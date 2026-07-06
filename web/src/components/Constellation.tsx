@@ -520,7 +520,8 @@ export default function Constellation({
         </g>
       </svg>
 
-      {hovered && view !== null && (
+      {/* the selected node's facts live in the side panel — no echo */}
+      {hovered && hovered.goal.id !== selectedId && view !== null && (
         <div
           className="pointer-events-none absolute z-10 max-w-sm rounded-md border border-edge-strong bg-surface-3 px-3 py-2"
           style={{

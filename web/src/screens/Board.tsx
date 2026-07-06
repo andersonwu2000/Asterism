@@ -414,6 +414,8 @@ export default function Board() {
           const cardSet = new Set(cards.map((p) => p.name))
           const completed = sorted.filter((p) => !cardSet.has(p.name) && p.status !== 'idle')
           const dormant = sorted.filter((p) => p.status === 'idle' && !cardSet.has(p.name))
+          /* big namespaces collapse to one aggregate chip (click →
+             filter); a 278-chip wall is the card-wall problem again */
           const strip = (title: string, items: BoardProblem[]) =>
             items.length > 0 && (
               <div className="mt-6">
@@ -421,26 +423,40 @@ export default function Board() {
                   {title} ({items.length})
                 </div>
                 <div className="flex flex-wrap gap-1.5">
-                  {items.map((p) => (
-                    <button
-                      key={p.name}
-                      className="tnum flex items-center gap-2 rounded-md border border-edge px-2 py-1 text-[11px] text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
-                      onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}
-                      title={p.name}
-                    >
-                      <span className="font-mono">
-                        {(() => {
-                          const leaf = p.name.includes('.')
-                            ? p.name.slice(p.name.indexOf('.') + 1)
-                            : p.name
-                          return leaf.length > 30 ? `${leaf.slice(0, 29)}…` : leaf
-                        })()}
-                      </span>
-                      {p.goals.proved > 0 && (
-                        <span className="text-ink-faint/70">{p.goals.proved}✓</span>
-                      )}
-                    </button>
-                  ))}
+                  {clusterize(items).map((c) =>
+                    c.items.length > 3 ? (
+                      <button
+                        key={c.prefix}
+                        className="tnum flex items-center gap-2 rounded-md border border-edge px-2 py-1 text-[11px] text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
+                        onClick={() => setQuery(`${c.prefix}.`)}
+                        title={`filter to ${c.prefix}.*`}
+                      >
+                        <span className="font-mono">{c.prefix}</span>
+                        <span className="text-ink-faint/70">{c.items.length}</span>
+                      </button>
+                    ) : (
+                      c.items.map((p) => (
+                        <button
+                          key={p.name}
+                          className="tnum flex items-center gap-2 rounded-md border border-edge px-2 py-1 text-[11px] text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
+                          onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}
+                          title={p.name}
+                        >
+                          <span className="font-mono">
+                            {(() => {
+                              const leaf = p.name.includes('.')
+                                ? p.name.slice(p.name.indexOf('.') + 1)
+                                : p.name
+                              return leaf.length > 30 ? `${leaf.slice(0, 29)}…` : leaf
+                            })()}
+                          </span>
+                          {p.goals.proved > 0 && (
+                            <span className="text-ink-faint/70">{p.goals.proved}✓</span>
+                          )}
+                        </button>
+                      ))
+                    ),
+                  )}
                 </div>
               </div>
             )
