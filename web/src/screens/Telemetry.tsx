@@ -286,6 +286,7 @@ function LibraryBrowser() {
 export default function Telemetry() {
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
+      <h1 className="font-display mb-4 text-[22px] font-medium text-ink">Engine</h1>
       <div className="flex flex-col gap-6">
         <section>
           <SectionLabel>daemon</SectionLabel>

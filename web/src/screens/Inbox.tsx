@@ -208,6 +208,14 @@ export default function Inbox() {
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-6">
+      <div className="mb-4 flex items-baseline gap-3">
+        <h1 className="font-display text-[22px] font-medium text-ink">Inbox</h1>
+        {!empty && (
+          <span className="tnum text-xs text-ink-faint">
+            {data.amends.length + data.signoffs.length} waiting on you
+          </span>
+        )}
+      </div>
       {empty ? (
         <EmptyState title="Nothing needs you right now">
           Amend requests and ingest sign-offs land here when the engine needs a human decision.

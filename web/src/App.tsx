@@ -96,13 +96,6 @@ function NavItem({
   )
 }
 
-const SECTION_TITLE: Record<string, string> = {
-  '': 'Problems',
-  problems: 'Problems',
-  inbox: 'Inbox',
-  telemetry: 'Engine',
-}
-
 function Shell() {
   const route = useRoute()
   const { data: meta } = usePoll<Meta>('/api/meta', 3000)
@@ -166,19 +159,8 @@ function Shell() {
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-11 shrink-0 items-center border-b border-edge px-5">
-          <div className="flex items-baseline gap-2 text-[13px]">
-            <Link to="/" className="text-ink-dim transition-colors hover:text-ink">
-              {SECTION_TITLE[section] ?? 'Problems'}
-            </Link>
-            {section === 'problems' && route.segments[1] && (
-              <>
-                <span className="text-ink-faint">/</span>
-                <span className="font-mono text-ink">{route.segments[1]}</span>
-              </>
-            )}
-          </div>
-        </header>
+        {/* no top chrome — the sidebar carries "where am I", each screen
+            carries its own title, the constellation gets the sky */}
         <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           {section === 'inbox' ? (
             <Inbox />

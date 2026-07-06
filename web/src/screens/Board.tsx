@@ -340,12 +340,15 @@ export default function Board() {
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-6">
-      <div className="mb-3 flex items-center justify-between">
-        <div className="tnum text-xs text-ink-dim">
-          {problems.length} problems
-          {attention > 0 && (
-            <span className="ml-2 font-medium text-warn">{attention} need input</span>
-          )}
+      <div className="mb-4 flex items-end justify-between">
+        <div className="flex items-baseline gap-3">
+          <h1 className="font-display text-[22px] font-medium text-ink">Problems</h1>
+          <span className="tnum text-xs text-ink-faint">
+            {problems.length}
+            {attention > 0 && (
+              <span className="ml-2 font-medium text-warn">{attention} need input</span>
+            )}
+          </span>
         </div>
         <div className="flex overflow-hidden rounded-md border border-edge text-xs">
           {(['list', 'galaxy'] as const).map((v) => (

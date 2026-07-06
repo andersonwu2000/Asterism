@@ -8,7 +8,7 @@ import { expect, test } from '@playwright/test'
 
 test('board renders problems with status chips', async ({ page }) => {
   await page.goto('/')
-  await expect(page.locator('header').getByText('Problems')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Problems' })).toBeVisible()
   // either rows exist or the explicit empty state shows — never a blank
   const rows = page.locator('tbody tr')
   const empty = page.getByText('No problems yet')
@@ -60,7 +60,7 @@ test('problem detail: four tabs, constellation svg has stars', async ({ page }) 
 
 test('inbox renders sections or empty state', async ({ page }) => {
   await page.goto('/#/inbox')
-  await expect(page.locator('header').getByText('Inbox')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible()
   const anySection = page
     .getByText(/amend requests|ingest sign-offs/i)
     .first()
@@ -70,7 +70,7 @@ test('inbox renders sections or empty state', async ({ page }) => {
 
 test('telemetry: daemon panel + log + usage + library sections', async ({ page }) => {
   await page.goto('/#/telemetry')
-  await expect(page.locator('header').getByText('Engine', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Engine' })).toBeVisible()
   for (const label of ['daemon', 'live log', 'usage', 'library']) {
     await expect(page.getByText(label, { exact: true })).toBeVisible()
   }

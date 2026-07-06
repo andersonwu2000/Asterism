@@ -112,8 +112,14 @@ export default function Problem({ name }: { name: string }) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 border-b border-edge px-6 pt-4">
-        <div className="flex items-baseline justify-between">
+      <div className="shrink-0 border-b border-edge px-6 pt-3">
+        <Link
+          to="/"
+          className="text-[11px] text-ink-faint transition-colors hover:text-ink"
+        >
+          ‹ problems
+        </Link>
+        <div className="mt-1 flex items-baseline justify-between">
           <div className="flex items-center gap-3">
             <h1 className="font-mono text-base font-semibold">{data.name}</h1>
             <StatusBadge status={data.status} />
