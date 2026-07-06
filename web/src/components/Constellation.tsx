@@ -38,26 +38,42 @@ function provedFill(dead: number): string {
   return `color-mix(in srgb, var(--color-starlight) ${100 - dull}%, var(--color-ink-faint))`
 }
 
-/** status → { fill, stroke, glow } for the star dot */
-function nodeStyle(g: Goal): { fill: string; stroke: string; glow: boolean; opacity: number } {
+/** status → { fill, stroke, glow } for the star dot.
+ *
+ * INK INVERSION (cold-eye review): a status instrument must answer
+ * "where is it stuck" in one glance. While ANYTHING is still live,
+ * the unproved few are the brightest objects in the sky and the
+ * proved mass recedes to memory; only a FINISHED problem lets the
+ * proved stars shine (the sky becomes the trophy it earned). */
+function nodeStyle(
+  g: Goal,
+  hasLive: boolean,
+): { fill: string; stroke: string; glow: boolean; opacity: number } {
   switch (g.status) {
     case 'proved':
-      return {
-        fill: provedFill(g.dead_attempts),
-        stroke: provedFill(g.dead_attempts),
-        glow: true,
-        opacity: 1,
-      }
+      return hasLive
+        ? {
+            fill: 'color-mix(in srgb, var(--color-starlight) 45%, var(--color-bg))',
+            stroke: 'color-mix(in srgb, var(--color-starlight) 45%, var(--color-bg))',
+            glow: false,
+            opacity: 0.9,
+          }
+        : {
+            fill: provedFill(g.dead_attempts),
+            stroke: provedFill(g.dead_attempts),
+            glow: true,
+            opacity: 1,
+          }
     case 'attempting':
-      return { fill: 'var(--color-accent)', stroke: 'var(--color-accent)', glow: true, opacity: 1 }
+      return { fill: 'var(--color-starlight)', stroke: 'var(--color-starlight)', glow: true, opacity: 1 }
     case 'open':
-      // The live frontier is the interesting 7% — accent, no glow
-      // (glow shared with proved made brightness meaningless).
-      return { fill: 'transparent', stroke: 'var(--color-accent)', glow: false, opacity: 1 }
+      // the live frontier owns the light: filled bright + glow, so the
+      // seven unproved stars outshine the hundred proved ones
+      return { fill: 'var(--color-star)', stroke: 'var(--color-starlight)', glow: true, opacity: 1 }
     case 'frozen':
       return { fill: 'transparent', stroke: 'var(--color-ink-faint)', glow: false, opacity: 0.8 }
     case 'pending_strategist_review':
-      return { fill: 'transparent', stroke: 'var(--color-warn)', glow: false, opacity: 1 }
+      return { fill: 'transparent', stroke: 'var(--color-warn)', glow: true, opacity: 1 }
     case 'shelved':
       return { fill: 'var(--color-ink-faint)', stroke: 'var(--color-ink-faint)', glow: false, opacity: 0.45 }
     case 'disproved':
@@ -135,6 +151,14 @@ export default function Constellation({
   const focusable = frontier.hiddenCount > 0
   const focused = focusable && (focusFrontier ?? goals.length > 60)
   const shownGoals = focused ? frontier.goals : goals
+  // ink inversion gate: while anything is live the unproved few carry
+  // the light; a finished sky lets the proved shine
+  const hasLive = goals.some(
+    (g) =>
+      g.status === 'open' ||
+      g.status === 'attempting' ||
+      g.status === 'pending_strategist_review',
+  )
 
   const layout = useMemo(
     () =>
@@ -223,11 +247,13 @@ export default function Constellation({
     // further still: four stars at atlas scale is a composition,
     // at survey scale it's dust.
     const kMax = layout.nodes.length <= 10 ? 2.6 : 2.0
-    const k = Math.min((cw - 48) / layout.width, (ch - 48) / layout.height, kMax)
+    // extra vertical air: the floating legend row must not sit on the
+    // top band's stars (cold-eye finding)
+    const k = Math.min((cw - 48) / layout.width, (ch - 88) / layout.height, kMax)
     setView({
       k,
       tx: (cw - layout.width * k) / 2,
-      ty: (ch - layout.height * k) / 2,
+      ty: (ch - layout.height * k) / 2 + 14,
     })
   }, [view, layout])
 
@@ -368,9 +394,9 @@ export default function Constellation({
               key={`d${i}`}
               cx={d.x}
               cy={d.y}
-              r={d.r / Math.max(k, 0.5)}
+              r={(d.r * 0.8) / Math.max(k, 0.5)}
               fill="var(--color-ink)"
-              opacity={d.o}
+              opacity={d.o * 0.45}
             />
           ))}
           {visibleEdges.map((e, i) => {
@@ -392,6 +418,9 @@ export default function Constellation({
                 Math.min(150, len * 0.18) * ((e.from + e.to) % 2 === 0 ? 1 : -1)
               const mx = (a.x + b.x) / 2 + (-dy / len) * bow
               const my = (a.y + b.y) / 2 + (dx / len) * bow
+              // long hauls fade further: a cross-sky thread is context,
+              // not content — nearby citations stay readable
+              const fade = Math.min(1, Math.max(0.35, 320 / len))
               return (
                 <path
                   key={i}
@@ -399,7 +428,7 @@ export default function Constellation({
                   fill="none"
                   stroke={edgeStroke(e.strategyStatus, e.kind)}
                   strokeWidth={1}
-                  strokeOpacity={citeOpacity}
+                  strokeOpacity={citeOpacity * fade}
                   vectorEffect="non-scaling-stroke"
                 />
               )
@@ -564,15 +593,15 @@ export default function Constellation({
             </text>
           )}
           {layout.nodes.map((n) => {
-            const s = nodeStyle(n.goal)
+            const s = nodeStyle(n.goal, hasLive)
             const live =
               n.goal.status === 'open' ||
               n.goal.status === 'attempting' ||
               n.goal.status === 'pending_strategist_review'
             // scale honesty: marks never drop below ~7px on screen, and
-            // at survey zoom the live frontier switches to filled
-            // accent dots — hollow 0.5px strokes are sub-perceptual
-            const r = Math.max(radius(n.goal), 3.5 / k)
+            // the live frontier gets a size bonus + a larger screen
+            // minimum — the unproved few must be findable at ANY zoom
+            const r = Math.max(radius(n.goal) + (live ? 1.5 : 0), (live ? 5.5 : 3.5) / k)
             const lod = k < 0.8
             const fill = lod && live ? s.stroke : s.fill
             const selected = n.goal.id === selectedId
@@ -753,8 +782,8 @@ export default function Constellation({
                     // Root + claims stay labelled at ANY zoom — the
                     // survey view needs its landmarks named.
                     y={
-                      r +
-                      ((layerCounts.get(n.layer) ?? 0) > 8 && n.col % 2 === 1 ? 26 : 14) / k
+                      r * (n.goal.is_deliverable || n.goal.origin === 'root' ? 1.6 : 1) +
+                      ((layerCounts.get(n.layer) ?? 0) > 8 && n.col % 2 === 1 ? 26 : 15) / k
                     }
                     textAnchor="middle"
                     className="pointer-events-none select-none"

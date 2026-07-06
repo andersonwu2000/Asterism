@@ -314,7 +314,10 @@ export default function Problem({ name }: { name: string }) {
           <div className="flex items-center gap-4">
             <RunControl problem={data.name} />
             {data.goals.length > 0 && (
-              <div className="flex h-[3px] w-28 overflow-hidden rounded-full bg-surface-3">
+              <div
+                className="flex h-[3px] w-28 overflow-hidden rounded-full bg-surface-3"
+                title={`${proved} proved of ${data.goals.length} goals (bright = proved, mid = in progress)`}
+              >
                 <div
                   className="h-full bg-starlight/80 transition-[width] duration-700"
                   style={{ width: `${(proved / data.goals.length) * 100}%` }}
@@ -387,8 +390,21 @@ export default function Problem({ name }: { name: string }) {
               {blocker && (
                 <span className="text-ink-faint">
                   {lastOk && ' · '}top blocker{' '}
-                  <span className="font-mono text-ink-dim">{blocker.slug}</span> (
-                  {blocker.dead_attempts} failed attempt{blocker.dead_attempts === 1 ? '' : 's'})
+                  {/* the words and the map must know each other: the
+                      named blocker is a link that lights its star */}
+                  <button
+                    className="cursor-pointer font-mono text-ink-dim underline decoration-ink-faint/50 underline-offset-2 transition-colors hover:text-ink"
+                    title="show this star on the constellation"
+                    onClick={() => {
+                      setTab('stars')
+                      setSelectedStrategy(null)
+                      setSelectedGoal(blocker.id)
+                    }}
+                  >
+                    {blocker.slug}
+                  </button>{' '}
+                  ({blocker.dead_attempts} failed attempt
+                  {blocker.dead_attempts === 1 ? '' : 's'})
                 </span>
               )}
               {(data.status === 'awaiting_human' || data.status === 'signoff_pending') && (
