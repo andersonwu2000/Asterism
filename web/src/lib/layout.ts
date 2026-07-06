@@ -205,72 +205,147 @@ export function layoutConstellation(
   }
   for (const g of goals) computeLayer(g.id, 0)
 
-  // Group per layer, initial order by goal id (creation order).
-  const layers = new Map<number, number[]>()
-  for (const g of goals) {
-    const l = layer.get(g.id) ?? 0
-    layers.set(l, [...(layers.get(l) ?? []), g.id])
+  // ---- Tidy-tree x-assignment -------------------------------------
+  // The old approach (per-layer index * gap, rows centered globally,
+  // weak barycenter) let a parent land half a canvas away from its
+  // children — 217-goal graphs became sweeping-edge spaghetti. Instead:
+  // build a primary-parent forest (min parent id), assign x bottom-up
+  // (leaf = next slot, parent = centered over its children), so
+  // families group and edges stay local. Secondary DAG edges remain as
+  // the few genuine cross-links. Deterministic throughout.
+  const primaryParent = new Map<number, number>()
+  for (const [child, ps] of parents) primaryParent.set(child, Math.min(...ps))
+  const treeKids = new Map<number, number[]>()
+  for (const [c, p] of primaryParent) {
+    treeKids.set(p, [...(treeKids.get(p) ?? []), c])
   }
-  const layerKeys = [...layers.keys()].sort((a, b) => a - b)
-  for (const k of layerKeys) layers.get(k)!.sort((a, b) => a - b)
+  for (const ks of treeKids.values()) ks.sort((a, b) => a - b)
 
-  // Barycenter ordering: 3 top-down passes using parent positions.
-  const pos = new Map<number, number>()
-  const reindex = (ids: number[]) => ids.forEach((id, i) => pos.set(id, i))
-  for (const k of layerKeys) reindex(layers.get(k)!)
-  for (let pass = 0; pass < 3; pass++) {
-    for (const k of layerKeys) {
-      if (k === 0) continue
-      const ids = layers.get(k)!
-      ids.sort((a, b) => {
-        const bary = (id: number): number => {
-          const ps = parents.get(id)
-          if (!ps || ps.length === 0) return pos.get(id) ?? 0
-          return ps.reduce((acc, p) => acc + (pos.get(p) ?? 0), 0) / ps.length
-        }
-        return bary(a) - bary(b) || a - b
-      })
-      reindex(ids)
+  const isSingleton = (id: number) =>
+    !primaryParent.has(id) && (treeKids.get(id)?.length ?? 0) === 0
+  const treeRoots = goals
+    .filter((g) => !primaryParent.has(g.id) && (treeKids.get(g.id)?.length ?? 0) > 0)
+    .map((g) => g.id)
+    .sort((a, b) => a - b)
+
+  const xSlot = new Map<number, number>()
+  let slot = 0
+  const treeInfos: { members: number[]; start: number; end: number; depth: number }[] = []
+  const assign = (id: number, guard: number, members: number[]): void => {
+    if (guard > goals.length + 1 || xSlot.has(id)) return
+    members.push(id)
+    const ks = treeKids.get(id) ?? []
+    if (ks.length === 0) {
+      xSlot.set(id, slot)
+      slot += 1
+      return
+    }
+    for (const k of ks) assign(k, guard + 1, members)
+    const first = xSlot.get(ks[0])
+    const last = xSlot.get(ks[ks.length - 1])
+    xSlot.set(id, first !== undefined && last !== undefined ? (first + last) / 2 : slot++)
+  }
+  for (const r of treeRoots) {
+    const start = slot
+    const members: number[] = []
+    assign(r, 0, members)
+    treeInfos.push({
+      members,
+      start,
+      end: slot - 1,
+      depth: Math.max(...members.map((m) => layer.get(m) ?? 0), 0),
+    })
+    slot += 0.6 // breathing room between families
+  }
+
+  // Band the independent families: a 200-goal shallow forest laid out
+  // in one strip is a ribbon (aspect 20:1); fold trees into horizontal
+  // bands sized for a roughly 16:9 canvas. Trees are independent, so
+  // banding costs nothing but the few cross-tree DAG edges.
+  const maxDepthAll = Math.max(...treeInfos.map((t) => t.depth), 0)
+  const targetBand = Math.max(
+    16,
+    Math.ceil(Math.sqrt(Math.max(slot, 1) * (maxDepthAll + 2) * (Y_GAP / X_GAP) * 1.7)),
+  )
+  const bandOfNode = new Map<number, number>()
+  const localSlot = new Map<number, number>()
+  const bandDepth: number[] = []
+  let band = 0
+  let bandUsed = 0
+  for (const t of treeInfos) {
+    const w = t.end - t.start + 1
+    if (bandUsed > 0 && bandUsed + w > targetBand) {
+      band += 1
+      bandUsed = 0
+    }
+    for (const m of t.members) {
+      bandOfNode.set(m, band)
+      localSlot.set(m, xSlot.get(m)! - t.start + bandUsed)
+    }
+    bandDepth[band] = Math.max(bandDepth[band] ?? 0, t.depth)
+    bandUsed += w + 0.6
+  }
+
+  // Parentless, childless forward bricks: their own compact block band.
+  const singles = goals.filter((g) => isSingleton(g.id)).map((g) => g.id)
+  if (singles.length > 0) {
+    const perRow = Math.max(4, Math.ceil(Math.sqrt(singles.length * 2.6)))
+    const sBand = bandUsed > 0 || band > 0 ? band + 1 : band
+    singles.forEach((id, i) => {
+      bandOfNode.set(id, sBand)
+      localSlot.set(id, i % perRow)
+      layer.set(id, Math.floor(i / perRow))
+    })
+    bandDepth[sBand] = Math.max(
+      bandDepth[sBand] ?? 0,
+      Math.floor((singles.length - 1) / perRow),
+    )
+  }
+
+  // Vertical base of each band = cumulative depth of the bands above.
+  const bandYBase: number[] = []
+  {
+    let y = 0
+    for (let b = 0; b < bandDepth.length; b++) {
+      bandYBase[b] = y
+      y += (bandDepth[b] ?? 0) + 1.7
     }
   }
 
-  // Edge-free graphs (all-forward problems) degenerate into one long
-  // row; wrap them into a roughly 16:9 grid so the canvas fills
-  // instead of rendering a single line in a void.
-  if (layerKeys.length === 1 && (layers.get(0)?.length ?? 0) > 6) {
-    const ids = layers.get(0)!
-    const perRow = Math.max(3, Math.ceil(Math.sqrt(ids.length * 1.8)))
-    layers.clear()
-    layerKeys.length = 0
+  // Per-(band, layer) collision sweep: multi-parent pulls a node deeper
+  // than its tree slot suggests; enforce min horizontal gap.
+  const rows = new Map<string, number[]>()
+  for (const g of goals) {
+    const key = `${bandOfNode.get(g.id) ?? 0}:${layer.get(g.id) ?? 0}`
+    rows.set(key, [...(rows.get(key) ?? []), g.id])
+  }
+  const colOf = new Map<number, number>()
+  for (const ids of rows.values()) {
+    ids.sort((a, b) => (localSlot.get(a)! - localSlot.get(b)!) || a - b)
+    let prev = -Infinity
     ids.forEach((id, i) => {
-      const row = Math.floor(i / perRow)
-      if (!layers.has(row)) {
-        layers.set(row, [])
-        layerKeys.push(row)
-      }
-      layers.get(row)!.push(id)
+      const x = Math.max(localSlot.get(id)!, prev + 1)
+      localSlot.set(id, x)
+      prev = x
+      colOf.set(id, i)
     })
   }
 
-  // Coordinates: layers stacked top-down, rows centered on the widest.
-  const maxCount = Math.max(...layerKeys.map((k) => layers.get(k)!.length), 1)
-  const width = PAD * 2 + Math.max(0, maxCount - 1) * X_GAP
-  const nodes: LayoutNode[] = []
-  for (const k of layerKeys) {
-    const ids = layers.get(k)!
-    const rowWidth = Math.max(0, ids.length - 1) * X_GAP
-    const x0 = PAD + (width - PAD * 2 - rowWidth) / 2
-    ids.forEach((id, i) => {
-      nodes.push({
-        goal: byId.get(id)!,
-        x: x0 + i * X_GAP,
-        y: PAD + k * Y_GAP,
-        layer: k,
-        col: i,
-      })
-    })
-  }
-  const height = PAD * 2 + Math.max(0, layerKeys.length - 1) * Y_GAP
+  const maxSlot = Math.max(...[...localSlot.values()], 0)
+  const lastBand = bandDepth.length - 1
+  const totalLayers = (bandYBase[lastBand] ?? 0) + (bandDepth[lastBand] ?? 0)
+  const width = PAD * 2 + maxSlot * X_GAP
+  const height = PAD * 2 + totalLayers * Y_GAP
+
+  const nodes: LayoutNode[] = goals.map((g) => ({
+    goal: g,
+    x: PAD + (localSlot.get(g.id) ?? 0) * X_GAP,
+    y:
+      PAD +
+      ((bandYBase[bandOfNode.get(g.id) ?? 0] ?? 0) + (layer.get(g.id) ?? 0)) * Y_GAP,
+    layer: layer.get(g.id) ?? 0,
+    col: colOf.get(g.id) ?? 0,
+  }))
 
   // Hyperedge bundles: group strategy edges by strategy; ≥2 children
   // form an AND-bundle with a junction point, single-child strategies
