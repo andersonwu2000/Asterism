@@ -9,11 +9,14 @@ import { ApiError } from '../lib/api'
 
 type ButtonVariant = 'primary' | 'star' | 'ok' | 'danger' | 'ghost' | 'outline'
 
+/* achromatic CTA ladder: the primary action inverts (white on black is
+ * the loudest achromatic signal); destructive stays a quiet outline —
+ * the confirm step and the wording carry the gravity */
 const BUTTON_VARIANT: Record<ButtonVariant, string> = {
-  primary: 'bg-accent/15 text-accent hover:bg-accent/25',
-  star: 'bg-star/15 text-star hover:bg-star/25',
-  ok: 'bg-ok/15 text-ok hover:bg-ok/25',
-  danger: 'border border-danger/40 text-danger hover:bg-danger/10',
+  primary: 'bg-ink text-bg font-semibold hover:bg-starlight',
+  star: 'bg-ink text-bg font-semibold hover:bg-starlight',
+  ok: 'bg-ink text-bg font-semibold hover:bg-starlight',
+  danger: 'border border-edge-strong text-ink-dim hover:border-ink-faint hover:text-ink',
   ghost: 'text-ink-dim hover:text-ink hover:bg-surface-2',
   outline: 'border border-edge text-ink-dim hover:border-edge-strong hover:text-ink',
 }

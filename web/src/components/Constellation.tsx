@@ -28,8 +28,9 @@ interface Props {
  * the reviewer hunting fragile spots. */
 function provedFill(dead: number): string {
   if (dead <= 0) return 'var(--color-starlight)'
-  const warm = dead <= 2 ? 18 : dead <= 5 ? 34 : 50
-  return `color-mix(in srgb, var(--color-starlight) ${100 - warm}%, var(--color-warn))`
+  // achromatic struggle residue: fought-over stars are duller, not warm
+  const dull = dead <= 2 ? 22 : dead <= 5 ? 40 : 55
+  return `color-mix(in srgb, var(--color-starlight) ${100 - dull}%, var(--color-ink-faint))`
 }
 
 /** status → { fill, stroke, glow } for the star dot */
@@ -273,12 +274,12 @@ export default function Constellation({
           {/* atmosphere: two faint nebulae + a vignette, screen-space so
               they sit behind the sky rather than inside it */}
           <radialGradient id="nebula-a" cx="30%" cy="24%" r="55%">
-            <stop offset="0%" stopColor="var(--color-accent)" stopOpacity="0.05" />
-            <stop offset="100%" stopColor="var(--color-accent)" stopOpacity="0" />
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.028" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
           </radialGradient>
           <radialGradient id="nebula-b" cx="76%" cy="72%" r="50%">
-            <stop offset="0%" stopColor="var(--color-star)" stopOpacity="0.035" />
-            <stop offset="100%" stopColor="var(--color-star)" stopOpacity="0" />
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.02" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
           </radialGradient>
         </defs>
         <rect width="100%" height="100%" fill="url(#nebula-a)" />
@@ -533,7 +534,7 @@ export default function Constellation({
                   <circle
                     r={heatR}
                     fill="none"
-                    stroke={heatFrac >= 0.99 ? 'var(--color-danger)' : 'var(--color-warn)'}
+                    stroke="var(--color-starlight)"
                     strokeWidth={1.2}
                     strokeOpacity={0.4 + heatFrac * 0.5}
                     strokeDasharray={`${heatC * heatFrac} ${heatC}`}

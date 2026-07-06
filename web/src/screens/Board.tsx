@@ -49,7 +49,7 @@ function ProgressBar({
   const rest = Math.max(0, total - proved - open)
   return (
     <div
-      className="flex h-1 overflow-hidden rounded-full bg-surface-3"
+      className="flex h-1 overflow-hidden rounded-full bg-white/10"
       style={{ width: w }}
       title={`${proved} proved · ${open} open${rest > 0 ? ` · ${rest} shelved/dead` : ''} of ${total}`}
     >

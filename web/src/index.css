@@ -7,35 +7,34 @@
  * borders are white-alpha so they read consistently across layers.
  */
 @theme {
-  /* Brass-observatory palette. Principles (Linear redesign, Material
-   * dark guidance): near-black NEUTRAL base — blue is kept out of the
-   * greys so the sky reads black, not fog; elevation = lightness steps;
-   * ONE brand accent (brass gold) owns identity, everything else is
-   * strictly semantic and small. */
+  /* Achromatic star-atlas palette (owner call: hues jumped — an atlas
+   * is black and white). The ONLY axes are lightness, weight, shape,
+   * motion and inversion: brightest = loudest (attention), mid-grey =
+   * ambient, faint = settled. Former semantic hues map onto that
+   * loudness ladder; wording carries the meaning. */
 
-  /* elevation ladder (neutral, whisper-cool) */
-  --color-bg: #0a0b0e;
-  --color-surface: #101116;
-  --color-surface-2: #16181e;
-  --color-surface-3: #1d1f27;
-  --color-edge: rgba(228, 232, 240, 0.07);
-  --color-edge-strong: rgba(228, 232, 240, 0.16);
+  /* elevation ladder */
+  --color-bg: #0a0a0c;
+  --color-surface: #101013;
+  --color-surface-2: #17171b;
+  --color-surface-3: #1e1e23;
+  --color-edge: rgba(255, 255, 255, 0.07);
+  --color-edge-strong: rgba(255, 255, 255, 0.15);
 
-  /* text ladder (paper-white → neutral greys, AA against bg) */
-  --color-ink: #eceef2;
-  --color-ink-dim: #a2a7b0;
-  --color-ink-faint: #686d77;
+  /* text ladder */
+  --color-ink: #ededf0;
+  --color-ink-dim: #a2a4ab;
+  --color-ink-faint: #67696f;
 
-  /* the one brand voice: brass gold — wordmark, active nav, focus,
-     library, deliverable */
-  --color-star: #d9b45f;
-  --color-starlight: #f2f4f8; /* lit stars (real night sky = white) */
+  /* identity + data light */
+  --color-star: #e9eaee; /* wordmark, active nav, deliverable — bright */
+  --color-starlight: #f4f5f8; /* lit stars */
 
-  /* strictly semantic, used small */
-  --color-accent: #82a8ee; /* machine working: proving, in-flight, open */
-  --color-warn: #de8f43; /* the human's move — separated from brand gold */
-  --color-danger: #e5606a; /* broken / destructive */
-  --color-ok: #4cba8e; /* success actions */
+  /* loudness ladder standing in for the old hues */
+  --color-accent: #bfc2ca; /* machine working — light grey + motion */
+  --color-warn: #f2f3f6; /* the human's move — brightest; inverts on pills */
+  --color-danger: #f2f3f6; /* broken — brightest; words carry it */
+  --color-ok: #9da0a8; /* settled-good — quiet mid-grey */
 
   --font-sans:
     "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;

@@ -72,7 +72,7 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
   const leaf = ns ? p.problem.slice(ns.length + 1) : p.problem
 
   return (
-    <div className="relative" style={{ width: w }}>
+    <div className="relative rounded-lg border border-edge bg-white/[0.015] px-1 pt-1" style={{ width: w }}>
       <svg width={w} height={h} className="block">
         {/* generous invisible hit areas — 1.5px stars are not targets */}
         {stars.map((s, i) => (
@@ -123,7 +123,7 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
         className="group block pb-1"
         title={`open ${p.problem}`}
       >
-        <span className="block truncate font-mono text-xs text-ink-dim transition-colors group-hover:text-ink">
+        <span className="block truncate px-1 font-mono text-[13px] text-ink transition-colors group-hover:text-starlight">
           {leaf}
           <span className="tnum ml-2 text-[10px] text-ink-faint">{p.decls.length}</span>
         </span>
@@ -191,7 +191,7 @@ export default function Library() {
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            'radial-gradient(ellipse 60% 45% at 28% 18%, color-mix(in srgb, var(--color-accent) 5%, transparent), transparent), radial-gradient(ellipse 50% 40% at 75% 70%, color-mix(in srgb, var(--color-star) 4%, transparent), transparent)',
+            'radial-gradient(ellipse 60% 45% at 28% 18%, rgba(255,255,255,0.03), transparent), radial-gradient(ellipse 50% 40% at 75% 70%, rgba(255,255,255,0.02), transparent)',
         }}
       />
       <div className="relative mx-auto max-w-6xl px-6 py-6">

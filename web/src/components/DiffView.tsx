@@ -54,7 +54,11 @@ function Line({
   return (
     <div
       className={`flex min-w-0 px-2 whitespace-pre-wrap ${
-        tone === 'del' ? 'bg-danger/10 text-ink' : tone === 'add' ? 'bg-ok/10 text-ink' : 'text-ink-dim'
+        tone === 'del'
+          ? 'bg-white/[0.025] text-ink-faint'
+          : tone === 'add'
+            ? 'bg-white/[0.07] text-ink'
+            : 'text-ink-dim'
       }`}
     >
       <span className="tnum mr-1 w-8 shrink-0 text-right text-ink-faint select-none">
@@ -62,12 +66,18 @@ function Line({
       </span>
       <span className="mr-2 w-3 shrink-0 text-ink-faint select-none">{sign}</span>
       <span className="min-w-0 break-words">
+        {/* achromatic word-diff: removed words are struck, added words
+            sit on a light plate */}
         {segs
           ? segs.map((s, i) =>
               s.changed ? (
                 <span
                   key={i}
-                  className={`rounded-[2px] ${tone === 'del' ? 'bg-danger/30' : 'bg-ok/30'}`}
+                  className={`rounded-[2px] ${
+                    tone === 'del'
+                      ? 'text-ink-faint line-through decoration-ink-faint/70'
+                      : 'bg-white/15 text-ink'
+                  }`}
                 >
                   {s.text}
                 </span>

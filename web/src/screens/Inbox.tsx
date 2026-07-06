@@ -69,7 +69,7 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
         })()}
       </div>
 
-      <p className="font-display mb-3 max-w-[62ch] text-[19px] leading-snug font-medium text-ink">
+      <p className="font-display mb-3 max-w-[62ch] text-[19px] leading-snug font-normal text-ink">
         {headline}
       </p>
 
