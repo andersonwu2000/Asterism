@@ -2362,6 +2362,17 @@ def bind_paper(conn: sqlite3.Connection, *, problem: str, paper_id: str,
     return cur.rowcount > 0
 
 
+def unbind_paper(conn: sqlite3.Connection, *, problem: str,
+                 paper_id: str) -> bool:
+    """Remove one (problem, paper) binding — the UI's uncheck. The
+    shelf entry itself is untouched. Returns True iff a row existed."""
+    cur = conn.execute(
+        "DELETE FROM problem_papers WHERE problem = ? AND paper_id = ?",
+        (problem, paper_id))
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def paper_bindings(conn: sqlite3.Connection,
                    problem: str) -> list[sqlite3.Row]:
     """A problem's paper bindings, manifest-origin first then by age —

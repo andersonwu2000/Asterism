@@ -204,6 +204,43 @@ export interface LibraryProblem {
   decls: LibraryDecl[]
 }
 
+/** A problem citing a shelf paper, as reported by GET /api/papers. */
+export interface PaperBoundRef {
+  problem: string
+  origin: string
+}
+
+/** One entry on the paper shelf (GET /api/papers). */
+export interface PaperShelfItem {
+  id: string
+  source_name: string
+  pages: number
+  chars: number
+  original: string
+  has_map: boolean
+  map_stale: boolean
+  bound: PaperBoundRef[]
+}
+
+/** GET /api/papers/{pid}/text — extracted markdown with `## p.N` page anchors. */
+export interface PaperText {
+  id: string
+  source_name: string
+  pages: number
+  text: string
+}
+
+/** One paper bound to a problem (GET /api/problems/{p}/papers). */
+export interface ProblemPaperBinding {
+  id: string
+  /** who bound it: 'manifest' | 'user' | 'scholar' */
+  origin: string
+  reason: string | null
+  source_name: string | null
+  /** binding survives but the shelf entry is gone */
+  missing: boolean
+}
+
 export interface DaemonStatus {
   running: boolean
   pid: number | null

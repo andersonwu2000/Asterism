@@ -229,7 +229,9 @@ _WATERMARKS = {
     # schema rework (#11).
     # 4400→4410 (2026-07-07): problem_settings DDL (frontmatter
     # dissolve) — table only; accessors live in state/settings.py.
-    "Tooling/state/db.py": 4410,
+    # 4410→4425 (2026-07-07): unbind_paper (papers-page uncheck — the
+    # write pair of bind_paper).
+    "Tooling/state/db.py": 4425,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

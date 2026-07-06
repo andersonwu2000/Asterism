@@ -85,6 +85,16 @@ class ProblemCreateBody(BaseModel):
     settings: dict | None = None
     defs: str | None = None
     root: str | None = None
+    # shelf ids to cite (Papers/<id> — bound with origin='user')
+    papers: list[str] | None = None
+
+
+class PaperAddBody(BaseModel):
+    path: str
+
+
+class PaperBindBody(BaseModel):
+    paper_id: str
 
 
 class ManifestUpdateBody(BaseModel):
@@ -338,6 +348,124 @@ def create_app(workspace: Path) -> FastAPI:
                                 detail=f"paper {pid!r} not shelved here")
         return d
 
+    # -- papers bookshelf (top-level page) ------------------------------
+
+    @app.get("/api/papers")
+    def papers() -> dict:
+        if not (workspace / "asterism.db").exists():
+            return _data.papers_list(None, workspace)
+        with _ro(workspace) as conn:
+            return _data.papers_list(conn, workspace)
+
+    @app.get("/api/papers/{pid}/text")
+    def paper_text(pid: str) -> dict:
+        from ..papers import shelf as _shelf
+        meta = _shelf.load_meta(workspace, pid)
+        tp = _shelf.text_path(workspace, pid)
+        if meta is None or not tp.exists():
+            raise HTTPException(status_code=404,
+                                detail=f"paper {pid!r} not shelved here")
+        return {"id": pid, "source_name": meta.source_name,
+                "pages": meta.pages,
+                "text": tp.read_text(encoding="utf-8")}
+
+    @app.get("/api/papers/{pid}/file")
+    def paper_file(pid: str):
+        """The original document (browser-native PDF viewing)."""
+        from ..papers import shelf as _shelf
+        pdir = _shelf.paper_dir(workspace, pid)
+        original = next(
+            (f for f in pdir.glob("paper.*") if f.is_file()), None)
+        if original is None:
+            raise HTTPException(status_code=404,
+                                detail=f"paper {pid!r} has no original file")
+        media = "application/pdf" if original.suffix == ".pdf" \
+            else "text/plain; charset=utf-8"
+        return FileResponse(original, media_type=media,
+                            filename=f"{pid}{original.suffix}",
+                            content_disposition_type="inline")
+
+    @app.post("/api/papers/add")
+    def paper_add(body: PaperAddBody) -> dict:
+        """Shelve a local file by path (the CLI paper-add chokepoint).
+        Content-hash identity: re-adding the same document is a no-op
+        that returns the existing slot."""
+        from ..papers import shelf as _shelf
+        src = Path(body.path).expanduser()
+        if not src.is_file():
+            raise HTTPException(status_code=404,
+                                detail=f"no such file: {src}")
+        try:
+            meta = _shelf.add_paper(workspace, src)
+        except (_shelf.ScannedPdfError, ValueError) as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        return {"id": meta.id, "source_name": meta.source_name,
+                "pages": meta.pages, "chars": meta.chars}
+
+    @app.delete("/api/papers/{pid}")
+    def paper_delete(pid: str) -> dict:
+        """Remove a shelf slot. Refused while any problem cites it —
+        unbind there first (the bindings are the citations agents rely
+        on; deleting under them would orphan every reference)."""
+        import shutil
+        from ..papers import shelf as _shelf
+        pdir = _shelf.paper_dir(workspace, pid)
+        if _shelf.load_meta(workspace, pid) is None:
+            raise HTTPException(status_code=404,
+                                detail=f"paper {pid!r} not shelved here")
+        if (workspace / "asterism.db").exists():
+            with _ro(workspace) as conn:
+                rows = conn.execute(
+                    "SELECT problem FROM problem_papers WHERE paper_id = ?"
+                    " ORDER BY problem", (pid,)).fetchall()
+            if rows:
+                names = ", ".join(str(r["problem"]) for r in rows)
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"cited by {names} — unbind it from those"
+                           f" problems first")
+        shutil.rmtree(pdir)
+        return {"message": f"removed Papers/{pid}"}
+
+    @app.get("/api/problems/{problem}/papers")
+    def problem_papers(problem: str) -> dict:
+        with _ro(workspace) as conn:
+            return _data.problem_papers_detail(conn, workspace, problem)
+
+    @app.post("/api/problems/{problem}/papers")
+    def problem_paper_bind(problem: str, body: PaperBindBody) -> dict:
+        from ..papers import shelf as _shelf
+        if _shelf.load_meta(workspace, body.paper_id) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"paper {body.paper_id!r} not shelved here")
+        conn = db.connect(workspace / "asterism.db")
+        try:
+            known = conn.execute(
+                "SELECT 1 FROM problems WHERE name = ?",
+                (problem,)).fetchone()
+            if known is None:
+                raise HTTPException(status_code=404,
+                                    detail=f"unknown problem {problem!r}")
+            db.bind_paper(conn, problem=problem, paper_id=body.paper_id,
+                          origin="user")
+            conn.commit()
+        finally:
+            conn.close()
+        return {"message": f"bound Papers/{body.paper_id} to {problem}"}
+
+    @app.delete("/api/problems/{problem}/papers/{pid}")
+    def problem_paper_unbind(problem: str, pid: str) -> dict:
+        conn = db.connect(workspace / "asterism.db")
+        try:
+            removed = db.unbind_paper(conn, problem=problem, paper_id=pid)
+        finally:
+            conn.close()
+        if not removed:
+            raise HTTPException(status_code=404,
+                                detail="no such binding")
+        return {"message": f"unbound Papers/{pid} from {problem}"}
+
     @app.get("/api/library")
     def library() -> dict:
         if not (workspace / "asterism.db").exists():
@@ -478,6 +606,27 @@ def create_app(workspace: Path) -> FastAPI:
             if rc != 0:
                 _shutil.rmtree(pdir, ignore_errors=True)
                 raise HTTPException(status_code=422, detail=msg)
+            # Explicit creation-time inputs are authoritative in the DB
+            # (init's lazy migration reads the PARSED file, and
+            # frontmatter lemma_hints are invisible to parse() — a
+            # legacy quirk the dissolve made harmless here):
+            if body.settings or body.papers:
+                from ..state import settings as _settings
+                conn2 = db.connect(workspace / "asterism.db")
+                try:
+                    for key in _settings.SETTING_KEYS:
+                        if body.settings and key in body.settings:
+                            try:
+                                _settings.write(conn2, name, key,
+                                                body.settings[key])
+                            except ValueError:
+                                pass  # form junk never blocks creation
+                    for pid in body.papers or []:
+                        db.bind_paper(conn2, problem=name, paper_id=pid,
+                                      origin="user")
+                    conn2.commit()
+                finally:
+                    conn2.close()
             return {"problem": name, "message": msg}
         except HTTPException:
             raise

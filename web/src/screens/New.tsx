@@ -1,7 +1,9 @@
-import { useState } from 'react'
-import { apiPost } from '../lib/api'
+import { useEffect, useState } from 'react'
+import { apiGet, apiPost } from '../lib/api'
 import { navigate } from '../lib/router'
 import { Button } from '../components/ui'
+import ListField from '../components/ListField'
+import type { PaperShelfItem } from '../lib/types'
 
 /*
  * Problem authoring, mathematician-first: a name, a natural-language
@@ -11,6 +13,9 @@ import { Button } from '../components/ui'
  */
 
 const NAME_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*$/
+
+/** kernel-blessed default — sending it explicitly is idempotent */
+const DEFAULT_AXIOMS = ['propext', 'Quot.sound', 'Classical.choice']
 
 export default function New() {
   const [name, setName] = useState('')
@@ -22,6 +27,32 @@ export default function New() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [nameTouched, setNameTouched] = useState(false)
+  const [shelf, setShelf] = useState<PaperShelfItem[]>([])
+  const [papers, setPapers] = useState<Set<string>>(new Set())
+  const [showConstraints, setShowConstraints] = useState(false)
+  const [axioms, setAxioms] = useState<string[]>(DEFAULT_AXIOMS)
+  const [forbidden, setForbidden] = useState<string[]>([])
+  const [hints, setHints] = useState<string[]>([])
+
+  // the papers block only renders when a shelf exists — one silent
+  // fetch; failure (older engine, empty workspace) hides it
+  useEffect(() => {
+    let cancelled = false
+    apiGet<{ papers: PaperShelfItem[] }>('/api/papers')
+      .then((d) => !cancelled && setShelf(d.papers))
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const togglePaper = (id: string) =>
+    setPapers((old) => {
+      const next = new Set(old)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
 
   const nameOk = NAME_RE.test(name)
   // concrete reason, live as the user types (or after a blur): silent
@@ -42,9 +73,15 @@ export default function New() {
       await apiPost<{ problem: string }>('/api/problems/create', {
         name,
         body,
-        settings: { library },
+        settings: {
+          library,
+          axioms_whitelist: axioms,
+          forbidden_lemmas: forbidden,
+          lemma_hints: hints,
+        },
         defs: defs.trim() === '' ? null : defs,
         root: root.trim() === '' ? null : root,
+        ...(papers.size > 0 ? { papers: [...papers] } : {}),
       })
       navigate(`/problems/${encodeURIComponent(name)}`)
     } catch (e) {
@@ -91,6 +128,31 @@ export default function New() {
         onChange={(e) => setDesc(e.target.value)}
       />
 
+      {shelf.length > 0 && (
+        <div className="mt-4">
+          <label className="mb-1 block text-[11px] font-medium tracking-widest text-ink-faint uppercase">
+            ground it in papers
+          </label>
+          <p className="mb-2 text-[11px] text-ink-faint">
+            the engine reads checked papers for definitions and proof routes (you can bind
+            more later)
+          </p>
+          <div className="flex flex-col gap-1">
+            {shelf.map((p) => (
+              <label key={p.id} className="flex items-center gap-2 text-xs text-ink-dim">
+                <input
+                  type="checkbox"
+                  checked={papers.has(p.id)}
+                  onChange={() => togglePaper(p.id)}
+                />
+                <span className="font-mono text-[12px] text-ink">{p.source_name}</span>
+                <span className="font-mono text-[10px] text-ink-faint">{p.id}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
       <label className="mt-4 flex items-center gap-2 text-xs text-ink-dim">
         <input type="checkbox" checked={library} onChange={(e) => setLibrary(e.target.checked)} />
         keep finished work in the Library for reuse
@@ -129,6 +191,35 @@ export default function New() {
               spellCheck={false}
             />
           </div>
+        </div>
+      )}
+
+      <button
+        className="mb-2 block text-xs text-ink-dim transition-colors hover:text-ink"
+        onClick={() => setShowConstraints((v) => !v)}
+      >
+        {showConstraints ? '▾' : '▸'} advanced — engine constraints
+      </button>
+      {showConstraints && (
+        <div className="mb-3 flex flex-col gap-4">
+          <ListField
+            label="forbidden lemmas"
+            hint="add pattern (e.g. sperner*)"
+            values={forbidden}
+            onChange={setForbidden}
+          />
+          <ListField
+            label="lemma hints"
+            hint="add Mathlib/Library name"
+            values={hints}
+            onChange={setHints}
+          />
+          <ListField
+            label="axiom whitelist"
+            hint="add axiom"
+            values={axioms}
+            onChange={setAxioms}
+          />
         </div>
       )}
 

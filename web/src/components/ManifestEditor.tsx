@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { apiGet, apiPost } from '../lib/api'
+import { apiDelete, apiGet, apiPost } from '../lib/api'
 import { Link } from '../lib/router'
 import { Button } from './ui'
-import type { ManifestData } from '../lib/types'
+import ListField from './ListField'
+import type { ManifestData, PaperShelfItem, ProblemPaperBinding } from '../lib/types'
 
 /*
  * The Manifest as the user's instrument: settings are controls, the
@@ -11,55 +12,149 @@ import type { ManifestData } from '../lib/types'
  * strategist amend is pending — two writers, one file.
  */
 
-function ListField({
-  label,
-  hint,
-  values,
-  onChange,
-}: {
-  label: string
-  hint: string
-  values: string[]
-  onChange: (v: string[]) => void
-}) {
-  const [draft, setDraft] = useState('')
-  const add = () => {
-    const v = draft.trim()
-    if (v !== '' && !values.includes(v)) onChange([...values, v])
-    setDraft('')
+/** Papers bound to this problem. Bindings live in the DB, not in
+ * Manifest.md, so this block deliberately sits OUTSIDE the
+ * pending_amend fieldset lock — binding a paper never collides with a
+ * strategist amend. */
+function PapersBlock({ problem }: { problem: string }) {
+  const [bindings, setBindings] = useState<ProblemPaperBinding[] | null>(null)
+  const [shelf, setShelf] = useState<PaperShelfItem[]>([])
+  const [err, setErr] = useState<string | null>(null)
+  const [pick, setPick] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [tick, setTick] = useState(0)
+  const refresh = () => setTick((t) => t + 1)
+
+  useEffect(() => {
+    let cancelled = false
+    apiGet<{ papers: ProblemPaperBinding[] }>(
+      `/api/problems/${encodeURIComponent(problem)}/papers`,
+    )
+      .then((d) => {
+        if (cancelled) return
+        setBindings(d.papers)
+        setErr(null)
+      })
+      .catch((e) => !cancelled && setErr(String((e as Error).message)))
+    apiGet<{ papers: PaperShelfItem[] }>('/api/papers')
+      .then((d) => !cancelled && setShelf(d.papers))
+      .catch(() => {
+        /* shelf unavailable → the bind select simply stays empty */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [problem, tick])
+
+  const unbind = async (pid: string) => {
+    setBusy(true)
+    try {
+      await apiDelete(`/api/problems/${encodeURIComponent(problem)}/papers/${pid}`)
+      refresh()
+    } catch (e) {
+      setErr(String((e as Error).message))
+    } finally {
+      setBusy(false)
+    }
   }
+  const bind = async () => {
+    if (pick === '') return
+    setBusy(true)
+    try {
+      await apiPost(`/api/problems/${encodeURIComponent(problem)}/papers`, { paper_id: pick })
+      setPick('')
+      refresh()
+    } catch (e) {
+      setErr(String((e as Error).message))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const boundIds = new Set((bindings ?? []).map((b) => b.id))
+  const bindable = shelf.filter((s) => !boundIds.has(s.id))
+
   return (
-    <div>
+    <div className="mt-6">
       <div className="mb-1 text-[11px] font-medium tracking-widest text-ink-faint uppercase">
-        {label}
+        papers
       </div>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {values.map((v) => (
-          <span
-            key={v}
-            className="group flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-ink-dim"
+      <p className="mb-2 text-[11px] text-ink-faint">
+        the engine reads bound papers for definitions and proof routes — bindings apply even
+        while an amend locks the editor above
+      </p>
+      {bindings === null && err === null ? (
+        <div className="late-fade text-xs text-ink-faint">Loading…</div>
+      ) : bindings !== null && bindings.length === 0 ? (
+        <div className="text-xs text-ink-faint">
+          no papers bound — the engine works from the description alone
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1">
+          {(bindings ?? []).map((b) => (
+            <div key={b.id} className="flex items-center gap-2" title={b.reason ?? undefined}>
+              {b.missing ? (
+                <>
+                  <span className="font-mono text-[12px] text-ink-dim">
+                    {b.source_name ?? b.id}
+                  </span>
+                  <span className="text-[11px] text-danger">shelf entry missing</span>
+                </>
+              ) : (
+                <Link
+                  to={`/papers/${encodeURIComponent(b.id)}`}
+                  className="font-mono text-[12px] text-ink transition-colors hover:text-starlight"
+                  title={b.reason ?? `read ${b.source_name ?? b.id}`}
+                >
+                  {b.source_name ?? b.id}
+                </Link>
+              )}
+              <span
+                className="text-[10px] text-ink-faint"
+                title={
+                  b.origin === 'scholar'
+                    ? 'fetched by the engine during a run'
+                    : b.origin === 'manifest'
+                      ? 'bound when the problem was created'
+                      : 'bound by you'
+                }
+              >
+                {b.origin}
+              </span>
+              <button
+                className="text-ink-faint transition-colors hover:text-ink disabled:opacity-45"
+                disabled={busy}
+                title="unbind this paper from the problem (the shelf copy stays)"
+                onClick={() => void unbind(b.id)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {bindable.length > 0 && (
+        <div className="mt-2 flex items-center gap-2">
+          <select
+            className="w-72 rounded border border-edge bg-surface px-2 py-1 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
+            value={pick}
+            onChange={(e) => setPick(e.target.value)}
           >
-            {v}
-            <button
-              className="text-ink-faint transition-colors hover:text-ink"
-              title={`remove ${v}`}
-              onClick={() => onChange(values.filter((x) => x !== v))}
-            >
-              ×
-            </button>
-          </span>
-        ))}
-        <input
-          className="w-44 rounded border border-edge bg-surface px-1.5 py-0.5 font-mono text-[11px] text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
-          placeholder={hint}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') add()
-          }}
-          onBlur={add}
-        />
-      </div>
+            <option value="">bind a paper from the shelf…</option>
+            {bindable.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.source_name}
+              </option>
+            ))}
+          </select>
+          {pick !== '' && (
+            <Button variant="outline" size="xs" disabled={busy} onClick={() => void bind()}>
+              bind
+            </Button>
+          )}
+        </div>
+      )}
+      {err && <div className="mt-1 text-[11px] text-ink-dim">{err}</div>}
     </div>
   )
 }
@@ -210,6 +305,10 @@ export default function ManifestEditor({
           {error && <span className="text-[11px] text-ink-dim">{error}</span>}
         </div>
       </fieldset>
+      {/* NOTE: outside the fieldset on purpose — paper bindings are DB
+          rows, not Manifest.md content, so the pending_amend lock does
+          not apply to them */}
+      <PapersBlock problem={problem} />
     </div>
   )
 }

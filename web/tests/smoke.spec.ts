@@ -87,6 +87,17 @@ test('telemetry: daemon panel + log + usage + library sections', async ({ page }
   await expect(page.getByText('developer log')).toBeVisible()
 })
 
+test('papers shelf renders rows or empty state', async ({ page }) => {
+  await page.goto('/#/papers')
+  await expect(page.getByRole('heading', { name: 'Papers' })).toBeVisible()
+  // rows, the explicit empty state, or (on an engine predating the
+  // papers API) the error state — never a blank list area
+  const rows = page.locator('tbody tr')
+  const empty = page.getByText('The shelf is empty')
+  const errState = page.getByText(/Not found|Can't reach the engine/).first()
+  await expect(rows.first().or(empty).or(errState)).toBeVisible()
+})
+
 test('api meta reachable and shaped', async ({ request }) => {
   const r = await request.get('/api/meta')
   expect(r.ok()).toBeTruthy()

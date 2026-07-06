@@ -710,6 +710,72 @@ def test_paper_section_page_anchor(workspace: Path) -> None:
 # daemon status (read-only surface; start/stop covered at CLI level)
 # ---------------------------------------------------------------------
 
+def test_papers_bookshelf_flow(workspace: Path) -> None:
+    """Top-level bookshelf: add by path (content-hash idempotent),
+    list with bindings, read text + original, delete guarded by
+    citations (unbind first)."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    conn.close()
+    c = _client(workspace)
+    assert c.get("/api/papers").json() == {"papers": []}
+    src = workspace / "notes.md"
+    src.write_text("# Paper\n\nsome text", encoding="utf-8")
+    r = c.post("/api/papers/add", json={"path": str(src)})
+    assert r.status_code == 200
+    pid = r.json()["id"]
+    assert c.post("/api/papers/add",
+                  json={"path": str(src)}).json()["id"] == pid
+    papers = c.get("/api/papers").json()["papers"]
+    assert [p["id"] for p in papers] == [pid]
+    assert papers[0]["bound"] == []
+    assert "some text" in c.get(f"/api/papers/{pid}/text").json()["text"]
+    assert c.get(f"/api/papers/{pid}/file").status_code == 200
+    assert c.post("/api/papers/add",
+                  json={"path": str(workspace / "nope.md")}
+                  ).status_code == 404
+
+    assert c.post("/api/problems/p/papers",
+                  json={"paper_id": pid}).status_code == 200
+    assert c.post("/api/problems/p/papers",
+                  json={"paper_id": "unshelved"}).status_code == 404
+    assert c.get("/api/papers").json()["papers"][0]["bound"] == [
+        {"problem": "p", "origin": "user"}]
+    mine = c.get("/api/problems/p/papers").json()["papers"]
+    assert mine[0]["id"] == pid and mine[0]["origin"] == "user"
+    # cited → delete refused; unbind → delete ok
+    assert c.delete(f"/api/papers/{pid}").status_code == 409
+    assert c.delete(f"/api/problems/p/papers/{pid}").status_code == 200
+    assert c.delete(f"/api/problems/p/papers/{pid}").status_code == 404
+    assert c.delete(f"/api/papers/{pid}").status_code == 200
+    assert c.get("/api/papers").json() == {"papers": []}
+
+
+def test_create_settings_and_papers_are_authoritative(
+        workspace: Path) -> None:
+    """Creation-time settings land in the DB via the chokepoint (the
+    frontmatter lemma_hints line is invisible to parse(), so migration
+    alone would write [] — explicit form input must win) and checked
+    papers bind with origin='user'."""
+    _open_db(workspace).close()
+    c = _client(workspace)
+    src = workspace / "ref.md"
+    src.write_text("# Ref\n\nbody", encoding="utf-8")
+    pid = c.post("/api/papers/add", json={"path": str(src)}).json()["id"]
+    r = c.post("/api/problems/create", json={
+        "name": "Test.cite", "body": "prove the thing",
+        "settings": {"lemma_hints": ["Mathlib.Foo"],
+                     "forbidden_lemmas": ["bad*"], "library": False},
+        "papers": [pid]})
+    assert r.status_code == 200, r.json()
+    got = c.get("/api/problems/Test.cite/manifest").json()["settings"]
+    assert got["lemma_hints"] == ["Mathlib.Foo"]
+    assert got["forbidden_lemmas"] == ["bad*"]
+    assert got["library"] is False
+    bound = c.get("/api/problems/Test.cite/papers").json()["papers"]
+    assert [(b["id"], b["origin"]) for b in bound] == [(pid, "user")]
+
+
 def test_daemon_status_endpoint(workspace: Path) -> None:
     r = _client(workspace).get("/api/daemon")
     assert r.status_code == 200

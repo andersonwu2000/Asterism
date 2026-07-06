@@ -6,6 +6,7 @@ import Board from './screens/Board'
 import Inbox from './screens/Inbox'
 import Library from './screens/Library'
 import New from './screens/New'
+import Papers, { PaperReader } from './screens/Papers'
 import Problem from './screens/Problem'
 import Telemetry from './screens/Telemetry'
 import type { Meta } from './lib/types'
@@ -96,6 +97,19 @@ const ICONS: Record<string, ReactNode> = {
       <rect x="5.7" y="5.7" width="4.6" height="4.6" transform="rotate(45 8 8)" fill="currentColor" opacity="0.9" />
       <circle cx="3" cy="12.5" r="1.1" fill="currentColor" opacity="0.6" />
       <circle cx="13" cy="3.5" r="1.1" fill="currentColor" opacity="0.6" />
+    </svg>
+  ),
+  papers: (
+    // a sheet with a folded corner — the shelf of source papers
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M4.5 1.8h5.2l3 3v8.4a1 1 0 01-1 1H4.5a1 1 0 01-1-1V2.8a1 1 0 011-1z"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinejoin="round"
+      />
+      <path d="M9.7 1.8v3h3" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+      <path d="M5.8 8h4.4M5.8 10.5h3" stroke="currentColor" strokeWidth="0.9" strokeLinecap="round" opacity="0.55" />
     </svg>
   ),
 }
@@ -190,6 +204,12 @@ function Shell() {
             active={section === 'library'}
           />
           <NavItem
+            to="/papers"
+            icon="papers"
+            label="Papers"
+            active={section === 'papers'}
+          />
+          <NavItem
             to="/inbox"
             icon="inbox"
             label="Inbox"
@@ -220,6 +240,12 @@ function Shell() {
             <Inbox />
           ) : section === 'library' ? (
             <Library />
+          ) : section === 'papers' ? (
+            route.segments[1] ? (
+              <PaperReader id={route.segments[1]} />
+            ) : (
+              <Papers />
+            )
           ) : section === 'telemetry' ? (
             <Telemetry />
           ) : section === 'problems' && route.segments[1] ? (
