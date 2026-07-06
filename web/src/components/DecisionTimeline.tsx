@@ -1,6 +1,9 @@
 import { useState } from 'react'
-import { relTime } from '../lib/format'
 import type { Decision } from '../lib/types'
+
+/* rows sit under day rules — a clock time reads better than thirty
+ * copies of "37d ago" */
+const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' })
 
 /** Strategist decision timeline (charter §3.3): newest first, one row
  * per decision, batch siblings visually grouped by a shared left rail. */
@@ -55,7 +58,7 @@ function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
                 {d.outcome}
               </span>
             ))}
-          {relTime(d.created_at)}
+          {TIME_FMT.format(new Date(d.created_at))}
         </span>
       </button>
       {open && (
@@ -82,21 +85,39 @@ function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
   )
 }
 
+const DAY_FMT = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+})
+
 export default function DecisionTimeline({ decisions }: { decisions: Decision[] }) {
   if (decisions.length === 0) {
     return <div className="px-4 py-8 text-center text-xs text-ink-faint">No decisions yet.</div>
   }
+  const dayOf = (iso: string) => DAY_FMT.format(new Date(iso))
   return (
     <div className="flex flex-col">
       {decisions.map((d, i) => (
-        <Row
-          key={d.id}
-          d={d}
-          grouped={
-            d.batch_id !== null &&
-            (decisions[i - 1]?.batch_id === d.batch_id || decisions[i + 1]?.batch_id === d.batch_id)
-          }
-        />
+        <div key={d.id}>
+          {/* day rules give a 44-day history its chapters */}
+          {(i === 0 || dayOf(decisions[i - 1].created_at) !== dayOf(d.created_at)) && (
+            <div className="mt-4 mb-1 flex items-center gap-3 px-2 first:mt-1">
+              <span className="text-[11px] font-medium tracking-widest text-ink-faint uppercase">
+                {dayOf(d.created_at)}
+              </span>
+              <span className="h-px flex-1 bg-edge" />
+            </div>
+          )}
+          <Row
+            d={d}
+            grouped={
+              d.batch_id !== null &&
+              (decisions[i - 1]?.batch_id === d.batch_id ||
+                decisions[i + 1]?.batch_id === d.batch_id)
+            }
+          />
+        </div>
       ))}
     </div>
   )
