@@ -48,9 +48,11 @@ function clusterSize(n: number): { w: number; h: number } {
   return { w, h: w * 0.52 }
 }
 
-function Cluster({ p }: { p: LibraryProblem }) {
+function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
   const [hover, setHover] = useState<StarPt | null>(null)
   const { w, h } = clusterSize(p.decls.length)
+  const match = (d: LibraryDecl) =>
+    query !== '' && (d.name ?? d.slug).toLowerCase().includes(query)
   const { stars, spine } = useMemo(() => {
     const rand = mulberry32(hash32(p.problem))
     const pts: StarPt[] = p.decls.map((decl) => ({
@@ -86,8 +88,11 @@ function Cluster({ p }: { p: LibraryProblem }) {
             strokeOpacity={0.28}
           />
         ))}
-        {stars.map((s, i) =>
-          DEF_KINDS.has(s.decl.decl_kind ?? '') ? (
+        {stars.map((s, i) => {
+          const hit = match(s.decl)
+          const fill = hit ? 'var(--color-star)' : 'var(--color-starlight)'
+          const dim = query !== '' && !hit
+          return DEF_KINDS.has(s.decl.decl_kind ?? '') ? (
             <rect
               key={i}
               x={s.x - s.r * 1.2}
@@ -95,8 +100,8 @@ function Cluster({ p }: { p: LibraryProblem }) {
               width={s.r * 2.4}
               height={s.r * 2.4}
               transform={`rotate(45 ${s.x} ${s.y})`}
-              fill="var(--color-starlight)"
-              opacity={0.55 + s.r * 0.16}
+              fill={fill}
+              opacity={dim ? 0.15 : hit ? 1 : 0.55 + s.r * 0.16}
               onMouseEnter={() => setHover(s)}
               onMouseLeave={() => setHover(null)}
             />
@@ -105,14 +110,14 @@ function Cluster({ p }: { p: LibraryProblem }) {
               key={i}
               cx={s.x}
               cy={s.y}
-              r={s.r}
-              fill="var(--color-starlight)"
-              opacity={0.3 + s.r * 0.22}
+              r={hit ? s.r + 0.8 : s.r}
+              fill={fill}
+              opacity={dim ? 0.12 : hit ? 1 : 0.3 + s.r * 0.22}
               onMouseEnter={() => setHover(s)}
               onMouseLeave={() => setHover(null)}
             />
-          ),
-        )}
+          )
+        })}
       </svg>
       <Link
         to={`/problems/${encodeURIComponent(p.problem)}`}
@@ -153,13 +158,31 @@ function Cluster({ p }: { p: LibraryProblem }) {
 
 export default function Library() {
   const { data, error, loading } = usePoll<{ problems: LibraryProblem[] }>('/api/library', 30000)
+  const [query, setQuery] = useState('')
 
   if (loading) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
   if (error && !data) return <ErrorState error={error} />
-  const problems = [...(data?.problems ?? [])].sort((a, b) => b.decls.length - a.decls.length)
-  const declCount = problems.reduce((s, p) => s + p.decls.length, 0)
+  const all = [...(data?.problems ?? [])].sort((a, b) => b.decls.length - a.decls.length)
+  const declCount = all.reduce((s, p) => s + p.decls.length, 0)
+  const q = query.trim().toLowerCase()
+  // a constellation stays visible if its name or any star matches
+  const problems =
+    q === ''
+      ? all
+      : all.filter(
+          (p) =>
+            p.problem.toLowerCase().includes(q) ||
+            p.decls.some((d) => (d.name ?? d.slug).toLowerCase().includes(q)),
+        )
+  const hitCount =
+    q === ''
+      ? 0
+      : all.reduce(
+          (s, p) => s + p.decls.filter((d) => (d.name ?? d.slug).toLowerCase().includes(q)).length,
+          0,
+        )
 
-  if (problems.length === 0) {
+  if (all.length === 0) {
     return (
       <EmptyState title="The Library is empty">
         Approved harvests land here — finish a problem and sign off its ingest.
@@ -181,17 +204,40 @@ export default function Library() {
         <div className="mb-6 flex items-baseline gap-4">
           <h1 className="font-display text-[22px] font-medium text-ink">Library</h1>
           <span className="tnum text-xs text-ink-faint">
-            <span className="font-display text-[15px] text-ink-dim">{problems.length}</span>{' '}
+            <span className="font-display text-[15px] text-ink-dim">{all.length}</span>{' '}
             constellations ·{' '}
             <span className="font-display text-[15px] text-ink-dim">{declCount}</span>{' '}
             declarations
           </span>
+          <span className="ml-auto flex items-center gap-2">
+            {q !== '' && (
+              <span className="tnum text-[11px] text-star">{hitCount} stars lit</span>
+            )}
+            <input
+              className="w-56 rounded-md border border-edge bg-surface py-1.5 px-2.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-accent focus:outline-none"
+              placeholder="find a declaration…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setQuery('')
+                  e.currentTarget.blur()
+                }
+              }}
+            />
+          </span>
         </div>
-        <div className="flex flex-wrap items-end gap-x-10 gap-y-8">
-          {problems.map((p) => (
-            <Cluster key={p.problem} p={p} />
-          ))}
-        </div>
+        {problems.length === 0 ? (
+          <div className="py-16 text-center text-xs text-ink-faint">
+            No declaration matches “{query}”.
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-end gap-x-10 gap-y-8">
+            {problems.map((p) => (
+              <Cluster key={p.problem} p={p} query={q} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
