@@ -99,7 +99,8 @@ def test_inbox_and_library_fresh_workspace(workspace: Path) -> None:
     c = _client(workspace)
     assert c.get("/api/inbox").json() == {"amends": [], "signoffs": []}
     assert c.get("/api/library").json() == {"problems": []}
-    assert c.get("/api/telemetry/usage").json() == {"problems": []}
+    assert c.get("/api/telemetry/usage").json() == {
+        "problems": [], "window": "all", "since": None}
 
 
 def test_schema_behind_serves_503_upgrade_required(workspace: Path) -> None:
@@ -151,17 +152,19 @@ def test_board_status_chips(workspace: Path) -> None:
 
     rows = {p["name"]: p for p in
             _client(workspace).get("/api/problems").json()["problems"]}
-    assert rows["proving_p"]["status"] == "proving"
+    # "proving" is an engine-liveness claim: no daemon runs in this
+    # test, so unfinished work reads paused, never proving
+    assert rows["proving_p"]["status"] == "paused"
     assert rows["proving_p"]["goals"]["open"] == 1
     assert rows["idle_p"]["status"] == "idle"
     assert rows["stalled_p"]["status"] == "stalled"
-    # board and detail must agree on the chip (idle refinement lives in
+    # board and detail must agree on the chip (refinements live in
     # both paths)
     c = _client(workspace)
     assert c.get("/api/problems/idle_p").json()["status"] == "idle"
     assert c.get("/api/problems/stalled_p").json()["status"] == "stalled"
-    # queued work (the between-batches Strategist wake) suppresses the
-    # red flicker: stalled + queue row → proving, on both surfaces
+    # queued work left behind without a live daemon is residue, not
+    # motion: stalled + queue row still reads paused on both surfaces
     conn = db.connect(workspace / "asterism.db")
     db.enqueue(conn, kind="Strategist", target_id="stalled_p",
                target_kind="Problem", problem="stalled_p")
@@ -169,12 +172,87 @@ def test_board_status_chips(workspace: Path) -> None:
     conn.close()
     rows2 = {p["name"]: p for p in
              c.get("/api/problems").json()["problems"]}
-    assert rows2["stalled_p"]["status"] == "proving"
-    assert c.get("/api/problems/stalled_p").json()["status"] == "proving"
+    assert rows2["stalled_p"]["status"] == "paused"
+    assert c.get("/api/problems/stalled_p").json()["status"] == "paused"
     assert rows["amend_p"]["status"] == "awaiting_human"
     assert rows["signoff_p"]["status"] == "signoff_pending"
     assert rows["ingested_p"]["status"] == "ingested"
     assert rows["bridged_p"]["status"] == "bridged"
+
+
+def _fake_daemon(monkeypatch, *, pid: int = 4321,
+                 scope: "str | None" = None,
+                 started_at: "str | None" = None) -> None:
+    """Make the serve layer see a live daemon (pid + scope)."""
+    import Tooling.core.cli as _cli
+
+    def fake_status(workspace):  # noqa: ANN001
+        return {"running": True, "pid": pid, "scope": scope,
+                "started_at": started_at or db.now(), "stopping": False,
+                "in_flight_leases": 0}
+    monkeypatch.setattr(_cli, "daemon_status", fake_status)
+
+
+def test_board_proving_requires_live_daemon_on_scope(
+        workspace: Path, monkeypatch) -> None:
+    """The chip says "proving" iff a live daemon is scoped to the
+    problem; a daemon busy elsewhere leaves it paused (the force-stop /
+    two-problems-proving lie, 2026-07-07)."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "mine")
+    db.insert_goal(conn, problem="mine", slug="main",
+                   lean_path="Problems/mine/proofs/main.lean",
+                   statement="True", origin="root")
+    _add_problem(conn, "other")
+    db.insert_goal(conn, problem="other", slug="main",
+                   lean_path="Problems/other/proofs/main.lean",
+                   statement="True", origin="root")
+    conn.commit()
+    conn.close()
+
+    _fake_daemon(monkeypatch, scope="mine")
+    c = _client(workspace)
+    rows = {p["name"]: p for p in
+            c.get("/api/problems").json()["problems"]}
+    assert rows["mine"]["status"] == "proving"
+    assert rows["other"]["status"] == "paused"
+    detail = c.get("/api/problems/mine").json()
+    assert detail["status"] == "proving"
+    assert detail["engine_working"] is True
+    other = c.get("/api/problems/other").json()
+    assert other["status"] == "paused"
+    assert other["engine_working"] is False
+
+
+def test_board_in_flight_counts_only_live_daemon_leases(
+        workspace: Path, monkeypatch) -> None:
+    """A lease owned by a dead pid must not render as a running agent
+    (it did, for 8 days)."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    gid = db.insert_goal(conn, problem="p", slug="main",
+                         lean_path="Problems/p/proofs/main.lean",
+                         statement="True", origin="root")
+    db.enqueue(conn, kind="Backward", target_id=str(gid),
+               target_kind="Goal", problem="p")
+    conn.execute("UPDATE queue SET owner_pid = 99999")  # dead owner
+    conn.commit()
+    conn.close()
+
+    c = _client(workspace)
+    # no daemon: the stale lease is residue — zero in flight, no pulse
+    rows = {p["name"]: p for p in
+            c.get("/api/problems").json()["problems"]}
+    assert rows["p"]["in_flight"] == 0
+    assert all(not g["in_flight"]
+               for g in c.get("/api/problems/p").json()["goals"])
+    # live daemon owning the lease: it IS live work again
+    _fake_daemon(monkeypatch, pid=99999, scope="p")
+    rows2 = {p["name"]: p for p in
+             c.get("/api/problems").json()["problems"]}
+    assert rows2["p"]["in_flight"] == 1
+    assert any(g["in_flight"]
+               for g in c.get("/api/problems/p").json()["goals"])
 
 
 # ---------------------------------------------------------------------
@@ -485,6 +563,35 @@ def test_telemetry_usage_aggregates(workspace: Path) -> None:
     assert p["output_tokens"] == 157
     kinds = {k["kind"]: k for k in p["kinds"]}
     assert kinds["Forward"]["spawns"] == 2
+
+
+def test_telemetry_usage_windows_to_running_daemon(
+        workspace: Path, monkeypatch) -> None:
+    """"usage — this run" must BE this run: with a live daemon the
+    window starts at its start time; idle, it's the all-time ledger,
+    labelled as such (the header used to say "this run" over the
+    all-time aggregate)."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    for ts in ("2020-01-01T00:00:00+00:00", db.now()):
+        conn.execute(
+            "INSERT INTO spawn_usage (pipeline_id, kind, problem,"
+            " input_tokens, output_tokens, turns, wall_sec, ts)"
+            " VALUES ('pl', 'Forward', 'p', 10, 5, 1, 2.5, ?)", (ts,))
+    conn.commit()
+    conn.close()
+
+    c = _client(workspace)
+    r = c.get("/api/telemetry/usage").json()
+    assert r["window"] == "all"
+    assert r["problems"][0]["spawns"] == 2
+
+    _fake_daemon(monkeypatch, scope="p",
+                 started_at="2025-01-01T00:00:00+00:00")
+    r2 = c.get("/api/telemetry/usage").json()
+    assert r2["window"] == "run"
+    assert r2["since"] == "2025-01-01T00:00:00+00:00"
+    assert r2["problems"][0]["spawns"] == 1
 
 
 def test_library_lists_bridged_decls(workspace: Path) -> None:

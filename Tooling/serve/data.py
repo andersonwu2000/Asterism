@@ -36,15 +36,60 @@ def _status_chip(*, awaiting: bool, signoff: bool, bridged: bool,
     return "proving"
 
 
+def _live_daemon_pid(daemon: "dict | None") -> "int | None":
+    if daemon and daemon.get("running") and daemon.get("pid"):
+        return int(daemon["pid"])
+    return None
+
+
+def _working(conn: sqlite3.Connection, daemon: "dict | None",
+             name: str) -> bool:
+    """True iff a live daemon is actually on this problem (scope LIKE
+    match; empty scope = workspace-wide run)."""
+    if _live_daemon_pid(daemon) is None:
+        return False
+    scope = daemon.get("scope") if daemon else None
+    if not scope:
+        return True
+    row = conn.execute("SELECT ? LIKE ?", (name, scope)).fetchone()
+    return bool(row and row[0])
+
+
+def _refine_chip(chip: str, *, working: bool, progressed: bool,
+                 queued: int) -> str:
+    """Presentation refinements shared by board() and problem_detail()
+    — the two surfaces must agree.
+
+    "proving" is an engine-liveness claim, not a DB-residue reading:
+    without a live daemon scoped to this problem it degrades to
+    "paused" (unfinished work remains) or "idle" (never launched).
+    Within a live run, stalled+queued means the engine is between
+    batches (the pending Strategist wake) — show proving, don't
+    flicker red in the gap; a never-launched stalled problem (frozen
+    root / zero goals) is idle, not stuck.
+    """
+    if chip == "stalled":
+        if queued > 0:
+            chip = "proving"
+        elif not progressed:
+            return "idle"
+    if chip == "proving" and not working:
+        return "paused" if progressed else "idle"
+    return chip
+
+
 def _awaiting_set(conn: sqlite3.Connection) -> set[str]:
     return {str(r[0]) for r in conn.execute(
         "SELECT DISTINCT problem FROM strategist_decisions"
         " WHERE outcome = 'awaiting_human'")}
 
 
-def board(conn: sqlite3.Connection) -> dict:
+def board(conn: sqlite3.Connection, *, daemon: "dict | None" = None) -> dict:
     """Campaign-board aggregation: one row per problem, batch queries
-    (no per-problem N+1 except the shared stall predicate)."""
+    (no per-problem N+1 except the shared stall predicate). `daemon` is
+    the `daemon_status()` dict — status chips and in-flight counts are
+    engine-liveness claims, so they must be gated on it (None = treat
+    as not running)."""
     problems = conn.execute(
         "SELECT name, created_at, ingest_signoff_pending, ingested_at,"
         " library_bridged_at FROM problems ORDER BY name").fetchall()
@@ -56,11 +101,16 @@ def board(conn: sqlite3.Connection) -> dict:
         goal_counts.setdefault(str(r["problem"]), {})[str(r["status"])] = \
             int(r["n"])
 
+    # Leases are only live work while their owner (the daemon) is the
+    # running one — a dead owner's lease is residue awaiting reclaim,
+    # not an agent (it rendered as "1 agent running now" for 8 days).
     inflight: dict[str, int] = {}
-    for r in conn.execute(
-            "SELECT problem, COUNT(*) AS n FROM queue"
-            " WHERE owner_pid IS NOT NULL GROUP BY problem"):
-        inflight[str(r["problem"])] = int(r["n"])
+    live_pid = _live_daemon_pid(daemon)
+    if live_pid is not None:
+        for r in conn.execute(
+                "SELECT problem, COUNT(*) AS n FROM queue"
+                " WHERE owner_pid = ? GROUP BY problem", (live_pid,)):
+            inflight[str(r["problem"])] = int(r["n"])
     queued: dict[str, int] = {}
     for r in conn.execute(
             "SELECT problem, COUNT(*) AS n FROM queue GROUP BY problem"):
@@ -92,19 +142,12 @@ def board(conn: sqlite3.Connection) -> dict:
             ingested=p["ingested_at"] is not None,
             stalled=name in stalled,
         )
-        # Presentation refinements on the stall signal (red = attention):
-        # (a) queued work (e.g. the pending Strategist wake between
-        #     batches) means the engine is on it — show proving, don't
-        #     flicker red in the gap;
-        # (b) never-launched problems (frozen root / zero goals, e.g. a
-        #     benchmark batch) are idle, not stuck.
         progressed = any(counts.get(s, 0) for s in
                          ("open", "attempting", "proved", "shelved",
                           "pending_strategist_review"))
-        if chip == "stalled" and queued.get(name, 0) > 0:
-            chip = "proving"
-        elif chip == "stalled" and not progressed:
-            chip = "idle"
+        chip = _refine_chip(
+            chip, working=_working(conn, daemon, name),
+            progressed=progressed, queued=queued.get(name, 0))
         rows.append({
             "name": name,
             "status": chip,
@@ -124,9 +167,11 @@ def board(conn: sqlite3.Connection) -> dict:
 
 
 def problem_detail(conn: sqlite3.Connection, workspace: Path,
-                   problem: str) -> dict | None:
+                   problem: str, *,
+                   daemon: "dict | None" = None) -> dict | None:
     """Full problem view: goal DAG (nodes + strategy edges), strategist
-    decision timeline, proofs file list."""
+    decision timeline, proofs file list. `daemon` gates the liveness
+    claims (status chip, per-goal in-flight pulse) exactly as board()."""
     prow = conn.execute(
         "SELECT name, created_at, ingest_signoff_pending, ingested_at,"
         " library_bridged_at, strategist_directive, last_strategist_at"
@@ -140,17 +185,20 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             " WHERE target_kind = 'Goal' GROUP BY target_id"):
         dead_counts[int(r["target_id"])] = int(r["n"])
 
-    # Live-work signal per goal: a leased queue row (owner_pid set) means
-    # a worker is on it right now — the constellation pulses that star.
+    # Live-work signal per goal: a queue row leased BY THE RUNNING
+    # daemon means a worker is on it right now — the constellation
+    # pulses that star. A dead owner's lease is residue, not a worker.
     inflight_goals: set[int] = set()
-    for r in conn.execute(
-            "SELECT target_id FROM queue WHERE problem = ?"
-            " AND target_kind = 'Goal' AND owner_pid IS NOT NULL",
-            (problem,)):
-        try:
-            inflight_goals.add(int(r["target_id"]))
-        except (TypeError, ValueError):
-            pass
+    live_pid = _live_daemon_pid(daemon)
+    if live_pid is not None:
+        for r in conn.execute(
+                "SELECT target_id FROM queue WHERE problem = ?"
+                " AND target_kind = 'Goal' AND owner_pid = ?",
+                (problem, live_pid)):
+            try:
+                inflight_goals.add(int(r["target_id"]))
+            except (TypeError, ValueError):
+                pass
 
     goals = []
     for g in conn.execute(
@@ -278,19 +326,17 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
         ingested=prow["ingested_at"] is not None,
         stalled=stalled,
     )
-    # Same refinements as board() — the two surfaces must agree.
-    if chip == "stalled":
-        queued_n = conn.execute(
-            "SELECT COUNT(*) FROM queue WHERE problem = ?",
-            (problem,)).fetchone()[0]
-        progressed = any(g["status"] in ("open", "attempting", "proved",
-                                         "shelved",
-                                         "pending_strategist_review")
-                         for g in goals)
-        if int(queued_n) > 0:
-            chip = "proving"
-        elif not progressed:
-            chip = "idle"
+    queued_n = conn.execute(
+        "SELECT COUNT(*) FROM queue WHERE problem = ?",
+        (problem,)).fetchone()[0]
+    progressed = any(g["status"] in ("open", "attempting", "proved",
+                                     "shelved",
+                                     "pending_strategist_review")
+                     for g in goals)
+    working = _working(conn, daemon, problem)
+    chip = _refine_chip(
+        chip, working=working,
+        progressed=progressed, queued=int(queued_n))
     # Same config source the dispatcher reads at startup — the serve
     # process isn't the daemon, so read it fresh (heat-ring denominator).
     from ..core import config as _config
@@ -304,6 +350,10 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
     return {
         "name": str(prow["name"]),
         "status": chip,
+        # is a live daemon actually on this problem right now? Lets the
+        # UI stop dressing DB residue (goals stuck "attempting" after a
+        # force stop) as live activity.
+        "engine_working": working,
         "shelve_threshold": shelve_threshold,
         "created_at": str(prow["created_at"]),
         "ingested_at": prow["ingested_at"],
@@ -501,17 +551,23 @@ def library(conn: sqlite3.Connection) -> dict:
     return {"problems": out}
 
 
-def telemetry_usage(conn: sqlite3.Connection) -> dict:
+def telemetry_usage(conn: sqlite3.Connection, *,
+                    since: "str | None" = None) -> dict:
     """spawn_usage aggregation: totals per problem and per (problem,
-    pipeline kind)."""
+    pipeline kind). `since` (an ISO timestamp, same format as the `ts`
+    column) restricts the window — pass the running daemon's start time
+    to get THIS run's burn instead of the all-time ledger."""
     per_problem: dict[str, dict] = {}
+    where = " WHERE ts >= ?" if since else ""
+    params: tuple = (since,) if since else ()
     for r in conn.execute(
             "SELECT COALESCE(problem, '') AS problem, kind,"
             " COUNT(*) AS spawns,"
             " SUM(input_tokens) AS in_tok, SUM(output_tokens) AS out_tok,"
             " SUM(cache_read_tokens) AS cache_tok,"
             " SUM(turns) AS turns, SUM(wall_sec) AS wall"
-            " FROM spawn_usage GROUP BY problem, kind"):
+            " FROM spawn_usage" + where + " GROUP BY problem, kind",
+            params):
         p = per_problem.setdefault(str(r["problem"]) or "(none)", {
             "problem": str(r["problem"]) or "(none)",
             "spawns": 0, "input_tokens": 0, "output_tokens": 0,

@@ -277,12 +277,13 @@ function ClusterRow({
   )
 }
 
-/* attention → live → settled → dormant */
+/* attention → live → interrupted → settled → dormant */
 const STATUS_ORDER = [
   'awaiting_human',
   'signoff_pending',
   'stalled',
   'proving',
+  'paused',
   'ingested',
   'bridged',
   'idle',
@@ -359,8 +360,11 @@ export default function Board() {
   const needsYou = sorted.filter(
     (p) => p.status === 'awaiting_human' || p.status === 'signoff_pending' || p.status === 'stalled',
   )
+  // "proving" and in_flight are daemon-gated server-side now — queued
+  // rows alone are residue a stopped run left behind (those problems
+  // read "paused"), not motion.
   const inMotion = sorted.filter(
-    (p) => !needsYou.includes(p) && (p.status === 'proving' || p.in_flight > 0 || p.queued > 0),
+    (p) => !needsYou.includes(p) && (p.status === 'proving' || p.in_flight > 0),
   )
   const hot = new Set([...needsYou, ...inMotion].map((p) => p.name))
   // Recent is a glance, not a ledger — cap it; the rest is one row away

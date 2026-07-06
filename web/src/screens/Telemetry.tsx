@@ -6,6 +6,12 @@ import type { ConfigSetting, DaemonStatus, UsageProblem } from '../lib/types'
 
 /** Engine panel + usage telemetry (charter §3.4); the Library browses at #/library. */
 
+/** "for 42m" / "for 3h 07m" — how long the current run has been going. */
+function runElapsed(startedAt: string): string {
+  const sec = Math.max(0, (Date.now() - Date.parse(startedAt)) / 1000)
+  return duration(sec)
+}
+
 function DaemonPanel() {
   const { data: d, refresh } = usePoll<DaemonStatus>('/api/daemon', 2000)
   const [busy, setBusy] = useState(false)
@@ -42,7 +48,9 @@ function DaemonPanel() {
           {d?.running && d.stopping
             ? `pid ${d.pid} — draining ${d.in_flight_leases} in-flight lease${d.in_flight_leases === 1 ? '' : 's'}; if this hangs on a stale lease, Force stop is safe`
             : d?.running
-              ? `working on ${d.scope ?? 'all problems'} · pid ${d.pid}${d.in_flight_leases > 0 ? ` · ${d.in_flight_leases} in flight` : ''}`
+              ? `working on ${d.scope ?? 'all problems'}${
+                  d.started_at ? ` · for ${runElapsed(d.started_at)}` : ''
+                } · pid ${d.pid}${d.in_flight_leases > 0 ? ` · ${d.in_flight_leases} in flight` : ''}`
               : 'the engine is not running'}
         </span>
       </div>
@@ -200,14 +208,25 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 function UsageTable() {
-  const { data } = usePoll<{ problems: UsageProblem[] }>('/api/telemetry/usage', 10000)
+  const { data } = usePoll<{ problems: UsageProblem[]; window?: 'run' | 'all' }>(
+    '/api/telemetry/usage',
+    10000,
+  )
   const [expanded, setExpanded] = useState<string | null>(null)
   const rows = data?.problems ?? []
+  // the server says which window it aggregated — never claim "this
+  // run" over an all-time ledger (it used to)
+  const label = data?.window === 'run' ? 'usage — this run' : 'usage — all time'
   if (rows.length === 0)
     return (
-      <div className="rounded-lg border border-edge bg-surface px-4 py-2 text-xs text-ink-faint">
-        No spawn usage recorded yet — rows appear as agents run.
-      </div>
+      <>
+        <SectionLabel>{label}</SectionLabel>
+        <div className="rounded-lg border border-edge bg-surface px-4 py-2 text-xs text-ink-faint">
+          {data?.window === 'run'
+            ? 'Nothing burned yet this run — figures appear as the engine works.'
+            : 'No usage yet — figures appear once the engine runs.'}
+        </div>
+      </>
     )
   const total = rows.reduce(
     (a, p) => ({
@@ -220,6 +239,7 @@ function UsageTable() {
   )
   return (
     <>
+      <SectionLabel>{label}</SectionLabel>
       <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="agent spawns" value={String(total.spawns)} />
         <Stat label="output tokens" value={compactNumber(total.out)} />
@@ -325,7 +345,6 @@ export default function Telemetry() {
           </details>
         </section>
         <section>
-          <SectionLabel>usage — this run</SectionLabel>
           <UsageTable />
         </section>
       </div>

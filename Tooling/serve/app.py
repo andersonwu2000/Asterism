@@ -144,13 +144,18 @@ def create_app(workspace: Path) -> FastAPI:
     def problems() -> dict:
         if not (workspace / "asterism.db").exists():
             return {"problems": []}  # fresh workspace — empty board
+        from ..core.cli import daemon_status
+        daemon = daemon_status(workspace)
         with _ro(workspace) as conn:
-            return _data.board(conn)
+            return _data.board(conn, daemon=daemon)
 
     @app.get("/api/problems/{problem}")
     def problem(problem: str) -> dict:
+        from ..core.cli import daemon_status
+        daemon = daemon_status(workspace)
         with _ro(workspace) as conn:
-            d = _data.problem_detail(conn, workspace, problem)
+            d = _data.problem_detail(conn, workspace, problem,
+                                     daemon=daemon)
         if d is None:
             raise HTTPException(status_code=404,
                                 detail=f"unknown problem {problem!r}")
@@ -313,10 +318,19 @@ def create_app(workspace: Path) -> FastAPI:
 
     @app.get("/api/telemetry/usage")
     def usage() -> dict:
+        """Burn figures. While a daemon runs, the window is THIS run
+        (since its start time); idle, it's the all-time ledger — the
+        response says which, so the UI never mislabels the window."""
         if not (workspace / "asterism.db").exists():
-            return {"problems": []}
+            return {"problems": [], "window": "all", "since": None}
+        from ..core.cli import daemon_status
+        d = daemon_status(workspace)
+        since = d.get("started_at") if d.get("running") else None
         with _ro(workspace) as conn:
-            return _data.telemetry_usage(conn)
+            out = _data.telemetry_usage(conn, since=since)
+        out["window"] = "run" if since else "all"
+        out["since"] = since
+        return out
 
     # -- writes (CLI/state chokepoints only) ----------------------------
 

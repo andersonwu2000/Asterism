@@ -1489,6 +1489,7 @@ def daemon_status(workspace: Path) -> dict:
     from . import dispatcher as _disp
     pid = _daemon_live_pid(workspace)
     scope: str | None = None
+    started_at: str | None = None
     if pid is not None:
         # written by daemon_start; "" = workspace-wide (--all-problems)
         scope_file = workspace / ".asterism" / "logs" / "daemon-scope.txt"
@@ -1496,11 +1497,24 @@ def daemon_status(workspace: Path) -> dict:
             scope = scope_file.read_text(encoding="utf-8").strip() or None
         except OSError:
             scope = None
+        # pid-file line 2 is the daemon's process start time (the same
+        # identity the singleton lock checks) — that IS this run's start.
+        try:
+            lines = (workspace / ".asterism" / "daemon.pid").read_text(
+                encoding="utf-8").splitlines()
+            started_at = datetime.fromtimestamp(
+                float(lines[1].strip()), timezone.utc).isoformat()
+        except (OSError, ValueError, IndexError):
+            started_at = None
     return {
         "running": pid is not None,
         "pid": pid,
         "scope": scope,
-        "stopping": _disp.stop_file_path(workspace).exists(),
+        "started_at": started_at,
+        # a stop-file left behind by a dead daemon is residue, not a
+        # state — "stopping" is only meaningful while something runs
+        "stopping": pid is not None
+        and _disp.stop_file_path(workspace).exists(),
         "in_flight_leases": _daemon_in_flight(workspace),
     }
 

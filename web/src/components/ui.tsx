@@ -47,6 +47,7 @@ export function Button({
  * (needs input / sign-off), red = broken or destructive only. */
 const STATUS_CHIP: Record<ProblemStatus, { label: string; cls: string; dot: string }> = {
   proving: { label: 'proving', cls: 'text-accent bg-accent/10', dot: 'bg-accent animate-pulse' },
+  paused: { label: 'paused', cls: 'text-ink-dim bg-white/[0.04]', dot: 'bg-ink-dim' },
   awaiting_human: { label: 'needs input', cls: 'bg-warn text-bg font-semibold', dot: 'bg-bg' },
   stalled: { label: 'stalled', cls: 'text-danger bg-danger/10', dot: 'bg-danger' },
   idle: { label: 'idle', cls: 'text-ink-faint', dot: 'bg-ink-faint/60' },
@@ -60,7 +61,8 @@ const STATUS_CHIP: Record<ProblemStatus, { label: string; cls: string; dot: stri
 }
 
 const STATUS_HINT: Record<ProblemStatus, string> = {
-  proving: 'agents are working on it',
+  proving: 'the engine is working on it right now',
+  paused: 'unfinished — the engine is not running it; press Run on its page to continue',
   awaiting_human: 'waiting for your decision — open the inbox',
   stalled: 'no path forward found — needs direction',
   idle: 'not started yet',
@@ -70,7 +72,9 @@ const STATUS_HINT: Record<ProblemStatus, string> = {
 }
 
 export function StatusBadge({ status }: { status: ProblemStatus }) {
-  const c = STATUS_CHIP[status] ?? STATUS_CHIP.proving
+  // Unknown status must degrade to the quietest claim, never the
+  // loudest — "proving" asserts live work the server didn't claim.
+  const c = STATUS_CHIP[status] ?? STATUS_CHIP.idle
   return (
     <span
       title={STATUS_HINT[status]}

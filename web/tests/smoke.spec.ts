@@ -78,7 +78,9 @@ test('library atlas renders constellations or empty state', async ({ page }) => 
 test('telemetry: daemon panel + log + usage + library sections', async ({ page }) => {
   await page.goto('/#/telemetry')
   await expect(page.getByRole('heading', { name: 'Engine' })).toBeVisible()
-  for (const label of ['settings', 'usage — this run']) {
+  // the usage window label is daemon-truthful: "this run" only while
+  // one runs; the smoke workspace is idle → all time
+  for (const label of ['settings', 'usage — all time']) {
     await expect(page.getByText(label, { exact: true })).toBeVisible()
   }
   // the summary row nests the label beside its chevron — substring match

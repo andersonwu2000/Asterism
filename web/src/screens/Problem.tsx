@@ -48,9 +48,11 @@ const GOAL_SORT: Record<string, number> = {
 function GoalsList({
   goals,
   onSelect,
+  engineWorking,
 }: {
   goals: Goal[]
   onSelect: (id: number) => void
+  engineWorking: boolean
 }) {
   if (goals.length === 0)
     return <div className="px-4 py-8 text-center text-xs text-ink-faint">No goals yet.</div>
@@ -86,8 +88,23 @@ function GoalsList({
               </button>
               {g.is_deliverable && <span className="ml-1.5 text-star" title="deliverable">◈</span>}
             </td>
-            <td className={`py-2 pr-4 text-xs ${GOAL_STATUS_CLS[g.status] ?? 'text-ink-dim'}`}>
-              {GOAL_STATUS_LABEL[g.status] ?? g.status}
+            <td
+              className={`py-2 pr-4 text-xs ${
+                g.status === 'attempting' && !engineWorking
+                  ? 'text-ink-dim'
+                  : (GOAL_STATUS_CLS[g.status] ?? 'text-ink-dim')
+              }`}
+              title={
+                g.status === 'attempting' && !engineWorking
+                  ? 'the run stopped mid-attempt — picked up again on the next run'
+                  : undefined
+              }
+            >
+              {/* "attempting" is a liveness claim — a stopped run's
+                  leftover reads as interrupted, not live work */}
+              {g.status === 'attempting' && !engineWorking
+                ? 'interrupted'
+                : (GOAL_STATUS_LABEL[g.status] ?? g.status)}
             </td>
             <td className="max-w-md truncate py-2 pr-4 font-mono text-[11px] text-ink-dim">
               {g.statement}
@@ -299,11 +316,18 @@ export default function Problem({ name }: { name: string }) {
                   setSelectedGoal(null)
                 }}
                 shelveThreshold={data.shelve_threshold}
+                engineWorking={data.engine_working}
               />
             </div>
           )}
           {tab === 'manifest' && <ManifestEditor problem={data.name} />}
-          {tab === 'goals' && <GoalsList goals={data.goals} onSelect={setSelectedGoal} />}
+          {tab === 'goals' && (
+            <GoalsList
+              goals={data.goals}
+              onSelect={setSelectedGoal}
+              engineWorking={data.engine_working}
+            />
+          )}
           {tab === 'timeline' && (
             <div className="mx-auto max-w-4xl px-4 py-3">
               <DecisionTimeline decisions={data.decisions} />

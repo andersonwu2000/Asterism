@@ -21,6 +21,9 @@ interface Props {
   onSelectStrategy?: (id: number) => void
   /** attempts heat-ring denominator (engine's shelve threshold) */
   shelveThreshold?: number
+  /** liveness gate: pulses are claims that work is happening NOW —
+   * without a live daemon on this problem they must not render */
+  engineWorking?: boolean
 }
 
 /** Residual struggle heat: a proved star that burned failed attempts
@@ -102,6 +105,7 @@ export default function Constellation({
   onSelect,
   onSelectStrategy,
   shelveThreshold = 8,
+  engineWorking = false,
 }: Props) {
   // Frontier focus: on for big live graphs by default (attention +
   // charter §7 perf bar); terminal problems always show everything.
@@ -515,7 +519,7 @@ export default function Constellation({
                     filter={s.glow ? 'url(#star-glow)' : undefined}
                     vectorEffect="non-scaling-stroke"
                   >
-                    {n.goal.status === 'attempting' && (
+                    {engineWorking && n.goal.status === 'attempting' && (
                       <animate
                         attributeName="opacity"
                         values="1;0.45;1"
@@ -534,7 +538,7 @@ export default function Constellation({
                     filter={s.glow ? 'url(#star-glow)' : undefined}
                     vectorEffect="non-scaling-stroke"
                   >
-                    {n.goal.status === 'attempting' && (
+                    {engineWorking && n.goal.status === 'attempting' && (
                       <animate
                         attributeName="opacity"
                         values="1;0.45;1"

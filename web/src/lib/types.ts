@@ -1,5 +1,6 @@
 export type ProblemStatus =
   | 'proving'
+  | 'paused'
   | 'awaiting_human'
   | 'stalled'
   | 'idle'
@@ -83,6 +84,9 @@ export interface Decision {
 export interface ProblemDetail {
   name: string
   status: ProblemStatus
+  /** a live daemon is on this problem right now — liveness displays
+   * (attempting tint, pulses) must gate on it, not on DB residue */
+  engine_working: boolean
   shelve_threshold: number
   created_at: string
   ingested_at: string | null
@@ -201,6 +205,9 @@ export interface DaemonStatus {
   pid: number | null
   /** exact problem name or LIKE pattern; null = workspace-wide */
   scope: string | null
+  /** ISO start time of the running daemon; null when idle */
+  started_at: string | null
+  /** only ever true while running (a stale stop-file is not a state) */
   stopping: boolean
   in_flight_leases: number
 }
