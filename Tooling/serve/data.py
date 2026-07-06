@@ -401,6 +401,42 @@ def telemetry_usage(conn: sqlite3.Connection) -> dict:
     return {"problems": rows}
 
 
+def paper_section(workspace: Path, pid: str,
+                  anchor: str | None) -> dict | None:
+    """One page-anchored section of a shelved paper's extracted text
+    (charter §3.2 side-by-side). Page anchors are `## p.N` lines. When
+    `anchor` is a page anchor, returns that page's block; otherwise the
+    whole text is scanned for the first literal occurrence and the
+    surrounding page is returned. None if the paper isn't shelved."""
+    if "/" in pid or "\\" in pid or ".." in pid:
+        return None
+    path = workspace / "Papers" / pid / "text.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    a = (anchor or "").strip()
+    # Non-page anchor (free-text ref): locate it, then serve its page.
+    if a and not a.startswith("## p.") and a in text:
+        page_start = text.rfind("\n## p.", 0, text.index(a))
+        if page_start >= 0:
+            a = text[page_start + 1:text.index("\n", page_start + 1)]
+        else:
+            a = ""
+    if a.startswith("## p."):
+        idx = text.find(a + "\n")
+        if idx < 0:
+            idx = text.find(a)
+        if idx >= 0:
+            nxt = text.find("\n## p.", idx + 1)
+            content = text[idx:nxt] if nxt > 0 else text[idx:]
+            return {"pid": pid, "anchor": a, "found": True,
+                    "content": content.strip()}
+    # Fallback: unpaged source or unknown anchor — first 4KB as context.
+    return {"pid": pid, "anchor": a or None, "found": False,
+            "content": text[:4096]}
+
+
 def read_problem_file(workspace: Path, problem: str,
                       rel_path: str) -> str | None:
     """Read-only file fetch, sandboxed to the problem directory.

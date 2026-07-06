@@ -164,6 +164,14 @@ def create_app(workspace: Path) -> FastAPI:
         with _ro(workspace) as conn:
             return _data.inbox(conn, workspace)
 
+    @app.get("/api/papers/{pid}/section")
+    def paper_sec(pid: str, anchor: str | None = None) -> dict:
+        d = _data.paper_section(workspace, pid, anchor)
+        if d is None:
+            raise HTTPException(status_code=404,
+                                detail=f"paper {pid!r} not shelved here")
+        return d
+
     @app.get("/api/library")
     def library() -> dict:
         if not (workspace / "asterism.db").exists():

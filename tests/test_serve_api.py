@@ -413,6 +413,28 @@ def test_library_lists_bridged_decls(workspace: Path) -> None:
     assert lib["problems"][0]["decls"][0]["name"] == "Asterism.mainThm"
 
 
+def test_paper_section_page_anchor(workspace: Path) -> None:
+    pdir = workspace / "Papers" / "abc123"
+    pdir.mkdir(parents=True)
+    (pdir / "text.md").write_text(
+        "# Title\n\n## p.1\nfirst page\n\n## p.2\nsecond page body\n\n"
+        "## p.3\nthird\n", encoding="utf-8")
+    c = _client(workspace)
+    r = c.get("/api/papers/abc123/section", params={"anchor": "## p.2"})
+    body = r.json()
+    assert body["found"] is True
+    assert "second page body" in body["content"]
+    assert "third" not in body["content"]
+    # free-text ref resolves to its containing page
+    r2 = c.get("/api/papers/abc123/section",
+               params={"anchor": "second page"})
+    assert r2.json()["found"] is True
+    assert "second page body" in r2.json()["content"]
+    # unknown paper → 404; traversal refused
+    assert c.get("/api/papers/nope/section").status_code == 404
+    assert c.get("/api/papers/..%2Fabc123/section").status_code == 404
+
+
 # ---------------------------------------------------------------------
 # daemon status (read-only surface; start/stop covered at CLI level)
 # ---------------------------------------------------------------------
