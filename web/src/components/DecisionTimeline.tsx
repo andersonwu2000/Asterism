@@ -119,7 +119,7 @@ export default function DecisionTimeline({ decisions }: { decisions: Decision[] 
       key={key ?? 'all'}
       className={`rounded-full border px-2 py-0.5 text-[11px] ${
         filter === key
-          ? 'border-accent/60 bg-accent/10 text-accent'
+          ? 'border-star/60 bg-star/10 text-star'
           : 'border-edge text-ink-faint hover:text-ink'
       }`}
       onClick={() => setFilter(filter === key ? null : key)}

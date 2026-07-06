@@ -426,7 +426,7 @@ export default function Board() {
               key={s}
               className={`rounded-full border px-2 py-0.5 text-[11px] ${
                 statusFilter === s
-                  ? 'border-accent/60 bg-accent/10 text-accent'
+                  ? 'border-star/60 bg-star/10 text-star'
                   : 'border-edge text-ink-faint hover:text-ink'
               }`}
               onClick={() => setStatusFilter(statusFilter === s ? null : s)}
