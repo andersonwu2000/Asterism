@@ -108,6 +108,13 @@ export function ErrorState({ error }: { error: Error }) {
       </EmptyState>
     )
   }
+  if (error instanceof ApiError && error.status === 404) {
+    return (
+      <EmptyState title="Not found">
+        {error.detail} — it may have been renamed or removed.
+      </EmptyState>
+    )
+  }
   return (
     <EmptyState title="Can't reach the engine">
       {String(error.message)} — is <code className="font-mono">asterism serve</code> still running?

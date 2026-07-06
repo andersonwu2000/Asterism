@@ -84,12 +84,15 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
       onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}
     >
       <td className={dense ? 'pr-4 pl-7' : 'pr-4 pl-3'}>
-        <span
+        {/* a real link: keyboard reachable (the row onClick is mouse sugar) */}
+        <Link
+          to={`/problems/${encodeURIComponent(p.name)}`}
           className={`block truncate font-mono text-[13px] ${dense ? 'text-ink-dim' : 'text-ink'}`}
           title={p.name}
+          onClick={(e) => e.stopPropagation()}
         >
           {shown}
-        </span>
+        </Link>
       </td>
       <td className="pr-4">
         {needsAction ? (
@@ -193,7 +196,14 @@ function ClusterRow({
       onClick={onToggle}
     >
       <td className="pr-4 pl-3">
-        <span className="flex items-center gap-2">
+        <button
+          className="flex items-center gap-2"
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggle()
+          }}
+          aria-expanded={expanded}
+        >
           <svg
             width="9"
             height="9"
@@ -205,7 +215,7 @@ function ClusterRow({
           </svg>
           <span className="font-mono text-[13px] text-ink">{c.prefix}</span>
           <span className="tnum text-[11px] text-ink-faint">{c.items.length} problems</span>
-        </span>
+        </button>
       </td>
       <td className="pr-4">
         {c.bridged > 0 && (

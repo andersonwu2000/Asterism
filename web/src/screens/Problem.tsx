@@ -68,7 +68,15 @@ function GoalsList({
             onClick={() => onSelect(g.id)}
           >
             <td className="py-2 pr-4 pl-4 font-mono text-xs whitespace-nowrap text-ink">
-              {g.slug}
+              <button
+                className="font-mono"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onSelect(g.id)
+                }}
+              >
+                {g.slug}
+              </button>
               {g.is_deliverable && <span className="ml-1.5 text-star" title="deliverable">◈</span>}
             </td>
             <td className={`py-2 pr-4 text-xs ${GOAL_STATUS_CLS[g.status] ?? 'text-ink-dim'}`}>
