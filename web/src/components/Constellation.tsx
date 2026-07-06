@@ -16,6 +16,8 @@ interface Props {
   strategyEdges: StrategyEdge[]
   selectedId: number | null
   onSelect: (id: number | null) => void
+  /** attempts heat-ring denominator (engine's shelve threshold) */
+  shelveThreshold?: number
 }
 
 /** status → { fill, stroke, glow } for the star dot */
@@ -58,12 +60,20 @@ const STATUS_LABEL: Record<string, string> = {
   dead: 'dead',
 }
 
+function edgeStroke(status: Strategy['status'], kind: 'strategy' | 'alias'): string {
+  if (kind === 'alias') return 'var(--color-accent)'
+  if (status === 'succeeded') return 'var(--color-star)'
+  if (status === 'dead' || status === 'superseded') return 'var(--color-edge)'
+  return 'var(--color-edge-strong)'
+}
+
 export default function Constellation({
   goals,
   strategies,
   strategyEdges,
   selectedId,
   onSelect,
+  shelveThreshold = 8,
 }: Props) {
   const layout = useMemo(
     () => layoutConstellation(goals, strategies, strategyEdges),
@@ -152,13 +162,15 @@ export default function Constellation({
     if (d && !d.moved && (e.target as Element).tagName === 'svg') onSelect(null)
   }
 
+  const isDead = (s: string) => s === 'dead' || s === 'superseded'
   const visibleEdges = layout.edges.filter(
-    (e) =>
-      showDead ||
-      e.kind === 'alias' ||
-      (e.strategyStatus !== 'dead' && e.strategyStatus !== 'superseded'),
+    (e) => showDead || e.kind === 'alias' || !isDead(e.strategyStatus),
   )
-  const deadEdgeCount = layout.edges.length - visibleEdges.length
+  const visibleBundles = layout.bundles.filter((b) => showDead || !isDead(b.status))
+  const deadEdgeCount =
+    layout.edges.length -
+    visibleEdges.length +
+    layout.bundles.filter((b) => isDead(b.status)).length
 
   if (layout.nodes.length === 0) {
     return (
@@ -193,15 +205,7 @@ export default function Constellation({
             const a = byId.get(e.from)
             const b = byId.get(e.to)
             if (!a || !b) return null
-            const dead = e.strategyStatus === 'dead' || e.strategyStatus === 'superseded'
-            const stroke =
-              e.kind === 'alias'
-                ? 'var(--color-accent)'
-                : e.strategyStatus === 'succeeded'
-                  ? 'var(--color-star)'
-                  : dead
-                    ? 'var(--color-edge)'
-                    : 'var(--color-edge-strong)'
+            const dead = isDead(e.strategyStatus)
             return (
               <line
                 key={i}
@@ -209,7 +213,7 @@ export default function Constellation({
                 y1={a.y}
                 x2={b.x}
                 y2={b.y}
-                stroke={stroke}
+                stroke={edgeStroke(e.strategyStatus, e.kind)}
                 strokeWidth={e.strategyStatus === 'succeeded' ? 1.4 : 1}
                 strokeOpacity={dead ? 0.35 : e.kind === 'alias' ? 0.5 : 0.55}
                 strokeDasharray={e.kind === 'alias' ? '4 4' : undefined}
@@ -217,10 +221,68 @@ export default function Constellation({
               />
             )
           })}
+          {visibleBundles.map((b) => {
+            // AND-group hyperedge: stem parent→junction, then branches.
+            // Side-by-side junctions on one goal = competing strategies.
+            const parent = byId.get(b.parentId)
+            if (!parent) return null
+            const dead = isDead(b.status)
+            const stroke = edgeStroke(b.status, 'strategy')
+            const opacity = dead ? 0.35 : 0.55
+            return (
+              <g key={`s${b.strategyId}`}>
+                <line
+                  x1={parent.x}
+                  y1={parent.y}
+                  x2={b.junction.x}
+                  y2={b.junction.y}
+                  stroke={stroke}
+                  strokeWidth={b.status === 'succeeded' ? 2 : 1.6}
+                  strokeOpacity={opacity}
+                  vectorEffect="non-scaling-stroke"
+                />
+                {b.children.map((cid) => {
+                  const c = byId.get(cid)
+                  if (!c) return null
+                  return (
+                    <line
+                      key={cid}
+                      x1={b.junction.x}
+                      y1={b.junction.y}
+                      x2={c.x}
+                      y2={c.y}
+                      stroke={stroke}
+                      strokeWidth={b.status === 'succeeded' ? 1.4 : 1}
+                      strokeOpacity={opacity}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )
+                })}
+                <circle
+                  cx={b.junction.x}
+                  cy={b.junction.y}
+                  r={1.6}
+                  fill={stroke}
+                  opacity={opacity}
+                />
+              </g>
+            )
+          })}
           {layout.nodes.map((n) => {
             const s = nodeStyle(n.goal)
             const r = radius(n.goal)
             const selected = n.goal.id === selectedId
+            // Attempts heat ring: arc fraction of the shelve threshold,
+            // only meaningful while the goal is still being worked.
+            const heatFrac =
+              (n.goal.status === 'open' ||
+                n.goal.status === 'attempting' ||
+                n.goal.status === 'pending_strategist_review') &&
+              n.goal.attempts > 0
+                ? Math.min(n.goal.attempts / shelveThreshold, 1)
+                : 0
+            const heatR = r + 3
+            const heatC = 2 * Math.PI * heatR
             return (
               <g
                 key={n.goal.id}
@@ -262,6 +324,38 @@ export default function Constellation({
                 </circle>
                 {n.goal.is_deliverable && (
                   <circle r={r + 3} fill="none" stroke={s.stroke} strokeWidth={0.7} opacity={0.6} />
+                )}
+                {heatFrac > 0 && (
+                  <circle
+                    r={heatR}
+                    fill="none"
+                    stroke={heatFrac >= 0.99 ? 'var(--color-danger)' : 'var(--color-warn)'}
+                    strokeWidth={1.2}
+                    strokeOpacity={0.4 + heatFrac * 0.5}
+                    strokeDasharray={`${heatC * heatFrac} ${heatC}`}
+                    transform="rotate(-90)"
+                  />
+                )}
+                {n.goal.in_flight && (
+                  <circle
+                    r={r + 6}
+                    fill="none"
+                    stroke="var(--color-accent)"
+                    strokeWidth={1}
+                  >
+                    <animate
+                      attributeName="stroke-opacity"
+                      values="0.7;0.15;0.7"
+                      dur="1.4s"
+                      repeatCount="indefinite"
+                    />
+                    <animate
+                      attributeName="r"
+                      values={`${r + 5};${r + 7};${r + 5}`}
+                      dur="1.4s"
+                      repeatCount="indefinite"
+                    />
+                  </circle>
                 )}
                 {showLabels && (
                   <text

@@ -140,6 +140,18 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             " WHERE target_kind = 'Goal' GROUP BY target_id"):
         dead_counts[int(r["target_id"])] = int(r["n"])
 
+    # Live-work signal per goal: a leased queue row (owner_pid set) means
+    # a worker is on it right now — the constellation pulses that star.
+    inflight_goals: set[int] = set()
+    for r in conn.execute(
+            "SELECT target_id FROM queue WHERE problem = ?"
+            " AND target_kind = 'Goal' AND owner_pid IS NOT NULL",
+            (problem,)):
+        try:
+            inflight_goals.add(int(r["target_id"]))
+        except (TypeError, ValueError):
+            pass
+
     goals = []
     for g in conn.execute(
             "SELECT id, slug, status, kind, origin, depth, detached,"
@@ -161,6 +173,7 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             "created_at": str(g["created_at"]),
             "attempts": int(g["attempts"]),
             "dead_attempts": dead_counts.get(int(g["id"]), 0),
+            "in_flight": int(g["id"]) in inflight_goals,
         })
 
     goal_ids = {g["id"] for g in goals}
@@ -243,9 +256,20 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             chip = "proving"
         elif not progressed:
             chip = "idle"
+    # Same config source the dispatcher reads at startup — the serve
+    # process isn't the daemon, so read it fresh (heat-ring denominator).
+    from ..core import config as _config
+    try:
+        shelve_threshold = int(_config.get(
+            "dispatch.shelve_threshold", default=8,
+            env_var="ASTERISM_SHELVE_THRESHOLD", cast=int,
+            workspace=workspace))
+    except Exception:  # noqa: BLE001 — presentation hint, never fatal
+        shelve_threshold = 8
     return {
         "name": str(prow["name"]),
         "status": chip,
+        "shelve_threshold": shelve_threshold,
         "created_at": str(prow["created_at"]),
         "ingested_at": prow["ingested_at"],
         "library_bridged_at": prow["library_bridged_at"],

@@ -46,6 +46,7 @@ export interface Goal {
   created_at: string
   attempts: number
   dead_attempts: number
+  in_flight: boolean
 }
 
 export interface Strategy {
@@ -82,6 +83,7 @@ export interface Decision {
 export interface ProblemDetail {
   name: string
   status: ProblemStatus
+  shelve_threshold: number
   created_at: string
   ingested_at: string | null
   library_bridged_at: string | null

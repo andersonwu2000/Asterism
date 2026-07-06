@@ -30,9 +30,21 @@ export interface LayoutEdge {
   kind: 'strategy' | 'alias'
 }
 
+/** A strategy's AND-group rendered as a hyperedge: one stem from the
+ * parent to a junction, then one branch per subgoal. Competing
+ * strategies of the same goal (OR) get side-by-side junctions. */
+export interface LayoutBundle {
+  strategyId: number
+  status: Strategy['status']
+  parentId: number
+  junction: { x: number; y: number }
+  children: number[]
+}
+
 export interface ConstellationLayout {
   nodes: LayoutNode[]
-  edges: LayoutEdge[]
+  edges: LayoutEdge[] // alias cross-links + single-child strategies
+  bundles: LayoutBundle[] // multi-child strategies (AND-groups)
   width: number
   height: number
 }
@@ -145,5 +157,55 @@ export function layoutConstellation(
     })
   }
   const height = PAD * 2 + Math.max(0, layerKeys.length - 1) * Y_GAP
-  return { nodes, edges, width, height }
+
+  // Hyperedge bundles: group strategy edges by strategy; ≥2 children
+  // form an AND-bundle with a junction point, single-child strategies
+  // stay plain edges. OR alternatives (several strategies on one goal)
+  // get deterministic side-by-side junction offsets, ordered by id.
+  const nodePos = new Map(nodes.map((n) => [n.goal.id, n]))
+  const byStrategy = new Map<number, LayoutEdge[]>()
+  for (const e of edges) {
+    if (e.kind !== 'strategy') continue
+    byStrategy.set(e.strategyId, [...(byStrategy.get(e.strategyId) ?? []), e])
+  }
+  const perParent = new Map<number, number[]>() // parent goal → strategy ids (multi-child only)
+  for (const [sid, es] of byStrategy) {
+    if (es.length < 2) continue
+    perParent.set(es[0].from, [...(perParent.get(es[0].from) ?? []), sid])
+  }
+  for (const sids of perParent.values()) sids.sort((a, b) => a - b)
+
+  const bundles: LayoutBundle[] = []
+  const plainEdges: LayoutEdge[] = []
+  for (const e of edges) {
+    if (e.kind !== 'strategy' || (byStrategy.get(e.strategyId)?.length ?? 0) < 2) {
+      plainEdges.push(e)
+    }
+  }
+  for (const [sid, es] of byStrategy) {
+    if (es.length < 2) continue
+    const parent = nodePos.get(es[0].from)
+    const children = es
+      .map((e) => nodePos.get(e.to))
+      .filter((n): n is LayoutNode => n !== undefined)
+    if (!parent || children.length < 2) {
+      for (const e of es) plainEdges.push(e)
+      continue
+    }
+    const sibs = perParent.get(es[0].from) ?? [sid]
+    const orOffset = (sibs.indexOf(sid) - (sibs.length - 1) / 2) * 18
+    const cx = children.reduce((a, n) => a + n.x, 0) / children.length
+    const cyMin = Math.min(...children.map((n) => n.y))
+    bundles.push({
+      strategyId: sid,
+      status: es[0].strategyStatus,
+      parentId: parent.goal.id,
+      junction: {
+        x: parent.x + (cx - parent.x) * 0.35 + orOffset,
+        y: parent.y + (cyMin - parent.y) * 0.45,
+      },
+      children: children.map((n) => n.goal.id),
+    })
+  }
+  return { nodes, edges: plainEdges, bundles, width, height }
 }

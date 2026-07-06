@@ -145,6 +145,7 @@ export default function Problem({ name }: { name: string }) {
                 strategyEdges={data.strategy_edges}
                 selectedId={selectedGoal}
                 onSelect={setSelectedGoal}
+                shelveThreshold={data.shelve_threshold}
               />
             </div>
           )}
