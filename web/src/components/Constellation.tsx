@@ -36,9 +36,9 @@ function nodeStyle(g: Goal): { fill: string; stroke: string; glow: boolean; opac
     case 'attempting':
       return { fill: 'var(--color-accent)', stroke: 'var(--color-accent)', glow: true, opacity: 1 }
     case 'open':
-      // The live frontier is the interesting 7% — it glows; settled
-      // white stars recede (design review: invert the emphasis).
-      return { fill: 'transparent', stroke: 'var(--color-accent)', glow: true, opacity: 1 }
+      // The live frontier is the interesting 7% — accent, no glow
+      // (glow shared with proved made brightness meaningless).
+      return { fill: 'transparent', stroke: 'var(--color-accent)', glow: false, opacity: 1 }
     case 'frozen':
       return { fill: 'transparent', stroke: 'var(--color-ink-faint)', glow: false, opacity: 0.8 }
     case 'pending_strategist_review':
@@ -377,9 +377,44 @@ export default function Constellation({
               </g>
             )
           })}
+          {/* band hairlines: bands stack independent trees — equal y
+              across bands means nothing, so mark the seams */}
+          {layout.bandTops.map((y, i) => (
+            <line
+              key={`b${i}`}
+              x1={0}
+              y1={y}
+              x2={layout.width}
+              y2={y}
+              stroke="var(--color-edge)"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
+          {layout.singlesBlock && (
+            <text
+              x={layout.singlesBlock.x}
+              y={layout.singlesBlock.y - 22 / k}
+              fill="var(--color-ink-faint)"
+              fontSize={10 / k}
+              fontFamily="var(--font-sans)"
+              className="pointer-events-none select-none"
+            >
+              unlinked bricks · {layout.singlesBlock.count}
+            </text>
+          )}
           {layout.nodes.map((n) => {
             const s = nodeStyle(n.goal)
-            const r = radius(n.goal)
+            const live =
+              n.goal.status === 'open' ||
+              n.goal.status === 'attempting' ||
+              n.goal.status === 'pending_strategist_review'
+            // scale honesty: marks never drop below ~7px on screen, and
+            // at survey zoom the live frontier switches to filled
+            // accent dots — hollow 0.5px strokes are sub-perceptual
+            const r = Math.max(radius(n.goal), 3.5 / k)
+            const lod = k < 0.8
+            const fill = lod && live ? s.stroke : s.fill
             const selected = n.goal.id === selectedId
             // Attempts heat ring: arc fraction of the shelve threshold,
             // only meaningful while the goal is still being worked.
@@ -404,40 +439,47 @@ export default function Constellation({
                   onSelect(n.goal.id)
                 }}
               >
+                {/* ring slots are disjoint (heat r+3, deliverable r+5,
+                    root r+7, in-flight r+8, selection r+10) — two
+                    meanings on one radius merge into ambiguity */}
                 {selected && (
                   <circle
-                    r={r + 6}
+                    r={r + 10}
                     fill="none"
                     stroke="var(--color-ink)"
                     strokeWidth={1}
                     strokeOpacity={0.8}
                     strokeDasharray="2 3"
+                    vectorEffect="non-scaling-stroke"
                   />
                 )}
                 {n.goal.origin === 'root' && (
                   <circle
-                    r={r + 4}
+                    r={r + 7}
                     fill="none"
                     stroke={s.stroke}
-                    strokeWidth={0.6}
-                    opacity={s.opacity * 0.45}
+                    strokeWidth={0.8}
+                    opacity={s.opacity * 0.5}
+                    vectorEffect="non-scaling-stroke"
                   />
                 )}
                 {/* defs are the meaning-bearers (the anchor surface a
-                    human vouches for) — they render as fixed diamonds;
+                    human vouches for) — diamonds above the shape-
+                    perception threshold (~5px), circles below it;
                     Props are the light and stay round */}
-                {DEF_KINDS.has(n.goal.kind) ? (
+                {DEF_KINDS.has(n.goal.kind) && r * k >= 5 ? (
                   <rect
-                    x={-r * 0.92}
-                    y={-r * 0.92}
-                    width={r * 1.84}
-                    height={r * 1.84}
+                    x={-r * 1.06}
+                    y={-r * 1.06}
+                    width={r * 2.12}
+                    height={r * 2.12}
                     transform="rotate(45)"
-                    fill={s.fill}
+                    fill={fill}
                     stroke={s.stroke}
                     strokeWidth={1.4}
                     opacity={s.opacity}
                     filter={s.glow ? 'url(#star-glow)' : undefined}
+                    vectorEffect="non-scaling-stroke"
                   >
                     {n.goal.status === 'attempting' && (
                       <animate
@@ -451,11 +493,12 @@ export default function Constellation({
                 ) : (
                   <circle
                     r={r}
-                    fill={s.fill}
+                    fill={fill}
                     stroke={s.stroke}
                     strokeWidth={1.4}
                     opacity={s.opacity}
                     filter={s.glow ? 'url(#star-glow)' : undefined}
+                    vectorEffect="non-scaling-stroke"
                   >
                     {n.goal.status === 'attempting' && (
                       <animate
@@ -469,11 +512,12 @@ export default function Constellation({
                 )}
                 {n.goal.is_deliverable && (
                   <circle
-                    r={r + 3}
+                    r={r + 5}
                     fill="none"
-                    stroke={s.stroke}
+                    stroke="var(--color-star)"
                     strokeWidth={1.1}
-                    opacity={0.85}
+                    opacity={0.9}
+                    vectorEffect="non-scaling-stroke"
                   />
                 )}
                 {heatFrac > 0 && (
@@ -485,14 +529,16 @@ export default function Constellation({
                     strokeOpacity={0.4 + heatFrac * 0.5}
                     strokeDasharray={`${heatC * heatFrac} ${heatC}`}
                     transform="rotate(-90)"
+                    vectorEffect="non-scaling-stroke"
                   />
                 )}
                 {n.goal.in_flight && (
                   <circle
-                    r={r + 6}
+                    r={r + 8}
                     fill="none"
                     stroke="var(--color-accent)"
                     strokeWidth={1}
+                    vectorEffect="non-scaling-stroke"
                   >
                     <animate
                       attributeName="stroke-opacity"
@@ -502,7 +548,7 @@ export default function Constellation({
                     />
                     <animate
                       attributeName="r"
-                      values={`${r + 5};${r + 7};${r + 5}`}
+                      values={`${r + 7};${r + 9};${r + 7}`}
                       dur="1.4s"
                       repeatCount="indefinite"
                     />
@@ -607,9 +653,15 @@ export default function Constellation({
         <span className="flex items-center gap-1">
           <svg width="12" height="12" viewBox="-6 -6 12 12">
             <circle r="2.4" fill="var(--color-starlight)" />
-            <circle r="4.6" fill="none" stroke="var(--color-starlight)" strokeWidth="0.7" opacity="0.6" />
+            <circle r="4.6" fill="none" stroke="var(--color-star)" strokeWidth="0.9" opacity="0.9" />
           </svg>
           deliverable
+        </span>
+        <span className="flex items-center gap-1">
+          <svg width="14" height="10" viewBox="0 0 14 10">
+            <line x1="1" y1="5" x2="13" y2="5" stroke="var(--color-accent)" strokeWidth="1" strokeDasharray="3 2.5" opacity="0.7" />
+          </svg>
+          alias
         </span>
         <span className="flex items-center gap-1">
           <svg width="10" height="10" viewBox="-5 -5 10 10">

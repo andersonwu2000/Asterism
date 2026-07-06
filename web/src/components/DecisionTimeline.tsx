@@ -8,13 +8,15 @@ const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '
 /** Strategist decision timeline (charter §3.3): newest first, one row
  * per decision, batch siblings visually grouped by a shared left rail. */
 
+/* amber is reserved app-wide for "the human's move" — routine machine
+ * events speak in neutral hues */
 const KIND_CLS: Record<string, string> = {
   Inject: 'text-accent',
   Ingest: 'text-star',
   MarkDeliverable: 'text-star',
   ConfirmShelve: 'text-ink-dim',
-  RequestUserAmend: 'text-danger',
-  EmitDirective: 'text-warn',
+  RequestUserAmend: 'text-warn',
+  EmitDirective: 'text-ink-dim',
   Noop: 'text-ink-faint',
 }
 
@@ -39,10 +41,17 @@ function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
   return (
     <div className={`relative pl-4 ${grouped ? 'border-l border-edge-strong/60' : ''}`}>
       <button
-        className="grid w-full grid-cols-[8rem_1fr_auto] items-baseline gap-2 rounded px-2 py-1.5 text-left hover:bg-surface"
+        className="group grid w-full grid-cols-[8rem_1fr_auto] items-baseline gap-2 rounded px-2 py-1.5 text-left hover:bg-surface"
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
       >
         <span className={`text-xs font-medium ${KIND_CLS[d.decision_kind] ?? 'text-ink-dim'}`}>
+          <span
+            className={`mr-1.5 inline-block text-[9px] text-ink-faint transition-transform duration-150 ${open ? 'rotate-90' : ''} opacity-0 group-hover:opacity-100 ${open ? 'opacity-100' : ''}`}
+            aria-hidden
+          >
+            ▸
+          </span>
           {d.decision_kind}
           {pipeline && <span className="text-ink-faint"> · {pipeline}</span>}
         </span>
@@ -98,27 +107,38 @@ export default function DecisionTimeline({ decisions }: { decisions: Decision[] 
   const dayOf = (iso: string) => DAY_FMT.format(new Date(iso))
   return (
     <div className="flex flex-col">
-      {decisions.map((d, i) => (
-        <div key={d.id}>
-          {/* day rules give a 44-day history its chapters */}
-          {(i === 0 || dayOf(decisions[i - 1].created_at) !== dayOf(d.created_at)) && (
-            <div className="mt-4 mb-1 flex items-center gap-3 px-2 first:mt-1">
-              <span className="text-[11px] font-medium tracking-widest text-ink-faint uppercase">
-                {dayOf(d.created_at)}
-              </span>
-              <span className="h-px flex-1 bg-edge" />
-            </div>
-          )}
-          <Row
-            d={d}
-            grouped={
-              d.batch_id !== null &&
-              (decisions[i - 1]?.batch_id === d.batch_id ||
-                decisions[i + 1]?.batch_id === d.batch_id)
-            }
-          />
-        </div>
-      ))}
+      {decisions.map((d, i) => {
+        const newDay = i === 0 || dayOf(decisions[i - 1].created_at) !== dayOf(d.created_at)
+        // burst-vs-stall rhythm: a same-day gap over an hour gets
+        // whitespace ∝ log(Δt), so a 6-hour stall looks different
+        // from a 40-second burst (newest-first: gap to the row above)
+        const dt = newDay
+          ? 0
+          : Math.abs(Date.parse(decisions[i - 1].created_at) - Date.parse(d.created_at))
+        const gap =
+          dt > 3600_000 ? Math.min(26, 6 + Math.round(Math.log10(dt / 3600_000) * 16)) : 0
+        return (
+          <div key={d.id} style={gap > 0 ? { marginTop: gap } : undefined}>
+            {/* day rules give a 44-day history its chapters */}
+            {newDay && (
+              <div className="mt-4 mb-1 flex items-center gap-3 px-2 first:mt-1">
+                <span className="text-[11px] font-medium tracking-widest text-ink-faint uppercase">
+                  {dayOf(d.created_at)}
+                </span>
+                <span className="h-px flex-1 bg-edge" />
+              </div>
+            )}
+            <Row
+              d={d}
+              grouped={
+                d.batch_id !== null &&
+                (decisions[i - 1]?.batch_id === d.batch_id ||
+                  decisions[i + 1]?.batch_id === d.batch_id)
+              }
+            />
+          </div>
+        )
+      })}
     </div>
   )
 }

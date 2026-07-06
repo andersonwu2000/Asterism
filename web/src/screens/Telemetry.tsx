@@ -48,7 +48,7 @@ function DaemonPanel() {
         </span>
       </div>
       {d && !d.running && d.in_flight_leases > 0 && (
-        <div className="mb-3 rounded-md border border-warn/40 bg-warn/10 px-3 py-1.5 text-xs text-warn">
+        <div className="mb-3 rounded-md border border-edge bg-surface-2 px-3 py-1.5 text-xs text-ink-dim">
           {d.in_flight_leases} orphaned work lease(s) from a previous run — reclaimed
           automatically on the next daemon start.
         </div>
@@ -120,7 +120,7 @@ function LogTail() {
   if (lines.length === 0) {
     return (
       <div className="rounded-lg border border-edge bg-surface px-3 py-2 text-xs text-ink-faint">
-        No log output — the tail follows the current daemon run and picks up when one starts.
+        No log output yet — the tail picks up when a daemon run starts.
       </div>
     )
   }
@@ -192,7 +192,7 @@ function inner(
         <tr className="border-b border-edge text-xs text-ink-faint">
           <th className="py-2 pr-4 pl-2 font-medium">problem</th>
           <th className="py-2 pr-4 text-right font-medium">spawns</th>
-          <th className="py-2 pr-4 text-right font-medium">input tok</th>
+          <th className="py-2 pr-4 text-right font-medium">input+cache</th>
           <th className="py-2 pr-4 text-right font-medium">output tok</th>
           <th className="py-2 pr-4 text-right font-medium">turns</th>
           <th className="py-2 pr-4 text-right font-medium">wall</th>
@@ -208,7 +208,7 @@ function inner(
               <td className="py-2 pr-4 pl-2 font-mono text-xs text-ink">{p.problem}</td>
               <td className="py-2 pr-4 text-right text-xs text-ink-dim">{p.spawns}</td>
               <td className="py-2 pr-4 text-right text-xs text-ink-dim">
-                {compactNumber(p.input_tokens)}
+                {compactNumber(p.input_tokens + p.cache_read_tokens)}
               </td>
               <td className="py-2 pr-4 text-right text-xs text-ink-dim">
                 {compactNumber(p.output_tokens)}
@@ -224,7 +224,7 @@ function inner(
                   </td>
                   <td className="py-1.5 pr-4 text-right text-[11px] text-ink-faint">{k.spawns}</td>
                   <td className="py-1.5 pr-4 text-right text-[11px] text-ink-faint">
-                    {compactNumber(k.input_tokens)}
+                    {compactNumber(k.input_tokens + k.cache_read_tokens)}
                   </td>
                   <td className="py-1.5 pr-4 text-right text-[11px] text-ink-faint">
                     {compactNumber(k.output_tokens)}
@@ -252,11 +252,11 @@ export default function Telemetry() {
           <DaemonPanel />
         </section>
         <section>
-          <SectionLabel>live log</SectionLabel>
+          <SectionLabel>run log</SectionLabel>
           <LogTail />
         </section>
         <section>
-          <SectionLabel>usage</SectionLabel>
+          <SectionLabel>usage — this run</SectionLabel>
           <UsageTable />
         </section>
       </div>

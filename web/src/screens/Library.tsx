@@ -53,21 +53,19 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
   const { w, h } = clusterSize(p.decls.length)
   const match = (d: LibraryDecl) =>
     query !== '' && (d.name ?? d.slug).toLowerCase().includes(query)
-  const { stars, spine } = useMemo(() => {
+  const stars = useMemo<StarPt[]>(() => {
+    // Position is honestly non-quantitative (seeded sky aesthetic);
+    // size/brightness must not fake importance, so they stay within a
+    // narrow texture band, and no line-art pretends structure the data
+    // doesn't carry. (Real usage/dependency weights are an engine-API
+    // item — when they land, size/brightness get meaning.)
     const rand = mulberry32(hash32(p.problem))
-    const pts: StarPt[] = p.decls.map((decl) => ({
+    return p.decls.map((decl) => ({
       x: 10 + rand() * (w - 20),
       y: 8 + rand() * (h - 30),
-      r: 1.1 + rand() * 1.7,
+      r: 1.4 + rand() * 0.5,
       decl,
     }))
-    // Atlas convention: line-art joins only the brightest few; the
-    // rest are the star field. 258 connected stars read as static.
-    const spine = [...pts]
-      .sort((a, b) => b.r - a.r)
-      .slice(0, Math.min(10, Math.max(3, Math.round(Math.sqrt(pts.length) * 1.5))))
-      .sort((a, b) => a.x - b.x)
-    return { stars: pts, spine }
   }, [p, w, h])
 
   const ns = p.problem.includes('.') ? p.problem.slice(0, p.problem.indexOf('.')) : null
@@ -76,18 +74,6 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
   return (
     <div className="relative" style={{ width: w }}>
       <svg width={w} height={h} className="block">
-        {spine.slice(0, -1).map((s, i) => (
-          <line
-            key={i}
-            x1={s.x}
-            y1={s.y}
-            x2={spine[i + 1].x}
-            y2={spine[i + 1].y}
-            stroke="var(--color-starlight)"
-            strokeWidth={0.5}
-            strokeOpacity={0.28}
-          />
-        ))}
         {/* generous invisible hit areas — 1.5px stars are not targets */}
         {stars.map((s, i) => (
           <circle
@@ -113,7 +99,7 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
               height={s.r * 2.4}
               transform={`rotate(45 ${s.x} ${s.y})`}
               fill={fill}
-              opacity={dim ? 0.15 : hit ? 1 : 0.55 + s.r * 0.16}
+              opacity={dim ? 0.15 : hit ? 1 : 0.8}
               onMouseEnter={() => setHover(s)}
               onMouseLeave={() => setHover(null)}
             />
@@ -124,23 +110,19 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
               cy={s.y}
               r={hit ? s.r + 0.8 : s.r}
               fill={fill}
-              opacity={dim ? 0.12 : hit ? 1 : 0.3 + s.r * 0.22}
+              opacity={dim ? 0.12 : hit ? 1 : 0.62}
               onMouseEnter={() => setHover(s)}
               onMouseLeave={() => setHover(null)}
             />
           )
         })}
       </svg>
+      {/* the section header carries the namespace — the card shows the leaf */}
       <Link
         to={`/problems/${encodeURIComponent(p.problem)}`}
         className="group block pb-1"
         title={`open ${p.problem}`}
       >
-        {ns && (
-          <span className="block truncate font-mono text-[10px] leading-tight text-ink-faint">
-            {ns}
-          </span>
-        )}
         <span className="block truncate font-mono text-xs text-ink-dim transition-colors group-hover:text-ink">
           {leaf}
           <span className="tnum ml-2 text-[10px] text-ink-faint">{p.decls.length}</span>
@@ -244,11 +226,35 @@ export default function Library() {
             No declaration matches “{query}”.
           </div>
         ) : (
-          <div className="flex flex-wrap items-end gap-x-10 gap-y-8">
-            {problems.map((p) => (
-              <Cluster key={p.problem} p={p} query={q} />
-            ))}
-          </div>
+          (() => {
+            // domain sections give the sky an index — 44 unsectioned
+            // panels have no information scent
+            const groups = new Map<string, LibraryProblem[]>()
+            for (const p of problems) {
+              const ns = p.problem.includes('.') ? p.problem.split('.')[0] : 'ungrouped'
+              groups.set(ns, [...(groups.get(ns) ?? []), p])
+            }
+            const ordered = [...groups.entries()].sort(
+              (a, b) =>
+                b[1].reduce((s, p) => s + p.decls.length, 0) -
+                a[1].reduce((s, p) => s + p.decls.length, 0),
+            )
+            return ordered.map(([ns, ps]) => (
+              <section key={ns} className="mb-10">
+                <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
+                  {ns}
+                  <span className="tnum ml-2 normal-case tracking-normal text-ink-faint/70">
+                    {ps.reduce((s, p) => s + p.decls.length, 0)} decls
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-end gap-x-10 gap-y-8">
+                  {ps.map((p) => (
+                    <Cluster key={p.problem} p={p} query={q} />
+                  ))}
+                </div>
+              </section>
+            ))
+          })()
         )}
       </div>
     </div>

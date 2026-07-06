@@ -57,7 +57,16 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
             {a.file}
           </span>
         </div>
-        <span className="text-[11px] text-ink-faint">{relTime(a.created_at)}</span>
+        {(() => {
+          const days = Math.floor((Date.now() - Date.parse(a.created_at)) / 86400_000)
+          return days >= 2 ? (
+            <span className="rounded-full bg-warn/15 px-2 py-0.5 text-[11px] font-semibold text-warn">
+              waiting {days} days
+            </span>
+          ) : (
+            <span className="text-[11px] text-ink-faint">{relTime(a.created_at)}</span>
+          )
+        })()}
       </div>
 
       <p className="font-display mb-3 max-w-[62ch] text-[19px] leading-snug font-medium text-ink">
@@ -98,6 +107,12 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
             {rejecting ? 'Confirm reject' : 'Reject'}
           </Button>
         </div>
+      </div>
+      {/* the highest-stakes click in the product states its consequences */}
+      <div className="mb-3 text-[11px] text-ink-faint">
+        Accept writes the amended file and the strategist resumes with it; Reject keeps the
+        file as-is and the strategist re-plans (your reason guides it). Either way the problem
+        unpauses.
       </div>
 
       {(longQuestion || a.reason) && (

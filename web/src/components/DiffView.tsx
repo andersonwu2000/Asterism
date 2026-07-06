@@ -132,14 +132,19 @@ export default function DiffView({ left, right }: { left: string; right: string 
         <span>current → proposed</span>
         {changed > 0 && <span className="tnum">· {changed} changed lines</span>}
       </div>
-      <div className="max-h-96 overflow-auto font-mono text-[11px] leading-relaxed">
-        {chunks.map((c, i) =>
-          c.kind === 'fold' && c.rows.length > 3 ? (
-            <Fold key={i} rows={c.rows} />
-          ) : (
-            c.rows.map((r, j) => <Row key={`${i}-${j}`} r={r} />)
-          ),
-        )}
+      {/* scrollable region announces itself — a diff that visually ends
+          mid-sentence reads as truncated, not scrollable */}
+      <div className="relative">
+        <div className="max-h-96 overflow-auto font-mono text-[11px] leading-relaxed">
+          {chunks.map((c, i) =>
+            c.kind === 'fold' && c.rows.length > 3 ? (
+              <Fold key={i} rows={c.rows} />
+            ) : (
+              c.rows.map((r, j) => <Row key={`${i}-${j}`} r={r} />)
+            ),
+          )}
+        </div>
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-surface to-transparent" />
       </div>
     </div>
   )

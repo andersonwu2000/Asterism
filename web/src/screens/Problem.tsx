@@ -25,6 +25,12 @@ const GOAL_STATUS_CLS: Record<string, string> = {
   frozen: 'text-ink-faint',
 }
 
+/* internal enums don't leak: display labels for the machine's states */
+const GOAL_STATUS_LABEL: Record<string, string> = {
+  pending_strategist_review: 'awaiting review',
+  frozen: 'frozen (pre-launch)',
+}
+
 /* live work first, settled bulk after */
 const GOAL_SORT: Record<string, number> = {
   attempting: 0,
@@ -80,7 +86,7 @@ function GoalsList({
               {g.is_deliverable && <span className="ml-1.5 text-star" title="deliverable">◈</span>}
             </td>
             <td className={`py-2 pr-4 text-xs ${GOAL_STATUS_CLS[g.status] ?? 'text-ink-dim'}`}>
-              {g.status}
+              {GOAL_STATUS_LABEL[g.status] ?? g.status}
             </td>
             <td className="py-2 pr-4 text-xs text-ink-faint">{g.origin}</td>
             <td className="max-w-md truncate py-2 pr-4 font-mono text-[11px] text-ink-dim">

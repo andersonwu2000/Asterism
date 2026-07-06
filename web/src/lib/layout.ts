@@ -52,6 +52,12 @@ export interface ConstellationLayout {
   bundles: LayoutBundle[] // multi-child strategies (AND-groups)
   width: number
   height: number
+  /** y (px) of the top of each band after the first — bands stack
+   * independent trees, so a cross-band y comparison means nothing;
+   * hairlines make that legible. */
+  bandTops: number[]
+  /** caption anchor for the unlinked forward-brick block */
+  singlesBlock: { x: number; y: number; count: number } | null
 }
 
 export const X_GAP = 110
@@ -396,5 +402,18 @@ export function layoutConstellation(
       children: children.map((n) => n.goal.id),
     })
   }
-  return { nodes, edges: plainEdges, bundles, width, height }
+  const bandTops: number[] = []
+  for (let b = 1; b < bandDepth.length; b++) {
+    bandTops.push(PAD + ((bandYBase[b] ?? 0) - 0.85) * Y_GAP)
+  }
+  const singlesBlock =
+    singles.length > 0
+      ? {
+          x: PAD,
+          y: PAD + (bandYBase[bandOfNode.get(singles[0]) ?? 0] ?? 0) * Y_GAP,
+          count: singles.length,
+        }
+      : null
+
+  return { nodes, edges: plainEdges, bundles, width, height, bandTops, singlesBlock }
 }

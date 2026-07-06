@@ -78,7 +78,7 @@ test('library atlas renders constellations or empty state', async ({ page }) => 
 test('telemetry: daemon panel + log + usage + library sections', async ({ page }) => {
   await page.goto('/#/telemetry')
   await expect(page.getByRole('heading', { name: 'Engine' })).toBeVisible()
-  for (const label of ['daemon', 'live log', 'usage']) {
+  for (const label of ['daemon', 'run log', 'usage — this run']) {
     await expect(page.getByText(label, { exact: true })).toBeVisible()
   }
 })

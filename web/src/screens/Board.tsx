@@ -3,7 +3,7 @@ import { usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { EmptyState, ErrorState, StatusBadge } from '../components/ui'
-import type { BoardProblem, BoardResponse } from '../lib/types'
+import type { BoardProblem, BoardResponse, Meta } from '../lib/types'
 
 /*
  * Board = the observatory's survey sheet. The eye should land on, in
@@ -31,20 +31,28 @@ function GoalCounts({ p }: { p: BoardProblem }) {
   )
 }
 
+/** Two honest channels: width ∝ √total (a 240-goal campaign should not
+ * look like a 3-goal toy) and fill = composition, with the settled-but-
+ * unproved remainder (shelved/dead) drawn as labeled grey ink instead
+ * of masquerading as "unfinished". */
 function ProgressBar({
   proved,
   open,
   total,
-  width = 'w-24',
 }: {
   proved: number
   open: number
   total: number
-  width?: string
 }) {
   if (total === 0 || (proved === 0 && open === 0)) return null
+  const w = Math.round(Math.min(128, Math.max(36, Math.sqrt(total) * 10)))
+  const rest = Math.max(0, total - proved - open)
   return (
-    <div className={`flex h-1 ${width} overflow-hidden rounded-full bg-surface-3`}>
+    <div
+      className="flex h-1 overflow-hidden rounded-full bg-surface-3"
+      style={{ width: w }}
+      title={`${proved} proved · ${open} open${rest > 0 ? ` · ${rest} shelved/dead` : ''} of ${total}`}
+    >
       <div
         className="h-full bg-starlight/80 transition-[width] duration-700"
         style={{ width: `${(proved / total) * 100}%` }}
@@ -53,6 +61,7 @@ function ProgressBar({
         className="h-full bg-accent/50 transition-[width] duration-700"
         style={{ width: `${(open / total) * 100}%` }}
       />
+      <div className="h-full bg-ink-faint/30" style={{ width: `${(rest / total) * 100}%` }} />
     </div>
   )
 }
@@ -124,10 +133,21 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
         <ProgressBar proved={p.goals.proved} open={p.goals.open} total={p.goals.total} />
       </td>
       <td className="tnum pr-3 text-right text-xs whitespace-nowrap text-ink-faint">
-        {relTime(p.last_event)}
+        {/* a blocking request's age is the product's most important
+            number — escalate it instead of whispering it */}
+        {needsAction && ageDays(p.last_event) >= 2 ? (
+          <span className="font-medium text-warn">waiting {ageDays(p.last_event)}d</span>
+        ) : (
+          relTime(p.last_event)
+        )}
       </td>
     </tr>
   )
+}
+
+function ageDays(iso: string | null): number {
+  if (!iso) return 0
+  return Math.floor((Date.now() - Date.parse(iso)) / 86400_000)
 }
 
 function SectionRow({ label, count }: { label: string; count?: number }) {
@@ -264,6 +284,7 @@ const WEEK_MS = 7 * 86400_000
 
 export default function Board() {
   const { data, error, loading } = usePoll<BoardResponse>('/api/problems')
+  const { data: meta } = usePoll<Meta>('/api/meta', 5000)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -367,6 +388,17 @@ export default function Board() {
       {error && (
         <div className="mb-3 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
           Live update failed ({error.message}) — showing last known state.
+        </div>
+      )}
+      {/* the board must not imply motion the engine isn't making */}
+      {meta && !meta.daemon.running && !meta.daemon.stopping && inMotion.length > 0 && (
+        <div className="mb-3 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+          The daemon is idle — {inMotion.length} problem{inMotion.length === 1 ? '' : 's'} in
+          motion {inMotion.length === 1 ? 'is' : 'are'} not being worked.{' '}
+          <Link to="/telemetry" className="underline">
+            Start it from the Engine page
+          </Link>
+          .
         </div>
       )}
       <div className="mb-3 flex items-center gap-2">
