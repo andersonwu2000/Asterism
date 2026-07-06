@@ -3,6 +3,7 @@ import { RouterProvider, useRoute, Link } from './lib/router'
 import { usePoll } from './lib/api'
 import Board from './screens/Board'
 import Inbox from './screens/Inbox'
+import Library from './screens/Library'
 import Problem from './screens/Problem'
 import Telemetry from './screens/Telemetry'
 import type { Meta } from './lib/types'
@@ -56,6 +57,13 @@ const ICONS: Record<string, ReactNode> = {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  ),
+  library: (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <rect x="5.7" y="5.7" width="4.6" height="4.6" transform="rotate(45 8 8)" fill="currentColor" opacity="0.9" />
+      <circle cx="3" cy="12.5" r="1.1" fill="currentColor" opacity="0.6" />
+      <circle cx="13" cy="3.5" r="1.1" fill="currentColor" opacity="0.6" />
     </svg>
   ),
 }
@@ -138,6 +146,12 @@ function Shell() {
             active={section === '' || section === 'problems'}
           />
           <NavItem
+            to="/library"
+            icon="library"
+            label="Library"
+            active={section === 'library'}
+          />
+          <NavItem
             to="/inbox"
             icon="inbox"
             label="Inbox"
@@ -164,6 +178,8 @@ function Shell() {
         <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           {section === 'inbox' ? (
             <Inbox />
+          ) : section === 'library' ? (
+            <Library />
           ) : section === 'telemetry' ? (
             <Telemetry />
           ) : section === 'problems' && route.segments[1] ? (

@@ -68,6 +68,13 @@ test('inbox renders sections or empty state', async ({ page }) => {
   await expect(anySection).toBeVisible()
 })
 
+test('library atlas renders constellations or empty state', async ({ page }) => {
+  await page.goto('/#/library')
+  await expect(page.getByRole('heading', { name: 'Library' })).toBeVisible()
+  const sky = page.locator('main svg').first().or(page.getByText('The Library is empty'))
+  await expect(sky).toBeVisible()
+})
+
 test('telemetry: daemon panel + log + usage + library sections', async ({ page }) => {
   await page.goto('/#/telemetry')
   await expect(page.getByRole('heading', { name: 'Engine' })).toBeVisible()
