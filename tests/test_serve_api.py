@@ -442,6 +442,36 @@ def test_library_lists_bridged_decls(workspace: Path) -> None:
     assert lib["problems"][0]["decls"][0]["name"] == "Asterism.mainThm"
 
 
+def test_review_refresh_async_job(workspace: Path, monkeypatch) -> None:
+    """The refresh job recomputes + stores the snapshot off-request (the
+    only gateway-legal path). Gateway is monkeypatched out (test fence)."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    conn.close()
+
+    from Tooling.quality import review as _review
+
+    def fake_store(conn, ws, problem):  # noqa: ANN001
+        db.set_review_snapshot(conn, problem, json.dumps(
+            {"deliverables": [], "union_count": 0}))
+        conn.commit()
+        return True
+
+    monkeypatch.setattr(_review, "store_review_snapshot", fake_store)
+    c = _client(workspace)
+    assert c.get("/api/problems/p/review").status_code == 404
+    r = c.post("/api/problems/p/review/refresh")
+    assert r.json()["state"] == "running"
+    for _ in range(50):
+        state = c.get("/api/problems/p/review/refresh").json()["state"]
+        if state != "running":
+            break
+        import time as _t
+        _t.sleep(0.1)
+    assert state == "done"
+    assert c.get("/api/problems/p/review").status_code == 200
+
+
 def test_paper_section_page_anchor(workspace: Path) -> None:
     pdir = workspace / "Papers" / "abc123"
     pdir.mkdir(parents=True)

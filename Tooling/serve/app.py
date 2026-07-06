@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -156,6 +157,47 @@ def create_app(workspace: Path) -> FastAPI:
                 detail="no review snapshot stored (problem not yet at "
                        "Ingest, or pre-v22 data); use refresh to compute")
         return d
+
+    # review refresh — the ONE path that may touch the gateway (charter
+    # §4): an explicit async job, never a GET side effect. One job per
+    # problem at a time; state is poll-able.
+    refresh_jobs: dict[str, dict] = {}
+    refresh_lock = threading.Lock()
+
+    @app.post("/api/problems/{problem}/review/refresh")
+    def review_refresh(problem: str) -> dict:
+        if not (workspace / "asterism.db").exists():
+            raise HTTPException(status_code=404, detail="NO_DATABASE")
+        with refresh_lock:
+            job = refresh_jobs.get(problem)
+            if job and job.get("state") == "running":
+                return job
+            refresh_jobs[problem] = {"state": "running",
+                                     "started_at": db.now()}
+
+        def work() -> None:
+            from ..quality import review as _review
+            try:
+                conn = db.connect(workspace / "asterism.db")
+                try:
+                    ok = _review.store_review_snapshot(
+                        conn, workspace, problem)
+                finally:
+                    conn.close()
+                refresh_jobs[problem] = {
+                    "state": "done" if ok else "failed",
+                    "finished_at": db.now()}
+            except Exception as e:  # noqa: BLE001 — job state, not a crash
+                refresh_jobs[problem] = {
+                    "state": "failed", "error": str(e),
+                    "finished_at": db.now()}
+
+        threading.Thread(target=work, daemon=True).start()
+        return refresh_jobs[problem]
+
+    @app.get("/api/problems/{problem}/review/refresh")
+    def review_refresh_state(problem: str) -> dict:
+        return refresh_jobs.get(problem, {"state": "none"})
 
     @app.get("/api/inbox")
     def inbox() -> dict:

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { usePoll } from '../lib/api'
+import { apiGet, apiPost, usePoll } from '../lib/api'
 import { SectionLabel } from './ui'
 import type { ReviewDeliverable, ReviewResponse } from '../lib/types'
 import { relTime } from '../lib/format'
@@ -103,24 +103,59 @@ function Deliverable({ d }: { d: ReviewDeliverable }) {
   )
 }
 
+function RefreshButton({ problem, onDone }: { problem: string; onDone: () => void }) {
+  const [state, setState] = useState<'idle' | 'running' | 'failed'>('idle')
+  const start = async () => {
+    setState('running')
+    try {
+      await apiPost(`/api/problems/${encodeURIComponent(problem)}/review/refresh`)
+      const poll = async (): Promise<void> => {
+        const j = await apiGet<{ state: string }>(
+          `/api/problems/${encodeURIComponent(problem)}/review/refresh`,
+        )
+        if (j.state === 'running') {
+          await new Promise((r) => setTimeout(r, 2000))
+          return poll()
+        }
+        setState(j.state === 'done' ? 'idle' : 'failed')
+        if (j.state === 'done') onDone()
+      }
+      await poll()
+    } catch {
+      setState('failed')
+    }
+  }
+  return (
+    <button
+      className="rounded border border-edge px-1.5 py-0.5 text-[11px] text-ink-dim hover:text-ink disabled:opacity-50"
+      disabled={state === 'running'}
+      onClick={() => void start()}
+      title="Recompute the closure live (warms the Lean gateway — slow)"
+    >
+      {state === 'running' ? 'recomputing…' : state === 'failed' ? 'recompute (failed — retry)' : 'recompute'}
+    </button>
+  )
+}
+
 export default function ReviewTree({ problem }: { problem: string }) {
-  const { data, error, loading } = usePoll<ReviewResponse>(
+  const { data, error, loading, refresh } = usePoll<ReviewResponse>(
     `/api/problems/${encodeURIComponent(problem)}/review`,
     30000,
   )
   if (loading) return <div className="text-xs text-ink-faint">Loading review…</div>
   if (error && !data)
     return (
-      <div className="text-xs text-warn">
-        No stored review snapshot ({error.message}) — run <code>asterism review {problem}</code>{' '}
-        in a terminal for a live closure.
+      <div className="flex items-center gap-2 text-xs text-warn">
+        No stored review snapshot — recompute it live:
+        <RefreshButton problem={problem} onDone={refresh} />
       </div>
     )
   if (!data) return null
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="text-[11px] text-ink-faint">
+      <div className="flex items-center gap-2 text-[11px] text-ink-faint">
         snapshot {relTime(data.stored_at)} · {data.union_count} distinct anchor names
+        <RefreshButton problem={problem} onDone={refresh} />
       </div>
       {data.deliverables.map((d) => (
         <Deliverable key={d.fq} d={d} />
