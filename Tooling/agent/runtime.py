@@ -165,7 +165,9 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
             )
     if timeout_sec_override is not None:
         timeout_sec = timeout_sec_override
-    return llm.get_provider(kind=kind).spawn(llm.LLMRequest(
+    import time as _time
+    _t0 = _time.monotonic()
+    rc = llm.get_provider(kind=kind).spawn(llm.LLMRequest(
         kind=kind,
         prompt_path=prompt_path,
         problem_dir=problem_dir,
@@ -180,6 +182,58 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
         mcp_config_path=mcp_config_path,
         inline_prompt=inline_prompt,
     ))
+    _record_spawn_usage(kind=kind, attempts_dir=attempts_dir,
+                        problem_dir=problem_dir,
+                        wall_sec=_time.monotonic() - _t0)
+    return rc
+
+
+def _record_spawn_usage(*, kind: str, attempts_dir: Path,
+                        problem_dir: Path, wall_sec: float) -> None:
+    """Persist the spawn's token/turn accounting into `spawn_usage`
+    (frontend charter §5-2). Source = the provider's
+    `_parser_state.json` usage block (claude provider writes it; other
+    providers simply have no file → no row). Best-effort throughout:
+    telemetry must never fail a spawn. Own short-lived WAL connection —
+    spawn_llm has no caller conn, and a per-spawn single INSERT is
+    negligible contention."""
+    import json as _json
+    try:
+        raw = (attempts_dir / "_parser_state.json").read_text(
+            encoding="utf-8")
+        usage = (_json.loads(raw).get("usage") or {})
+        if not (usage.get("turns") or usage.get("output_tokens")):
+            return
+        # attempts_dir = <workspace>/.attempts/<pipeline_id>;
+        # problem name = problem_dir relative to <workspace>/Problems
+        # with / → . (matches db.problem_dir's inverse).
+        workspace = attempts_dir.parent.parent
+        try:
+            rel = problem_dir.resolve().relative_to(
+                (workspace / "Problems").resolve())
+            problem = ".".join(rel.parts)
+        except ValueError:
+            problem = problem_dir.name
+        from ..state import db as _db
+        conn = _db.connect(workspace / "asterism.db")
+        try:
+            conn.execute(
+                "INSERT INTO spawn_usage (pipeline_id, kind, problem,"
+                " input_tokens, output_tokens, cache_read_tokens,"
+                " cache_new_tokens, turns, wall_sec, ts)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (attempts_dir.name, kind, problem,
+                 int(usage.get("input_tokens") or 0),
+                 int(usage.get("output_tokens") or 0),
+                 int(usage.get("cache_read_input_tokens") or 0),
+                 int(usage.get("cache_creation_input_tokens") or 0),
+                 int(usage.get("turns") or 0),
+                 float(wall_sec), _db.now()))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — telemetry never fails a spawn
+        pass
 
 
 def new_pipeline_id() -> str:

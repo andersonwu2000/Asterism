@@ -218,7 +218,9 @@ _WATERMARKS = {
     # 4010→4090 (2026-07-05): v20 'instance' + `_widen_goals_kind_check`
     # (the v19 rebuild generalized for future kind additions) — conscious
     # bump.
-    "Tooling/state/db.py": 4090,
+    # 4090→4130 (2026-07-06): v21 spawn_usage (frontend charter §5-2) —
+    # conscious bump. db.py split stays a #11 順勢項 (next schema rework).
+    "Tooling/state/db.py": 4130,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

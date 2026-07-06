@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 20
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 21
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -366,7 +366,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 20
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 21
     conn.close()
 
 
@@ -468,7 +468,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 20
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 21
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -609,3 +609,52 @@ def test_connect_auto_migrates_stale_populated_db(tmp_path):
     cols = {r[1] for r in c1.execute("PRAGMA table_info(library_decls)")}
     assert "reopen_note" in cols             # phase-9 column present after migrate
     c1.close()
+
+
+def test_v21_creates_spawn_usage_table(tmp_path, monkeypatch):
+    """v21 (frontend charter 5-2): per-spawn token accounting table. Fresh
+    init gets it via the migration chain; columns match the writer."""
+    monkeypatch.chdir(tmp_path)
+    conn = db.connect()
+    db.init_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(spawn_usage)")}
+    assert {"pipeline_id", "kind", "problem", "input_tokens",
+            "output_tokens", "cache_read_tokens", "cache_new_tokens",
+            "turns", "wall_sec", "ts"} <= cols
+    conn.close()
+
+
+def test_record_spawn_usage_roundtrip(tmp_path):
+    """agent._record_spawn_usage reads the provider parser-state usage
+    block and lands one row; no parser state / empty usage = no row and
+    no error (telemetry never fails a spawn)."""
+    import json
+    from Tooling.agent import runtime as rt
+    ws = tmp_path
+    conn = db.connect(ws / "asterism.db")
+    db.init_schema(conn)
+    conn.close()
+    attempts = ws / ".attempts" / "pid-usage-1"
+    attempts.mkdir(parents=True)
+    pdir = ws / "Problems" / "Logic" / "toy"
+    pdir.mkdir(parents=True)
+    # no parser state -> no row, no crash
+    rt._record_spawn_usage(kind="builder", attempts_dir=attempts,
+                           problem_dir=pdir, wall_sec=1.0)
+    (attempts / "_parser_state.json").write_text(json.dumps({
+        "usage": {"input_tokens": 10, "output_tokens": 200,
+                  "cache_read_input_tokens": 3000,
+                  "cache_creation_input_tokens": 400, "turns": 5}}),
+        encoding="utf-8")
+    rt._record_spawn_usage(kind="builder", attempts_dir=attempts,
+                           problem_dir=pdir, wall_sec=12.5)
+    conn = db.connect(ws / "asterism.db")
+    rows = conn.execute("SELECT * FROM spawn_usage").fetchall()
+    conn.close()
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["pipeline_id"] == "pid-usage-1"
+    assert r["kind"] == "builder"
+    assert r["problem"] == "Logic.toy"          # dotted, not the leaf
+    assert r["output_tokens"] == 200 and r["turns"] == 5
+    assert r["wall_sec"] == 12.5

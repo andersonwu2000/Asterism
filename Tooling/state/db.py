@@ -579,7 +579,26 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 20
+_CURRENT_USER_VERSION = 21
+
+# v21 (frontend charter §5-2) — per-spawn token/turn accounting. Created
+# in the migration chain (fresh DBs start at user_version 0 and run the
+# whole chain, so SCHEMA does not duplicate it).
+_SPAWN_USAGE_DDL = """
+CREATE TABLE IF NOT EXISTS spawn_usage (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    pipeline_id   TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    problem       TEXT,
+    input_tokens  INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_new_tokens  INTEGER NOT NULL DEFAULT 0,
+    turns         INTEGER NOT NULL DEFAULT 0,
+    wall_sec      REAL,
+    ts            TEXT NOT NULL
+)
+"""
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -1012,6 +1031,18 @@ def init_schema(conn: sqlite3.Connection) -> None:
         _widen_goals_kind_check(conn, ("theorem", "def", "structure",
                                        "class", "inductive", "instance"))
         conn.execute("PRAGMA user_version = 20")
+        conn.commit()
+    if v < 21:
+        # v21 — spawn_usage: per-spawn token/turn accounting lands in the
+        # DB (frontend charter §5-2). Historically the numbers lived only
+        # in `[usage]` log lines + dead_attempts.artifacts (failed spawns
+        # only), so successful spawns had no queryable spend and every
+        # cost analysis was log archaeology.
+        conn.execute(_SPAWN_USAGE_DDL)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_spawn_usage_problem"
+            " ON spawn_usage(problem, ts)")
+        conn.execute("PRAGMA user_version = 21")
         conn.commit()
 
 
