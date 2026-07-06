@@ -390,6 +390,12 @@ export default function Board() {
             )}
           </span>
         </div>
+        <Link
+          to="/new"
+          className="rounded-md border border-edge px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-edge-strong hover:text-ink"
+        >
+          New problem
+        </Link>
       </div>
       {error && (
         <div className="mb-3 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">

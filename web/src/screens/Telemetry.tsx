@@ -8,7 +8,13 @@ import type { DaemonStatus, UsageProblem } from '../lib/types'
 
 function DaemonPanel() {
   const { data: d, refresh } = usePoll<DaemonStatus>('/api/daemon', 2000)
-  const [scope, setScope] = useState('')
+  // problem creation leaves a one-shot scope suggestion so "start the
+  // engine on my new problem" is a single click
+  const [scope, setScope] = useState(() => {
+    const suggest = localStorage.getItem('engine_scope_suggest') ?? ''
+    localStorage.removeItem('engine_scope_suggest')
+    return suggest
+  })
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
 
@@ -32,15 +38,15 @@ function DaemonPanel() {
         <span className="flex items-center gap-2.5">
           <span
             className={`h-2.5 w-2.5 rounded-full ${
-              d?.stopping ? 'bg-warn' : d?.running ? 'bg-ok animate-pulse' : 'bg-ink-faint'
+              d?.running ? (d.stopping ? 'bg-warn' : 'bg-ok animate-pulse') : 'bg-ink-faint'
             }`}
           />
           <span className="font-display text-[22px] font-medium text-ink">
-            {d?.stopping ? 'Stopping' : d?.running ? 'Running' : 'Idle'}
+            {d?.running ? (d.stopping ? 'Stopping' : 'Running') : 'Idle'}
           </span>
         </span>
         <span className="text-xs text-ink-faint">
-          {d?.stopping
+          {d?.running && d.stopping
             ? `pid ${d.pid} — draining ${d.in_flight_leases} in-flight lease${d.in_flight_leases === 1 ? '' : 's'}; if this hangs on a stale lease, Force stop is safe`
             : d?.running
               ? `pid ${d.pid}${d.in_flight_leases > 0 ? ` · ${d.in_flight_leases} in flight` : ''}`

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { usePoll } from '../lib/api'
-import { Link } from '../lib/router'
+import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { ErrorState, StatusBadge } from '../components/ui'
 import Constellation from '../components/Constellation'
@@ -254,7 +254,20 @@ export default function Problem({ name }: { name: string }) {
 
       <div className="flex min-h-0 flex-1">
         <div className="min-w-0 flex-1 overflow-y-auto">
-          {tab === 'stars' && (
+          {tab === 'stars' && data.goals.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-ink-faint">
+              <div>No goals yet — the Strategist bootstraps from the Manifest once the engine runs.</div>
+              <button
+                className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
+                onClick={() => {
+                  localStorage.setItem('engine_scope_suggest', data.name)
+                  navigate('/telemetry')
+                }}
+              >
+                Start the engine on this problem
+              </button>
+            </div>
+          ) : tab === 'stars' && (
             <div className="h-full">
               <Constellation
                 goals={data.goals}

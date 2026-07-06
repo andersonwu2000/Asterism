@@ -589,3 +589,88 @@ def test_daemon_status_endpoint(workspace: Path) -> None:
     body = r.json()
     assert body["running"] is False
     assert body["stopping"] is False
+
+
+# ---------------------------------------------------------------------
+# problem authoring (POST /api/problems/create)
+# ---------------------------------------------------------------------
+
+_MANIFEST = """---
+problem: Test.ui_created
+axioms_whitelist:
+  - propext
+forbidden_lemmas: []
+library: true
+---
+
+# Test.ui_created — a UI-authored problem
+
+## Statement
+
+Prove something small.
+"""
+
+
+def test_create_problem_pure_nl(workspace: Path) -> None:
+    c = _client(workspace)
+    r = c.post("/api/problems/create",
+               json={"name": "Test.ui_created", "manifest": _MANIFEST})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["problem"] == "Test.ui_created"
+    assert "pure-NL" in body["message"]
+    pdir = workspace / "Problems" / "Test" / "ui_created"
+    assert (pdir / "Manifest.md").read_text(encoding="utf-8") == _MANIFEST
+    assert (pdir / "proofs").is_dir()
+    conn = db.connect(workspace / "asterism.db")
+    row = conn.execute("SELECT manifest_path FROM problems WHERE name = ?",
+                       ("Test.ui_created",)).fetchone()
+    conn.close()
+    assert row is not None
+    assert row["manifest_path"] == "Problems/Test/ui_created/Manifest.md"
+    # visible on the board immediately
+    names = [p["name"] for p in c.get("/api/problems").json()["problems"]]
+    assert "Test.ui_created" in names
+
+
+def test_create_problem_duplicate_409(workspace: Path) -> None:
+    c = _client(workspace)
+    assert c.post("/api/problems/create",
+                  json={"name": "Test.dup", "manifest": _MANIFEST
+                        }).status_code == 200
+    r = c.post("/api/problems/create",
+               json={"name": "Test.dup", "manifest": _MANIFEST})
+    assert r.status_code == 409
+    assert "already exists" in r.json()["detail"]
+
+
+def test_create_problem_bad_name_422(workspace: Path) -> None:
+    c = _client(workspace)
+    for bad in ("", "1starts_with_digit", "has space", "trailing.", "a..b",
+                "semi;colon"):
+        r = c.post("/api/problems/create",
+                   json={"name": bad, "manifest": _MANIFEST})
+        assert r.status_code == 422, bad
+    assert not (workspace / "Problems" / "has space").exists()
+
+
+def test_create_problem_empty_manifest_422(workspace: Path) -> None:
+    r = _client(workspace).post(
+        "/api/problems/create",
+        json={"name": "Test.empty", "manifest": "   \n"})
+    assert r.status_code == 422
+    assert not (workspace / "Problems" / "Test" / "empty").exists()
+
+
+def test_create_problem_init_failure_rolls_back(
+        workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from Tooling.core import cli as _cli
+    monkeypatch.setattr(_cli, "init_problem",
+                        lambda ws, name, **kw: (1, "FAIL: stubbed"))
+    r = _client(workspace).post(
+        "/api/problems/create",
+        json={"name": "Test.rollback", "manifest": _MANIFEST})
+    assert r.status_code == 422
+    assert "stubbed" in r.json()["detail"]
+    # the created directory is rolled back so a retry can succeed
+    assert not (workspace / "Problems" / "Test" / "rollback").exists()

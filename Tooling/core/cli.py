@@ -185,15 +185,30 @@ def _classify_root_body(text: str) -> str:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    workspace = Path.cwd()
-    problem = args.problem
+    rc, msg = init_problem(
+        Path.cwd(), args.problem, force=bool(getattr(args, "force", False)))
+    print(msg, file=sys.stdout if rc == 0 else sys.stderr)
+    return rc
+
+
+def init_problem(workspace: Path, problem: str, *,
+                 force: bool = False) -> tuple[int, str]:
+    """Validate + register a problem (chokepoint shared by CLI + serve).
+
+    Expects `Problems/<problem>/Manifest.md` to exist (Defs.lean /
+    Root.lean optional — see the Phase 6 comment below). Returns
+    (0, ok-message) or (1, failure-message); never prints.
+    """
+    msgs: list[str] = []
     pdir = db.problem_dir(workspace, problem)
     mfst_path = pdir / "Manifest.md"
     if not mfst_path.exists():
-        print(f"FAIL: {mfst_path} not found", file=sys.stderr)
-        return 1
+        return 1, f"FAIL: {mfst_path} not found"
 
-    mfst = manifest.parse(mfst_path)  # Statement section now optional
+    try:
+        mfst = manifest.parse(mfst_path)  # Statement section now optional
+    except Exception as e:  # noqa: BLE001 — malformed authoring input
+        return 1, f"FAIL: Manifest.md did not parse: {e}"
 
     # Phase 6 — Root.lean and Defs.lean are OPTIONAL, user-pinned inputs:
     #   Root present  = must-prove-this-exact-statement-to-exit (a HARD,
@@ -216,17 +231,13 @@ def cmd_init(args: argparse.Namespace) -> int:
     # framework wires up the problem in the DB. --force bypasses the
     # gate for transitional situations only (e.g. operator knows the
     # error is in an unrelated downstream module).
-    if not args.force:
+    if not force:
         from ..pipeline._lake import lake_build
         for path in present:
-            ok, msg = lake_build(workspace, path)
+            ok, bmsg = lake_build(workspace, path)
             if not ok:
                 rel = path.relative_to(workspace).as_posix()
-                print(
-                    f"FAIL: {rel} did not type-check.\n{msg}",
-                    file=sys.stderr,
-                )
-                return 1
+                return 1, f"FAIL: {rel} did not type-check.\n{bmsg}"
 
     statement: str | None = None
     if root_lean.exists():
@@ -234,15 +245,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         statement = _extract_root_statement(
             root_lean.read_text(encoding="utf-8"))
         if statement is None:
-            print(
+            return 1, (
                 f"FAIL: could not parse `theorem main : <stmt> := by sorry`\n"
                 f"  from {root_lean.relative_to(workspace).as_posix()}.\n"
                 f"  Use the canonical shape so init can extract the "
                 f"statement\n"
-                f"  for the goals.statement DB column.",
-                file=sys.stderr,
-            )
-            return 1
+                f"  for the goals.statement DB column.")
 
         # Statement-hygiene gate: the root statement must not hard-code its
         # own `Problems.<problem>.` namespace prefix. The theorem already
@@ -259,7 +267,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         # Library citation, not a raw Problems reference.)
         self_prefix = f"Problems.{problem}."
         if self_prefix in statement:
-            print(
+            return 1, (
                 f"FAIL: root statement hard-codes its own namespace "
                 f"`{self_prefix}`.\n"
                 f"  Drop the prefix and use the bare name — the theorem is "
@@ -268,15 +276,12 @@ def cmd_init(args: argparse.Namespace) -> int:
                 f"Problems.{problem}.Defs`,\n"
                 f"  so e.g. `{self_prefix}Foo` should be written `Foo`.\n"
                 f"  (Keeps the statement Library-portable for the "
-                f"Librarian's re-derivation gate.)",
-                file=sys.stderr,
-            )
-            return 1
+                f"Librarian's re-derivation gate.)")
 
     proofs_dir = pdir / "proofs"
     proofs_dir.mkdir(parents=True, exist_ok=True)
 
-    conn = db.connect()
+    conn = db.connect(workspace / "asterism.db")
     db.init_schema(conn)
 
     existing = conn.execute(
@@ -292,8 +297,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         # Pure-NL: no root goal row. The problem starts with zero goals —
         # structurally stalled — so the T4 stall wake bootstraps the
         # Strategist's first Inject from the Manifest alone.
-        print(f"OK: init {problem} (pure-NL — no Root.lean; the Strategist "
-              f"bootstraps from the Manifest)")
+        msgs.append(
+            f"OK: init {problem} (pure-NL — no Root.lean; the Strategist "
+            f"bootstraps from the Manifest)")
     else:
         existing_goal = conn.execute(
             "SELECT id FROM goals WHERE problem = ? AND slug = 'main'",
@@ -311,10 +317,10 @@ def cmd_init(args: argparse.Namespace) -> int:
                 origin="root", depth=0, entry_kind="Backward",
                 status="frozen",
             )
-            print(f"OK: init {problem}, root goal id={gid}")
+            msgs.append(f"OK: init {problem}, root goal id={gid}")
         else:
-            print(f"OK: {problem} already initialized "
-                  f"(goal id={existing_goal['id']})")
+            msgs.append(f"OK: {problem} already initialized "
+                        f"(goal id={existing_goal['id']})")
     conn.commit()
     # Initial TREE.md so readers see structure right after init.
     tree.write(conn, workspace, problem)
@@ -325,7 +331,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # No LESSONS.md seed: Phase 12 Model B made the KB the lessons SoT —
     # reflection writes `kb_entries`, Context reads `kb.query`; the old flat
     # LESSONS.md mirror (and its Edit-anchor seed) is retired.
-    return 0
+    return 0, "\n".join(msgs)
 
 
 def _hard_exit_after_fatal(rc: int) -> None:

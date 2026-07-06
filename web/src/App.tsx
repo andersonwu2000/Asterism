@@ -4,6 +4,7 @@ import { usePoll } from './lib/api'
 import Board from './screens/Board'
 import Inbox from './screens/Inbox'
 import Library from './screens/Library'
+import New from './screens/New'
 import Problem from './screens/Problem'
 import Telemetry from './screens/Telemetry'
 import type { Meta } from './lib/types'
@@ -11,8 +12,9 @@ import type { Meta } from './lib/types'
 function DaemonChip({ meta }: { meta: Meta | null }) {
   if (!meta) return <span className="px-2.5 text-xs text-ink-faint">engine…</span>
   const d = meta.daemon
-  const label = d.stopping ? 'stopping' : d.running ? 'running' : 'idle'
-  const dot = d.stopping ? 'bg-warn' : d.running ? 'bg-ok animate-pulse' : 'bg-ink-faint'
+  // a stop marker with no live process is idle, not stopping-forever
+  const label = d.running ? (d.stopping ? 'stopping' : 'running') : 'idle'
+  const dot = d.running ? (d.stopping ? 'bg-warn' : 'bg-ok animate-pulse') : 'bg-ink-faint'
   return (
     <Link
       to="/telemetry"
@@ -176,7 +178,9 @@ function Shell() {
         {/* no top chrome — the sidebar carries "where am I", each screen
             carries its own title, the constellation gets the sky */}
         <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-          {section === 'inbox' ? (
+          {section === 'new' ? (
+            <New />
+          ) : section === 'inbox' ? (
             <Inbox />
           ) : section === 'library' ? (
             <Library />

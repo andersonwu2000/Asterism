@@ -91,3 +91,10 @@ test('api meta reachable and shaped', async ({ request }) => {
   expect(body).toHaveProperty('daemon')
   expect(['ok', 'missing', 'behind', 'unavailable']).toContain(body.db)
 })
+
+test('new-problem form renders (read-only: no submit)', async ({ page }) => {
+  await page.goto('/#/new')
+  await expect(page.getByRole('heading', { name: 'New problem' })).toBeVisible()
+  await expect(page.getByPlaceholder('Namespace.leaf_name')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Create problem' })).toBeDisabled()
+})

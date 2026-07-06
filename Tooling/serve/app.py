@@ -77,6 +77,13 @@ class RejectDeclBody(BaseModel):
     reason: str | None = None
 
 
+class ProblemCreateBody(BaseModel):
+    name: str
+    manifest: str
+    defs: str | None = None
+    root: str | None = None
+
+
 class DaemonStartBody(BaseModel):
     scope: str | None = None
     once: bool = False
@@ -300,6 +307,57 @@ def create_app(workspace: Path) -> FastAPI:
                 status_code=409,
                 detail=f"reject failed for {body.decl!r} (see server log)")
         return {"problem": problem, "decl": body.decl, "action": "reject"}
+
+    @app.post("/api/problems/create")
+    def create_problem_ep(body: ProblemCreateBody) -> dict:
+        """Author a new problem from the UI: write Manifest.md
+        (+ optional Defs.lean / Root.lean), then run the same init
+        chokepoint the CLI uses. Pure-NL creation is instant; a
+        Defs/Root submission type-checks first (lake build — minutes).
+        On init failure the created directory is rolled back so the
+        form can be corrected and resubmitted."""
+        import re as _re
+        import shutil as _shutil
+        from ..core.cli import init_problem
+        name = body.name.strip()
+        if not _re.fullmatch(
+                r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*", name)                 or len(name) > 120:
+            raise HTTPException(
+                status_code=422,
+                detail="problem name must be dot-separated identifiers, "
+                       "e.g. Topology.my_theorem")
+        if not body.manifest.strip():
+            raise HTTPException(status_code=422,
+                                detail="Manifest must not be empty")
+        pdir = db.problem_dir(workspace, name)
+        if pdir.exists():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Problems/{'/'.join(name.split('.'))} already exists")
+        created = False
+        try:
+            pdir.mkdir(parents=True)
+            created = True
+            (pdir / "Manifest.md").write_text(
+                body.manifest, encoding="utf-8", newline="\n")
+            if body.defs and body.defs.strip():
+                (pdir / "Defs.lean").write_text(
+                    body.defs, encoding="utf-8", newline="\n")
+            if body.root and body.root.strip():
+                (pdir / "Root.lean").write_text(
+                    body.root, encoding="utf-8", newline="\n")
+            rc, msg = init_problem(workspace, name)
+            if rc != 0:
+                _shutil.rmtree(pdir, ignore_errors=True)
+                raise HTTPException(status_code=422, detail=msg)
+            return {"problem": name, "message": msg}
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001 — surface, don't 500-blank
+            if created:
+                _shutil.rmtree(pdir, ignore_errors=True)
+            raise HTTPException(status_code=500,
+                                detail=f"create failed: {e}")
 
     # -- daemon control --------------------------------------------------
 
