@@ -24,7 +24,10 @@ FETCH_HOST_WHITELIST = frozenset({
 MAX_FETCH_BYTES = 50 * 1024 * 1024
 MAX_SCHOLAR_FETCHES_PER_PROBLEM = 5
 
-_ARXIV_ID_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
+# New-style (2007+) `2605.23679` and old-style `math/0601146` /
+# `math.GT/0601146` arXiv ids both resolve to arxiv.org/pdf/<id>.
+_ARXIV_ID_RE = re.compile(
+    r"^(\d{4}\.\d{4,5}|[a-z-]+(\.[A-Z]{2})?/\d{7})(v\d+)?$")
 
 
 def _resolve_url(target: str) -> str:

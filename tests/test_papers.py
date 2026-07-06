@@ -267,6 +267,17 @@ def _mk_pdf_bytes() -> bytes:
     return data
 
 
+def test_arxiv_id_resolution_old_and_new_style() -> None:
+    from Tooling.papers.fetch import _resolve_url
+    assert _resolve_url("2605.23679") == "https://arxiv.org/pdf/2605.23679"
+    assert _resolve_url("math/0601146") \
+        == "https://arxiv.org/pdf/math/0601146"
+    assert _resolve_url("math.GT/0601146v2") \
+        == "https://arxiv.org/pdf/math.GT/0601146v2"
+    # A non-id passes through untouched (URL path).
+    assert _resolve_url("https://arxiv.org/pdf/x").endswith("/pdf/x")
+
+
 def test_fetch_refuses_non_whitelisted_host(tmp_path: Path) -> None:
     from Tooling.papers import fetch
     with pytest.raises(ValueError, match="not fetch-whitelisted"):
