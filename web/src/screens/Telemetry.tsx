@@ -41,10 +41,18 @@ function DaemonPanel() {
               ? `running (pid ${d.pid})`
               : 'not running'}
         </span>
-        {d && d.in_flight_leases > 0 && (
-          <span className="text-xs text-ink-dim">{d.in_flight_leases} in-flight lease(s)</span>
+        {d && d.running && d.in_flight_leases > 0 && (
+          <span className="tnum text-xs text-ink-dim">
+            {d.in_flight_leases} in-flight lease(s)
+          </span>
         )}
       </div>
+      {d && !d.running && d.in_flight_leases > 0 && (
+        <div className="mb-3 rounded-md border border-warn/40 bg-warn/10 px-3 py-1.5 text-xs text-warn">
+          {d.in_flight_leases} orphaned work lease(s) from a previous run — reclaimed
+          automatically on the next daemon start.
+        </div>
+      )}
       <div className="flex items-center gap-2">
         {!d?.running ? (
           <>
@@ -107,6 +115,15 @@ function LogTail() {
     if (el && stickBottom.current) el.scrollTop = el.scrollHeight
   }, [lines])
 
+  // Empty panels collapse to one line — a 260px empty box conveys one
+  // sentence (design review).
+  if (lines.length === 0) {
+    return (
+      <div className="rounded-lg border border-edge bg-surface px-3 py-2 text-xs text-ink-faint">
+        No log output — the tail follows the current daemon run and picks up when one starts.
+      </div>
+    )
+  }
   return (
     <div
       ref={boxRef}
@@ -116,15 +133,9 @@ function LogTail() {
         stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30
       }}
     >
-      {lines.length === 0 ? (
-        <div className="text-xs text-ink-faint">
-          No log output — the tail follows the current daemon run and picks up when one starts.
-        </div>
-      ) : (
-        <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
-          {lines.join('\n')}
-        </pre>
-      )}
+      <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
+        {lines.join('\n')}
+      </pre>
     </div>
   )
 }
@@ -215,7 +226,13 @@ function LibraryBrowser() {
           <div className="px-4 py-2">
             {p.decls.map((d) => (
               <div key={d.slug} className="flex items-baseline gap-3 py-0.5">
-                <span className="shrink-0 font-mono text-xs text-ink">{d.name ?? d.slug}</span>
+                {/* leaf name only — the group header already carries the namespace */}
+                <span
+                  className="shrink-0 font-mono text-xs text-ink"
+                  title={d.name ?? d.slug}
+                >
+                  {(d.name ?? d.slug).split('.').pop()}
+                </span>
                 {d.signature && (
                   <span className="truncate font-mono text-[11px] text-ink-faint">
                     {d.signature}

@@ -228,11 +228,40 @@ export default function Board() {
         )}
       </div>
       {view === 'galaxy' ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-          {sorted.map((p) => (
-            <GalaxyCard key={p.name} p={p} />
-          ))}
-        </div>
+        (() => {
+          // Dormant problems (idle, zero progress) demote to a compact
+          // strip — a wall of dark stub cards drowned the live sky.
+          const active = sorted.filter((p) => p.status !== 'idle')
+          const dormant = sorted.filter((p) => p.status === 'idle')
+          return (
+            <>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+                {active.map((p) => (
+                  <GalaxyCard key={p.name} p={p} />
+                ))}
+              </div>
+              {dormant.length > 0 && (
+                <div className="mt-6">
+                  <div className="mb-2 text-xs font-medium tracking-widest text-ink-faint uppercase">
+                    not started ({dormant.length})
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {dormant.map((p) => (
+                      <button
+                        key={p.name}
+                        className="rounded-md border border-edge px-2 py-1 font-mono text-[11px] text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
+                        onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}
+                        title={p.name}
+                      >
+                        {p.name.length > 30 ? `…${p.name.slice(-29)}` : p.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )
+        })()
       ) : (
         <table className="w-full border-collapse text-left">
           <thead className="sticky top-0 z-10 bg-bg">
