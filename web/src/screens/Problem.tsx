@@ -161,6 +161,42 @@ export default function Problem({ name }: { name: string }) {
             </div>
           </div>
         </div>
+        {(() => {
+          // health line for live problems: when did the engine last make
+          // progress, and where is it burning attempts (client-side from
+          // data already on hand — the "is it stuck?" answer)
+          const live =
+            data.status === 'proving' ||
+            data.status === 'awaiting_human' ||
+            data.status === 'stalled' ||
+            data.goals.some((g) => g.status === 'open' || g.status === 'attempting')
+          if (!live) return null
+          const OK = new Set(['success', 'accepted', 'live_subgoal', 'closed_subgoal'])
+          const lastOk = data.decisions.find((d) => d.outcome !== null && OK.has(d.outcome))
+          const blocker = [...data.goals]
+            .filter((g) => g.status !== 'proved' && g.dead_attempts > 0)
+            .sort((a, b) => b.dead_attempts - a.dead_attempts)[0]
+          if (!lastOk && !blocker) return null
+          const staleDays = lastOk
+            ? Math.floor((Date.now() - Date.parse(lastOk.created_at)) / 86400_000)
+            : null
+          return (
+            <div className="mt-1.5 text-xs">
+              {lastOk && (
+                <span className={staleDays !== null && staleDays >= 3 ? 'text-warn' : 'text-ink-faint'}>
+                  last progress {relTime(lastOk.created_at)}
+                </span>
+              )}
+              {blocker && (
+                <span className="text-ink-faint">
+                  {lastOk && ' · '}top blocker{' '}
+                  <span className="font-mono text-ink-dim">{blocker.slug}</span> (
+                  {blocker.dead_attempts} failed attempt{blocker.dead_attempts === 1 ? '' : 's'})
+                </span>
+              )}
+            </div>
+          )
+        })()}
         {data.strategist_directive && (
           <button
             className="mt-2 block w-full max-w-4xl text-left"

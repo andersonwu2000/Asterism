@@ -23,13 +23,22 @@ interface Props {
   shelveThreshold?: number
 }
 
+/** Residual struggle heat: a proved star that burned failed attempts
+ * keeps a warm cast — "where the machine fought" stays on the map for
+ * the reviewer hunting fragile spots. */
+function provedFill(dead: number): string {
+  if (dead <= 0) return 'var(--color-starlight)'
+  const warm = dead <= 2 ? 18 : dead <= 5 ? 34 : 50
+  return `color-mix(in srgb, var(--color-starlight) ${100 - warm}%, var(--color-warn))`
+}
+
 /** status → { fill, stroke, glow } for the star dot */
 function nodeStyle(g: Goal): { fill: string; stroke: string; glow: boolean; opacity: number } {
   switch (g.status) {
     case 'proved':
       return {
-        fill: 'var(--color-starlight)',
-        stroke: 'var(--color-starlight)',
+        fill: provedFill(g.dead_attempts),
+        stroke: provedFill(g.dead_attempts),
         glow: true,
         opacity: 1,
       }

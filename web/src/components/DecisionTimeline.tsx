@@ -101,20 +101,53 @@ const DAY_FMT = new Intl.DateTimeFormat(undefined, {
 })
 
 export default function DecisionTimeline({ decisions }: { decisions: Decision[] }) {
+  const [filter, setFilter] = useState<string | null>(null)
   if (decisions.length === 0) {
     return <div className="px-4 py-8 text-center text-xs text-ink-faint">No decisions yet.</div>
   }
   const dayOf = (iso: string) => DAY_FMT.format(new Date(iso))
+  const isFailure = (d: Decision) => d.outcome !== null && !OK_OUTCOMES.has(d.outcome)
+  const kinds = [...new Set(decisions.map((d) => d.decision_kind))].sort()
+  const filtered =
+    filter === null
+      ? decisions
+      : filter === '__failures'
+        ? decisions.filter(isFailure)
+        : decisions.filter((d) => d.decision_kind === filter)
+  const chip = (key: string | null, label: string, count: number) => (
+    <button
+      key={key ?? 'all'}
+      className={`rounded-full border px-2 py-0.5 text-[11px] ${
+        filter === key
+          ? 'border-accent/60 bg-accent/10 text-accent'
+          : 'border-edge text-ink-faint hover:text-ink'
+      }`}
+      onClick={() => setFilter(filter === key ? null : key)}
+    >
+      {label} {count}
+    </button>
+  )
   return (
     <div className="flex flex-col">
-      {decisions.map((d, i) => {
-        const newDay = i === 0 || dayOf(decisions[i - 1].created_at) !== dayOf(d.created_at)
+      <div className="mb-2 flex flex-wrap gap-1.5 px-2">
+        {chip(null, 'all', decisions.length)}
+        {kinds.map((k) => chip(k, k, decisions.filter((d) => d.decision_kind === k).length))}
+        {decisions.some(isFailure) &&
+          chip('__failures', 'failures', decisions.filter(isFailure).length)}
+      </div>
+      {filtered.length === 0 && (
+        <div className="px-4 py-6 text-center text-xs text-ink-faint">
+          No events match this filter.
+        </div>
+      )}
+      {filtered.map((d, i) => {
+        const newDay = i === 0 || dayOf(filtered[i - 1].created_at) !== dayOf(d.created_at)
         // burst-vs-stall rhythm: a same-day gap over an hour gets
         // whitespace ∝ log(Δt), so a 6-hour stall looks different
         // from a 40-second burst (newest-first: gap to the row above)
         const dt = newDay
           ? 0
-          : Math.abs(Date.parse(decisions[i - 1].created_at) - Date.parse(d.created_at))
+          : Math.abs(Date.parse(filtered[i - 1].created_at) - Date.parse(d.created_at))
         const gap =
           dt > 3600_000 ? Math.min(26, 6 + Math.round(Math.log10(dt / 3600_000) * 16)) : 0
         return (
@@ -132,8 +165,8 @@ export default function DecisionTimeline({ decisions }: { decisions: Decision[] 
               d={d}
               grouped={
                 d.batch_id !== null &&
-                (decisions[i - 1]?.batch_id === d.batch_id ||
-                  decisions[i + 1]?.batch_id === d.batch_id)
+                (filtered[i - 1]?.batch_id === d.batch_id ||
+                  filtered[i + 1]?.batch_id === d.batch_id)
               }
             />
           </div>
