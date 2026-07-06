@@ -5,6 +5,12 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-05
+- Extended the automated prover so its forward-exploration stage can now invent new inductive types, structures, and named instances rather than only lemmas, with database and validation support exercised on fresh toy problems.
+- Added a Hilbert-style propositional calculus benchmark whose target is the deduction theorem, alongside other small test problems.
+- Fixed several reliability bugs, including a Windows command-line length limit that silently killed large prompts and a background process that refused to shut down after fatal errors.
+- Strengthened the infrastructure with a CI tier that runs against a real Lean toolchain, a versioned record of already-proved problems for regression checking, and a lemma library index consolidated into the database.
+
 ### 2026-07-04
 - Replaced fragile text-pattern extraction of Lean declarations with direct queries to the Lean compiler and language server, so theorem names and definitions are now read from ground truth.
 - Centralized the check that marks a theorem as proved at a single chokepoint and closed a gap where declarations containing incomplete proofs could slip past validation.
@@ -131,12 +137,6 @@
 
 ### 2026-06-06
 - Cleaned up duplicate entries in the shared library of proven results, adding a safeguard so that a result still relied on by another problem is never removed.
-
-### 2026-06-05
-- Proved three classical linear-algebra theorems — the Eckart–Young best low-rank approximation theorem, the Courant–Fischer min-max characterization of eigenvalues, and Sylvester's criterion — and added them to its reusable lemma library.
-- A broader linear-algebra campaign produced several further new proofs and re-derived some earlier ones more compactly by reusing shared lemmas.
-- The lemma library was turned into a cross-problem pool, so results established for one problem can now be reused as building blocks for others.
-- Tightened the proof checker so that a verification timeout is reported as indeterminate rather than as a success.
 
 <!-- ASTERISM-PROGRESS:END -->
 
