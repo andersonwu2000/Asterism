@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { compactNumber, duration } from '../lib/format'
-import { SectionLabel } from '../components/ui'
+import { Button, SectionLabel } from '../components/ui'
 import type { DaemonStatus, LibraryProblem, UsageProblem } from '../lib/types'
 
 /** Engine panel + usage telemetry + Library browser (charter §3.4). */
@@ -54,30 +54,30 @@ function DaemonPanel() {
               value={scope}
               onChange={(e) => setScope(e.target.value)}
             />
-            <button
-              className="rounded-md bg-accent/20 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/30 disabled:opacity-50"
+            <Button
+              variant="primary"
               disabled={busy}
               onClick={() => void act('/api/daemon/start', { scope: scope || null })}
             >
               Start daemon
-            </button>
+            </Button>
           </>
         ) : (
           <>
-            <button
-              className="rounded-md border border-edge px-3 py-1.5 text-xs text-ink-dim hover:text-ink disabled:opacity-50"
+            <Button
+              variant="outline"
               disabled={busy || d.stopping}
               onClick={() => void act('/api/daemon/stop', { force: false })}
             >
               Stop (graceful)
-            </button>
-            <button
-              className="rounded-md border border-danger/40 px-3 py-1.5 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
+            </Button>
+            <Button
+              variant="danger"
               disabled={busy}
               onClick={() => void act('/api/daemon/stop', { force: true })}
             >
               Force stop
-            </button>
+            </Button>
           </>
         )}
       </div>
@@ -233,7 +233,6 @@ function LibraryBrowser() {
 export default function Telemetry() {
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
-      <h1 className="mb-4 text-lg font-semibold">Engine</h1>
       <div className="flex flex-col gap-6">
         <section>
           <SectionLabel>daemon</SectionLabel>

@@ -1,26 +1,62 @@
-import type { ReactNode } from 'react'
+import type { ButtonHTMLAttributes, ReactNode } from 'react'
 import type { ProblemStatus } from '../lib/types'
 import { ApiError } from '../lib/api'
 
-/** Problem status → label + chip styling. awaiting_human / stalled are
- * the two "needs attention" reds: filled = human's move, outlined =
- * engine gave up. */
-const STATUS_CHIP: Record<ProblemStatus, { label: string; cls: string }> = {
-  proving: { label: 'proving', cls: 'text-accent bg-accent/10' },
-  awaiting_human: { label: 'needs input', cls: 'text-white bg-danger/80' },
-  stalled: { label: 'stalled', cls: 'text-danger border border-danger/60' },
-  idle: { label: 'idle', cls: 'text-ink-faint border border-edge' },
-  signoff_pending: { label: 'sign-off', cls: 'text-warn bg-warn/15' },
-  ingested: { label: 'ingested', cls: 'text-ok bg-ok/10' },
-  bridged: { label: 'bridged', cls: 'text-star bg-star/10' },
+/* ------------------------------------------------------------------ */
+/* Button — one component, five intents; every action in the app goes
+ * through this so hover/focus/disabled behavior stays uniform.        */
+/* ------------------------------------------------------------------ */
+
+type ButtonVariant = 'primary' | 'star' | 'ok' | 'danger' | 'ghost' | 'outline'
+
+const BUTTON_VARIANT: Record<ButtonVariant, string> = {
+  primary: 'bg-accent/15 text-accent hover:bg-accent/25',
+  star: 'bg-star/15 text-star hover:bg-star/25',
+  ok: 'bg-ok/15 text-ok hover:bg-ok/25',
+  danger: 'border border-danger/40 text-danger hover:bg-danger/10',
+  ghost: 'text-ink-dim hover:text-ink hover:bg-surface-2',
+  outline: 'border border-edge text-ink-dim hover:border-edge-strong hover:text-ink',
+}
+
+export function Button({
+  variant = 'outline',
+  size = 'sm',
+  className = '',
+  ...rest
+}: {
+  variant?: ButtonVariant
+  size?: 'sm' | 'xs'
+} & ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      className={`rounded-md font-medium transition-colors duration-150 disabled:pointer-events-none disabled:opacity-45 ${
+        size === 'sm' ? 'px-3 py-1.5 text-xs' : 'px-2 py-1 text-[11px]'
+      } ${BUTTON_VARIANT[variant]} ${className}`}
+      {...rest}
+    />
+  )
+}
+
+/** Problem status → dot + label chip. One visual language for every
+ * state; awaiting_human is the single loud exception (it's the one
+ * state that is strictly the human's move). */
+const STATUS_CHIP: Record<ProblemStatus, { label: string; cls: string; dot: string }> = {
+  proving: { label: 'proving', cls: 'text-accent bg-accent/10', dot: 'bg-accent' },
+  awaiting_human: { label: 'needs input', cls: 'bg-danger/85 text-white', dot: 'bg-white' },
+  stalled: { label: 'stalled', cls: 'text-danger bg-danger/10', dot: 'bg-danger' },
+  idle: { label: 'idle', cls: 'text-ink-faint', dot: 'bg-ink-faint/60' },
+  signoff_pending: { label: 'sign-off', cls: 'text-warn bg-warn/10', dot: 'bg-warn' },
+  ingested: { label: 'ingested', cls: 'text-ok bg-ok/10', dot: 'bg-ok' },
+  bridged: { label: 'bridged', cls: 'text-star bg-star/10', dot: 'bg-star' },
 }
 
 export function StatusBadge({ status }: { status: ProblemStatus }) {
   const c = STATUS_CHIP[status] ?? STATUS_CHIP.proving
   return (
     <span
-      className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap ${c.cls}`}
+      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium whitespace-nowrap ${c.cls}`}
     >
+      <span className={`h-1.5 w-1.5 rounded-full ${c.dot}`} />
       {c.label}
     </span>
   )

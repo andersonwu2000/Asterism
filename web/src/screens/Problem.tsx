@@ -121,18 +121,19 @@ export default function Problem({ name }: { name: string }) {
             .
           </div>
         )}
-        <nav className="mt-3 flex gap-1">
+        <nav className="mt-3 flex gap-5">
           {tabs.map((t) => (
             <button
               key={t.id}
-              className={`rounded-t-md px-3 py-1.5 text-xs ${
-                tab === t.id
-                  ? 'border border-b-0 border-edge bg-bg text-ink'
-                  : 'text-ink-dim hover:text-ink'
+              className={`relative pb-2 text-xs transition-colors duration-150 ${
+                tab === t.id ? 'text-ink' : 'text-ink-dim hover:text-ink'
               }`}
               onClick={() => setTab(t.id)}
             >
               {t.label}
+              {tab === t.id && (
+                <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-accent" />
+              )}
             </button>
           ))}
         </nav>

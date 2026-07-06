@@ -9,7 +9,7 @@ import type { BoardProblem, BoardResponse } from '../lib/types'
 function GoalCounts({ p }: { p: BoardProblem }) {
   if (p.goals.total === 0) return <span className="text-xs text-ink-faint">—</span>
   return (
-    <span className="flex items-center gap-3 font-mono text-xs">
+    <span className="tnum flex items-center gap-3 font-mono text-xs">
       <span className={p.goals.open > 0 ? 'text-accent' : 'text-ink-faint'}>
         {p.goals.open} open
       </span>
@@ -27,8 +27,11 @@ function Progress({ p }: { p: BoardProblem }) {
   if (p.goals.total === 0 || (p.goals.proved === 0 && p.goals.open === 0)) return null
   const frac = p.goals.proved / p.goals.total
   return (
-    <div className="h-1 w-24 overflow-hidden rounded-full bg-surface-2">
-      <div className="h-full rounded-full bg-star/70" style={{ width: `${frac * 100}%` }} />
+    <div className="h-[3px] w-24 overflow-hidden rounded-full bg-surface-3">
+      <div
+        className="h-full rounded-full bg-star/80 transition-[width] duration-700"
+        style={{ width: `${frac * 100}%` }}
+      />
     </div>
   )
 }
@@ -37,13 +40,13 @@ function Row({ p }: { p: BoardProblem }) {
   const needsAction = p.status === 'awaiting_human' || p.status === 'signoff_pending'
   return (
     <tr
-      className="cursor-pointer border-b border-edge/60 transition-colors hover:bg-surface"
+      className="h-11 cursor-pointer border-b border-edge/60 transition-colors duration-150 hover:bg-surface"
       onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}
     >
-      <td className="py-2.5 pr-4 pl-4">
-        <span className="font-mono text-sm text-ink">{p.name}</span>
+      <td className="pr-4 pl-3">
+        <span className="font-mono text-[13px] text-ink">{p.name}</span>
       </td>
-      <td className="py-2.5 pr-4">
+      <td className="pr-4">
         {needsAction ? (
           <Link to="/inbox" onClick={(e) => e.stopPropagation()} title="Open in inbox">
             <StatusBadge status={p.status} />
@@ -52,21 +55,21 @@ function Row({ p }: { p: BoardProblem }) {
           <StatusBadge status={p.status} />
         )}
       </td>
-      <td className="py-2.5 pr-4">
+      <td className="pr-4">
         <GoalCounts p={p} />
       </td>
-      <td className="py-2.5 pr-4">
+      <td className="pr-4">
         <Progress p={p} />
       </td>
-      <td className="py-2.5 pr-4 text-xs text-ink-dim">
+      <td className="pr-4 text-xs whitespace-nowrap text-ink-dim">
         {p.in_flight > 0 && (
           <span className="flex items-center gap-1.5 text-accent">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
-            {p.in_flight} running
+            <span className="tnum">{p.in_flight} running</span>
           </span>
         )}
       </td>
-      <td className="py-2.5 pr-4 text-right text-xs whitespace-nowrap text-ink-faint">
+      <td className="tnum pr-3 text-right text-xs whitespace-nowrap text-ink-faint">
         {relTime(p.last_event)}
       </td>
     </tr>
@@ -127,26 +130,23 @@ export default function Board() {
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
-      <div className="mb-4 flex items-baseline justify-between">
-        <h1 className="text-lg font-semibold">Problems</h1>
-        <div className="flex items-center gap-4">
-          <div className="flex overflow-hidden rounded-md border border-edge text-xs">
-            {(['list', 'galaxy'] as const).map((v) => (
-              <button
-                key={v}
-                className={`px-2.5 py-1 ${
-                  view === v ? 'bg-surface-2 text-ink' : 'text-ink-faint hover:text-ink'
-                }`}
-                onClick={() => switchView(v)}
-              >
-                {v}
-              </button>
-            ))}
-          </div>
-          <div className="text-xs text-ink-dim">
-            {problems.length} total
-            {attention > 0 && <span className="ml-2 text-danger">{attention} need attention</span>}
-          </div>
+      <div className="mb-3 flex items-center justify-between">
+        <div className="tnum text-xs text-ink-dim">
+          {problems.length} problems
+          {attention > 0 && <span className="ml-2 text-danger">{attention} need attention</span>}
+        </div>
+        <div className="flex overflow-hidden rounded-md border border-edge text-xs">
+          {(['list', 'galaxy'] as const).map((v) => (
+            <button
+              key={v}
+              className={`px-2.5 py-1 transition-colors duration-150 ${
+                view === v ? 'bg-surface-2 text-ink' : 'text-ink-faint hover:text-ink'
+              }`}
+              onClick={() => switchView(v)}
+            >
+              {v}
+            </button>
+          ))}
         </div>
       </div>
       {error && (

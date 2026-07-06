@@ -1,83 +1,168 @@
+import type { ReactNode } from 'react'
 import { RouterProvider, useRoute, Link } from './lib/router'
 import { usePoll } from './lib/api'
 import Board from './screens/Board'
 import Inbox from './screens/Inbox'
 import Problem from './screens/Problem'
 import Telemetry from './screens/Telemetry'
+import type { Meta } from './lib/types'
 
-interface MetaResponse {
-  workspace: string
-  daemon: { running: boolean; pid: number | null; stopping: boolean; in_flight_leases: number }
-  inbox_count: number
-}
-
-function DaemonChip({ meta }: { meta: MetaResponse | null }) {
-  if (!meta) return <span className="text-ink-faint text-xs">engine…</span>
+function DaemonChip({ meta }: { meta: Meta | null }) {
+  if (!meta) return <span className="text-xs text-ink-faint">engine…</span>
   const d = meta.daemon
   const label = d.stopping ? 'stopping' : d.running ? 'running' : 'idle'
   const dot = d.stopping ? 'bg-warn' : d.running ? 'bg-ok' : 'bg-ink-faint'
   return (
     <Link
       to="/telemetry"
-      className="flex items-center gap-2 rounded-full border border-edge px-3 py-1 text-xs text-ink-dim hover:border-edge-strong"
+      className="flex items-center gap-2 rounded-full bg-surface-2 px-3 py-1 text-xs text-ink-dim transition-colors hover:text-ink"
       title={d.pid ? `daemon pid ${d.pid}` : 'daemon not running'}
     >
-      <span className={`h-2 w-2 rounded-full ${dot}`} />
+      <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
       daemon {label}
       {d.running && d.in_flight_leases > 0 && (
-        <span className="text-ink-faint">· {d.in_flight_leases} in flight</span>
+        <span className="tnum text-ink-faint">· {d.in_flight_leases} in flight</span>
       )}
     </Link>
   )
 }
 
-function NavItem({ to, label, active, badge }: { to: string; label: string; active: boolean; badge?: number }) {
+const ICONS: Record<string, ReactNode> = {
+  board: (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="4" cy="4" r="1.6" fill="currentColor" />
+      <circle cx="12" cy="5.5" r="1.2" fill="currentColor" opacity="0.7" />
+      <circle cx="7" cy="11.5" r="1.4" fill="currentColor" opacity="0.85" />
+      <path d="M4 4l8 1.5M12 5.5l-5 6" stroke="currentColor" strokeWidth="0.8" opacity="0.45" />
+    </svg>
+  ),
+  inbox: (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M2.5 9.5V12a1.5 1.5 0 001.5 1.5h8A1.5 1.5 0 0013.5 12V9.5M2.5 9.5L4.6 3.6A1.5 1.5 0 016 2.5h4a1.5 1.5 0 011.4 1.1l2.1 5.9M2.5 9.5H6l1 1.5h2l1-1.5h3.5"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  ),
+  telemetry: (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M1.5 8.5h3l2-5 3 9 2-4h3"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  ),
+}
+
+function NavItem({
+  to,
+  icon,
+  label,
+  active,
+  badge,
+}: {
+  to: string
+  icon: string
+  label: string
+  active: boolean
+  badge?: number
+}) {
   return (
     <Link
       to={to}
-      className={`flex items-center justify-between rounded-md px-3 py-1.5 text-sm ${
-        active ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:text-ink'
+      className={`group relative flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors duration-150 ${
+        active ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:bg-surface-2/60 hover:text-ink'
       }`}
     >
-      {label}
+      {active && (
+        <span className="absolute top-1.5 bottom-1.5 -left-2 w-0.5 rounded-full bg-accent" />
+      )}
+      <span className={active ? 'text-accent' : 'text-ink-faint group-hover:text-ink-dim'}>
+        {ICONS[icon]}
+      </span>
+      <span className="flex-1">{label}</span>
       {badge !== undefined && badge > 0 && (
-        <span className="ml-2 rounded-full bg-danger/20 px-2 py-0.5 text-xs text-danger">{badge}</span>
+        <span className="tnum rounded-full bg-danger/15 px-1.5 py-px text-[11px] font-medium text-danger">
+          {badge}
+        </span>
       )}
     </Link>
   )
+}
+
+const SECTION_TITLE: Record<string, string> = {
+  '': 'Problems',
+  problems: 'Problems',
+  inbox: 'Inbox',
+  telemetry: 'Engine',
 }
 
 function Shell() {
   const route = useRoute()
-  const { data: meta } = usePoll<MetaResponse>('/api/meta', 3000)
+  const { data: meta } = usePoll<Meta>('/api/meta', 3000)
   const section = route.segments[0] ?? ''
+  const workspaceName = meta ? (meta.workspace.split(/[\\/]/).pop() ?? '') : ''
 
   return (
     <div className="flex h-full">
       <aside className="flex w-52 shrink-0 flex-col border-r border-edge bg-surface px-3 py-4">
-        <Link to="/" className="mb-6 flex items-center gap-2 px-3">
-          <svg width="18" height="18" viewBox="0 0 24 24" className="text-star" aria-hidden>
+        <Link to="/" className="mb-1 flex items-center gap-2 px-2.5">
+          <svg width="17" height="17" viewBox="0 0 24 24" className="text-star" aria-hidden>
             <path
               fill="currentColor"
               d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z"
             />
           </svg>
-          <span className="text-base font-semibold tracking-wide">Asterism</span>
+          <span className="text-[15px] font-semibold tracking-wide">Asterism</span>
         </Link>
-        <nav className="flex flex-col gap-1">
-          <NavItem to="/" label="Board" active={section === '' || section === 'problems'} />
-          <NavItem to="/inbox" label="Inbox" active={section === 'inbox'} badge={meta?.inbox_count} />
-          <NavItem to="/telemetry" label="Telemetry" active={section === 'telemetry'} />
+        <div className="mb-5 truncate px-2.5 text-[11px] text-ink-faint" title={meta?.workspace}>
+          {workspaceName}
+        </div>
+        <nav className="flex flex-col gap-0.5">
+          <NavItem
+            to="/"
+            icon="board"
+            label="Board"
+            active={section === '' || section === 'problems'}
+          />
+          <NavItem
+            to="/inbox"
+            icon="inbox"
+            label="Inbox"
+            active={section === 'inbox'}
+            badge={meta?.inbox_count}
+          />
+          <NavItem
+            to="/telemetry"
+            icon="telemetry"
+            label="Engine"
+            active={section === 'telemetry'}
+          />
         </nav>
-        <div className="mt-auto px-3 text-xs text-ink-faint" title={meta?.workspace}>
-          {meta ? meta.workspace.split(/[\\/]/).pop() : ''}
+        <div className="mt-auto px-2.5 text-[11px] text-ink-faint/70">
+          {meta?.db === 'behind' && <span className="text-warn">db needs migration</span>}
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center justify-end border-b border-edge px-4">
+        <header className="flex h-12 shrink-0 items-center justify-between border-b border-edge px-5">
+          <div className="flex items-baseline gap-2 text-[13px]">
+            <span className="text-ink-dim">{SECTION_TITLE[section] ?? 'Problems'}</span>
+            {section === 'problems' && route.segments[1] && (
+              <>
+                <span className="text-ink-faint">/</span>
+                <span className="font-mono text-ink">{route.segments[1]}</span>
+              </>
+            )}
+          </div>
           <DaemonChip meta={meta} />
         </header>
-        <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+        <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           {section === 'inbox' ? (
             <Inbox />
           ) : section === 'telemetry' ? (

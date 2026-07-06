@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { Link } from '../lib/router'
 import { relTime } from '../lib/format'
-import { EmptyState, ErrorState, SectionLabel } from '../components/ui'
+import { Button, EmptyState, ErrorState, SectionLabel } from '../components/ui'
 import DiffView from '../components/DiffView'
 import ReviewTree from '../components/ReviewTree'
 import type { Amend, InboxResponse, Signoff } from '../lib/types'
@@ -71,15 +71,11 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
       {error && <div className="mb-2 text-xs text-danger">{error}</div>}
 
       <div className="flex items-center gap-2">
-        <button
-          className="rounded-md bg-ok/20 px-3 py-1.5 text-xs font-medium text-ok hover:bg-ok/30 disabled:opacity-50"
-          disabled={busy}
-          onClick={() => void resolve('accept')}
-        >
+        <Button variant="ok" disabled={busy} onClick={() => void resolve('accept')}>
           {editing ? 'Accept with edits' : 'Accept proposed'}
-        </button>
-        <button
-          className="rounded-md border border-edge px-3 py-1.5 text-xs text-ink-dim hover:text-ink disabled:opacity-50"
+        </Button>
+        <Button
+          variant="outline"
           disabled={busy}
           onClick={() => {
             setEditing((v) => !v)
@@ -87,7 +83,7 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
           }}
         >
           {editing ? 'Back to diff' : 'Edit before accepting'}
-        </button>
+        </Button>
         <div className="ml-auto flex items-center gap-2">
           {rejecting && (
             <input
@@ -98,13 +94,13 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
               autoFocus
             />
           )}
-          <button
-            className="rounded-md border border-danger/40 px-3 py-1.5 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
+          <Button
+            variant="danger"
             disabled={busy}
             onClick={() => (rejecting ? void resolve('reject') : setRejecting(true))}
           >
             {rejecting ? 'Confirm reject' : 'Reject'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -154,13 +150,9 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
       </div>
       {error && <div className="mb-2 text-xs text-danger">{error}</div>}
       <div className="flex items-center gap-2">
-        <button
-          className="rounded-md bg-star/20 px-3 py-1.5 text-xs font-medium text-star hover:bg-star/30 disabled:opacity-50"
-          disabled={busy}
-          onClick={() => void act('approve')}
-        >
+        <Button variant="star" disabled={busy} onClick={() => void act('approve')}>
           Approve — harvest to Library
-        </button>
+        </Button>
         <div className="ml-auto flex items-center gap-2">
           {rejecting && (
             <input
@@ -171,13 +163,13 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
               autoFocus
             />
           )}
-          <button
-            className="rounded-md border border-danger/40 px-3 py-1.5 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
+          <Button
+            variant="danger"
             disabled={busy}
             onClick={() => (rejecting ? void act('reject') : setRejecting(true))}
           >
             {rejecting ? 'Confirm reject' : 'Reject — keep proving'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -195,7 +187,6 @@ export default function Inbox() {
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-6">
-      <h1 className="mb-4 text-lg font-semibold">Inbox</h1>
       {empty ? (
         <EmptyState title="Nothing needs you right now">
           Amend requests and ingest sign-offs land here when the engine needs a human decision.
