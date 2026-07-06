@@ -12,8 +12,10 @@ import type { Goal, ProblemDetail } from '../lib/types'
 
 type Tab = 'stars' | 'goals' | 'timeline' | 'files'
 
+/* proved is the settled majority — it reads quiet; color is spent on
+ * the live minority (open/attempting) and exceptions. */
 const GOAL_STATUS_CLS: Record<string, string> = {
-  proved: 'text-star',
+  proved: 'text-ink-faint',
   attempting: 'text-accent',
   open: 'text-accent',
   shelved: 'text-ink-faint',
@@ -21,6 +23,18 @@ const GOAL_STATUS_CLS: Record<string, string> = {
   disproved: 'text-danger',
   dead: 'text-ink-faint',
   frozen: 'text-ink-faint',
+}
+
+/* live work first, settled bulk after */
+const GOAL_SORT: Record<string, number> = {
+  attempting: 0,
+  open: 1,
+  pending_strategist_review: 2,
+  disproved: 3,
+  frozen: 4,
+  proved: 5,
+  shelved: 6,
+  dead: 7,
 }
 
 function GoalsList({
@@ -32,6 +46,9 @@ function GoalsList({
 }) {
   if (goals.length === 0)
     return <div className="px-4 py-8 text-center text-xs text-ink-faint">No goals yet.</div>
+  const sorted = [...goals].sort(
+    (a, b) => (GOAL_SORT[a.status] ?? 9) - (GOAL_SORT[b.status] ?? 9) || a.id - b.id,
+  )
   return (
     <table className="w-full border-collapse text-left">
       <thead>
@@ -44,7 +61,7 @@ function GoalsList({
         </tr>
       </thead>
       <tbody>
-        {goals.map((g) => (
+        {sorted.map((g) => (
           <tr
             key={g.id}
             className="cursor-pointer border-b border-edge/60 hover:bg-surface"

@@ -15,11 +15,11 @@ const KIND_CLS: Record<string, string> = {
   Noop: 'text-ink-faint',
 }
 
+/* positive outcomes are the norm — they collapse to a quiet check so
+ * the timeline's color budget goes to failures and pauses */
+const OK_OUTCOMES = new Set(['success', 'accepted', 'live_subgoal', 'closed_subgoal'])
+
 const OUTCOME_CLS: Record<string, string> = {
-  success: 'text-ok',
-  accepted: 'text-ok',
-  live_subgoal: 'text-ok',
-  closed_subgoal: 'text-ok',
   awaiting_human: 'text-danger',
   rejected: 'text-danger',
   verify_failed: 'text-danger',
@@ -45,9 +45,16 @@ function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
         </span>
         <span className="truncate text-xs text-ink-dim">{summary}</span>
         <span className="text-right text-[11px] whitespace-nowrap text-ink-faint">
-          {d.outcome && (
-            <span className={`mr-2 ${OUTCOME_CLS[d.outcome] ?? 'text-ink-dim'}`}>{d.outcome}</span>
-          )}
+          {d.outcome &&
+            (OK_OUTCOMES.has(d.outcome) ? (
+              <span className="mr-2 text-ink-faint" title={d.outcome}>
+                ✓
+              </span>
+            ) : (
+              <span className={`mr-2 ${OUTCOME_CLS[d.outcome] ?? 'text-ink-dim'}`}>
+                {d.outcome}
+              </span>
+            ))}
           {relTime(d.created_at)}
         </span>
       </button>

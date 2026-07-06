@@ -42,17 +42,24 @@ export default function FileViewer({
   return (
     <div className="flex min-h-0 flex-1">
       <div className="w-56 shrink-0 overflow-y-auto border-r border-edge py-2">
-        {files.map((f) => (
-          <button
-            key={f}
-            className={`block w-full truncate px-4 py-1.5 text-left font-mono text-xs ${
-              f === selected ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:text-ink'
-            }`}
-            onClick={() => setSelected(f)}
-            title={f}
-          >
-            {f}
-          </button>
+        {files.map((f, i) => (
+          <div key={f}>
+            {/* one "proofs/" group header instead of a 130-row prefix wall */}
+            {f.startsWith('proofs/') && !files[i - 1]?.startsWith('proofs/') && (
+              <div className="mt-2 px-4 pb-1 text-[10px] font-medium tracking-widest text-ink-faint/70 uppercase">
+                proofs · {files.length - i}
+              </div>
+            )}
+            <button
+              className={`block w-full truncate px-4 py-1.5 text-left font-mono text-xs ${
+                f === selected ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:text-ink'
+              }`}
+              onClick={() => setSelected(f)}
+              title={f}
+            >
+              {f.startsWith('proofs/') ? f.slice('proofs/'.length) : f}
+            </button>
+          </div>
         ))}
       </div>
       <div className="min-w-0 flex-1 overflow-auto p-4">

@@ -46,11 +46,11 @@ const HALO: Record<string, string> = {
  * not a signal (design review); dormant cards stay quiet. */
 const BADGE_STATES = new Set(['awaiting_human', 'signoff_pending', 'stalled', 'proving'])
 
-/** Truncate the namespace prefix, never the leaf — two adjacent
- * `Minif2f.mathd_algebr…` cards are indistinguishable. */
-function displayName(name: string, budget = 26): string {
-  if (name.length <= budget) return name
-  return `…${name.slice(name.length - budget + 1)}`
+/** Namespace and leaf split onto two lines: the leaf (the identity)
+ * stays whole and strong, the namespace reads as a quiet eyebrow. */
+function splitName(name: string): { ns: string | null; leaf: string } {
+  const i = name.indexOf('.')
+  return i === -1 ? { ns: null, leaf: name } : { ns: name.slice(0, i), leaf: name.slice(i + 1) }
 }
 
 export default function GalaxyCard({ p }: { p: BoardProblem }) {
@@ -122,10 +122,19 @@ export default function GalaxyCard({ p }: { p: BoardProblem }) {
         })}
       </svg>
       <div className="border-t border-edge/60 px-3 py-2">
-        {/* badge on its own row over the art keeps the name whole */}
-        <div className="truncate font-mono text-xs text-ink" title={p.name}>
-          {displayName(p.name)}
-        </div>
+        {(() => {
+          const { ns, leaf } = splitName(p.name)
+          return (
+            <div title={p.name}>
+              {ns && (
+                <div className="truncate font-mono text-[10px] leading-tight text-ink-faint">
+                  {ns}
+                </div>
+              )}
+              <div className="truncate font-mono text-xs text-ink">{leaf}</div>
+            </div>
+          )
+        })()}
         <div className="tnum mt-0.5 flex items-center justify-between text-[11px] text-ink-faint">
           <span>
             {p.goals.total === 0 ? 'no goals' : `${p.goals.proved}/${p.goals.total} proved`}
