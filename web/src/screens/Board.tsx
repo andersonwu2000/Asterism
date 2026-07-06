@@ -66,9 +66,15 @@ const SETTLED_LABEL: Record<string, string> = {
   idle: 'not started',
 }
 
-function Row({ p, dense }: { p: BoardProblem; dense?: boolean }) {
+function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stripPrefix?: string }) {
   const needsAction = p.status === 'awaiting_human' || p.status === 'signoff_pending'
   const settled = p.status === 'ingested' || p.status === 'bridged' || p.status === 'idle'
+  // inside an expanded cluster the group header already carries the
+  // namespace — repeating it every dense row is noise
+  const shown =
+    stripPrefix && p.name.startsWith(`${stripPrefix}.`)
+      ? p.name.slice(stripPrefix.length + 1)
+      : p.name
   return (
     <tr
       data-kind="problem"
@@ -82,7 +88,7 @@ function Row({ p, dense }: { p: BoardProblem; dense?: boolean }) {
           className={`block truncate font-mono text-[13px] ${dense ? 'text-ink-dim' : 'text-ink'}`}
           title={p.name}
         >
-          {p.name}
+          {shown}
         </span>
       </td>
       <td className="pr-4">
@@ -571,7 +577,7 @@ function PerCluster({
   return (
     <>
       <ClusterRow c={c} expanded={expanded} onToggle={onToggle} />
-      {expanded && c.items.map((p) => <Row key={p.name} p={p} dense />)}
+      {expanded && c.items.map((p) => <Row key={p.name} p={p} dense stripPrefix={c.prefix} />)}
     </>
   )
 }
