@@ -3,7 +3,6 @@ import { usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { EmptyState, ErrorState, StatusBadge } from '../components/ui'
-import GalaxyCard from '../components/GalaxyCard'
 import type { BoardProblem, BoardResponse } from '../lib/types'
 
 /*
@@ -265,13 +264,6 @@ const WEEK_MS = 7 * 86400_000
 
 export default function Board() {
   const { data, error, loading } = usePoll<BoardResponse>('/api/problems')
-  const [view, setView] = useState<'list' | 'galaxy'>(
-    () => (localStorage.getItem('board_view') as 'list' | 'galaxy') || 'list',
-  )
-  const switchView = (v: 'list' | 'galaxy') => {
-    setView(v)
-    localStorage.setItem('board_view', v)
-  }
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -371,19 +363,6 @@ export default function Board() {
             )}
           </span>
         </div>
-        <div className="flex overflow-hidden rounded-md border border-edge text-xs">
-          {(['list', 'galaxy'] as const).map((v) => (
-            <button
-              key={v}
-              className={`px-2.5 py-1 transition-colors duration-150 ${
-                view === v ? 'bg-surface-2 text-ink' : 'text-ink-faint hover:text-ink'
-              }`}
-              onClick={() => switchView(v)}
-            >
-              {v}
-            </button>
-          ))}
-        </div>
       </div>
       {error && (
         <div className="mb-3 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
@@ -426,82 +405,9 @@ export default function Board() {
         </div>
         {filtering && <span className="text-xs text-ink-faint">{sorted.length} shown</span>}
       </div>
-      {view === 'galaxy' ? (
-        (() => {
-          const live = new Set(['awaiting_human', 'signoff_pending', 'stalled', 'proving'])
-          const cards = sorted.filter(
-            (p) => live.has(p.status) || (p.status !== 'idle' && isRecent(p)),
-          )
-          const cardSet = new Set(cards.map((p) => p.name))
-          const completed = sorted.filter((p) => !cardSet.has(p.name) && p.status !== 'idle')
-          const dormant = sorted.filter((p) => p.status === 'idle' && !cardSet.has(p.name))
-          /* big namespaces collapse to one aggregate chip (click →
-             filter); a 278-chip wall is the card-wall problem again */
-          const strip = (title: string, items: BoardProblem[]) =>
-            items.length > 0 && (
-              <div className="mt-6">
-                <div className="mb-2 text-xs font-medium tracking-widest text-ink-faint uppercase">
-                  {title} ({items.length})
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {clusterize(items).map((c) =>
-                    c.items.length > 3 ? (
-                      <button
-                        key={c.prefix}
-                        className="tnum flex items-center gap-2 rounded-md border border-edge px-2 py-1 text-[11px] text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
-                        onClick={() => setQuery(`${c.prefix}.`)}
-                        title={`filter to ${c.prefix}.*`}
-                      >
-                        <span className="font-mono">{c.prefix}</span>
-                        <span className="text-ink-faint/70">{c.items.length}</span>
-                      </button>
-                    ) : (
-                      c.items.map((p) => (
-                        <button
-                          key={p.name}
-                          className="tnum flex items-center gap-2 rounded-md border border-edge px-2 py-1 text-[11px] text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
-                          onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}
-                          title={p.name}
-                        >
-                          <span className="font-mono">
-                            {(() => {
-                              const leaf = p.name.includes('.')
-                                ? p.name.slice(p.name.indexOf('.') + 1)
-                                : p.name
-                              return leaf.length > 30 ? `${leaf.slice(0, 29)}…` : leaf
-                            })()}
-                          </span>
-                          {p.goals.proved > 0 && (
-                            <span className="text-ink-faint/70">{p.goals.proved}✓</span>
-                          )}
-                        </button>
-                      ))
-                    ),
-                  )}
-                </div>
-              </div>
-            )
-          return (
-            <>
-              {cards.length > 0 ? (
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-                  {cards.map((p) => (
-                    <GalaxyCard key={p.name} p={p} />
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-md border border-edge bg-surface px-4 py-6 text-center text-xs text-ink-faint">
-                  Nothing live right now — completed and dormant problems are below.
-                </div>
-              )}
-              {strip('completed', completed)}
-              {strip('not started', dormant)}
-            </>
-          )
-        })()
-      ) : (
-        /* table-fixed + truncating name cell: long mono names must not
-           push "last event" off a laptop screen (main clips overflow) */
+      {/* table-fixed + truncating name cell: long mono names must not
+          push "last event" off a laptop screen (main clips overflow) */}
+      {(
         <table className="w-full table-fixed border-collapse text-left">
           <thead className="sticky top-0 z-10 bg-bg">
             <tr className="border-b border-edge text-xs text-ink-faint">
