@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Goal, Strategy, StrategyEdge } from '../lib/types'
-import { layoutConstellation } from '../lib/layout'
+import { frontierView, layoutConstellation } from '../lib/layout'
 import type { LayoutNode } from '../lib/layout'
 
 /*
@@ -75,9 +75,20 @@ export default function Constellation({
   onSelect,
   shelveThreshold = 8,
 }: Props) {
-  const layout = useMemo(
-    () => layoutConstellation(goals, strategies, strategyEdges),
+  // Frontier focus: on for big live graphs by default (attention +
+  // charter §7 perf bar); terminal problems always show everything.
+  const [focusFrontier, setFocusFrontier] = useState<boolean | null>(null)
+  const frontier = useMemo(
+    () => frontierView(goals, strategies, strategyEdges),
     [goals, strategies, strategyEdges],
+  )
+  const focusable = frontier.hiddenCount > 0
+  const focused = focusable && (focusFrontier ?? goals.length > 60)
+  const shownGoals = focused ? frontier.goals : goals
+
+  const layout = useMemo(
+    () => layoutConstellation(shownGoals, strategies, strategyEdges),
+    [shownGoals, strategies, strategyEdges],
   )
   const byId = useMemo(
     () => new Map(layout.nodes.map((n) => [n.goal.id, n])),
@@ -90,11 +101,12 @@ export default function Constellation({
   const [showDead, setShowDead] = useState(false)
   const drag = useRef<{ x: number; y: number; tx: number; ty: number; moved: boolean } | null>(null)
 
-  // Initial fit — once per problem (not per poll: the layout is stable,
-  // and refitting under the user's zoom would fight them).
+  // Initial fit — once per problem and on frontier-focus toggles (not
+  // per poll: the layout is stable, and refitting under the user's
+  // zoom would fight them).
   useEffect(() => {
     setView(null)
-  }, [goals.length > 0 && goals[0].lean_path.split('/')[1]])
+  }, [goals.length > 0 && goals[0].lean_path.split('/')[1], focused])
   useEffect(() => {
     if (view !== null) return
     const el = containerRef.current
@@ -357,6 +369,18 @@ export default function Constellation({
                     />
                   </circle>
                 )}
+                {focused && (frontier.folded.get(n.goal.id) ?? 0) > 0 && (
+                  <text
+                    x={r + 4 / k}
+                    y={-r}
+                    className="pointer-events-none select-none"
+                    fill="var(--color-ink-faint)"
+                    fontSize={9.5 / k}
+                    fontFamily="var(--font-mono)"
+                  >
+                    +{frontier.folded.get(n.goal.id)}
+                  </text>
+                )}
                 {showLabels && (
                   <text
                     // Stagger label rows by in-layer parity so long
@@ -406,14 +430,27 @@ export default function Constellation({
         </div>
       )}
 
-      {deadEdgeCount > 0 && (
-        <button
-          className="absolute right-3 bottom-3 rounded-md border border-edge bg-surface px-2.5 py-1 text-xs text-ink-dim hover:border-edge-strong hover:text-ink"
-          onClick={() => setShowDead((v) => !v)}
-        >
-          {showDead ? 'hide' : 'show'} dead paths ({deadEdgeCount})
-        </button>
-      )}
+      <div className="absolute right-3 bottom-3 flex gap-2">
+        {focusable && (
+          <button
+            className="rounded-md border border-edge bg-surface px-2.5 py-1 text-xs text-ink-dim hover:border-edge-strong hover:text-ink"
+            onClick={() => setFocusFrontier(!focused)}
+            title="Fold settled subtrees into their nearest visible ancestor (+N badges)"
+          >
+            {focused
+              ? `frontier focus — show all (${goals.length})`
+              : `focus frontier (fold ${frontier.hiddenCount})`}
+          </button>
+        )}
+        {deadEdgeCount > 0 && (
+          <button
+            className="rounded-md border border-edge bg-surface px-2.5 py-1 text-xs text-ink-dim hover:border-edge-strong hover:text-ink"
+            onClick={() => setShowDead((v) => !v)}
+          >
+            {showDead ? 'hide' : 'show'} dead paths ({deadEdgeCount})
+          </button>
+        )}
+      </div>
     </div>
   )
 }

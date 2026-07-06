@@ -53,6 +53,80 @@ export const X_GAP = 110
 export const Y_GAP = 120
 const PAD = 60
 
+const ACTIVE_STATUSES = new Set(['open', 'attempting', 'pending_strategist_review'])
+
+export interface FrontierView {
+  goals: Goal[]
+  /** kept goal id → number of hidden descendants folded into it */
+  folded: Map<number, number>
+  hiddenCount: number
+}
+
+/**
+ * Active-frontier focus (charter appendix): keep the live frontier +
+ * its ancestor chains + roots + deliverables; everything else folds
+ * into its nearest kept ancestor (badge count). For problems with no
+ * frontier (terminal), returns everything unchanged.
+ */
+export function frontierView(
+  goals: Goal[],
+  strategies: Strategy[],
+  strategyEdges: StrategyEdge[],
+): FrontierView {
+  const frontier = goals.filter((g) => ACTIVE_STATUSES.has(g.status) || g.in_flight)
+  if (frontier.length === 0) {
+    return { goals, folded: new Map(), hiddenCount: 0 }
+  }
+  const stratOwner = new Map(strategies.map((s) => [s.id, s.goal_id]))
+  const parents = new Map<number, number[]>()
+  for (const e of strategyEdges) {
+    const p = stratOwner.get(e.strategy_id)
+    if (p === undefined) continue
+    parents.set(e.subgoal_id, [...(parents.get(e.subgoal_id) ?? []), p])
+  }
+  const keep = new Set<number>()
+  const markWithAncestors = (id: number) => {
+    if (keep.has(id)) return
+    keep.add(id)
+    for (const p of parents.get(id) ?? []) markWithAncestors(p)
+  }
+  for (const g of frontier) markWithAncestors(g.id)
+  for (const g of goals) {
+    if (g.origin === 'root' || g.is_deliverable) markWithAncestors(g.id)
+  }
+
+  const folded = new Map<number, number>()
+  let hiddenCount = 0
+  for (const g of goals) {
+    if (keep.has(g.id)) continue
+    hiddenCount++
+    // attribute to the nearest kept ancestor (deterministic: sorted
+    // parent walk, breadth-first)
+    const queue = [...(parents.get(g.id) ?? [])].sort((a, b) => a - b)
+    const seen = new Set<number>(queue)
+    let owner: number | null = null
+    while (queue.length > 0) {
+      const p = queue.shift()!
+      if (keep.has(p)) {
+        owner = p
+        break
+      }
+      for (const pp of (parents.get(p) ?? []).sort((a, b) => a - b)) {
+        if (!seen.has(pp)) {
+          seen.add(pp)
+          queue.push(pp)
+        }
+      }
+    }
+    if (owner !== null) folded.set(owner, (folded.get(owner) ?? 0) + 1)
+  }
+  return {
+    goals: goals.filter((g) => keep.has(g.id)),
+    folded,
+    hiddenCount,
+  }
+}
+
 export function layoutConstellation(
   goals: Goal[],
   strategies: Strategy[],
