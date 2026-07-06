@@ -222,14 +222,6 @@ export interface PaperShelfItem {
   bound: PaperBoundRef[]
 }
 
-/** GET /api/papers/{pid}/text — extracted markdown with `## p.N` page anchors. */
-export interface PaperText {
-  id: string
-  source_name: string
-  pages: number
-  text: string
-}
-
 /** One paper bound to a problem (GET /api/problems/{p}/papers). */
 export interface ProblemPaperBinding {
   id: string

@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { ApiError, apiDelete, apiGet, apiPost, usePoll } from '../lib/api'
+import { useEffect, useRef, useState } from 'react'
+import { ApiError, apiDelete, apiPost, usePoll } from '../lib/api'
 import { Link } from '../lib/router'
 import { Button, EmptyState, ErrorState } from '../components/ui'
-import type { PaperShelfItem, PaperText } from '../lib/types'
+import type { PaperShelfItem } from '../lib/types'
 
 /*
  * The paper shelf: every source the engine can ground its citations in.
  * One flat table (Board vocabulary) — a shelf of tens, not thousands.
- * The reader below renders the extracted text as-is; the `original`
- * link opens the untouched PDF for anything extraction mangled.
+ * Opening a paper shows the ORIGINAL document (browser-native PDF
+ * rendering) beside a slim rail for switching papers; the extracted
+ * text is the machines' copy, not a human reading surface.
  */
 
 /** "21 pp · 87k chars" — pages first (how a mathematician sizes a
@@ -229,110 +230,84 @@ export default function Papers() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Reader — the extracted text, one page anchor per `## p.N` line.     */
+/* Viewer — the ORIGINAL document, browser-native rendering, with a    */
+/* slim rail for switching papers without losing your place on the    */
+/* shelf. The extracted text is for agents; humans get the PDF.       */
 /* ------------------------------------------------------------------ */
 
-interface Segment {
-  page: number | null
-  text: string
-}
-
-function splitPages(text: string): Segment[] {
-  const segs: Segment[] = [{ page: null, text: '' }]
-  for (const line of text.split('\n')) {
-    const m = /^## p\.(\d+)\s*$/.exec(line)
-    if (m) segs.push({ page: Number(m[1]), text: '' })
-    else {
-      const s = segs[segs.length - 1]
-      s.text = s.text === '' ? line : `${s.text}\n${line}`
-    }
-  }
-  return segs.filter((s) => s.page !== null || s.text.trim() !== '')
-}
-
 export function PaperReader({ id }: { id: string }) {
-  const [data, setData] = useState<PaperText | null>(null)
-  const [error, setError] = useState<Error | null>(null)
+  const { data, error } = usePoll<{ papers: PaperShelfItem[] }>('/api/papers', 30000)
+  const papers = data?.papers ?? []
+  const current = papers.find((p) => p.id === id) ?? null
+  const fileUrl = `/api/papers/${encodeURIComponent(id)}/file`
 
-  // one-shot fetch — extracted text is immutable per paper id (a
-  // re-extraction goes through paper-add, which the shelf reflects)
-  useEffect(() => {
-    let cancelled = false
-    setData(null)
-    setError(null)
-    apiGet<PaperText>(`/api/papers/${encodeURIComponent(id)}/text`)
-      .then((d) => !cancelled && setData(d))
-      .catch((e) => !cancelled && setError(e as Error))
-    return () => {
-      cancelled = true
-    }
-  }, [id])
-
-  const segments = useMemo(() => (data ? splitPages(data.text) : []), [data])
-  const pageNums = segments.filter((s) => s.page !== null).map((s) => s.page as number)
-
-  if (error) return <ErrorState error={error} />
-  if (!data) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
+  if (error && !data) return <ErrorState error={error} />
 
   return (
-    <div className="mx-auto max-w-[80ch] px-6 py-6">
-      <Link to="/papers" className="text-xs text-ink-faint transition-colors hover:text-ink">
-        ‹ papers
-      </Link>
-      <div className="mt-2 mb-6 flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        <h1 className="font-display min-w-0 text-[22px] font-medium break-all text-ink">
-          {data.source_name}
-        </h1>
-        <a
-          href={`/api/papers/${encodeURIComponent(data.id)}/file`}
-          target="_blank"
-          rel="noreferrer"
-          className="text-xs whitespace-nowrap text-ink-dim transition-colors hover:text-ink"
-          title="open the original file"
+    <div className="flex h-full">
+      <aside className="flex w-60 shrink-0 flex-col border-r border-edge bg-surface/50">
+        <Link
+          to="/papers"
+          className="px-4 pt-4 pb-2 text-xs text-ink-faint transition-colors hover:text-ink"
         >
-          original ↗
-        </a>
-        {pageNums.length > 1 && (
-          <select
-            className="rounded border border-edge bg-surface px-2 py-1 text-xs text-ink-dim focus:border-ink-faint focus:outline-none"
-            value=""
-            onChange={(e) => {
-              if (e.target.value === '') return
-              document
-                .getElementById(`p-${e.target.value}`)
-                ?.scrollIntoView({ block: 'start' })
-              e.target.value = ''
-            }}
-          >
-            <option value="">jump to page…</option>
-            {pageNums.map((n) => (
-              <option key={n} value={n}>
-                p. {n}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-      {segments.map((s, i) => (
-        <section key={i}>
-          {s.page !== null && (
-            <div
-              id={`p-${s.page}`}
-              className="mt-8 mb-3 flex items-center gap-3 first:mt-0 scroll-mt-4"
+          ‹ all papers
+        </Link>
+        <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
+          {papers.map((p) => (
+            <Link
+              key={p.id}
+              to={`/papers/${encodeURIComponent(p.id)}`}
+              className={`block truncate rounded-md px-2 py-1.5 font-mono text-[12px] transition-colors ${
+                p.id === id
+                  ? 'bg-surface-2 text-ink'
+                  : 'text-ink-dim hover:bg-surface-2/60 hover:text-ink'
+              }`}
+              title={p.source_name}
             >
-              <span className="text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
-                p. {s.page}
-              </span>
-              <span className="h-px flex-1 bg-edge" />
-            </div>
+              {p.source_name}
+            </Link>
+          ))}
+        </nav>
+      </aside>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex shrink-0 items-baseline gap-4 border-b border-edge px-4 py-2.5">
+          <span className="min-w-0 truncate font-mono text-[13px] text-ink">
+            {current?.source_name ?? id}
+          </span>
+          {current && (
+            <span className="tnum text-[11px] whitespace-nowrap text-ink-faint">
+              {sizeLabel(current)}
+            </span>
           )}
-          {s.text.trim() !== '' && (
-            <div className="text-sm leading-relaxed whitespace-pre-wrap text-ink-dim">
-              {s.text}
-            </div>
+          {current && current.bound.length > 0 && (
+            <span className="min-w-0 truncate text-[11px] text-ink-faint">
+              cited by{' '}
+              {current.bound.map((b, i) => (
+                <span key={b.problem}>
+                  {i > 0 && ', '}
+                  <Link
+                    to={`/problems/${encodeURIComponent(b.problem)}`}
+                    className="font-mono text-ink-dim transition-colors hover:text-ink"
+                  >
+                    {b.problem}
+                  </Link>
+                </span>
+              ))}
+            </span>
           )}
-        </section>
-      ))}
+          <a
+            href={fileUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="ml-auto text-xs whitespace-nowrap text-ink-dim transition-colors hover:text-ink"
+            title="open in its own tab"
+          >
+            open in tab ↗
+          </a>
+        </div>
+        {/* browser-native PDF viewer; text sources render as plain text */}
+        <iframe src={fileUrl} title={current?.source_name ?? id} className="min-h-0 w-full flex-1 border-0" />
+      </div>
     </div>
   )
 }
