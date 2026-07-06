@@ -364,8 +364,15 @@ export default function Board() {
   )
   const hot = new Set([...needsYou, ...inMotion].map((p) => p.name))
   // Recent is a glance, not a ledger — cap it; the rest is one row away
-  // in the archive clusters
-  const recent = sorted.filter((p) => !hot.has(p.name) && isRecent(p)).slice(0, 8)
+  // in the archive clusters. A just-created problem counts as recent
+  // even before its first event — burying it in the archive right
+  // after New Problem would lose the user's own work.
+  const justCreated = (p: BoardProblem) =>
+    p.status === 'idle' && now - Date.parse(p.created_at) < 2 * 86400_000
+  const recent = sorted
+    .filter((p) => !hot.has(p.name) && (isRecent(p) || justCreated(p)))
+    .sort((a, b) => Number(justCreated(b)) - Number(justCreated(a)))
+    .slice(0, 8)
   for (const p of recent) hot.add(p.name)
   const archive = sorted.filter((p) => !hot.has(p.name))
   const clusters = clusterize(archive)
