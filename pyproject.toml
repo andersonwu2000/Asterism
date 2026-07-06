@@ -22,6 +22,7 @@ dependencies = [
     "mcp>=1.27",
     "starlette>=0.52",
     "uvicorn>=0.42",
+    "fastapi>=0.115",
     "PyYAML>=6.0",
     "psutil>=7.2",
 ]
@@ -30,6 +31,8 @@ dependencies = [
 dev = [
     "pytest>=8.4",
     "ruff>=0.15",
+    # starlette/fastapi TestClient transport for tests/test_serve_api.py
+    "httpx>=0.28",
 ]
 
 [project.scripts]

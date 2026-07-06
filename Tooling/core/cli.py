@@ -1445,137 +1445,164 @@ def cmd_review(args: argparse.Namespace) -> int:
 # and pipeline code must not import the CLI entrypoint layer.
 
 
+def _daemon_live_pid(workspace: Path) -> "int | None":
+    """Singleton-lock liveness: the daemon's pid iff the lock file names
+    a live daemon instance (pid + start-time identity, the same
+    reuse-proof check the lock itself uses)."""
+    from . import dispatcher as _disp
+    pid_file = workspace / ".asterism" / "daemon.pid"
+    try:
+        lines = pid_file.read_text(encoding="utf-8").splitlines()
+        pid = int(lines[0].strip())
+        start = float(lines[1].strip()) if len(lines) > 1 else None
+    except (OSError, ValueError, IndexError):
+        return None
+    return pid if _disp._lock_held_by_live_daemon(pid, start) else None
+
+
+def _daemon_in_flight(workspace: Path) -> int:
+    try:
+        conn = db.connect(workspace / "asterism.db")
+        n = conn.execute(
+            "SELECT count(*) FROM queue WHERE owner_pid IS NOT NULL"
+        ).fetchone()[0]
+        conn.close()
+        return int(n)
+    except Exception:  # noqa: BLE001 — status must not crash
+        return -1
+
+
+def daemon_status(workspace: Path) -> dict:
+    """Daemon lifecycle status dict (shared by `asterism daemon status`
+    and the serve API — one implementation, two surfaces)."""
+    from . import dispatcher as _disp
+    pid = _daemon_live_pid(workspace)
+    return {
+        "running": pid is not None,
+        "pid": pid,
+        "stopping": _disp.stop_file_path(workspace).exists(),
+        "in_flight_leases": _daemon_in_flight(workspace),
+    }
+
+
+def daemon_start(workspace: Path, *, scope: "str | None" = None,
+                 once: bool = False) -> "tuple[int, str]":
+    """Detached daemon start. Returns (exit_code, message). Refuses (1)
+    while a daemon holds the singleton lock; on success writes the
+    per-run log + the daemon-current.txt pointer the SSE tail follows."""
+    import subprocess
+    from . import dispatcher as _disp
+    pid = _daemon_live_pid(workspace)
+    if pid is not None:
+        return 1, (f"REFUSED: a daemon is already running (pid {pid}) — "
+                   f"one daemon per workspace (singleton lock)")
+    _disp.stop_file_path(workspace).unlink(missing_ok=True)
+    logs = workspace / ".asterism" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_path = logs / f"daemon_{stamp}.log"
+    argv = [sys.executable, "-m", "Tooling.core.cli", "run"]
+    if once:
+        argv.append("--once")
+    if scope:
+        argv += ["--scope", scope]
+    else:
+        argv.append("--all-problems")
+    creationflags = 0
+    popen_kwargs: dict = {}
+    if os.name == "nt":
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        creationflags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+    env = dict(os.environ)
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    with open(log_path, "ab") as logf:
+        proc = subprocess.Popen(
+            argv, cwd=str(workspace), stdout=logf,
+            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            creationflags=creationflags, env=env, **popen_kwargs)
+    # SSE tail pointer (charter appendix): per-run log filenames need
+    # a stable "latest log" resolution point.
+    (logs / "daemon-current.txt").write_text(
+        str(log_path), encoding="utf-8")
+    return 0, f"started daemon pid {proc.pid}; log: {log_path}"
+
+
+def daemon_stop(workspace: Path, *, force: bool = False) -> "tuple[int, str]":
+    """Graceful stop by default (daemon.stop file: the tick loop stops
+    spawning, drains in-flight workers, exits cleanly). force=True is the
+    explicit hard-kill override; the message carries the in-flight count
+    being abandoned (lease sweep + startup recovery reclaim it)."""
+    from . import dispatcher as _disp
+    stop_file = _disp.stop_file_path(workspace)
+    pid = _daemon_live_pid(workspace)
+    if pid is None:
+        stop_file.unlink(missing_ok=True)
+        return 0, "no daemon running"
+    if force:
+        n = _daemon_in_flight(workspace)
+        try:
+            import psutil
+            psutil.Process(pid).terminate()
+        except Exception as e:  # noqa: BLE001
+            return 1, f"terminate failed: {e}"
+        return 0, (f"force-stopping pid {pid} ({n} in-flight lease(s) — "
+                   f"lease sweep + startup recovery will reclaim)")
+    stop_file.write_text(db.now(), encoding="utf-8")
+    return 0, (f"stop requested (graceful): daemon pid {pid} will finish "
+               f"in-flight work and exit; `daemon status` to watch, "
+               f"`daemon stop --force` to terminate immediately")
+
+
 def cmd_daemon(args) -> int:
     """Daemon lifecycle (frontend charter §5-3): detached start / graceful
-    stop / status — the serve API's process-control backend, with the
-    operator's manual pre-flight discipline built in as mechanism:
-
-      status  — singleton-lock liveness (pid+start-time identity, the
-                same reuse-proof check the lock itself uses) + in-flight
-                lease count + pending stop request.
-      start   — refuses (with the live pid) while a daemon holds the
-                lock; spawns `asterism run` detached, log to
-                .asterism/logs/, writes the daemon-current.txt pointer
-                the SSE tail follows.
-      stop    — graceful by default: creates daemon.stop; the tick loop
-                stops spawning, drains in-flight workers, exits cleanly.
-                --force is the explicit hard-kill override (terminates
-                the PID; the kill-on-close job reaps the worker tree,
-                lease sweep + startup recovery reclaim the rest) and
-                prints the in-flight count it is abandoning.
-    """
+    stop / status — thin CLI shell over daemon_status/start/stop (the
+    serve API imports those directly)."""
     import json as _json
-    import subprocess
     from ..core import config as _config
-    from . import dispatcher as _disp
 
     workspace = _config.resolve_workspace(getattr(args, "workspace", None))
-    pid_file = workspace / ".asterism" / "daemon.pid"
-    stop_file = _disp.stop_file_path(workspace)
-
-    def _lock() -> "tuple[int, float | None] | None":
-        try:
-            lines = pid_file.read_text(encoding="utf-8").splitlines()
-            pid = int(lines[0].strip())
-            start = float(lines[1].strip()) if len(lines) > 1 else None
-            return pid, start
-        except (OSError, ValueError, IndexError):
-            return None
-
-    def _live_pid() -> "int | None":
-        lk = _lock()
-        if lk is None:
-            return None
-        pid, start = lk
-        return pid if _disp._lock_held_by_live_daemon(pid, start) else None
-
-    def _in_flight() -> int:
-        try:
-            conn = db.connect(workspace / "asterism.db")
-            n = conn.execute(
-                "SELECT count(*) FROM queue WHERE owner_pid IS NOT NULL"
-            ).fetchone()[0]
-            conn.close()
-            return int(n)
-        except Exception:  # noqa: BLE001 — status must not crash
-            return -1
-
     action = args.daemon_action
     if action == "status":
-        pid = _live_pid()
-        print(_json.dumps({
-            "running": pid is not None,
-            "pid": pid,
-            "stopping": stop_file.exists(),
-            "in_flight_leases": _in_flight(),
-        }))
+        print(_json.dumps(daemon_status(workspace)))
         return 0
-
     if action == "start":
-        pid = _live_pid()
-        if pid is not None:
-            print(f"REFUSED: a daemon is already running (pid {pid}) — "
-                  f"one daemon per workspace (singleton lock)")
-            return 1
-        stop_file.unlink(missing_ok=True)
-        logs = workspace / ".asterism" / "logs"
-        logs.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_path = logs / f"daemon_{stamp}.log"
-        argv = [sys.executable, "-m", "Tooling.core.cli", "run"]
-        if getattr(args, "once", False):
-            argv.append("--once")
-        if getattr(args, "scope", None):
-            argv += ["--scope", args.scope]
-        else:
-            argv.append("--all-problems")
-        creationflags = 0
-        popen_kwargs: dict = {}
-        if os.name == "nt":
-            DETACHED_PROCESS = 0x00000008
-            CREATE_NEW_PROCESS_GROUP = 0x00000200
-            creationflags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-        else:
-            popen_kwargs["start_new_session"] = True
-        env = dict(os.environ)
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-        with open(log_path, "ab") as logf:
-            proc = subprocess.Popen(
-                argv, cwd=str(workspace), stdout=logf,
-                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                creationflags=creationflags, env=env, **popen_kwargs)
-        # SSE tail pointer (charter appendix): per-run log filenames need
-        # a stable "latest log" resolution point.
-        (logs / "daemon-current.txt").write_text(
-            str(log_path), encoding="utf-8")
-        print(f"started daemon pid {proc.pid}; log: {log_path}")
-        return 0
-
+        code, msg = daemon_start(
+            workspace, scope=getattr(args, "scope", None),
+            once=getattr(args, "once", False))
+        print(msg)
+        return code
     if action == "stop":
-        pid = _live_pid()
-        if pid is None:
-            stop_file.unlink(missing_ok=True)
-            print("no daemon running")
-            return 0
-        if getattr(args, "force", False):
-            n = _in_flight()
-            print(f"force-stopping pid {pid} ({n} in-flight lease(s) — "
-                  f"lease sweep + startup recovery will reclaim)")
-            try:
-                import psutil
-                psutil.Process(pid).terminate()
-            except Exception as e:  # noqa: BLE001
-                print(f"terminate failed: {e}")
-                return 1
-            return 0
-        stop_file.write_text(db.now(), encoding="utf-8")
-        print(f"stop requested (graceful): daemon pid {pid} will finish "
-              f"in-flight work and exit; `daemon status` to watch, "
-              f"`daemon stop --force` to terminate immediately")
-        return 0
-
+        code, msg = daemon_stop(
+            workspace, force=getattr(args, "force", False))
+        print(msg)
+        return code
     print(f"unknown daemon action {action!r}")
     return 2
+
+
+def cmd_serve(args) -> int:
+    """`asterism serve` — the localhost web UI (frontend charter §0
+    form A). One process per workspace; reads are connect_readonly,
+    writes go through the same chokepoints the CLI uses.
+
+    chdir to the workspace before serving: the write chokepoints
+    (cmd_approve_ingest etc.) open the DB via the cwd-relative default
+    path, same as every terminal invocation."""
+    import uvicorn
+    from ..core import config as _config
+    from ..serve.app import create_app
+
+    workspace = _config.resolve_workspace(getattr(args, "workspace", None))
+    os.chdir(workspace)
+    host = "127.0.0.1"
+    port = int(getattr(args, "port", None) or 8642)
+    app = create_app(workspace)
+    print(f"Asterism UI: http://{host}:{port}/  (workspace: {workspace})")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+    return 0
 
 
 def _resolve_reject_target(conn, decl: str, problem: str | None):
@@ -2127,6 +2154,15 @@ def main(argv: list[str] | None = None) -> int:
     p_daemon.add_argument("--workspace", default=None,
                           help="workspace root (default: resolve_workspace)")
     p_daemon.set_defaults(func=cmd_daemon)
+
+    p_serve = sub.add_parser(
+        "serve",
+        help="run the localhost web UI (FastAPI; frontend charter §0)")
+    p_serve.add_argument("--port", type=int, default=8642,
+                         help="bind port (default 8642; host is 127.0.0.1)")
+    p_serve.add_argument("--workspace", default=None,
+                         help="workspace root (default: resolve_workspace)")
+    p_serve.set_defaults(func=cmd_serve)
 
     p_reject = sub.add_parser(
         "reject",
