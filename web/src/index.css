@@ -21,7 +21,8 @@
   --color-ink-faint: #646c80;
 
   /* semantic */
-  --color-star: #e5c15d; /* proved / lit constellation node */
+  --color-star: #e5c15d; /* brand gold — badges, library, progress accents */
+  --color-starlight: #edf1fa; /* lit stars in the graphs (real night sky = white) */
   --color-accent: #74a5f8; /* proving / interactive */
   --color-danger: #ec5f66; /* awaiting_human, stalled */
   --color-warn: #d9a039; /* signoff pending, near-limit */

@@ -7,13 +7,17 @@ import GalaxyCard from '../components/GalaxyCard'
 import type { BoardProblem, BoardResponse } from '../lib/types'
 
 function GoalCounts({ p }: { p: BoardProblem }) {
-  if (p.goals.total === 0) return <span className="text-xs text-ink-faint">—</span>
+  // Zero-progress rows render as quiet dashes — nine "0 open 0 proved"
+  // rows in a row is pure noise (design review). Numbers are UI, not
+  // code: sans + tabular numerals, aligned sub-columns.
+  if (p.goals.total === 0 || (p.goals.open === 0 && p.goals.proved === 0))
+    return <span className="text-xs text-ink-faint">—</span>
   return (
-    <span className="tnum flex items-center gap-3 font-mono text-xs">
-      <span className={p.goals.open > 0 ? 'text-accent' : 'text-ink-faint'}>
+    <span className="tnum flex items-center text-xs">
+      <span className={`w-14 ${p.goals.open > 0 ? 'text-accent' : 'text-ink-faint'}`}>
         {p.goals.open} open
       </span>
-      <span className={p.goals.proved > 0 ? 'text-star' : 'text-ink-faint'}>
+      <span className={`w-18 ${p.goals.proved > 0 ? 'text-ink-dim' : 'text-ink-faint'}`}>
         {p.goals.proved} proved
       </span>
       {p.goals.shelved > 0 && <span className="text-ink-faint">{p.goals.shelved} shelved</span>}
@@ -21,16 +25,22 @@ function GoalCounts({ p }: { p: BoardProblem }) {
   )
 }
 
-/** Tiny progress bar: proved fraction of all goals, lit like a
- * constellation filling in. Hidden until there is any progress to show. */
+/** Progress: proved fill on a visible track, with the open fraction as
+ * a second (accent) segment — complete vs in-progress reads at a
+ * glance instead of two identical full bars. */
 function Progress({ p }: { p: BoardProblem }) {
   if (p.goals.total === 0 || (p.goals.proved === 0 && p.goals.open === 0)) return null
-  const frac = p.goals.proved / p.goals.total
+  const proved = (p.goals.proved / p.goals.total) * 100
+  const open = (p.goals.open / p.goals.total) * 100
   return (
-    <div className="h-[3px] w-24 overflow-hidden rounded-full bg-surface-3">
+    <div className="flex h-[3px] w-24 overflow-hidden rounded-full bg-surface-3">
       <div
-        className="h-full rounded-full bg-star/80 transition-[width] duration-700"
-        style={{ width: `${frac * 100}%` }}
+        className="h-full bg-star/80 transition-[width] duration-700"
+        style={{ width: `${proved}%` }}
+      />
+      <div
+        className="h-full bg-accent/50 transition-[width] duration-700"
+        style={{ width: `${open}%` }}
       />
     </div>
   )
@@ -40,7 +50,7 @@ function Row({ p }: { p: BoardProblem }) {
   const needsAction = p.status === 'awaiting_human' || p.status === 'signoff_pending'
   return (
     <tr
-      className="h-11 cursor-pointer border-b border-edge/60 transition-colors duration-150 hover:bg-surface"
+      className="h-9 cursor-pointer border-b border-edge/60 transition-colors duration-150 hover:bg-surface"
       onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}
     >
       <td className="pr-4 pl-3">
@@ -180,19 +190,24 @@ export default function Board() {
         </div>
       )}
       <div className="mb-3 flex items-center gap-2">
-        <input
-          ref={filterRef}
-          className="w-64 rounded-md border border-edge bg-surface px-2.5 py-1.5 font-mono text-xs text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
-          placeholder="filter problems…  ( / )"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              setQuery('')
-              e.currentTarget.blur()
-            }
-          }}
-        />
+        <div className="relative">
+          <input
+            ref={filterRef}
+            className="w-64 rounded-md border border-edge bg-surface py-1.5 pr-8 pl-2.5 text-xs text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
+            placeholder="filter problems…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                setQuery('')
+                e.currentTarget.blur()
+              }
+            }}
+          />
+          <kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border border-edge bg-surface-2 px-1.5 text-[10px] text-ink-faint">
+            /
+          </kbd>
+        </div>
         <div className="flex flex-wrap gap-1.5">
           {STATUS_ORDER.filter((s) => (statusCounts.get(s) ?? 0) > 0).map((s) => (
             <button

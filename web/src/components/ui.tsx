@@ -40,12 +40,14 @@ export function Button({
 /** Problem status → dot + label chip. One visual language for every
  * state; awaiting_human is the single loud exception (it's the one
  * state that is strictly the human's move). */
+/* One attention system (design review): amber = the human's move
+ * (needs input / sign-off), red = broken or destructive only. */
 const STATUS_CHIP: Record<ProblemStatus, { label: string; cls: string; dot: string }> = {
   proving: { label: 'proving', cls: 'text-accent bg-accent/10', dot: 'bg-accent' },
-  awaiting_human: { label: 'needs input', cls: 'bg-danger/85 text-white', dot: 'bg-white' },
+  awaiting_human: { label: 'needs input', cls: 'bg-warn text-bg font-semibold', dot: 'bg-bg' },
   stalled: { label: 'stalled', cls: 'text-danger bg-danger/10', dot: 'bg-danger' },
   idle: { label: 'idle', cls: 'text-ink-faint', dot: 'bg-ink-faint/60' },
-  signoff_pending: { label: 'sign-off', cls: 'text-warn bg-warn/10', dot: 'bg-warn' },
+  signoff_pending: { label: 'sign-off', cls: 'text-warn bg-warn/15', dot: 'bg-warn' },
   ingested: { label: 'ingested', cls: 'text-ok bg-ok/10', dot: 'bg-ok' },
   bridged: { label: 'bridged', cls: 'text-star bg-star/10', dot: 'bg-star' },
 }

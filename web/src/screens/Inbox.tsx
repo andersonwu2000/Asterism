@@ -36,9 +36,16 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
     }
   }
 
+  // Decision-first anatomy (design review): headline = the short ask
+  // (reason when present — it's the strategist's TL;DR), actions above
+  // the fold, the long reasoning wall collapsed, diff = changed hunks.
+  const longQuestion = a.question.length > 280
+  const headline = a.reason || (longQuestion ? `Amend ${a.file} — decision needed` : a.question)
+  const [showReasoning, setShowReasoning] = useState(!longQuestion && !a.reason)
+
   return (
-    <div className="rounded-lg border border-danger/30 bg-surface p-4">
-      <div className="mb-1 flex items-center justify-between">
+    <div className="rounded-lg border border-warn/40 bg-surface p-4">
+      <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Link
             to={`/problems/${encodeURIComponent(a.problem)}`}
@@ -52,25 +59,12 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
         </div>
         <span className="text-[11px] text-ink-faint">{relTime(a.created_at)}</span>
       </div>
-      <p className="mb-1 text-sm text-ink">{a.question}</p>
-      {a.reason && <p className="mb-3 text-xs text-ink-dim">{a.reason}</p>}
 
-      {editing ? (
-        <textarea
-          className="mb-3 h-72 w-full resize-y rounded-md border border-edge bg-bg p-3 font-mono text-xs text-ink focus:border-accent focus:outline-none"
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          spellCheck={false}
-        />
-      ) : (
-        <div className="mb-3">
-          <DiffView left={a.current_body} right={a.proposed_body} />
-        </div>
-      )}
+      <p className="mb-3 max-w-[70ch] text-sm leading-relaxed text-ink">{headline}</p>
 
       {error && <div className="mb-2 text-xs text-danger">{error}</div>}
 
-      <div className="flex items-center gap-2">
+      <div className="mb-3 flex items-center gap-2">
         <Button variant="ok" disabled={busy} onClick={() => void resolve('accept')}>
           {editing ? 'Accept with edits' : 'Accept proposed'}
         </Button>
@@ -103,6 +97,31 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
           </Button>
         </div>
       </div>
+
+      {(longQuestion || a.reason) && (
+        <button
+          className="mb-2 text-xs text-ink-dim transition-colors hover:text-ink"
+          onClick={() => setShowReasoning((v) => !v)}
+        >
+          {showReasoning ? '▾ hide' : '▸ show'} the strategist's full reasoning
+        </button>
+      )}
+      {showReasoning && (longQuestion || a.reason) && (
+        <div className="mb-3 max-w-[75ch] rounded-md border border-edge bg-bg px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap text-ink-dim">
+          {a.question}
+        </div>
+      )}
+
+      {editing ? (
+        <textarea
+          className="h-72 w-full resize-y rounded-md border border-edge bg-bg p-3 font-mono text-xs text-ink focus:border-accent focus:outline-none"
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          spellCheck={false}
+        />
+      ) : (
+        <DiffView left={a.current_body} right={a.proposed_body} />
+      )}
     </div>
   )
 }

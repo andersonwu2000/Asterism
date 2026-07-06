@@ -8,15 +8,15 @@ import Telemetry from './screens/Telemetry'
 import type { Meta } from './lib/types'
 
 function DaemonChip({ meta }: { meta: Meta | null }) {
-  if (!meta) return <span className="text-xs text-ink-faint">engine…</span>
+  if (!meta) return <span className="px-2.5 text-xs text-ink-faint">engine…</span>
   const d = meta.daemon
   const label = d.stopping ? 'stopping' : d.running ? 'running' : 'idle'
-  const dot = d.stopping ? 'bg-warn' : d.running ? 'bg-ok' : 'bg-ink-faint'
+  const dot = d.stopping ? 'bg-warn' : d.running ? 'bg-ok animate-pulse' : 'bg-ink-faint'
   return (
     <Link
       to="/telemetry"
-      className="flex items-center gap-2 rounded-full bg-surface-2 px-3 py-1 text-xs text-ink-dim transition-colors hover:text-ink"
-      title={d.pid ? `daemon pid ${d.pid}` : 'daemon not running'}
+      className="group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
+      title={d.pid ? `daemon pid ${d.pid} — open engine page` : 'daemon not running — open engine page'}
     >
       <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
       daemon {label}
@@ -88,7 +88,7 @@ function NavItem({
       </span>
       <span className="flex-1">{label}</span>
       {badge !== undefined && badge > 0 && (
-        <span className="tnum rounded-full bg-danger/15 px-1.5 py-px text-[11px] font-medium text-danger">
+        <span className="tnum rounded-full bg-warn/15 px-1.5 py-px text-[11px] font-medium text-warn">
           {badge}
         </span>
       )}
@@ -121,9 +121,15 @@ function Shell() {
           </svg>
           <span className="text-[15px] font-semibold tracking-wide">Asterism</span>
         </Link>
-        <div className="mb-5 truncate px-2.5 text-[11px] text-ink-faint" title={meta?.workspace}>
-          {workspaceName}
-        </div>
+        {/* workspace label only when it differs from the product name —
+            otherwise "Asterism" would render three times in one column */}
+        {workspaceName && workspaceName.toLowerCase() !== 'asterism' ? (
+          <div className="mb-5 truncate px-2.5 text-[11px] text-ink-faint" title={meta?.workspace}>
+            {workspaceName}
+          </div>
+        ) : (
+          <div className="mb-4" />
+        )}
         <nav className="flex flex-col gap-0.5">
           <NavItem
             to="/"
@@ -145,14 +151,19 @@ function Shell() {
             active={section === 'telemetry'}
           />
         </nav>
-        <div className="mt-auto px-2.5 text-[11px] text-ink-faint/70">
-          {meta?.db === 'behind' && <span className="text-warn">db needs migration</span>}
+        <div className="mt-auto flex flex-col gap-1">
+          <DaemonChip meta={meta} />
+          {meta?.db === 'behind' && (
+            <span className="px-2.5 text-[11px] text-warn">db needs migration</span>
+          )}
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center justify-between border-b border-edge px-5">
+        <header className="flex h-11 shrink-0 items-center border-b border-edge px-5">
           <div className="flex items-baseline gap-2 text-[13px]">
-            <span className="text-ink-dim">{SECTION_TITLE[section] ?? 'Problems'}</span>
+            <Link to="/" className="text-ink-dim transition-colors hover:text-ink">
+              {SECTION_TITLE[section] ?? 'Problems'}
+            </Link>
             {section === 'problems' && route.segments[1] && (
               <>
                 <span className="text-ink-faint">/</span>
@@ -160,7 +171,6 @@ function Shell() {
               </>
             )}
           </div>
-          <DaemonChip meta={meta} />
         </header>
         <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           {section === 'inbox' ? (

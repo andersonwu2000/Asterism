@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Goal, Strategy, StrategyEdge } from '../lib/types'
-import { frontierView, layoutConstellation } from '../lib/layout'
+import { frontierView, layoutConstellation, X_GAP } from '../lib/layout'
 import type { LayoutNode } from '../lib/layout'
 
 /*
@@ -26,11 +26,18 @@ interface Props {
 function nodeStyle(g: Goal): { fill: string; stroke: string; glow: boolean; opacity: number } {
   switch (g.status) {
     case 'proved':
-      return { fill: 'var(--color-star)', stroke: 'var(--color-star)', glow: true, opacity: 1 }
+      return {
+        fill: 'var(--color-starlight)',
+        stroke: 'var(--color-starlight)',
+        glow: true,
+        opacity: 1,
+      }
     case 'attempting':
       return { fill: 'var(--color-accent)', stroke: 'var(--color-accent)', glow: true, opacity: 1 }
     case 'open':
-      return { fill: 'transparent', stroke: 'var(--color-accent)', glow: false, opacity: 0.9 }
+      // The live frontier is the interesting 7% — it glows; settled
+      // white stars recede (design review: invert the emphasis).
+      return { fill: 'transparent', stroke: 'var(--color-accent)', glow: true, opacity: 1 }
     case 'frozen':
       return { fill: 'transparent', stroke: 'var(--color-ink-faint)', glow: false, opacity: 0.8 }
     case 'pending_strategist_review':
@@ -51,10 +58,30 @@ function radius(g: Goal): number {
   return 5
 }
 
-/** Four-point star path (the logo shape) for root goals. */
-function starPath(R: number): string {
-  const d = R * 0.3
-  return `M0,${-R} L${d},${-d} L${R},0 L${d},${d} L0,${R} L${-d},${d} L${-R},0 L${-d},${-d} Z`
+/** Root goals render as a bright star with diffraction spikes — the
+ * telescope-photo look (thin cross rays), deliberately distinct from
+ * the four-point "spark" glyphs of other products. */
+function RootStar({ r, fill, stroke, opacity, glow }: {
+  r: number
+  fill: string
+  stroke: string
+  opacity: number
+  glow: boolean
+}) {
+  const spike = r * 2.1
+  return (
+    <g opacity={opacity}>
+      <line x1={-spike} y1={0} x2={spike} y2={0} stroke={stroke} strokeWidth={0.7} opacity={0.55} />
+      <line x1={0} y1={-spike} x2={0} y2={spike} stroke={stroke} strokeWidth={0.7} opacity={0.55} />
+      <circle
+        r={r * 0.85}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={1.2}
+        filter={glow ? 'url(#star-glow)' : undefined}
+      />
+    </g>
+  )
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -70,7 +97,7 @@ const STATUS_LABEL: Record<string, string> = {
 
 function edgeStroke(status: Strategy['status'], kind: 'strategy' | 'alias'): string {
   if (kind === 'alias') return 'var(--color-accent)'
-  if (status === 'succeeded') return 'var(--color-star)'
+  if (status === 'succeeded') return 'var(--color-starlight)'
   if (status === 'dead' || status === 'superseded') return 'var(--color-edge)'
   return 'var(--color-edge-strong)'
 }
@@ -133,6 +160,7 @@ export default function Constellation({
   const tx = view?.tx ?? 0
   const ty = view?.ty ?? 0
   const showLabels = k >= 1.05
+  const labelBudgetPx = X_GAP
 
   // Wheel zoom must preventDefault (page would scroll); React's
   // delegated wheel handlers are passive, so attach natively.
@@ -263,8 +291,10 @@ export default function Constellation({
                 x2={b.x}
                 y2={b.y}
                 stroke={edgeStroke(e.strategyStatus, e.kind)}
-                strokeWidth={e.strategyStatus === 'succeeded' ? 1.4 : 1}
-                strokeOpacity={dead ? 0.35 : e.kind === 'alias' ? 0.5 : 0.55}
+                strokeWidth={e.strategyStatus === 'succeeded' ? 1.2 : 1}
+                strokeOpacity={
+                  dead ? 0.35 : e.kind === 'alias' ? 0.5 : e.strategyStatus === 'succeeded' ? 0.38 : 0.55
+                }
                 strokeDasharray={e.kind === 'alias' ? '4 4' : undefined}
                 vectorEffect="non-scaling-stroke"
               />
@@ -277,7 +307,7 @@ export default function Constellation({
             if (!parent) return null
             const dead = isDead(b.status)
             const stroke = edgeStroke(b.status, 'strategy')
-            const opacity = dead ? 0.35 : 0.55
+            const opacity = dead ? 0.35 : b.status === 'succeeded' ? 0.38 : 0.55
             return (
               <g key={`s${b.strategyId}`}>
                 <line
@@ -370,14 +400,12 @@ export default function Constellation({
                   />
                 )}
                 {n.goal.origin === 'root' ? (
-                  <path
-                    d={starPath(r + 2)}
+                  <RootStar
+                    r={r}
                     fill={s.fill}
                     stroke={s.stroke}
-                    strokeWidth={1.2}
-                    strokeLinejoin="round"
                     opacity={s.opacity}
-                    filter={s.glow ? 'url(#star-glow)' : undefined}
+                    glow={s.glow}
                   />
                 ) : (
                   <circle
@@ -449,7 +477,8 @@ export default function Constellation({
                   <text
                     // Stagger label rows by in-layer parity so long
                     // slugs on adjacent stars don't collide; offsets are
-                    // screen-constant like the font.
+                    // screen-constant like the font. Truncation is
+                    // width-aware: never truncate into empty space.
                     y={r + (n.col % 2 === 0 ? 14 : 26) / k}
                     textAnchor="middle"
                     className="pointer-events-none select-none"
@@ -457,9 +486,12 @@ export default function Constellation({
                     fontSize={10.5 / k}
                     fontFamily="var(--font-mono)"
                   >
-                    {k >= 2 || n.goal.slug.length <= 16
-                      ? n.goal.slug
-                      : `${n.goal.slug.slice(0, 7)}…${n.goal.slug.slice(-7)}`}
+                    {(() => {
+                      const budget = Math.max(12, Math.floor((labelBudgetPx * k) / 6.4))
+                      return k >= 2 || n.goal.slug.length <= budget
+                        ? n.goal.slug
+                        : `${n.goal.slug.slice(0, Math.floor(budget / 2) - 1)}…${n.goal.slug.slice(-(Math.floor(budget / 2) - 1))}`
+                    })()}
                   </text>
                 )}
               </g>
@@ -500,6 +532,50 @@ export default function Constellation({
         </div>
       )}
 
+      {/* persistent mini-legend — the encodings must be self-describing */}
+      <div className="pointer-events-none absolute top-3 left-3 flex items-center gap-3 rounded-md bg-surface/80 px-2.5 py-1 text-[11px] text-ink-faint">
+        <span className="flex items-center gap-1">
+          <svg width="10" height="10" viewBox="-5 -5 10 10">
+            <circle r="3" fill="var(--color-starlight)" />
+          </svg>
+          proved
+        </span>
+        <span className="flex items-center gap-1">
+          <svg width="10" height="10" viewBox="-5 -5 10 10">
+            <circle r="3" fill="none" stroke="var(--color-accent)" strokeWidth="1.2" />
+          </svg>
+          open
+        </span>
+        <span className="flex items-center gap-1">
+          <svg width="12" height="12" viewBox="-6 -6 12 12">
+            <line x1="-5" y1="0" x2="5" y2="0" stroke="var(--color-starlight)" strokeWidth="0.7" />
+            <line x1="0" y1="-5" x2="0" y2="5" stroke="var(--color-starlight)" strokeWidth="0.7" />
+            <circle r="2.4" fill="var(--color-starlight)" />
+          </svg>
+          root
+        </span>
+        <span className="flex items-center gap-1">
+          <svg width="12" height="12" viewBox="-6 -6 12 12">
+            <circle r="2.4" fill="var(--color-starlight)" />
+            <circle r="4.6" fill="none" stroke="var(--color-starlight)" strokeWidth="0.7" opacity="0.6" />
+          </svg>
+          deliverable
+        </span>
+        <span className="flex items-center gap-1">
+          <svg width="12" height="12" viewBox="-6 -6 12 12">
+            <circle r="2.4" fill="none" stroke="var(--color-ink-faint)" strokeWidth="1" />
+            <circle
+              r="4.4"
+              fill="none"
+              stroke="var(--color-warn)"
+              strokeWidth="1.2"
+              strokeDasharray="14 28"
+              transform="rotate(-90)"
+            />
+          </svg>
+          attempts
+        </span>
+      </div>
       <div className="absolute bottom-3 left-3 flex overflow-hidden rounded-md border border-edge bg-surface">
         {(
           [

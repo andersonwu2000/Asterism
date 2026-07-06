@@ -212,6 +212,24 @@ export function layoutConstellation(
     }
   }
 
+  // Edge-free graphs (all-forward problems) degenerate into one long
+  // row; wrap them into a roughly 16:9 grid so the canvas fills
+  // instead of rendering a single line in a void.
+  if (layerKeys.length === 1 && (layers.get(0)?.length ?? 0) > 6) {
+    const ids = layers.get(0)!
+    const perRow = Math.max(3, Math.ceil(Math.sqrt(ids.length * 1.8)))
+    layers.clear()
+    layerKeys.length = 0
+    ids.forEach((id, i) => {
+      const row = Math.floor(i / perRow)
+      if (!layers.has(row)) {
+        layers.set(row, [])
+        layerKeys.push(row)
+      }
+      layers.get(row)!.push(id)
+    })
+  }
+
   // Coordinates: layers stacked top-down, rows centered on the widest.
   const maxCount = Math.max(...layerKeys.map((k) => layers.get(k)!.length), 1)
   const width = PAD * 2 + Math.max(0, maxCount - 1) * X_GAP

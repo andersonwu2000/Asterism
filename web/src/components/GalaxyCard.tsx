@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { navigate } from '../lib/router'
 import { relTime } from '../lib/format'
+import { StatusBadge } from './ui'
 import type { BoardProblem } from '../lib/types'
 
 /*
@@ -32,13 +33,24 @@ function mulberry32(seed: number): () => number {
 }
 
 const HALO: Record<string, string> = {
-  awaiting_human: 'border-danger/60',
-  signoff_pending: 'border-warn/60',
+  awaiting_human: 'border-warn/70',
+  signoff_pending: 'border-warn/50',
   stalled: 'border-danger/40',
-  bridged: 'border-star/50',
-  ingested: 'border-ok/40',
+  bridged: 'border-star/40',
+  ingested: 'border-ok/30',
   proving: 'border-accent/40',
   idle: 'border-edge',
+}
+
+/** Attention states carry the full badge on the card — a 1px halo is
+ * not a signal (design review); dormant cards stay quiet. */
+const BADGE_STATES = new Set(['awaiting_human', 'signoff_pending', 'stalled', 'proving'])
+
+/** Truncate the namespace prefix, never the leaf — two adjacent
+ * `Minif2f.mathd_algebr…` cards are indistinguishable. */
+function displayName(name: string, budget = 26): string {
+  if (name.length <= budget) return name
+  return `…${name.slice(name.length - budget + 1)}`
 }
 
 export default function GalaxyCard({ p }: { p: BoardProblem }) {
@@ -79,9 +91,9 @@ export default function GalaxyCard({ p }: { p: BoardProblem }) {
               y1={s.y}
               x2={t.x}
               y2={t.y}
-              stroke={i < litCount - 1 ? 'var(--color-star)' : 'var(--color-edge-strong)'}
+              stroke={i < litCount - 1 ? 'var(--color-starlight)' : 'var(--color-edge-strong)'}
               strokeWidth={0.5}
-              strokeOpacity={i < litCount - 1 ? 0.5 : 0.35}
+              strokeOpacity={i < litCount - 1 ? 0.4 : 0.35}
             />
           )
         })}
@@ -93,19 +105,22 @@ export default function GalaxyCard({ p }: { p: BoardProblem }) {
               cx={s.x}
               cy={s.y}
               r={s.r}
-              fill={lit ? 'var(--color-star)' : 'transparent'}
-              stroke={lit ? 'var(--color-star)' : 'var(--color-ink-faint)'}
+              fill={lit ? 'var(--color-starlight)' : 'transparent'}
+              stroke={lit ? 'var(--color-starlight)' : 'var(--color-ink-faint)'}
               strokeWidth={0.8}
-              opacity={lit ? 0.95 : 0.5}
+              opacity={lit ? 0.9 : 0.5}
             />
           )
         })}
       </svg>
       <div className="border-t border-edge/60 px-3 py-2">
-        <div className="truncate font-mono text-xs text-ink" title={p.name}>
-          {p.name}
+        <div className="flex items-center justify-between gap-2">
+          <div className="truncate font-mono text-xs text-ink" title={p.name}>
+            {displayName(p.name)}
+          </div>
+          {BADGE_STATES.has(p.status) && <StatusBadge status={p.status} />}
         </div>
-        <div className="mt-0.5 flex items-center justify-between text-[11px] text-ink-faint">
+        <div className="tnum mt-0.5 flex items-center justify-between text-[11px] text-ink-faint">
           <span>
             {p.goals.total === 0 ? 'no goals' : `${p.goals.proved}/${p.goals.total} proved`}
           </span>

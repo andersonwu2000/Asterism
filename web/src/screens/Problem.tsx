@@ -96,11 +96,6 @@ export default function Problem({ name }: { name: string }) {
   return (
     <div className="flex h-full flex-col">
       <div className="shrink-0 border-b border-edge px-6 pt-4">
-        <div className="mb-1 flex items-center gap-3">
-          <Link to="/" className="text-xs text-ink-faint hover:text-ink">
-            ← board
-          </Link>
-        </div>
         <div className="flex items-baseline justify-between">
           <div className="flex items-center gap-3">
             <h1 className="font-mono text-base font-semibold">{data.name}</h1>
