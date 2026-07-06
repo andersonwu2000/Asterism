@@ -76,11 +76,16 @@ export default function GalaxyCard({ p }: { p: BoardProblem }) {
 
   return (
     <button
-      className={`group flex flex-col rounded-lg border bg-surface text-left transition-all duration-150 hover:-translate-y-0.5 hover:bg-surface-2 ${
+      className={`group relative flex flex-col rounded-lg border bg-surface text-left transition-all duration-150 hover:-translate-y-0.5 hover:bg-surface-2 ${
         HALO[p.status] ?? 'border-edge'
       }`}
       onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}
     >
+      {BADGE_STATES.has(p.status) && (
+        <div className="absolute top-2 right-2 z-10">
+          <StatusBadge status={p.status} />
+        </div>
+      )}
       <svg viewBox="0 0 140 80" className="w-full">
         {stars.slice(0, -1).map((s, i) => {
           const t = stars[i + 1]
@@ -114,11 +119,9 @@ export default function GalaxyCard({ p }: { p: BoardProblem }) {
         })}
       </svg>
       <div className="border-t border-edge/60 px-3 py-2">
-        <div className="flex items-center justify-between gap-2">
-          <div className="truncate font-mono text-xs text-ink" title={p.name}>
-            {displayName(p.name)}
-          </div>
-          {BADGE_STATES.has(p.status) && <StatusBadge status={p.status} />}
+        {/* badge on its own row over the art keeps the name whole */}
+        <div className="truncate font-mono text-xs text-ink" title={p.name}>
+          {displayName(p.name)}
         </div>
         <div className="tnum mt-0.5 flex items-center justify-between text-[11px] text-ink-faint">
           <span>

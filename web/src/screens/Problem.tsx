@@ -103,10 +103,16 @@ export default function Problem({ name }: { name: string }) {
           </div>
           <div className="flex items-center gap-3">
             {data.goals.length > 0 && (
-              <div className="h-[3px] w-28 overflow-hidden rounded-full bg-surface-3">
+              <div className="flex h-[3px] w-28 overflow-hidden rounded-full bg-surface-3">
                 <div
-                  className="h-full rounded-full bg-star/80 transition-[width] duration-700"
+                  className="h-full bg-star/80 transition-[width] duration-700"
                   style={{ width: `${(proved / data.goals.length) * 100}%` }}
+                />
+                <div
+                  className="h-full bg-accent/50 transition-[width] duration-700"
+                  style={{
+                    width: `${(data.goals.filter((g) => g.status === 'open' || g.status === 'attempting').length / data.goals.length) * 100}%`,
+                  }}
                 />
               </div>
             )}
