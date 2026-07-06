@@ -10,19 +10,19 @@ cd web && npm install && npm run build && cd ..
 asterism serve            # http://127.0.0.1:8642
 ```
 
-One serve process per workspace. The board is the survey sheet — every
-problem in attention order (needs you / in motion / recent / archive,
-big namespaces folded into clusters). Each problem opens as a
-constellation: goals are stars that light up as they're proved, defs
-render as diamonds (the meaning-bearers a human vouches for),
-strategies are the lines that bind them. The Library page draws the
-harvested corpus as one sky — each bridged problem a constellation of
-its real declarations, searchable (a query lights the matching stars).
-The inbox collects everything that needs a human (amend requests with
-a word-level diff, ingest sign-offs that resolve each anchor/claim to
-its actual statement), and the engine page starts/stops the daemon and
-tails its log. The UI is read-only against the engine database; every
-action goes through the same chokepoints as the CLI.
+One serve process per workspace. The whole lifecycle runs in the
+browser: create a problem from a name and a natural-language
+description, press Run on its page (the engine works one problem at a
+time), and watch the constellation grow — goals are stars that light
+up as they're proved, defs render as diamonds, newborn stars carry a
+brief halo. The Manifest edits live on the problem's Manifest tab
+(natural language + control-style settings, hot-reloaded). The Library
+page draws the harvested corpus as one sky — searchable, and each star
+copies its citation. The inbox collects everything that needs a human,
+with age escalation on blocking requests. The engine page carries
+status, model/knob settings, usage, and a developer-log fold. The UI
+is read-only against the engine database; every action goes through
+the same chokepoints as the CLI.
 
 `cd web && npm run smoke` runs the Playwright smoke suite against a
 live serve.

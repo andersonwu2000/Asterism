@@ -9,20 +9,28 @@ and one polling hook.
 ## Screens
 
 - **Board** (`#/`) — the survey sheet. Problems in attention order:
-  needs you / in motion / recent / archive; archive namespaces fold
-  into cluster rows. `/` focuses the filter.
-- **Problem** (`#/problems/<name>`) — the constellation. Goals as
-  stars (defs are diamonds, Props circles; proved lights up starlight,
-  the live frontier glows accent), strategies as edge bundles,
-  frontier focus for big graphs; tabs for Goals / Timeline / Files
-  (Manifest renders as a typeset document).
-- **Library** (`#/library`) — the atlas. The harvested corpus as one
-  sky: each bridged problem a constellation of its real declarations,
-  line-art joins only the brightest; search lights matching stars.
+  needs you / in motion / recent (incl. just-created) / archive with
+  namespace clusters. `/` focuses the filter; "New problem" lives here.
+- **New problem** (`#/new`) — a name + a natural-language description
+  (+ optional pinned Defs.lean/Root.lean behind an advanced fold). The
+  server composes the Manifest; no yaml in the UI.
+- **Problem** (`#/problems/<name>`) — the cockpit. Run/Stop for THIS
+  problem in the header (single-problem runs are the only mode);
+  health line (last progress / top blocker / paused-on-you);
+  constellation (defs are diamonds, newborn stars get a welcome halo,
+  struggle leaves grey residue); Manifest tab = NL instructions +
+  control-style settings, hot-reloaded, locked while an amend is
+  pending; Goals / Timeline (day rules, filters) / Files (Manifest
+  typeset, Lean highlighted).
+- **Library** (`#/library`) — the atlas. Each harvested problem is a
+  constellation of its real declarations; search lights matching
+  stars; click a star to copy its citation (shift: with import).
 - **Inbox** (`#/inbox`) — decisions. Amend requests with word-level
-  diffs; ingest sign-offs resolve each anchor/claim to its statement
-  (vouching means reading the mathematics).
-- **Engine** (`#/telemetry`) — daemon control, live log, usage.
+  diffs + age escalation; ingest sign-offs resolve anchors/claims to
+  their statements.
+- **Engine** (`#/telemetry`) — status (what it's working on), settings
+  (per-pipeline models + engine knobs, comment-preserving yaml edits),
+  usage (this run), and a developer-log fold.
 
 ## Development
 
