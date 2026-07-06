@@ -51,6 +51,12 @@ function radius(g: Goal): number {
   return 5
 }
 
+/** Four-point star path (the logo shape) for root goals. */
+function starPath(R: number): string {
+  const d = R * 0.3
+  return `M0,${-R} L${d},${-d} L${R},0 L${d},${d} L0,${R} L${-d},${d} L${-R},0 L${-d},${-d} Z`
+}
+
 const STATUS_LABEL: Record<string, string> = {
   open: 'open',
   attempting: 'attempting',
@@ -363,23 +369,35 @@ export default function Constellation({
                     strokeDasharray="2 3"
                   />
                 )}
-                <circle
-                  r={r}
-                  fill={s.fill}
-                  stroke={s.stroke}
-                  strokeWidth={1.4}
-                  opacity={s.opacity}
-                  filter={s.glow ? 'url(#star-glow)' : undefined}
-                >
-                  {n.goal.status === 'attempting' && (
-                    <animate
-                      attributeName="opacity"
-                      values="1;0.45;1"
-                      dur="1.6s"
-                      repeatCount="indefinite"
-                    />
-                  )}
-                </circle>
+                {n.goal.origin === 'root' ? (
+                  <path
+                    d={starPath(r + 2)}
+                    fill={s.fill}
+                    stroke={s.stroke}
+                    strokeWidth={1.2}
+                    strokeLinejoin="round"
+                    opacity={s.opacity}
+                    filter={s.glow ? 'url(#star-glow)' : undefined}
+                  />
+                ) : (
+                  <circle
+                    r={r}
+                    fill={s.fill}
+                    stroke={s.stroke}
+                    strokeWidth={1.4}
+                    opacity={s.opacity}
+                    filter={s.glow ? 'url(#star-glow)' : undefined}
+                  >
+                    {n.goal.status === 'attempting' && (
+                      <animate
+                        attributeName="opacity"
+                        values="1;0.45;1"
+                        dur="1.6s"
+                        repeatCount="indefinite"
+                      />
+                    )}
+                  </circle>
+                )}
                 {n.goal.is_deliverable && (
                   <circle r={r + 3} fill="none" stroke={s.stroke} strokeWidth={0.7} opacity={0.6} />
                 )}

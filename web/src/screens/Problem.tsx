@@ -106,10 +106,20 @@ export default function Problem({ name }: { name: string }) {
             <h1 className="font-mono text-base font-semibold">{data.name}</h1>
             <StatusBadge status={data.status} />
           </div>
-          <div className="text-xs text-ink-faint">
-            {proved}/{data.goals.length} proved
-            {data.ingested_at && ` · ingested ${relTime(data.ingested_at)}`}
-            {data.library_bridged_at && ` · bridged ${relTime(data.library_bridged_at)}`}
+          <div className="flex items-center gap-3">
+            {data.goals.length > 0 && (
+              <div className="h-[3px] w-28 overflow-hidden rounded-full bg-surface-3">
+                <div
+                  className="h-full rounded-full bg-star/80 transition-[width] duration-700"
+                  style={{ width: `${(proved / data.goals.length) * 100}%` }}
+                />
+              </div>
+            )}
+            <div className="tnum text-xs text-ink-faint">
+              {proved}/{data.goals.length} proved
+              {data.ingested_at && ` · ingested ${relTime(data.ingested_at)}`}
+              {data.library_bridged_at && ` · bridged ${relTime(data.library_bridged_at)}`}
+            </div>
           </div>
         </div>
         {(data.status === 'awaiting_human' || data.status === 'signoff_pending') && (
