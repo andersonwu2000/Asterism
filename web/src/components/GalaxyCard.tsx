@@ -61,7 +61,7 @@ export default function GalaxyCard({ p }: { p: BoardProblem }) {
 
   return (
     <button
-      className={`group flex flex-col rounded-lg border bg-surface text-left transition-colors hover:bg-surface-2 ${
+      className={`group flex flex-col rounded-lg border bg-surface text-left transition-all duration-150 hover:-translate-y-0.5 hover:bg-surface-2 ${
         HALO[p.status] ?? 'border-edge'
       }`}
       onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}

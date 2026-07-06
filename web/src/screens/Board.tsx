@@ -98,7 +98,18 @@ export default function Board() {
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<string | null>(null)
 
-  if (loading) return <div className="p-8 text-sm text-ink-faint">Loading…</div>
+  if (loading)
+    return (
+      <div className="mx-auto max-w-5xl px-6 py-10">
+        {Array.from({ length: 7 }, (_, i) => (
+          <div
+            key={i}
+            className="mb-3 h-9 animate-pulse rounded-md bg-surface"
+            style={{ animationDelay: `${i * 80}ms`, opacity: 1 - i * 0.11 }}
+          />
+        ))}
+      </div>
+    )
   if (error && !data) return <ErrorState error={error} />
   const problems = data?.problems ?? []
 

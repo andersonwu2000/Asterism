@@ -187,6 +187,24 @@ export default function Constellation({
     visibleEdges.length +
     layout.bundles.filter((b) => isDead(b.status)).length
 
+  // Faint background stardust — deterministic per problem, pure
+  // atmosphere (opacity kept below signal level).
+  const dust = useMemo(() => {
+    let h = 88172645
+    const rand = () => {
+      h ^= h << 13
+      h ^= h >>> 17
+      h ^= h << 5
+      return ((h >>> 0) % 1000) / 1000
+    }
+    return Array.from({ length: 70 }, () => ({
+      x: rand() * 1600 - 200,
+      y: rand() * 1200 - 200,
+      r: 0.5 + rand() * 0.9,
+      o: 0.04 + rand() * 0.1,
+    }))
+  }, [])
+
   if (layout.nodes.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-ink-faint">
@@ -216,6 +234,16 @@ export default function Constellation({
           </filter>
         </defs>
         <g transform={`translate(${tx},${ty}) scale(${k})`}>
+          {dust.map((d, i) => (
+            <circle
+              key={`d${i}`}
+              cx={d.x}
+              cy={d.y}
+              r={d.r / Math.max(k, 0.5)}
+              fill="var(--color-ink)"
+              opacity={d.o}
+            />
+          ))}
           {visibleEdges.map((e, i) => {
             const a = byId.get(e.from)
             const b = byId.get(e.to)
@@ -424,10 +452,16 @@ export default function Constellation({
 
       {hovered && view !== null && (
         <div
-          className="pointer-events-none absolute z-10 max-w-sm rounded-md border border-edge-strong bg-surface-2 px-3 py-2 shadow-lg"
+          className="pointer-events-none absolute z-10 max-w-sm rounded-md border border-edge-strong bg-surface-3 px-3 py-2"
           style={{
-            left: tx + hovered.x * k + 14,
-            top: ty + hovered.y * k + 14,
+            left: Math.min(
+              tx + hovered.x * k + 14,
+              (containerRef.current?.clientWidth ?? 800) - 340,
+            ),
+            top: Math.min(
+              ty + hovered.y * k + 14,
+              (containerRef.current?.clientHeight ?? 600) - 120,
+            ),
           }}
         >
           <div className="mb-1 flex items-center gap-2">
@@ -448,6 +482,43 @@ export default function Constellation({
         </div>
       )}
 
+      <div className="absolute bottom-3 left-3 flex overflow-hidden rounded-md border border-edge bg-surface">
+        {(
+          [
+            ['−', 0.7],
+            ['+', 1.45],
+          ] as const
+        ).map(([label, factor]) => (
+          <button
+            key={label}
+            className="px-2.5 py-1 text-sm text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
+            title={label === '+' ? 'zoom in' : 'zoom out'}
+            onClick={() => {
+              const v = viewRef.current
+              const el = containerRef.current
+              if (!v || !el) return
+              const { width: cw, height: ch } = el.getBoundingClientRect()
+              const nk = Math.min(4, Math.max(0.25, v.k * factor))
+              const next = {
+                k: nk,
+                tx: cw / 2 - ((cw / 2 - v.tx) / v.k) * nk,
+                ty: ch / 2 - ((ch / 2 - v.ty) / v.k) * nk,
+              }
+              viewRef.current = next
+              setView(next)
+            }}
+          >
+            {label}
+          </button>
+        ))}
+        <button
+          className="border-l border-edge px-2.5 py-1 text-xs text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
+          title="fit to view"
+          onClick={() => setView(null)}
+        >
+          fit
+        </button>
+      </div>
       <div className="absolute right-3 bottom-3 flex gap-2">
         {focusable && (
           <button
