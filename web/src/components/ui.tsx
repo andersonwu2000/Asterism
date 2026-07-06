@@ -46,7 +46,7 @@ export function Button({
 /* One attention system (design review): amber = the human's move
  * (needs input / sign-off), red = broken or destructive only. */
 const STATUS_CHIP: Record<ProblemStatus, { label: string; cls: string; dot: string }> = {
-  proving: { label: 'proving', cls: 'text-accent bg-accent/10', dot: 'bg-accent' },
+  proving: { label: 'proving', cls: 'text-accent bg-accent/10', dot: 'bg-accent animate-pulse' },
   awaiting_human: { label: 'needs input', cls: 'bg-warn text-bg font-semibold', dot: 'bg-bg' },
   stalled: { label: 'stalled', cls: 'text-danger bg-danger/10', dot: 'bg-danger' },
   idle: { label: 'idle', cls: 'text-ink-faint', dot: 'bg-ink-faint/60' },
