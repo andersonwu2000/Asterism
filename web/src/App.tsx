@@ -89,9 +89,9 @@ function NavItem({
       }`}
     >
       {active && (
-        <span className="absolute top-1.5 bottom-1.5 -left-2 w-0.5 rounded-full bg-accent" />
+        <span className="absolute top-1.5 bottom-1.5 -left-2 w-0.5 rounded-full bg-star" />
       )}
-      <span className={active ? 'text-accent' : 'text-ink-faint group-hover:text-ink-dim'}>
+      <span className={active ? 'text-star' : 'text-ink-faint group-hover:text-ink-dim'}>
         {ICONS[icon]}
       </span>
       <span className="flex-1">{label}</span>

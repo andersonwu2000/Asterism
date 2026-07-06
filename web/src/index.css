@@ -7,26 +7,35 @@
  * borders are white-alpha so they read consistently across layers.
  */
 @theme {
-  /* elevation ladder */
-  --color-bg: #0a0d15;
-  --color-surface: #0f131d;
-  --color-surface-2: #151a27;
-  --color-surface-3: #1b2132;
-  --color-edge: rgba(148, 163, 199, 0.1);
-  --color-edge-strong: rgba(148, 163, 199, 0.22);
+  /* Brass-observatory palette. Principles (Linear redesign, Material
+   * dark guidance): near-black NEUTRAL base — blue is kept out of the
+   * greys so the sky reads black, not fog; elevation = lightness steps;
+   * ONE brand accent (brass gold) owns identity, everything else is
+   * strictly semantic and small. */
 
-  /* text ladder (off-white, AA against bg) */
-  --color-ink: #e2e6f0;
-  --color-ink-dim: #9aa2b6;
-  --color-ink-faint: #646c80;
+  /* elevation ladder (neutral, whisper-cool) */
+  --color-bg: #0a0b0e;
+  --color-surface: #101116;
+  --color-surface-2: #16181e;
+  --color-surface-3: #1d1f27;
+  --color-edge: rgba(228, 232, 240, 0.07);
+  --color-edge-strong: rgba(228, 232, 240, 0.16);
 
-  /* semantic */
-  --color-star: #e5c15d; /* brand gold — badges, library, progress accents */
-  --color-starlight: #edf1fa; /* lit stars in the graphs (real night sky = white) */
-  --color-accent: #74a5f8; /* proving / interactive */
-  --color-danger: #ec5f66; /* awaiting_human, stalled */
-  --color-warn: #d9a039; /* signoff pending, near-limit */
-  --color-ok: #46b98c; /* ingested / bridged */
+  /* text ladder (paper-white → neutral greys, AA against bg) */
+  --color-ink: #eceef2;
+  --color-ink-dim: #a2a7b0;
+  --color-ink-faint: #686d77;
+
+  /* the one brand voice: brass gold — wordmark, active nav, focus,
+     library, deliverable */
+  --color-star: #d9b45f;
+  --color-starlight: #f2f4f8; /* lit stars (real night sky = white) */
+
+  /* strictly semantic, used small */
+  --color-accent: #82a8ee; /* machine working: proving, in-flight, open */
+  --color-warn: #de8f43; /* the human's move — separated from brand gold */
+  --color-danger: #e5606a; /* broken / destructive */
+  --color-ok: #4cba8e; /* success actions */
 
   --font-sans:
     "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
@@ -64,12 +73,13 @@ body {
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  background: color-mix(in srgb, var(--color-star) 28%, transparent);
 }
 
-/* Keyboard affordance — visible focus without mouse-click noise */
+/* Keyboard affordance — visible focus without mouse-click noise;
+   focus speaks in the brand voice */
 :focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-accent) 60%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--color-star) 65%, transparent);
   outline-offset: 1px;
   border-radius: 4px;
 }

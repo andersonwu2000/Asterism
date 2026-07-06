@@ -236,7 +236,7 @@ export default function Problem({ name }: { name: string }) {
             >
               {t.label}
               {tab === t.id && (
-                <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-accent" />
+                <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-star" />
               )}
             </button>
           ))}
