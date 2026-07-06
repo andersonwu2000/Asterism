@@ -219,15 +219,23 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
 
     awaiting = db.problem_has_awaiting_human(conn, problem)
     stalled = db.is_problem_stalled(conn, problem)
+    chip = _status_chip(
+        awaiting=awaiting,
+        signoff=bool(prow["ingest_signoff_pending"]),
+        bridged=prow["library_bridged_at"] is not None,
+        ingested=prow["ingested_at"] is not None,
+        stalled=stalled,
+    )
+    # Same idle refinement as board() — the two surfaces must agree.
+    progressed = any(g["status"] in ("open", "attempting", "proved",
+                                     "shelved",
+                                     "pending_strategist_review")
+                     for g in goals)
+    if chip == "stalled" and not progressed:
+        chip = "idle"
     return {
         "name": str(prow["name"]),
-        "status": _status_chip(
-            awaiting=awaiting,
-            signoff=bool(prow["ingest_signoff_pending"]),
-            bridged=prow["library_bridged_at"] is not None,
-            ingested=prow["ingested_at"] is not None,
-            stalled=stalled,
-        ),
+        "status": chip,
         "created_at": str(prow["created_at"]),
         "ingested_at": prow["ingested_at"],
         "library_bridged_at": prow["library_bridged_at"],

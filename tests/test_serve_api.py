@@ -142,6 +142,11 @@ def test_board_status_chips(workspace: Path) -> None:
     assert rows["proving_p"]["goals"]["open"] == 1
     assert rows["idle_p"]["status"] == "idle"
     assert rows["stalled_p"]["status"] == "stalled"
+    # board and detail must agree on the chip (idle refinement lives in
+    # both paths)
+    c = _client(workspace)
+    assert c.get("/api/problems/idle_p").json()["status"] == "idle"
+    assert c.get("/api/problems/stalled_p").json()["status"] == "stalled"
     assert rows["amend_p"]["status"] == "awaiting_human"
     assert rows["signoff_p"]["status"] == "signoff_pending"
     assert rows["ingested_p"]["status"] == "ingested"
