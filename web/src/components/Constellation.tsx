@@ -14,6 +14,7 @@ interface Props {
   goals: Goal[]
   strategies: Strategy[]
   strategyEdges: StrategyEdge[]
+  anchorEdges?: { from: number; to: number }[]
   selectedId: number | null
   onSelect: (id: number | null) => void
   /** junction click → strategy drill-down (optional) */
@@ -95,9 +96,9 @@ const STATUS_LABEL: Record<string, string> = {
   dead: 'dead',
 }
 
-function edgeStroke(status: Strategy['status'], kind: 'strategy' | 'alias'): string {
+function edgeStroke(status: Strategy['status'], kind: 'strategy' | 'alias' | 'anchor'): string {
   if (kind === 'alias') return 'var(--color-accent)'
-  if (status === 'succeeded') return 'var(--color-starlight)'
+  if (kind === 'anchor' || status === 'succeeded') return 'var(--color-starlight)'
   if (status === 'dead' || status === 'superseded') return 'var(--color-edge)'
   return 'var(--color-edge-strong)'
 }
@@ -106,6 +107,7 @@ export default function Constellation({
   goals,
   strategies,
   strategyEdges,
+  anchorEdges = [],
   selectedId,
   onSelect,
   onSelectStrategy,
@@ -123,8 +125,8 @@ export default function Constellation({
   const shownGoals = focused ? frontier.goals : goals
 
   const layout = useMemo(
-    () => layoutConstellation(shownGoals, strategies, strategyEdges),
-    [shownGoals, strategies, strategyEdges],
+    () => layoutConstellation(shownGoals, strategies, strategyEdges, anchorEdges),
+    [shownGoals, strategies, strategyEdges, anchorEdges],
   )
   const byId = useMemo(
     () => new Map(layout.nodes.map((n) => [n.goal.id, n])),
@@ -158,7 +160,7 @@ export default function Constellation({
     // Fill the canvas: fit the content bounding box, allowing generous
     // magnification for small graphs (10 stars in a void read as a
     // failed page load — design review).
-    const k = Math.min(cw / layout.width, ch / layout.height, 2.0)
+    const k = Math.min((cw - 48) / layout.width, (ch - 48) / layout.height, 2.0)
     setView({
       k,
       tx: (cw - layout.width * k) / 2,
@@ -303,7 +305,15 @@ export default function Constellation({
                 stroke={edgeStroke(e.strategyStatus, e.kind)}
                 strokeWidth={e.strategyStatus === 'succeeded' ? 1.2 : 1}
                 strokeOpacity={
-                  dead ? 0.35 : e.kind === 'alias' ? 0.5 : e.strategyStatus === 'succeeded' ? 0.38 : 0.55
+                  dead
+                    ? 0.35
+                    : e.kind === 'alias'
+                      ? 0.5
+                      : e.kind === 'anchor'
+                        ? 0.3
+                        : e.strategyStatus === 'succeeded'
+                          ? 0.38
+                          : 0.55
                 }
                 strokeDasharray={e.kind === 'alias' ? '4 4' : undefined}
                 vectorEffect="non-scaling-stroke"

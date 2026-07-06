@@ -27,7 +27,12 @@ export interface LayoutEdge {
   to: number // subgoal id
   strategyId: number
   strategyStatus: Strategy['status']
-  kind: 'strategy' | 'alias'
+  kind: 'strategy' | 'alias' | 'anchor'
+}
+
+export interface AnchorEdge {
+  from: number
+  to: number
 }
 
 /** A strategy's AND-group rendered as a hyperedge: one stem from the
@@ -131,6 +136,7 @@ export function layoutConstellation(
   goals: Goal[],
   strategies: Strategy[],
   strategyEdges: StrategyEdge[],
+  anchorEdges: AnchorEdge[] = [],
 ): ConstellationLayout {
   const byId = new Map(goals.map((g) => [g.id, g]))
   const stratById = new Map(strategies.map((s) => [s.id, s]))
@@ -147,6 +153,21 @@ export function layoutConstellation(
       kind: 'strategy',
     })
   }
+  // Kernel-dependency edges from the review snapshot — the structural
+  // truth for Forward-built problems, which have no strategy edges.
+  const seenPairs = new Set(edges.map((e) => `${e.from}>${e.to}`))
+  for (const e of anchorEdges) {
+    if (!byId.has(e.from) || !byId.has(e.to)) continue
+    if (seenPairs.has(`${e.from}>${e.to}`)) continue
+    seenPairs.add(`${e.from}>${e.to}`)
+    edges.push({
+      from: e.from,
+      to: e.to,
+      strategyId: -2,
+      strategyStatus: 'succeeded',
+      kind: 'anchor',
+    })
+  }
   for (const g of goals) {
     if (g.alias_target_id !== null && byId.has(g.alias_target_id)) {
       edges.push({
@@ -159,13 +180,14 @@ export function layoutConstellation(
     }
   }
 
-  // Longest-path layering over strategy edges only (alias edges are
-  // cross-links, not hierarchy). Cycles can't occur (the engine's
-  // circularity gate), but guard with a visit cap anyway.
+  // Longest-path layering over strategy + anchor edges (alias edges
+  // are cross-links, not hierarchy). Cycles can't occur (the engine's
+  // circularity gate; anchor closures are kernel-acyclic), but guard
+  // with a visit cap anyway.
   const children = new Map<number, number[]>()
   const parents = new Map<number, number[]>()
   for (const e of edges) {
-    if (e.kind !== 'strategy') continue
+    if (e.kind === 'alias') continue
     children.set(e.from, [...(children.get(e.from) ?? []), e.to])
     parents.set(e.to, [...(parents.get(e.to) ?? []), e.from])
   }

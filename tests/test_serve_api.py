@@ -417,6 +417,37 @@ def test_reject_ingest_via_api(workspace: Path, monkeypatch) -> None:
 # review snapshot / telemetry / library
 # ---------------------------------------------------------------------
 
+def test_anchor_edges_derived_from_snapshot(workspace: Path) -> None:
+    """Forward-only problems have no strategy edges; the detail endpoint
+    derives dependency edges from the review snapshot's anchor closure
+    (anchor → deliverable, matched by slug)."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    a = db.insert_goal(conn, problem="p", slug="toy_reverse",
+                       lean_path="Problems/p/proofs/a.lean",
+                       statement="d", origin="forward", status="proved")
+    d = db.insert_goal(conn, problem="p", slug="toy_reverse_involutive",
+                       lean_path="Problems/p/proofs/d.lean",
+                       statement="t", origin="forward", status="proved")
+    db.set_review_snapshot(conn, "p", json.dumps({
+        "deliverables": [{
+            "slug": "toy_reverse_involutive", "ok": True,
+            "anchors": [
+                {"kind": "def", "module": "m",
+                 "name": "Problems.p.toy_reverse"},
+                # ctor attributes to its parent decl; duplicate pair folds
+                {"kind": "ctor", "module": "m",
+                 "name": "Problems.p.toy_reverse.mk"},
+            ],
+            "claims": [],
+        }],
+        "union_count": 1}))
+    conn.commit()
+    conn.close()
+    body = _client(workspace).get("/api/problems/p").json()
+    assert body["anchor_edges"] == [{"from": a, "to": d}]
+
+
 def test_review_snapshot_roundtrip(workspace: Path) -> None:
     conn = _open_db(workspace)
     _add_problem(conn, "p")

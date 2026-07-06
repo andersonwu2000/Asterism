@@ -229,6 +229,41 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             "updated_at": str(d["updated_at"]),
         })
 
+    # Dependency edges for Forward-built problems: strategies only exist
+    # for Backward decompositions, so an all-forward constellation has
+    # no structural edges — but the Ingest-time review snapshot carries
+    # each deliverable's kernel anchor closure. Derive anchor→deliverable
+    # edges from it (read-side, no gateway; best-effort name matching).
+    anchor_edges: list[dict] = []
+    try:
+        from ..quality import review as _review
+        snap = _review.load_review_snapshot(conn, problem)
+        if snap is not None:
+            slug_to_id = {g["slug"]: g["id"] for g in goals}
+            prefix = f"Problems.{problem}."
+            seen_pairs: set[tuple[int, int]] = set()
+            for d in snap[0].get("deliverables", []):
+                did = slug_to_id.get(str(d.get("slug", "")))
+                if did is None:
+                    continue
+                for a in d.get("anchors", []):
+                    # anchors are {kind, module, name} dicts (older
+                    # snapshots may carry bare strings)
+                    name = str(a.get("name", "")) if isinstance(a, dict) \
+                        else str(a)
+                    if name.startswith(prefix):
+                        name = name[len(prefix):]
+                    # ctor/companion names attribute to their parent
+                    # decl (toy_list.cons → toy_list)
+                    slug = name.split(".", 1)[0]
+                    aid = slug_to_id.get(slug)
+                    if (aid is not None and aid != did
+                            and (aid, did) not in seen_pairs):
+                        seen_pairs.add((aid, did))
+                        anchor_edges.append({"from": aid, "to": did})
+    except Exception:  # noqa: BLE001 — enrichment only, never fatal
+        anchor_edges = []
+
     proofs_dir = db.problem_dir(workspace, problem) / "proofs"
     proof_files = sorted(
         f.name for f in proofs_dir.glob("*.lean")) if proofs_dir.is_dir() \
@@ -277,6 +312,7 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
         "goals": goals,
         "strategies": strategies,
         "strategy_edges": edges,
+        "anchor_edges": anchor_edges,
         "decisions": decisions,
         "proof_files": proof_files,
     }

@@ -91,6 +91,7 @@ export interface ProblemDetail {
   goals: Goal[]
   strategies: Strategy[]
   strategy_edges: StrategyEdge[]
+  anchor_edges: { from: number; to: number }[]
   decisions: Decision[]
   proof_files: string[]
 }
