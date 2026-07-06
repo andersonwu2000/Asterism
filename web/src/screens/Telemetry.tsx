@@ -140,16 +140,52 @@ function LogTail() {
   )
 }
 
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-edge bg-surface px-4 py-3">
+      <div className="tnum text-xl font-semibold text-ink">{value}</div>
+      <div className="mt-0.5 text-[11px] text-ink-faint">{label}</div>
+    </div>
+  )
+}
+
 function UsageTable() {
   const { data } = usePoll<{ problems: UsageProblem[] }>('/api/telemetry/usage', 10000)
   const [expanded, setExpanded] = useState<string | null>(null)
   const rows = data?.problems ?? []
   if (rows.length === 0)
     return (
-      <div className="rounded-lg border border-edge bg-surface px-4 py-6 text-center text-xs text-ink-faint">
+      <div className="rounded-lg border border-edge bg-surface px-4 py-2 text-xs text-ink-faint">
         No spawn usage recorded yet — rows appear as agents run.
       </div>
     )
+  const total = rows.reduce(
+    (a, p) => ({
+      spawns: a.spawns + p.spawns,
+      out: a.out + p.output_tokens,
+      inTok: a.inTok + p.input_tokens + p.cache_read_tokens,
+      wall: a.wall + p.wall_sec,
+    }),
+    { spawns: 0, out: 0, inTok: 0, wall: 0 },
+  )
+  return (
+    <>
+      <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat label="agent spawns" value={String(total.spawns)} />
+        <Stat label="output tokens" value={compactNumber(total.out)} />
+        <Stat label="input + cache read" value={compactNumber(total.inTok)} />
+        <Stat label="agent wall time" value={duration(total.wall)} />
+      </div>
+      {inner(rows, expanded, setExpanded)}
+    </>
+  )
+}
+
+function inner(
+  rows: UsageProblem[],
+  expanded: string | null,
+  setExpanded: (v: string | null) => void,
+) {
   return (
     <table className="w-full border-collapse text-left">
       <thead>

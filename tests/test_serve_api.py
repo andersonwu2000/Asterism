@@ -534,6 +534,29 @@ def test_review_refresh_async_job(workspace: Path, monkeypatch) -> None:
     assert c.get("/api/problems/p/review").status_code == 200
 
 
+def test_reject_decl_endpoint_calls_chokepoint(workspace: Path,
+                                               monkeypatch) -> None:
+    """Per-deliverable reject rides cmd_reject verbatim (gateway-heavy —
+    structural test only, chokepoint monkeypatched)."""
+    from Tooling.core import cli as _cli
+    calls: list = []
+
+    def fake_reject(args):  # noqa: ANN001
+        calls.append((args.decl, args.problem, args.reason, args.dry_run))
+        return 0
+
+    monkeypatch.setattr(_cli, "cmd_reject", fake_reject)
+    c = _client(workspace)
+    r = c.post("/api/problems/p/reject-decl",
+               json={"decl": "Problems.p.bad_lemma", "reason": "wrong"})
+    assert r.status_code == 200
+    assert calls == [("Problems.p.bad_lemma", "p", "wrong", False)]
+
+    monkeypatch.setattr(_cli, "cmd_reject", lambda a: 1)
+    assert c.post("/api/problems/p/reject-decl",
+                  json={"decl": "x"}).status_code == 409
+
+
 def test_paper_section_page_anchor(workspace: Path) -> None:
     pdir = workspace / "Papers" / "abc123"
     pdir.mkdir(parents=True)

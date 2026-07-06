@@ -72,6 +72,11 @@ class RejectIngestBody(BaseModel):
     reason: str | None = None
 
 
+class RejectDeclBody(BaseModel):
+    decl: str  # slug or Problems.<problem>.<slug> FQN (as review prints)
+    reason: str | None = None
+
+
 class DaemonStartBody(BaseModel):
     scope: str | None = None
     once: bool = False
@@ -278,6 +283,23 @@ def create_app(workspace: Path) -> FastAPI:
                 status_code=409,
                 detail=f"{problem!r} is not awaiting ingest sign-off")
         return {"problem": problem, "action": "reject-ingest"}
+
+    @app.post("/api/problems/{problem}/reject-decl")
+    def reject_decl(problem: str, body: RejectDeclBody) -> dict:
+        """Per-deliverable reject (GitHub-PR-review granularity): kills
+        the node + every deliverable whose meaning depends on it, via
+        the same `asterism reject` chokepoint. May warm the gateway —
+        slow like review refresh, and equally explicit."""
+        import argparse
+        from ..core import cli as _cli
+        code = _cli.cmd_reject(argparse.Namespace(
+            decl=body.decl, problem=problem, reason=body.reason,
+            dry_run=False))
+        if code != 0:
+            raise HTTPException(
+                status_code=409,
+                detail=f"reject failed for {body.decl!r} (see server log)")
+        return {"problem": problem, "decl": body.decl, "action": "reject"}
 
     # -- daemon control --------------------------------------------------
 

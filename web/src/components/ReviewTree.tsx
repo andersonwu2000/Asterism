@@ -31,10 +31,36 @@ function PaperPane({ pid, anchor }: { pid: string; anchor: string }) {
   )
 }
 
-function Deliverable({ d }: { d: ReviewDeliverable }) {
+function Deliverable({
+  d,
+  onRejected,
+}: {
+  d: ReviewDeliverable
+  onRejected?: () => void
+}) {
   const [open, setOpen] = useState(false)
   const [showPaper, setShowPaper] = useState(false)
+  const [rejecting, setRejecting] = useState(false)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const paper = d.paper ? PAPER_RE.exec(d.paper) : null
+
+  const reject = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await apiPost(`/api/problems/${encodeURIComponent(d.problem)}/reject-decl`, {
+        decl: d.fq,
+        reason: reason || undefined,
+      })
+      onRejected?.()
+    } catch (e) {
+      setError(String((e as Error).message))
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <div className="rounded-md border border-edge">
       <button
@@ -52,6 +78,26 @@ function Deliverable({ d }: { d: ReviewDeliverable }) {
       {open && (
         <div className="border-t border-edge px-3 py-2">
           {d.error && <div className="mb-2 text-xs text-danger">{d.error}</div>}
+          {error && <div className="mb-2 text-xs text-danger">{error}</div>}
+          <div className="mb-2 flex items-center justify-end gap-2">
+            {rejecting && (
+              <input
+                className="w-56 rounded-md border border-edge bg-bg px-2 py-1 text-[11px] text-ink focus:border-danger focus:outline-none"
+                placeholder="why is this wrong?"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                autoFocus
+              />
+            )}
+            <button
+              className="rounded-md border border-danger/40 px-2 py-1 text-[11px] text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
+              disabled={busy}
+              title="Kill this deliverable + everything whose meaning depends on it (slow — recomputes closures)"
+              onClick={() => (rejecting ? void reject() : setRejecting(true))}
+            >
+              {busy ? 'rejecting…' : rejecting ? 'confirm reject' : 'reject this deliverable'}
+            </button>
+          </div>
           {d.paper && (
             <div className="mb-2">
               <div className="flex items-center gap-2 text-[11px] text-ink-dim">
@@ -158,7 +204,7 @@ export default function ReviewTree({ problem }: { problem: string }) {
         <RefreshButton problem={problem} onDone={refresh} />
       </div>
       {data.deliverables.map((d) => (
-        <Deliverable key={d.fq} d={d} />
+        <Deliverable key={d.fq} d={d} onRejected={refresh} />
       ))}
     </div>
   )
