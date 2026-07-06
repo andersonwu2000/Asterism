@@ -90,6 +90,7 @@ import uuid
 from pathlib import Path
 from typing import NamedTuple
 
+from ..core.process_group import no_window_creationflags
 from ..state import db
 
 
@@ -603,6 +604,7 @@ def _batch_provable_via_apply(
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",
             timeout=_BATCH_TIMEOUT_SEC,
+            creationflags=no_window_creationflags(),
         )
         output = r.stdout + r.stderr
         rc = r.returncode

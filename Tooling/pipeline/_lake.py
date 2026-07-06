@@ -8,6 +8,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from ..core.process_group import no_window_creationflags
+
 
 def lean_path_to_module(workspace: Path, lean_path: Path) -> str:
     """Convert workspace-relative .lean path to lean module name.
@@ -37,6 +39,7 @@ def lake_build_modules(workspace: Path,
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",
             timeout=600,
+            creationflags=no_window_creationflags(),
         )
         out = (r.stdout + r.stderr).strip()
         ok = r.returncode == 0 and "error:" not in out.lower()

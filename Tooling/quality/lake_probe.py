@@ -22,6 +22,8 @@ import uuid
 from pathlib import Path
 from typing import NamedTuple
 
+from ..core.process_group import no_window_creationflags
+
 # `<file>:<line>:<col>: error` — the (1-based) line number is group(1).
 LAKE_ERR_RE = re.compile(r"^.+?:(\d+):\d+:\s*error", re.MULTILINE)
 
@@ -72,7 +74,8 @@ def run_lean_source(workspace: Path, content: str, *, prefix: str = "_probe",
     try:
         r = subprocess.run(
             cmd, cwd=str(workspace), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout)
+            encoding="utf-8", errors="replace", timeout=timeout,
+            creationflags=no_window_creationflags())
         return LeanRun(r.returncode, r.stdout + "\n" + r.stderr, False)
     except subprocess.TimeoutExpired as e:
         return LeanRun(None, f"timeout after {timeout}s: {e}", True)

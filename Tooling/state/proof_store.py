@@ -34,6 +34,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..core.process_group import no_window_creationflags
 from . import db
 
 
@@ -136,7 +137,8 @@ def _git_untracked_under(workspace: Path, rel_dir: str) -> "set[str] | None":
     try:
         r = subprocess.run(
             ["git", "ls-files", "--others", "--", rel_dir],
-            cwd=str(workspace), capture_output=True, text=True, timeout=30)
+            cwd=str(workspace), capture_output=True, text=True, timeout=30,
+            creationflags=no_window_creationflags())
         if r.returncode != 0:
             return None
         return {ln.strip() for ln in r.stdout.splitlines() if ln.strip()}

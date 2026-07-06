@@ -28,6 +28,8 @@ import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from ..core.process_group import no_window_creationflags
+
 
 CACHE_FILE = Path(__file__).parent / ".lemma_cache.json"
 LOOKUP_TIMEOUT_SEC = 180  # generous; cold lake env lean ≈ 20-30s on this repo
@@ -151,6 +153,7 @@ def lookup_batch(
                 encoding="utf-8",
                 errors="replace",
                 timeout=LOOKUP_TIMEOUT_SEC,
+                creationflags=no_window_creationflags(),
             )
         except subprocess.TimeoutExpired:
             # Don't pollute cache; let the next call retry.

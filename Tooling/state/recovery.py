@@ -40,6 +40,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+from ..core.process_group import no_window_creationflags
 from . import db
 from . import proof_store
 
@@ -295,6 +296,7 @@ def _git_untracked_under(workspace: Path, rel_dir: str) -> set[str] | None:
             ["git", "-C", str(workspace), "ls-files", "--others",
              "--exclude-standard", "--", rel_dir],
             capture_output=True, text=True, timeout=30, check=True,
+            creationflags=no_window_creationflags(),
         ).stdout
         return {ln.strip() for ln in out.splitlines() if ln.strip()}
     except Exception:  # noqa: BLE001 — repo present but git failed → protect all

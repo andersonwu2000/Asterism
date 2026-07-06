@@ -31,6 +31,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ..core.process_group import no_window_creationflags
 from .base import LLMRequest
 
 
@@ -190,6 +191,7 @@ class GeminiCliProvider:
                 # soft-sandbox so relative reads/writes land inside the
                 # Problem instead of at workspace).
                 cwd=str(req.problem_dir),
+                creationflags=no_window_creationflags(),
             )
         except subprocess.TimeoutExpired:
             print(f"[llm:gemini] timed out after {req.timeout_sec}s",
@@ -254,6 +256,7 @@ class GeminiCliProvider:
                 cmd, timeout=timeout_sec,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
+                creationflags=no_window_creationflags(),
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return None

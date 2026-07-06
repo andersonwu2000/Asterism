@@ -134,3 +134,14 @@ def breakaway_creationflags() -> int:
         return 0
     import subprocess
     return getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+
+
+def no_window_creationflags() -> int:
+    """`creationflags` addend that stops a console-subsystem child from
+    popping a visible console window when its parent has none (the
+    detached daemon): CREATE_NO_WINDOW on Windows, 0 elsewhere. Callers
+    must OR this with any other flags (never assign over breakaway)."""
+    if sys.platform != "win32":
+        return 0
+    import subprocess
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)

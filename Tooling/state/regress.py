@@ -32,6 +32,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from ..core.process_group import no_window_creationflags
+
 MANIFEST_REL = Path("Benchmarks") / "proved_manifest.jsonl"
 
 TERMINALS = ("ingested", "bridged")
@@ -41,7 +43,8 @@ def _git_head(workspace: Path) -> str:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--short=12", "HEAD"],
-            cwd=str(workspace), capture_output=True, text=True, timeout=10)
+            cwd=str(workspace), capture_output=True, text=True, timeout=10,
+            creationflags=no_window_creationflags())
         return r.stdout.strip() if r.returncode == 0 else ""
     except (OSError, subprocess.TimeoutExpired):
         return ""

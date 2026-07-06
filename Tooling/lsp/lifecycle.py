@@ -224,7 +224,8 @@ def start_gateway(workspace: Path,
         cwd=str(workspace),
         stdout=gateway_log_fp,
         stderr=subprocess.STDOUT,
-        creationflags=process_group.breakaway_creationflags(),
+        creationflags=(process_group.breakaway_creationflags()
+                       | process_group.no_window_creationflags()),
     )
 
     def _shutdown():

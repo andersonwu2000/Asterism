@@ -29,6 +29,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..core.process_group import no_window_creationflags
+
 
 class LspClient:
     def __init__(self, workspace: Path) -> None:
@@ -115,6 +117,7 @@ class LspClient:
             cwd=str(self.workspace),
             env=env,
             bufsize=0,
+            creationflags=no_window_creationflags(),
             **popen_kwargs,
         )
         self._reader_thread = threading.Thread(
@@ -138,7 +141,8 @@ class LspClient:
         pid = self.proc.pid
         if os.name == "nt":
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True)
+                           capture_output=True,
+                           creationflags=no_window_creationflags())
         else:
             try:
                 os.killpg(os.getpgid(pid), signal.SIGKILL)

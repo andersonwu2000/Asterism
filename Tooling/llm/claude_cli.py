@@ -45,6 +45,7 @@ import threading
 import time
 from pathlib import Path
 
+from ..core.process_group import no_window_creationflags
 from .base import LLMRequest, SpawnRC
 from .stream_parser import StreamParser
 
@@ -1009,6 +1010,7 @@ class ClaudeCliProvider:
             cmd, env=env, cwd=str(req.problem_dir),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace",
+            creationflags=no_window_creationflags(),
         )
         # Register so dispatcher's request_shutdown can kill us on
         # budget-exceeded / gateway-permadown exit paths. Without this
@@ -1208,6 +1210,7 @@ class ClaudeCliProvider:
                 cmd, timeout=timeout_sec,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
+                creationflags=no_window_creationflags(),
             )
             if r.returncode != 0:
                 return None
