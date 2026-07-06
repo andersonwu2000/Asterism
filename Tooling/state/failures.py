@@ -141,6 +141,10 @@ REGISTRY: "dict[str, FailureTraits]" = {
     "librarian_schema_invalid": _T("librarian"),
     "librarian_verify_failed": _T("librarian"),
     "librarian_warnings_remain": _T("librarian"),
+
+    # --- scholar (paper v2, D11) ---
+    "scholar_no_query": _T(),
+    "paper_unfetchable": _T(),
 }
 
 

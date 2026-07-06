@@ -123,6 +123,8 @@ Librarian（`Tooling/pipeline/librarian.py`，Phase 4）：失敗走 `dispatcher
 - **跨檔 / upstream**：`librarian_file_busy`（不計數）/ `librarian_file_owned_by_other` / `librarian_integrity_error`（DB↔檔 drift）/ `librarian_needs_upstream_unresolvable` / `librarian_reopened_upstream`
 - **共用**：`agent_error`（Librarian agent spawn rc≠0）/ `agent_no_output` / `agent_declined`（agent 自評該 unit 無法機械化）
 
+**Scholar（paper v2, D11）**：`scholar_no_query`（FetchPaper decision row 無 query——commit 端 bug 或 decision 被手改）/ `paper_unfetchable`（解析成功但無白名單可抓副本；精確請求（DOI/URL）寫進 decision `outcome_detail`、人工通道接手）。兩者 target=Problem、不計 goal attempts、不投影。
+
 `daemon_shutdown`（`_retry.py`）— daemon 收到關閉訊號時 in-flight retry 的收尾 reason；infra-class、不計 attempts、不投影。
 
 ---

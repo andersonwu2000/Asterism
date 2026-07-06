@@ -369,6 +369,130 @@ def test_search_aggregates_sources(monkeypatch) -> None:
     assert hits[1]["pdf_url"].endswith("/pdf/2605.23679v1")
 
 
+# ---------------------------------------------------------------------
+# v2: FetchPaper decision + Scholar pipeline (spawn stubbed)
+# ---------------------------------------------------------------------
+
+def _v2_conn(tmp_path: Path):
+    import sqlite3
+    from Tooling.state import db as _db
+    conn = sqlite3.connect(str(tmp_path / "asterism.db"))
+    conn.row_factory = sqlite3.Row
+    _db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) VALUES"
+        " ('Test.px', 'Problems/Test/px/Manifest.md', 'ts')")
+    conn.commit()
+    return conn
+
+
+def test_fetchpaper_verify_and_commit(tmp_path: Path) -> None:
+    from Tooling.pipeline.strategist import (Decision, verify_decision,
+                                             _commit_fetch_paper)
+    from Tooling.state import db as _db
+    conn = _v2_conn(tmp_path)
+    # Missing query / reason → rejected.
+    assert "query" in verify_decision(
+        Decision(kind="FetchPaper"), conn, problem="Test.px")
+    assert "reason" in verify_decision(
+        Decision(kind="FetchPaper", payload={"query": "Thurston 1982"}),
+        conn, problem="Test.px")
+    d = Decision(kind="FetchPaper", reason="need the JSJ statement",
+                 payload={"query": "Thurston 1982 three-manifolds"})
+    assert verify_decision(d, conn, problem="Test.px") == ""
+    # Cap → rejected at DECISION time.
+    from Tooling.papers.fetch import MAX_SCHOLAR_FETCHES_PER_PROBLEM
+    for i in range(MAX_SCHOLAR_FETCHES_PER_PROBLEM):
+        _db.bind_paper(conn, problem="Test.px", paper_id=f"c{i}",
+                       origin="scholar")
+    assert "cap" in verify_decision(d, conn, problem="Test.px")
+    conn.execute("DELETE FROM problem_papers")
+    conn.commit()
+    # Commit: audit row first, queue row carries decision_id + payload.
+    out = _commit_fetch_paper(d, conn, problem="Test.px", tick=1,
+                              trigger_kind="routine")
+    row = conn.execute(
+        "SELECT * FROM queue WHERE kind='Scholar'").fetchone()
+    assert row is not None
+    assert int(row["decision_id"]) == out.decision_row_id
+    import json
+    payload = json.loads(row["payload"])
+    assert payload["query"].startswith("Thurston")
+    assert row["target_kind"] == "Problem" and row["problem"] == "Test.px"
+    conn.close()
+
+
+def test_run_scholar_outcomes(tmp_path: Path, monkeypatch) -> None:
+    """Fetched → binding delta → success + outcome fill; no fetch →
+    result file becomes the precise human request in outcome_detail."""
+    import json
+    from Tooling import agent as _agent
+    from Tooling.pipeline import scholar
+    from Tooling.pipeline.strategist import Decision, _commit_fetch_paper
+    from Tooling.state import db as _db
+    conn = _v2_conn(tmp_path)
+    (tmp_path / "Problems" / "Test" / "px").mkdir(parents=True)
+    d = Decision(kind="FetchPaper", reason="need it",
+                 payload={"query": "Roeder Newton polyhedra"})
+    out = _commit_fetch_paper(d, conn, problem="Test.px", tick=1,
+                              trigger_kind="routine")
+    did = out.decision_row_id
+
+    # Case 1: agent "fetches" (stub binds a paper mid-spawn).
+    def _spawn_binds(**kw):
+        _db.bind_paper(conn, problem="Test.px", paper_id="newpaper001",
+                       origin="scholar", reason="fetched")
+    monkeypatch.setattr(_agent, "spawn_llm", _spawn_binds)
+    r = scholar.run_scholar(conn, problem="Test.px", workspace=tmp_path,
+                            pipeline_id="pid1", decision_id=did)
+    assert r.outcome == "success"
+    row = conn.execute("SELECT outcome, outcome_detail FROM"
+                       " strategist_decisions WHERE id=?", (did,)).fetchone()
+    assert row["outcome"] == "paper_fetched"
+    assert "newpaper001" in row["outcome_detail"]
+
+    # Case 2: nothing fetched; agent leaves the precise request.
+    out2 = _commit_fetch_paper(d, conn, problem="Test.px", tick=2,
+                               trigger_kind="routine")
+
+    def _spawn_declines(**kw):
+        adir = kw["attempts_dir"]
+        (adir / scholar.RESULT_FILENAME).write_text(
+            "Thurston 1982, DOI 10.1090/x — AMS only: https://ams.org/x",
+            encoding="utf-8")
+    monkeypatch.setattr(_agent, "spawn_llm", _spawn_declines)
+    r2 = scholar.run_scholar(conn, problem="Test.px", workspace=tmp_path,
+                             pipeline_id="pid2",
+                             decision_id=out2.decision_row_id)
+    assert r2.outcome == "failed"
+    assert r2.failure_reason == "paper_unfetchable"
+    row2 = conn.execute("SELECT outcome, outcome_detail FROM"
+                        " strategist_decisions WHERE id=?",
+                        (out2.decision_row_id,)).fetchone()
+    assert row2["outcome"] == "paper_unfetchable"
+    assert "DOI 10.1090/x" in row2["outcome_detail"]
+    conn.close()
+
+
+def test_section_paper_index_multi_paper(tmp_path: Path) -> None:
+    """D14: primary (Manifest pointer) full; scholar-fetched papers as
+    one-line auxiliary entries."""
+    from Tooling.agent import context as ctx
+    from Tooling.state import db as _db
+    conn = _v2_conn(tmp_path)
+    meta1 = _add_text_paper(tmp_path, "primary paper\n", name="prim.md")
+    meta2 = _add_text_paper(tmp_path, "aux paper\n", name="aux.md")
+    _db.bind_paper(conn, problem="Test.px", paper_id=meta2.id,
+                   origin="scholar", reason="cited")
+    m = manifest.Manifest(problem="Test.px", statement="s",
+                          paper=meta1.id)
+    joined = "\n".join(ctx._section_paper_index(m, tmp_path, conn))
+    assert "prim.md" in joined
+    assert "### Auxiliary papers" in joined
+    assert f"Papers/{meta2.id}" in joined and "aux.md" in joined
+    conn.close()
+
+
 def test_section_paper_index_stale_map_warns(tmp_path: Path) -> None:
     from Tooling.agent import context as ctx
     meta = _add_text_paper(tmp_path, "short paper\n")

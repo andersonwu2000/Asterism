@@ -688,6 +688,13 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     patterns = [
         # Bash (Loogle, plus operator override)
         os.environ.get("ASTERISM_CLAUDE_ALLOWED_BASH", DEFAULT_BASH_ALLOWED),
+        # Scholar (paper v2, D12): the two curated network commands are
+        # this kind's ONLY extra surface — the LLM judges, the commands
+        # touch the network (search = open metadata APIs; fetch =
+        # whitelisted hosts + caps, see Tooling/papers/fetch.py).
+        *(["Bash(python -m Tooling.papers.search *)",
+           "Bash(python -m Tooling.papers.fetch *)"]
+          if req.kind == "scholar" else []),
         # Read scope: this problem's dir, the agent's sandbox, and
         # only `*.lean` under Lake-packages — keeps `.olean` binary
         # blobs out of agent context (an accidental Read on one

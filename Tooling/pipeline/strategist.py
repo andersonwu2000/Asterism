@@ -48,6 +48,7 @@ from ..core import dispatcher as _dispatcher
 DECISION_KINDS: frozenset[str] = frozenset({
     "Inject", "ConfirmShelve", "EmitDirective",
     "RequestUserAmend", "Noop", "MarkDeliverable", "Ingest",
+    "FetchPaper",
 })
 
 
@@ -338,6 +339,25 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
             return (f"MarkDeliverable target must be a Forward-produced node "
                     f"(origin='forward'); goal {decision.target_id} is "
                     f"origin={g['origin']!r}")
+        return ""
+
+    if k == "FetchPaper":
+        # Paper pipeline v2 (D11): request a cited paper. Payload needs
+        # a resolvable description; the Scholar pipeline does the fuzzy
+        # work. Cap checked here so a capped problem fails the DECISION
+        # (visible to the agent immediately) instead of burning a spawn.
+        query = str(decision.payload.get("query") or "").strip()
+        if not query:
+            return ("FetchPaper requires payload.query — the citation "
+                    "as printed (authors, title fragment, year) or an "
+                    "arXiv id/DOI")
+        if not decision.reason or not str(decision.reason).strip():
+            return "FetchPaper requires non-empty reason (why needed)"
+        from ..papers.fetch import MAX_SCHOLAR_FETCHES_PER_PROBLEM
+        n = db.scholar_fetch_count(conn, problem)
+        if n >= MAX_SCHOLAR_FETCHES_PER_PROBLEM:
+            return (f"FetchPaper blocked: per-problem scholar fetch cap "
+                    f"reached ({n}/{MAX_SCHOLAR_FETCHES_PER_PROBLEM})")
         return ""
 
     if k == "Ingest":
@@ -910,6 +930,43 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
     )[0]
 
 
+def _commit_fetch_paper(decision: Decision, conn: sqlite3.Connection,
+                        *, problem: str, tick: int,
+                        trigger_kind: str) -> CommitOutcome:
+    """FetchPaper (paper v2, D11) — 1 audit row + 1 Scholar enqueue.
+
+    Mirrors `_commit_inject_forward`: the audit row is inserted first
+    so the queue row carries `decision_id`; the dispatcher fills this
+    decision's `outcome` when the Scholar pipeline finishes
+    ('paper_fetched' / the failure reason). The queue payload carries
+    query+reason so the Scholar's Context renders them without a
+    decision-row read."""
+    ts = db.now()
+    query = str(decision.payload.get("query") or "").strip()
+    row_payload = {"query": query}
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " outcome, created_at, updated_at)"
+        " VALUES (?, ?, ?, 'FetchPaper', NULL, NULL, ?, ?, NULL, ?, ?)",
+        (problem, tick, trigger_kind, decision.reason,
+         json.dumps(row_payload, ensure_ascii=False), ts, ts),
+    )
+    row_id = int(cur.lastrowid)
+    db.enqueue(
+        conn, kind="Scholar", target_id=problem,
+        target_kind="Problem", priority=3,
+        decision_id=row_id, problem=problem,
+        payload={"query": query, "reason": str(decision.reason or "")})
+    db.update_problem_last_strategist_at(conn, problem)
+    conn.commit()
+    return CommitOutcome(
+        decision_row_id=row_id,
+        enqueued_forward=False,
+        final_outcome="committed",
+    )
+
+
 def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
                    workspace: Path) -> None:
     """Execute a Strategist `Ingest` decision's side effect (anchor+claim
@@ -1070,6 +1127,14 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         # review. Falls through to the shared audit-row INSERT (outcome
         # 'success').
         db.mark_deliverable(conn, int(decision.target_id))  # type: ignore[arg-type]
+
+    elif k == "FetchPaper":
+        # Paper v2 (D11): own commit path — audit row FIRST so the
+        # Scholar queue row carries decision_id (Inject pattern; the
+        # dispatcher fills this decision's `outcome` on completion).
+        return _commit_fetch_paper(
+            decision, conn, problem=problem, tick=tick,
+            trigger_kind=trigger_kind)
 
     elif k == "Ingest":
         # Terminal judgment → harvest to Library (gated by Manifest

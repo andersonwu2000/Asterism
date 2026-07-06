@@ -739,18 +739,25 @@ def _section_manifest_meta(mfst: manifest.Manifest,
 
 
 def _section_paper_index_strategist(mfst: manifest.Manifest,
-                                    workspace: Path) -> list[str]:
+                                    workspace: Path,
+                                    conn=None) -> list[str]:
     """Strategist view of the paper section: the shared navigation
-    block + the provenance-recording instruction (conditional — only a
-    paper-bound problem renders it; prompt stays static per the
-    prompt-editing principle)."""
-    lines = context._section_paper_index(mfst, workspace)
+    block + the provenance-recording instruction + the FetchPaper
+    channel (conditional — only a paper-bound problem renders them;
+    prompt stays static per the prompt-editing principle)."""
+    lines = context._section_paper_index(mfst, workspace, conn)
     if not lines:
         return lines
     return lines + [
         "Every `MarkDeliverable` on this problem MUST include "
         "`paper_ref: \"p.N <label>\"` in its payload (where the paper "
         "states the claim) — it is shown to the human at sign-off.",
+        "When the paper cites a work you genuinely need (a proof "
+        "detail this paper omits), decide "
+        "`{\"kind\": \"FetchPaper\", \"query\": \"<citation as "
+        "printed>\", \"reason\": \"<why>\"}` — a Scholar agent "
+        "resolves and fetches it; fetched papers appear under "
+        "`### Auxiliary papers` on later wakes.",
         "",
     ]
 
@@ -810,7 +817,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_failure_replay(conn, problem),
         _section_tree_inline(conn, workspace, problem),
         _section_manifest_meta(mfst, workspace, problem),
-        _section_paper_index_strategist(mfst, workspace),
+        _section_paper_index_strategist(mfst, workspace, conn),
     ]
     parts: list[str] = [f"# Strategist context — {problem}", ""]
     for sect in sections:
@@ -942,7 +949,7 @@ def compile_forward_context(conn: sqlite3.Connection, *,
         _section_manifest_meta(mfst, workspace, problem),
         # Paper navigation — Forward mints the vocabulary; exact
         # hypotheses/definitions come from the paper (design D1).
-        context._section_paper_index(mfst, workspace),
+        context._section_paper_index(mfst, workspace, conn),
     ]
     parts: list[str] = [f"# Forward context — {problem}", ""]
     for sect in sections:

@@ -943,6 +943,47 @@ def _run_pipeline(workspace: Path,
                 return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                         r.outcome, str(r.failure_reason or ""))
 
+            if task_kind == "Scholar":
+                # Paper v2 (D11): resolve + fetch a cited paper. Problem-
+                # targeted like Forward; query/reason ride the FetchPaper
+                # decision row (decision_id threaded from the queue).
+                problem = target_id
+                if problem not in manifests:
+                    db.record_pipeline(
+                        conn, pipeline_id=pipeline_id, kind=task_kind,
+                        target_id=target_id, target_kind=target_kind,
+                        status="failed", outcome="failed",
+                        started_at=started_at,
+                    )
+                    return WorkerDone(pipeline_id, task_kind, target_id,
+                                      target_kind, "failed",
+                                      "problem_not_found")
+                from ..pipeline import scholar
+                r = scholar.run_scholar(
+                    conn, problem=problem, workspace=workspace,
+                    pipeline_id=pipeline_id, decision_id=decision_id,
+                )
+                status = ("succeeded" if r.outcome in ("proved", "success")
+                          else "failed")
+                db.record_pipeline(
+                    conn, pipeline_id=pipeline_id, kind=task_kind,
+                    target_id=target_id, target_kind=target_kind,
+                    status=status, outcome=r.outcome,
+                    started_at=started_at,
+                )
+                if status == "failed":
+                    _arts = pipeline.collect_artifacts(attempts_dir)
+                    db.record_dead_attempt(
+                        conn, target_id=0, target_kind=target_kind,
+                        pipeline_id=pipeline_id,
+                        failure_reason=str(r.failure_reason or "failed"),
+                        failure_detail=str(r.failure_detail or ""),
+                        artifacts=(_json.dumps(_arts) if _arts else ""),
+                    )
+                return WorkerDone(pipeline_id, task_kind, target_id,
+                                  target_kind, r.outcome,
+                                  str(r.failure_reason or ""))
+
             if task_kind == "Librarian":
                 # Problem-targeted background harvest (plan §5). Derive
                 # the work_kind from library_decls state — work_kind is

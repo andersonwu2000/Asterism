@@ -876,46 +876,77 @@ def _section_strategist_brief(conn: sqlite3.Connection,
 PAPER_INDEX_MAX_CHARS = 8_000
 
 
+def _paper_ids_for(mfst: manifest.Manifest, conn=None) -> list[str]:
+    """Bound paper ids for the manifest's problem, primary first.
+    Sources: DB `problem_papers` bindings (v2, D13) ∪ the legacy
+    Manifest `paper:` pointer (always primary when present). conn=None
+    (some test/offline callers) degrades to the Manifest pointer."""
+    primary = (getattr(mfst, "paper", "") or "").strip()
+    ids: list[str] = [primary] if primary else []
+    if conn is not None:
+        try:
+            from ..state import db as _db
+            for r in _db.paper_bindings(conn, str(mfst.problem)):
+                if r["paper_id"] not in ids:
+                    ids.append(str(r["paper_id"]))
+        except Exception:  # noqa: BLE001 — bindings are additive, never break Context
+            pass
+    return ids
+
+
 def _section_paper_index(mfst: manifest.Manifest,
-                         workspace: Path) -> list[str]:
-    """Paper navigation section — rendered only when the Manifest binds
-    a shelved paper (`paper: <id>`). Map present → inline (capped);
-    small doc (no map) → pointer to text.md. Original text is the
-    content authority; this section only navigates (design D1)."""
-    pid = getattr(mfst, "paper", "") or ""
-    if not pid:
+                         workspace: Path, conn=None) -> list[str]:
+    """Paper navigation section — rendered when the problem binds ≥1
+    shelved paper (Manifest `paper:` pointer ∪ DB bindings). The
+    PRIMARY paper gets the full map inline (capped); auxiliary papers
+    (scholar-fetched etc.) get one-line entries — their maps stay on
+    disk, Read on demand (D14 budget bar). Original text is the
+    content authority; this section only navigates (D1)."""
+    pids = _paper_ids_for(mfst, conn)
+    if not pids:
         return []
     from ..papers import shelf
-    meta = shelf.load_meta(workspace, pid)
+    primary, aux = pids[0], pids[1:]
+    meta = shelf.load_meta(workspace, primary)
     if meta is None:
-        return [f"## Paper", f"(Manifest binds paper `{pid}` but "
-                f"Papers/{pid}/ is missing — tell the operator via "
-                f"feedback; proceed without it.)", ""]
-    tpath = shelf.text_path(workspace, pid).as_posix()
-    lines = [
-        "## Paper",
-        f"Source: `{meta.source_name}` (Papers/{pid}). The paper is the "
-        f"authority for exact hypotheses/definitions — Read "
-        f"`{tpath}` slices on demand (`## p.N` headings are page "
-        f"anchors).",
-    ]
-    mpath = shelf.map_path(workspace, pid)
-    try:
-        body = mpath.read_text(encoding="utf-8").strip()
-    except OSError:
-        body = ""
-    if body:
-        if shelf.map_is_stale(workspace, pid):
-            lines.append("(WARNING: map below was built from an older "
-                         "extraction — trust text.md over it.)")
-        if len(body) > PAPER_INDEX_MAX_CHARS:
-            body = (body[:PAPER_INDEX_MAX_CHARS]
-                    + "\n\n[TRUNCATED at Context cap — map.md exceeds "
-                      "budget; the full map is on disk]")
-        lines += ["", body]
+        lines = [f"## Paper", f"(problem binds paper `{primary}` but "
+                 f"Papers/{primary}/ is missing — tell the operator via "
+                 f"feedback; proceed without it.)"]
     else:
-        lines.append(f"(No navigation map — paper is short; read "
-                     f"`{tpath}` directly.)")
+        tpath = shelf.text_path(workspace, primary).as_posix()
+        lines = [
+            "## Paper",
+            f"Source: `{meta.source_name}` (Papers/{primary}). The paper "
+            f"is the authority for exact hypotheses/definitions — Read "
+            f"`{tpath}` slices on demand (`## p.N` headings are page "
+            f"anchors).",
+        ]
+        mpath = shelf.map_path(workspace, primary)
+        try:
+            body = mpath.read_text(encoding="utf-8").strip()
+        except OSError:
+            body = ""
+        if body:
+            if shelf.map_is_stale(workspace, primary):
+                lines.append("(WARNING: map below was built from an older "
+                             "extraction — trust text.md over it.)")
+            if len(body) > PAPER_INDEX_MAX_CHARS:
+                body = (body[:PAPER_INDEX_MAX_CHARS]
+                        + "\n\n[TRUNCATED at Context cap — map.md exceeds "
+                          "budget; the full map is on disk]")
+            lines += ["", body]
+        else:
+            lines.append(f"(No navigation map — paper is short; read "
+                         f"`{tpath}` directly.)")
+    if aux:
+        lines += ["", "### Auxiliary papers (Read/Grep on demand)"]
+        for pid in aux:
+            m = shelf.load_meta(workspace, pid)
+            name = m.source_name if m else "?"
+            has_map = shelf.map_path(workspace, pid).is_file()
+            tail = (f"map at Papers/{pid}/map.md" if has_map
+                    else f"short — read Papers/{pid}/text.md whole")
+            lines.append(f"- `{name}` (Papers/{pid}): {tail}")
     return lines + [""]
 
 
@@ -1021,7 +1052,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                                 attempts_dir),
         # Paper navigation — cross-spawn-stable (map.md changes only on
         # regeneration), so it sits in the cacheable prefix with BRIEF.
-        _section_paper_index(mfst, workspace),
+        _section_paper_index(mfst, workspace, conn),
         # Phase 2 — Strategist injections sit between cross-spawn-stable
         # content (BRIEF / LESSONS) and per-goal sections. Directive is
         # problem-level standing (every cold-start); brief is per-decision

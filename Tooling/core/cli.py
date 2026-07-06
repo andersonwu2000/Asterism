@@ -323,6 +323,12 @@ def init_problem(workspace: Path, problem: str, *,
             msgs.append(f"OK: {problem} already initialized "
                         f"(goal id={existing_goal['id']})")
     conn.commit()
+    # Paper v2 (D13): migrate the legacy Manifest `paper:` pointer into
+    # the problem_papers binding table (idempotent; scholar/user
+    # bindings accrue alongside).
+    if getattr(mfst, "paper", ""):
+        db.bind_paper(conn, problem=problem, paper_id=mfst.paper,
+                      origin="manifest")
     # Initial TREE.md so readers see structure right after init.
     tree.write(conn, workspace, problem)
     # Initial BRIEF.md — framework-rendered cross-spawn stable context
