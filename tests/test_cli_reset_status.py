@@ -606,3 +606,104 @@ def test_status_recent_pipelines_filtered_to_problem(
     pipe_ids = {p["id"] for p in payload["recent_pipelines"]}
     assert "pid-w" in pipe_ids
     assert "pid-c" not in pipe_ids
+
+
+# ---------------------------------------------------------------------
+# cmd_daemon — lifecycle with built-in pre-flight (charter 5-3)
+# ---------------------------------------------------------------------
+
+def _daemon_ns(action, **kw):
+    import argparse
+    base = dict(daemon_action=action, scope=None, once=False,
+                force=False, workspace=None)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def test_daemon_status_no_daemon(tmp_path, monkeypatch, capsys):
+    import json
+    from Tooling.core.cli import cmd_daemon
+    (tmp_path / "Problems").mkdir()
+    monkeypatch.chdir(tmp_path)
+    rc = cmd_daemon(_daemon_ns("status"))
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert out["running"] is False and out["pid"] is None
+
+
+def test_daemon_start_refuses_when_lock_held_by_self(tmp_path, monkeypatch,
+                                                     capsys):
+    """Pre-flight mechanized: a live daemon lock (pid+start-time identity,
+    here OUR OWN live process) refuses a second start with the pid named.
+    The button can never kill or shadow a teammate's daemon."""
+    import os, psutil
+    from Tooling.core.cli import cmd_daemon
+    (tmp_path / "Problems").mkdir()
+    (tmp_path / ".asterism").mkdir()
+    me = os.getpid()
+    start = psutil.Process(me).create_time()
+    (tmp_path / ".asterism" / "daemon.pid").write_text(
+        f"{me}\n{start}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    rc = cmd_daemon(_daemon_ns("start"))
+    assert rc == 1
+    assert f"pid {me}" in capsys.readouterr().out
+
+
+def test_daemon_stop_graceful_writes_stop_file(tmp_path, monkeypatch,
+                                               capsys):
+    import os, psutil
+    from Tooling.core.cli import cmd_daemon
+    from Tooling.core import dispatcher as disp
+    (tmp_path / "Problems").mkdir()
+    (tmp_path / ".asterism").mkdir()
+    me = os.getpid()
+    start = psutil.Process(me).create_time()
+    (tmp_path / ".asterism" / "daemon.pid").write_text(
+        f"{me}\n{start}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    rc = cmd_daemon(_daemon_ns("stop"))
+    assert rc == 0
+    assert disp.stop_file_path(tmp_path).exists()
+    assert "graceful" in capsys.readouterr().out
+
+
+def test_daemon_stop_no_daemon_clears_stale_stop_file(tmp_path,
+                                                      monkeypatch):
+    from Tooling.core.cli import cmd_daemon
+    from Tooling.core import dispatcher as disp
+    (tmp_path / "Problems").mkdir()
+    (tmp_path / ".asterism").mkdir()
+    disp.stop_file_path(tmp_path).write_text("x", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert cmd_daemon(_daemon_ns("stop")) == 0
+    assert not disp.stop_file_path(tmp_path).exists()
+
+
+def test_daemon_start_spawns_detached_and_writes_log_pointer(
+        tmp_path, monkeypatch, capsys):
+    import subprocess
+    from Tooling.core.cli import cmd_daemon
+    from Tooling.core import dispatcher as disp
+    (tmp_path / "Problems").mkdir()
+    monkeypatch.chdir(tmp_path)
+    disp.stop_file_path(tmp_path).parent.mkdir(exist_ok=True)
+    disp.stop_file_path(tmp_path).write_text("stale", encoding="utf-8")
+    seen = {}
+
+    class _P:
+        pid = 4242
+    def fake_popen(argv, **kw):
+        seen["argv"] = argv
+        seen["kw"] = kw
+        return _P()
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    rc = cmd_daemon(_daemon_ns("start", scope="Logic.%"))
+    assert rc == 0
+    assert "--scope" in seen["argv"] and "Logic.%" in seen["argv"]
+    assert "run" in seen["argv"]
+    # stale stop file cleared so the fresh daemon is not insta-killed
+    assert not disp.stop_file_path(tmp_path).exists()
+    pointer = tmp_path / ".asterism" / "logs" / "daemon-current.txt"
+    assert pointer.exists()
+    assert "4242" in capsys.readouterr().out

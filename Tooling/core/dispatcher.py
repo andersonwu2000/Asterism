@@ -1309,6 +1309,14 @@ def _acquire_singleton_lock(workspace: Path) -> Path | None:
     return pid_file
 
 
+def stop_file_path(workspace: Path) -> Path:
+    """Graceful-stop signal (frontend charter §5-3): `asterism daemon
+    stop` creates it; the tick loop stops spawning, drains in-flight
+    workers, and exits cleanly — the mechanized form of the operator's
+    'never kill a daemon with in-flight work' discipline."""
+    return workspace / ".asterism" / "daemon.stop"
+
+
 def run(workspace: Path, *, once: bool = False,
         scope: str | None = None) -> int:
     pid_lock = _acquire_singleton_lock(workspace)
@@ -1316,6 +1324,9 @@ def run(workspace: Path, *, once: bool = False,
         return 1
     import atexit
     atexit.register(lambda: pid_lock.unlink(missing_ok=True))
+    # A stale stop file from a prior stop request must not insta-kill
+    # this fresh daemon (the start side also clears it — belt+braces).
+    stop_file_path(workspace).unlink(missing_ok=True)
 
     # Bind this process + every later spawn (claude / lake / lean / per-spawn
     # LSP) into a kill-on-close Job Object, so a hard daemon death reaps the
@@ -1496,7 +1507,24 @@ def run(workspace: Path, *, once: bool = False,
     else:
         tree_problems = list(manifests)
 
+    stop_announced = False
     while True:
+        # Graceful stop (charter §5-3): stop file present → no new
+        # spawns; drain in-flight workers via the normal cascade below;
+        # exit cleanly once empty. Never abandons a worker mid-proof.
+        stopping = stop_file_path(workspace).exists()
+        if stopping and not futures:
+            print("[dispatcher] stop requested (daemon.stop) — no "
+                  "in-flight work; exiting cleanly", flush=True)
+            stop_file_path(workspace).unlink(missing_ok=True)
+            _exit_pool_fast(pool)
+            return 0
+        if stopping and not stop_announced:
+            print(f"[dispatcher] stop requested (daemon.stop) — draining "
+                  f"{len(futures)} in-flight worker(s), no new spawns",
+                  flush=True)
+            stop_announced = True
+
         # Cascade for any completed pipelines
         if futures:
             done, _ = wait(list(futures), timeout=0, return_when=FIRST_COMPLETED)
@@ -1827,7 +1855,7 @@ def run(workspace: Path, *, once: bool = False,
         # the same (target_id, kind) is already in flight in this
         # daemon — bfs_refill caps at 1 but daemon recovery + race
         # corners mean defense-in-depth here is cheap.
-        while len(futures) < pool_size:
+        while not stopping and len(futures) < pool_size:
             row = db.pop_queue(conn, scope=scope)
             if row is None:
                 break
