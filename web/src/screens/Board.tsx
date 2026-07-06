@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { EmptyState, ErrorState, StatusBadge } from '../components/ui'
+import GalaxyCard from '../components/GalaxyCard'
 import type { BoardProblem, BoardResponse } from '../lib/types'
 
 function GoalCounts({ p }: { p: BoardProblem }) {
@@ -83,6 +85,13 @@ const STATUS_ORDER = [
 
 export default function Board() {
   const { data, error, loading } = usePoll<BoardResponse>('/api/problems')
+  const [view, setView] = useState<'list' | 'galaxy'>(
+    () => (localStorage.getItem('board_view') as 'list' | 'galaxy') || 'list',
+  )
+  const switchView = (v: 'list' | 'galaxy') => {
+    setView(v)
+    localStorage.setItem('board_view', v)
+  }
 
   if (loading) return <div className="p-8 text-sm text-ink-faint">Loading…</div>
   if (error && !data) return <ErrorState error={error} />
@@ -110,9 +119,24 @@ export default function Board() {
     <div className="mx-auto max-w-5xl px-6 py-6">
       <div className="mb-4 flex items-baseline justify-between">
         <h1 className="text-lg font-semibold">Problems</h1>
-        <div className="text-xs text-ink-dim">
-          {problems.length} total
-          {attention > 0 && <span className="ml-2 text-danger">{attention} need attention</span>}
+        <div className="flex items-center gap-4">
+          <div className="flex overflow-hidden rounded-md border border-edge text-xs">
+            {(['list', 'galaxy'] as const).map((v) => (
+              <button
+                key={v}
+                className={`px-2.5 py-1 ${
+                  view === v ? 'bg-surface-2 text-ink' : 'text-ink-faint hover:text-ink'
+                }`}
+                onClick={() => switchView(v)}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
+          <div className="text-xs text-ink-dim">
+            {problems.length} total
+            {attention > 0 && <span className="ml-2 text-danger">{attention} need attention</span>}
+          </div>
         </div>
       </div>
       {error && (
@@ -120,23 +144,31 @@ export default function Board() {
           Live update failed ({error.message}) — showing last known state.
         </div>
       )}
-      <table className="w-full border-collapse text-left">
-        <thead>
-          <tr className="border-b border-edge text-xs text-ink-faint">
-            <th className="py-2 pr-4 pl-4 font-medium">problem</th>
-            <th className="py-2 pr-4 font-medium">status</th>
-            <th className="py-2 pr-4 font-medium">goals</th>
-            <th className="py-2 pr-4 font-medium">progress</th>
-            <th className="py-2 pr-4 font-medium">activity</th>
-            <th className="py-2 pr-4 text-right font-medium whitespace-nowrap">last event</th>
-          </tr>
-        </thead>
-        <tbody>
+      {view === 'galaxy' ? (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {sorted.map((p) => (
-            <Row key={p.name} p={p} />
+            <GalaxyCard key={p.name} p={p} />
           ))}
-        </tbody>
-      </table>
+        </div>
+      ) : (
+        <table className="w-full border-collapse text-left">
+          <thead>
+            <tr className="border-b border-edge text-xs text-ink-faint">
+              <th className="py-2 pr-4 pl-4 font-medium">problem</th>
+              <th className="py-2 pr-4 font-medium">status</th>
+              <th className="py-2 pr-4 font-medium">goals</th>
+              <th className="py-2 pr-4 font-medium">progress</th>
+              <th className="py-2 pr-4 font-medium">activity</th>
+              <th className="py-2 pr-4 text-right font-medium whitespace-nowrap">last event</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((p) => (
+              <Row key={p.name} p={p} />
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   )
 }
