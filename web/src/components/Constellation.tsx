@@ -639,8 +639,13 @@ export default function Constellation({
         </div>
       )}
 
-      {/* persistent mini-legend — the encodings must be self-describing */}
-      <div className="pointer-events-none absolute top-3 left-3 flex items-center gap-3 rounded-md bg-surface/80 px-2.5 py-1 text-[11px] text-ink-faint">
+      {/* legend on demand — the owner knows the encoding; a permanent
+          key is seven items of noise on every visit */}
+      <div className="group absolute top-3 left-3">
+        <span className="cursor-default rounded-md bg-surface/80 px-2 py-1 text-[11px] text-ink-faint transition-colors group-hover:text-ink-dim">
+          legend
+        </span>
+        <div className="pointer-events-none mt-1 hidden items-center gap-3 rounded-md bg-surface/90 px-2.5 py-1 text-[11px] text-ink-faint group-hover:flex">
         <span className="flex items-center gap-1">
           <svg width="10" height="10" viewBox="-5 -5 10 10">
             <circle r="3" fill="var(--color-starlight)" />
@@ -693,6 +698,7 @@ export default function Constellation({
           </svg>
           attempts
         </span>
+        </div>
       </div>
       <div className="absolute bottom-3 left-3 flex overflow-hidden rounded-md border border-edge bg-surface">
         {(

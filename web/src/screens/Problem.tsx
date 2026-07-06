@@ -61,7 +61,6 @@ function GoalsList({
         <tr className="border-b border-edge text-xs text-ink-faint">
           <th className="py-2 pr-4 pl-4 font-medium">goal</th>
           <th className="py-2 pr-4 font-medium">status</th>
-          <th className="py-2 pr-4 font-medium">origin</th>
           <th className="py-2 pr-4 font-medium">statement</th>
           <th className="py-2 pr-4 text-right font-medium">attempts</th>
         </tr>
@@ -88,7 +87,6 @@ function GoalsList({
             <td className={`py-2 pr-4 text-xs ${GOAL_STATUS_CLS[g.status] ?? 'text-ink-dim'}`}>
               {GOAL_STATUS_LABEL[g.status] ?? g.status}
             </td>
-            <td className="py-2 pr-4 text-xs text-ink-faint">{g.origin}</td>
             <td className="max-w-md truncate py-2 pr-4 font-mono text-[11px] text-ink-dim">
               {g.statement}
             </td>
@@ -154,10 +152,16 @@ export default function Problem({ name }: { name: string }) {
                 />
               </div>
             )}
-            <div className="tnum text-xs text-ink-faint">
+            <div
+              className="tnum text-xs text-ink-faint"
+              title={[
+                data.ingested_at && `ingested ${relTime(data.ingested_at)}`,
+                data.library_bridged_at && `bridged ${relTime(data.library_bridged_at)}`,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            >
               {proved}/{data.goals.length} proved
-              {data.ingested_at && ` · ingested ${relTime(data.ingested_at)}`}
-              {data.library_bridged_at && ` · bridged ${relTime(data.library_bridged_at)}`}
             </div>
           </div>
         </div>
@@ -176,7 +180,8 @@ export default function Problem({ name }: { name: string }) {
           const blocker = [...data.goals]
             .filter((g) => g.status !== 'proved' && g.dead_attempts > 0)
             .sort((a, b) => b.dead_attempts - a.dead_attempts)[0]
-          if (!lastOk && !blocker) return null
+          const paused = data.status === 'awaiting_human' || data.status === 'signoff_pending'
+          if (!lastOk && !blocker && !paused) return null
           const staleDays = lastOk
             ? Math.floor((Date.now() - Date.parse(lastOk.created_at)) / 86400_000)
             : null
@@ -192,6 +197,14 @@ export default function Problem({ name }: { name: string }) {
                   {lastOk && ' · '}top blocker{' '}
                   <span className="font-mono text-ink-dim">{blocker.slug}</span> (
                   {blocker.dead_attempts} failed attempt{blocker.dead_attempts === 1 ? '' : 's'})
+                </span>
+              )}
+              {(data.status === 'awaiting_human' || data.status === 'signoff_pending') && (
+                <span className="text-ink">
+                  {' · '}paused on you —{' '}
+                  <Link to="/inbox" className="underline decoration-ink-faint underline-offset-2">
+                    open the inbox
+                  </Link>
                 </span>
               )}
             </div>
@@ -214,16 +227,6 @@ export default function Problem({ name }: { name: string }) {
               {data.strategist_directive}
             </span>
           </button>
-        )}
-        {/* amber = the human's move; red stays reserved for breakage */}
-        {(data.status === 'awaiting_human' || data.status === 'signoff_pending') && (
-          <div className="mt-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-1.5 text-xs text-warn">
-            This problem is paused on a human decision —{' '}
-            <Link to="/inbox" className="underline">
-              open the inbox
-            </Link>
-            .
-          </div>
         )}
         <nav className="mt-3 flex gap-5">
           {tabs.map((t) => (

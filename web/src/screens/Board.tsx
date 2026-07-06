@@ -19,14 +19,11 @@ function GoalCounts({ p }: { p: BoardProblem }) {
   // one nowrap line that truncates — a mid-word wrap inside a table
   // cell is worse than losing the (tertiary) shelved count
   return (
-    <span className="tnum block truncate text-xs whitespace-nowrap">
-      {p.goals.open > 0 && <span className="text-accent">{p.goals.open} open · </span>}
-      <span className={p.goals.proved > 0 ? 'text-ink-dim' : 'text-ink-faint'}>
-        {p.goals.proved} proved
+    <span className="tnum truncate text-xs whitespace-nowrap">
+      {p.goals.open > 0 && <span className="text-ink">{p.goals.open} open · </span>}
+      <span className="text-ink-faint">
+        {p.goals.proved}/{p.goals.total}
       </span>
-      {p.goals.shelved > 0 && (
-        <span className="text-ink-faint"> · {p.goals.shelved} shelved</span>
-      )}
     </span>
   )
 }
@@ -127,10 +124,10 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
         )}
       </td>
       <td className="pr-4">
-        <GoalCounts p={p} />
-      </td>
-      <td className="pr-4">
-        <ProgressBar proved={p.goals.proved} open={p.goals.open} total={p.goals.total} />
+        <span className="flex items-center gap-2.5">
+          <ProgressBar proved={p.goals.proved} open={p.goals.open} total={p.goals.total} />
+          <GoalCounts p={p} />
+        </span>
       </td>
       <td className="tnum pr-3 text-right text-xs whitespace-nowrap text-ink-faint">
         {/* a blocking request's age is the product's most important
@@ -153,7 +150,7 @@ function ageDays(iso: string | null): number {
 function SectionRow({ label, count }: { label: string; count?: number }) {
   return (
     <tr>
-      <td colSpan={5} className="pt-5 pb-1.5 pl-3">
+      <td colSpan={4} className="pt-5 pb-1.5 pl-3">
         <span className="text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
           {label}
         </span>
@@ -245,12 +242,14 @@ function ClusterRow({
         )}
       </td>
       <td className="pr-4">
-        <span className="tnum text-xs text-ink-faint">
-          {c.proved > 0 && `${c.proved} proved`}
+        <span className="flex items-center gap-2.5">
+          <ProgressBar proved={c.proved} open={c.open} total={c.total} />
+          {c.proved > 0 && (
+            <span className="tnum truncate text-xs whitespace-nowrap text-ink-faint">
+              {c.proved}/{c.total}
+            </span>
+          )}
         </span>
-      </td>
-      <td className="pr-4">
-        <ProgressBar proved={c.proved} open={c.open} total={c.total} />
       </td>
       <td className="tnum pr-3 text-right text-xs whitespace-nowrap text-ink-faint">
         {relTime(c.lastEvent)}
@@ -270,23 +269,12 @@ const STATUS_ORDER = [
   'idle',
 ]
 
-const STATUS_FILTER_LABEL: Record<string, string> = {
-  awaiting_human: 'needs input',
-  signoff_pending: 'sign-off',
-  stalled: 'stalled',
-  proving: 'proving',
-  ingested: 'ingested',
-  bridged: 'bridged',
-  idle: 'not started',
-}
-
 const WEEK_MS = 7 * 86400_000
 
 export default function Board() {
   const { data, error, loading } = usePoll<BoardResponse>('/api/problems')
   const { data: meta } = usePoll<Meta>('/api/meta', 5000)
   const [query, setQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const filterRef = useRef<HTMLInputElement>(null)
 
@@ -331,11 +319,10 @@ export default function Board() {
   }
 
   const q = query.trim().toLowerCase()
-  const filtering = q !== '' || statusFilter !== null
+  const filtering = q !== ''
   const filtered = problems.filter(
     (p) =>
-      (q === '' || p.name.toLowerCase().includes(q)) &&
-      (statusFilter === null || p.status === statusFilter),
+      q === '' || p.name.toLowerCase().includes(q),
   )
   const sorted = [...filtered].sort(
     (a, b) =>
@@ -345,8 +332,6 @@ export default function Board() {
   const attention = problems.filter(
     (p) => p.status === 'awaiting_human' || p.status === 'signoff_pending',
   ).length
-  const statusCounts = new Map<string, number>()
-  for (const p of problems) statusCounts.set(p.status, (statusCounts.get(p.status) ?? 0) + 1)
 
   // ---- attention / motion / recent / archive partition (list view) ----
   const now = Date.now()
@@ -420,21 +405,6 @@ export default function Board() {
             /
           </kbd>
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          {STATUS_ORDER.filter((s) => (statusCounts.get(s) ?? 0) > 0).map((s) => (
-            <button
-              key={s}
-              className={`rounded-full border px-2 py-0.5 text-[11px] ${
-                statusFilter === s
-                  ? 'border-star/60 bg-star/10 text-star'
-                  : 'border-edge text-ink-faint hover:text-ink'
-              }`}
-              onClick={() => setStatusFilter(statusFilter === s ? null : s)}
-            >
-              {STATUS_FILTER_LABEL[s] ?? s} {statusCounts.get(s)}
-            </button>
-          ))}
-        </div>
         {filtering && <span className="text-xs text-ink-faint">{sorted.length} shown</span>}
       </div>
       {/* table-fixed + truncating name cell: long mono names must not
@@ -445,8 +415,7 @@ export default function Board() {
             <tr className="border-b border-edge text-xs text-ink-faint">
               <th className="py-2 pr-4 pl-3 font-medium">problem</th>
               <th className="w-[120px] py-2 pr-4 font-medium">status</th>
-              <th className="w-[170px] py-2 pr-4 font-medium">goals</th>
-              <th className="w-[130px] py-2 pr-4 font-medium">progress</th>
+              <th className="w-[230px] py-2 pr-4 font-medium">progress</th>
               <th className="w-[80px] py-2 pr-3 text-right font-medium whitespace-nowrap">
                 last event
               </th>

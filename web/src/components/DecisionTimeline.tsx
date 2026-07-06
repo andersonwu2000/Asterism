@@ -58,11 +58,7 @@ function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
         <span className="truncate text-xs text-ink-dim">{summary}</span>
         <span className="text-right text-[11px] whitespace-nowrap text-ink-faint">
           {d.outcome &&
-            (OK_OUTCOMES.has(d.outcome) ? (
-              <span className="mr-2 text-ink-faint" title={d.outcome}>
-                ✓
-              </span>
-            ) : (
+            (OK_OUTCOMES.has(d.outcome) ? null : (
               <span className={`mr-2 ${OUTCOME_CLS[d.outcome] ?? 'text-ink-dim'}`}>
                 {d.outcome}
               </span>
