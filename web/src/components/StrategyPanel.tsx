@@ -74,7 +74,7 @@ export default function StrategyPanel({
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        {loading && <div className="text-xs text-ink-faint">Loading…</div>}
+        {loading && <div className="late-fade text-xs text-ink-faint">Loading…</div>}
         {error && !data && <div className="text-xs text-danger">{String(error.message)}</div>}
         {data && (
           <>

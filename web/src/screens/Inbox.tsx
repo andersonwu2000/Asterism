@@ -200,7 +200,7 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
 export default function Inbox() {
   const { data, error, loading, refresh } = usePoll<InboxResponse>('/api/inbox', 3000)
 
-  if (loading) return <div className="p-8 text-sm text-ink-faint">Loading…</div>
+  if (loading) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
   if (error && !data) return <ErrorState error={error} />
   if (!data) return null
 

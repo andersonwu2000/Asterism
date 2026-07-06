@@ -98,7 +98,7 @@ export default function Problem({ name }: { name: string }) {
   const [selectedStrategy, setSelectedStrategy] = useState<number | null>(null)
   const [fileToOpen, setFileToOpen] = useState<string | null>(null)
 
-  if (loading) return <div className="p-8 text-sm text-ink-faint">Loading…</div>
+  if (loading) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
   if (error && !data) return <ErrorState error={error} />
   if (!data) return null
 
@@ -165,8 +165,9 @@ export default function Problem({ name }: { name: string }) {
             </span>
           </button>
         )}
+        {/* amber = the human's move; red stays reserved for breakage */}
         {(data.status === 'awaiting_human' || data.status === 'signoff_pending') && (
-          <div className="mt-2 rounded-md border border-danger/40 bg-danger/10 px-3 py-1.5 text-xs text-danger">
+          <div className="mt-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-1.5 text-xs text-warn">
             This problem is paused on a human decision —{' '}
             <Link to="/inbox" className="underline">
               open the inbox

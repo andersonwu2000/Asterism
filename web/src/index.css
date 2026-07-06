@@ -101,6 +101,20 @@ body {
   animation: rise-in 0.22s ease-out both;
 }
 
+/* Loading indicators hold back 150ms — sub-100ms responses never
+   flash a spinner-equivalent at the user. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.late-fade {
+  animation: fade-in 0.2s ease-out 0.15s both;
+}
+
 /* Constellation: stars light up gently when a poll flips a status
    (proved = the map literally brightens as the proof advances). */
 .constellation circle,
