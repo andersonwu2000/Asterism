@@ -17,13 +17,15 @@ export default function RunControl({ problem }: { problem: string }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  const act = async (path: string, body: Record<string, unknown>) => {
+  const act = async (path: string, body: Record<string, unknown>, verb: 'start' | 'stop') => {
     setBusy(true)
     setErr(null)
     try {
       await apiPost(path, body)
     } catch (e) {
-      setErr(String((e as Error).message))
+      // stays until the next attempt clears it — a failure that fades
+      // on its own is a failure the user can miss
+      setErr(`couldn't ${verb}: ${String((e as Error).message)}`)
     } finally {
       setBusy(false)
       refresh()
@@ -37,7 +39,7 @@ export default function RunControl({ problem }: { problem: string }) {
   return (
     <span className="flex items-center gap-2">
       {err && (
-        <span className="max-w-64 truncate text-[11px] text-ink-dim" title={err}>
+        <span className="max-w-72 text-[11px] leading-snug text-danger">
           {err}
         </span>
       )}
@@ -50,7 +52,7 @@ export default function RunControl({ problem }: { problem: string }) {
           <button
             className="rounded-md border border-edge px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-edge-strong hover:text-ink disabled:pointer-events-none disabled:opacity-45"
             disabled={busy || d.stopping}
-            onClick={() => void act('/api/daemon/stop', { force: false })}
+            onClick={() => void act('/api/daemon/stop', { force: false }, 'stop')}
           >
             Stop
           </button>
@@ -67,9 +69,9 @@ export default function RunControl({ problem }: { problem: string }) {
           className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight disabled:pointer-events-none disabled:opacity-45"
           disabled={busy}
           title="run the engine on this problem only"
-          onClick={() => void act('/api/daemon/start', { scope: problem })}
+          onClick={() => void act('/api/daemon/start', { scope: problem }, 'start')}
         >
-          Run
+          {busy ? 'Starting…' : 'Run'}
         </button>
       )}
     </span>

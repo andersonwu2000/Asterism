@@ -11,7 +11,7 @@ test('board renders problems with status chips', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Problems' })).toBeVisible()
   // either rows exist or the explicit empty state shows — never a blank
   const rows = page.locator('tbody tr')
-  const empty = page.getByText('No problems yet')
+  const empty = page.getByText('Prove something')
   await expect(rows.first().or(empty)).toBeVisible()
 })
 

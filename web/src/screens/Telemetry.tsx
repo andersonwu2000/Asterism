@@ -16,6 +16,26 @@ function DaemonPanel() {
   const { data: d, refresh } = usePoll<DaemonStatus>('/api/daemon', 2000)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
+  // Force stop is two-step (same pattern as the Inbox's Reject →
+  // Confirm reject): first press arms it, 3s of silence disarms.
+  const [confirmForce, setConfirmForce] = useState(false)
+  const forceTimer = useRef<number | null>(null)
+  useEffect(
+    () => () => {
+      if (forceTimer.current !== null) window.clearTimeout(forceTimer.current)
+    },
+    [],
+  )
+  const armForce = () => {
+    setConfirmForce(true)
+    if (forceTimer.current !== null) window.clearTimeout(forceTimer.current)
+    forceTimer.current = window.setTimeout(() => setConfirmForce(false), 3000)
+  }
+  const disarmForce = () => {
+    if (forceTimer.current !== null) window.clearTimeout(forceTimer.current)
+    forceTimer.current = null
+    setConfirmForce(false)
+  }
 
   const act = async (path: string, body: Record<string, unknown>) => {
     setBusy(true)
@@ -77,10 +97,22 @@ function DaemonPanel() {
             <Button
               variant="danger"
               disabled={busy}
-              onClick={() => void act('/api/daemon/stop', { force: true })}
+              onClick={() => {
+                if (confirmForce) {
+                  disarmForce()
+                  void act('/api/daemon/stop', { force: true })
+                } else {
+                  armForce()
+                }
+              }}
             >
-              Force stop
+              {confirmForce ? 'Confirm force stop' : 'Force stop'}
             </Button>
+            {confirmForce && (
+              <span className="text-[11px] text-ink-faint">
+                kills agents mid-attempt — unfinished work is reclaimed on the next run
+              </span>
+            )}
           </>
         )}
       </div>

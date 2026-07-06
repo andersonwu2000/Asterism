@@ -64,7 +64,13 @@ function ListField({
   )
 }
 
-export default function ManifestEditor({ problem }: { problem: string }) {
+export default function ManifestEditor({
+  problem,
+  onDirtyChange,
+}: {
+  problem: string
+  onDirtyChange?: (dirty: boolean) => void
+}) {
   const [data, setData] = useState<ManifestData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [body, setBody] = useState('')
@@ -72,6 +78,22 @@ export default function ManifestEditor({ problem }: { problem: string }) {
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
+
+  // the parent shows an unsaved-changes dot on the tab
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
+
+  // an unsaved draft must survive an accidental reload/close
+  useEffect(() => {
+    if (!dirty) return
+    const guard = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [dirty])
 
   useEffect(() => {
     let cancelled = false

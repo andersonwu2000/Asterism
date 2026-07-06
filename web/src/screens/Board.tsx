@@ -331,9 +331,18 @@ export default function Board() {
 
   if (problems.length === 0) {
     return (
-      <EmptyState title="No problems yet">
-        Add a problem under <code className="font-mono">Problems/</code> (Manifest.md + Defs.lean)
-        and start the daemon — it will appear here.
+      <EmptyState title="Prove something">
+        <ol className="mx-auto max-w-sm text-left leading-relaxed">
+          <li>1. Describe what you want proved, in plain language.</li>
+          <li>2. Press Run — the engine decomposes, searches, and writes Lean.</li>
+          <li>3. Sign off the result and it joins your Library.</li>
+        </ol>
+        <Link
+          to="/new"
+          className="mt-5 inline-block rounded-md bg-ink px-4 py-2 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
+        >
+          New problem
+        </Link>
       </EmptyState>
     )
   }

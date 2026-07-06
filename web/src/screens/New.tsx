@@ -21,8 +21,17 @@ export default function New() {
   const [root, setRoot] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [nameTouched, setNameTouched] = useState(false)
 
   const nameOk = NAME_RE.test(name)
+  // concrete reason, live as the user types (or after a blur): silent
+  // disabled buttons make people re-read the form instead of the fix
+  const nameError =
+    (name !== '' || nameTouched) && !nameOk
+      ? /\s/.test(name)
+        ? "spaces aren't allowed — use underscores"
+        : 'names are dot-separated identifiers — try Topology.my_theorem'
+      : null
   const hasLean = defs.trim() !== '' || root.trim() !== ''
 
   const create = async () => {
@@ -60,15 +69,12 @@ export default function New() {
         className="mb-1 w-96 rounded-md border border-edge bg-surface px-2.5 py-1.5 font-mono text-sm text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
         placeholder="Topology.my_theorem"
         value={name}
-        onChange={(e) => setName(e.target.value.trim())}
+        onChange={(e) => setName(e.target.value)}
+        onBlur={() => setNameTouched(true)}
         spellCheck={false}
         autoFocus
       />
-      <div className="mb-4 text-[11px] text-ink-faint">
-        {name !== '' && !nameOk
-          ? 'dot-separated identifiers, e.g. Topology.my_theorem'
-          : ' '}
-      </div>
+      <div className="mb-4 min-h-4 text-[11px] text-danger">{nameError ?? ' '}</div>
 
       <label className="mb-1 block text-[11px] font-medium tracking-widest text-ink-faint uppercase">
         what should be proved?
@@ -133,13 +139,17 @@ export default function New() {
       )}
 
       <div className="mt-2 flex items-center gap-3">
-        <Button
-          variant="primary"
-          disabled={busy || !nameOk || desc.trim() === ''}
-          onClick={() => void create()}
-        >
-          {busy ? (hasLean ? 'Type-checking Lean files…' : 'Creating…') : 'Create problem'}
-        </Button>
+        {/* disabled buttons swallow pointer events — the "why" tooltip
+            must live on a wrapper to actually show */}
+        <span title={desc.trim() === '' ? 'write a description first' : undefined}>
+          <Button
+            variant="primary"
+            disabled={busy || !nameOk || desc.trim() === ''}
+            onClick={() => void create()}
+          >
+            {busy ? (hasLean ? 'Type-checking Lean files…' : 'Creating…') : 'Create problem'}
+          </Button>
+        </span>
         {busy && hasLean && (
           <span className="text-[11px] text-ink-faint">
             lake build runs first — this can take minutes

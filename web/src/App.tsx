@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import type { ReactNode } from 'react'
 import { RouterProvider, useRoute, Link } from './lib/router'
 import { usePoll } from './lib/api'
@@ -111,6 +112,12 @@ function Shell() {
   const { data: meta } = usePoll<Meta>('/api/meta', 3000)
   const section = route.segments[0] ?? ''
   const workspaceName = meta ? (meta.workspace.split(/[\\/]/).pop() ?? '') : ''
+  // the tab title carries the inbox count — the one place a decision
+  // can wait on the human while they look at another tab
+  const inboxCount = meta?.inbox_count ?? 0
+  useEffect(() => {
+    document.title = inboxCount > 0 ? `(${inboxCount}) Asterism` : 'Asterism'
+  }, [inboxCount])
 
   return (
     <div className="flex h-full">

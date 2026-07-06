@@ -45,6 +45,21 @@ const GOAL_SORT: Record<string, number> = {
   dead: 7,
 }
 
+/** Fold a statement's leading `letI …;` / `let …;` / `haveI …;` binder
+ * chain (`;`-separated) into a count prefix — a truncating table cell
+ * would otherwise show only the first binder and none of the actual
+ * proposition. No `;`-separated binder prefix → returned unchanged. */
+function stripBinders(statement: string): string {
+  if (!/^(letI|haveI|let)\b/.test(statement)) return statement
+  const parts = statement.split(';')
+  let n = 0
+  while (n < parts.length - 1 && /^\s*(letI|haveI|let)\b/.test(parts[n])) n++
+  if (n === 0) return statement
+  const rest = parts.slice(n).join(';').trim()
+  if (rest === '') return statement
+  return `${n} let${n === 1 ? '' : 's'} · ${rest}`
+}
+
 function GoalsList({
   goals,
   onSelect,
@@ -106,8 +121,11 @@ function GoalsList({
                 ? 'interrupted'
                 : (GOAL_STATUS_LABEL[g.status] ?? g.status)}
             </td>
-            <td className="max-w-md truncate py-2 pr-4 font-mono text-[11px] text-ink-dim">
-              {g.statement}
+            <td
+              className="max-w-md truncate py-2 pr-4 font-mono text-[11px] text-ink-dim"
+              title={g.statement}
+            >
+              {stripBinders(g.statement)}
             </td>
             <td className="py-2 pr-4 text-right text-xs text-ink-faint">
               {g.attempts > 0 ? g.attempts : '—'}
@@ -125,6 +143,7 @@ export default function Problem({ name }: { name: string }) {
   )
   const { data: daemon } = usePoll<DaemonStatus>('/api/daemon', 3000)
   const [tab, setTab] = useState<Tab>('stars')
+  const [manifestDirty, setManifestDirty] = useState(false)
   const [directiveOpen, setDirectiveOpen] = useState(false)
   const [selectedGoal, setSelectedGoal] = useState<number | null>(null)
   const [selectedStrategy, setSelectedStrategy] = useState<number | null>(null)
@@ -266,6 +285,11 @@ export default function Problem({ name }: { name: string }) {
               onClick={() => setTab(t.id)}
             >
               {t.label}
+              {t.id === 'manifest' && manifestDirty && (
+                <span className="ml-1 text-star" title="unsaved changes">
+                  ·
+                </span>
+              )}
               {tab === t.id && (
                 <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-star" />
               )}
@@ -320,7 +344,11 @@ export default function Problem({ name }: { name: string }) {
               />
             </div>
           )}
-          {tab === 'manifest' && <ManifestEditor problem={data.name} />}
+          {/* the manifest editor stays mounted (hidden, not unmounted) so
+              an unsaved draft survives a tab switch */}
+          <div className={tab === 'manifest' ? undefined : 'hidden'}>
+            <ManifestEditor problem={data.name} onDirtyChange={setManifestDirty} />
+          </div>
           {tab === 'goals' && (
             <GoalsList
               goals={data.goals}
