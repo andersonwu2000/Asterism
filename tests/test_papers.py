@@ -487,6 +487,33 @@ def test_run_scholar_outcomes(tmp_path: Path, monkeypatch) -> None:
     conn.close()
 
 
+def test_release_own_leases_frees_claimed_rows(tmp_path: Path) -> None:
+    """Graceful-exit sweep (frontend joint test 2026-07-07): a row
+    claimed by this PID is released (not deleted); other owners' leases
+    untouched."""
+    import os
+    from Tooling.state import db as _db
+    conn = _v2_conn(tmp_path)
+    _db.enqueue(conn, kind="Scholar", target_id="Test.px",
+                target_kind="Problem", problem="Test.px")
+    _db.enqueue(conn, kind="Scholar", target_id="Test.px",
+                target_kind="Problem", problem="Test.px", priority=1)
+    row = _db.pop_queue(conn)  # leases to os.getpid()
+    assert row is not None
+    conn.execute("UPDATE queue SET owner_pid = 99999999,"
+                 " leased_at = 'ts' WHERE id != ?", (int(row["id"]),))
+    conn.commit()
+    assert _db.release_own_leases(conn) == 1
+    mine, other = conn.execute(
+        "SELECT COUNT(*) FROM queue WHERE owner_pid IS NULL"
+    ).fetchone()[0], conn.execute(
+        "SELECT COUNT(*) FROM queue WHERE owner_pid = 99999999"
+    ).fetchone()[0]
+    assert mine == 1 and other == 1
+    assert os.getpid()  # documents the implicit owner
+    conn.close()
+
+
 def test_section_paper_index_multi_paper(tmp_path: Path) -> None:
     """D14: primary (Manifest pointer) full; scholar-fetched papers as
     one-line auxiliary entries."""

@@ -1866,6 +1866,10 @@ def run(workspace: Path, *, once: bool = False,
                     fail_counts=st.librarian_fail_counts)):
             print("[dispatcher] all problems ingested", flush=True)
             _exit_pool_fast(pool)
+            _released = db.release_own_leases(conn)
+            if _released:
+                print(f"[queue] released {_released} own lease(s) at "
+                      f"graceful exit", flush=True)
             return 0
 
         # Refill queue (uses in-memory `running` for dedup; st.cooldown_until
@@ -2012,6 +2016,7 @@ def run(workspace: Path, *, once: bool = False,
                 conn, scope=scope, claimable_only=True) == 0:
             print("[dispatcher] --once and queue empty, exit")
             pool.shutdown(wait=True)
+            db.release_own_leases(conn)
             return 0
 
         # Idle exit: nothing in flight, queue empty, and bfs_refill found
@@ -2045,6 +2050,7 @@ def run(workspace: Path, *, once: bool = False,
             print(f"[dispatcher] no dispatchable work, exiting "
                   f"(all_ingested={scoped_done})", flush=True)
             pool.shutdown(wait=True)
+            db.release_own_leases(conn)
             return 0 if scoped_done else 1
 
         # Wait for any completion or tick
@@ -2071,6 +2077,10 @@ def run(workspace: Path, *, once: bool = False,
             print(f"[dispatcher] {budget_sec}s budget exceeded; stopping",
                   flush=True)
             _exit_pool_fast(pool)
+            _released = db.release_own_leases(conn)
+            if _released:
+                print(f"[queue] released {_released} own lease(s) at "
+                      f"graceful exit", flush=True)
             return 1
 
 

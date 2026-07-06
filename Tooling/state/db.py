@@ -3974,6 +3974,23 @@ def complete_queue_row(conn: sqlite3.Connection, row_id: int) -> None:
     conn.commit()
 
 
+def release_own_leases(conn: sqlite3.Connection, *,
+                       owner_pid: "int | None" = None) -> int:
+    """Graceful-shutdown lease sweep: release every queue lease held by
+    THIS process. An in-flight worker killed at a daemon exit
+    (`_exit_pool_fast` on the ingested/budget paths) leaves its claimed
+    row leased to a dead PID — harmless to correctness (the next run's
+    `release_expired_leases` reclaims it) but visible as a phantom
+    running unit to DB readers (frontend joint test, 2026-07-07). Rows
+    are released, not deleted — the next run re-pops them."""
+    owner = owner_pid if owner_pid is not None else os.getpid()
+    cur = conn.execute(
+        "UPDATE queue SET owner_pid = NULL, leased_at = NULL"
+        " WHERE owner_pid = ?", (owner,))
+    conn.commit()
+    return cur.rowcount
+
+
 def release_expired_leases(conn: sqlite3.Connection, *,
                            scope: "str | None" = None,
                            ttl_sec: float,

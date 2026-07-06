@@ -222,11 +222,12 @@ _WATERMARKS = {
     # conscious bump. db.py split stays a #11 順勢項 (next schema rework).
     # 4130→4200 (2026-07-06): v22 review snapshot + connect_readonly
     # (charter §5-4/§5-5) — conscious bump; the split pressure is real now.
-    # 4200→4390 (2026-07-07): v23 Scholar/FetchPaper CHECK widens (three-
-    # table rebuild) + problem_papers bindings (paper v2 D11/D13) —
-    # conscious bump; migrations-out-of-db.py split is the natural cut
-    # at the next schema rework (#11).
-    "Tooling/state/db.py": 4390,
+    # 4200→4400 (2026-07-07): v23 Scholar/FetchPaper CHECK widens (three-
+    # table rebuild) + problem_papers bindings (paper v2 D11/D13) +
+    # release_own_leases (graceful-exit sweep) — conscious bump;
+    # migrations-out-of-db.py split is the natural cut at the next
+    # schema rework (#11).
+    "Tooling/state/db.py": 4400,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
