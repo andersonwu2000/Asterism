@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
-import { lineDiff } from '../lib/diff'
-import type { DiffRow } from '../lib/diff'
+import { lineDiff, wordDiff } from '../lib/diff'
+import type { DiffRow, Seg } from '../lib/diff'
 
 /*
  * Side-by-side line diff (current | proposed) for amend review.
@@ -41,11 +41,13 @@ function chunkRows(rows: DiffRow[]): Chunk[] {
 function Line({
   no,
   text,
+  segs,
   tone,
   sign,
 }: {
   no: number | null
-  text: string
+  text?: string
+  segs?: Seg[]
   tone: 'same' | 'del' | 'add'
   sign: string
 }) {
@@ -59,21 +61,42 @@ function Line({
         {no ?? ''}
       </span>
       <span className="mr-2 w-3 shrink-0 text-ink-faint select-none">{sign}</span>
-      <span className="min-w-0 break-words">{text}</span>
+      <span className="min-w-0 break-words">
+        {segs
+          ? segs.map((s, i) =>
+              s.changed ? (
+                <span
+                  key={i}
+                  className={`rounded-[2px] ${tone === 'del' ? 'bg-danger/30' : 'bg-ok/30'}`}
+                >
+                  {s.text}
+                </span>
+              ) : (
+                <span key={i}>{s.text}</span>
+              ),
+            )
+          : text}
+      </span>
     </div>
   )
 }
 
 function Row({ r }: { r: DiffRow }) {
   if (r.type === 'same') return <Line no={r.rightNo} text={r.right ?? ''} tone="same" sign=" " />
+  if (r.type === 'change') {
+    // paired edit: highlight the words that moved, not the whole line
+    const { left, right } = wordDiff(r.left ?? '', r.right ?? '')
+    return (
+      <>
+        <Line no={r.leftNo} segs={left} tone="del" sign="−" />
+        <Line no={r.rightNo} segs={right} tone="add" sign="+" />
+      </>
+    )
+  }
   return (
     <>
-      {(r.type === 'del' || r.type === 'change') && (
-        <Line no={r.leftNo} text={r.left ?? ''} tone="del" sign="−" />
-      )}
-      {(r.type === 'add' || r.type === 'change') && (
-        <Line no={r.rightNo} text={r.right ?? ''} tone="add" sign="+" />
-      )}
+      {r.type === 'del' && <Line no={r.leftNo} text={r.left ?? ''} tone="del" sign="−" />}
+      {r.type === 'add' && <Line no={r.rightNo} text={r.right ?? ''} tone="add" sign="+" />}
     </>
   )
 }
