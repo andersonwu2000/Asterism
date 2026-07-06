@@ -1461,8 +1461,13 @@ def _daemon_live_pid(workspace: Path) -> "int | None":
 
 
 def _daemon_in_flight(workspace: Path) -> int:
+    path = workspace / "asterism.db"
+    if not path.exists():
+        return 0
     try:
-        conn = db.connect(workspace / "asterism.db")
+        # Read-only on purpose: db.connect() CREATES a missing file (a
+        # write), and this runs from the serve API's status poll too.
+        conn = db.connect_readonly(path)
         n = conn.execute(
             "SELECT count(*) FROM queue WHERE owner_pid IS NOT NULL"
         ).fetchone()[0]

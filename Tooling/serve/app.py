@@ -191,6 +191,8 @@ def create_app(workspace: Path) -> FastAPI:
     @app.post("/api/inbox/amend/{decision_id}/resolve")
     def resolve_amend(decision_id: int, body: AmendResolveBody) -> dict:
         from ..state import amend as _amend
+        if not (workspace / "asterism.db").exists():
+            raise HTTPException(status_code=404, detail="NO_DATABASE")
         conn = db.connect(workspace / "asterism.db")
         try:
             try:

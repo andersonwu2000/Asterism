@@ -76,6 +76,19 @@ def test_meta_fresh_workspace_no_db(workspace: Path) -> None:
     assert body["daemon"]["running"] is False
 
 
+def test_meta_never_creates_the_db(workspace: Path) -> None:
+    """Iron rule regression: the read surface must not write. db.connect()
+    CREATES a missing sqlite file — the daemon-status path did exactly
+    that from /api/meta, making every fresh workspace look
+    schema-behind (0-byte DB at user_version 0)."""
+    c = _client(workspace)
+    c.get("/api/meta")
+    c.get("/api/daemon")
+    c.get("/api/problems")
+    assert not (workspace / "asterism.db").exists()
+    assert c.get("/api/meta").json()["daemon"]["in_flight_leases"] == 0
+
+
 def test_board_fresh_workspace_is_empty_not_error(workspace: Path) -> None:
     r = _client(workspace).get("/api/problems")
     assert r.status_code == 200
