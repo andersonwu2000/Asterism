@@ -133,8 +133,8 @@ function Cluster({ p }: { p: LibraryProblem }) {
         <div
           className="pointer-events-none absolute z-10 max-w-xs rounded-md border border-edge-strong bg-surface-3 px-2.5 py-1.5"
           style={{
-            left: Math.min(hover.x + 10, w - 180),
-            top: Math.min(hover.y + 10, h - 20),
+            left: Math.max(0, Math.min(hover.x + 10, w - 180)),
+            top: Math.max(0, Math.min(hover.y + 10, h - 20)),
           }}
         >
           <div className="font-mono text-[11px] break-all text-ink">

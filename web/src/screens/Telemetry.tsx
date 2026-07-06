@@ -2,9 +2,9 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { compactNumber, duration } from '../lib/format'
 import { Button, SectionLabel } from '../components/ui'
-import type { DaemonStatus, LibraryProblem, UsageProblem } from '../lib/types'
+import type { DaemonStatus, UsageProblem } from '../lib/types'
 
-/** Engine panel + usage telemetry + Library browser (charter §3.4). */
+/** Engine panel + usage telemetry (charter §3.4); the Library browses at #/library. */
 
 function DaemonPanel() {
   const { data: d, refresh } = usePoll<DaemonStatus>('/api/daemon', 2000)
@@ -242,47 +242,6 @@ function inner(
   )
 }
 
-function LibraryBrowser() {
-  const { data } = usePoll<{ problems: LibraryProblem[] }>('/api/library', 30000)
-  const rows = data?.problems ?? []
-  if (rows.length === 0)
-    return (
-      <div className="rounded-lg border border-edge bg-surface px-4 py-6 text-center text-xs text-ink-faint">
-        Nothing bridged to the Library yet — approved harvests land here.
-      </div>
-    )
-  return (
-    <div className="flex flex-col gap-3">
-      {rows.map((p) => (
-        <div key={p.problem} className="rounded-lg border border-edge bg-surface">
-          <div className="border-b border-edge px-4 py-2 font-mono text-xs text-star">
-            {p.problem}
-            <span className="ml-2 text-ink-faint">{p.decls.length} declarations</span>
-          </div>
-          <div className="px-4 py-2">
-            {p.decls.map((d) => (
-              <div key={d.slug} className="flex items-baseline gap-3 py-0.5">
-                {/* leaf name only — the group header already carries the namespace */}
-                <span
-                  className="shrink-0 font-mono text-xs text-ink"
-                  title={d.name ?? d.slug}
-                >
-                  {(d.name ?? d.slug).split('.').pop()}
-                </span>
-                {d.signature && (
-                  <span className="truncate font-mono text-[11px] text-ink-faint">
-                    {d.signature}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
 export default function Telemetry() {
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
@@ -299,10 +258,6 @@ export default function Telemetry() {
         <section>
           <SectionLabel>usage</SectionLabel>
           <UsageTable />
-        </section>
-        <section>
-          <SectionLabel>library</SectionLabel>
-          <LibraryBrowser />
         </section>
       </div>
     </div>
