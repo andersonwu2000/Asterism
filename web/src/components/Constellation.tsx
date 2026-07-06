@@ -59,31 +59,8 @@ function radius(g: Goal): number {
   return 5
 }
 
-/** Root goals render as a bright star with diffraction spikes — the
- * telescope-photo look (thin cross rays), deliberately distinct from
- * the four-point "spark" glyphs of other products. */
-function RootStar({ r, fill, stroke, opacity, glow }: {
-  r: number
-  fill: string
-  stroke: string
-  opacity: number
-  glow: boolean
-}) {
-  const spike = r * 2.1
-  return (
-    <g opacity={opacity}>
-      <line x1={-spike} y1={0} x2={spike} y2={0} stroke={stroke} strokeWidth={0.7} opacity={0.55} />
-      <line x1={0} y1={-spike} x2={0} y2={spike} stroke={stroke} strokeWidth={0.7} opacity={0.55} />
-      <circle
-        r={r * 0.85}
-        fill={fill}
-        stroke={stroke}
-        strokeWidth={1.2}
-        filter={glow ? 'url(#star-glow)' : undefined}
-      />
-    </g>
-  )
-}
+/* Root goals are just the brightest star: larger radius + a soft halo
+ * ring. No glyph shapes (owner's call — spikes and sparks both out). */
 
 const STATUS_LABEL: Record<string, string> = {
   open: 'open',
@@ -419,33 +396,32 @@ export default function Constellation({
                     strokeDasharray="2 3"
                   />
                 )}
-                {n.goal.origin === 'root' ? (
-                  <RootStar
-                    r={r}
-                    fill={s.fill}
-                    stroke={s.stroke}
-                    opacity={s.opacity}
-                    glow={s.glow}
-                  />
-                ) : (
+                {n.goal.origin === 'root' && (
                   <circle
-                    r={r}
-                    fill={s.fill}
+                    r={r + 4}
+                    fill="none"
                     stroke={s.stroke}
-                    strokeWidth={1.4}
-                    opacity={s.opacity}
-                    filter={s.glow ? 'url(#star-glow)' : undefined}
-                  >
-                    {n.goal.status === 'attempting' && (
-                      <animate
-                        attributeName="opacity"
-                        values="1;0.45;1"
-                        dur="1.6s"
-                        repeatCount="indefinite"
-                      />
-                    )}
-                  </circle>
+                    strokeWidth={0.6}
+                    opacity={s.opacity * 0.45}
+                  />
                 )}
+                <circle
+                  r={r}
+                  fill={s.fill}
+                  stroke={s.stroke}
+                  strokeWidth={1.4}
+                  opacity={s.opacity}
+                  filter={s.glow ? 'url(#star-glow)' : undefined}
+                >
+                  {n.goal.status === 'attempting' && (
+                    <animate
+                      attributeName="opacity"
+                      values="1;0.45;1"
+                      dur="1.6s"
+                      repeatCount="indefinite"
+                    />
+                  )}
+                </circle>
                 {n.goal.is_deliverable && (
                   <circle
                     r={r + 3}
@@ -577,9 +553,8 @@ export default function Constellation({
         </span>
         <span className="flex items-center gap-1">
           <svg width="12" height="12" viewBox="-6 -6 12 12">
-            <line x1="-5" y1="0" x2="5" y2="0" stroke="var(--color-starlight)" strokeWidth="0.7" />
-            <line x1="0" y1="-5" x2="0" y2="5" stroke="var(--color-starlight)" strokeWidth="0.7" />
-            <circle r="2.4" fill="var(--color-starlight)" />
+            <circle r="5" fill="none" stroke="var(--color-starlight)" strokeWidth="0.6" opacity="0.5" />
+            <circle r="2.8" fill="var(--color-starlight)" />
           </svg>
           root
         </span>

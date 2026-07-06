@@ -71,12 +71,17 @@ export function StatusBadge({ status }: { status: ProblemStatus }) {
 export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
   return (
     <div className="flex flex-col items-center justify-center py-24 text-center">
-      <svg width="28" height="28" viewBox="0 0 24 24" className="mb-4 text-ink-faint" aria-hidden>
+      <svg width="30" height="30" viewBox="0 0 20 20" className="mb-4 text-ink-faint" aria-hidden>
         <path
-          fill="currentColor"
-          d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z"
-          opacity="0.5"
+          d="M4 14.5L10.5 5l5 6.5"
+          stroke="currentColor"
+          strokeWidth="0.8"
+          opacity="0.4"
+          fill="none"
         />
+        <circle cx="4" cy="14.5" r="1.5" fill="currentColor" opacity="0.6" />
+        <circle cx="10.5" cy="5" r="1.9" fill="currentColor" opacity="0.6" />
+        <circle cx="15.5" cy="11.5" r="1.2" fill="currentColor" opacity="0.6" />
       </svg>
       <div className="text-base text-ink-dim">{title}</div>
       {children && <div className="mt-2 max-w-md text-sm text-ink-faint">{children}</div>}

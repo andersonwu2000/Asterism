@@ -113,11 +113,18 @@ function Shell() {
     <div className="flex h-full">
       <aside className="flex w-52 shrink-0 flex-col border-r border-edge bg-surface px-3 py-4">
         <Link to="/" className="mb-1 flex items-center gap-2 px-2.5">
-          <svg width="17" height="17" viewBox="0 0 24 24" className="text-star" aria-hidden>
+          {/* the mark IS an asterism: three stars, one line of sky */}
+          <svg width="18" height="18" viewBox="0 0 20 20" className="text-star" aria-hidden>
             <path
-              fill="currentColor"
-              d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z"
+              d="M4 14.5L10.5 5l5 6.5"
+              stroke="currentColor"
+              strokeWidth="0.9"
+              opacity="0.5"
+              fill="none"
             />
+            <circle cx="4" cy="14.5" r="1.7" fill="currentColor" />
+            <circle cx="10.5" cy="5" r="2.1" fill="currentColor" />
+            <circle cx="15.5" cy="11.5" r="1.4" fill="currentColor" />
           </svg>
           <span className="text-[15px] font-semibold tracking-wide">Asterism</span>
         </Link>
