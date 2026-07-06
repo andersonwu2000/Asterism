@@ -1376,18 +1376,37 @@ def cmd_review(args: argparse.Namespace) -> int:
     Read-only. Needs the gateway (reused if already warm; else warmed —
     slow on a cold Mathlib cache). Exit 0 always (a review, not a gate);
     deliverables whose closure could not be computed print a WARN."""
+    from ..quality import review as review_mod
+
     workspace = Path.cwd()
     conn = db.connect()
     db.init_schema(conn)
     scope = getattr(args, "problem", None)
-    data = review_data(conn, workspace, problem=scope)
-    conn.close()
+    fresh = bool(getattr(args, "fresh", False))
+    # Snapshot-first (charter §5-4): the Ingest commit stored the closure
+    # while the gateway was warm; reading it costs nothing. --fresh (or a
+    # problem never snapshotted) recomputes live and refreshes the store.
+    data = None
+    snap_note = ""
+    if scope and not fresh:
+        snap = review_mod.load_review_snapshot(conn, scope)
+        if snap is not None:
+            data, at = snap
+            snap_note = (f"(snapshot from {at[:19]} — "
+                         f"`--fresh` recomputes)")
+    if data is None:
+        data = review_mod.review_data(conn, workspace, problem=scope)
+        if scope and data["deliverables"]:
+            db.set_review_snapshot(
+                conn, scope, json.dumps(data, ensure_ascii=False))
 
     if not data["deliverables"]:
+        conn.close()
         where = f" for '{scope}'" if scope else ""
         print(f"no deliverables{where} (Strategist marks them via "
               f"is_deliverable; none set yet)")
         return 0
+    conn.close()
 
     def render(items: list[dict], head: str) -> None:
         if not items:
@@ -1397,7 +1416,8 @@ def cmd_review(args: argparse.Namespace) -> int:
             mod = c.get("module") or "<local>"
             print(f"      - {c['name']}   ({mod})")
 
-    print(f"\n=== anchor+claim review: {scope or 'all problems'} ===")
+    print(f"\n=== anchor+claim review: {scope or 'all problems'} "
+          f"{snap_note}===")
     for d in data["deliverables"]:
         if not d["ok"]:
             print(f"\n▸ {d['fq']}  [WARN] closure unavailable: {d['error']}")
@@ -1420,92 +1440,9 @@ def cmd_review(args: argparse.Namespace) -> int:
     return 0
 
 
-def review_data(conn, workspace: Path, *,
-                problem: "str | None" = None) -> dict:
-    """Structured anchor+claim review (frontend charter §5-4): the data
-    `cmd_review` renders, reusable by the serve API. Per deliverable:
-    {fq, problem, slug, ok, error, kind, module, paper, anchors, claims,
-    folded}; plus the distinct pending-name union count. Warms the
-    gateway iff there are deliverables to compute (same behavior the CLI
-    had)."""
-    from ..lsp import lifecycle as gateway_lifecycle
-    from ..pipeline._constants import (anchor_closure_goal,
-                                       canonicalize_anchor_pending,
-                                       fold_generated_companions)
-    dels = db.deliverables(conn, problem=problem)
-    out: "list[dict]" = []
-    union: set[str] = set()
-    if not dels:
-        return {"deliverables": out, "union_count": 0}
-    gateway_lifecycle.start_gateway(workspace)
-    _papers: dict[str, str] = {}  # problem → paper id ('' = unbound)
-    for g in dels:
-        dest = workspace / g["lean_path"]
-        r = anchor_closure_goal(
-            workspace, dest, problem=g["problem"], slug=g["slug"])
-        fq = f"Problems.{g['problem']}.{g['slug']}"
-        entry = {"fq": fq, "problem": str(g["problem"]),
-                 "slug": str(g["slug"]), "ok": bool(r.ok),
-                 "error": None if r.ok else str(r.error),
-                 "kind": None, "module": None, "paper": "",
-                 "anchors": [], "claims": [], "folded": 0}
-        if r.ok:
-            # Canonicalize internal strategy names (`s<N>`) → public goal
-            # slugs so the sign-off surface shows only human-meaningful
-            # names (and each stays rejectable). #71.
-            r.pending = canonicalize_anchor_pending(
-                conn, workspace, g["problem"], r.pending)
-            # Presentation only — reject/harvest consume the raw closure.
-            r.pending, folded = fold_generated_companions(r.pending)
-            entry.update({
-                "kind": ("claim" if r.top_is_claim
-                         else f"anchor:{r.top_kind}"),
-                "module": r.top_module or None,
-                "paper": _deliverable_paper_line(
-                    conn, workspace, g, papers_cache=_papers),
-                "anchors": r.anchors, "claims": r.claims,
-                "folded": folded,
-            })
-            union.update(c["name"] for c in r.pending)
-        out.append(entry)
-    return {"deliverables": out, "union_count": len(union)}
-
-
-def _deliverable_paper_line(conn, workspace: Path, g,
-                            *, papers_cache: dict) -> str:
-    """Paper-provenance line for one deliverable at review (paper
-    pipeline Phase 2): the `paper_ref` the Strategist recorded in the
-    MarkDeliverable payload, so the human signs 'claim = paper theorem'
-    against a pinned location instead of hunting. '' for problems with
-    no `paper:` binding; a LOUD placeholder when the binding exists but
-    no ref was recorded (visibility, not a gate)."""
-    import json as _json
-    from ..state import manifest as _mfst_mod
-    prob = str(g["problem"])
-    if prob not in papers_cache:
-        mpath = db.problem_dir(workspace, prob) / "Manifest.md"
-        try:
-            papers_cache[prob] = _mfst_mod.parse(mpath).paper
-        except OSError:
-            papers_cache[prob] = ""
-    pid = papers_cache[prob]
-    if not pid:
-        return ""
-    row = conn.execute(
-        "SELECT payload FROM strategist_decisions"
-        " WHERE decision_kind = 'MarkDeliverable' AND target_id = ?"
-        " ORDER BY id DESC LIMIT 1", (int(g["id"]),)).fetchone()
-    ref = ""
-    if row is not None:
-        try:
-            ref = str((_json.loads(row["payload"] or "{}")
-                       ).get("paper_ref") or "").strip()
-        except ValueError:
-            ref = ""
-    if ref:
-        return f"paper: {ref}   (Papers/{pid}/text.md)"
-    return (f"paper: (no paper_ref recorded — locate the claim in "
-            f"Papers/{pid}/text.md yourself before signing)")
+# review_data / _deliverable_paper_line moved to Tooling/quality/review.py
+# (charter §5-4): the Strategist's Ingest-commit snapshot hook needs them,
+# and pipeline code must not import the CLI entrypoint layer.
 
 
 def _resolve_reject_target(conn, decl: str, problem: str | None):
@@ -2035,6 +1972,10 @@ def main(argv: list[str] | None = None) -> int:
              "Strategist-marked deliverable (anchors to vouch for)")
     p_review.add_argument("problem", nargs="?", default=None,
                           help="optional; default = deliverables across all problems")
+    p_review.add_argument("--fresh", action="store_true",
+                          help="recompute the closure live (warms the "
+                               "gateway) instead of reading the Ingest-time "
+                               "snapshot; refreshes the stored snapshot")
     p_review.set_defaults(func=cmd_review)
 
     p_reject = sub.add_parser(

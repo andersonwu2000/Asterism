@@ -220,7 +220,9 @@ _WATERMARKS = {
     # bump.
     # 4090→4130 (2026-07-06): v21 spawn_usage (frontend charter §5-2) —
     # conscious bump. db.py split stays a #11 順勢項 (next schema rework).
-    "Tooling/state/db.py": 4130,
+    # 4130→4200 (2026-07-06): v22 review snapshot + connect_readonly
+    # (charter §5-4/§5-5) — conscious bump; the split pressure is real now.
+    "Tooling/state/db.py": 4200,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

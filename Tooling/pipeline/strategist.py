@@ -941,6 +941,13 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     _regress.record_terminal(
         workspace, problem=problem, terminal="ingested",
         deliverables=len(db.deliverables(conn, problem)))
+    # Review snapshot (frontend charter §5-4): compute the anchor+claim
+    # closure NOW, while the gateway is warm from the proving run — the
+    # sign-off surfaces (CLI default, serve API) then read the stored
+    # JSON instead of paying a 30s+ cold gateway per view. Best-effort:
+    # a failure degrades readers to live compute, never blocks Ingest.
+    from ..quality import review as _review
+    _review.store_review_snapshot(conn, workspace, problem)
     mfst_path = db.problem_dir(workspace, problem) / "Manifest.md"
     try:
         mfst = _manifest.parse(mfst_path)

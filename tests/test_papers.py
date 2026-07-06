@@ -214,7 +214,7 @@ def test_review_paper_line_ref_and_missing(tmp_path: Path) -> None:
     without a ref → loud locate-yourself placeholder; unbound → ''."""
     import json
     import sqlite3
-    from Tooling.core.cli import _deliverable_paper_line
+    from Tooling.quality.review import _deliverable_paper_line
     from Tooling.state import db as _db
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

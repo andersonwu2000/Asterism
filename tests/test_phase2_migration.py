@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 21
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 22
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -366,7 +366,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 21
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 22
     conn.close()
 
 
@@ -468,7 +468,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 21
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 22
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -658,3 +658,93 @@ def test_record_spawn_usage_roundtrip(tmp_path):
     assert r["problem"] == "Logic.toy"          # dotted, not the leaf
     assert r["output_tokens"] == 200 and r["turns"] == 5
     assert r["wall_sec"] == 12.5
+
+
+def test_connect_readonly_reads_but_cannot_write(tmp_path):
+    """Charter 5-5: the web layer's only legal DB entry. mode=ro makes
+    writes impossible at the engine level; current-version DBs open fine."""
+    import pytest
+    p = tmp_path / "asterism.db"
+    conn = db.connect(p)
+    db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
+                 " VALUES ('p', 'm', ?)", (db.now(),))
+    conn.commit()
+    conn.close()
+    ro = db.connect_readonly(p)
+    assert ro.execute("SELECT count(*) FROM problems").fetchone()[0] == 1
+    with pytest.raises(Exception):          # sqlite3.OperationalError
+        ro.execute("INSERT INTO problems (name, manifest_path, created_at)"
+                   " VALUES ('q', 'm', 'now')")
+    ro.close()
+
+
+def test_connect_readonly_refuses_stale_schema(tmp_path):
+    """A behind DB raises SchemaBehind (with both versions) instead of
+    auto-migrating - connect()'s auto-migrate is a WRITE a read-only
+    consumer must never perform."""
+    import pytest
+    p = tmp_path / "asterism.db"
+    conn = db.connect(p)
+    db.init_schema(conn)
+    conn.execute("PRAGMA user_version = 17")     # simulate stale
+    conn.commit()
+    conn.close()
+    with pytest.raises(db.SchemaBehind) as ei:
+        db.connect_readonly(p)
+    assert ei.value.found == 17
+    assert ei.value.expected == db._CURRENT_USER_VERSION
+
+
+def test_v22_review_snapshot_roundtrip(tmp_path, monkeypatch):
+    """v22 (charter 5-4): review snapshot columns + set/get/load. The
+    Ingest commit writes it while the gateway is warm; readers consume
+    the stored JSON instead of paying a cold closure per view."""
+    import json
+    from Tooling.quality import review as review_mod
+    monkeypatch.chdir(tmp_path)
+    conn = db.connect()
+    db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
+                 " VALUES ('p', 'm', ?)", (db.now(),))
+    conn.commit()
+    assert review_mod.load_review_snapshot(conn, "p") is None
+    payload = {"deliverables": [{"fq": "Problems.p.x", "ok": True}],
+               "union_count": 3}
+    db.set_review_snapshot(conn, "p", json.dumps(payload))
+    got = review_mod.load_review_snapshot(conn, "p")
+    assert got is not None
+    data, at = got
+    assert data == payload and at
+    # unparseable / wrong-shape snapshots degrade to None (live compute)
+    db.set_review_snapshot(conn, "p", "{not json")
+    assert review_mod.load_review_snapshot(conn, "p") is None
+    conn.close()
+
+
+def test_cmd_review_snapshot_path_never_touches_gateway(tmp_path,
+                                                        monkeypatch):
+    """Charter 5-4 load rule: with a stored snapshot, `asterism review
+    <p>` renders without warming the gateway (GET must not be a heavy
+    op; the CLI default mirrors the API)."""
+    import argparse, json
+    from Tooling.core.cli import cmd_review
+    from Tooling.lsp import lifecycle as gl
+    monkeypatch.chdir(tmp_path)
+    conn = db.connect()
+    db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
+                 " VALUES ('p', 'm', ?)", (db.now(),))
+    payload = {"deliverables": [
+        {"fq": "Problems.p.x", "problem": "p", "slug": "x", "ok": True,
+         "error": None, "kind": "claim", "module": None, "paper": "",
+         "anchors": [], "claims": [], "folded": 0}], "union_count": 0}
+    db.set_review_snapshot(conn, "p", json.dumps(payload))
+    conn.commit()
+    conn.close()
+
+    def _boom(*a, **k):
+        raise AssertionError("snapshot path must not warm the gateway")
+    monkeypatch.setattr(gl, "start_gateway", _boom)
+    rc = cmd_review(argparse.Namespace(problem="p", fresh=False))
+    assert rc == 0

@@ -579,7 +579,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 21
+_CURRENT_USER_VERSION = 22
 
 # v21 (frontend charter §5-2) — per-spawn token/turn accounting. Created
 # in the migration chain (fresh DBs start at user_version 0 and run the
@@ -629,6 +629,60 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
         print(f"[db] auto-migrating stale schema {ver} -> "
               f"{_CURRENT_USER_VERSION} at {path}", flush=True)
         init_schema(conn)
+    return conn
+
+
+def set_review_snapshot(conn: sqlite3.Connection, problem: str,
+                        snapshot_json: str) -> None:
+    """Store the problem's anchor+claim review snapshot (charter §5-4;
+    written at Ingest commit while the gateway is warm, refreshed by an
+    explicit recompute)."""
+    conn.execute(
+        "UPDATE problems SET review_snapshot = ?, review_snapshot_at = ?"
+        " WHERE name = ?",
+        (snapshot_json, now(), problem))
+    conn.commit()
+
+
+def get_review_snapshot(conn: sqlite3.Connection,
+                        problem: str) -> "tuple[str, str] | None":
+    """(snapshot_json, stored_at) or None when never stored."""
+    row = conn.execute(
+        "SELECT review_snapshot, review_snapshot_at FROM problems"
+        " WHERE name = ?", (problem,)).fetchone()
+    if row is None or row["review_snapshot"] is None:
+        return None
+    return str(row["review_snapshot"]), str(row["review_snapshot_at"] or "")
+
+
+class SchemaBehind(RuntimeError):
+    """The on-disk DB's user_version trails _CURRENT_USER_VERSION and the
+    caller is read-only (must not migrate). Carries both versions so the
+    surface can say 'run the daemon/CLI once to upgrade' precisely."""
+
+    def __init__(self, found: int, expected: int) -> None:
+        super().__init__(
+            f"DB schema v{found} is behind v{expected}; a read-only "
+            f"consumer must not migrate — run the daemon or any asterism "
+            f"CLI command once to upgrade")
+        self.found = found
+        self.expected = expected
+
+
+def connect_readonly(path: Path = DB_PATH) -> sqlite3.Connection:
+    """TRUE read-only connection (frontend charter §5-5, the web layer's
+    only legal DB entry). `connect()` auto-migrates a stale DB — a WRITE,
+    which a 'read-only' web layer must never perform (it would silently
+    upgrade the schema under a running daemon's feet). SQLite URI
+    `mode=ro` makes writes impossible at the engine level; a behind
+    schema raises SchemaBehind instead of upgrading."""
+    uri = f"file:{Path(path).as_posix()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=30)
+    conn.row_factory = sqlite3.Row
+    ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    if ver < _CURRENT_USER_VERSION:
+        conn.close()
+        raise SchemaBehind(ver, _CURRENT_USER_VERSION)
     return conn
 
 
@@ -1043,6 +1097,21 @@ def init_schema(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_spawn_usage_problem"
             " ON spawn_usage(problem, ts)")
         conn.execute("PRAGMA user_version = 21")
+        conn.commit()
+    if v < 22:
+        # v22 — review snapshot (frontend charter §5-4): the anchor
+        # closure needs a warm gateway (30s+ cold), so readers (serve
+        # API GET, CLI default) must not compute it — the Ingest commit
+        # stores it here while the gateway is warm; recompute is an
+        # explicit act.
+        pcols = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
+        if "review_snapshot" not in pcols:
+            conn.execute(
+                "ALTER TABLE problems ADD COLUMN review_snapshot TEXT")
+        if "review_snapshot_at" not in pcols:
+            conn.execute(
+                "ALTER TABLE problems ADD COLUMN review_snapshot_at TEXT")
+        conn.execute("PRAGMA user_version = 22")
         conn.commit()
 
 
