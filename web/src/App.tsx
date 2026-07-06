@@ -10,23 +10,52 @@ import Problem from './screens/Problem'
 import Telemetry from './screens/Telemetry'
 import type { Meta } from './lib/types'
 
+/** Global run strip: from any page, what is the engine doing right
+ * now? Running → the problem it works (click lands on its cockpit) +
+ * elapsed; idle → quiet; crashed last run → say so (a crash must not
+ * wear the same face as a clean finish). */
 function DaemonChip({ meta }: { meta: Meta | null }) {
   if (!meta) return <span className="px-2.5 text-xs text-ink-faint">engine…</span>
   const d = meta.daemon
-  // a stop marker with no live process is idle, not stopping-forever
-  const label = d.running ? (d.stopping ? 'stopping' : 'running') : 'idle'
-  const dot = d.running ? (d.stopping ? 'bg-warn' : 'bg-ok animate-pulse') : 'bg-ink-faint'
+  if (d.running) {
+    const leaf = d.scope ? (d.scope.split('.').pop() ?? d.scope) : 'running'
+    const mins = d.started_at
+      ? Math.max(0, Math.floor((Date.now() - Date.parse(d.started_at)) / 60000))
+      : null
+    const elapsed = mins === null ? '' : mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`
+    return (
+      <Link
+        to={d.scope ? `/problems/${encodeURIComponent(d.scope)}` : '/telemetry'}
+        className="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap text-ink transition-colors hover:bg-surface-2"
+        title={
+          d.stopping
+            ? 'engine stopping — finishing in-flight work'
+            : `engine working on ${d.scope ?? 'all problems'}${elapsed ? ` for ${elapsed}` : ''} — open it`
+        }
+      >
+        <span
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${d.stopping ? 'bg-warn' : 'bg-ok animate-pulse'}`}
+        />
+        <span className="truncate font-mono text-[12px]">
+          {d.stopping ? 'stopping' : leaf}
+        </span>
+        {!d.stopping && elapsed && <span className="tnum shrink-0 text-ink-faint">{elapsed}</span>}
+      </Link>
+    )
+  }
+  const crashed = d.last_exit !== null && d.last_exit.rc !== null && d.last_exit.rc !== 0
   return (
     <Link
       to="/telemetry"
       className="group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
-      title={d.pid ? `engine pid ${d.pid} — open the Engine page` : 'engine not running — open the Engine page'}
+      title={
+        crashed
+          ? `the last run exited abnormally: ${d.last_exit?.error ?? 'unknown error'} — open the Engine page`
+          : 'engine not running — open the Engine page'
+      }
     >
-      <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
-      engine {label}
-      {d.running && d.in_flight_leases > 0 && (
-        <span className="tnum text-ink-faint">·{d.in_flight_leases}</span>
-      )}
+      <span className={`h-1.5 w-1.5 rounded-full ${crashed ? 'bg-warn' : 'bg-ink-faint'}`} />
+      {crashed ? <span className="text-warn">last run crashed</span> : 'engine idle'}
     </Link>
   )
 }

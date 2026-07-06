@@ -188,17 +188,29 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
     # Live-work signal per goal: a queue row leased BY THE RUNNING
     # daemon means a worker is on it right now — the constellation
     # pulses that star. A dead owner's lease is residue, not a worker.
+    # `workers` is the same truth as a roster ("what is each agent
+    # doing"), the cockpit's run-strip data (demo/ stats panel lineage).
     inflight_goals: set[int] = set()
+    workers: list[dict] = []
     live_pid = _live_daemon_pid(daemon)
     if live_pid is not None:
         for r in conn.execute(
-                "SELECT target_id FROM queue WHERE problem = ?"
-                " AND target_kind = 'Goal' AND owner_pid = ?",
-                (problem, live_pid)):
-            try:
-                inflight_goals.add(int(r["target_id"]))
-            except (TypeError, ValueError):
-                pass
+                "SELECT q.kind AS kind, q.target_kind AS tk,"
+                " q.target_id AS tid, q.leased_at AS leased_at, g.slug AS slug"
+                " FROM queue q LEFT JOIN goals g ON q.target_kind = 'Goal'"
+                " AND g.id = CAST(q.target_id AS INTEGER)"
+                " WHERE q.problem = ? AND q.owner_pid = ?"
+                " ORDER BY q.leased_at", (problem, live_pid)):
+            if str(r["tk"]) == "Goal":
+                try:
+                    inflight_goals.add(int(r["tid"]))
+                except (TypeError, ValueError):
+                    pass
+            workers.append({
+                "kind": str(r["kind"]),
+                "slug": r["slug"] if r["slug"] is not None else str(r["tid"]),
+                "leased_at": r["leased_at"],
+            })
 
     goals = []
     for g in conn.execute(
@@ -354,6 +366,9 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
         # UI stop dressing DB residue (goals stuck "attempting" after a
         # force stop) as live activity.
         "engine_working": working,
+        # roster of the running daemon's leased units on this problem
+        # (kind + goal slug + leased_at) — empty when nothing runs
+        "workers": workers,
         "shelve_threshold": shelve_threshold,
         "created_at": str(prow["created_at"]),
         "ingested_at": prow["ingested_at"],
@@ -565,13 +580,15 @@ def telemetry_usage(conn: sqlite3.Connection, *,
             " COUNT(*) AS spawns,"
             " SUM(input_tokens) AS in_tok, SUM(output_tokens) AS out_tok,"
             " SUM(cache_read_tokens) AS cache_tok,"
+            " SUM(cache_new_tokens) AS cache_new,"
             " SUM(turns) AS turns, SUM(wall_sec) AS wall"
             " FROM spawn_usage" + where + " GROUP BY problem, kind",
             params):
         p = per_problem.setdefault(str(r["problem"]) or "(none)", {
             "problem": str(r["problem"]) or "(none)",
             "spawns": 0, "input_tokens": 0, "output_tokens": 0,
-            "cache_read_tokens": 0, "turns": 0, "wall_sec": 0.0,
+            "cache_read_tokens": 0, "cache_new_tokens": 0,
+            "turns": 0, "wall_sec": 0.0,
             "kinds": [],
         })
         row = {
@@ -580,6 +597,7 @@ def telemetry_usage(conn: sqlite3.Connection, *,
             "input_tokens": int(r["in_tok"] or 0),
             "output_tokens": int(r["out_tok"] or 0),
             "cache_read_tokens": int(r["cache_tok"] or 0),
+            "cache_new_tokens": int(r["cache_new"] or 0),
             "turns": int(r["turns"] or 0),
             "wall_sec": float(r["wall"] or 0.0),
         }
@@ -588,6 +606,7 @@ def telemetry_usage(conn: sqlite3.Connection, *,
         p["input_tokens"] += row["input_tokens"]
         p["output_tokens"] += row["output_tokens"]
         p["cache_read_tokens"] += row["cache_read_tokens"]
+        p["cache_new_tokens"] += row["cache_new_tokens"]
         p["turns"] += row["turns"]
         p["wall_sec"] += row["wall_sec"]
     rows = sorted(per_problem.values(),

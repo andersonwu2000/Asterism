@@ -87,6 +87,8 @@ export interface ProblemDetail {
   /** a live daemon is on this problem right now — liveness displays
    * (attempting tint, pulses) must gate on it, not on DB residue */
   engine_working: boolean
+  /** the running daemon's leased units here: what each agent is doing */
+  workers: { kind: string; slug: string; leased_at: string | null }[]
   shelve_threshold: number
   created_at: string
   ingested_at: string | null
@@ -171,6 +173,7 @@ export interface UsageKind {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
+  cache_new_tokens: number
   turns: number
   wall_sec: number
 }
@@ -181,6 +184,7 @@ export interface UsageProblem {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
+  cache_new_tokens: number
   turns: number
   wall_sec: number
   kinds: UsageKind[]
@@ -210,6 +214,9 @@ export interface DaemonStatus {
   /** only ever true while running (a stale stop-file is not a state) */
   stopping: boolean
   in_flight_leases: number
+  /** how the LAST run ended; null while running or before any run.
+   * rc=0 clean finish · rc>0 crash (error says why) · rc=null forced */
+  last_exit: { at: string; rc: number | null; error: string | null } | null
 }
 
 export interface ManifestData {

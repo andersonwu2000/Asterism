@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { Link } from '../lib/router'
 import { relTime } from '../lib/format'
@@ -137,6 +137,51 @@ function GoalsList({
   )
 }
 
+/** The run strip — the demo-panel stats line, webbed: a live wall
+ * clock plus the roster of what each agent is on right now. Rendered
+ * only while the engine actually works this problem (daemon-gated),
+ * so its mere presence is a truthful "it's running" signal. */
+function RunStrip({
+  workers,
+  startedAt,
+}: {
+  workers: ProblemDetail['workers']
+  startedAt: string | null
+}) {
+  const [, tick] = useState(0)
+  useEffect(() => {
+    const t = window.setInterval(() => tick((n) => n + 1), 1000)
+    return () => window.clearInterval(t)
+  }, [])
+  let wall: string | null = null
+  if (startedAt) {
+    const sec = Math.max(0, Math.floor((Date.now() - Date.parse(startedAt)) / 1000))
+    const h = Math.floor(sec / 3600)
+    const m = Math.floor((sec % 3600) / 60)
+    const s = sec % 60
+    wall = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  }
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+      <span className="flex items-center gap-1.5 text-ink">
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ok" />
+        running
+      </span>
+      {wall && <span className="tnum font-mono text-[12px] text-ink-dim">{wall}</span>}
+      {workers.length > 0 ? (
+        workers.map((w, i) => (
+          <span key={i} className="text-ink-faint" title={`a ${w.kind} agent is on this unit now`}>
+            {w.kind.toLowerCase()}{' '}
+            <span className="font-mono text-[11px] text-ink-dim">{w.slug}</span>
+          </span>
+        ))
+      ) : (
+        <span className="text-ink-faint">between batches — planning the next moves</span>
+      )}
+    </div>
+  )
+}
+
 export default function Problem({ name }: { name: string }) {
   const { data, error, loading } = usePoll<ProblemDetail>(
     `/api/problems/${encodeURIComponent(name)}`,
@@ -206,6 +251,9 @@ export default function Problem({ name }: { name: string }) {
             </div>
           </div>
         </div>
+        {data.engine_working && (
+          <RunStrip workers={data.workers} startedAt={daemon?.started_at ?? null} />
+        )}
         {(() => {
           // health line for live problems: when did the engine last make
           // progress, and where is it burning attempts (client-side from

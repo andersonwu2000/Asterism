@@ -12,6 +12,15 @@ function runElapsed(startedAt: string): string {
   return duration(sec)
 }
 
+/** Idle must not wear one face for three endings: clean finish,
+ * user's force stop, and a crash each say what happened. */
+function lastExitLine(e: DaemonStatus['last_exit']): string {
+  if (!e) return 'the engine is not running'
+  if (e.rc === 0) return 'the engine is not running — the last run finished cleanly'
+  if (e.rc === null) return 'the engine is not running — you force-stopped the last run'
+  return `the last run exited abnormally (${e.error ?? 'unknown error'}) — details in the developer log`
+}
+
 function DaemonPanel() {
   const { data: d, refresh } = usePoll<DaemonStatus>('/api/daemon', 2000)
   const [busy, setBusy] = useState(false)
@@ -71,7 +80,7 @@ function DaemonPanel() {
               ? `working on ${d.scope ?? 'all problems'}${
                   d.started_at ? ` · for ${runElapsed(d.started_at)}` : ''
                 } · pid ${d.pid}${d.in_flight_leases > 0 ? ` · ${d.in_flight_leases} in flight` : ''}`
-              : 'the engine is not running'}
+              : lastExitLine(d?.last_exit ?? null)}
         </span>
       </div>
       {d && !d.running && d.in_flight_leases > 0 && (
@@ -230,13 +239,29 @@ function LogTail() {
   )
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
-    <div className="rounded-lg border border-edge bg-surface px-4 py-3">
+    <div className="rounded-lg border border-edge bg-surface px-4 py-3" title={title}>
       <div className="font-display tnum text-[26px] font-medium text-ink">{value}</div>
       <div className="mt-0.5 text-[11px] text-ink-faint">{label}</div>
     </div>
   )
+}
+
+/** Per-model price weights, Opus-output ≡ 1 unit (demo/watcher.py
+ * lineage — the owner's quota-burn axis: on a subscription, quota is
+ * metered roughly by backend cost, so weighted units beat raw token
+ * counts). Unknown models assume Sonnet tier — never under-count a
+ * release this table hasn't met. */
+const PRICE_TIERS: [RegExp, { in: number; cw: number; cr: number; out: number }][] = [
+  [/fable|mythos|opus-4-[5-9]/, { in: 0.2, cw: 0.25, cr: 0.02, out: 1.0 }],
+  [/opus/, { in: 0.6, cw: 0.75, cr: 0.06, out: 3.0 }],
+  [/haiku/, { in: 0.04, cw: 0.05, cr: 0.004, out: 0.2 }],
+]
+const SONNET_TIER = { in: 0.12, cw: 0.15, cr: 0.012, out: 0.6 }
+function priceWeights(model: string) {
+  for (const [re, w] of PRICE_TIERS) if (re.test(model)) return w
+  return SONNET_TIER
 }
 
 function UsageTable() {
@@ -244,6 +269,8 @@ function UsageTable() {
     '/api/telemetry/usage',
     10000,
   )
+  // kind → model (from settings) turns raw tokens into weighted burn
+  const { data: cfg } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
   const [expanded, setExpanded] = useState<string | null>(null)
   const rows = data?.problems ?? []
   // the server says which window it aggregated — never claim "this
@@ -265,19 +292,49 @@ function UsageTable() {
       spawns: a.spawns + p.spawns,
       out: a.out + p.output_tokens,
       inTok: a.inTok + p.input_tokens + p.cache_read_tokens,
+      inRaw: a.inRaw + p.input_tokens,
+      cr: a.cr + p.cache_read_tokens,
+      cw: a.cw + p.cache_new_tokens,
       wall: a.wall + p.wall_sec,
     }),
-    { spawns: 0, out: 0, inTok: 0, wall: 0 },
+    { spawns: 0, out: 0, inTok: 0, inRaw: 0, cr: 0, cw: 0, wall: 0 },
   )
+  const modelFor = (kind: string): string =>
+    String(cfg?.settings.find((s) => s.key === `${kind.toLowerCase()}.model`)?.resolved ?? '')
+  const weighted = rows
+    .flatMap((p) => p.kinds)
+    .reduce((a, k) => {
+      const w = priceWeights(modelFor(k.kind))
+      return (
+        a +
+        k.input_tokens * w.in +
+        (k.cache_new_tokens ?? 0) * w.cw +
+        k.cache_read_tokens * w.cr +
+        k.output_tokens * w.out
+      )
+    }, 0)
+  const cacheDenom = total.inRaw + total.cw + total.cr
   return (
     <>
       <SectionLabel>{label}</SectionLabel>
-      <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
         <Stat label="agent spawns" value={String(total.spawns)} />
         <Stat label="output tokens" value={compactNumber(total.out)} />
         <Stat label="input + cache read" value={compactNumber(total.inTok)} />
+        <Stat
+          label="weighted burn"
+          value={compactNumber(Math.round(weighted))}
+          title="≈ share of quota: tokens weighted by each pipeline's model price (top-model output = 1 unit) — comparable across model tiers, unlike raw counts"
+        />
         <Stat label="agent wall time" value={duration(total.wall)} />
       </div>
+      {cacheDenom > 0 && (
+        <div className="mb-3 -mt-1 text-[11px] text-ink-faint">
+          cache hit share{' '}
+          <span className="tnum text-ink-dim">{((total.cr / cacheDenom) * 100).toFixed(1)}%</span>{' '}
+          — the slice of the prompt bill served from cache instead of re-billed
+        </div>
+      )}
       {(rows.length > 1 || expanded !== null) && inner(rows, expanded, setExpanded)}
       {rows.length === 1 && expanded === null && (
         <button
