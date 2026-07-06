@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+/*
+ * Asterism theme — night-sky minimal.
+ * Single dark theme (charter §7: no theme system beyond default dark).
+ */
+@theme {
+  --color-bg: #0b0e17;
+  --color-surface: #11151f;
+  --color-surface-2: #161b28;
+  --color-edge: #222939;
+  --color-edge-strong: #303a52;
+
+  --color-ink: #dde2ed;
+  --color-ink-dim: #8b93a7;
+  --color-ink-faint: #5c6375;
+
+  --color-star: #e8c268; /* proved / lit constellation node */
+  --color-accent: #6ea8fe; /* proving / interactive */
+  --color-danger: #e5484d; /* awaiting_human, stalled */
+  --color-warn: #d9a039; /* signoff pending, librarian near-limit */
+  --color-ok: #3fb27f; /* ingested / bridged */
+
+  --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+/* Thin dark scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-edge-strong) transparent;
+}
