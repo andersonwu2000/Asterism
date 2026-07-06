@@ -59,10 +59,21 @@ const STATUS_CHIP: Record<ProblemStatus, { label: string; cls: string; dot: stri
   },
 }
 
+const STATUS_HINT: Record<ProblemStatus, string> = {
+  proving: 'agents are working on it',
+  awaiting_human: 'waiting for your decision — open the inbox',
+  stalled: 'no path forward found — needs direction',
+  idle: 'not started yet',
+  signoff_pending: 'finished — waiting for your sign-off in the inbox',
+  ingested: 'proof complete and accepted',
+  bridged: 'merged into the Library',
+}
+
 export function StatusBadge({ status }: { status: ProblemStatus }) {
   const c = STATUS_CHIP[status] ?? STATUS_CHIP.proving
   return (
     <span
+      title={STATUS_HINT[status]}
       className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium whitespace-nowrap ${c.cls}`}
     >
       <span className={`h-1.5 w-1.5 rounded-full ${c.dot}`} />

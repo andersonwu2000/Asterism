@@ -222,6 +222,12 @@ export default function Problem({ name }: { name: string }) {
               }`}
             >
               <span className="mr-1.5 font-medium tracking-widest text-ink-faint/70 uppercase">
+                <span
+                  className={`mr-1 inline-block text-[9px] transition-transform duration-150 ${directiveOpen ? 'rotate-90' : ''}`}
+                  aria-hidden
+                >
+                  ▸
+                </span>
                 directive
               </span>
               {data.strategist_directive}

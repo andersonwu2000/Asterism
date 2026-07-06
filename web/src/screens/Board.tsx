@@ -116,7 +116,16 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
             <StatusBadge status={p.status} />
           </Link>
         ) : settled ? (
-          <span className={`text-[11px] ${p.status === 'bridged' ? 'text-star/70' : 'text-ink-faint'}`}>
+          <span
+            className={`text-[11px] ${p.status === 'bridged' ? 'text-star/70' : 'text-ink-faint'}`}
+            title={
+              p.status === 'bridged'
+                ? 'merged into the Library'
+                : p.status === 'ingested'
+                  ? 'proof complete and accepted'
+                  : 'not started yet'
+            }
+          >
             {SETTLED_LABEL[p.status]}
           </span>
         ) : (
@@ -344,7 +353,9 @@ export default function Board() {
     (p) => !needsYou.includes(p) && (p.status === 'proving' || p.in_flight > 0 || p.queued > 0),
   )
   const hot = new Set([...needsYou, ...inMotion].map((p) => p.name))
-  const recent = sorted.filter((p) => !hot.has(p.name) && isRecent(p))
+  // Recent is a glance, not a ledger — cap it; the rest is one row away
+  // in the archive clusters
+  const recent = sorted.filter((p) => !hot.has(p.name) && isRecent(p)).slice(0, 8)
   for (const p of recent) hot.add(p.name)
   const archive = sorted.filter((p) => !hot.has(p.name))
   const clusters = clusterize(archive)
@@ -378,7 +389,7 @@ export default function Board() {
       {/* the board must not imply motion the engine isn't making */}
       {meta && !meta.daemon.running && !meta.daemon.stopping && inMotion.length > 0 && (
         <div className="mb-3 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
-          The daemon is idle — {inMotion.length} problem{inMotion.length === 1 ? '' : 's'} in
+          The engine is idle — {inMotion.length} problem{inMotion.length === 1 ? '' : 's'} in
           motion {inMotion.length === 1 ? 'is' : 'are'} not being worked.{' '}
           <Link to="/telemetry" className="underline">
             Start it from the Engine page

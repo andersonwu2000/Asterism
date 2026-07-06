@@ -17,10 +17,10 @@ function DaemonChip({ meta }: { meta: Meta | null }) {
     <Link
       to="/telemetry"
       className="group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
-      title={d.pid ? `daemon pid ${d.pid} — open engine page` : 'daemon not running — open engine page'}
+      title={d.pid ? `engine pid ${d.pid} — open the Engine page` : 'engine not running — open the Engine page'}
     >
       <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
-      daemon {label}
+      engine {label}
       {d.running && d.in_flight_leases > 0 && (
         <span className="tnum text-ink-faint">· {d.in_flight_leases} in flight</span>
       )}

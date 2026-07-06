@@ -108,11 +108,10 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
           </Button>
         </div>
       </div>
-      {/* the highest-stakes click in the product states its consequences */}
-      <div className="mb-3 text-[11px] text-ink-faint">
-        Accept writes the amended file and the strategist resumes with it; Reject keeps the
-        file as-is and the strategist re-plans (your reason guides it). Either way the problem
-        unpauses.
+      {/* the highest-stakes click states its consequence — one line */}
+      <div className="mb-3 truncate text-[11px] text-ink-faint">
+        Either choice unpauses the problem — Accept writes the file, Reject keeps it and your
+        reason guides the re-plan.
       </div>
 
       {(longQuestion || a.reason) && (

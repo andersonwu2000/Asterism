@@ -44,13 +44,13 @@ function DaemonPanel() {
             ? `pid ${d.pid} — draining in-flight work`
             : d?.running
               ? `pid ${d.pid}${d.in_flight_leases > 0 ? ` · ${d.in_flight_leases} in flight` : ''}`
-              : 'the daemon is not running'}
+              : 'the engine is not running'}
         </span>
       </div>
       {d && !d.running && d.in_flight_leases > 0 && (
         <div className="mb-3 rounded-md border border-edge bg-surface-2 px-3 py-1.5 text-xs text-ink-dim">
           {d.in_flight_leases} orphaned work lease(s) from a previous run — reclaimed
-          automatically on the next daemon start.
+          automatically on the next engine start.
         </div>
       )}
       <div className="flex items-center gap-2">
@@ -67,7 +67,7 @@ function DaemonPanel() {
               disabled={busy}
               onClick={() => void act('/api/daemon/start', { scope: scope || null })}
             >
-              Start daemon
+              Start engine
             </Button>
           </>
         ) : (
@@ -176,7 +176,16 @@ function UsageTable() {
         <Stat label="input + cache read" value={compactNumber(total.inTok)} />
         <Stat label="agent wall time" value={duration(total.wall)} />
       </div>
-      {inner(rows, expanded, setExpanded)}
+      {(rows.length > 1 || expanded !== null) && inner(rows, expanded, setExpanded)}
+      {rows.length === 1 && expanded === null && (
+        <button
+          className="text-[11px] text-ink-faint transition-colors hover:text-ink"
+          onClick={() => setExpanded(rows[0].problem)}
+        >
+          everything above is{' '}
+          <span className="font-mono">{rows[0].problem}</span> — break it down by agent kind
+        </button>
+      )}
     </>
   )
 }
@@ -248,7 +257,6 @@ export default function Telemetry() {
       <h1 className="font-display mb-4 text-[22px] font-medium text-ink">Engine</h1>
       <div className="flex flex-col gap-6">
         <section>
-          <SectionLabel>daemon</SectionLabel>
           <DaemonPanel />
         </section>
         <section>

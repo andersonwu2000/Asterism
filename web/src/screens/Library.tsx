@@ -221,6 +221,10 @@ export default function Library() {
             />
           </span>
         </div>
+        <p className="mb-5 -mt-3 max-w-[70ch] text-xs text-ink-faint">
+          Every harvested problem is a constellation; its stars are the declarations it
+          contributed. Hover a star to read it, click a name to revisit the problem.
+        </p>
         {problems.length === 0 ? (
           <div className="py-16 text-center text-xs text-ink-faint">
             No declaration matches “{query}”.
