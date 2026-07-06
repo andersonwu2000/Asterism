@@ -898,6 +898,17 @@ def test_config_get_and_set(workspace: Path) -> None:
     got = c.get("/api/config").json()["settings"]
     keys = {row["key"] for row in got}
     assert "strategist.model" in keys and "dispatch.pool" in keys
+    assert "scholar.model" in keys
+    # .model keys carry dropdown choices (typo-proof select); the
+    # resolved value is always a legal choice; knobs carry none
+    by_key = {row["key"]: row for row in got}
+    for k, row in by_key.items():
+        if k.endswith(".model"):
+            assert row["choices"], k
+            if row["resolved"]:
+                assert str(row["resolved"]) in row["choices"], k
+        else:
+            assert "choices" not in row, k
     r = c.post("/api/config",
                json={"key": "strategist.model", "value": "claude-fable-5"})
     assert r.status_code == 200

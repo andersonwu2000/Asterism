@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
+import { weightedBurn } from '../lib/burn'
 import { compactNumber, duration } from '../lib/format'
 import { Button, SectionLabel } from '../components/ui'
 import type { ConfigSetting, DaemonStatus, UsageProblem } from '../lib/types'
@@ -163,11 +164,28 @@ function ConfigPanel() {
     return (
       <div key={s.key} className="flex items-center gap-3 py-1">
         <span className="w-44 shrink-0 font-mono text-xs text-ink-dim">{s.key}</span>
-        <input
-          className="w-56 rounded border border-edge bg-bg px-2 py-1 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
-          value={draft ?? current}
-          onChange={(e) => setDrafts((d) => ({ ...d, [s.key]: e.target.value }))}
-        />
+        {s.choices ? (
+          // a select kills the free-text failure mode (a typo'd model
+          // name only explodes at the NEXT run) — power users can
+          // still put anything in yaml/.env; it shows up as a choice
+          <select
+            className="w-56 rounded border border-edge bg-bg px-2 py-1 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
+            value={draft ?? current}
+            onChange={(e) => setDrafts((d) => ({ ...d, [s.key]: e.target.value }))}
+          >
+            {s.choices.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            className="w-56 rounded border border-edge bg-bg px-2 py-1 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
+            value={draft ?? current}
+            onChange={(e) => setDrafts((d) => ({ ...d, [s.key]: e.target.value }))}
+          />
+        )}
         {draft !== undefined && draft !== current && (
           <button
             className="rounded-md bg-ink px-2 py-1 text-[11px] font-semibold text-bg transition-colors hover:bg-starlight"
@@ -250,21 +268,6 @@ function Stat({ label, value, title }: { label: string; value: string; title?: s
   )
 }
 
-/** Per-model price weights, Opus-output ≡ 1 unit (demo/watcher.py
- * lineage — the owner's quota-burn axis: on a subscription, quota is
- * metered roughly by backend cost, so weighted units beat raw token
- * counts). Unknown models assume Sonnet tier — never under-count a
- * release this table hasn't met. */
-const PRICE_TIERS: [RegExp, { in: number; cw: number; cr: number; out: number }][] = [
-  [/fable|mythos|opus-4-[5-9]/, { in: 0.2, cw: 0.25, cr: 0.02, out: 1.0 }],
-  [/opus/, { in: 0.6, cw: 0.75, cr: 0.06, out: 3.0 }],
-  [/haiku/, { in: 0.04, cw: 0.05, cr: 0.004, out: 0.2 }],
-]
-const SONNET_TIER = { in: 0.12, cw: 0.15, cr: 0.012, out: 0.6 }
-function priceWeights(model: string) {
-  for (const [re, w] of PRICE_TIERS) if (re.test(model)) return w
-  return SONNET_TIER
-}
 
 function UsageTable() {
   const { data } = usePoll<{ problems: UsageProblem[]; window?: 'run' | 'all' }>(
@@ -301,20 +304,10 @@ function UsageTable() {
     }),
     { spawns: 0, out: 0, inTok: 0, inRaw: 0, cr: 0, cw: 0, wall: 0 },
   )
-  const modelFor = (kind: string): string =>
-    String(cfg?.settings.find((s) => s.key === `${kind.toLowerCase()}.model`)?.resolved ?? '')
-  const weighted = rows
-    .flatMap((p) => p.kinds)
-    .reduce((a, k) => {
-      const w = priceWeights(modelFor(k.kind))
-      return (
-        a +
-        k.input_tokens * w.in +
-        (k.cache_new_tokens ?? 0) * w.cw +
-        k.cache_read_tokens * w.cr +
-        k.output_tokens * w.out
-      )
-    }, 0)
+  const weighted = weightedBurn(
+    rows.flatMap((p) => p.kinds),
+    cfg?.settings,
+  )
   const cacheDenom = total.inRaw + total.cw + total.cr
   return (
     <>

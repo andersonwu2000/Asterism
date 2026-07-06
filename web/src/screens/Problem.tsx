@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { usePoll } from '../lib/api'
+import { weightedBurn } from '../lib/burn'
 import { Link } from '../lib/router'
-import { relTime } from '../lib/format'
+import { compactNumber, relTime } from '../lib/format'
 import { ErrorState, StatusBadge } from '../components/ui'
 import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
@@ -10,7 +11,13 @@ import DecisionTimeline from '../components/DecisionTimeline'
 import FileViewer from '../components/FileViewer'
 import ManifestEditor from '../components/ManifestEditor'
 import RunControl from '../components/RunControl'
-import type { DaemonStatus, Goal, ProblemDetail } from '../lib/types'
+import type {
+  ConfigSetting,
+  DaemonStatus,
+  Goal,
+  ProblemDetail,
+  UsageProblem,
+} from '../lib/types'
 
 type Tab = 'stars' | 'manifest' | 'goals' | 'timeline' | 'files'
 
@@ -137,24 +144,39 @@ function GoalsList({
   )
 }
 
-/** The run strip — the demo-panel stats line, webbed: a live wall
- * clock plus the roster of what each agent is on right now. Rendered
- * only while the engine actually works this problem (daemon-gated),
- * so its mere presence is a truthful "it's running" signal. */
+/** The run strip — the demo stats panel, webbed. Two lines while the
+ * engine works this problem (its presence IS the truthful "running"
+ * signal): phase + wall clock + goal tallies + burn, then one chip per
+ * live agent. No logs — the state is the story. */
 function RunStrip({
+  problem,
   workers,
+  goals,
   startedAt,
   gateway,
+  stopping,
 }: {
+  problem: string
   workers: ProblemDetail['workers']
+  goals: Goal[]
   startedAt: string | null
   gateway: DaemonStatus['gateway']
+  stopping: boolean
 }) {
   const [, tick] = useState(0)
   useEffect(() => {
     const t = window.setInterval(() => tick((n) => n + 1), 1000)
     return () => window.clearInterval(t)
   }, [])
+  // burn for THIS problem, this run (weighted units — quota axis)
+  const { data: usage } = usePoll<{ problems: UsageProblem[]; window?: string }>(
+    '/api/telemetry/usage',
+    10000,
+  )
+  const { data: cfg } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
+  const mine = usage?.window === 'run' ? usage.problems.find((p) => p.problem === problem) : null
+  const burn = mine ? weightedBurn(mine.kinds, cfg?.settings) : 0
+
   let wall: string | null = null
   if (startedAt) {
     const sec = Math.max(0, Math.floor((Date.now() - Date.parse(startedAt)) / 1000))
@@ -163,28 +185,88 @@ function RunStrip({
     const s = sec % 60
     wall = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
   }
+
+  // Phase, derived — a name for what the user would otherwise read
+  // logs to learn. Order matters: stopping > warming > roster shape.
+  const phase = stopping
+    ? 'stopping — finishing in-flight work'
+    : gateway === 'warming'
+      ? 'warming the Lean toolchain'
+      : workers.length === 0
+        ? 'planning'
+        : workers.every((w) => w.kind === 'Librarian')
+          ? 'harvesting'
+          : 'proving'
+  const phaseHint: Record<string, string> = {
+    planning: 'the Strategist is reading the state and deciding the next moves',
+    proving: 'agents are attempting goals right now',
+    harvesting: 'finished work is being curated into the Library',
+    'warming the Lean toolchain':
+      'first start takes a few minutes — proving begins once the toolchain is hot',
+  }
+
+  const count = (s: string) => goals.filter((g) => g.status === s).length
+  const tallies: [number, string][] = [
+    [count('proved'), 'proved'],
+    [count('attempting'), 'attempting'],
+    [count('open'), 'open'],
+    [count('shelved') + count('pending_shelve_confirm'), 'shelved'],
+  ]
+
+  const leaseAge = (iso: string | null) => {
+    if (!iso) return null
+    const m = Math.floor((Date.now() - Date.parse(iso)) / 60000)
+    return m < 1 ? 'just now' : `${m}m`
+  }
+
   return (
-    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-      <span className="flex items-center gap-1.5 text-ink">
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ok" />
-        running
-      </span>
-      {wall && <span className="tnum font-mono text-[12px] text-ink-dim">{wall}</span>}
-      {workers.length > 0 ? (
-        workers.map((w, i) => (
-          <span key={i} className="text-ink-faint" title={`a ${w.kind} agent is on this unit now`}>
-            {w.kind.toLowerCase()}{' '}
-            <span className="font-mono text-[11px] text-ink-dim">{w.slug}</span>
-          </span>
-        ))
-      ) : gateway === 'warming' ? (
-        <span className="text-ink-faint">
-          warming the Lean toolchain — proving starts once it's hot (a few minutes on a cold
-          start)
+    <div className="mt-1.5 flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        <span className="flex items-center gap-1.5 text-ink" title={phaseHint[phase]}>
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ok" />
+          {phase}
         </span>
-      ) : (
-        <span className="text-ink-faint">between batches — planning the next moves</span>
-      )}
+        {wall && <span className="tnum font-mono text-[12px] text-ink-dim">{wall}</span>}
+        {goals.length > 0 && (
+          <span className="tnum text-ink-faint">
+            {tallies
+              .filter(([n], i) => n > 0 || i === 0)
+              .map(([n, label]) => `${n} ${label}`)
+              .join(' · ')}
+          </span>
+        )}
+        {burn > 0 && (
+          <span
+            className="tnum text-ink-faint"
+            title="weighted burn this run: tokens weighted by each pipeline's model price (top-model output = 1 unit) — a quota share, not a token count"
+          >
+            burn {compactNumber(Math.round(burn))}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        {workers.length > 0 ? (
+          workers.map((w, i) => (
+            <span
+              key={i}
+              className="flex items-center gap-1.5 rounded-full border border-edge bg-surface px-2 py-0.5"
+              title={`a ${w.kind} agent has been on this unit ${leaseAge(w.leased_at) ?? ''}`}
+            >
+              <span className="text-[11px] text-ink-dim">{w.kind.toLowerCase()}</span>
+              <span className="max-w-56 truncate font-mono text-[11px] text-ink">{w.slug}</span>
+              {leaseAge(w.leased_at) && (
+                <span className="tnum text-[10px] text-ink-faint">{leaseAge(w.leased_at)}</span>
+              )}
+            </span>
+          ))
+        ) : (
+          <span className="text-[11px] text-ink-faint">
+            {gateway === 'warming'
+              ? 'no agents yet — they spawn once the toolchain is hot'
+              : 'no agents this instant — the Strategist is planning'}
+          </span>
+        )}
+      </div>
     </div>
   )
 }
@@ -260,9 +342,12 @@ export default function Problem({ name }: { name: string }) {
         </div>
         {data.engine_working && (
           <RunStrip
+            problem={data.name}
             workers={data.workers}
+            goals={data.goals}
             startedAt={daemon?.started_at ?? null}
             gateway={daemon?.gateway ?? null}
+            stopping={daemon?.stopping ?? false}
           />
         )}
         {(() => {

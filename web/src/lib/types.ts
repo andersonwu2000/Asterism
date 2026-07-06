@@ -245,6 +245,9 @@ export interface ConfigSetting {
   resolved: string | number | null
   type: 'str' | 'int'
   description: string
+  /** present on .model keys: the UI offers these (typo-proof select);
+   * the resolved value is always included */
+  choices?: string[]
 }
 
 export interface Meta {

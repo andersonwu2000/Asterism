@@ -270,10 +270,21 @@ UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
     "forward.model": (str, "model that builds vocabulary and claims"),
     "presearch.model": (str, "model that scouts Mathlib before proving"),
     "librarian.model": (str, "model that curates the Library"),
+    "scholar.model": (str, "model that searches and fetches cited papers"),
     "dispatch.pool": (int, "max agents working at once"),
     "dispatch.budget_sec": (int, "wall-clock budget per engine run (seconds)"),
     "dispatch.shelve_threshold": (int, "failed attempts before a goal is shelved"),
 }
+
+#: dropdown choices for `.model` keys — what the UI offers (free text
+#: stays possible via yaml/.env; the UI's job is killing typos). Keep
+#: in sync with the model tiers the pipelines actually target.
+MODEL_CHOICES: "list[str]" = [
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+    "claude-haiku-4-5",
+]
 
 _INT_BOUNDS = {
     "dispatch.pool": (1, 32),
@@ -295,10 +306,19 @@ def ui_settings(workspace: Path) -> "list[dict[str, object]]":
             cur = cur.get(part) if isinstance(cur, dict) else None
         resolved = get(key, workspace=workspace,
                        cast=int if typ is int else None)
-        out.append({
+        row: dict[str, object] = {
             "key": key, "yaml": cur, "resolved": resolved,
             "type": typ.__name__, "description": desc,
-        })
+        }
+        if key.endswith(".model"):
+            choices = list(MODEL_CHOICES)
+            # the resolved value (env/yaml may name anything) is always
+            # a legal choice — never render a select that can't show
+            # the current truth
+            if resolved and str(resolved) not in choices:
+                choices.insert(0, str(resolved))
+            row["choices"] = choices
+        out.append(row)
     return out
 
 

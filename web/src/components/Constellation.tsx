@@ -166,10 +166,33 @@ export default function Constellation({
 
   // Initial fit — once per problem and on frontier-focus toggles (not
   // per poll: the layout is stable, and refitting under the user's
-  // zoom would fight them).
+  // zoom would fight them). `userAdjusted` records a manual zoom/pan:
+  // a window resize re-fits ONLY untouched views (fighting an explicit
+  // zoom is worse than letting it drift off-center).
+  const userAdjusted = useRef(false)
   useEffect(() => {
+    userAdjusted.current = false
     setView(null)
   }, [goals.length > 0 && goals[0].lean_path.split('/')[1], focused])
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    // observe() always delivers one INITIAL callback (spec) — it is
+    // not a resize, and letting it setView(null) batches against the
+    // mount fit's setView(fitted): the queue collapses to null→null,
+    // the [view] dep sees no change, and the fit effect starves until
+    // the next poll (~2s of unfitted sky). Skip delivery #1.
+    let initial = true
+    const ro = new ResizeObserver(() => {
+      if (initial) {
+        initial = false
+        return
+      }
+      if (!userAdjusted.current) setView(null)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   useEffect(() => {
     if (view !== null) return
     const el = containerRef.current
@@ -218,6 +241,7 @@ export default function Constellation({
         tx: mx - ((mx - v.tx) / v.k) * nk,
         ty: my - ((my - v.ty) / v.k) * nk,
       }
+      userAdjusted.current = true
       viewRef.current = next
       setView(next)
     }
@@ -236,7 +260,10 @@ export default function Constellation({
     const dx = e.clientX - d.x
     const dy = e.clientY - d.y
     if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true
-    if (d.moved) setView({ k: view.k, tx: d.tx + dx, ty: d.ty + dy })
+    if (d.moved) {
+      userAdjusted.current = true
+      setView({ k: view.k, tx: d.tx + dx, ty: d.ty + dy })
+    }
   }
   const onPointerUp = (e: React.PointerEvent) => {
     const d = drag.current
@@ -766,6 +793,7 @@ export default function Constellation({
                 tx: cw / 2 - ((cw / 2 - v.tx) / v.k) * nk,
                 ty: ch / 2 - ((ch / 2 - v.ty) / v.k) * nk,
               }
+              userAdjusted.current = true
               viewRef.current = next
               setView(next)
             }}
@@ -776,7 +804,10 @@ export default function Constellation({
         <button
           className="border-l border-edge px-2.5 py-1 text-xs text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
           title="fit to view"
-          onClick={() => setView(null)}
+          onClick={() => {
+            userAdjusted.current = false
+            setView(null)
+          }}
         >
           fit
         </button>
