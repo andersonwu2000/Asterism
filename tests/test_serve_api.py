@@ -696,6 +696,33 @@ def test_daemon_status_endpoint(workspace: Path) -> None:
     body = r.json()
     assert body["running"] is False
     assert body["stopping"] is False
+    assert body["started_at"] is None
+
+
+def test_daemon_start_requires_exact_known_scope(
+        workspace: Path, monkeypatch) -> None:
+    """The UI path runs ONE existing problem: empty scope is a 400
+    (workspace-wide runs are CLI-only deliberate acts), a typo is a 404
+    — never a silent `--all-problems` dispatch."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    conn.close()
+    c = _client(workspace)
+    assert c.post("/api/daemon/start", json={}).status_code == 400
+    assert c.post("/api/daemon/start",
+                  json={"scope": "  "}).status_code == 400
+    assert c.post("/api/daemon/start",
+                  json={"scope": "no_such"}).status_code == 404
+    import Tooling.core.cli as _cli
+    seen = {}
+
+    def fake_start(ws, *, scope=None, once=False):  # noqa: ANN001
+        seen["scope"] = scope
+        return 0, f"started daemon pid 1; scope {scope}"
+    monkeypatch.setattr(_cli, "daemon_start", fake_start)
+    r = c.post("/api/daemon/start", json={"scope": "p"})
+    assert r.status_code == 200
+    assert seen["scope"] == "p"
 
 
 # ---------------------------------------------------------------------

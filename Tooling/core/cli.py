@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -373,6 +374,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     log_file = log_path.open("w", encoding="utf-8")
     print(f"[cli] log → {log_path.relative_to(workspace).as_posix()}",
           flush=True)
+    # SSE tail pointer: the web UI follows daemon-current.txt. EVERY run
+    # path must update it — when only daemon_start (the UI button) did,
+    # a terminal-started run left the web log tail silently replaying
+    # the previous run's file.
+    try:
+        (workspace / LOG_DIR / "daemon-current.txt").write_text(
+            str(log_path), encoding="utf-8")
+    except OSError:
+        pass
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
     sys.stdout = _Tee(orig_stdout, log_file)
     sys.stderr = _Tee(orig_stderr, log_file)
@@ -382,8 +392,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             once=getattr(args, "once", False),
             scope=getattr(args, "scope", None),
         )
+        _write_exit_summary(workspace, rc=rc, error=None)
         return rc
-    except Exception:
+    except Exception as exc:
+        _write_exit_summary(
+            workspace, rc=2,
+            error=f"{type(exc).__name__}: {exc}"[:400])
         # Log the crash traceback HERE, while `sys.stderr` is still tee'd to
         # the log file and the file is still open. The `finally` below restores
         # `sys.stderr` and closes the log BEFORE an unhandled exception would
@@ -1451,6 +1465,36 @@ def cmd_review(args: argparse.Namespace) -> int:
 # and pipeline code must not import the CLI entrypoint layer.
 
 
+def _write_exit_summary(workspace: Path, *, rc: "int | None",
+                        error: "str | None") -> None:
+    """Record how the last run ended (read by `daemon_status` when
+    idle) — a crashed run must not be indistinguishable from a finished
+    one (both used to read 'Idle')."""
+    try:
+        p = workspace / LOG_DIR / "daemon-exit.txt"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(
+            {"at": db.now(), "rc": rc, "error": error}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _read_exit_summary(workspace: Path) -> "dict | None":
+    try:
+        raw = (workspace / LOG_DIR / "daemon-exit.txt").read_text(
+            encoding="utf-8")
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+# Serializes check-then-spawn within one process (the serve API handles
+# two Run clicks on two threads); the cross-process guard is the
+# daemon-starting marker + the child's singleton lock.
+_daemon_start_lock = threading.Lock()
+
+
 def _daemon_live_pid(workspace: Path) -> "int | None":
     """Singleton-lock liveness: the daemon's pid iff the lock file names
     a live daemon instance (pid + start-time identity, the same
@@ -1516,6 +1560,10 @@ def daemon_status(workspace: Path) -> dict:
         "stopping": pid is not None
         and _disp.stop_file_path(workspace).exists(),
         "in_flight_leases": _daemon_in_flight(workspace),
+        # how the LAST run ended ({at, rc, error}) — only meaningful
+        # while idle; lets the UI tell "finished" from "crashed"
+        "last_exit": None if pid is not None
+        else _read_exit_summary(workspace),
     }
 
 
@@ -1525,14 +1573,35 @@ def daemon_start(workspace: Path, *, scope: "str | None" = None,
     while a daemon holds the singleton lock; on success writes the
     per-run log + the daemon-current.txt pointer the SSE tail follows."""
     import subprocess
+    import time as _time
     from . import dispatcher as _disp
-    pid = _daemon_live_pid(workspace)
-    if pid is not None:
-        return 1, (f"REFUSED: a daemon is already running (pid {pid}) — "
-                   f"one daemon per workspace (singleton lock)")
-    _disp.stop_file_path(workspace).unlink(missing_ok=True)
-    logs = workspace / ".asterism" / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
+    with _daemon_start_lock:
+        pid = _daemon_live_pid(workspace)
+        if pid is not None:
+            return 1, (f"REFUSED: a daemon is already running (pid {pid}) "
+                       f"— one daemon per workspace (singleton lock)")
+        # Anti-double-spawn window: the child takes seconds to boot and
+        # claim the singleton lock; two near-simultaneous starts both
+        # passed the check above and both spawned (the loser died
+        # silently AFTER this call returned "started", and last-writer
+        # scope made the UI lie about what runs). The marker covers the
+        # boot gap; the child consumes it once the lock is settled.
+        marker = workspace / ".asterism" / "daemon-starting.txt"
+        try:
+            if _time.time() - marker.stat().st_mtime < 60:
+                return 1, ("REFUSED: a daemon is already starting (another "
+                           "Run landed moments ago) — give it a few "
+                           "seconds, then check status")
+        except OSError:
+            pass
+        _disp.stop_file_path(workspace).unlink(missing_ok=True)
+        logs = workspace / ".asterism" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        marker.write_text(db.now(), encoding="utf-8")
+        # last run's exit summary belongs to the last run — a force-
+        # killed run writes none, and a stale one must not be reported
+        # as this run's ending
+        (logs / "daemon-exit.txt").unlink(missing_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_path = logs / f"daemon_{stamp}.log"
     argv = [sys.executable, "-m", "Tooling.core.cli", "run"]
@@ -1582,11 +1651,44 @@ def daemon_stop(workspace: Path, *, force: bool = False) -> "tuple[int, str]":
         n = _daemon_in_flight(workspace)
         try:
             import psutil
-            psutil.Process(pid).terminate()
+            p = psutil.Process(pid)
+            p.terminate()
+            try:
+                p.wait(timeout=10)
+            except psutil.TimeoutExpired:
+                p.kill()
+                p.wait(timeout=5)
         except Exception as e:  # noqa: BLE001
             return 1, f"terminate failed: {e}"
-        return 0, (f"force-stopping pid {pid} ({n} in-flight lease(s) — "
-                   f"lease sweep + startup recovery will reclaim)")
+        # Post-kill hygiene — TerminateProcess skips atexit, so nothing
+        # else runs: a leftover stop-file used to wedge "stopping" into
+        # the status, and the dead pid's leases rendered as running
+        # agents until some future daemon start happened to sweep them
+        # (scope-filtered, so possibly never).
+        stop_file.unlink(missing_ok=True)
+        released = 0
+        db_path = workspace / "asterism.db"
+        if db_path.exists():
+            try:
+                import psutil as _ps
+
+                def _alive(owner) -> bool:
+                    try:
+                        o = int(owner)
+                    except (TypeError, ValueError):
+                        return False
+                    return o != pid and _ps.pid_exists(o)
+                conn = db.connect(db_path)
+                released = db.release_expired_leases(
+                    conn, ttl_sec=float("inf"), pid_alive=_alive)
+                conn.commit()
+                conn.close()
+            except Exception:  # noqa: BLE001 — hygiene must not fail the stop
+                released = 0
+        _write_exit_summary(workspace, rc=None,
+                            error="force-stopped by the user")
+        return 0, (f"force-stopped pid {pid}; released {released} of "
+                   f"{n} in-flight lease(s)")
     stop_file.write_text(db.now(), encoding="utf-8")
     return 0, (f"stop requested (graceful): daemon pid {pid} will finish "
                f"in-flight work and exit; `daemon status` to watch, "

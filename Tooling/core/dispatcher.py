@@ -1320,6 +1320,9 @@ def stop_file_path(workspace: Path) -> Path:
 def run(workspace: Path, *, once: bool = False,
         scope: str | None = None) -> int:
     pid_lock = _acquire_singleton_lock(workspace)
+    # The start-side anti-double-spawn marker is consumed here: the
+    # singleton lock has settled the race either way.
+    (workspace / ".asterism" / "daemon-starting.txt").unlink(missing_ok=True)
     if pid_lock is None:
         return 1
     import atexit
@@ -1327,6 +1330,17 @@ def run(workspace: Path, *, once: bool = False,
     # A stale stop file from a prior stop request must not insta-kill
     # this fresh daemon (the start side also clears it — belt+braces).
     stop_file_path(workspace).unlink(missing_ok=True)
+    # Scope pointer is written by the DAEMON ITSELF (single truth): when
+    # only the UI's daemon_start wrote it, a terminal-started run left
+    # the UI reading the PREVIOUS run's scope — Stop on the wrong
+    # problem page would have killed this run. "" = workspace-wide.
+    try:
+        _logs = workspace / ".asterism" / "logs"
+        _logs.mkdir(parents=True, exist_ok=True)
+        (_logs / "daemon-scope.txt").write_text(
+            scope or "", encoding="utf-8")
+    except OSError:
+        pass
 
     # Bind this process + every later spawn (claude / lake / lean / per-spawn
     # LSP) into a kill-on-close Job Object, so a hard daemon death reaps the

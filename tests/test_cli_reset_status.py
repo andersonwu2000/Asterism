@@ -680,6 +680,80 @@ def test_daemon_stop_no_daemon_clears_stale_stop_file(tmp_path,
     assert not disp.stop_file_path(tmp_path).exists()
 
 
+def test_daemon_start_refuses_while_start_marker_fresh(
+        tmp_path, monkeypatch, capsys):
+    """Anti-double-spawn: a second Run inside the first one's boot
+    window is refused instead of silently spawning a loser daemon
+    (whose scope write made the UI lie about what runs)."""
+    from Tooling.core.cli import cmd_daemon
+    (tmp_path / "Problems").mkdir()
+    (tmp_path / ".asterism").mkdir()
+    (tmp_path / ".asterism" / "daemon-starting.txt").write_text(
+        "x", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    rc = cmd_daemon(_daemon_ns("start", scope="Logic.p"))
+    assert rc == 1
+    assert "already starting" in capsys.readouterr().out
+
+
+def test_daemon_force_stop_cleans_residue(tmp_path, monkeypatch, capsys):
+    """Force stop must sweep what TerminateProcess leaves behind: the
+    stop-file (wedged 'stopping' forever), the dead pid's leases
+    (rendered as running agents for days), and it records the exit."""
+    import os as _os
+    import psutil
+    from Tooling.core.cli import cmd_daemon, daemon_status
+    from Tooling.core import dispatcher as disp
+    from Tooling.state import db as _db
+    (tmp_path / "Problems").mkdir()
+    (tmp_path / ".asterism").mkdir()
+    me = _os.getpid()
+    start = psutil.Process(me).create_time()
+    (tmp_path / ".asterism" / "daemon.pid").write_text(
+        f"{me}\n{start}\n", encoding="utf-8")
+    disp.stop_file_path(tmp_path).write_text("x", encoding="utf-8")
+    conn = _db.connect(tmp_path / "asterism.db")
+    _db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (_db.now(),))
+    _db.enqueue(conn, kind="Strategist", target_id="p",
+                target_kind="Problem", problem="p")
+    conn.execute("UPDATE queue SET owner_pid = ?, leased_at = ?",
+                 (me, _db.now()))
+    conn.commit()
+    conn.close()
+
+    class _FakeProc:
+        def __init__(self, _pid):
+            pass
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+    monkeypatch.setattr(psutil, "Process", _FakeProc)
+    monkeypatch.chdir(tmp_path)
+    rc = cmd_daemon(_daemon_ns("stop", force=True))
+    assert rc == 0
+    assert "released 1" in capsys.readouterr().out
+    assert not disp.stop_file_path(tmp_path).exists()
+    conn = _db.connect(tmp_path / "asterism.db")
+    leased = conn.execute(
+        "SELECT COUNT(*) FROM queue WHERE owner_pid IS NOT NULL"
+    ).fetchone()[0]
+    conn.close()
+    assert leased == 0
+    # the run's ending is on record (pid file is stale-but-dead here, so
+    # status still reports running for OUR live test pid — read the
+    # summary file directly instead)
+    from Tooling.core.cli import _read_exit_summary
+    summary = _read_exit_summary(tmp_path)
+    assert summary and "force-stopped" in (summary.get("error") or "")
+    assert daemon_status  # imported symbol used above in other tests
+
+
 def test_daemon_start_spawns_detached_and_writes_log_pointer(
         tmp_path, monkeypatch, capsys):
     import subprocess

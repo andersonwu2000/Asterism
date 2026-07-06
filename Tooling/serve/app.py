@@ -480,8 +480,25 @@ def create_app(workspace: Path) -> FastAPI:
 
     @app.post("/api/daemon/start")
     def daemon_start_ep(body: DaemonStartBody) -> dict:
+        """Start the engine on ONE problem. Scope is required and must
+        name an existing problem exactly — the CLI's pattern scopes and
+        workspace-wide runs are deliberate operator acts, not one HTTP
+        typo away (a no-scope run once swept 148 files off other
+        problems)."""
         from ..core.cli import daemon_start
-        code, msg = daemon_start(workspace, scope=body.scope, once=body.once)
+        scope = (body.scope or "").strip()
+        if not scope:
+            raise HTTPException(
+                status_code=400,
+                detail="scope is required — start the engine from a"
+                       " problem's Run button (one problem at a time)")
+        with _ro(workspace) as conn:
+            known = conn.execute(
+                "SELECT 1 FROM problems WHERE name = ?", (scope,)).fetchone()
+        if known is None:
+            raise HTTPException(status_code=404,
+                                detail=f"unknown problem {scope!r}")
+        code, msg = daemon_start(workspace, scope=scope, once=body.once)
         if code != 0:
             raise HTTPException(status_code=409, detail=msg)
         return {"message": msg}

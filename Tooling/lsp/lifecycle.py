@@ -228,14 +228,13 @@ def start_gateway(workspace: Path,
                        | process_group.no_window_creationflags()),
     )
 
-    def _shutdown():
-        if proc.poll() is None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-    atexit.register(_shutdown)
+    # NO atexit kill: the gateway deliberately OUTLIVES its parent
+    # (breakaway above — warming Mathlib costs minutes and reuse is the
+    # feature). The old atexit terminate inverted stop semantics: a
+    # GRACEFUL daemon exit killed the warm gateway (next run repaid the
+    # cold start) while a force-kill skipped atexit and kept it.
+    # Lifecycle is owned by the health/version-skew checks at the next
+    # start_gateway (stale or mismatched gateways are killed there).
 
     # Poll /health. Gateway only opens HTTP after backend pre-warm,
     # so any successful response means backend_ready=true (we still
