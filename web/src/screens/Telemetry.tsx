@@ -41,7 +41,7 @@ function DaemonPanel() {
         </span>
         <span className="text-xs text-ink-faint">
           {d?.stopping
-            ? `pid ${d.pid} — draining in-flight work`
+            ? `pid ${d.pid} — draining ${d.in_flight_leases} in-flight lease${d.in_flight_leases === 1 ? '' : 's'}; if this hangs on a stale lease, Force stop is safe`
             : d?.running
               ? `pid ${d.pid}${d.in_flight_leases > 0 ? ` · ${d.in_flight_leases} in flight` : ''}`
               : 'the engine is not running'}
