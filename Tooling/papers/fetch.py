@@ -73,7 +73,18 @@ def fetch_and_shelve(workspace: Path, target: str, *,
                 "retry the same URL; report it for the human path")
 
         from . import shelf, index as paper_index
-        tmp = workspace / "Papers" / "_fetch_tmp.pdf"
+        # The download's basename becomes the shelf `source_name`
+        # (shown in the Context auxiliary line) — derive a meaningful
+        # one instead of a temp-file name (live blemish 2026-07-07:
+        # RHD07 displayed as `_fetch_tmp.pdf`).
+        if _ARXIV_ID_RE.match(target):
+            name = "arxiv_" + target.replace("/", "_") + ".pdf"
+        else:
+            name = (urllib.parse.urlparse(url).path.rsplit("/", 1)[-1]
+                    or "paper")
+            if not name.endswith(".pdf"):
+                name += ".pdf"
+        tmp = workspace / "Papers" / ".dl" / name
         tmp.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_bytes(data)
         try:
@@ -81,6 +92,7 @@ def fetch_and_shelve(workspace: Path, target: str, *,
         finally:
             try:
                 tmp.unlink()
+                tmp.parent.rmdir()
             except OSError:
                 pass
         print(f"[fetch] shelved {url} → Papers/{meta.id}", flush=True)

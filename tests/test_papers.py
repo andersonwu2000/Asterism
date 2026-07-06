@@ -332,6 +332,8 @@ def test_fetch_shelves_and_binds(tmp_path: Path, monkeypatch) -> None:
     pid = fetch.fetch_and_shelve(tmp_path, "2605.23679",
                                  problem="Test.px", reason="cited [X]")
     assert shelf.text_path(tmp_path, pid).is_file()
+    meta = shelf.load_meta(tmp_path, pid)
+    assert meta.source_name == "arxiv_2605.23679.pdf"  # no temp-name leak
     conn = sqlite3.connect(str(tmp_path / "asterism.db"))
     conn.row_factory = sqlite3.Row
     rows = _db.paper_bindings(conn, "Test.px")
