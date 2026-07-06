@@ -125,7 +125,9 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
       >
         <span className="block truncate px-1 font-mono text-[13px] text-ink transition-colors group-hover:text-starlight">
           {leaf}
-          <span className="tnum ml-2 text-[10px] text-ink-faint">{p.decls.length}</span>
+          <span className="tnum ml-2 text-[10px] text-ink-faint">
+            {query !== '' ? `${p.decls.filter(match).length} lit · ${p.decls.length}` : p.decls.length}
+          </span>
         </span>
       </Link>
       {hover && (

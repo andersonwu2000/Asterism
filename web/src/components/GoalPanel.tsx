@@ -75,7 +75,7 @@ export default function GoalPanel({
   return (
     <div className="rise-in flex h-full w-96 shrink-0 flex-col border-l border-edge bg-surface">
       <div className="flex items-center justify-between border-b border-edge px-4 py-2.5">
-        <span className="truncate font-mono text-sm text-ink">{data?.slug ?? `#${goalId}`}</span>
+        <span className="truncate font-mono text-sm text-ink" title={data?.slug}>{data?.slug ?? `#${goalId}`}</span>
         <button
           className="ml-2 rounded px-1.5 text-ink-faint hover:text-ink"
           onClick={onClose}

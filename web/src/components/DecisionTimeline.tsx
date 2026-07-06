@@ -24,6 +24,14 @@ const KIND_CLS: Record<string, string> = {
  * the timeline's color budget goes to failures and pauses */
 const OK_OUTCOMES = new Set(['success', 'accepted', 'live_subgoal', 'closed_subgoal'])
 
+/* outcome enums get human labels */
+const OUTCOME_LABEL: Record<string, string> = {
+  awaiting_human: 'awaiting you',
+  verify_failed: 'verify failed',
+  forward_no_new_goal: 'no new goal',
+  shelved_produced: 'shelved',
+}
+
 const OUTCOME_CLS: Record<string, string> = {
   awaiting_human: 'text-danger',
   rejected: 'text-danger',
@@ -41,7 +49,7 @@ function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
   return (
     <div className={`relative pl-4 ${grouped ? 'border-l border-edge-strong/60' : ''}`}>
       <button
-        className="group grid w-full grid-cols-[8rem_1fr_auto] items-baseline gap-2 rounded px-2 py-1.5 text-left hover:bg-surface"
+        className="group grid w-full grid-cols-[9.5rem_1fr_auto] items-baseline gap-2 rounded px-2 py-1.5 text-left hover:bg-surface"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
@@ -60,7 +68,7 @@ function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
           {d.outcome &&
             (OK_OUTCOMES.has(d.outcome) ? null : (
               <span className={`mr-2 ${OUTCOME_CLS[d.outcome] ?? 'text-ink-dim'}`}>
-                {d.outcome}
+                {OUTCOME_LABEL[d.outcome] ?? d.outcome}
               </span>
             ))}
           {TIME_FMT.format(new Date(d.created_at))}

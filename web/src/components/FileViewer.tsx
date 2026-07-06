@@ -133,7 +133,7 @@ export default function FileViewer({
 
   return (
     <div className="flex min-h-0 flex-1">
-      <div className="w-56 shrink-0 overflow-y-auto border-r border-edge py-2">
+      <div className="w-72 shrink-0 overflow-y-auto border-r border-edge py-2">
         {files.map((f, i) => (
           <div key={f}>
             {/* one "proofs/" group header instead of a 130-row prefix wall */}
@@ -149,7 +149,7 @@ export default function FileViewer({
               onClick={() => setSelected(f)}
               title={f}
             >
-              {f.startsWith('proofs/') ? f.slice('proofs/'.length) : f}
+              {f.startsWith('proofs/L_') ? f.slice('proofs/L_'.length) : f.startsWith('proofs/') ? f.slice('proofs/'.length) : f}
             </button>
           </div>
         ))}

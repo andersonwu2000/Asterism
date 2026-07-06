@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
@@ -156,7 +157,15 @@ function ageDays(iso: string | null): number {
   return Math.floor((Date.now() - Date.parse(iso)) / 86400_000)
 }
 
-function SectionRow({ label, count }: { label: string; count?: number }) {
+function SectionRow({
+  label,
+  count,
+  note,
+}: {
+  label: string
+  count?: number
+  note?: ReactNode
+}) {
   return (
     <tr>
       <td colSpan={4} className="pt-5 pb-1.5 pl-3">
@@ -166,6 +175,7 @@ function SectionRow({ label, count }: { label: string; count?: number }) {
         {count !== undefined && (
           <span className="tnum ml-2 text-[11px] text-ink-faint/70">{count}</span>
         )}
+        {note && <span className="ml-3 text-[11px] text-ink-dim">{note}</span>}
       </td>
     </tr>
   )
@@ -386,17 +396,6 @@ export default function Board() {
           Live update failed ({error.message}) — showing last known state.
         </div>
       )}
-      {/* the board must not imply motion the engine isn't making */}
-      {meta && !meta.daemon.running && !meta.daemon.stopping && inMotion.length > 0 && (
-        <div className="mb-3 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
-          The engine is idle — {inMotion.length} problem{inMotion.length === 1 ? '' : 's'} in
-          motion {inMotion.length === 1 ? 'is' : 'are'} not being worked.{' '}
-          <Link to="/telemetry" className="underline">
-            Start it from the Engine page
-          </Link>
-          .
-        </div>
-      )}
       <div className="mb-3 flex items-center gap-2">
         <div className="relative">
           <input
@@ -452,7 +451,20 @@ export default function Board() {
               )}
               {inMotion.length > 0 && (
                 <>
-                  <SectionRow label="In motion" count={inMotion.length} />
+                  <SectionRow
+                    label="In motion"
+                    count={inMotion.length}
+                    note={
+                      meta && !meta.daemon.running && !meta.daemon.stopping ? (
+                        <>
+                          engine idle — not being worked ·{' '}
+                          <Link to="/telemetry" className="underline decoration-ink-faint underline-offset-2 hover:text-ink">
+                            start it
+                          </Link>
+                        </>
+                      ) : undefined
+                    }
+                  />
                   {inMotion.map((p) => (
                     <Row key={p.name} p={p} />
                   ))}
