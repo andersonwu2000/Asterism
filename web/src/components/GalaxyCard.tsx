@@ -53,6 +53,9 @@ export default function GalaxyCard({ p }: { p: BoardProblem }) {
         r: 1.6 + rand() * 1.6,
       })
     }
+    // Connect left→right so the polyline reads as constellation
+    // line-art instead of a scribble.
+    pts.sort((a, b) => a.x - b.x)
     return pts
   }, [p.name, p.goals.total])
 

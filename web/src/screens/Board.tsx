@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
@@ -97,6 +97,20 @@ export default function Board() {
   }
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<string | null>(null)
+  const filterRef = useRef<HTMLInputElement>(null)
+
+  // "/" focuses the filter from anywhere on the board
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === '/' && !(e.target instanceof HTMLInputElement) &&
+          !(e.target instanceof HTMLTextAreaElement)) {
+        e.preventDefault()
+        filterRef.current?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   if (loading)
     return (
@@ -167,10 +181,17 @@ export default function Board() {
       )}
       <div className="mb-3 flex items-center gap-2">
         <input
+          ref={filterRef}
           className="w-64 rounded-md border border-edge bg-surface px-2.5 py-1.5 font-mono text-xs text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
-          placeholder="filter problems…"
+          placeholder="filter problems…  ( / )"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setQuery('')
+              e.currentTarget.blur()
+            }
+          }}
         />
         <div className="flex flex-wrap gap-1.5">
           {STATUS_ORDER.filter((s) => (statusCounts.get(s) ?? 0) > 0).map((s) => (
@@ -199,7 +220,7 @@ export default function Board() {
         </div>
       ) : (
         <table className="w-full border-collapse text-left">
-          <thead>
+          <thead className="sticky top-0 z-10 bg-bg">
             <tr className="border-b border-edge text-xs text-ink-faint">
               <th className="py-2 pr-4 pl-4 font-medium">problem</th>
               <th className="py-2 pr-4 font-medium">status</th>

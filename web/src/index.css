@@ -80,3 +80,12 @@ body {
     opacity 0.9s ease,
     stroke-opacity 0.9s ease;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  .constellation circle,
+  .constellation line {
+    transition: none !important;
+    animation: none !important;
+  }
+}
