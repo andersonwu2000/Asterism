@@ -100,6 +100,42 @@ function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
   )
 }
 
+/** One subscription window: a thin bar that brightens as it fills,
+ * with the reset moment — spend against the REAL ceiling. */
+function QuotaMeter({
+  label,
+  pct,
+  resetsAt,
+}: {
+  label: string
+  pct: number
+  resetsAt: string | null
+}) {
+  const clamped = Math.max(0, Math.min(100, pct))
+  const resets = resetsAt
+    ? new Date(resetsAt).toLocaleString(undefined, {
+        weekday: clamped >= 0 && label.includes('week') ? 'short' : undefined,
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : null
+  return (
+    <div className="flex items-center gap-3">
+      <span className="w-32 shrink-0 text-xs text-ink-dim">{label}</span>
+      <div className="h-1 flex-1 overflow-hidden rounded-full bg-surface-2">
+        <div
+          className={`h-full ${clamped >= 85 ? 'bg-warn' : 'bg-starlight/60'}`}
+          style={{ width: `${clamped}%` }}
+        />
+      </div>
+      <span className="tnum w-10 text-right text-xs text-ink">{Math.round(clamped)}%</span>
+      <span className="tnum w-28 text-[11px] text-ink-faint">
+        {resets ? `resets ${resets}` : ''}
+      </span>
+    </div>
+  )
+}
+
 export default function Run() {
   const { data, refresh } = usePoll<RunStatus>('/api/run', 2000)
   const { data: cfg } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
@@ -304,6 +340,40 @@ export default function Run() {
               </>
             )
           })()}
+        </section>
+      )}
+
+      {data.quota && (
+        <section className="mt-7">
+          <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
+            plan windows
+            <span className="ml-2 font-normal tracking-normal normal-case text-ink-faint/80">
+              your subscription's own meters
+            </span>
+          </div>
+          <div className="flex max-w-xl flex-col gap-2">
+            {(
+              [
+                ['5-hour window', data.quota.five_hour],
+                ['week', data.quota.seven_day],
+              ] as const
+            ).map(
+              ([label, w]) =>
+                w && (
+                  <QuotaMeter key={label} label={label} pct={w.utilization} resetsAt={w.resets_at} />
+                ),
+            )}
+            {data.quota.scoped
+              .filter((s) => s.is_active)
+              .map((s) => (
+                <QuotaMeter
+                  key={s.name}
+                  label={`${s.name} · week`}
+                  pct={s.percent}
+                  resetsAt={s.resets_at}
+                />
+              ))}
+          </div>
         </section>
       )}
 

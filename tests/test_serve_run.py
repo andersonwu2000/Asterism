@@ -24,6 +24,20 @@ def workspace(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _no_network_quota(monkeypatch):
+    """Tests never touch api.anthropic.com: default the quota fetch to
+    'offline' and reset the memo around every test."""
+    from Tooling.serve import run as _run
+
+    def offline():
+        raise OSError("no network in tests")
+    monkeypatch.setattr(_run, "_fetch_oauth_usage", offline)
+    _run._quota_memo.update(at=0.0, value=None, ttl=0.0, last_good=None)
+    yield
+    _run._quota_memo.update(at=0.0, value=None, ttl=0.0, last_good=None)
+
+
 def _open_db(workspace: Path) -> sqlite3.Connection:
     conn = db.connect(workspace / "asterism.db")
     db.init_schema(conn)
@@ -62,6 +76,49 @@ def test_run_fresh_workspace_is_quiet(workspace: Path) -> None:
     body = r.json()
     assert body["workers"] == []
     assert body["goals"] is None
+    # quota is garnish: offline → null, never an error
+    assert body["quota"] is None
+
+
+def test_run_quota_reads_the_oauth_windows(workspace: Path,
+                                           monkeypatch) -> None:
+    """The subscription meter: five_hour/seven_day utilization + the
+    per-model scoped weekly limits, token never echoed."""
+    from Tooling.serve import run as _run
+    _run._quota_memo.update(at=0.0, value=None, ttl=0.0)
+    canned = {
+        "five_hour": {"utilization": 27.0,
+                      "resets_at": "2026-07-07T06:59:59+00:00"},
+        "seven_day": {"utilization": 31.0,
+                      "resets_at": "2026-07-12T23:59:59+00:00"},
+        "limits": [
+            {"kind": "session", "percent": 27, "scope": None,
+             "is_active": False},
+            {"kind": "weekly_scoped", "percent": 60,
+             "resets_at": "2026-07-12T23:59:59+00:00",
+             "scope": {"model": {"display_name": "Fable"}},
+             "is_active": True},
+        ],
+    }
+    monkeypatch.setattr(_run, "_fetch_oauth_usage", lambda: canned)
+    body = _client(workspace).get("/api/run").json()
+    q = body["quota"]
+    assert q["five_hour"]["utilization"] == 27.0
+    assert q["seven_day"]["utilization"] == 31.0
+    assert q["scoped"] == [{"name": "Fable", "percent": 60.0,
+                            "resets_at": "2026-07-12T23:59:59+00:00",
+                            "is_active": True}]
+    assert "token" not in str(q).lower()
+
+    # stale-while-error: a later blip serves the last good reading
+    from Tooling.serve import run as _run2
+    _run2._quota_memo.update(at=0.0, ttl=0.0)
+
+    def blip():
+        raise OSError("429")
+    monkeypatch.setattr(_run2, "_fetch_oauth_usage", blip)
+    again = _client(workspace).get("/api/run").json()["quota"]
+    assert again["five_hour"]["utilization"] == 27.0
 
 
 def test_run_live_lanes_carry_statement_and_file_tail(

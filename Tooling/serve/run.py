@@ -15,7 +15,10 @@ the shared aggregation file.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
+import time
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -51,6 +54,72 @@ def _tail(path: Path) -> "dict | None":
     }
 
 
+# ---------------------------------------------------------------------
+# Subscription quota — the REAL windows, not a proxy. Claude Code's
+# login leaves an OAuth token at ~/.claude/.credentials.json; the same
+# endpoint its statusline uses (api.anthropic.com/api/oauth/usage)
+# reports five_hour / seven_day utilization and per-model scoped
+# limits. Read-only against the user's own account; the token never
+# appears in any response or log. Memoized 60s (failures 30s) — the
+# console polls every 2s and the endpoint 429s eagerly.
+# ---------------------------------------------------------------------
+
+_quota_memo: "dict[str, object]" = {
+    "at": 0.0, "value": None, "ttl": 0.0, "last_good": None}
+
+
+def _fetch_oauth_usage() -> "dict | None":
+    """One raw call. Separated for tests (monkeypatch me)."""
+    creds_path = Path.home() / ".claude" / ".credentials.json"
+    token = json.loads(creds_path.read_text(encoding="utf-8"))[
+        "claudeAiOauth"]["accessToken"]
+    req = urllib.request.Request(
+        "https://api.anthropic.com/api/oauth/usage",
+        headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=4) as resp:
+        return json.loads(resp.read())
+
+
+def quota() -> "dict | None":
+    """{five_hour, seven_day, scoped[]} or None (no login file, expired
+    token, rate-limited, offline — the console simply omits the meter)."""
+    now = time.monotonic()
+    if now - float(_quota_memo["at"]) < float(_quota_memo["ttl"]):  # type: ignore[arg-type]
+        return _quota_memo["value"]  # type: ignore[return-value]
+    value = None
+    try:
+        raw = _fetch_oauth_usage()
+        if raw is not None:
+            def window(node: "dict | None") -> "dict | None":
+                if not node or node.get("utilization") is None:
+                    return None
+                return {"utilization": float(node["utilization"]),
+                        "resets_at": node.get("resets_at")}
+            scoped = []
+            for lim in raw.get("limits") or []:
+                scope = lim.get("scope") or {}
+                model = (scope.get("model") or {}).get("display_name")
+                if lim.get("kind") == "weekly_scoped" and model:
+                    scoped.append({
+                        "name": str(model),
+                        "percent": float(lim.get("percent") or 0),
+                        "resets_at": lim.get("resets_at"),
+                        "is_active": bool(lim.get("is_active")),
+                    })
+            value = {"five_hour": window(raw.get("five_hour")),
+                     "seven_day": window(raw.get("seven_day")),
+                     "scoped": scoped}
+    except Exception:  # noqa: BLE001 — quota is garnish, never a failure
+        value = None
+    if value is not None:
+        _quota_memo.update(at=now, value=value, ttl=120.0, last_good=value)
+    else:
+        # stale-while-error: a 429/offline blip keeps the last good
+        # reading on the meter instead of blanking it
+        _quota_memo.update(at=now, value=_quota_memo["last_good"], ttl=60.0)
+    return _quota_memo["value"]  # type: ignore[return-value]
+
+
 def run_status(conn: sqlite3.Connection, workspace: Path,
                daemon: "dict | None") -> dict:
     d = daemon or {}
@@ -65,6 +134,7 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
         "workers": [],
         "burn_run": None,
         "burn_5h": None,
+        "quota": quota(),
         "recent": [],
     }
 
@@ -144,6 +214,6 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
         if not (workspace / "asterism.db").exists():
             return {"daemon": d, "problem": None, "goals": None,
                     "workers": [], "burn_run": None, "burn_5h": None,
-                    "recent": []}
+                    "quota": quota(), "recent": []}
         with ro(workspace) as conn:
             return run_status(conn, workspace, d)

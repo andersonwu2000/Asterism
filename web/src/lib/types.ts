@@ -205,6 +205,12 @@ export interface RunWorker {
   file: { tail: string; size: number; quiet_sec: number } | null
 }
 
+/** One subscription window (from the account's own OAuth usage read). */
+export interface QuotaWindow {
+  utilization: number
+  resets_at: string | null
+}
+
 export interface RunStatus {
   daemon: DaemonStatus
   problem: string | null
@@ -212,6 +218,12 @@ export interface RunStatus {
   workers: RunWorker[]
   burn_run: { problems: UsageProblem[] } | null
   burn_5h: { problems: UsageProblem[] } | null
+  /** null = not knowable right now (no login file, offline) — omitted, never faked */
+  quota: {
+    five_hour: QuotaWindow | null
+    seven_day: QuotaWindow | null
+    scoped: { name: string; percent: number; resets_at: string | null; is_active: boolean }[]
+  } | null
   recent: { kind: string; outcome: string; at: string }[]
 }
 
