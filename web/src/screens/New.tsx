@@ -4,7 +4,8 @@ import { navigate } from '../lib/router'
 import { Button } from '../components/ui'
 import ListField from '../components/ListField'
 import { DiagList, countErrors } from '../components/LeanProbe'
-import { caretLineCol, useLeanSession, type LeanCursor } from '../lib/leanSession'
+import { useLeanSession, type LeanCursor } from '../lib/leanSession'
+import { LeanEditor } from '../components/LeanEditor'
 import type { PaperShelfItem } from '../lib/types'
 
 /*
@@ -59,8 +60,6 @@ export default function New() {
   // slot). Pause typing → elaborate + diagnostics; move the caret →
   // the goal at that position (live inside `by` blocks).
   const [cursor, setCursor] = useState<LeanCursor | null>(null)
-  const trackCaret = (part: string) => (e: { currentTarget: HTMLTextAreaElement }) =>
-    setCursor({ part, ...caretLineCol(e.currentTarget) })
   const check = useLeanSession({
     enabled: showLean && (defs.trim() !== '' || root.trim() !== ''),
     parts: [
@@ -210,16 +209,11 @@ export default function New() {
             <div className="mb-1 text-[11px] text-ink-faint">
               Defs.lean — your own definitions; the engine must use these, never re-derive them.
             </div>
-            <textarea
-              className="h-40 w-full resize-y rounded-md border border-edge bg-surface p-3 font-mono text-xs leading-relaxed text-ink focus:border-ink-faint focus:outline-none"
-              placeholder={`import Mathlib\n\nnamespace Problems.${name || '<name>'}\n\n-- your definitions\n\nend Problems.${name || '<name>'}`}
+            <LeanEditor
               value={defs}
-              onChange={(e) => {
-                setDefs(e.target.value)
-                trackCaret('defs')(e)
-              }}
-              onSelect={trackCaret('defs')}
-              spellCheck={false}
+              onChange={setDefs}
+              onCaret={(pos) => setCursor({ part: 'defs', ...pos })}
+              placeholder={`import Mathlib\n\nnamespace Problems.${name || '<name>'}\n\n-- your definitions\n\nend Problems.${name || '<name>'}`}
             />
             <DiagList diags={check.parts.defs ?? []} />
           </div>
@@ -228,16 +222,11 @@ export default function New() {
               Root.lean — pins the exact statement that must be proved before the problem can
               finish (shape: <span className="font-mono">theorem main : &lt;stmt&gt; := by sorry</span>).
             </div>
-            <textarea
-              className="h-40 w-full resize-y rounded-md border border-edge bg-surface p-3 font-mono text-xs leading-relaxed text-ink focus:border-ink-faint focus:outline-none"
-              placeholder={`import Mathlib\nimport Problems.${name || '<name>'}.Defs\n\nnamespace Problems.${name || '<name>'}\n\ntheorem main : <statement> := by sorry\n\nend Problems.${name || '<name>'}`}
+            <LeanEditor
               value={root}
-              onChange={(e) => {
-                setRoot(e.target.value)
-                trackCaret('root')(e)
-              }}
-              onSelect={trackCaret('root')}
-              spellCheck={false}
+              onChange={setRoot}
+              onCaret={(pos) => setCursor({ part: 'root', ...pos })}
+              placeholder={`import Mathlib\nimport Problems.${name || '<name>'}.Defs\n\nnamespace Problems.${name || '<name>'}\n\ntheorem main : <statement> := by sorry\n\nend Problems.${name || '<name>'}`}
             />
             <DiagList diags={check.parts.root ?? []} />
           </div>

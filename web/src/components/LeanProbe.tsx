@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiPost } from '../lib/api'
 import { Lean } from '../lib/lean'
+import { LeanEditor } from './LeanEditor'
 
 /*
  * The reader's Lean scratch pipeline, client side (POST /api/lean/eval).
@@ -136,18 +137,17 @@ export function LeanProbe({ fq, module }: { fq: string; module?: string }) {
   return (
     <div className="mt-2 ml-[22px] max-w-4xl">
       <div className="rounded-md border border-edge bg-white/[0.02]">
-        <textarea
-          className="block w-full resize-y bg-transparent px-3 py-2 font-mono text-[11px] leading-relaxed text-ink focus:outline-none"
-          rows={Math.max(2, code.split('\n').length)}
+        <LeanEditor
           value={code}
-          onChange={(e) => setCode(e.target.value)}
+          onChange={setCode}
+          heightClass="min-h-16 h-auto field-sizing-content"
+          frameless
           onKeyDown={(e) => {
             if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
               e.preventDefault()
               void run()
             }
           }}
-          spellCheck={false}
         />
         <div className="flex items-center gap-3 border-t border-edge px-3 py-1.5">
           <span className="text-[10px] text-ink-faint">
