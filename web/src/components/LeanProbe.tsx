@@ -150,14 +150,6 @@ export function LeanProbe({ fq, module }: { fq: string; module?: string }) {
           spellCheck={false}
         />
         <div className="flex items-center gap-3 border-t border-edge px-3 py-1.5">
-          <button
-            className="cursor-pointer font-mono text-[10px] text-ink-dim transition-colors hover:text-ink disabled:cursor-default disabled:text-ink-faint"
-            disabled={phase !== 'idle'}
-            onClick={() => void run()}
-            title="ctrl+enter"
-          >
-            run
-          </button>
           <span className="text-[10px] text-ink-faint">
             {phase === 'warming'
               ? 'engine warming — retries on its own (can take a minute)'
@@ -167,6 +159,14 @@ export function LeanProbe({ fq, module }: { fq: string; module?: string }) {
                   ? `${out.wall.toFixed(1)}s`
                   : ''}
           </span>
+          <button
+            className="ml-auto cursor-pointer rounded border border-edge px-2.5 py-0.5 font-mono text-[11px] text-ink-dim transition-colors hover:border-edge-strong hover:text-ink disabled:cursor-default disabled:text-ink-faint"
+            disabled={phase !== 'idle'}
+            onClick={() => void run()}
+            title="ctrl+enter"
+          >
+            ▸ run
+          </button>
         </div>
       </div>
       {out && <DiagList diags={out.diags} />}

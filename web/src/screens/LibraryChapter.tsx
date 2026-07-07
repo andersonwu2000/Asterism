@@ -163,15 +163,13 @@ function DeclEntry({
         {copied && <span className="text-[10px] text-ink-faint">copied</span>}
         <button
           className={
-            'cursor-pointer font-mono text-[10px] transition-all hover:text-ink ' +
-            (probing
-              ? 'text-ink-dim'
-              : 'text-ink-faint opacity-0 group-hover:opacity-100')
+            'cursor-pointer font-mono text-[10px] transition-colors hover:text-ink ' +
+            (probing ? 'text-ink-dim' : 'text-ink-faint')
           }
           onClick={() => setProbing((v) => !v)}
           title="run Lean against this declaration — opens with #print axioms, edit freely"
         >
-          {probing ? 'close probe' : 'probe'}
+          {probing ? 'close probe' : '▸ probe'}
         </button>
         {onOpenModule && d.file && (
           <button
