@@ -1041,7 +1041,6 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
             "axioms_whitelist": _manifest.effective_axioms(
                 mfst, problem=problem),
             "forbidden_lemmas": list(mfst.forbidden_lemmas),
-            "lemma_hints": list(mfst.lemma_hints),
             "library": bool(mfst.library),
         }
     except Exception:  # noqa: BLE001 — unreadable Manifest path above

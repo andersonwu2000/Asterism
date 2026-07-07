@@ -104,8 +104,8 @@ def test_empty_db_whitelist_never_weakens_the_gate(conn) -> None:
 
 def test_migrate_is_idempotent_and_never_clobbers_db(conn) -> None:
     m = _mfst(axioms_whitelist=["file.ax"], forbidden_lemmas=["bad*"],
-              lemma_hints=["Mathlib.A"], library=True)
-    assert settings.migrate_from_manifest(conn, "p", m) == 4
+              library=True)
+    assert settings.migrate_from_manifest(conn, "p", m) == 3
     # second run: nothing to do
     assert settings.migrate_from_manifest(conn, "p", m) == 0
     # a UI edit survives a re-migration against the stale file

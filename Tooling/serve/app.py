@@ -319,7 +319,6 @@ def create_app(workspace: Path) -> FastAPI:
         merged = {
             "axioms_whitelist": list(mfst.axioms_whitelist),
             "forbidden_lemmas": list(mfst.forbidden_lemmas),
-            "lemma_hints": list(mfst.lemma_hints),
             "library": bool(mfst.library),
         }
         pending = False
@@ -807,8 +806,6 @@ def create_app(workspace: Path) -> FastAPI:
                 "forbidden_lemmas": _as_list(st.get("forbidden_lemmas")),
                 "library": bool(st.get("library", True)),
             }
-            if _as_list(st.get("lemma_hints")):
-                fm["lemma_hints"] = _as_list(st.get("lemma_hints"))
             nl = body.body if body.body.startswith("\n") else "\n" + body.body
             raw = _mfst.compose(fm, nl)
         if raw is None or not raw.strip():
@@ -836,9 +833,7 @@ def create_app(workspace: Path) -> FastAPI:
                 _shutil.rmtree(pdir, ignore_errors=True)
                 raise HTTPException(status_code=422, detail=msg)
             # Explicit creation-time inputs are authoritative in the DB
-            # (init's lazy migration reads the PARSED file, and
-            # frontmatter lemma_hints are invisible to parse() — a
-            # legacy quirk the dissolve made harmless here):
+            # (init's lazy migration reads the PARSED file):
             if body.settings or body.papers:
                 from ..state import settings as _settings
                 conn2 = db.connect(workspace / "asterism.db")

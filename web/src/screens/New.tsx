@@ -33,7 +33,6 @@ export default function New() {
   const [showConstraints, setShowConstraints] = useState(false)
   const [axioms, setAxioms] = useState<string[]>(DEFAULT_AXIOMS)
   const [forbidden, setForbidden] = useState<string[]>([])
-  const [hints, setHints] = useState<string[]>([])
 
   // the papers block only renders when a shelf exists — one silent
   // fetch; failure (older engine, empty workspace) hides it
@@ -119,7 +118,6 @@ export default function New() {
           library: true,
           axioms_whitelist: axioms,
           forbidden_lemmas: forbidden,
-          lemma_hints: hints,
         },
         defs: defs.trim() === '' ? null : defs,
         root: root.trim() === '' ? null : root,
@@ -286,12 +284,6 @@ export default function New() {
             hint="add pattern (e.g. sperner*)"
             values={forbidden}
             onChange={setForbidden}
-          />
-          <ListField
-            label="lemma hints"
-            hint="add Mathlib/Library name"
-            values={hints}
-            onChange={setHints}
           />
           <ListField
             label="axiom whitelist"

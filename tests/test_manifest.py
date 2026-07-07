@@ -45,7 +45,7 @@ free-form text
     assert not hasattr(m, "entry_kind")  # Phase 2: field removed
     assert m.axioms_whitelist == ["propext", "Quot.sound"]
     assert m.forbidden_lemmas == ["ZMod.wilsons_lemma"]
-    assert m.mathlib_hints == ["ZMod.val_natCast", "ZMod.val_neg_one"]
+    assert not hasattr(m, "mathlib_hints")  # retired 2026-07-08
     assert "free-form" in m.strategic_notes
 
 

@@ -907,9 +907,8 @@ def test_papers_bookshelf_flow(workspace: Path) -> None:
 
 def test_create_settings_and_papers_are_authoritative(
         workspace: Path) -> None:
-    """Creation-time settings land in the DB via the chokepoint (the
-    frontmatter lemma_hints line is invisible to parse(), so migration
-    alone would write [] — explicit form input must win) and checked
+    """Creation-time settings land in the DB via the chokepoint —
+    explicit form input must win over lazy migration — and checked
     papers bind with origin='user'."""
     _open_db(workspace).close()
     c = _client(workspace)
@@ -918,12 +917,10 @@ def test_create_settings_and_papers_are_authoritative(
     pid = c.post("/api/papers/add", json={"path": str(src)}).json()["id"]
     r = c.post("/api/problems/create", json={
         "name": "Test.cite", "body": "prove the thing",
-        "settings": {"lemma_hints": ["Mathlib.Foo"],
-                     "forbidden_lemmas": ["bad*"], "library": False},
+        "settings": {"forbidden_lemmas": ["bad*"], "library": False},
         "papers": [pid]})
     assert r.status_code == 200, r.json()
     got = c.get("/api/problems/Test.cite/manifest").json()["settings"]
-    assert got["lemma_hints"] == ["Mathlib.Foo"]
     assert got["forbidden_lemmas"] == ["bad*"]
     assert got["library"] is False
     bound = c.get("/api/problems/Test.cite/papers").json()["papers"]

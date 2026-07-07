@@ -33,14 +33,6 @@ class Manifest:
     statement: str
     axioms_whitelist: list[str] = field(default_factory=list)
     forbidden_lemmas: list[str] = field(default_factory=list)
-    # `lemma_hints` unifies Mathlib + Library hint paths. Entries
-    # like `Mathlib.NumberTheory.ZMod.Basic` and `Library.NumberTheory.
-    # wilson` flow through the same `lemma_lookup` (lake env lean
-    # `#check`). For backward compat the legacy `## Mathlib hints`
-    # section + `mathlib_hints` field are still populated; agents see
-    # both unified into `lemma_hints` (see property below).
-    lemma_hints: list[str] = field(default_factory=list)
-    mathlib_hints: list[str] = field(default_factory=list)
     strategic_notes: str = ""
     # Opt-in: should this Problem's proved decls be Library-ized for
     # cross-problem reuse + mathlib upstreaming (see
@@ -57,19 +49,6 @@ class Manifest:
     # removing.
     paper: str = ""
 
-    @property
-    def all_hints(self) -> list[str]:
-        """Unified hint list. `lemma_hints` first, then any
-        `mathlib_hints` not already in `lemma_hints` (dedup preserves
-        precedence). Callers needing a single agent-facing list use
-        this; the two raw fields stay split for migration tracing."""
-        seen: set[str] = set()
-        out: list[str] = []
-        for h in self.lemma_hints + self.mathlib_hints:
-            if h not in seen:
-                seen.add(h)
-                out.append(h)
-        return out
 
 
 FRAMEWORK_DEFAULT_AXIOMS: tuple[str, ...] = (
@@ -347,11 +326,11 @@ def parse(path: Path) -> Manifest:
     # Manifest files carrying `## Entry kind` are tolerated (section
     # silently ignored) — no warning to avoid noise on legacy files.
 
-    # Read both `## Lemma hints` (canonical) and `## Mathlib hints`
-    # (legacy alias). Either may be present; if both, lemma_hints wins
-    # for the unified `all_hints` view but both raw lists stay tracked.
-    mathlib_hints = _parse_bullet_list(sections.get('Mathlib hints', ''))
-    lemma_hints = _parse_bullet_list(sections.get('Lemma hints', ''))
+    # `## Lemma hints` retired (2026-07-08, owner): presearch covers
+    # mechanical lemma discovery per-goal and the strategist directive
+    # carries curated API steering, so the structured field had no
+    # consumer left. A body section with that title is now plain prose
+    # — the Strategist still reads it as natural language.
     notes = sections.get('Strategic notes', '').strip()
 
     axioms = fm.get('axioms_whitelist') or []
@@ -368,8 +347,6 @@ def parse(path: Path) -> Manifest:
         statement=statement,
         axioms_whitelist=list(axioms),
         forbidden_lemmas=list(forbidden),
-        lemma_hints=lemma_hints,
-        mathlib_hints=mathlib_hints,
         strategic_notes=notes,
         library=_coerce_bool(fm.get('library')),
         paper=str(fm.get('paper') or "").strip(),
@@ -495,7 +472,7 @@ def inject_defs_opens(
 
 #: frontmatter keys the UI owns; anything else round-trips verbatim.
 UI_SETTING_KEYS = (
-    "axioms_whitelist", "forbidden_lemmas", "lemma_hints", "library",
+    "axioms_whitelist", "forbidden_lemmas", "library",
 )
 
 

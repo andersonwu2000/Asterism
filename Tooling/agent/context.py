@@ -295,7 +295,7 @@ def _ago(ts_iso: str | None) -> str:
 def _section_brief_inline(problem_dir: Path) -> list[str]:
     """Inline `Problems/<p>/BRIEF.md` content into Context.md so the
     agent's read surface stays single-file (BRIEF is framework-rendered
-    cross-spawn stable context — sandbox / forbidden / mathlib hints /
+    cross-spawn stable context — sandbox / forbidden /
     library / strategic notes; see `Tooling/brief.py`). Returns [] when
     BRIEF.md is missing (legacy init, mid-reset race) — Context.md
     proceeds without it; safer than crashing dispatch on a missing

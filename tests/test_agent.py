@@ -536,11 +536,7 @@ def test_brief_omits_retired_mathlib_hints(tmp_path: Path) -> None:
     from Tooling.state import brief
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True, exist_ok=True)
-    mfst = Manifest(
-        problem="p", statement="T",
-        mathlib_hints=["Nat.factorial (Data/Nat/Factorial/Basic.lean:50)",
-                       "ZMod.val_natCast"],
-    )
+    mfst = Manifest(problem="p", statement="T")
     out = brief.write(tmp_path, mfst)
     body = out.read_text(encoding="utf-8")
     assert "## Mathlib lemmas" not in body

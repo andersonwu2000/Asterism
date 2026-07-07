@@ -2,7 +2,7 @@
 dissolve, 2026-07-07).
 
 The four UI-owned Manifest settings (`axioms_whitelist`,
-`forbidden_lemmas`, `lemma_hints`, `library`) live in the
+`forbidden_lemmas`, `library`) live in the
 `problem_settings` table; Manifest.md keeps only the human prose
 (Statement / Deliverables / Strategic notes). Every read and write
 goes through this module.
@@ -47,10 +47,10 @@ if TYPE_CHECKING:  # circular-import guard (manifest imports us lazily)
 #: importing across would close the manifest→settings→db→manifest
 #: cycle, so both stay literals).
 SETTING_KEYS: tuple[str, ...] = (
-    "axioms_whitelist", "forbidden_lemmas", "lemma_hints", "library",
+    "axioms_whitelist", "forbidden_lemmas", "library",
 )
 
-_LIST_KEYS = ("axioms_whitelist", "forbidden_lemmas", "lemma_hints")
+_LIST_KEYS = ("axioms_whitelist", "forbidden_lemmas")
 
 
 def _valid(key: str, value: object) -> bool:

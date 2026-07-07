@@ -1,8 +1,8 @@
 """BRIEF.md — auto-rendered problem-level stable context.
 
 Holds the cross-spawn invariants the framework would otherwise re-inject
-into every Context.md: sandbox rules, Manifest hints (with resolved
-Mathlib signatures), forbidden lemmas, strategic notes, Library entries.
+into every Context.md: sandbox rules, forbidden lemmas, strategic
+notes, Library entries.
 
 Re-render triggers:
   * `cli init`         — create initial BRIEF when a Problem is registered.

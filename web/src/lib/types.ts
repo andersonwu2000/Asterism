@@ -344,7 +344,6 @@ export interface ManifestData {
   settings: {
     axioms_whitelist: string[]
     forbidden_lemmas: string[]
-    lemma_hints: string[]
     library: boolean
   }
   pending_amend: boolean

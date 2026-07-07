@@ -287,15 +287,6 @@ export default function ManifestEditor({
             touch()
           }}
         />
-        <ListField
-          label="lemma hints"
-          hint="add Mathlib/Library name"
-          values={settings.lemma_hints}
-          onChange={(v) => {
-            setSettings({ ...settings, lemma_hints: v })
-            touch()
-          }}
-        />
         {/* the axiom gate is FIXED AT CREATION (server enforces 409):
             the gate re-reads it per validation, so a mid-life edit
             would re-tune soundness under live proofs — display only */}

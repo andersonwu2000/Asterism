@@ -59,10 +59,7 @@ def test_render_no_mathlib_hints_section(tmp_path: Path) -> None:
     """`## Lemma hints` was retired (target-1 pre-search replaces it): a
     Manifest with mathlib hints no longer renders a `## Mathlib lemmas`
     section in BRIEF."""
-    mfst = Manifest(
-        problem="p", statement="T",
-        mathlib_hints=["Nat.factorial — n! is positive"],
-    )
+    mfst = Manifest(problem="p", statement="T")
     out = brief.render(tmp_path, mfst)
     assert "## Mathlib lemmas" not in out
     assert "Nat.factorial" not in out
