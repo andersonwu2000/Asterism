@@ -277,7 +277,7 @@ def create_app(workspace: Path) -> FastAPI:
     @app.get("/api/problems/{problem}/goals/{goal_id}")
     def goal(problem: str, goal_id: int) -> dict:
         with _ro(workspace) as conn:
-            d = _data.goal_detail(conn, problem, goal_id)
+            d = _data.goal_detail(conn, problem, goal_id, workspace)
         if d is None:
             raise HTTPException(status_code=404,
                                 detail=f"no goal {goal_id} in {problem!r}")

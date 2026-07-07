@@ -346,8 +346,9 @@ def test_problem_detail_shape(workspace: Path) -> None:
     conn.close()
     proofs = workspace / "Problems" / "p" / "proofs"
     proofs.mkdir(parents=True)
-    (proofs / "main.lean").write_text("theorem main : True := trivial",
-                                      encoding="utf-8")
+    (proofs / "main.lean").write_text(
+        "import Mathlib\n\ntheorem main : True := trivial",
+        encoding="utf-8")
 
     c = _client(workspace)
     d = c.get("/api/problems/p").json()
@@ -362,6 +363,11 @@ def test_problem_detail_shape(workspace: Path) -> None:
 
     g = c.get(f"/api/problems/p/goals/{sub}").json()
     assert g["dead_attempts"][0]["failure_reason"] == "agent_timeout"
+    # declaration source: the proof file minus its import prelude;
+    # missing file → null (statement fallback is the client's)
+    gm = c.get(f"/api/problems/p/goals/{gid}").json()
+    assert gm["proof_text"] == "theorem main : True := trivial"
+    assert g["proof_text"] is None
 
     assert c.get("/api/problems/nope").status_code == 404
     assert c.get("/api/problems/p/goals/99999").status_code == 404
@@ -911,10 +917,14 @@ def test_citation_edges_from_strategy_scratch(workspace: Path) -> None:
     (pdir / "_strategy_s2.lean").write_text(
         patch.replace("L_forward_brick", "L_child_lemma"),
         encoding="utf-8")
-    d = _client(workspace).get("/api/problems/p").json()
-    edges = d["citation_edges"]
+    c = _client(workspace)
+    edges = c.get("/api/problems/p").json()["citation_edges"]
     assert {"from": brick, "to": parent} in edges  # the forward brick links
     assert {"from": child, "to": parent} not in edges  # hierarchy, not cite
+    # the goal's source is the winning route's scratch (the real
+    # proof), not its own delegate file
+    gp = c.get(f"/api/problems/p/goals/{parent}").json()
+    assert gp["proof_text"].startswith("theorem parent_thm")
 
 
 def test_papers_bookshelf_flow(workspace: Path) -> None:

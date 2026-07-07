@@ -6,9 +6,10 @@ import { goalStatusLabel, originLabel, strategyStatusLabel } from '../lib/vocab'
 import { SectionLabel } from './ui'
 import type { DeadAttempt, GoalDetail } from '../lib/types'
 
-/** Right-hand drill-down for a selected goal: statement, lifecycle
- * facts, dead-attempt forensics (failure reason + detail + the agent's
- * postmortem proposal). */
+/** Right-hand drill-down for a selected goal: the declaration source
+ * as written (`name : statement := proof`, import prelude stripped),
+ * routes, and — while the goal is still unproved — dead-attempt
+ * forensics. A proved star's past failures are history, not signal. */
 
 const GOAL_STATUS_CLS: Record<string, string> = {
   proved: 'text-starlight',
@@ -100,72 +101,70 @@ export default function GoalPanel({
               {data.is_deliverable && <span className="text-star">claim</span>}
               {data.detached && <span className="text-ink-faint">detached</span>}
             </div>
-            <SectionLabel>statement</SectionLabel>
-            <pre className="mb-4 font-mono text-xs leading-snug break-words whitespace-pre-wrap text-ink">
-              <Lean code={data.statement} />
+            <SectionLabel>{data.proof_text ? 'source' : 'statement'}</SectionLabel>
+            <pre className="mb-3 max-h-[55vh] overflow-y-auto font-mono text-xs leading-snug break-words whitespace-pre-wrap text-ink">
+              <Lean code={data.proof_text ?? data.statement} />
             </pre>
             <div className="mb-4 text-[11px] break-all text-ink-faint">
-              {onOpenFile && data.lean_path.includes('proofs/') ? (
+              {onOpenFile && (data.source_path ?? data.lean_path).includes('proofs/') ? (
                 <button
                   className="text-left break-all underline decoration-edge-strong hover:text-ink"
                   onClick={() =>
-                    onOpenFile(`proofs/${data.lean_path.split('proofs/').pop()}`)
+                    onOpenFile(
+                      `proofs/${(data.source_path ?? data.lean_path).split('proofs/').pop()}`,
+                    )
                   }
                   title="Open in the Files tab"
                 >
-                  {data.lean_path}
+                  {data.source_path ?? data.lean_path}
                 </button>
               ) : (
-                data.lean_path
-              )}{' '}
-              · created {relTime(data.created_at)}
+                (data.source_path ?? data.lean_path)
+              )}
             </div>
-            {data.strategies.length > 0 && (
+            {data.strategies.filter((s) => s.subgoal_count > 0).length > 0 && (
               <>
-                <SectionLabel>decompositions ({data.strategies.length})</SectionLabel>
+                <SectionLabel>routes</SectionLabel>
                 <div className="mb-4 flex flex-col gap-0.5">
-                  {data.strategies.map((s) => (
-                    <button
-                      key={s.id}
-                      className="flex items-baseline justify-between rounded px-2 py-1 text-left hover:bg-surface-2 disabled:cursor-default"
-                      disabled={!onSelectStrategy}
-                      onClick={() => onSelectStrategy?.(s.id)}
-                    >
-                      <span className="font-mono text-xs text-ink">
-                        s{s.id}
-                        <span className="ml-2 text-ink-faint">
+                  {data.strategies
+                    .filter((s) => s.subgoal_count > 0)
+                    .map((s) => (
+                      <button
+                        key={s.id}
+                        className="flex items-baseline justify-between rounded px-2 py-1 text-left hover:bg-surface-2 disabled:cursor-default"
+                        disabled={!onSelectStrategy}
+                        onClick={() => onSelectStrategy?.(s.id)}
+                      >
+                        <span className="font-mono text-xs text-ink">
                           {s.subgoal_count} subgoal{s.subgoal_count === 1 ? '' : 's'}
                         </span>
-                      </span>
-                      <span
-                        className={`text-[11px] ${
-                          s.status === 'succeeded'
-                            ? 'text-starlight'
-                            : s.status === 'proposed'
-                              ? 'text-accent'
-                              : s.status === 'dead'
-                                ? 'text-danger'
-                                : 'text-ink-faint'
-                        }`}
-                      >
-                        {strategyStatusLabel(s.status)}
-                      </span>
-                    </button>
-                  ))}
+                        <span
+                          className={`text-[11px] ${
+                            s.status === 'succeeded'
+                              ? 'text-starlight'
+                              : s.status === 'proposed'
+                                ? 'text-accent'
+                                : s.status === 'dead'
+                                  ? 'text-danger'
+                                  : 'text-ink-faint'
+                          }`}
+                        >
+                          {strategyStatusLabel(s.status)}
+                        </span>
+                      </button>
+                    ))}
                 </div>
               </>
             )}
-            <SectionLabel>
-              failed attempts {data.dead_attempts.length > 0 && `(${data.dead_attempts.length})`}
-            </SectionLabel>
-            {data.dead_attempts.length === 0 ? (
-              <div className="text-xs text-ink-faint">None.</div>
-            ) : (
-              <div className="flex flex-col gap-1.5">
-                {data.dead_attempts.map((a) => (
-                  <Attempt key={a.id} a={a} />
-                ))}
-              </div>
+            {data.status !== 'proved' && data.dead_attempts.length > 0 && (
+              <>
+                <SectionLabel>failed attempts ({data.dead_attempts.length})</SectionLabel>
+                <div className="flex flex-col gap-1.5">
+                  {data.dead_attempts.map((a) => (
+                    <Attempt key={a.id} a={a} />
+                  ))}
+                </div>
+              </>
             )}
           </>
         )}

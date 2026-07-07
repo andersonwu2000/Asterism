@@ -571,14 +571,45 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
 
 
 def goal_detail(conn: sqlite3.Connection, problem: str,
-                goal_id: int) -> dict | None:
+                goal_id: int,
+                workspace: "Path | None" = None) -> dict | None:
     """Goal drill-down: full row + dead-attempt forensics (most recent
-    first, capped)."""
+    first, capped). With `workspace`, also the declaration source —
+    the proof file minus its import prelude (a node IS its Lean text;
+    the panel shows `name : statement := proof` as written)."""
     g = conn.execute(
         "SELECT * FROM goals WHERE id = ? AND problem = ?",
         (goal_id, problem)).fetchone()
     if g is None:
         return None
+    proof_text = None
+    src = g["lean_path"]
+    if workspace is not None:
+        # the winning route's scratch patch is the real proof — the
+        # goal's own file is often a two-line delegate
+        # (`def main := @...sNNN`); readers came for the tactics
+        win = conn.execute(
+            "SELECT scratch_path FROM strategies WHERE goal_id = ?"
+            " AND status = 'succeeded' AND scratch_path != ''"
+            " ORDER BY id DESC LIMIT 1", (goal_id,)).fetchone()
+        if win is not None:
+            src = win["scratch_path"]
+        try:
+            text = (workspace / str(src)).read_text(
+                encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        # drop import lines wherever they sit (a header comment may
+        # precede them and is worth keeping — it is the agent's own
+        # narration); collapse the blank run they leave behind
+        kept = [ln for ln in text.splitlines()
+                if not ln.startswith("import ")]
+        out_lines: list[str] = []
+        for ln in kept:
+            if not ln.strip() and out_lines and not out_lines[-1].strip():
+                continue
+            out_lines.append(ln)
+        proof_text = "\n".join(out_lines).strip()[:40000] or None
     dead = []
     for r in conn.execute(
             "SELECT id, pipeline_id, failure_reason, failure_detail,"
@@ -617,6 +648,11 @@ def goal_detail(conn: sqlite3.Connection, problem: str,
         "alias_target_id": g["alias_target_id"],
         "is_deliverable": bool(g["is_deliverable"]),
         "created_at": str(g["created_at"]),
+        "proof_text": proof_text,
+        # the file the source above was actually read from (the scratch
+        # when a winning route exists) — the panel's path label must
+        # name what it shows
+        "source_path": str(src),
         "dead_attempts": dead,
         "strategies": strategies,
     }

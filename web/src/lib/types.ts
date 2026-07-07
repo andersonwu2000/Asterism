@@ -118,6 +118,10 @@ export interface DeadAttempt {
 }
 
 export interface GoalDetail extends Omit<Goal, 'dead_attempts'> {
+  /** declaration source — the proof file minus its import prelude */
+  proof_text: string | null
+  /** the file proof_text was read from (winning route's scratch when present) */
+  source_path: string
   dead_attempts: DeadAttempt[]
   strategies: {
     id: number
