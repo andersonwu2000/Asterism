@@ -124,6 +124,17 @@ class DaemonStopBody(BaseModel):
     force: bool = False
 
 
+def _creds_path() -> Path:
+    """Claude Code's local session file. Module-level so tests can
+    monkeypatch it — a test must never touch the REAL login."""
+    return Path.home() / ".claude" / ".credentials.json"
+
+
+def datetime_now_compact() -> str:
+    from datetime import datetime
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
 def create_app(workspace: Path) -> FastAPI:
     workspace = workspace.resolve()
     app = FastAPI(title="Asterism", docs_url=None, redoc_url=None)
@@ -166,11 +177,40 @@ def create_app(workspace: Path) -> FastAPI:
         itself belongs to Claude Code (its OAuth client, its
         credentials file) — the UI only needs to KNOW the state and
         open the official wizard. Cheap checks, polled with meta."""
+        import json as _json
         import shutil
         installed = shutil.which("claude") is not None
-        logged_in = (Path.home() / ".claude"
-                     / ".credentials.json").exists()
-        return {"installed": installed, "logged_in": logged_in}
+        creds = _creds_path()
+        logged_in = creds.exists()
+        subscription = None
+        if logged_in:
+            try:
+                subscription = _json.loads(
+                    creds.read_text(encoding="utf-8"))[
+                    "claudeAiOauth"].get("subscriptionType")
+            except Exception:  # noqa: BLE001 — display garnish only
+                pass
+        return {"installed": installed, "logged_in": logged_in,
+                "subscription": subscription}
+
+    @app.post("/api/claude/logout")
+    def claude_logout() -> dict:
+        """Log out locally: the credentials file IS the local session,
+        so logging out = retiring it (a timestamped backup, never a
+        delete — reversible by hand). Claude Code asks for a fresh
+        login on its next start; running agents keep the session they
+        already hold, NEW agent spawns use whatever is logged in next.
+        This is the owner's mid-run account switch (quota reset)."""
+        creds = _creds_path()
+        if not creds.exists():
+            return {"logged_out": False, "detail": "already logged out"}
+        stamp = datetime_now_compact()
+        creds.rename(creds.with_name(f".credentials.json.bak-{stamp}"))
+        # the quota memo still holds the OLD account's meters for up
+        # to 2 minutes — flush so the switch is visible immediately
+        from .run import reset_quota_memo
+        reset_quota_memo()
+        return {"logged_out": True}
 
     @app.post("/api/claude/login")
     def claude_login() -> dict:

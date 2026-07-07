@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { weightedBurn } from '../lib/burn'
+import { switchAccount } from '../lib/claudeAuth'
 import { compactNumber, duration, relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { Link } from '../lib/router'
@@ -166,6 +167,18 @@ export default function Run() {
 
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
+  const [switching, setSwitching] = useState(false)
+  const [switchMsg, setSwitchMsg] = useState<string | null>(null)
+  const doSwitch = async () => {
+    setSwitching(true)
+    try {
+      setSwitchMsg(await switchAccount())
+    } catch (e) {
+      setSwitchMsg(String((e as Error).message))
+    } finally {
+      setSwitching(false)
+    }
+  }
   const [confirmForce, setConfirmForce] = useState(false)
   const forceTimer = useRef<number | null>(null)
   useEffect(
@@ -395,12 +408,23 @@ export default function Run() {
 
       {data.quota && (
         <section className="mt-7">
-          <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
+          <div className="mb-3 flex items-baseline text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
             plan windows
             <span className="ml-2 font-normal tracking-normal normal-case text-ink-faint/80">
               your subscription's own meters
             </span>
+            {/* the quota-reset move lives WHERE you watch the quota:
+                switch accounts without leaving the console (owner) */}
+            <button
+              className="ml-auto cursor-pointer font-normal tracking-normal normal-case underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink disabled:opacity-50"
+              disabled={switching}
+              onClick={() => void doSwitch()}
+              title="log this account out and open the login window for another — running agents keep their session; new work uses the new account"
+            >
+              switch account
+            </button>
           </div>
+          {switchMsg && <div className="mb-2 text-[11px] text-ink-faint">{switchMsg}</div>}
           <div className="flex max-w-xl flex-col gap-2">
             {(
               [

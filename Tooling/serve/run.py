@@ -68,6 +68,12 @@ _quota_memo: "dict[str, object]" = {
     "at": 0.0, "value": None, "ttl": 0.0, "last_good": None}
 
 
+def reset_quota_memo() -> None:
+    """Flush the meters (account switch: the old account's numbers
+    must not linger for the memo's lifetime)."""
+    _quota_memo.update(at=0.0, value=None, ttl=0.0, last_good=None)
+
+
 def _fetch_oauth_usage() -> "dict | None":
     """One raw call. Separated for tests (monkeypatch me)."""
     creds_path = Path.home() / ".claude" / ".credentials.json"

@@ -76,7 +76,7 @@ def test_meta_fresh_workspace_no_db(workspace: Path) -> None:
     assert body["daemon"]["running"] is False
     # auth awareness rides meta (the login itself is Claude Code's own
     # first-run flow — the UI only knows the state and opens it)
-    assert set(body["claude"]) == {"installed", "logged_in"}
+    assert set(body["claude"]) == {"installed", "logged_in", "subscription"}
 
 
 def test_claude_login_needs_the_cli(workspace: Path, monkeypatch) -> None:
@@ -85,6 +85,31 @@ def test_claude_login_needs_the_cli(workspace: Path, monkeypatch) -> None:
     r = _client(workspace).post("/api/claude/login")
     assert r.status_code == 409
     assert "installer" in r.json()["detail"]
+
+
+def test_claude_logout_retires_the_session_file(
+        workspace: Path, monkeypatch, tmp_path: Path) -> None:
+    """Logout = renaming the local session file to a timestamped
+    backup (reversible, never a delete). MUST run against a fake
+    home — a test may never touch the real login."""
+    import Tooling.serve.app as _app
+    fake = tmp_path / "fakehome" / ".claude" / ".credentials.json"
+    fake.parent.mkdir(parents=True)
+    fake.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "x", "subscriptionType": "max"}}), encoding="utf-8")
+    monkeypatch.setattr(_app, "_creds_path", lambda: fake)
+    c = _client(workspace)
+    st = c.get("/api/meta").json()["claude"]
+    assert st["logged_in"] is True
+    assert st["subscription"] == "max"
+    r = c.post("/api/claude/logout")
+    assert r.json()["logged_out"] is True
+    assert not fake.exists()
+    backups = list(fake.parent.glob(".credentials.json.bak-*"))
+    assert len(backups) == 1
+    assert c.get("/api/meta").json()["claude"]["logged_in"] is False
+    # idempotent: a second logout reports, never errors
+    assert c.post("/api/claude/logout").json()["logged_out"] is False
 
 
 def test_meta_never_creates_the_db(workspace: Path) -> None:
@@ -1214,3 +1239,110 @@ def test_config_get_and_set(workspace: Path) -> None:
         "key": "dispatch.pool", "value": 999}).status_code == 422
     assert c.post("/api/config", json={
         "key": "gateway.port", "value": 1}).status_code == 422
+
+
+# ---------------------------------------------------------------------
+# POST /api/lean/eval — the reader's Lean scratch pipeline
+# ---------------------------------------------------------------------
+
+def test_lean_eval_assemble_and_map() -> None:
+    """Pure core: parts concatenate after the import preamble, and
+    global diagnostic lines map back to part-local lines."""
+    from Tooling.serve import lean_eval as le
+    text, n_pre, spans = le._assemble(
+        [("defs", "def a := 1\ndef b := 2"), ("root", "#check a")],
+        imports=[])
+    assert text.startswith("import Mathlib\n")          # auto-preamble
+    assert n_pre == 1
+    assert spans == [("defs", 2, 3), ("root", 4, 4)]
+    mapped = le._map_diags(
+        [{"line": 1, "col": 0, "severity": "error", "message": "bad import"},
+         {"line": 3, "col": 4, "severity": "error", "message": "oops"},
+         {"line": 4, "col": 0, "severity": "information", "message": "a : Nat"}],
+        n_pre, spans)
+    assert mapped["_preamble"][0]["message"] == "bad import"
+    assert mapped["defs"] == [{"line": 2, "col": 4, "severity": "error",
+                               "message": "oops"}]
+    assert mapped["root"][0]["severity"] == "information"
+
+
+def test_lean_eval_assemble_respects_own_imports() -> None:
+    """A first part carrying its own import header suppresses the
+    Mathlib auto-preamble; explicit imports win over both."""
+    from Tooling.serve import lean_eval as le
+    text, n_pre, _ = le._assemble([("defs", "import Mathlib\ndef a := 1")],
+                                  imports=[])
+    assert n_pre == 0 and text.startswith("import Mathlib\n")
+    text, n_pre, _ = le._assemble([("probe", "#print axioms Foo.bar")],
+                                  imports=["Library.X.Y"])
+    assert n_pre == 1 and text.startswith("import Library.X.Y\n")
+
+
+def test_lean_eval_warming_and_validation(workspace: Path,
+                                          monkeypatch) -> None:
+    """Gateway not ready → {"status": "warming"} and ONE warm-up kick;
+    empty payload → 400; oversized → 413. No toolchain spawn."""
+    from Tooling.lsp import lifecycle as gw
+    from Tooling.serve import lean_eval as le
+    monkeypatch.setattr(gw, "gateway_phase", lambda ws: None)
+    kicks: list[Path] = []
+    monkeypatch.setattr(gw, "start_gateway", lambda ws: kicks.append(ws))
+    client = _client(workspace)
+    r = client.post("/api/lean/eval",
+                    json={"parts": [{"id": "p", "code": "#check 1"}]})
+    assert r.status_code == 200 and r.json()["status"] == "warming"
+    assert client.post("/api/lean/eval",
+                       json={"parts": [{"id": "p", "code": "  "}]}
+                       ).status_code == 400
+    assert client.post(
+        "/api/lean/eval",
+        json={"parts": [{"id": "p", "code": "x" * (le._MAX_CODE + 1)}]}
+    ).status_code == 413
+
+
+def test_lean_eval_ready_path_stages_and_maps(workspace: Path,
+                                              monkeypatch) -> None:
+    """Ready gateway → staged file written under .asterism/eval, passed
+    to verify_file with write_olean=False, diagnostics mapped per part,
+    staged file unlinked."""
+    from Tooling.lsp import lifecycle as gw
+    monkeypatch.setattr(gw, "gateway_phase", lambda ws: "ready")
+    seen: dict = {}
+
+    def fake_verify(path, **kw):
+        seen["text"] = Path(path).read_text(encoding="utf-8")
+        seen["path"] = Path(path)
+        seen["kw"] = kw
+        return {"ok": False, "diagnostics": [
+            {"line": 2, "col": 1, "severity": "error", "message": "boom"}]}
+
+    monkeypatch.setattr(gw, "verify_file", fake_verify)
+    client = _client(workspace)
+    r = client.post("/api/lean/eval",
+                    json={"parts": [{"id": "probe", "code": "#check 1"}]})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["status"] == "ok" and d["ok"] is False
+    assert d["parts"]["probe"] == [
+        {"line": 1, "col": 1, "severity": "error", "message": "boom"}]
+    assert seen["kw"]["write_olean"] is False
+    assert seen["text"] == "import Mathlib\n#check 1\n"
+    assert ".asterism" in str(seen["path"]) and not seen["path"].exists()
+
+
+def test_lean_eval_assemble_hoists_later_part_imports() -> None:
+    """Root-style later parts: `Problems.*` imports are blanked in place
+    (content is inlined above), duplicates dedup against the first
+    part's own header, and line counts never shift."""
+    from Tooling.serve import lean_eval as le
+    defs = "import Mathlib\n\nnamespace P\ndef a := 1\nend P"
+    root = ("import Mathlib\nimport Problems.X.Defs\n\n"
+            "namespace P\ntheorem main : True := trivial\nend P")
+    text, n_pre, spans = le._assemble([("defs", defs), ("root", root)],
+                                      imports=[])
+    assert n_pre == 0                     # defs opens with its own header
+    assert "import Problems.X.Defs" not in text
+    assert text.count("import Mathlib") == 1
+    lines = text.splitlines()
+    assert lines[spans[1][1] - 1] == "" and lines[spans[1][1]] == ""
+    assert spans[1][2] - spans[1][1] + 1 == len(root.splitlines())
