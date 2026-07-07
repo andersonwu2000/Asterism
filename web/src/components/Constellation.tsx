@@ -713,6 +713,14 @@ export default function Constellation({
               />
             )
           }
+          // The same ink law citations obey: a long haul is context,
+          // not content. Hierarchy gets a GENTLER curve than citations
+          // (480 vs 320): wide trees legitimately span 3–4 slots, and
+          // fading those washed out the structural skeleton itself
+          // (green_theorem went ghostly) — only true cross-sky rays
+          // recede (stokes' hub fan, jordan's chain fan).
+          const span = Math.hypot(b.x - a.x, b.y - a.y) || 1
+          const lineFade = Math.min(1, Math.max(0.4, 480 / span))
           return (
             <line
               key={i}
@@ -724,7 +732,7 @@ export default function Constellation({
               stroke={edgeStroke(e.strategyStatus, e.kind)}
               strokeWidth={e.strategyStatus === 'succeeded' ? 1.2 : 1}
               strokeOpacity={
-                dead
+                (dead
                   ? 0.18
                   : e.kind === 'alias'
                     ? 0.5
@@ -732,7 +740,7 @@ export default function Constellation({
                       ? 0.3
                       : e.strategyStatus === 'succeeded'
                         ? 0.38
-                        : 0.55
+                        : 0.55) * lineFade
               }
               strokeDasharray={e.kind === 'alias' ? '4 4' : undefined}
               vectorEffect="non-scaling-stroke"
@@ -756,6 +764,12 @@ export default function Constellation({
           const dead = isDead(b.status)
           const stroke = edgeStroke(b.status, 'strategy')
           const opacity = dead ? 0.18 : b.status === 'succeeded' ? 0.38 : 0.55
+          // the ink law applies to hyperedge limbs too: a branch whose
+          // child lives under a DIFFERENT primary parent can span half
+          // the sky (jordan's chain fan was all bundle branches);
+          // hierarchy curve (480) — see the edge layer
+          const fade = (ax: number, ay: number, bx: number, by: number) =>
+            Math.min(1, Math.max(0.4, 480 / (Math.hypot(bx - ax, by - ay) || 1)))
           return (
             <g key={`s${b.strategyId}`}>
               <line
@@ -772,7 +786,9 @@ export default function Constellation({
                 y2={b.junction.y}
                 stroke={stroke}
                 strokeWidth={b.status === 'succeeded' ? 2 : 1.6}
-                strokeOpacity={opacity}
+                strokeOpacity={
+                  opacity * fade(parent.x, parent.y, b.junction.x, b.junction.y)
+                }
                 vectorEffect="non-scaling-stroke"
               />
               {b.children.map((cid) => {
@@ -794,7 +810,9 @@ export default function Constellation({
                     y2={c.y}
                     stroke={stroke}
                     strokeWidth={b.status === 'succeeded' ? 1.4 : 1}
-                    strokeOpacity={opacity}
+                    strokeOpacity={
+                      opacity * fade(b.junction.x, b.junction.y, c.x, c.y)
+                    }
                     vectorEffect="non-scaling-stroke"
                   />
                 )
