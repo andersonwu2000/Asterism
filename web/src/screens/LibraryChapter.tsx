@@ -221,51 +221,106 @@ function ModuleMap({
   onOpen: (path: string) => void
 }) {
   const layout = useMemo(() => {
-    const depth = new Map<string, number>()
+    // Layered drawing done properly (the naive version — alphabetical
+    // order, uniform spread — ignored the edges entirely and BT read
+    // as spaghetti): longest-path layering, then barycenter sweeps to
+    // untangle crossings, then x relaxes toward the mean of each
+    // node's neighbours with per-layer collision resolution.
     const byPath = new Map(files.map((f) => [f.path, f]))
+    const parentsOf = new Map<string, string[]>()
+    const childrenOf = new Map<string, string[]>()
+    for (const f of files) {
+      parentsOf.set(f.path, f.imports_within.filter((p) => byPath.has(p)))
+      for (const imp of f.imports_within) {
+        if (!byPath.has(imp)) continue
+        childrenOf.set(imp, [...(childrenOf.get(imp) ?? []), f.path])
+      }
+    }
+    const depth = new Map<string, number>()
     const layerOf = (path: string, guard: number): number => {
       const memo = depth.get(path)
       if (memo !== undefined) return memo
       if (guard > files.length + 1) return 0
-      const f = byPath.get(path)
-      const d =
-        !f || f.imports_within.length === 0
-          ? 0
-          : Math.max(...f.imports_within.map((i) => layerOf(i, guard + 1))) + 1
+      const ps = parentsOf.get(path) ?? []
+      const d = ps.length === 0 ? 0 : Math.max(...ps.map((i) => layerOf(i, guard + 1))) + 1
       depth.set(path, d)
       return d
     }
     for (const f of files) layerOf(f.path, 0)
-    const layers = new Map<number, string[]>()
+    const layers: string[][] = []
     for (const f of files) {
       const l = depth.get(f.path) ?? 0
-      layers.set(l, [...(layers.get(l) ?? []), f.path])
+      ;(layers[l] ??= []).push(f.path)
     }
-    // wide layers wrap (max 6 per visual row) — the map must fit the
-    // page, not scroll off it
-    const XG = 150
-    const YG = 105
-    const PER_ROW = 6
-    const rows: string[][] = []
-    for (const l of [...layers.keys()].sort((a, b) => a - b)) {
-      const paths = layers.get(l)!
-      paths.sort()
-      for (let i = 0; i < paths.length; i += PER_ROW) {
-        rows.push(paths.slice(i, i + PER_ROW))
+    for (const l of layers) l.sort()
+
+    const orderIdx = new Map<string, number>()
+    const reindex = () => layers.forEach((l) => l.forEach((p, i) => orderIdx.set(p, i)))
+    reindex()
+    const bary = (p: string, nbrs: string[]): number => {
+      const xs = nbrs
+        .map((n) => orderIdx.get(n))
+        .filter((v): v is number => v !== undefined)
+      return xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : orderIdx.get(p)!
+    }
+    for (let it = 0; it < 4; it++) {
+      for (let l = 1; l < layers.length; l++) {
+        layers[l].sort(
+          (a, b) =>
+            bary(a, parentsOf.get(a) ?? []) - bary(b, parentsOf.get(b) ?? []) ||
+            a.localeCompare(b),
+        )
+        reindex()
+      }
+      for (let l = layers.length - 2; l >= 0; l--) {
+        layers[l].sort(
+          (a, b) =>
+            bary(a, childrenOf.get(a) ?? []) - bary(b, childrenOf.get(b) ?? []) ||
+            a.localeCompare(b),
+        )
+        reindex()
       }
     }
-    const maxRow = Math.max(...rows.map((r) => r.length))
-    const width = Math.max(maxRow * XG + 60, 480)
+
+    // continuous x: pull toward neighbour mean, keep ≥1 slot apart
+    const x = new Map<string, number>()
+    layers.forEach((l) => l.forEach((p, i) => x.set(p, i - (l.length - 1) / 2)))
+    for (let it = 0; it < 12; it++) {
+      for (const f of files) {
+        const nbrs = [...(parentsOf.get(f.path) ?? []), ...(childrenOf.get(f.path) ?? [])]
+        if (nbrs.length === 0) continue
+        const m = nbrs.reduce((a, n) => a + (x.get(n) ?? 0), 0) / nbrs.length
+        x.set(f.path, (x.get(f.path)! + m) / 2)
+      }
+      for (const l of layers) {
+        l.sort((a, b) => x.get(a)! - x.get(b)!)
+        for (let i = 1; i < l.length; i++) {
+          x.set(l[i], Math.max(x.get(l[i])!, x.get(l[i - 1])! + 1))
+        }
+      }
+    }
+
+    const xs = [...x.values()]
+    const minX = Math.min(...xs)
+    const spread = Math.max(Math.max(...xs) - minX, 1)
+    // fit the page when possible; wide skies shrink toward 95px slots
+    const XG = Math.max(95, Math.min(155, 880 / spread))
+    const YG = 108
+    const width = spread * XG + 170
     const pos = new Map<string, { x: number; y: number }>()
-    rows.forEach((row, ri) => {
-      row.forEach((p, i) => {
-        pos.set(p, {
-          x: width / 2 + (i - (row.length - 1) / 2) * XG,
-          y: 55 + ri * YG,
-        })
+    // dense rows stagger their labels by parity so names never merge
+    const stagger = new Map<string, number>()
+    for (const l of layers) {
+      l.sort((a, b) => x.get(a)! - x.get(b)!)
+      l.forEach((p, i) => stagger.set(p, l.length > 4 ? i % 2 : 0))
+    }
+    for (const f of files) {
+      pos.set(f.path, {
+        x: 85 + (x.get(f.path)! - minX) * XG,
+        y: 55 + (depth.get(f.path) ?? 0) * YG,
       })
-    })
-    return { pos, width, height: 60 + rows.length * YG }
+    }
+    return { pos, width, height: 70 + layers.length * YG, XG, stagger }
   }, [files])
 
   const [hover, setHover] = useState<string | null>(null)
@@ -273,11 +328,33 @@ function ModuleMap({
     <div className="overflow-x-auto">
       <svg width={layout.width} height={layout.height} className="mx-auto block">
         {files.flatMap((f) =>
-          f.imports_within.map((imp) => {
+          f.imports_within.map((imp, ei) => {
             const a = layout.pos.get(imp)
             const b = layout.pos.get(f.path)
             if (!a || !b) return null
             const lit = hover === f.path || hover === imp
+            const opacity = hover === null ? 0.3 : lit ? 0.65 : 0.08
+            const span = Math.abs(b.y - a.y)
+            // an edge that skips layers bows around the rows between,
+            // instead of drawing through their stars
+            if (span > 130) {
+              const dx = b.x - a.x
+              const dy = b.y - a.y
+              const len = Math.hypot(dx, dy) || 1
+              const bow = Math.min(60, span * 0.16) * (ei % 2 === 0 ? 1 : -1)
+              const mx = (a.x + b.x) / 2 + (-dy / len) * bow
+              const my = (a.y + b.y) / 2 + (dx / len) * bow
+              return (
+                <path
+                  key={`${f.path}<${imp}`}
+                  d={`M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`}
+                  fill="none"
+                  stroke="var(--color-starlight)"
+                  strokeWidth={1}
+                  strokeOpacity={opacity}
+                />
+              )
+            }
             return (
               <line
                 key={`${f.path}<${imp}`}
@@ -287,7 +364,7 @@ function ModuleMap({
                 y2={b.y}
                 stroke="var(--color-starlight)"
                 strokeWidth={1}
-                strokeOpacity={hover === null ? 0.3 : lit ? 0.65 : 0.08}
+                strokeOpacity={opacity}
               />
             )
           }),
@@ -297,6 +374,7 @@ function ModuleMap({
           if (!p) return null
           const r = 5 + Math.sqrt(f.decls.length) * 1.6
           const mains = f.decls.filter((d) => d.is_deliverable).length
+          const drop = (layout.stagger.get(f.path) ?? 0) * 15
           return (
             <g
               key={f.path}
@@ -324,17 +402,23 @@ function ModuleMap({
               )}
               <title>{`${moduleOf(f.path)} — ${f.decls.length} declarations${mains > 0 ? `, ${mains} main` : ''}`}</title>
               <text
-                y={r + 16}
+                y={r + 16 + drop}
                 textAnchor="middle"
                 className="pointer-events-none select-none"
                 fill={hover === f.path ? 'var(--color-ink)' : 'var(--color-ink-dim)'}
                 fontSize={11}
                 fontFamily="var(--font-mono)"
               >
-                {leafOf(f.path)}
+                {(() => {
+                  const s = leafOf(f.path)
+                  const cap = Math.max(12, Math.floor((layout.XG * 1.9) / 6.6))
+                  return s.length > cap
+                    ? `${s.slice(0, Math.floor(cap / 2) - 1)}…${s.slice(-(Math.floor(cap / 2) - 1))}`
+                    : s
+                })()}
               </text>
               <text
-                y={r + 30}
+                y={r + 29 + drop}
                 textAnchor="middle"
                 className="tnum pointer-events-none select-none"
                 fill="var(--color-ink-faint)"
