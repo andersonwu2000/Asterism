@@ -314,17 +314,37 @@ export function layoutConstellation(
         items.push({ kind: 'branch', k, w: 1, d: 1, ord: ordIdx.get(k) ?? 0 })
       }
     }
-    // Shelve depth-descending (FFDH — a shelf costs the height of its
-    // deepest member, so mixed depths waste rows); ties keep the
-    // sibling order (id on pass 1, partner barycenter on pass 2).
-    // On a SINGLE shelf the order is free space-wise, so it obeys the
-    // LEAN instead: a subtree on its parent's left flank packs its
-    // deep spine rightmost (and vice versa), so fork branches run
-    // inward — the owner's circled near-horizontal pair was two
-    // branches crossing 800px to reach spines hugging the OUTER flanks.
+    // Shelve depth-descending when WRAPPING (FFDH — a shelf costs the
+    // height of its deepest member). On a SINGLE shelf the order is
+    // free space-wise, so it serves geometry instead: the deepest
+    // subtree (the spine the parent will follow) sits at the lean end,
+    // partner-LESS subtrees pack beside it (their only placement cost
+    // is the parent edge — the halfspace chain sat 1800px out for
+    // nothing), and partnered subtrees keep their barycenter order.
     const totalW = items.reduce((a, it) => a + it.w, 0)
-    const ascend = lean === 1 && totalW <= SHELF_CAP
-    items.sort((a, b) => (ascend ? a.d - b.d : b.d - a.d) || a.ord - b.ord)
+    if (totalW > SHELF_CAP) {
+      items.sort((a, b) => b.d - a.d || a.ord - b.ord)
+    } else if (lean === 0) {
+      items.sort((a, b) => b.d - a.d || a.ord - b.ord)
+    } else {
+      let spine = items[0]
+      for (const it of items) if (it.d > spine.d) spine = it
+      const tier = (it: (typeof items)[number]): number => {
+        if (it === spine) return 2
+        const anchored =
+          it.k !== undefined
+            ? hasPartnerDeep(it.k, 0)
+            : (it.leaves ?? []).some((l) => partner.has(l))
+        return anchored ? 0 : 1
+      }
+      items.sort((a, b) => {
+        const ta = tier(a)
+        const tb = tier(b)
+        if (ta !== tb) return lean === 1 ? ta - tb : tb - ta
+        if (ta === 1) return lean === 1 ? a.d - b.d : b.d - a.d
+        return a.ord - b.ord
+      })
+    }
     const shelves: Item[][] = []
     let cur: Item[] = []
     let curW = 0
@@ -343,11 +363,13 @@ export function layoutConstellation(
     let maxEnd = slot
     let yOff = 0
     const myLayer = layer.get(id) ?? 0
+    const wrapped: { members: number[]; left: number; right: number }[] = []
     for (const shelf of shelves) {
       slot = start0
       let shelfDepth = 1
       const shelfW = shelf.reduce((a, it) => a + it.w, 0)
       let off = 0
+      const mStart = members.length
       for (const it of shelf) {
         if (it.kind === 'leaves' && it.leaves) {
           const perRow = it.w
@@ -373,6 +395,9 @@ export function layoutConstellation(
         }
         off += it.w
         shelfDepth = Math.max(shelfDepth, it.d)
+      }
+      if (yOff > 0) {
+        wrapped.push({ members: members.slice(mStart), left: start0, right: slot })
       }
       maxEnd = Math.max(maxEnd, slot)
       yOff += shelfDepth
@@ -410,6 +435,26 @@ export function layoutConstellation(
       }
       xSlot.set(id, lo <= hi ? (lo + hi) / 2 : (start0 + maxEnd - 1) / 2)
     }
+    // Wrapped shelves re-anchor under the PARENT: they start at the
+    // subtree's left edge while the parent rides its spine — the
+    // halfspace chain sat 1800px from its only parent because its
+    // shelf stayed at start0. Rigid shift, clamped inside the span
+    // (the span is reserved for this subtree, so no tree-level
+    // collisions; the row pass guards the rest).
+    {
+      const px = xSlot.get(id)!
+      for (const sh of wrapped) {
+        const centre = (sh.left + sh.right - 1) / 2
+        let dx = px - centre
+        dx = Math.max(start0 - sh.left, Math.min(dx, maxEnd - sh.right))
+        if (dx !== 0) {
+          for (const m of sh.members) {
+            const x = xSlot.get(m)
+            if (x !== undefined) xSlot.set(m, x + dx)
+          }
+        }
+      }
+    }
     // Loose leaves hug the parent (owner: needless spans). The shelf
     // packed them at its cursor — a whole subtree away from where the
     // parent just landed (spine/inner-branch following). Re-seat them
@@ -427,6 +472,36 @@ export function layoutConstellation(
         xSlot.set(k, px + side * step)
       })
     }
+  }
+  // Cross-link partners (citations, aliases, secondary parents) —
+  // needed during assign() too: a subtree with NO partners has exactly
+  // one placement cost, its parent edge, so it belongs beside the
+  // spine the parent will follow.
+  const partner = new Map<number, number[]>()
+  const addPartner = (a: number, b: number) => {
+    partner.set(a, [...(partner.get(a) ?? []), b])
+    partner.set(b, [...(partner.get(b) ?? []), a])
+  }
+  for (const e of edges) {
+    if (e.kind === 'citation' || e.kind === 'alias') addPartner(e.from, e.to)
+    else if (primaryParent.get(e.to) !== e.from) addPartner(e.from, e.to)
+  }
+  const subtreeHasPartner = new Map<number, boolean>()
+  const hasPartnerDeep = (id: number, guard: number): boolean => {
+    const memo = subtreeHasPartner.get(id)
+    if (memo !== undefined) return memo
+    if (guard > goals.length + 1) return false
+    let v = partner.has(id)
+    if (!v) {
+      for (const c of treeKids.get(id) ?? []) {
+        if (hasPartnerDeep(c, guard + 1)) {
+          v = true
+          break
+        }
+      }
+    }
+    subtreeHasPartner.set(id, v)
+    return v
   }
   for (const r of treeRoots) measure(r, 0)
   const baseLayer = new Map(layer) // assign() adds shelf shifts — snapshot for pass 2
@@ -456,15 +531,6 @@ export function layoutConstellation(
   // each subtree's partners and lay the forest out again — threads pull
   // toward their far ends. Partner-less subtrees rank by their own
   // pass-1 centre, so they keep their relative order. Deterministic.
-  const partner = new Map<number, number[]>()
-  const addPartner = (a: number, b: number) => {
-    partner.set(a, [...(partner.get(a) ?? []), b])
-    partner.set(b, [...(partner.get(b) ?? []), a])
-  }
-  for (const e of edges) {
-    if (e.kind === 'citation' || e.kind === 'alias') addPartner(e.from, e.to)
-    else if (primaryParent.get(e.to) !== e.from) addPartner(e.from, e.to)
-  }
   if (partner.size > 0) {
     const collect = (id: number, acc: number[], guard: number): void => {
       if (guard > goals.length + 1) return
@@ -529,9 +595,27 @@ export function layoutConstellation(
     })
     slot += 0.6
   }
-  const mainSingles = singletonIds.filter(mainish)
+  // Universal hubs leave the beds: a singleton cited by a large share
+  // of the sky (stokes' smul_form: 110 threads) locked inside a shared
+  // bed can never sit where its readers are — as its own component the
+  // band optimiser puts it at its citers' centre of mass, and the
+  // starburst reads as a sun instead of a corner mystery.
+  const hubThreshold = Math.max(12, Math.round(goals.length * 0.08))
+  const isHub = (id: number) =>
+    (citPartner.get(id)?.length ?? 0) >= hubThreshold
+  const hubComps: Comp[] = []
+  for (const id of singletonIds) {
+    if (!isHub(id)) continue
+    xSlot.set(id, slot)
+    layer.set(id, 0)
+    const comp: Comp = { members: [id], start: slot, end: slot, depth: 0 }
+    treeInfos.push(comp)
+    hubComps.push(comp)
+    slot += 1.6
+  }
+  const mainSingles = singletonIds.filter((id) => mainish(id) && !isHub(id))
   const linkedSingles = singletonIds.filter(
-    (id) => !mainish(id) && citPartner.has(id),
+    (id) => !mainish(id) && citPartner.has(id) && !isHub(id),
   )
   const partnerMean = (id: number) => {
     const xs = (citPartner.get(id) ?? [])
@@ -658,6 +742,38 @@ export function layoutConstellation(
     horizonBand = band
     pack(linked)
     pack(unlinkedTrees)
+  }
+  // A hub's own band must follow its READERS: FFDH files a depth-0
+  // component at the region's tail, parking the most-cited star at the
+  // bottom while its 110 citers live near the horizon — the starburst
+  // crossed the whole sky (the crossing metric caught this: +54).
+  // Re-seat each hub in the band nearest its citers' mean, clamped to
+  // its own region; the optimiser then centres its x.
+  for (const comp of hubComps) {
+    const id = comp.members[0]
+    const cs = (citPartner.get(id) ?? [])
+      .map((p) => bandOfNode.get(p))
+      .filter((b): b is number => b !== undefined)
+    if (cs.length === 0) continue
+    const mean = cs.reduce((a, b) => a + b, 0) / cs.length
+    const lo = isMain(comp) ? 0 : (horizonBand ?? 0)
+    const target = Math.max(lo, Math.min(band, Math.round(mean)))
+    if ((citPartner.get(id)?.length ?? 0) >= goals.length * 0.25) {
+      // an ultra-hub (a quarter of the sky cites it) gets a thin band
+      // of its OWN: alone in the band, the optimiser can put it exactly
+      // at its citers' centre of mass — the sun earns its own orbit
+      // instead of squeezing into whichever shelf had room
+      for (const [nid, b] of bandOfNode) {
+        if (b >= target) bandOfNode.set(nid, b + 1)
+      }
+      bandDepth.splice(target, 0, 0)
+      if (horizonBand !== null && horizonBand >= target) horizonBand += 1
+      band += 1
+      bandOfNode.set(id, target)
+    } else {
+      bandOfNode.set(id, target)
+      bandDepth[target] = Math.max(bandDepth[target] ?? 0, 0)
+    }
   }
 
   // ---- band composition -----------------------------------------------
