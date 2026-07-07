@@ -773,11 +773,9 @@ export function layoutConstellation(
     const mean = cs.reduce((a, b) => a + b, 0) / cs.length
     const lo = isMain(comp) ? 0 : (horizonBand ?? 0)
     const ultra = (citPartner.get(id)?.length ?? 0) >= goals.length * 0.25
-    // the sun centres BOTH ways (owner): its band sits at the vertical
-    // middle of its region, its x at the plate middle
-    const target = ultra
-      ? Math.max(lo, Math.min(band, Math.round((lo + band) / 2)))
-      : Math.max(lo, Math.min(band, Math.round(mean)))
+    // seat by the citers' mean — for the sun this is only a SEED (its
+    // real centring is the pixel-space pass after the vertical reorder)
+    const target = Math.max(lo, Math.min(band, Math.round(mean)))
     if (ultra) {
       ultraHubs.add(id)
       // an ultra-hub (a quarter of the sky cites it) gets a thin band
@@ -1020,6 +1018,52 @@ export function layoutConstellation(
       bandDepth[sBand] ?? 0,
       Math.floor((singles.length - 1) / perRow),
     )
+  }
+
+  // The sun's centring is a PIXEL-space invariant, enforced last
+  // (owner: 偏上). Index-middle splicing missed twice over: band
+  // heights vary, so counting bands is not centring, and the vertical
+  // reorder ran later and moved the band anyway. Once every other
+  // vertical decision is final, re-seat each ultra-hub band where its
+  // centre lands nearest its region's pixel middle.
+  for (const id of ultraHubs) {
+    const nB = bandDepth.length
+    const s = bandOfNode.get(id)
+    if (s === undefined || nB < 3) continue
+    const hb = horizonBand ?? nB
+    const inMain = s < hb
+    const r0 = inMain ? 0 : hb
+    const r1 = inMain ? hb : nB
+    const hOf = (b: number) => (bandDepth[b] ?? 0) + 1.7
+    const rest: number[] = []
+    for (let b = r0; b < r1; b++) if (b !== s) rest.push(hOf(b))
+    const total = rest.reduce((a, x) => a + x, 0) + hOf(s)
+    const kMin = inMain && r0 === 0 ? 1 : 0 // the root band keeps the top
+    let bestK = kMin
+    let bestD = Infinity
+    let cum = 0
+    for (let k = 0; k <= rest.length; k++) {
+      if (k >= kMin) {
+        const off = Math.abs(cum + hOf(s) / 2 - total / 2)
+        if (off < bestD) {
+          bestD = off
+          bestK = k
+        }
+      }
+      if (k < rest.length) cum += rest[k]
+    }
+    const target = r0 + bestK
+    if (target === s) continue
+    const order: number[] = []
+    for (let b = 0; b < nB; b++) if (b !== s) order.push(b)
+    order.splice(target, 0, s)
+    const posOf = new Map<number, number>()
+    order.forEach((b, i) => posOf.set(b, i))
+    for (const [nid, b] of bandOfNode) bandOfNode.set(nid, posOf.get(b) ?? b)
+    const newDepth: number[] = []
+    for (let b = 0; b < nB; b++) newDepth[posOf.get(b)!] = bandDepth[b]
+    bandDepth.length = 0
+    bandDepth.push(...newDepth)
   }
 
   // Vertical base of each band = cumulative depth of the bands above;
