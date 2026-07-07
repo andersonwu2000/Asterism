@@ -197,7 +197,8 @@ def _parse_one(obj: dict[str, Any]) -> tuple[Decision | None, str]:
 # ---------------------------------------------------------------------
 
 def verify_decision(decision: Decision, conn: sqlite3.Connection,
-                    *, problem: str) -> str:
+                    *, problem: str,
+                    workspace: "Path | None" = None) -> str:
     """Validate decision shape + cross-row constraints. Returns '' if
     OK, an error message string otherwise.
 
@@ -417,6 +418,36 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         if not db.deliverables(conn, problem=problem) and not root_proved:
             return ("Ingest requires at least one marked deliverable "
                     "(MarkDeliverable) or a proved root goal")
+        # Feature D (class fix, live bypass 2026-07-08): a ¬-headed
+        # marked deliverable the user never named is a DISPROOF being
+        # substituted for the requested claim — the first live run
+        # routed its negation through Inject (no AttemptDisproof
+        # linkage) and Ingested without any human touch. Whatever the
+        # route, delivering a negation the Manifest didn't ask for
+        # requires one user round-trip (RequestUserAmend) first.
+        mfst_path = db.problem_dir(workspace or Path.cwd(),
+                                   problem) / "Manifest.md"
+        try:
+            mfst_text = mfst_path.read_text(encoding="utf-8")
+        except OSError:
+            mfst_text = ""
+        for d_row in db.deliverables(conn, problem=problem):
+            stmt = str(d_row["statement"] or "").lstrip()
+            named = f"`{d_row['slug']}`" in mfst_text
+            if stmt.startswith("¬") and not named:
+                amended = conn.execute(
+                    "SELECT 1 FROM strategist_decisions WHERE problem = ?"
+                    " AND decision_kind = 'RequestUserAmend'"
+                    " AND outcome IN ('accepted', 'consumed') LIMIT 1",
+                    (problem,)).fetchone()
+                if amended is None:
+                    return (f"Ingest blocked: marked deliverable "
+                            f"`{d_row['slug']}` is a negation the "
+                            f"Manifest never asked for — a disproof "
+                            f"does not substitute for the requested "
+                            f"claim. RequestUserAmend first (hand the "
+                            f"disproof back); Ingest after the user "
+                            f"responds")
         # Feature D — a PROVED negation of a still-pursued target blocks
         # the terminal judgment: the user asked for P and the kernel
         # says ¬P; the honest exit is RequestUserAmend (hand the
@@ -476,7 +507,8 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
 
 
 def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
-                     *, problem: str) -> str:
+                     *, problem: str,
+                     workspace: "Path | None" = None) -> str:
     """Validate a multi-decision batch. Runs `verify_decision` on each
     item in declared order, then applies cross-decision invariants that
     only matter when multiple decisions land in the same call.
@@ -495,7 +527,8 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     non-empty — `commit_decisions` assumes verify passed.
     """
     for i, d in enumerate(decisions):
-        err = verify_decision(d, conn, problem=problem)
+        err = verify_decision(d, conn, problem=problem,
+                              workspace=workspace)
         if err:
             return (f"decision #{i}: {err}" if len(decisions) > 1 else err)
 
@@ -1596,7 +1629,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             failure_detail=f"parse: {parse_err}",
         )
 
-    verify_err = verify_decisions(decisions, conn, problem=problem)
+    verify_err = verify_decisions(decisions, conn, problem=problem,
+                                  workspace=workspace)
     if verify_err and retry_enabled:
         # Single retry on the same session. The provider's `is_retry`
         # path resumes the session and inlines `retry_context` (the
@@ -1631,7 +1665,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                     f"first-attempt verify: {verify_err}"
                 ),
             )
-        verify_err2 = verify_decisions(decisions, conn, problem=problem)
+        verify_err2 = verify_decisions(decisions, conn, problem=problem,
+                                       workspace=workspace)
         if verify_err2:
             return PipelineResult(
                 outcome="failed",

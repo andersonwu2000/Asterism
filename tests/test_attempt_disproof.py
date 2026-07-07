@@ -169,6 +169,46 @@ def test_ingest_gate_blocks_on_proved_negation(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_ingest_gate_blocks_unrequested_negation_deliverable(
+        tmp_path: Path) -> None:
+    """Class fix (live bypass 2026-07-08): a ¬-headed marked deliverable
+    the Manifest never named is a disproof substituted for the request —
+    blocked until one user round-trip, whatever route minted it."""
+    conn = _conn(tmp_path)
+    pdir = tmp_path / "Problems" / "Test" / "px"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "Manifest.md").write_text(
+        "---\nproblem: Test.px\n---\n\n# t\n\n### Deliverables\n\n"
+        "- `wanted_claim`\n", encoding="utf-8")
+    neg = _seed_claim(conn, tmp_path, slug="not_wanted_claim",
+                      status="proved")
+    conn.execute("UPDATE goals SET statement = '¬ (∀ n, P n)'"
+                 " WHERE id = ?", (neg,))
+    _db.mark_deliverable(conn, neg)
+    conn.commit()
+    err = verify_decision(Decision(kind="Ingest"), conn,
+                          problem="Test.px", workspace=tmp_path)
+    assert "never asked for" in err and "RequestUserAmend" in err
+    # A resolved user round-trip releases the gate.
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, payload, outcome, created_at,"
+        " updated_at) VALUES ('Test.px', 0, 'routine',"
+        " 'RequestUserAmend', '{}', 'accepted', 'ts', 'ts')")
+    conn.commit()
+    assert verify_decision(Decision(kind="Ingest"), conn,
+                           problem="Test.px", workspace=tmp_path) == ""
+    # A negation the user DID name in the Manifest never blocks.
+    conn.execute("DELETE FROM strategist_decisions")
+    (pdir / "Manifest.md").write_text(
+        "---\nproblem: Test.px\n---\n\n# t\n\n### Deliverables\n\n"
+        "- `not_wanted_claim`\n", encoding="utf-8")
+    conn.commit()
+    assert verify_decision(Decision(kind="Ingest"), conn,
+                           problem="Test.px", workspace=tmp_path) == ""
+    conn.close()
+
+
 def test_disproof_guidance_section_gating(tmp_path: Path) -> None:
     from Tooling.agent.phase2_context import _section_disproof_guidance
     conn = _conn(tmp_path)
