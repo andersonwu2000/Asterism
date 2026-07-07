@@ -201,6 +201,7 @@ function DeclEntry({
         {/* the sky's glyphs carry over: diamond = meaning-bearer (def),
             round = proposition */}
         <svg width="10" height="10" viewBox="-5 -5 10 10" className="shrink-0 self-center">
+          <title>{isDef ? 'definition — carries meaning' : 'proposition'}{d.decl_kind ? ` (${d.decl_kind})` : ''}</title>
           {isDef ? (
             <rect
               x="-3"
@@ -222,7 +223,7 @@ function DeclEntry({
         >
           {short}
         </button>
-        <span className="text-[10px] text-ink-faint">{d.decl_kind ?? ''}</span>
+
         {d.is_deliverable && (
           <span
             className="text-[10px] tracking-wide text-star"

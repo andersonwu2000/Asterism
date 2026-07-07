@@ -16,7 +16,7 @@ import type { BoardProblem, BoardResponse, Meta } from '../lib/types'
 
 function GoalCounts({ p }: { p: BoardProblem }) {
   if (p.goals.total === 0 || (p.goals.open === 0 && p.goals.proved === 0))
-    return <span className="text-xs text-ink-faint">—</span>
+    return null // nothing started — silence, not a dash
   // one nowrap line that truncates — a mid-word wrap inside a table
   // cell is worse than losing the (tertiary) shelved count
   return (
@@ -66,8 +66,9 @@ function ProgressBar({
 
 /** Quiet text status for settled rows — the pill treatment is reserved
  * for states that ask something of the reader. */
+// 'complete' (ingested) is the settled norm — it earns NO ink; the
+// pill treatment stays reserved for states that ask something.
 const SETTLED_LABEL: Record<string, string> = {
-  ingested: 'complete',
   bridged: 'in Library ◆',
   idle: 'not started',
 }
@@ -117,25 +118,29 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
             <StatusBadge status={p.status} />
           </Link>
         ) : settled ? (
-          <span
-            className={`text-[11px] ${p.status === 'bridged' ? 'text-star/70' : 'text-ink-faint'}`}
-            title={
-              p.status === 'bridged'
-                ? 'merged into the Library (engine term: bridged)'
-                : p.status === 'ingested'
-                  ? 'proof complete and accepted (engine term: ingested)'
+          SETTLED_LABEL[p.status] ? (
+            <span
+              className={`text-[11px] ${p.status === 'bridged' ? 'text-star/70' : 'text-ink-faint'}`}
+              title={
+                p.status === 'bridged'
+                  ? 'merged into the Library (engine term: bridged)'
                   : 'not started yet'
-            }
-          >
-            {SETTLED_LABEL[p.status]}
-          </span>
+              }
+            >
+              {SETTLED_LABEL[p.status]}
+            </span>
+          ) : null
         ) : (
           <StatusBadge status={p.status} />
         )}
       </td>
       <td className="pr-4">
         <span className="flex items-center gap-2.5">
-          <ProgressBar proved={p.goals.proved} open={p.goals.open} total={p.goals.total} />
+          {/* a FULL bar carries nothing the N/N doesn't — bars are for
+              campaigns still in motion */}
+          {!(p.goals.total > 0 && p.goals.open === 0 && p.goals.proved === p.goals.total) && (
+            <ProgressBar proved={p.goals.proved} open={p.goals.open} total={p.goals.total} />
+          )}
           <GoalCounts p={p} />
         </span>
       </td>
@@ -261,13 +266,10 @@ function ClusterRow({
         )}
       </td>
       <td className="pr-4">
-        <span className="flex items-center gap-2.5">
-          <ProgressBar proved={c.proved} open={c.open} total={c.total} />
-          {c.proved > 0 && (
-            <span className="tnum truncate text-xs whitespace-nowrap text-ink-faint">
-              {c.proved}/{c.total}
-            </span>
-          )}
+        {/* the professor's unit is PROBLEMS, not the engine's goal sum */}
+        <span className="tnum text-xs whitespace-nowrap text-ink-faint">
+          {c.items.filter((p) => p.status === 'ingested' || p.status === 'bridged').length}
+          /{c.items.length} done
         </span>
       </td>
       <td className="tnum pr-3 text-right text-xs whitespace-nowrap text-ink-faint">

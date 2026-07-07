@@ -112,10 +112,13 @@ function GoalsList({
               }
             >
               {/* "attempting" is a liveness claim — a stopped run's
-                  leftover reads as interrupted, not live work */}
+                  leftover reads as interrupted, not live work; and
+                  'proved' is the settled norm — it earns no ink */}
               {g.status === 'attempting' && !engineWorking
                 ? 'interrupted'
-                : goalStatusLabel(g.status)}
+                : g.status === 'proved'
+                  ? null
+                  : goalStatusLabel(g.status)}
             </td>
             <td
               className="max-w-md truncate py-2 pr-4 font-mono text-[11px] text-ink-dim"
@@ -124,7 +127,7 @@ function GoalsList({
               <Lean code={stripBinders(g.statement)} />
             </td>
             <td className="py-2 pr-4 text-right text-xs text-ink-faint">
-              {g.attempts > 0 ? g.attempts : '—'}
+              {g.attempts > 0 ? g.attempts : null}
             </td>
           </tr>
         ))}
@@ -272,7 +275,13 @@ export default function Problem({ name }: { name: string }) {
         <div className="mt-1 flex items-baseline justify-between">
           <div className="flex items-center gap-3">
             <h1 className="font-mono text-base font-semibold">{data.name}</h1>
-            <StatusBadge status={data.status} />
+            {data.status === 'awaiting_human' || data.status === 'signoff_pending' ? (
+              <Link to="/inbox" title="paused on you — open the inbox">
+                <StatusBadge status={data.status} />
+              </Link>
+            ) : (
+              <StatusBadge status={data.status} />
+            )}
           </div>
           <div className="flex items-center gap-4">
             <RunControl problem={data.name} />
@@ -367,14 +376,6 @@ export default function Problem({ name }: { name: string }) {
                   </button>{' '}
                   ({blocker.dead_attempts} failed attempt
                   {blocker.dead_attempts === 1 ? '' : 's'})
-                </span>
-              )}
-              {(data.status === 'awaiting_human' || data.status === 'signoff_pending') && (
-                <span className="text-ink">
-                  {' · '}paused on you —{' '}
-                  <Link to="/inbox" className="underline decoration-ink-faint underline-offset-2">
-                    open the inbox
-                  </Link>
                 </span>
               )}
             </div>

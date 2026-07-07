@@ -28,7 +28,6 @@ export default function New() {
   const [root, setRoot] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [nameTouched, setNameTouched] = useState(false)
   const [shelf, setShelf] = useState<PaperShelfItem[]>([])
   const [papers, setPapers] = useState<Set<string>>(new Set())
   const [showConstraints, setShowConstraints] = useState(false)
@@ -98,7 +97,7 @@ export default function New() {
   // concrete reason, live as the user types (or after a blur): silent
   // disabled buttons make people re-read the form instead of the fix
   const nameError =
-    (name !== '' || nameTouched) && !nameOk
+    name !== '' && !nameOk
       ? /\s/.test(name)
         ? "spaces aren't allowed — use underscores"
         : 'names are dot-separated identifiers — try Topology.my_theorem'
@@ -150,7 +149,6 @@ export default function New() {
         placeholder="Topology.my_theorem"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        onBlur={() => setNameTouched(true)}
         spellCheck={false}
         autoFocus
       />

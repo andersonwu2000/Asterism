@@ -502,7 +502,9 @@ export default function Run() {
               <div key={i} className="flex items-baseline gap-3 text-xs">
                 <span className="tnum w-16 shrink-0 text-ink-faint">{relTime(r.at)}</span>
                 <span className="text-ink-dim">{r.kind}</span>
-                <span className="text-ink-faint">{r.outcome.replace(/_/g, ' ')}</span>
+                {r.outcome !== 'success' && (
+                  <span className="text-ink-faint">{r.outcome.replace(/_/g, ' ')}</span>
+                )}
               </div>
             ))}
           </div>
