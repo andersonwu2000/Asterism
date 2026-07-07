@@ -410,6 +410,19 @@ export function layoutConstellation(
       }
       xSlot.set(id, lo <= hi ? (lo + hi) / 2 : (start0 + maxEnd - 1) / 2)
     }
+    // Loose leaves hug the parent (owner: needless spans). The shelf
+    // packed them at its cursor — a whole subtree away from where the
+    // parent just landed (spine/inner-branch following). Re-seat them
+    // beside the parent on its free side; the row de-overlap pass
+    // keeps neighbours honest. Pure leaf fans (no branch children)
+    // already sit under their parent, and >8 leaves live in a grid.
+    if (branchKs.length > 0 && leafKs.length > 0 && leafKs.length <= 8) {
+      const px = xSlot.get(id)!
+      const dir = lean === -1 ? -1 : 1
+      leafKs.forEach((k, i) => {
+        xSlot.set(k, px + dir * (i + 1))
+      })
+    }
   }
   for (const r of treeRoots) measure(r, 0)
   const baseLayer = new Map(layer) // assign() adds shelf shifts — snapshot for pass 2
