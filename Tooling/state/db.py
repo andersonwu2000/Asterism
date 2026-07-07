@@ -2804,19 +2804,26 @@ def problem_library_bridged(conn: sqlite3.Connection, problem: str) -> bool:
     return bool(row and row["library_bridged_at"])
 
 
-def bridged_library_index(conn: sqlite3.Connection
+def bridged_library_index(conn: sqlite3.Connection,
+                          problem: "str | None" = None,
                           ) -> "dict[str, list[sqlite3.Row]]":
     """{problem: [placed decl rows]} for every BRIDGED problem — the query
     behind every former INDEX.md read (prover context menu, dedupe pool,
-    pre-search verification). Placed = lifecycle IN ('migrated','cleaned'),
-    the exact set the old INDEX sections recorded."""
+    pre-search verification) AND the serve chapter (`problem=` narrows to
+    one). Placed = lifecycle IN ('migrated','cleaned'), the exact set the
+    old INDEX sections recorded — this is the ONLY place that set is
+    spelled; widen it here and every consumer follows. Rows also carry
+    `library_bridged_at` from the JOIN."""
+    sql = ("SELECT ld.*, p.library_bridged_at FROM library_decls ld"
+           " JOIN problems p ON p.name = ld.problem"
+           " WHERE p.library_bridged_at IS NOT NULL"
+           " AND ld.lifecycle IN ('migrated','cleaned')")
+    args: tuple = ()
+    if problem is not None:
+        sql += " AND ld.problem = ?"
+        args = (problem,)
     out: "dict[str, list[sqlite3.Row]]" = {}
-    for r in conn.execute(
-            "SELECT ld.* FROM library_decls ld"
-            " JOIN problems p ON p.name = ld.problem"
-            " WHERE p.library_bridged_at IS NOT NULL"
-            " AND ld.lifecycle IN ('migrated','cleaned')"
-            " ORDER BY ld.problem, ld.id"):
+    for r in conn.execute(sql + " ORDER BY ld.problem, ld.id", args):
         out.setdefault(str(r["problem"]), []).append(r)
     return out
 

@@ -745,12 +745,9 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
     """One bridged problem's contributed Library modules, in import
     order, each decl carrying its docstring + oracle signature and its
     goal-side meaning (claim = deliverable, def-kind = vocabulary)."""
-    rows = conn.execute(
-        "SELECT ld.*, p.library_bridged_at FROM library_decls ld"
-        " JOIN problems p ON p.name = ld.problem"
-        " WHERE ld.problem = ? AND p.library_bridged_at IS NOT NULL"
-        " AND ld.lifecycle IN ('migrated','cleaned')"
-        " ORDER BY ld.id", (problem,)).fetchall()
+    # the one bridged+placed definition (db.bridged_library_index),
+    # narrowed to this problem; rows carry library_bridged_at
+    rows = db.bridged_library_index(conn, problem=problem).get(problem, [])
     if not rows:
         return None
     # goal-side flag only: kind comes from library_decls.decl_kind
