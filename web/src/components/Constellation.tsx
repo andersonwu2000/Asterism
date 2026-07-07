@@ -354,7 +354,9 @@ export default function Constellation({
     new Map<SVGElement, { from: number; to: number; cite: boolean }>(),
   )
   const stemEls = useRef(new Map<SVGLineElement, { parent: number; sid: number }>())
-  const branchEls = useRef(new Map<SVGLineElement, { sid: number; child: number }>())
+  const branchEls = useRef(
+    new Map<SVGElement, { sid: number; child: number; curved: boolean }>(),
+  )
   const animRef = useRef({ raf: 0, timer: 0 })
 
   const k = view?.k ?? 1
@@ -468,10 +470,14 @@ export default function Constellation({
         const j = shownJ.get(m.sid)
         const c = shown.get(m.child)
         if (!j || !c) continue
-        el.setAttribute('x1', String(j.x))
-        el.setAttribute('y1', String(j.y))
-        el.setAttribute('x2', String(c.x))
-        el.setAttribute('y2', String(c.y))
+        if (m.curved) {
+          el.setAttribute('d', citePath(j, c, m.sid, m.child).d)
+        } else {
+          el.setAttribute('x1', String(j.x))
+          el.setAttribute('y1', String(j.y))
+          el.setAttribute('x2', String(c.x))
+          el.setAttribute('y2', String(c.y))
+        }
       }
       if (tween.fromView && tween.toView && !userAdjusted.current) {
         const f = tween.fromView
@@ -672,13 +678,11 @@ export default function Constellation({
           const b = byId.get(e.to)
           if (!a || !b) return null
           const dead = isDead(e.strategyStatus)
-          const reg = (el: SVGElement | null) => {
+          // curved elements animate via a `d` rewrite; straight ones by
+          // endpoint attributes — the registry must know which
+          const reg = (curved: boolean) => (el: SVGElement | null) => {
             if (!el) return
-            edgeEls.current.set(el, {
-              from: e.from,
-              to: e.to,
-              cite: e.kind === 'citation',
-            })
+            edgeEls.current.set(el, { from: e.from, to: e.to, cite: curved })
             return () => {
               edgeEls.current.delete(el)
             }
@@ -697,7 +701,7 @@ export default function Constellation({
             return (
               <path
                 key={i}
-                ref={reg}
+                ref={reg(true)}
                 d={d}
                 fill="none"
                 stroke={edgeStroke(e.strategyStatus, e.kind)}
@@ -721,27 +725,44 @@ export default function Constellation({
           // recede (stokes' hub fan, jordan's chain fan).
           const span = Math.hypot(b.x - a.x, b.y - a.y) || 1
           const lineFade = Math.min(1, Math.max(0.4, 480 / span))
+          const baseOpacity =
+            (dead
+              ? 0.18
+              : e.kind === 'alias'
+                ? 0.5
+                : e.kind === 'anchor'
+                  ? 0.3
+                  : e.strategyStatus === 'succeeded'
+                    ? 0.38
+                    : 0.55) * lineFade
+          // past ~5 slots a straight hierarchy edge reads as a stray
+          // WIRE (the owner circled one) — a bow reads as a relation
+          if (span > 560) {
+            return (
+              <path
+                key={i}
+                ref={reg(true)}
+                d={citePath(a, b, e.from, e.to).d}
+                fill="none"
+                stroke={edgeStroke(e.strategyStatus, e.kind)}
+                strokeWidth={e.strategyStatus === 'succeeded' ? 1.2 : 1}
+                strokeOpacity={baseOpacity}
+                strokeDasharray={e.kind === 'alias' ? '4 4' : undefined}
+                vectorEffect="non-scaling-stroke"
+              />
+            )
+          }
           return (
             <line
               key={i}
-              ref={reg}
+              ref={reg(false)}
               x1={a.x}
               y1={a.y}
               x2={b.x}
               y2={b.y}
               stroke={edgeStroke(e.strategyStatus, e.kind)}
               strokeWidth={e.strategyStatus === 'succeeded' ? 1.2 : 1}
-              strokeOpacity={
-                (dead
-                  ? 0.18
-                  : e.kind === 'alias'
-                    ? 0.5
-                    : e.kind === 'anchor'
-                      ? 0.3
-                      : e.strategyStatus === 'succeeded'
-                        ? 0.38
-                        : 0.55) * lineFade
-              }
+              strokeOpacity={baseOpacity}
               strokeDasharray={e.kind === 'alias' ? '4 4' : undefined}
               vectorEffect="non-scaling-stroke"
             />
@@ -794,16 +815,37 @@ export default function Constellation({
               {b.children.map((cid) => {
                 const c = byId.get(cid)
                 if (!c) return null
+                const branchSpan = Math.hypot(c.x - b.junction.x, c.y - b.junction.y)
+                const curved = branchSpan > 560
+                const regBranch = (el: SVGElement | null) => {
+                  if (!el) return
+                  branchEls.current.set(el, { sid: b.strategyId, child: cid, curved })
+                  return () => {
+                    branchEls.current.delete(el)
+                  }
+                }
+                // a straight limb past ~5 slots reads as a stray wire
+                // (the owner circled one) — long limbs bow instead
+                if (curved) {
+                  return (
+                    <path
+                      key={cid}
+                      ref={regBranch}
+                      d={citePath(b.junction, c, b.strategyId, cid).d}
+                      fill="none"
+                      stroke={stroke}
+                      strokeWidth={b.status === 'succeeded' ? 1.4 : 1}
+                      strokeOpacity={
+                        opacity * fade(b.junction.x, b.junction.y, c.x, c.y)
+                      }
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )
+                }
                 return (
                   <line
                     key={cid}
-                    ref={(el) => {
-                      if (!el) return
-                      branchEls.current.set(el, { sid: b.strategyId, child: cid })
-                      return () => {
-                        branchEls.current.delete(el)
-                      }
-                    }}
+                    ref={regBranch}
                     x1={b.junction.x}
                     y1={b.junction.y}
                     x2={c.x}

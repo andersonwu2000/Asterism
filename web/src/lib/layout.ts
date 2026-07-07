@@ -270,6 +270,7 @@ export function layoutConstellation(
     guard: number,
     members: number[],
     shift: number,
+    lean: -1 | 0 | 1,
   ): void => {
     if (guard > goals.length + 1 || xSlot.has(id)) return
     members.push(id)
@@ -313,10 +314,17 @@ export function layoutConstellation(
         items.push({ kind: 'branch', k, w: 1, d: 1, ord: ordIdx.get(k) ?? 0 })
       }
     }
-    // shelve depth-descending (FFDH — a shelf costs the height of its
+    // Shelve depth-descending (FFDH — a shelf costs the height of its
     // deepest member, so mixed depths waste rows); ties keep the
-    // sibling order (id on pass 1, partner barycenter on pass 2)
-    items.sort((a, b) => b.d - a.d || a.ord - b.ord)
+    // sibling order (id on pass 1, partner barycenter on pass 2).
+    // On a SINGLE shelf the order is free space-wise, so it obeys the
+    // LEAN instead: a subtree on its parent's left flank packs its
+    // deep spine rightmost (and vice versa), so fork branches run
+    // inward — the owner's circled near-horizontal pair was two
+    // branches crossing 800px to reach spines hugging the OUTER flanks.
+    const totalW = items.reduce((a, it) => a + it.w, 0)
+    const ascend = lean === 1 && totalW <= SHELF_CAP
+    items.sort((a, b) => (ascend ? a.d - b.d : b.d - a.d) || a.ord - b.ord)
     const shelves: Item[][] = []
     let cur: Item[] = []
     let curW = 0
@@ -338,6 +346,8 @@ export function layoutConstellation(
     for (const shelf of shelves) {
       slot = start0
       let shelfDepth = 1
+      const shelfW = shelf.reduce((a, it) => a + it.w, 0)
+      let off = 0
       for (const it of shelf) {
         if (it.kind === 'leaves' && it.leaves) {
           const perRow = it.w
@@ -350,8 +360,18 @@ export function layoutConstellation(
           })
           slot = gStart + Math.min(it.leaves.length, perRow)
         } else if (it.k !== undefined) {
-          assign(it.k, guard + 1, members, shift + yOff)
+          // a lone branch is a chain link — it inherits the lean so
+          // the whole chain hugs one side; fork children lean toward
+          // the fork's centre (left half leans right, right half left)
+          const childLean: -1 | 0 | 1 =
+            branchKs.length === 1
+              ? lean
+              : off + it.w / 2 < shelfW / 2
+                ? 1
+                : -1
+          assign(it.k, guard + 1, members, shift + yOff, childLean)
         }
+        off += it.w
         shelfDepth = Math.max(shelfDepth, it.d)
       }
       maxEnd = Math.max(maxEnd, slot)
@@ -361,12 +381,23 @@ export function layoutConstellation(
     // Parent placement (owner: tree interiors meandered): span-centre
     // let side leaves drag every chain link 0.5+ slots sideways — a
     // staircase. Follow the SPINE when there is exactly one branch
-    // child (chains run plumb, leaves hang beside); otherwise sit at
-    // the midpoint of the child ROOTS (fork angles symmetric), the
-    // classic tidy-tree rule. Row de-overlap still guards collisions.
+    // child (chains run plumb, leaves hang beside). A LEANING fork
+    // follows its INNER branch root instead of the midpoint — the node
+    // presents itself on the flank its own parent reaches for, so the
+    // parent's bundle branches span the inter-subtree gap instead of
+    // overflying both bodies (owner's circled near-horizontal pair).
+    // Only a lean-free fork (tree tops) takes the classic symmetric
+    // midpoint of its child roots. Row de-overlap guards collisions.
     const placedBranches = branchKs.filter((c) => xSlot.has(c))
     if (placedBranches.length === 1) {
       xSlot.set(id, xSlot.get(placedBranches[0])!)
+    } else if (lean !== 0 && placedBranches.length > 1) {
+      let best = xSlot.get(placedBranches[0])!
+      for (const c of placedBranches) {
+        const x = xSlot.get(c)!
+        if (lean === 1 ? x > best : x < best) best = x
+      }
+      xSlot.set(id, best)
     } else {
       let lo = Infinity
       let hi = -Infinity
@@ -389,7 +420,7 @@ export function layoutConstellation(
     for (const r of treeRoots) {
       const start = slot
       const members: number[] = []
-      assign(r, 0, members, 0)
+      assign(r, 0, members, 0, 0)
       treeInfos.push({
         members,
         start,
