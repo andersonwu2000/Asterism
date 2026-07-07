@@ -485,6 +485,83 @@ def apply(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE library_decls ADD COLUMN src_line INTEGER")
         conn.execute("PRAGMA user_version = 24")
         conn.commit()
+    if v < 25:
+        # v25 — feature D: strategist_decisions.decision_kind widens to
+        # 'AttemptDisproof' (Strategist suspects a user-requested claim
+        # is FALSE → framework mechanically mints the ¬P goal; belief is
+        # never trusted, both directions need the kernel).
+        _migrate_to_v25(conn)
+        conn.execute("PRAGMA user_version = 25")
+        conn.commit()
+
+
+def _migrate_to_v25(conn: sqlite3.Connection) -> None:
+    """v25 — widen strategist_decisions.decision_kind to also accept
+    'AttemptDisproof'. Same point-in-time rebuild-and-copy as v23's
+    strategist_decisions leg (columns unchanged since v22)."""
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table'"
+        " AND name='strategist_decisions'").fetchone()
+    if chk and "'AttemptDisproof'" in (chk["sql"] or ""):
+        return  # fresh DB from SCHEMA, or re-run
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_strategist_decisions (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem             TEXT NOT NULL REFERENCES problems(name),
+                triggered_at_tick   INTEGER NOT NULL,
+                trigger_kind        TEXT NOT NULL
+                                        CHECK(trigger_kind IN
+                                              ('first_launch','pending_review',
+                                               'routine','inject_batch_done')),
+                decision_kind       TEXT NOT NULL
+                                        CHECK(decision_kind IN
+                                              ('Inject','ConfirmShelve','Reopen',
+                                               'EmitDirective','InitializeDefs',
+                                               'RequestUserAmend','Noop',
+                                               'MarkDeliverable','Ingest',
+                                               'FetchPaper','AttemptDisproof')),
+                target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                brief               TEXT NULL DEFAULT NULL,
+                reason              TEXT NULL DEFAULT NULL,
+                payload             TEXT NOT NULL DEFAULT '{}',
+                batch_id            TEXT NULL DEFAULT NULL,
+                produced_goal_id    INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                                        ON DELETE SET NULL,
+                produced_strategy_id INTEGER NULL DEFAULT NULL
+                                        REFERENCES strategies(id) ON DELETE SET NULL,
+                outcome             TEXT NULL DEFAULT NULL,
+                outcome_detail      TEXT NULL DEFAULT NULL,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
+            );
+            INSERT INTO _new_strategist_decisions
+                (id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                 target_id, brief, reason, payload, batch_id, produced_goal_id,
+                 produced_strategy_id, outcome, outcome_detail,
+                 created_at, updated_at)
+            SELECT id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                   target_id, brief, reason, payload, batch_id, produced_goal_id,
+                   produced_strategy_id, outcome, outcome_detail,
+                   created_at, updated_at
+            FROM strategist_decisions;
+            DROP TABLE strategist_decisions;
+            ALTER TABLE _new_strategist_decisions RENAME TO strategist_decisions;
+            CREATE INDEX IF NOT EXISTS idx_sd_problem
+                ON strategist_decisions(problem);
+            CREATE INDEX IF NOT EXISTS idx_sd_outcome
+                ON strategist_decisions(outcome);
+            CREATE INDEX IF NOT EXISTS idx_sd_batch_id
+                ON strategist_decisions(batch_id);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"v25 migration left FK violations: {fk_violations[:5]}")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_to_v19(conn: sqlite3.Connection) -> None:

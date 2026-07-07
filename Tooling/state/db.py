@@ -453,11 +453,17 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                             -- 'FetchPaper' (v23, paper pipeline v2): Strategist
                             -- requests a cited paper; a Scholar pipeline
                             -- resolves + fetches it (D11).
+                            -- 'AttemptDisproof' (v25, feature D): Strategist
+                            -- suspects a user-requested claim is FALSE →
+                            -- framework mechanically mints the ¬P goal
+                            -- (target_id=P, produced_goal_id=¬P). Belief is
+                            -- never trusted — settling either way needs the
+                            -- kernel.
                             CHECK(decision_kind IN
                                   ('Inject','ConfirmShelve','Reopen',
                                    'EmitDirective','InitializeDefs',
                                    'RequestUserAmend','Noop','MarkDeliverable',
-                                   'Ingest','FetchPaper')),
+                                   'Ingest','FetchPaper','AttemptDisproof')),
     target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
     brief               TEXT NULL DEFAULT NULL,
     reason              TEXT NULL DEFAULT NULL,
@@ -615,7 +621,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 24
+_CURRENT_USER_VERSION = 25
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:

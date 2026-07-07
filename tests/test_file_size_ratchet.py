@@ -239,7 +239,9 @@ _WATERMARKS = {
     "Tooling/state/db.py": 3000,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
-    "Tooling/state/db_migrations.py": 1560,
+    # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,
+    # single-table rebuild) — conscious bump.
+    "Tooling/state/db_migrations.py": 1660,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
