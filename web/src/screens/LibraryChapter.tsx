@@ -4,6 +4,7 @@ import { relTime } from '../lib/format'
 import { Link } from '../lib/router'
 import { ErrorState } from '../components/ui'
 import { Lean } from '../lib/lean'
+import { LeanProbe } from '../components/LeanProbe'
 import type { LibraryChapter, LibraryChapterDecl, LibraryChapterFile } from '../lib/types'
 
 /*
@@ -103,6 +104,7 @@ function DeclEntry({
   onOpenModule?: (path: string) => void
 }) {
   const [copied, setCopied] = useState(false)
+  const [probing, setProbing] = useState(false)
   const short = (d.name ?? d.slug).split('.').pop() ?? d.slug
   const isDef = DEF_KINDS.has(d.decl_kind ?? '')
   const copy = (withImport: boolean) => {
@@ -159,6 +161,18 @@ function DeclEntry({
           </span>
         )}
         {copied && <span className="text-[10px] text-ink-faint">copied</span>}
+        <button
+          className={
+            'cursor-pointer font-mono text-[10px] transition-all hover:text-ink ' +
+            (probing
+              ? 'text-ink-dim'
+              : 'text-ink-faint opacity-0 group-hover:opacity-100')
+          }
+          onClick={() => setProbing((v) => !v)}
+          title="run Lean against this declaration — opens with #print axioms, edit freely"
+        >
+          {probing ? 'close probe' : 'probe'}
+        </button>
         {onOpenModule && d.file && (
           <button
             className="ml-auto cursor-pointer font-mono text-[10px] text-ink-faint transition-colors hover:text-ink"
@@ -180,6 +194,7 @@ function DeclEntry({
           <Lean code={d.signature} />
         </pre>
       )}
+      {probing && <LeanProbe fq={d.name ?? d.slug} module={module} />}
     </div>
   )
 }

@@ -3,6 +3,7 @@ import { apiGet, apiPost } from '../lib/api'
 import { navigate } from '../lib/router'
 import { Button } from '../components/ui'
 import ListField from '../components/ListField'
+import { DiagList, countErrors, evalLean, type EvalDiag } from '../components/LeanProbe'
 import type { PaperShelfItem } from '../lib/types'
 
 /*
@@ -52,6 +53,65 @@ export default function New() {
       else next.add(id)
       return next
     })
+
+  // live authoring check: pause typing → the pinned Lean elaborates on
+  // the warm engine, diagnostics land under each buffer. Warming
+  // engines retry on their own; results for stale text are orphaned.
+  const [check, setCheck] = useState<{
+    phase: 'idle' | 'warming' | 'checking' | 'done'
+    defs: EvalDiag[]
+    root: EvalDiag[]
+    pre: EvalDiag[]
+  }>({ phase: 'idle', defs: [], root: [], pre: [] })
+  useEffect(() => {
+    const hasText = defs.trim() !== '' || root.trim() !== ''
+    if (!showLean || !hasText) {
+      setCheck({ phase: 'idle', defs: [], root: [], pre: [] })
+      return
+    }
+    let cancelled = false
+    let retry: number | null = null
+    const go = async () => {
+      if (cancelled) return
+      setCheck((c) => ({ ...c, phase: 'checking' }))
+      try {
+        const parts: { id: string; code: string }[] = []
+        if (defs.trim() !== '') parts.push({ id: 'defs', code: defs })
+        if (root.trim() !== '') parts.push({ id: 'root', code: root })
+        const r = await evalLean(parts, [])
+        if (cancelled) return
+        if (r.status === 'warming') {
+          setCheck((c) => ({ ...c, phase: 'warming' }))
+          retry = window.setTimeout(() => void go(), 5000)
+          return
+        }
+        setCheck({
+          phase: 'done',
+          defs: r.parts.defs ?? [],
+          root: r.parts.root ?? [],
+          pre: r.preamble,
+        })
+      } catch {
+        if (!cancelled) setCheck({ phase: 'idle', defs: [], root: [], pre: [] })
+      }
+    }
+    const t = window.setTimeout(() => void go(), 900)
+    return () => {
+      cancelled = true
+      window.clearTimeout(t)
+      if (retry != null) window.clearTimeout(retry)
+    }
+  }, [defs, root, showLean])
+  const checkWord =
+    check.phase === 'warming'
+      ? 'engine warming — checks resume on their own'
+      : check.phase === 'checking'
+        ? 'checking…'
+        : check.phase === 'done'
+          ? countErrors([...check.pre, ...check.defs, ...check.root]) === 0
+            ? '✓ elaborates'
+            : `${countErrors([...check.pre, ...check.defs, ...check.root])} error${countErrors([...check.pre, ...check.defs, ...check.root]) === 1 ? '' : 's'}`
+          : ''
 
   const nameOk = NAME_RE.test(name)
   // concrete reason, live as the user types (or after a blur): silent
@@ -168,6 +228,8 @@ export default function New() {
       </button>
       {showLean && (
         <div className="mb-3 flex flex-col gap-3">
+          <div className="min-h-4 text-[11px] text-ink-faint">{checkWord}</div>
+          {check.pre.length > 0 && <DiagList diags={check.pre} />}
           <div>
             <div className="mb-1 text-[11px] text-ink-faint">
               Defs.lean — your own definitions; the engine must use these, never re-derive them.
@@ -179,6 +241,7 @@ export default function New() {
               onChange={(e) => setDefs(e.target.value)}
               spellCheck={false}
             />
+            <DiagList diags={check.defs} />
           </div>
           <div>
             <div className="mb-1 text-[11px] text-ink-faint">
@@ -192,6 +255,7 @@ export default function New() {
               onChange={(e) => setRoot(e.target.value)}
               spellCheck={false}
             />
+            <DiagList diags={check.root} />
           </div>
         </div>
       )}
