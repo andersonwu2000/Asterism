@@ -51,6 +51,10 @@ export interface Goal {
   attempts: number
   dead_attempts: number
   in_flight: boolean
+  /** set when this goal IS the mechanical negation of another goal
+   * (AttemptDisproof linkage) — a proved disproof must not dress as
+   * ordinary success */
+  disproof_of?: { id: number; slug: string } | null
 }
 
 export interface Strategy {

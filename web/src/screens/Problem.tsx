@@ -98,6 +98,14 @@ function GoalsList({
                 {g.slug}
               </button>
               {g.is_deliverable && <span className="ml-1.5 text-star" title="claim — you sign off on this">◈</span>}
+              {g.disproof_of && (
+                <span
+                  className="ml-1.5 text-[11px] text-warn"
+                  title={`this theorem is the negation of ${g.disproof_of.slug} — the kernel settled the original claim as false`}
+                >
+                  disproof
+                </span>
+              )}
             </td>
             <td
               className={`py-2 pr-4 text-xs ${

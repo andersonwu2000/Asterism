@@ -870,6 +870,36 @@ def test_problem_detail_citation_edges(workspace: Path) -> None:
     assert all(e["from"] != e["to"] for e in d["citation_edges"])
 
 
+def test_goal_disproof_linkage(workspace: Path) -> None:
+    """An AttemptDisproof decision's mechanical linkage (target_id=P,
+    produced_goal_id=¬P) surfaces on the ¬P goal as disproof_of in both
+    problem_detail and goal_detail — a proved negation must not dress
+    as ordinary success anywhere it is read."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    p_goal = db.insert_goal(conn, problem="p", slug="claim_p",
+                            lean_path="Problems/p/proofs/L_claim_p.lean",
+                            statement="P", origin="forward")
+    neg = db.insert_goal(conn, problem="p", slug="not_claim_p",
+                         lean_path="Problems/p/proofs/L_not_claim_p.lean",
+                         statement="¬ P", origin="forward")
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, produced_goal_id,"
+        " brief, reason, payload, created_at, updated_at)"
+        " VALUES ('p', 0, 'routine', 'AttemptDisproof', ?, ?, 'b', 'r',"
+        " '{}', ?, ?)", (p_goal, neg, db.now(), db.now()))
+    conn.commit()
+    conn.close()
+    c = _client(workspace)
+    goals = {g["slug"]: g for g in c.get("/api/problems/p").json()["goals"]}
+    assert goals["not_claim_p"]["disproof_of"] == {
+        "id": p_goal, "slug": "claim_p"}
+    assert goals["claim_p"]["disproof_of"] is None
+    gd = c.get(f"/api/problems/p/goals/{neg}").json()
+    assert gd["disproof_of"] == {"id": p_goal, "slug": "claim_p"}
+
+
 def test_citation_edges_from_strategy_scratch(workspace: Path) -> None:
     """A Backward assembly's citations live in the strategy's scratch
     patch, not in any goal's own L_ file. A succeeded strategy's

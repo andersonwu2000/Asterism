@@ -99,6 +99,14 @@ export default function GoalPanel({
               <span className="text-ink-faint">{data.kind}</span>
               <span className="text-ink-faint">{originLabel(data.origin)}</span>
               {data.is_deliverable && <span className="text-star">claim</span>}
+              {data.disproof_of && (
+                <span
+                  className="text-warn"
+                  title={`this theorem is the negation of ${data.disproof_of.slug} — the kernel settled the original claim as false`}
+                >
+                  disproof of {data.disproof_of.slug}
+                </span>
+              )}
               {data.detached && <span className="text-ink-faint">detached</span>}
             </div>
             <SectionLabel>{data.proof_text ? 'source' : 'statement'}</SectionLabel>

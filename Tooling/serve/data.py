@@ -390,6 +390,7 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             })
 
     goal_docs = _goal_docs(conn, problem)
+    disproofs = _disproof_links(conn, problem)
     goals = []
     for g in conn.execute(
             "SELECT id, slug, status, kind, origin, depth, detached,"
@@ -413,6 +414,8 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             "attempts": int(g["attempts"]),
             "dead_attempts": dead_counts.get(int(g["id"]), 0),
             "in_flight": int(g["id"]) in inflight_goals,
+            # AttemptDisproof linkage (read-side): this goal IS ¬target
+            "disproof_of": disproofs.get(int(g["id"])),
         })
 
     goal_ids = {g["id"] for g in goals}
@@ -570,6 +573,24 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
     }
 
 
+def _disproof_links(conn: sqlite3.Connection,
+                    problem: str) -> "dict[int, dict]":
+    """produced ¬P goal id → {id, slug} of the target P, from
+    AttemptDisproof decision rows (the framework's mechanical linkage —
+    no schema, no name-pattern guessing). A star that IS a disproof
+    must say so wherever it is read: the sky dresses a proved negation
+    exactly like ordinary success otherwise."""
+    out: dict[int, dict] = {}
+    for r in conn.execute(
+            "SELECT d.produced_goal_id AS neg, g.id AS tid, g.slug AS slug"
+            " FROM strategist_decisions d"
+            " JOIN goals g ON g.id = d.target_id"
+            " WHERE d.problem = ? AND d.decision_kind = 'AttemptDisproof'"
+            " AND d.produced_goal_id IS NOT NULL", (problem,)):
+        out[int(r["neg"])] = {"id": int(r["tid"]), "slug": str(r["slug"])}
+    return out
+
+
 def goal_detail(conn: sqlite3.Connection, problem: str,
                 goal_id: int,
                 workspace: "Path | None" = None) -> dict | None:
@@ -648,6 +669,7 @@ def goal_detail(conn: sqlite3.Connection, problem: str,
         "alias_target_id": g["alias_target_id"],
         "is_deliverable": bool(g["is_deliverable"]),
         "created_at": str(g["created_at"]),
+        "disproof_of": _disproof_links(conn, problem).get(int(g["id"])),
         "proof_text": proof_text,
         # the file the source above was actually read from (the scratch
         # when a winning route exists) — the panel's path label must

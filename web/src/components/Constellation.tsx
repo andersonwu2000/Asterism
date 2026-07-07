@@ -1323,6 +1323,9 @@ export default function Constellation({
             <span className="text-xs text-ink-faint">
               {goalStatusLabel(hovered.goal.status)}
             </span>
+            {hovered.goal.disproof_of && (
+              <span className="text-[11px] text-warn">disproof of {hovered.goal.disproof_of.slug}</span>
+            )}
           </div>
           <div className="line-clamp-4 font-mono text-[11px] leading-snug text-ink-dim">
             <Lean code={hovered.goal.statement} />

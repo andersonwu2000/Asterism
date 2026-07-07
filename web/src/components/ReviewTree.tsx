@@ -126,6 +126,16 @@ function Deliverable({
       >
         <span className={d.ok ? 'text-ok' : 'text-danger'}>{d.ok ? '✓' : '✗'}</span>
         <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink">{d.fq}</span>
+        {/* signing a negation must read as signing a negation — the
+            requested claim was settled FALSE, this is its refutation */}
+        {resolve(d.fq)?.disproof_of && (
+          <span
+            className="text-[11px] whitespace-nowrap text-warn"
+            title={`the negation of ${resolve(d.fq)!.disproof_of!.slug} — the kernel settled the requested claim as false`}
+          >
+            disproof of {resolve(d.fq)!.disproof_of!.slug}
+          </span>
+        )}
         <span className="text-[11px] whitespace-nowrap text-ink-faint">
           {d.kind}
           {d.anchors.length > 0 && ` · ${d.anchors.length} anchors`}
