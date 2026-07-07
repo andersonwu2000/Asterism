@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Setting up Asterism…</title>
+<!-- Opened by "Setup Asterism.exe" the moment the hidden bootstrap
+     starts. Self-contained (no network assets): it only polls
+     localhost with an image beacon — file:// pages may not fetch()
+     http, but they may load images — and replaces itself with the
+     console the moment the engine answers. -->
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0a0a0c; color: #ededf0;
+    font: 14px/1.6 "Segoe UI", system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .wrap { max-width: 34rem; padding: 2rem; text-align: center; }
+  .mark { font-size: 15px; letter-spacing: .35em; color: #9da0a8;
+          text-transform: uppercase; }
+  h1 { font-family: Georgia, serif; font-weight: 500; font-size: 28px;
+       margin: 1rem 0 .5rem; }
+  p { color: #a2a4ab; margin: .4rem 0; }
+  .hint { color: #67696f; font-size: 12px; margin-top: 2rem; }
+  code { background: #17171b; padding: 1px 6px; border-radius: 4px;
+         font-size: 12px; }
+  .sky { margin: 1.6rem auto 0; width: 160px; }
+  .star { animation: tw 2.4s ease-in-out infinite; }
+  .star.b { animation-delay: .8s; } .star.c { animation-delay: 1.6s; }
+  @keyframes tw { 0%,100% { opacity: .25 } 50% { opacity: 1 } }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="mark">Asterism</div>
+    <h1>Setting things up&hellip;</h1>
+    <p>Python and the engine are installing quietly in the background
+       &mdash; usually one to three minutes.</p>
+    <p><strong>Keep this page open.</strong> It becomes the Asterism
+       console by itself the moment the engine is ready; the setup
+       wizard takes it from there.</p>
+    <svg class="sky" viewBox="0 0 160 60" aria-hidden="true">
+      <path d="M20 44 L74 14 L128 36" stroke="#67696f" stroke-width="1"
+            fill="none" opacity="0.4"/>
+      <circle class="star a" cx="20" cy="44" r="3.4" fill="#f4f5f8"/>
+      <circle class="star b" cx="74" cy="14" r="4.2" fill="#f4f5f8"/>
+      <circle class="star c" cx="128" cy="36" r="2.8" fill="#f4f5f8"/>
+    </svg>
+    <p class="hint">Nothing after five minutes? Double-click
+      <code>installer\install.bat</code> to watch the installer work,
+      or read <code>installer\bootstrap.log</code>.</p>
+  </div>
+  <script>
+    (function poll() {
+      var i = new Image();
+      i.onload = function () { location.replace('http://127.0.0.1:8642/'); };
+      i.onerror = function () { setTimeout(poll, 2000); };
+      i.src = 'http://127.0.0.1:8642/favicon.svg?' + Date.now();
+    })();
+  </script>
+</body>
+</html>

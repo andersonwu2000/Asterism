@@ -1,6 +1,9 @@
-# Asterism launcher — start the engine console (if it isn't already
+# Asterism launcher - start the engine console (if it isn't already
 # running) and open the browser. Invoked hidden via launch.vbs; safe
 # to run twice (an existing serve is reused, not duplicated).
+# -NoBrowser: the bootstrap's welcome page is already polling - just
+# bring the engine up.
+param([switch]$NoBrowser)
 $ErrorActionPreference = 'SilentlyContinue'
 $Root = Split-Path -Parent $PSScriptRoot
 
@@ -20,4 +23,6 @@ if (-not $up) {
         if ($up) { break }
     }
 }
-Start-Process 'http://127.0.0.1:8642'
+if (-not $NoBrowser) {
+    Start-Process 'http://127.0.0.1:8642'
+}
