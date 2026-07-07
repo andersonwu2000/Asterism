@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Goal, Strategy, StrategyEdge } from '../lib/types'
 import { frontierView, layoutConstellation, X_GAP } from '../lib/layout'
+import { Lean } from '../lib/lean'
 import { goalStatusLabel } from '../lib/vocab'
 import type { LayoutNode } from '../lib/layout'
 
@@ -881,7 +882,7 @@ export default function Constellation({
             </span>
           </div>
           <div className="line-clamp-4 font-mono text-[11px] leading-snug text-ink-dim">
-            {hovered.goal.statement}
+            <Lean code={hovered.goal.statement} />
           </div>
           {(hovered.goal.attempts > 0 || hovered.goal.dead_attempts > 0) && (
             <div className="mt-1 text-[11px] text-ink-faint">

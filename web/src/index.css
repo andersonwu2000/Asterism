@@ -36,6 +36,16 @@
   --color-danger: #f2f3f6; /* broken — brightest; words carry it */
   --color-ok: #9da0a8; /* settled-good — quiet mid-grey */
 
+  /* Code ink (owner-approved exception to the achromatic rule: code
+   * and `code spans` may carry hue). Saturation stays LOW (~15-25%) —
+   * tinted greys, not highlighter; lightness matches the ink ladder
+   * so nothing shouts. UI chrome stays achromatic. */
+  --color-syn-kw: #a3accc; /* keywords — cool steel */
+  --color-syn-sort: #8fb5aa; /* Type/Prop/Sort — sea glass */
+  --color-syn-str: #a9b590; /* strings — moss */
+  --color-syn-num: #c2b190; /* numerals — parchment */
+  --color-syn-attr: #a99e8c; /* @[attributes] — dim parchment */
+
   --font-sans:
     "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;

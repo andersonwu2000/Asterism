@@ -3,6 +3,7 @@ import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
 import { Link } from '../lib/router'
 import { ErrorState } from '../components/ui'
+import { Lean } from '../lib/lean'
 import type { LibraryChapter, LibraryChapterDecl, LibraryChapterFile } from '../lib/types'
 
 /*
@@ -72,7 +73,7 @@ function renderSpans(s: string) {
     if (p.startsWith('`') && p.endsWith('`')) {
       return (
         <code key={i} className="rounded bg-white/[0.06] px-1 font-mono text-[0.92em] text-ink">
-          {p.slice(1, -1)}
+          <Lean code={p.slice(1, -1)} />
         </code>
       )
     }
@@ -176,7 +177,7 @@ function DeclEntry({
       )}
       {d.signature && (
         <pre className="mt-2 ml-[22px] max-w-4xl overflow-x-auto rounded-md border border-edge bg-white/[0.02] px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink">
-          {d.signature}
+          <Lean code={d.signature} />
         </pre>
       )}
     </div>

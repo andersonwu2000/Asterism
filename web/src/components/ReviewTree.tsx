@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { apiGet, apiPost, usePoll } from '../lib/api'
+import { Lean } from '../lib/lean'
 import { SectionLabel } from './ui'
 import type { Goal, ProblemDetail, ReviewDeliverable, ReviewResponse } from '../lib/types'
 import { relTime } from '../lib/format'
@@ -48,7 +49,7 @@ function VouchRow({ name, goal, claim }: { name: string; goal: Goal | null; clai
       </div>
       {goal && (
         <pre className="mt-1 ml-1 line-clamp-3 border-l border-edge pl-2 font-mono text-[11px] leading-snug break-words whitespace-pre-wrap text-ink-dim">
-          {goal.statement}
+          <Lean code={goal.statement} />
         </pre>
       )}
     </div>

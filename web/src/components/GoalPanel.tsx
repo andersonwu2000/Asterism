@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
+import { Lean } from '../lib/lean'
 import { goalStatusLabel, originLabel, strategyStatusLabel } from '../lib/vocab'
 import { SectionLabel } from './ui'
 import type { DeadAttempt, GoalDetail } from '../lib/types'
@@ -101,7 +102,7 @@ export default function GoalPanel({
             </div>
             <SectionLabel>statement</SectionLabel>
             <pre className="mb-4 font-mono text-xs leading-snug break-words whitespace-pre-wrap text-ink">
-              {data.statement}
+              <Lean code={data.statement} />
             </pre>
             <div className="mb-4 text-[11px] break-all text-ink-faint">
               {onOpenFile && data.lean_path.includes('proofs/') ? (

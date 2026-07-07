@@ -3,6 +3,7 @@ import { usePoll } from '../lib/api'
 import { weightedBurn } from '../lib/burn'
 import { Link } from '../lib/router'
 import { compactNumber, relTime } from '../lib/format'
+import { Lean } from '../lib/lean'
 import { goalStatusLabel } from '../lib/vocab'
 import { ErrorState, StatusBadge } from '../components/ui'
 import Constellation from '../components/Constellation'
@@ -127,7 +128,7 @@ function GoalsList({
               className="max-w-md truncate py-2 pr-4 font-mono text-[11px] text-ink-dim"
               title={g.statement}
             >
-              {stripBinders(g.statement)}
+              <Lean code={stripBinders(g.statement)} />
             </td>
             <td className="py-2 pr-4 text-right text-xs text-ink-faint">
               {g.attempts > 0 ? g.attempts : '—'}

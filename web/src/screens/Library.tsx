@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { Link } from '../lib/router'
 import { EmptyState, ErrorState } from '../components/ui'
+import { Lean } from '../lib/lean'
 import type { LibraryDecl, LibraryProblem } from '../lib/types'
 
 /*
@@ -159,7 +160,7 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
           </div>
           {hover.decl.signature && (
             <div className="mt-0.5 line-clamp-3 font-mono text-[10px] leading-snug break-words text-ink-dim">
-              {hover.decl.signature}
+              <Lean code={hover.decl.signature} />
             </div>
           )}
           <div className="mt-1 text-[10px] text-ink-faint">

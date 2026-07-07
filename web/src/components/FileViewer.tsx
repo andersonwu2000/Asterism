@@ -1,23 +1,13 @@
 import { useEffect, useState } from 'react'
 import { usePoll } from '../lib/api'
+import { Lean, leanHtml } from '../lib/lean'
 
-/** Read-only proofs/ + input-file viewer. Minimal hand-rolled Lean
- * highlighting (keywords / comments / strings) — dependency freeze
- * rules out a highlighter package. */
-
-const LEAN_KEYWORDS =
-  /\b(theorem|lemma|def|noncomputable|instance|inductive|structure|class|abbrev|example|by|exact|intro|intros|apply|simp|rw|rfl|calc|have|show|from|let|fun|match|with|do|then|else|if|open|import|namespace|end|section|variable|variables|universe|where|deriving|extends|mutual|sorry)\b/g
+/** Read-only proofs/ + input-file viewer. Lean highlighting comes
+ * from the shared tokenizer in lib/lean (the old regex-replace chain
+ * could match keywords inside its own emitted markup). */
 
 function escapeHtml(src: string): string {
   return src.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
-
-function highlightLean(src: string): string {
-  return escapeHtml(src)
-    .replace(/("(?:[^"\\]|\\.)*")/g, '<span class="text-ok">$1</span>')
-    .replace(/(--[^\n]*)/g, '<span class="text-ink-faint italic">$1</span>')
-    .replace(/(\/-[\s\S]*?-\/)/g, '<span class="text-ink-faint italic">$1</span>')
-    .replace(LEAN_KEYWORDS, '<span class="text-accent">$1</span>')
 }
 
 /* ------------------------------------------------------------------ */
@@ -27,12 +17,19 @@ function highlightLean(src: string): string {
 /* ------------------------------------------------------------------ */
 
 function mdInline(s: string): string {
-  return escapeHtml(s)
-    .replace(
-      /`([^`]+)`/g,
-      '<code class="rounded bg-surface-2 px-1 py-px font-mono text-[12px] text-ink">$1</code>',
+  // `code` spans re-highlight from the RAW text (leanHtml escapes
+  // itself); everything else escapes first
+  const parts = s.split(/(`[^`]+`)/)
+  return parts
+    .map((p) =>
+      p.startsWith('`') && p.endsWith('`') && p.length > 2
+        ? `<code class="rounded bg-surface-2 px-1 py-px font-mono text-[12px] text-ink">${leanHtml(p.slice(1, -1))}</code>`
+        : escapeHtml(p).replace(
+            /\*\*([^*]+)\*\*/g,
+            '<strong class="font-semibold text-ink">$1</strong>',
+          ),
     )
-    .replace(/\*\*([^*]+)\*\*/g, '<strong class="font-semibold text-ink">$1</strong>')
+    .join('')
 }
 
 function Markdown({ src }: { src: string }) {
@@ -65,7 +62,7 @@ function Markdown({ src }: { src: string }) {
       const end = lines.findIndex((l, j) => j > i && l.startsWith('```'))
       const body = lines.slice(i + 1, end === -1 ? undefined : end).join('\n')
       out.push(
-        `<pre class="my-3 overflow-x-auto rounded-md border border-edge bg-bg px-3 py-2 font-mono text-[12px] leading-relaxed text-ink-dim">${escapeHtml(body)}</pre>`,
+        `<pre class="my-3 overflow-x-auto rounded-md border border-edge bg-bg px-3 py-2 font-mono text-[12px] leading-relaxed text-ink-dim">${leanHtml(body)}</pre>`,
       )
       i = end === -1 ? lines.length : end + 1
       continue
@@ -163,10 +160,9 @@ export default function FileViewer({
         {data &&
           data.path === selected &&
           (selected.endsWith('.lean') ? (
-            <pre
-              className="font-mono text-xs leading-relaxed whitespace-pre text-ink-dim"
-              dangerouslySetInnerHTML={{ __html: highlightLean(data.content) }}
-            />
+            <pre className="font-mono text-xs leading-relaxed whitespace-pre text-ink-dim">
+              <Lean code={data.content} />
+            </pre>
           ) : selected.endsWith('.md') ? (
             <Markdown src={data.content} />
           ) : (
