@@ -665,7 +665,7 @@ def test_library_chapter_reads_curated_modules(workspace: Path) -> None:
         encoding="utf-8")
     (workspace / "Library" / "X" / "Main.lean").write_text(
         "import Library.X.Defs\n/-!\n# Main\n-/\n"
-        "/-- A helper step. -/\ntheorem helper : True := trivial\n"
+        "/-- A helper step. -/\ntheorem helper : baseDef = 0 := rfl\n"
         "/-- The main result. -/\n@[simp]\ntheorem mainThm : True := trivial\n",
         encoding="utf-8")
 
@@ -688,6 +688,13 @@ def test_library_chapter_reads_curated_modules(workspace: Path) -> None:
     base = ch["files"][0]["decls"][0]
     assert base["signature"] == "def baseDef : Nat"
     assert base["decl_kind"] == "def"
+    # keystone weight: baseDef is reached for from Main.lean; helper
+    # is not used outside its own module
+    assert base["used_by"] == 1
+    assert main["decls"][0]["used_by"] == 0
+    # the file-level sky: Main imports Defs, within this problem
+    assert main["imports_within"] == ["Library/X/Defs.lean"]
+    assert ch["files"][0]["imports_within"] == []
     assert c.get("/api/library/nope").status_code == 404
 
 

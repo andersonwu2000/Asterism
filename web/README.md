@@ -35,11 +35,13 @@ and one polling hook.
   constellation of its real declarations; search lights matching
   stars; click a star to copy its citation (shift: with import).
   Opening a constellation reads its **chapter**
-  (`#/library/<problem>`): the curated modules as a textbook — module
-  docstrings as prose, each declaration with its docstring and
-  kernel-true signature in source order, main results (the claims a
-  human vouched for) leading. The engine record (goals, attempts)
-  stays on the problem page, one link away.
+  (`#/library/<problem>`), three views: Highlights (the short list
+  worth reading — vouched claims or, where ingest wore the flags off,
+  the keystones other modules demonstrably reach for, plus the
+  vocabulary), Map (modules and their imports), and Modules (the full
+  curated text, one file at a time — docstrings as prose, kernel-true
+  signatures). The engine record (goals, attempts) stays on the
+  problem page, one link away.
 - **Inbox** (`#/inbox`) — decisions. Amend requests with word-level
   diffs + age escalation; ingest sign-offs resolve anchors/claims to
   their statements.

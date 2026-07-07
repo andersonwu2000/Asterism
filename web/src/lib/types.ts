@@ -216,12 +216,18 @@ export interface LibraryChapterDecl {
   decl_kind: string | null
   doc: string
   is_deliverable: boolean
+  /** how many OTHER modules of this problem reach for it — the
+   * keystone weight (ingest weakens the claim flags; demonstrated
+   * reuse is the honest importance signal) */
+  used_by: number
 }
 
 export interface LibraryChapterFile {
   path: string
   module_doc: string
   decls: LibraryChapterDecl[]
+  /** within-problem import edges (paths) — the file-level sky */
+  imports_within: string[]
 }
 
 export interface LibraryChapter {

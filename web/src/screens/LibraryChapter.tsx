@@ -1,19 +1,21 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
 import { Link } from '../lib/router'
 import { ErrorState } from '../components/ui'
-import type { LibraryChapter, LibraryChapterDecl } from '../lib/types'
+import type { LibraryChapter, LibraryChapterDecl, LibraryChapterFile } from '../lib/types'
 
 /*
- * Library chapter — the harvested modules of one problem, read as a
- * textbook (blueprint spirit, in-app). The Library exists so finished
- * work reads at near-Mathlib standard; this page shows THAT text:
- * module docstrings as prose, each declaration with its docstring and
- * kernel-true signature, in source order. Main results (the claims a
- * human vouched for) lead. The engine record (goals, attempts, files)
- * stays on the problem page — one link, not a tab bar.
+ * Library chapter — one harvested problem, read for humans. Nobody
+ * needs all N declarations at once (owner): the landing view is the
+ * short list worth reading — claims where the flag survives, plus the
+ * keystones the other modules demonstrably reach for, plus the
+ * vocabulary. The full text stays browsable one module at a time, and
+ * a small sky draws the modules' import structure. The engine record
+ * (goals, attempts) lives on the problem page — one link away.
  */
+
+type Tab = 'highlights' | 'map' | 'modules'
 
 const DEF_KINDS = new Set(['def', 'induct', 'inductive', 'structure', 'class', 'instance', 'abbrev'])
 
@@ -21,12 +23,12 @@ function moduleOf(path: string): string {
   return path.replace(/\.lean$/, '').split('/').join('.')
 }
 
-function anchorId(name: string | null, slug: string): string {
-  return `decl-${(name ?? slug).replace(/[^\w.']/g, '_')}`
+function leafOf(path: string): string {
+  return moduleOf(path).split('.').pop() ?? path
 }
 
 /** Docstring markdown-lite: paragraphs, `code` spans, # headings,
- * `- ` bullets. Lean's unicode IS the math notation — no TeX pass. */
+ * `- ` bullets, *emphasis*. Lean's unicode IS the math — no TeX pass. */
 function Prose({ text, className = '' }: { text: string; className?: string }) {
   const blocks = text
     .split(/\n\s*\n/)
@@ -89,7 +91,16 @@ function renderSpans(s: string) {
   })
 }
 
-function DeclEntry({ d, module }: { d: LibraryChapterDecl; module: string }) {
+function DeclEntry({
+  d,
+  module,
+  onOpenModule,
+}: {
+  d: LibraryChapterDecl & { file?: string }
+  module: string
+  /** highlights entries carry a "where it lives" jump */
+  onOpenModule?: (path: string) => void
+}) {
   const [copied, setCopied] = useState(false)
   const short = (d.name ?? d.slug).split('.').pop() ?? d.slug
   const isDef = DEF_KINDS.has(d.decl_kind ?? '')
@@ -103,7 +114,7 @@ function DeclEntry({ d, module }: { d: LibraryChapterDecl; module: string }) {
       })
   }
   return (
-    <div id={anchorId(d.name, d.slug)} className="group scroll-mt-20">
+    <div className="group">
       <div className="flex items-baseline gap-2.5">
         {/* the sky's glyphs carry over: diamond = meaning-bearer (def),
             round = proposition */}
@@ -131,11 +142,31 @@ function DeclEntry({ d, module }: { d: LibraryChapterDecl; module: string }) {
         </button>
         <span className="text-[10px] text-ink-faint">{d.decl_kind ?? ''}</span>
         {d.is_deliverable && (
-          <span className="text-[10px] tracking-wide text-star" title="a result the Manifest asked for — accepted at sign-off">
+          <span
+            className="text-[10px] tracking-wide text-star"
+            title="a result the Manifest asked for — accepted at sign-off"
+          >
             main result
           </span>
         )}
+        {d.used_by > 0 && (
+          <span
+            className="tnum text-[10px] text-ink-faint"
+            title={`referenced in ${d.used_by} other module${d.used_by === 1 ? '' : 's'} of this chapter`}
+          >
+            used in {d.used_by}
+          </span>
+        )}
         {copied && <span className="text-[10px] text-ink-faint">copied</span>}
+        {onOpenModule && d.file && (
+          <button
+            className="ml-auto cursor-pointer font-mono text-[10px] text-ink-faint transition-colors hover:text-ink"
+            onClick={() => onOpenModule(d.file!)}
+            title="read it in its module"
+          >
+            {leafOf(d.file)} →
+          </button>
+        )}
       </div>
       {d.doc && (
         <Prose
@@ -152,11 +183,214 @@ function DeclEntry({ d, module }: { d: LibraryChapterDecl; module: string }) {
   )
 }
 
+/** One module, fully read: docstring prose + every decl in source
+ * order. The only place the whole text unrolls — one file at a time. */
+function ModuleReading({ f }: { f: LibraryChapterFile }) {
+  const mod = moduleOf(f.path)
+  return (
+    <div>
+      <div className="flex items-baseline gap-3 border-b border-edge pb-2">
+        <h2 className="font-display text-[18px] text-ink">{leafOf(f.path)}</h2>
+        <span className="truncate font-mono text-[11px] text-ink-faint" title={f.path}>
+          {mod}
+        </span>
+        <span className="tnum ml-auto text-[11px] text-ink-faint">{f.decls.length}</span>
+      </div>
+      {f.module_doc && (
+        <Prose
+          text={f.module_doc}
+          className="mt-3 max-w-[76ch] text-[13px] leading-relaxed text-ink-dim"
+        />
+      )}
+      <div className="mt-5 flex flex-col gap-7">
+        {f.decls.map((d) => (
+          <DeclEntry key={d.slug} d={d} module={mod} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** The file-level sky: modules as stars, import edges as lines —
+ * structure the decl scatter never had (owner's redirection). */
+function ModuleMap({
+  files,
+  onOpen,
+}: {
+  files: LibraryChapterFile[]
+  onOpen: (path: string) => void
+}) {
+  const layout = useMemo(() => {
+    const depth = new Map<string, number>()
+    const byPath = new Map(files.map((f) => [f.path, f]))
+    const layerOf = (path: string, guard: number): number => {
+      const memo = depth.get(path)
+      if (memo !== undefined) return memo
+      if (guard > files.length + 1) return 0
+      const f = byPath.get(path)
+      const d =
+        !f || f.imports_within.length === 0
+          ? 0
+          : Math.max(...f.imports_within.map((i) => layerOf(i, guard + 1))) + 1
+      depth.set(path, d)
+      return d
+    }
+    for (const f of files) layerOf(f.path, 0)
+    const layers = new Map<number, string[]>()
+    for (const f of files) {
+      const l = depth.get(f.path) ?? 0
+      layers.set(l, [...(layers.get(l) ?? []), f.path])
+    }
+    // wide layers wrap (max 6 per visual row) — the map must fit the
+    // page, not scroll off it
+    const XG = 150
+    const YG = 105
+    const PER_ROW = 6
+    const rows: string[][] = []
+    for (const l of [...layers.keys()].sort((a, b) => a - b)) {
+      const paths = layers.get(l)!
+      paths.sort()
+      for (let i = 0; i < paths.length; i += PER_ROW) {
+        rows.push(paths.slice(i, i + PER_ROW))
+      }
+    }
+    const maxRow = Math.max(...rows.map((r) => r.length))
+    const width = Math.max(maxRow * XG + 60, 480)
+    const pos = new Map<string, { x: number; y: number }>()
+    rows.forEach((row, ri) => {
+      row.forEach((p, i) => {
+        pos.set(p, {
+          x: width / 2 + (i - (row.length - 1) / 2) * XG,
+          y: 55 + ri * YG,
+        })
+      })
+    })
+    return { pos, width, height: 60 + rows.length * YG }
+  }, [files])
+
+  const [hover, setHover] = useState<string | null>(null)
+  return (
+    <div className="overflow-x-auto">
+      <svg width={layout.width} height={layout.height} className="mx-auto block">
+        {files.flatMap((f) =>
+          f.imports_within.map((imp) => {
+            const a = layout.pos.get(imp)
+            const b = layout.pos.get(f.path)
+            if (!a || !b) return null
+            const lit = hover === f.path || hover === imp
+            return (
+              <line
+                key={`${f.path}<${imp}`}
+                x1={a.x}
+                y1={a.y}
+                x2={b.x}
+                y2={b.y}
+                stroke="var(--color-starlight)"
+                strokeWidth={1}
+                strokeOpacity={hover === null ? 0.3 : lit ? 0.65 : 0.08}
+              />
+            )
+          }),
+        )}
+        {files.map((f) => {
+          const p = layout.pos.get(f.path)
+          if (!p) return null
+          const r = 5 + Math.sqrt(f.decls.length) * 1.6
+          const mains = f.decls.filter((d) => d.is_deliverable).length
+          return (
+            <g
+              key={f.path}
+              transform={`translate(${p.x},${p.y})`}
+              className="cursor-pointer"
+              onMouseEnter={() => setHover(f.path)}
+              onMouseLeave={() => setHover(null)}
+              onClick={() => onOpen(f.path)}
+            >
+              <circle
+                r={r}
+                fill="var(--color-star)"
+                stroke="var(--color-starlight)"
+                strokeWidth={1.2}
+                opacity={hover === null || hover === f.path ? 1 : 0.55}
+              />
+              {mains > 0 && (
+                <circle
+                  r={r + 4}
+                  fill="none"
+                  stroke="var(--color-star)"
+                  strokeWidth={1}
+                  opacity={0.9}
+                />
+              )}
+              <title>{`${moduleOf(f.path)} — ${f.decls.length} declarations${mains > 0 ? `, ${mains} main` : ''}`}</title>
+              <text
+                y={r + 16}
+                textAnchor="middle"
+                className="pointer-events-none select-none"
+                fill={hover === f.path ? 'var(--color-ink)' : 'var(--color-ink-dim)'}
+                fontSize={11}
+                fontFamily="var(--font-mono)"
+              >
+                {leafOf(f.path)}
+              </text>
+              <text
+                y={r + 30}
+                textAnchor="middle"
+                className="tnum pointer-events-none select-none"
+                fill="var(--color-ink-faint)"
+                fontSize={9}
+              >
+                {f.decls.length}
+              </text>
+            </g>
+          )
+        })}
+      </svg>
+      <p className="pb-2 text-center text-[11px] text-ink-faint">
+        modules and their imports — ringed stars hold main results; click one to read it
+      </p>
+    </div>
+  )
+}
+
+function HighlightSection({
+  title,
+  hint,
+  decls,
+  onOpenModule,
+}: {
+  title: string
+  hint?: string
+  decls: (LibraryChapterDecl & { file: string })[]
+  onOpenModule: (path: string) => void
+}) {
+  if (decls.length === 0) return null
+  return (
+    <section className="mt-8">
+      <div className="mb-4 border-b border-edge pb-2 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
+        {title}
+        {hint && (
+          <span className="ml-3 font-normal tracking-normal normal-case text-ink-faint/80">
+            {hint}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-col gap-7">
+        {decls.map((d) => (
+          <DeclEntry key={d.slug} d={d} module={moduleOf(d.file)} onOpenModule={onOpenModule} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
 export default function LibraryChapterScreen({ problem }: { problem: string }) {
   const { data, error, loading } = usePoll<LibraryChapter>(
     `/api/library/${encodeURIComponent(problem)}`,
     30000,
   )
+  const [tab, setTab] = useState<Tab>('highlights')
+  const [activeFile, setActiveFile] = useState<string | null>(null)
 
   if (loading) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
   if (error && !data) return <ErrorState error={error} />
@@ -165,7 +399,44 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
   const ns = problem.includes('.') ? problem.slice(0, problem.indexOf('.')) : null
   const leaf = ns ? problem.slice(ns.length + 1) : problem
   const declCount = data.files.reduce((s, f) => s + f.decls.length, 0)
-  const mains = data.files.flatMap((f) => f.decls.filter((d) => d.is_deliverable))
+
+  const all = data.files.flatMap((f) => f.decls.map((d) => ({ ...d, file: f.path })))
+  const mains = all.filter((d) => d.is_deliverable)
+  // ingest weakens the claim flags (old harvests never had them):
+  // when none survive, the results other modules reach for stand in
+  const leadIsVouched = mains.length > 0
+  const lead = leadIsVouched
+    ? mains
+    : all
+        .filter((d) => !DEF_KINDS.has(d.decl_kind ?? '') && d.used_by >= 1)
+        .sort((a, b) => b.used_by - a.used_by)
+        .slice(0, 6)
+  const leadSet = new Set(lead.map((d) => d.slug))
+  const vocab = all
+    .filter((d) => DEF_KINDS.has(d.decl_kind ?? '') && !leadSet.has(d.slug))
+    .sort((a, b) => b.used_by - a.used_by)
+    .slice(0, 12)
+  const vocabTotal = all.filter(
+    (d) => DEF_KINDS.has(d.decl_kind ?? '') && !leadSet.has(d.slug),
+  ).length
+  const keystones = all
+    .filter(
+      (d) => !leadSet.has(d.slug) && !DEF_KINDS.has(d.decl_kind ?? '') && d.used_by >= 1,
+    )
+    .sort((a, b) => b.used_by - a.used_by)
+    .slice(0, 8)
+
+  const openModule = (path: string) => {
+    setActiveFile(path)
+    setTab('modules')
+  }
+  const active = data.files.find((f) => f.path === activeFile) ?? data.files[0]
+
+  const tabs: { id: Tab; label: string }[] = [
+    { id: 'highlights', label: 'Highlights' },
+    { id: 'map', label: 'Map' },
+    { id: 'modules', label: `Modules (${data.files.length})` },
+  ]
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
@@ -189,59 +460,91 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
         </Link>
       </div>
 
-      {mains.length > 0 && (
-        <div className="mt-5 rounded-lg border border-edge bg-white/[0.015] px-4 py-3">
-          <div className="mb-2 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
-            main results
-          </div>
-          <div className="flex flex-col gap-1">
-            {mains.map((d) => (
-              <a
-                key={d.slug}
-                href={`#library-jump`}
-                onClick={(e) => {
-                  e.preventDefault()
-                  document
-                    .getElementById(anchorId(d.name, d.slug))
-                    ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                }}
-                className="w-fit font-mono text-xs text-ink-dim transition-colors hover:text-starlight"
-              >
-                {(d.name ?? d.slug).split('.').pop()}
-              </a>
-            ))}
-          </div>
+      <nav className="mt-4 flex gap-5 border-b border-edge">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            className={`relative cursor-pointer pb-2 text-xs transition-colors duration-150 ${
+              tab === t.id ? 'text-ink' : 'text-ink-dim hover:text-ink'
+            }`}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+            {tab === t.id && (
+              <span className="absolute inset-x-0 -bottom-px h-px bg-ink" aria-hidden />
+            )}
+          </button>
+        ))}
+      </nav>
+
+      {tab === 'highlights' && (
+        <div>
+          <HighlightSection
+            title={leadIsVouched ? 'main results' : 'keystones'}
+            hint={
+              leadIsVouched
+                ? 'the results a human vouched for at sign-off'
+                : 'no claim flags survive this harvest — these are the results the other modules reach for'
+            }
+            decls={lead}
+            onOpenModule={openModule}
+          />
+          <HighlightSection
+            title="vocabulary"
+            hint={
+              vocabTotal > vocab.length
+                ? `the definitions everything speaks in — ${vocabTotal - vocab.length} quieter ones stay in their modules`
+                : 'the definitions everything speaks in'
+            }
+            decls={vocab}
+            onOpenModule={openModule}
+          />
+          {leadIsVouched && (
+            <HighlightSection
+              title="workhorses"
+              hint="lemmas the other modules keep reaching for"
+              decls={keystones}
+              onOpenModule={openModule}
+            />
+          )}
+          {lead.length === 0 && vocab.length === 0 && keystones.length === 0 && (
+            <p className="mt-8 text-sm text-ink-faint">
+              Nothing stands out yet — browse the modules directly.
+            </p>
+          )}
         </div>
       )}
 
-      {data.files.map((f) => {
-        const mod = moduleOf(f.path)
-        const modLeaf = mod.split('.').pop() ?? mod
-        return (
-          <section key={f.path} className="mt-10">
-            <div className="flex items-baseline gap-3 border-b border-edge pb-2">
-              <h2 className="font-display text-[18px] text-ink">{modLeaf}</h2>
-              <span className="truncate font-mono text-[11px] text-ink-faint" title={f.path}>
-                {mod}
-              </span>
-              <span className="tnum ml-auto text-[11px] text-ink-faint">
-                {f.decls.length}
-              </span>
-            </div>
-            {f.module_doc && (
-              <Prose
-                text={f.module_doc}
-                className="mt-3 max-w-[76ch] text-[13px] leading-relaxed text-ink-dim"
-              />
-            )}
-            <div className="mt-5 flex flex-col gap-7">
-              {f.decls.map((d) => (
-                <DeclEntry key={d.slug} d={d} module={mod} />
+      {tab === 'map' && (
+        <div className="mt-6">
+          <ModuleMap files={data.files} onOpen={openModule} />
+        </div>
+      )}
+
+      {tab === 'modules' && (
+        <div className="mt-5 flex gap-6">
+          <div className="w-56 shrink-0">
+            <div className="flex flex-col gap-0.5">
+              {data.files.map((f) => (
+                <button
+                  key={f.path}
+                  className={`flex cursor-pointer items-baseline justify-between rounded px-2 py-1.5 text-left font-mono text-xs transition-colors ${
+                    f.path === active?.path
+                      ? 'bg-surface-2 text-ink'
+                      : 'text-ink-dim hover:bg-surface-2 hover:text-ink'
+                  }`}
+                  onClick={() => setActiveFile(f.path)}
+                  title={f.path}
+                >
+                  <span className="truncate">{leafOf(f.path)}</span>
+                  <span className="tnum ml-2 text-[10px] text-ink-faint">{f.decls.length}</span>
+                </button>
               ))}
             </div>
-          </section>
-        )
-      })}
+          </div>
+          <div className="min-w-0 flex-1">{active && <ModuleReading f={active} />}</div>
+        </div>
+      )}
     </div>
   )
 }

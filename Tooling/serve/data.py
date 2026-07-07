@@ -729,13 +729,14 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
     per_file: "dict[str, list[sqlite3.Row]]" = {}
     for r in rows:
         per_file.setdefault(str(r["target_file"] or ""), []).append(r)
+    texts: "dict[str, str]" = {}
     scanned: "dict[str, tuple[str, dict, list[str]]]" = {}
     for path in per_file:
         try:
-            text = (workspace / path).read_text(encoding="utf-8")
+            texts[path] = (workspace / path).read_text(encoding="utf-8")
         except OSError:
-            text = ""
-        scanned[path] = _scan_library_file(text)
+            texts[path] = ""
+        scanned[path] = _scan_library_file(texts[path])
 
     # Import order tells the story: a module comes after the siblings
     # it imports (Kahn; ties keep path order for determinism).
@@ -759,9 +760,16 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
             ordered.extend(pending)
             break
 
+    # Cross-module usage: in how many OTHER modules of this problem
+    # does the decl's name appear? Ingest weakens the anchor/claim
+    # flags (older harvests never had them), but a lemma the other
+    # files keep reaching for is a keystone by demonstration — the
+    # honest importance weight for the highlights view. Whole-word
+    # heuristic (blueprint precedent), display only.
+    mod_paths = {v: k for k, v in mod_of.items()}
     files = []
     for path in ordered:
-        module_doc, docs, _imports = scanned[path]
+        module_doc, docs, imports = scanned[path]
         decls = []
         for r in per_file[path]:
             slug = str(r["slug"])
@@ -769,6 +777,10 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
             offset, doc, file_kind, file_stmt = docs.get(
                 short, (1 << 30, "", "", ""))
             meta = goal_meta.get(slug, {})
+            pat = re.compile(
+                r"(?<![\w'])" + re.escape(short) + r"(?![\w'])")
+            used_by = sum(
+                1 for q, t in texts.items() if q != path and pat.search(t))
             decls.append({
                 "slug": slug,
                 "name": r["target_name"],
@@ -778,12 +790,20 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
                 "decl_kind": r["decl_kind"] or file_kind or None,
                 "doc": doc,
                 "is_deliverable": bool(meta.get("is_deliverable", False)),
+                "used_by": used_by,
                 "_offset": offset,
             })
         decls.sort(key=lambda d: d["_offset"])  # source order = narrative
         for d in decls:
             del d["_offset"]
-        files.append({"path": path, "module_doc": module_doc, "decls": decls})
+        files.append({
+            "path": path,
+            "module_doc": module_doc,
+            "decls": decls,
+            # within-problem import edges — the file-level sky
+            "imports_within": [mod_paths[i] for i in imports
+                               if i in mod_paths and mod_paths[i] != path],
+        })
     return {
         "problem": problem,
         "bridged_at": prow["library_bridged_at"] if prow else None,
