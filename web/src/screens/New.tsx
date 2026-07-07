@@ -3,7 +3,8 @@ import { apiGet, apiPost } from '../lib/api'
 import { navigate } from '../lib/router'
 import { Button } from '../components/ui'
 import ListField from '../components/ListField'
-import { DiagList, countErrors, evalLean, type EvalDiag } from '../components/LeanProbe'
+import { DiagList, countErrors } from '../components/LeanProbe'
+import { caretLineCol, useLeanSession, type LeanCursor } from '../lib/leanSession'
 import type { PaperShelfItem } from '../lib/types'
 
 /*
@@ -54,64 +55,39 @@ export default function New() {
       return next
     })
 
-  // live authoring check: pause typing → the pinned Lean elaborates on
-  // the warm engine, diagnostics land under each buffer. Warming
-  // engines retry on their own; results for stale text are orphaned.
-  const [check, setCheck] = useState<{
-    phase: 'idle' | 'warming' | 'checking' | 'done'
-    defs: EvalDiag[]
-    root: EvalDiag[]
-    pre: EvalDiag[]
-  }>({ phase: 'idle', defs: [], root: [], pre: [] })
-  useEffect(() => {
-    const hasText = defs.trim() !== '' || root.trim() !== ''
-    if (!showLean || !hasText) {
-      setCheck({ phase: 'idle', defs: [], root: [], pre: [] })
-      return
-    }
-    let cancelled = false
-    let retry: number | null = null
-    const go = async () => {
-      if (cancelled) return
-      setCheck((c) => ({ ...c, phase: 'checking' }))
-      try {
-        const parts: { id: string; code: string }[] = []
-        if (defs.trim() !== '') parts.push({ id: 'defs', code: defs })
-        if (root.trim() !== '') parts.push({ id: 'root', code: root })
-        const r = await evalLean(parts, [])
-        if (cancelled) return
-        if (r.status === 'warming') {
-          setCheck((c) => ({ ...c, phase: 'warming' }))
-          retry = window.setTimeout(() => void go(), 5000)
-          return
-        }
-        setCheck({
-          phase: 'done',
-          defs: r.parts.defs ?? [],
-          root: r.parts.root ?? [],
-          pre: r.preamble,
-        })
-      } catch {
-        if (!cancelled) setCheck({ phase: 'idle', defs: [], root: [], pre: [] })
-      }
-    }
-    const t = window.setTimeout(() => void go(), 900)
-    return () => {
-      cancelled = true
-      window.clearTimeout(t)
-      if (retry != null) window.clearTimeout(retry)
-    }
-  }, [defs, root, showLean])
+  // the authoring InfoView: one interactive engine session (reserved
+  // slot). Pause typing → elaborate + diagnostics; move the caret →
+  // the goal at that position (live inside `by` blocks).
+  const [cursor, setCursor] = useState<LeanCursor | null>(null)
+  const trackCaret = (part: string) => (e: { currentTarget: HTMLTextAreaElement }) =>
+    setCursor({ part, ...caretLineCol(e.currentTarget) })
+  const check = useLeanSession({
+    enabled: showLean && (defs.trim() !== '' || root.trim() !== ''),
+    parts: [
+      { id: 'defs', code: defs },
+      { id: 'root', code: root },
+    ],
+    cursor,
+  })
+  const nErr = countErrors([
+    ...check.preamble,
+    ...(check.parts.defs ?? []),
+    ...(check.parts.root ?? []),
+  ])
   const checkWord =
     check.phase === 'warming'
       ? 'engine warming — checks resume on their own'
-      : check.phase === 'checking'
-        ? 'checking…'
-        : check.phase === 'done'
-          ? countErrors([...check.pre, ...check.defs, ...check.root]) === 0
-            ? '✓ elaborates'
-            : `${countErrors([...check.pre, ...check.defs, ...check.root])} error${countErrors([...check.pre, ...check.defs, ...check.root]) === 1 ? '' : 's'}`
-          : ''
+      : check.phase === 'busy'
+        ? 'engine editor slot is busy elsewhere — retrying'
+        : check.phase === 'checking' || check.phase === 'connecting'
+          ? 'checking…'
+          : check.detail
+            ? `engine error: ${check.detail}`
+            : check.phase === 'ready'
+              ? nErr === 0
+                ? '✓ elaborates'
+                : `${nErr} error${nErr === 1 ? '' : 's'}`
+              : ''
 
   const nameOk = NAME_RE.test(name)
   // concrete reason, live as the user types (or after a blur): silent
@@ -229,7 +205,7 @@ export default function New() {
       {showLean && (
         <div className="mb-3 flex flex-col gap-3">
           <div className="min-h-4 text-[11px] text-ink-faint">{checkWord}</div>
-          {check.pre.length > 0 && <DiagList diags={check.pre} />}
+          {check.preamble.length > 0 && <DiagList diags={check.preamble} />}
           <div>
             <div className="mb-1 text-[11px] text-ink-faint">
               Defs.lean — your own definitions; the engine must use these, never re-derive them.
@@ -238,10 +214,14 @@ export default function New() {
               className="h-40 w-full resize-y rounded-md border border-edge bg-surface p-3 font-mono text-xs leading-relaxed text-ink focus:border-ink-faint focus:outline-none"
               placeholder={`import Mathlib\n\nnamespace Problems.${name || '<name>'}\n\n-- your definitions\n\nend Problems.${name || '<name>'}`}
               value={defs}
-              onChange={(e) => setDefs(e.target.value)}
+              onChange={(e) => {
+                setDefs(e.target.value)
+                trackCaret('defs')(e)
+              }}
+              onSelect={trackCaret('defs')}
               spellCheck={false}
             />
-            <DiagList diags={check.defs} />
+            <DiagList diags={check.parts.defs ?? []} />
           </div>
           <div>
             <div className="mb-1 text-[11px] text-ink-faint">
@@ -252,11 +232,43 @@ export default function New() {
               className="h-40 w-full resize-y rounded-md border border-edge bg-surface p-3 font-mono text-xs leading-relaxed text-ink focus:border-ink-faint focus:outline-none"
               placeholder={`import Mathlib\nimport Problems.${name || '<name>'}.Defs\n\nnamespace Problems.${name || '<name>'}\n\ntheorem main : <statement> := by sorry\n\nend Problems.${name || '<name>'}`}
               value={root}
-              onChange={(e) => setRoot(e.target.value)}
+              onChange={(e) => {
+                setRoot(e.target.value)
+                trackCaret('root')(e)
+              }}
+              onSelect={trackCaret('root')}
               spellCheck={false}
             />
-            <DiagList diags={check.root} />
+            <DiagList diags={check.parts.root ?? []} />
           </div>
+          {check.phase !== 'idle' && cursor && (
+            <div className="rounded-md border border-edge bg-white/[0.02]">
+              <div className="flex items-baseline gap-2 border-b border-edge px-3 py-1.5">
+                <span className="text-[10px] tracking-widest text-ink-faint uppercase">
+                  goal at cursor
+                </span>
+                <span className="font-mono text-[10px] text-ink-faint">
+                  {cursor.part} L{cursor.line}
+                </span>
+              </div>
+              <pre className="max-h-56 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
+                {check.goal && check.goal !== 'no goals' ? (
+                  check.goal.replace(/^```lean\n?/, '').replace(/\n?```\s*$/, '')
+                ) : (
+                  <span className="text-ink-faint">
+                    {check.goal === 'no goals'
+                      ? 'no goals — cursor is outside an open proof'
+                      : '— place the cursor inside a `by` proof to see its goal'}
+                  </span>
+                )}
+              </pre>
+              {check.note && (
+                <div className="border-t border-edge px-3 py-1.5 text-[10px] text-ink-faint">
+                  {check.note}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

@@ -29,7 +29,9 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+import asyncio
+
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 _MAX_CODE = 200_000  # chars, all parts combined — scratch, not upload
@@ -95,6 +97,22 @@ def _assemble(parts: "list[tuple[str, str]]",
     return "\n".join(lines) + "\n", len(preamble), spans
 
 
+def _global_cursor(cursor: "dict | None",
+                   spans: "list[tuple[str, int, int]]",
+                   ) -> "tuple[int, int] | None":
+    """{part, line, col} in a part's local frame → (global_line, col)
+    in the assembled file. None when the cursor doesn't resolve."""
+    if not cursor or not spans:
+        return None
+    for pid, start, end in spans:
+        if pid == cursor.get("part"):
+            line = cursor.get("line")
+            if not isinstance(line, int) or line < 1:
+                return None
+            return min(start + line - 1, end), int(cursor.get("col") or 0)
+    return None
+
+
 def _map_diags(diags: "list[dict]", preamble_lines: int,
                spans: "list[tuple[str, int, int]]") -> "dict[str, list[dict]]":
     """Global diagnostic lines → {part_id: [diag with part-local line]}.
@@ -122,12 +140,15 @@ def _map_diags(diags: "list[dict]", preamble_lines: int,
 
 def register(app: FastAPI, workspace: Path) -> None:
 
-    def _ensure_gateway() -> "str | None":
+    def _ensure_gateway(force: bool = False) -> "str | None":
         """'ready' → proceed; otherwise kick ONE warm-up thread and
-        report the phase for the frontend's retry loop."""
+        report the phase for the frontend's retry loop. `force=True`
+        kicks even on a healthy gateway — start_gateway's fingerprint
+        gate then kills a stale-code one and relaunches (the serve path
+        that discovers staleness: /interactive 404s on an old build)."""
         from ..lsp import lifecycle as gw
         phase = gw.gateway_phase(workspace)
-        if phase == "ready":
+        if phase == "ready" and not force:
             return None
         global _warm_started
         with _warm_lock:
@@ -207,3 +228,106 @@ def register(app: FastAPI, workspace: Path) -> None:
             "parts": {pid: mapped.get(pid, []) for pid, _, _ in spans},
             "preamble": mapped.get("_preamble", []),
         }
+
+    @app.websocket("/api/lean/session")
+    async def lean_session(ws: WebSocket) -> None:
+        """The browser InfoView: one interactive gateway session per
+        connection (the RESERVED slot — pipelines and the editor never
+        touch each other's slots). Messages in: {type: "sync", parts,
+        imports?, cursor?, seq} for buffer changes, {type: "cursor",
+        cursor, seq} for caret moves. Out: state / goal / warming /
+        busy / error, each echoing seq so the client drops stale
+        responses. Disconnect releases the slot."""
+        from ..lsp import lifecycle as gw
+        await ws.accept()
+        token: "str | None" = None
+        spans: "list[tuple[str, int, int]]" = []
+        n_pre = 0
+        try:
+            while True:
+                msg = await ws.receive_json()
+                seq = msg.get("seq")
+                kind = msg.get("type")
+                if kind == "sync":
+                    parts = [(str(p.get("id")), str(p.get("code") or ""))
+                             for p in (msg.get("parts") or [])
+                             if str(p.get("code") or "").strip()]
+                    if not parts:
+                        await ws.send_json({"type": "state", "seq": seq,
+                                            "parts": {}, "preamble": [],
+                                            "goal": None, "note": None})
+                        continue
+                    phase = _ensure_gateway()
+                    if phase is not None:
+                        await ws.send_json({"type": "warming", "seq": seq,
+                                            "phase": phase})
+                        continue
+                    text, n_pre, spans = _assemble(
+                        parts, list(msg.get("imports") or []))
+                    cur = _global_cursor(msg.get("cursor"), spans)
+                    r: dict = {}
+                    for _attempt in (1, 2):
+                        if token is None:
+                            reg = await asyncio.to_thread(
+                                gw.interactive_register, text)
+                            if reg.get("http_status") == 404:
+                                # healthy but STALE gateway (no
+                                # /interactive on the old build) —
+                                # force the fingerprint relaunch and
+                                # let the client's warming retry land
+                                # on the fresh one
+                                _ensure_gateway(force=True)
+                                await ws.send_json({
+                                    "type": "warming", "seq": seq,
+                                    "phase": "restarting"})
+                                r = {}
+                                break
+                            if reg.get("error"):
+                                busy = reg.get("http_status") == 409
+                                await ws.send_json({
+                                    "type": "busy" if busy else "error",
+                                    "seq": seq,
+                                    "detail": str(reg["error"])})
+                                r = {}
+                                break
+                            token = str(reg["session_token"])
+                        r = await asyncio.to_thread(
+                            gw.interactive_sync, token, text,
+                            cur[0] if cur else None,
+                            cur[1] if cur else 0)
+                        if r.get("error"):
+                            # swept claim / gateway restart — one clean
+                            # re-register before surfacing the error
+                            token = None
+                            continue
+                        break
+                    if not r:
+                        continue
+                    if r.get("error"):
+                        await ws.send_json({"type": "error", "seq": seq,
+                                            "detail": str(r["error"])})
+                        continue
+                    mapped = _map_diags(list(r.get("diagnostics") or []),
+                                        n_pre, spans)
+                    await ws.send_json({
+                        "type": "state", "seq": seq,
+                        "parts": {pid: mapped.get(pid, [])
+                                  for pid, _, _ in spans},
+                        "preamble": mapped.get("_preamble", []),
+                        "goal": r.get("goal"), "note": r.get("note")})
+                elif kind == "cursor" and token is not None:
+                    cur = _global_cursor(msg.get("cursor"), spans)
+                    if cur is None:
+                        continue
+                    r = await asyncio.to_thread(
+                        gw.interactive_goal, token, cur[0], cur[1])
+                    if r.get("error"):
+                        continue  # cursor peeks are best-effort
+                    await ws.send_json({"type": "goal", "seq": seq,
+                                        "goal": r.get("goal"),
+                                        "note": r.get("note")})
+        except WebSocketDisconnect:
+            pass
+        finally:
+            if token is not None:
+                await asyncio.to_thread(gw.interactive_release, token)

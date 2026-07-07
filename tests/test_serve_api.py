@@ -1346,3 +1346,82 @@ def test_lean_eval_assemble_hoists_later_part_imports() -> None:
     lines = text.splitlines()
     assert lines[spans[1][1] - 1] == "" and lines[spans[1][1]] == ""
     assert spans[1][2] - spans[1][1] + 1 == len(root.splitlines())
+
+
+def test_lean_session_ws_sync_and_cursor(workspace: Path,
+                                         monkeypatch) -> None:
+    """WS bridge: sync assembles parts, registers an interactive
+    session, maps diagnostics per part, carries the cursor goal;
+    cursor-only messages query the goal without re-sync; disconnect
+    releases the session."""
+    from Tooling.lsp import lifecycle as gw
+    from Tooling.serve import lean_eval as le
+    monkeypatch.setattr(le, "_warm_started", False)
+    monkeypatch.setattr(gw, "gateway_phase", lambda ws: "ready")
+    calls: list = []
+
+    def fake_register(content):
+        calls.append(("register", content))
+        return {"session_token": "tok1"}
+
+    def fake_sync(token, content, line=None, col=0):
+        calls.append(("sync", token, line, col))
+        return {"diagnostics": [
+            {"line": 2, "col": 0, "severity": "error", "message": "bad"}],
+            "goal": "⊢ True", "note": None}
+
+    def fake_goal(token, line, col):
+        calls.append(("goal", token, line, col))
+        return {"goal": "⊢ 2 + 2 = 4", "note": None}
+
+    def fake_release(token):
+        calls.append(("release", token))
+        return {"ok": True}
+
+    monkeypatch.setattr(gw, "interactive_register", fake_register)
+    monkeypatch.setattr(gw, "interactive_sync", fake_sync)
+    monkeypatch.setattr(gw, "interactive_goal", fake_goal)
+    monkeypatch.setattr(gw, "interactive_release", fake_release)
+
+    client = _client(workspace)
+    with client.websocket_connect("/api/lean/session") as ws:
+        ws.send_json({"type": "sync", "seq": 1,
+                      "parts": [{"id": "defs", "code": "def a := 1"}],
+                      "cursor": {"part": "defs", "line": 1, "col": 3}})
+        r = ws.receive_json()
+        assert r["type"] == "state" and r["seq"] == 1
+        # global line 2 (after the auto `import Mathlib`) → defs line 1
+        assert r["parts"]["defs"] == [
+            {"line": 1, "col": 0, "severity": "error", "message": "bad"}]
+        assert r["goal"] == "⊢ True"
+        ws.send_json({"type": "cursor", "seq": 2,
+                      "cursor": {"part": "defs", "line": 1, "col": 0}})
+        r2 = ws.receive_json()
+        assert r2["type"] == "goal" and r2["goal"] == "⊢ 2 + 2 = 4"
+    assert ("release", "tok1") in calls
+    # sync carried the cursor mapped to the assembled frame (line 2)
+    assert ("sync", "tok1", 2, 3) in calls
+
+
+def test_lean_session_ws_busy_and_warming(workspace: Path,
+                                          monkeypatch) -> None:
+    """Reserved slot held elsewhere → busy; cold gateway → warming."""
+    from Tooling.lsp import lifecycle as gw
+    from Tooling.serve import lean_eval as le
+    monkeypatch.setattr(le, "_warm_started", True)  # no warm kick
+    monkeypatch.setattr(gw, "gateway_phase", lambda ws: "ready")
+    monkeypatch.setattr(gw, "interactive_register",
+                        lambda content: {"error": "interactive slot busy",
+                                         "http_status": 409})
+    client = _client(workspace)
+    with client.websocket_connect("/api/lean/session") as ws:
+        ws.send_json({"type": "sync", "seq": 7,
+                      "parts": [{"id": "p", "code": "#check 1"}]})
+        r = ws.receive_json()
+        assert r["type"] == "busy" and r["seq"] == 7
+    monkeypatch.setattr(gw, "gateway_phase", lambda ws: None)
+    with client.websocket_connect("/api/lean/session") as ws:
+        ws.send_json({"type": "sync", "seq": 8,
+                      "parts": [{"id": "p", "code": "#check 1"}]})
+        r = ws.receive_json()
+        assert r["type"] == "warming" and r["seq"] == 8

@@ -81,6 +81,11 @@ class WorkerSlot:
     # Lifetime ownership. None = available for claim. Set at
     # register_session, cleared at release_session.
     claimed_by: str | None = None
+    # Reserved for the serve UI's interactive editor (owner's
+    # pipeline=slot identity, both directions): pipeline claims skip
+    # reserved slots, interactive claims take ONLY reserved slots, and
+    # borrow probes never touch them.
+    reserved: bool = False
     # Whose content is currently didChanged in this slot. May lag
     # `claimed_by` until the first tool call (warmup state has neither
     # set). Stale after release — next claim's first tool call rewrites.
@@ -186,7 +191,8 @@ def _log_for(meta: SessionMetadata | None, event: dict) -> None:
 
 # ─── Backend + worker pool lifecycle ──────────────────────
 
-def _start_workers(workspace: Path, w_count: int) -> None:
+def _start_workers(workspace: Path, w_count: int,
+                   n_interactive: int = 0) -> None:
     """Pre-warm `w_count` workers at gateway startup. Each worker is a
     didOpen on a distinct slot URI (`_gateway_slot_<i>.lean`) with
     `import Mathlib\\n` content. Lean elaborates Mathlib once per
@@ -215,13 +221,15 @@ def _start_workers(workspace: Path, w_count: int) -> None:
         slots_dir = workspace / ".asterism" / "runtime_slots"
         slots_dir.mkdir(parents=True, exist_ok=True)
         slots: list[WorkerSlot] = []
-        for i in range(w_count):
+        for i in range(w_count + n_interactive):
             slot_path = slots_dir / f"_gateway_slot_{i}.lean"
             slot_path.write_text(WARMUP_CONTENT, encoding="utf-8")
             slot = WorkerSlot(
                 slot_id=i,
                 slot_path=slot_path,
                 slot_uri=slot_path.as_uri(),
+                # trailing slots are the serve UI's interactive pool
+                reserved=(i >= w_count),
             )
             client.did_open(slot_path, WARMUP_CONTENT)
             slots.append(slot)
@@ -298,8 +306,11 @@ def _restart_backend(reason: str) -> None:
         ws = _state.workspace
         if ws is None:
             return
-        n = len(_state.workers) or 1
-        print(f"[gateway] backend restart — {reason} ({n} slots)",
+        n_res = sum(1 for s in _state.workers
+                    if getattr(s, "reserved", False))
+        n = (len(_state.workers) - n_res) or 1
+        print(f"[gateway] backend restart — {reason} "
+              f"({n}+{n_res} slots)",
               file=sys.stderr, flush=True)
         _state.ready_event.clear()
         if old is not None:
@@ -310,7 +321,7 @@ def _restart_backend(reason: str) -> None:
                     old._kill_tree()
                 except Exception:
                     pass
-        _start_workers(ws, n)
+        _start_workers(ws, n, n_res)
     finally:
         _restart_lock.release()
 
@@ -355,7 +366,7 @@ def _borrow_order(workers):
     each group. A claimed slot is reachable only when every unclaimed slot is
     lock-busy — liveness for housekeeping probes when the whole pool is
     registered. Extracted for direct unit-testing of the ordering invariant."""
-    return sorted(workers,
+    return sorted((s for s in workers if not getattr(s, "reserved", False)),
                   key=lambda s: (s.claimed_by is not None, s.last_used_ts))
 
 
@@ -518,13 +529,16 @@ def _register_session_internal(
     problem: str, workspace: Path,
     log_path: Path | None,
     kind: str | None = None,
+    interactive: bool = False,
 ) -> tuple[str, str | None]:
     """Stash session metadata AND eagerly claim a worker slot
     (#118, 1:1 binding). The claim is registered by setting
     `slot.claimed_by`; the slot's `content_pipeline_id` stays at its
     prior value until the first tool call's didChange. NO didOpen here
     — that's lazy-deferred to first tool call. Returns (session_token,
-    error)."""
+    error). `interactive=True` claims ONLY a reserved slot (the serve
+    UI's editor) and pipeline claims only unreserved ones — the
+    pipeline=slot identity holds in both directions."""
     err = _ensure_backend_ready()
     if err:
         return "", err
@@ -549,10 +563,13 @@ def _register_session_internal(
     # dispatcher misconfiguration, not a runtime contention case.
     with _state.sessions_lock:
         free_slot = next(
-            (s for s in _state.workers if s.claimed_by is None), None,
+            (s for s in _state.workers
+             if s.claimed_by is None and s.reserved == interactive), None,
         )
         if free_slot is None:
             return "", (
+                "interactive slot busy — another editor session holds it"
+                if interactive else
                 "no free worker slot — pool exhausted "
                 "(dispatch.pool must not exceed actual worker count)"
             )
@@ -993,6 +1010,11 @@ def _compilation_for(meta: SessionMetadata) -> "tuple[str, list[int | None]]":
     every claimed-session tool swaps in, so `goal_at` / `errors_at` /
     `apply_edit` see exactly what `validate_file` (and, post-commit, lake)
     do — no more sibling-less live buffer vs synthesized validate world."""
+    if meta.kind == "interactive":
+        # The serve editor's buffer IS the compilation unit — no
+        # framework prefix, no sibling stubs; identity line_map.
+        n = meta.file_content.count("\n") + 1
+        return meta.file_content, list(range(1, n + 1))
     merged, line_map, _ = _build_compilation_unit(
         meta.file_content, meta.problem, meta.workspace,
         meta.target_path.parent)
@@ -1786,6 +1808,128 @@ async def release(request: Request):
     return JSONResponse({"ok": True}, status_code=200)
 
 
+# ─── Interactive editor session (serve UI) ────────────────
+#
+# The browser's InfoView: one RESERVED slot, claimed via
+# /interactive/register, full-buffer synced via /interactive/sync
+# (one didChange + elaborate, goal at the cursor rides the same
+# response), cursor-only moves via /interactive/goal (no re-elaborate
+# on the hot slot). The buffer lives on a scratch file under
+# `.asterism/eval/` (apply_edit's write-through lands there — never on
+# real problem files). Stale sessions fall to the same 900s claim
+# sweep as pipelines.
+
+def _interactive_meta(token: str) -> "SessionMetadata | None":
+    with _state.sessions_lock:
+        meta = _state.sessions.get(token)
+    return meta if meta is not None and meta.kind == "interactive" else None
+
+
+@mcp.custom_route("/interactive/register", methods=["POST"])
+async def interactive_register(request: Request):
+    """Claim the reserved slot for a browser editor session."""
+    try:
+        data = await request.json()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid JSON: {e}"},
+                            status_code=400)
+    ws = _state.workspace
+    if ws is None:
+        return JSONResponse({"error": "backend not ready"},
+                            status_code=503)
+    content = str(data.get("content") or WARMUP_CONTENT)
+    scratch_dir = ws / ".asterism" / "eval"
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    scratch = scratch_dir / f"interactive_{uuid.uuid4().hex[:8]}.lean"
+    scratch.write_text(content, encoding="utf-8")
+    token, err = _register_session_internal(
+        pipeline_id=f"interactive-{scratch.stem.split('_')[1]}",
+        target_path=scratch, problem="", workspace=ws,
+        log_path=None, kind="interactive", interactive=True,
+    )
+    if err:
+        scratch.unlink(missing_ok=True)
+        busy = err.startswith("interactive slot busy")
+        return JSONResponse({"error": err},
+                            status_code=409 if busy else 500)
+    return JSONResponse({"session_token": token}, status_code=200)
+
+
+@mcp.custom_route("/interactive/sync", methods=["POST"])
+async def interactive_sync(request: Request):
+    """Replace the session buffer with the browser's full text, wait
+    for elaboration, return diagnostics — plus the goal at the cursor
+    when (line, col) ride along."""
+    try:
+        data = await request.json()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid JSON: {e}"},
+                            status_code=400)
+    token = str(data.get("token") or "")
+    meta = _interactive_meta(token)
+    if meta is None:
+        return JSONResponse({"error": "unknown interactive session"},
+                            status_code=404)
+    _session_ctx.set(token)
+    end = meta.file_content.count("\n") + 1
+    edit_raw = await apply_edit(1, end, str(data.get("content") or ""))
+    edit = json.loads(edit_raw)
+    if edit.get("error"):
+        return JSONResponse({"error": edit["error"]}, status_code=500)
+    resp = {
+        "diagnostics": edit.get("diagnostics") or [],
+        "goal": None,
+        "note": None,
+    }
+    line, col = data.get("line"), data.get("col")
+    if isinstance(line, int):
+        goal_raw = await goal_at(line, int(col or 0))
+        goal = json.loads(goal_raw)
+        resp["goal"] = goal.get("goal")
+        resp["note"] = goal.get("note")
+    return JSONResponse(resp, status_code=200)
+
+
+@mcp.custom_route("/interactive/goal", methods=["POST"])
+async def interactive_goal(request: Request):
+    """Cursor moved, text unchanged: goal only (hot slot, no swap)."""
+    try:
+        data = await request.json()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid JSON: {e}"},
+                            status_code=400)
+    token = str(data.get("token") or "")
+    if _interactive_meta(token) is None:
+        return JSONResponse({"error": "unknown interactive session"},
+                            status_code=404)
+    _session_ctx.set(token)
+    goal_raw = await goal_at(int(data.get("line") or 1),
+                             int(data.get("col") or 0))
+    goal = json.loads(goal_raw)
+    if goal.get("error"):
+        return JSONResponse({"error": goal["error"]}, status_code=500)
+    return JSONResponse({"goal": goal.get("goal"),
+                         "note": goal.get("note")}, status_code=200)
+
+
+@mcp.custom_route("/interactive/release", methods=["POST"])
+async def interactive_release(request: Request):
+    """Release the editor session and its scratch file. Idempotent."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    token = str(data.get("token") or "")
+    meta = _interactive_meta(token)
+    _release_session_internal(token)
+    if meta is not None:
+        try:
+            meta.target_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return JSONResponse({"ok": True}, status_code=200)
+
+
 def _olean_dest_for(workspace: Path, target_path: Path) -> Path | None:
     """Derive `.lake/build/lib/lean/<module path>.olean` for a Lean
     source under `workspace`. Returns None if the path isn't under
@@ -2294,7 +2438,11 @@ async def health(request: Request):
     backend_ok = _state.backend is not None and bool(_state.workers)
     with _state.sessions_lock:
         n_sessions = len(_state.sessions)
-    n_workers = len(_state.workers)
+    # workers_total counts the PIPELINE pool only — the daemon's reuse
+    # gate compares it against dispatch.pool; reserved interactive
+    # slots report separately.
+    n_workers = sum(1 for s in _state.workers if not s.reserved)
+    n_interactive = sum(1 for s in _state.workers if s.reserved)
     n_busy = sum(1 for s in _state.workers if s.lock.locked())
     with _state.counters_lock:
         counters = {
@@ -2311,6 +2459,7 @@ async def health(request: Request):
     return JSONResponse({
         "backend_ready": backend_ok,
         "workers_total": n_workers,
+        "workers_interactive": n_interactive,
         "workers_busy": n_busy,
         "sessions_active": n_sessions,
         "init_error": _state.init_error,
@@ -2382,9 +2531,17 @@ def main() -> None:
         env_var="ASTERISM_POOL", cast=int,
         workspace=workspace,
     )
+    # Reserved slots for the serve UI's interactive editor — outside
+    # the pipeline pool entirely (pipeline=slot identity holds both
+    # ways: spawns never see them, the editor never sees spawn slots).
+    n_interactive = _cfg.get(
+        "gateway.interactive_slots", default=1,
+        env_var="ASTERISM_INTERACTIVE_SLOTS", cast=int,
+        workspace=workspace,
+    )
 
     print(f"[gateway] starting; workspace={workspace} port={port} "
-          f"workers={w_count}",
+          f"workers={w_count}+{n_interactive} interactive",
           file=sys.stderr, flush=True)
 
     # Claim the port BEFORE warming, and hold the socket for uvicorn.
@@ -2415,7 +2572,8 @@ def main() -> None:
     import atexit as _atexit
     _atexit.register(lambda: _marker.unlink(missing_ok=True))
 
-    threading.Thread(target=_start_workers, args=(workspace, w_count),
+    threading.Thread(target=_start_workers,
+                     args=(workspace, w_count, n_interactive),
                      daemon=True).start()
     # Stale-claim sweep: reclaims gateway slots whose /release was
     # dropped (urlopen failure during teardown, worker crash before

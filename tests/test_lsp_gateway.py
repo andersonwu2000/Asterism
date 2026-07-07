@@ -1341,7 +1341,7 @@ def test_restart_backend_reaps_old_then_rewarms(monkeypatch) -> None:
         _state.workspace = Path(".")
         _state.workers = [object(), object(), object()]  # width 3
         monkeypatch.setattr(lsp_gateway, "_start_workers",
-                            lambda ws, n: order.append(f"start:{n}"))
+                            lambda ws, n, n_res=0: order.append(f"start:{n}"))
         lsp_gateway._restart_backend("unit test")
         assert order == ["shutdown", "start:3"], order
     finally:
@@ -1506,3 +1506,89 @@ def test_build_compilation_unit_no_db_is_noop(tmp_path: Path) -> None:
     merged, _, _ = lsp_gateway._build_compilation_unit(
         "theorem t : True := trivial\n", prob, tmp_path, attempts)
     assert "proofs.L_" not in merged
+
+
+# ---------------------------------------------------------------------
+# Interactive reserved slot (serve UI editor) — pipeline=slot identity
+# holds in BOTH directions
+# ---------------------------------------------------------------------
+
+def _make_reserved_slot(slot_id: int, *, claimed_by: "str | None" = None):
+    s = _make_fake_slot(slot_id, claimed_by=claimed_by)
+    s.reserved = True
+    return s
+
+
+def test_pipeline_claim_never_takes_reserved_slot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A free RESERVED slot is invisible to pipeline registration: with
+    every unreserved slot claimed, the pool reports exhausted rather
+    than invading the editor's slot."""
+    target = tmp_path / "x.lean"
+    target.write_text("dummy", encoding="utf-8")
+    slots = [_make_fake_slot(0, claimed_by="other"),
+             _make_reserved_slot(1)]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+                        lambda **kw: None)
+    token, err = lsp_gateway._register_session_internal(
+        pipeline_id="pipe-A", target_path=target,
+        problem="p", workspace=tmp_path, log_path=None,
+    )
+    assert token == "" and err is not None
+    assert "pool exhausted" in err
+    assert slots[1].claimed_by is None  # reserved slot untouched
+
+
+def test_interactive_claim_takes_only_reserved_slot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Interactive registration claims the reserved slot and never a
+    pipeline slot; a second interactive session reports busy."""
+    target = tmp_path / "scratch.lean"
+    target.write_text("import Mathlib\n", encoding="utf-8")
+    slots = [_make_fake_slot(0),            # free pipeline slot
+             _make_reserved_slot(1)]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+                        lambda **kw: None)
+    token, err = lsp_gateway._register_session_internal(
+        pipeline_id="interactive-a", target_path=target,
+        problem="", workspace=tmp_path, log_path=None,
+        kind="interactive", interactive=True,
+    )
+    assert err is None and token
+    assert slots[0].claimed_by is None       # pipeline slot untouched
+    assert slots[1].claimed_by == "interactive-a"
+    token2, err2 = lsp_gateway._register_session_internal(
+        pipeline_id="interactive-b", target_path=target,
+        problem="", workspace=tmp_path, log_path=None,
+        kind="interactive", interactive=True,
+    )
+    assert token2 == "" and "interactive slot busy" in (err2 or "")
+    lsp_gateway._release_session_internal(token)
+    assert slots[1].claimed_by is None
+
+
+def test_borrow_order_excludes_reserved() -> None:
+    """/verify probe borrows never see the reserved slot, claimed or
+    not — the editor's warm buffer is not evictable by one-shots."""
+    slots = [_make_reserved_slot(0),
+             _make_fake_slot(1, last_used=5.0),
+             _make_fake_slot(2, claimed_by="p", last_used=1.0)]
+    order = lsp_gateway._borrow_order(slots)
+    assert [s.slot_id for s in order] == [1, 2]
+
+
+def test_compilation_for_interactive_is_identity(tmp_path: Path) -> None:
+    """An interactive session's buffer IS the compilation unit — no
+    framework merge, identity line_map."""
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="interactive-x", target_path=tmp_path / "s.lean",
+        problem="", workspace=tmp_path, kind="interactive",
+        file_content="import Mathlib\n#check 1",
+    )
+    merged, line_map = lsp_gateway._compilation_for(meta)
+    assert merged == meta.file_content
+    assert line_map == [1, 2]

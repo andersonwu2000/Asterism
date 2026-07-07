@@ -578,3 +578,63 @@ def release_session(token: str) -> None:
         urllib.request.urlopen(req, timeout=30.0).read()
     except (urllib.error.URLError, OSError) as exc:
         print(f"[gateway] release {token[:8]} failed: {exc}", flush=True)
+
+
+# ─── Interactive editor session (serve UI client) ─────────────
+#
+# Thin clients for the gateway's /interactive/* surface — the browser
+# InfoView rides its RESERVED slot (pipeline=slot identity: spawns and
+# the editor never touch each other's slots). All return the gateway's
+# JSON dict; HTTP/transport failures come back as {"error": ...} (+
+# "http_status" on HTTP errors, "transient": True on unreachable).
+
+def _interactive_post(path: str, body: dict, *,
+                      timeout: float = 150.0) -> dict:
+    import json
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{_gateway_port()}/interactive/{path}",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read().decode("utf-8")).get("error", "")
+        except Exception:  # noqa: BLE001 — surface the HTTP error itself
+            detail = ""
+        return {"error": detail or str(e), "http_status": e.code}
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return {"error": f"gateway unreachable: {e}", "transient": True}
+
+
+def interactive_register(content: str) -> dict:
+    """Claim the reserved editor slot. {"session_token"} or {"error"}
+    (http_status 409 = another editor session holds it)."""
+    return _interactive_post("register", {"content": content})
+
+
+def interactive_sync(token: str, content: str,
+                     line: "int | None" = None, col: int = 0) -> dict:
+    """Full-buffer replace + elaborate; goal at (line, col) rides the
+    response when a cursor is given. {"diagnostics", "goal", "note"}."""
+    body: dict = {"token": token, "content": content}
+    if line is not None:
+        body["line"], body["col"] = line, col
+    return _interactive_post("sync", body)
+
+
+def interactive_goal(token: str, line: int, col: int) -> dict:
+    """Cursor-only goal query on the hot slot (no re-elaborate)."""
+    return _interactive_post("goal", {"token": token,
+                                      "line": line, "col": col},
+                             timeout=30.0)
+
+
+def interactive_release(token: str) -> dict:
+    """Release the editor slot + scratch file. Idempotent."""
+    if not token:
+        return {"ok": True}
+    return _interactive_post("release", {"token": token}, timeout=30.0)
