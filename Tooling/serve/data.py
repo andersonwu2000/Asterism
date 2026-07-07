@@ -753,11 +753,12 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
         " ORDER BY ld.id", (problem,)).fetchall()
     if not rows:
         return None
-    goal_meta = {
-        str(g["slug"]): {"is_deliverable": bool(g["is_deliverable"]),
-                         "goal_kind": str(g["kind"])}
+    # goal-side flag only: kind comes from library_decls.decl_kind
+    # (kernel-true since v24; goals.kind would duplicate it worse)
+    deliverable = {
+        str(g["slug"]): bool(g["is_deliverable"])
         for g in conn.execute(
-            "SELECT slug, kind, is_deliverable FROM goals WHERE problem = ?",
+            "SELECT slug, is_deliverable FROM goals WHERE problem = ?",
             (problem,))}
 
     per_file: "dict[str, list[sqlite3.Row]]" = {}
@@ -811,7 +812,6 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
                 doc = r["docstring"]
             if r["src_line"] is not None:
                 line = int(r["src_line"])
-            meta = goal_meta.get(slug, {})
             used_by = sum(1 for q in per_file
                           if q != path and short in scanned[q][3])
             keyed.append((line, {
@@ -822,7 +822,7 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
                 "signature": r["signature"] or file_stmt or None,
                 "decl_kind": r["decl_kind"] or file_kind or None,
                 "doc": doc,
-                "is_deliverable": bool(meta.get("is_deliverable", False)),
+                "is_deliverable": deliverable.get(slug, False),
                 "used_by": used_by,
             }))
         keyed.sort(key=lambda t: t[0])  # source order = narrative
