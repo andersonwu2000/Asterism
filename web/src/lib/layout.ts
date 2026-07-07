@@ -229,6 +229,9 @@ export function layoutConstellation(
     if (prev === undefined || e.strategyId < prev) stratOfChild.set(e.to, e.strategyId)
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(globalThis as any).__layoutDebug = { treeKids, primaryParent, layer }
+
   const isSingleton = (id: number) =>
     !primaryParent.has(id) && (treeKids.get(id)?.length ?? 0) === 0
   const treeRoots = goals
@@ -1408,6 +1411,21 @@ export function layoutConstellation(
     // sibling blocks: a parent's child subtrees, each a rigid x-block.
     // Only pairwise-disjoint blocks (= shelf-mates) may permute; a
     // wrapped shelf or leaf grid overlaps in x and stays fixed.
+    // Grouping key = the engine's OWN bundle groups (what is actually
+    // drawn), not the hierarchy-derived proxy — a child hanging by an
+    // anchor edge still belongs to the strategy fan that draws its arm.
+    const sidOfChild = new Map<number, Map<number, number>>()
+    for (const g of groups) {
+      let m = sidOfChild.get(g.parent)
+      if (!m) {
+        m = new Map()
+        sidOfChild.set(g.parent, m)
+      }
+      for (const c of g.children) {
+        const prev = m.get(c)
+        if (prev === undefined || g.sid < prev) m.set(c, g.sid)
+      }
+    }
     const subMembers = new Map<number, number[]>()
     const membersOf = (k: number): number[] => {
       const memo = subMembers.get(k)
@@ -1429,9 +1447,14 @@ export function layoutConstellation(
       lo: number
       hi: number
     }
-    const blocksOf = (p: number): Block[] | null => {
+    // maximal runs of consecutive pairwise-disjoint blocks: an
+    // all-or-nothing disjointness test skipped exactly the parents
+    // that needed help (a leaf hugged inside a branch's span voided
+    // the whole family). Within a run, rigid permutation stays sound —
+    // nothing else lives between run members.
+    const blocksOf = (p: number): Block[][] => {
       const ks = (treeKids.get(p) ?? []).filter((k) => px.has(k))
-      if (ks.length < 2) return null
+      if (ks.length < 2) return []
       const blocks: Block[] = []
       for (const k of ks) {
         let lo = Infinity
@@ -1443,13 +1466,36 @@ export function layoutConstellation(
           hi = Math.max(hi, x)
         }
         if (!isFinite(lo)) continue
-        blocks.push({ k, grp: stratOfChild.get(k) ?? -(k + 2), lo, hi })
+        blocks.push({ k, grp: sidOfChild.get(p)?.get(k) ?? -(k + 2), lo, hi })
       }
       blocks.sort((a, b) => a.lo - b.lo)
-      for (let i = 0; i + 1 < blocks.length; i++) {
-        if (blocks[i].hi >= blocks[i + 1].lo) return null
+      // a block touched by ANY overlap is immovable (running max-hi
+      // catches a long block swallowing a non-adjacent later one)
+      const poisoned = new Set<number>()
+      let maxHi = -Infinity
+      let maxIdx = -1
+      for (let i = 0; i < blocks.length; i++) {
+        if (blocks[i].lo <= maxHi) {
+          poisoned.add(i)
+          poisoned.add(maxIdx)
+        }
+        if (blocks[i].hi > maxHi) {
+          maxHi = blocks[i].hi
+          maxIdx = i
+        }
       }
-      return blocks.length >= 2 ? blocks : null
+      const runs: Block[][] = []
+      let run: Block[] = []
+      for (let i = 0; i < blocks.length; i++) {
+        if (poisoned.has(i)) {
+          if (run.length >= 2) runs.push(run)
+          run = []
+          continue
+        }
+        run.push(blocks[i])
+      }
+      if (run.length >= 2) runs.push(run)
+      return runs
     }
     // lay blocks into the same span in a new order: widths ride along,
     // the original gap sequence stays
@@ -1470,47 +1516,121 @@ export function layoutConstellation(
       })
       return moves
     }
+    const runPass = (run: Block[]): void => {
+      // (a) compound proposal: same-strategy blocks contiguous, groups
+      // ordered by mean x — the jump adjacent swaps can't make
+      const byGrp = new Map<number, Block[]>()
+      for (const b of run) byGrp.set(b.grp, [...(byGrp.get(b.grp) ?? []), b])
+      if (byGrp.size < run.length) {
+        const gMean = (bs: Block[]): number =>
+          bs.reduce((a, b) => a + (b.lo + b.hi) / 2, 0) / bs.length
+        const grouped = [...byGrp.values()]
+          .sort((a, b) => gMean(a) - gMean(b))
+          .flat()
+        const same = grouped.every((b, i) => b === run[i])
+        if (!same && tryMove(arrangeMoves(run, grouped))) {
+          run.length = 0
+          run.push(...grouped)
+          // extents moved: refresh from px
+          for (const b of run) {
+            let lo = Infinity
+            let hi = -Infinity
+            for (const m of membersOf(b.k)) {
+              const x = px.get(m)
+              if (x === undefined) continue
+              lo = Math.min(lo, x)
+              hi = Math.max(hi, x)
+            }
+            b.lo = lo
+            b.hi = hi
+          }
+        }
+      }
+      // (b) adjacent block swaps, one bubble sweep
+      for (let i = 0; i + 1 < run.length; i++) {
+        const order = [...run]
+        const t = order[i]
+        order[i] = order[i + 1]
+        order[i + 1] = t
+        if (tryMove(arrangeMoves(run, order))) {
+          const shifted = order.map((b) => {
+            let lo = Infinity
+            let hi = -Infinity
+            for (const m of membersOf(b.k)) {
+              const x = px.get(m)
+              if (x === undefined) continue
+              lo = Math.min(lo, x)
+              hi = Math.max(hi, x)
+            }
+            return { ...b, lo, hi }
+          })
+          run.length = 0
+          run.push(...shifted)
+        }
+      }
+      // (c) mirror a child block in place
+      for (const b of run) {
+        if (b.hi - b.lo < 1e-9) continue
+        const moves: [number, number][] = []
+        for (const m of membersOf(b.k)) {
+          const x = px.get(m)
+          if (x !== undefined) moves.push([m, b.lo + b.hi - x])
+        }
+        tryMove(moves)
+      }
+    }
     const siblingPass = (): void => {
       const parentsWithKids = [...treeKids.keys()].sort((a, b) => a - b)
       for (const p of parentsWithKids) {
-        const blocks = blocksOf(p)
-        if (!blocks) continue
-        // (a) compound proposal: same-strategy blocks contiguous,
-        // groups ordered by mean x — the jump adjacent swaps can't make
-        const byGrp = new Map<number, Block[]>()
-        for (const b of blocks) byGrp.set(b.grp, [...(byGrp.get(b.grp) ?? []), b])
-        if (byGrp.size < blocks.length) {
-          const gMean = (bs: Block[]): number =>
-            bs.reduce((a, b) => a + (b.lo + b.hi) / 2, 0) / bs.length
-          const grouped = [...byGrp.values()]
-            .sort((a, b) => gMean(a) - gMean(b))
-            .flat()
-          const same = grouped.every((b, i) => b === blocks[i])
-          if (!same) tryMove(arrangeMoves(blocks, grouped))
+        for (const run of blocksOf(p)) runPass(run)
+        // leaf-row moves: leaves of one parent on one row are
+        // interchangeable slots — no disjointness precondition (the
+        // hug tucks them INSIDE a branch's span, which is exactly why
+        // block moves can't reach them). Compound regroup by strategy,
+        // then adjacent swaps.
+        const leaves = (treeKids.get(p) ?? []).filter(
+          (k) => (treeKids.get(k)?.length ?? 0) === 0 && px.has(k),
+        )
+        if (leaves.length < 2) continue
+        const byRow = new Map<number, number[]>()
+        for (const k of leaves) {
+          const y = pyOf.get(k)!
+          byRow.set(y, [...(byRow.get(y) ?? []), k])
         }
-        // (b) adjacent block swaps, one bubble sweep
-        let cur = blocksOf(p)
-        if (!cur) continue
-        for (let i = 0; i + 1 < cur.length; i++) {
-          const order = [...cur]
-          const t = order[i]
-          order[i] = order[i + 1]
-          order[i + 1] = t
-          if (tryMove(arrangeMoves(cur, order))) {
-            cur = blocksOf(p)
-            if (!cur) break
-          }
-        }
-        // (c) mirror a child block in place
-        if (cur) {
-          for (const b of cur) {
-            if (b.hi - b.lo < 1e-9) continue
-            const moves: [number, number][] = []
-            for (const m of membersOf(b.k)) {
-              const x = px.get(m)
-              if (x !== undefined) moves.push([m, b.lo + b.hi - x])
+        for (const row of byRow.values()) {
+          if (row.length < 2) continue
+          row.sort((a, b) => px.get(a)! - px.get(b)!)
+          const slots = row.map((k) => px.get(k)!)
+          const grpOf = (k: number): number => sidOfChild.get(p)?.get(k) ?? -(k + 2)
+          // (a) regroup: leaves ordered by (group mean x, x) onto slots
+          const gs = new Map<number, number[]>()
+          for (const k of row) gs.set(grpOf(k), [...(gs.get(grpOf(k)) ?? []), k])
+          if (gs.size < row.length) {
+            const gMean = (ks: number[]): number =>
+              ks.reduce((a, k) => a + px.get(k)!, 0) / ks.length
+            const target = [...gs.values()]
+              .sort((a, b) => gMean(a) - gMean(b))
+              .flat()
+            if (!target.every((k, i) => k === row[i])) {
+              if (tryMove(target.map((k, i) => [k, slots[i]]))) {
+                row.length = 0
+                row.push(...target)
+              }
             }
-            tryMove(moves)
+          }
+          // (b) adjacent leaf swaps
+          for (let i = 0; i + 1 < row.length; i++) {
+            const a = row[i]
+            const b = row[i + 1]
+            if (
+              tryMove([
+                [a, px.get(b)!],
+                [b, px.get(a)!],
+              ])
+            ) {
+              row[i] = b
+              row[i + 1] = a
+            }
           }
         }
       }
