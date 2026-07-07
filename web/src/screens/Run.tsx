@@ -177,7 +177,7 @@ export default function Run() {
       ? 'Stopping'
       : d.gateway === 'warming'
         ? 'Warming up'
-        : workers.length === 0
+        : workers.length === 0 || workers.every((w) => w.kind === 'Strategist')
           ? 'Planning'
           : workers.every((w) => w.kind === 'Librarian')
             ? 'Harvesting'

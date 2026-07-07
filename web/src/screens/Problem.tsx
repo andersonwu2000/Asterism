@@ -171,7 +171,7 @@ function RunStrip({
     ? 'stopping — finishing in-flight work'
     : gateway === 'warming'
       ? 'warming the Lean toolchain'
-      : workers.length === 0
+      : workers.length === 0 || workers.every((w) => w.kind === 'Strategist')
         ? 'planning'
         : workers.every((w) => w.kind === 'Librarian')
           ? 'harvesting'
