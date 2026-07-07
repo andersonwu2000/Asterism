@@ -484,7 +484,16 @@ export function layoutConstellation(
   }
   for (const e of edges) {
     if (e.kind === 'citation' || e.kind === 'alias') addPartner(e.from, e.to)
-    else if (primaryParent.get(e.to) !== e.from) addPartner(e.from, e.to)
+    else if (primaryParent.get(e.to) !== e.from) {
+      // a SECONDARY hierarchy edge is a drawn bright(ish) limb — it
+      // pulls three times as hard as a citation whisper, so co-parents
+      // of a shared child drift together instead of 4400px apart
+      addPartner(e.from, e.to)
+      addPartner(e.from, e.to)
+      addPartner(e.from, e.to)
+      addPartner(e.from, e.to)
+      addPartner(e.from, e.to)
+    }
   }
   const subtreeHasPartner = new Map<number, boolean>()
   const hasPartnerDeep = (id: number, guard: number): boolean => {
@@ -664,8 +673,13 @@ export function layoutConstellation(
   mains.sort((a, b) => {
     const ra = a.members.some((id) => byId.get(id)?.origin === 'root') ? 0 : 1
     const rb = b.members.some((id) => byId.get(id)?.origin === 'root') ? 0 : 1
+    // claims are the signed surface — their families take the crown
+    // rows right under the root (owner), before depth economy speaks
+    const ca = a.members.some((id) => byId.get(id)?.is_deliverable) ? 0 : 1
+    const cb = b.members.some((id) => byId.get(id)?.is_deliverable) ? 0 : 1
     return (
       ra - rb ||
+      ca - cb ||
       b.depth - a.depth ||
       treePartnerMean(a) - treePartnerMean(b) ||
       a.start - b.start
@@ -758,8 +772,13 @@ export function layoutConstellation(
     if (cs.length === 0) continue
     const mean = cs.reduce((a, b) => a + b, 0) / cs.length
     const lo = isMain(comp) ? 0 : (horizonBand ?? 0)
-    const target = Math.max(lo, Math.min(band, Math.round(mean)))
-    if ((citPartner.get(id)?.length ?? 0) >= goals.length * 0.25) {
+    const ultra = (citPartner.get(id)?.length ?? 0) >= goals.length * 0.25
+    // the sun centres BOTH ways (owner): its band sits at the vertical
+    // middle of its region, its x at the plate middle
+    const target = ultra
+      ? Math.max(lo, Math.min(band, Math.round((lo + band) / 2)))
+      : Math.max(lo, Math.min(band, Math.round(mean)))
+    if (ultra) {
       ultraHubs.add(id)
       // an ultra-hub (a quarter of the sky cites it) gets a thin band
       // of its OWN: alone in the band, the optimiser can put it exactly
