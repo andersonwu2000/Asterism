@@ -93,6 +93,65 @@ function renderSpans(s: string) {
   })
 }
 
+/** The resting statement, for humans: short name + explicit `(...)`
+ * binders + conclusion. Universe annotations, `{implicit}` and
+ * `[instance]` binder walls drop (licensed to be non-Lean); the run
+ * state's `#check @fq` shows the full kernel truth on demand. */
+function conciseSignature(sig: string, short: string): string {
+  const OPEN = '({[⦃⟨'
+  const CLOSE = ')}]⦄⟩'
+  let depth = 0
+  let k = 0
+  // skip the head token (fq name, possibly `.{u_1, u_2}`-annotated)
+  while (k < sig.length) {
+    const ch = sig[k]
+    if (OPEN.includes(ch)) depth++
+    else if (CLOSE.includes(ch)) depth--
+    else if (depth === 0 && /\s/.test(ch)) break
+    k++
+  }
+  const parts: string[] = [short]
+  let seg = ''
+  let dropping = false
+  for (let i = k; i < sig.length; i++) {
+    const ch = sig[i]
+    if (depth === 0) {
+      if (ch === ':' && sig[i + 1] !== '=') {
+        parts.push(sig.slice(i).replace(/\s+/g, ' ').trim())
+        return shortenLibraryNames(parts.join(' '))
+      }
+      if ('{[⦃'.includes(ch)) {
+        dropping = true
+        depth++
+        continue
+      }
+      if (ch === '(') {
+        depth++
+        seg = '('
+        continue
+      }
+      continue // stray depth-0 text (keywords, source-form names)
+    }
+    if (OPEN.includes(ch)) depth++
+    else if (CLOSE.includes(ch)) depth--
+    if (!dropping) seg += ch
+    if (depth === 0) {
+      if (!dropping && seg) {
+        parts.push(seg.replace(/\s+/g, ' '))
+        seg = ''
+      }
+      dropping = false
+    }
+  }
+  return shortenLibraryNames(parts.join(' '))
+}
+
+/** `Library.….lastComponent` → `lastComponent` inside the concise
+ * rendering — chapter-local names cite themselves short. */
+function shortenLibraryNames(s: string): string {
+  return s.replace(/\bLibrary(?:\.[A-Za-z0-9_'₀-₉]+)*\.([A-Za-z0-9_'₀-₉]+)/g, '$1')
+}
+
 function DeclEntry({
   d,
   module,
@@ -177,26 +236,28 @@ function DeclEntry({
           className="mt-1.5 ml-[22px] max-w-[76ch] text-[13px] leading-relaxed text-ink-dim"
         />
       )}
-      {d.signature && (
+      {d.signature && !probing && (
         <div className="group/sig relative mt-2 ml-[22px] max-w-4xl">
-          <pre className="overflow-x-auto rounded-md border border-edge bg-white/[0.02] px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink">
-            <Lean code={d.signature} />
+          <pre
+            className="overflow-x-auto rounded-md border border-edge bg-white/[0.02] px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink"
+            title={d.signature}
+          >
+            <Lean code={conciseSignature(d.signature, short)} />
           </pre>
-          {!probing && (
-            <button
-              className="absolute right-2 bottom-2 cursor-pointer rounded border border-edge bg-surface px-2.5 py-0.5 font-mono text-[11px] text-ink-dim opacity-0 transition-opacity group-hover/sig:opacity-100 hover:border-edge-strong hover:text-ink"
-              onClick={() => setProbing(true)}
-              title="run Lean against this declaration — opens with #print axioms, edit freely"
-            >
-              ▸ run
-            </button>
-          )}
+          <button
+            className="absolute right-2 bottom-2 cursor-pointer rounded border border-edge bg-surface px-2.5 py-0.5 font-mono text-[11px] text-ink-dim opacity-0 transition-opacity group-hover/sig:opacity-100 hover:border-edge-strong hover:text-ink"
+            onClick={() => setProbing(true)}
+            title="expand into runnable Lean — full type via #check, axioms below, edit freely"
+          >
+            ▸ run
+          </button>
         </div>
       )}
       {probing && (
         <LeanProbe
           fq={d.name ?? d.slug}
           module={module}
+          seed={`#check @${d.name ?? d.slug}\n\n#print axioms ${d.name ?? d.slug}`}
           onClose={() => setProbing(false)}
         />
       )}

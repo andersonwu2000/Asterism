@@ -66,13 +66,15 @@ export function DiagList({ diags }: { diags: EvalDiag[] }) {
 export function LeanProbe({
   fq,
   module,
+  seed,
   onClose,
 }: {
   fq: string
   module?: string
+  seed?: string
   onClose?: () => void
 }) {
-  const [code, setCode] = useState(`#print axioms ${fq}`)
+  const [code, setCode] = useState(seed ?? `#print axioms ${fq}`)
   const [cursor, setCursor] = useState<LeanCursor | null>(null)
   const s = useLeanSession({
     enabled: true,
