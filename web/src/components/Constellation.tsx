@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Goal, Strategy, StrategyEdge } from '../lib/types'
 import { frontierView, layoutConstellation, X_GAP } from '../lib/layout'
+import { goalStatusLabel } from '../lib/vocab'
 import type { LayoutNode } from '../lib/layout'
 
 /*
@@ -100,17 +101,6 @@ const DEF_KINDS = new Set(['def', 'structure', 'class', 'instance', 'abbrev', 'i
 /* Root goals are just the brightest star: larger radius + a soft halo
  * ring. No glyph shapes (owner's call — spikes and sparks both out). */
 
-const STATUS_LABEL: Record<string, string> = {
-  open: 'open',
-  attempting: 'attempting',
-  proved: 'proved',
-  shelved: 'shelved',
-  pending_strategist_review: 'awaiting strategist review',
-  disproved: 'disproved',
-  frozen: 'frozen (pre-launch)',
-  dead: 'dead',
-}
-
 function edgeStroke(
   status: Strategy['status'],
   kind: 'strategy' | 'alias' | 'anchor' | 'citation',
@@ -176,6 +166,36 @@ export default function Constellation({
     for (const n of layout.nodes) m.set(n.layer, (m.get(n.layer) ?? 0) + 1)
     return m
   }, [layout])
+
+  // Per-node label room from the ACTUAL neighbours in the same label
+  // row (same y + same stagger parity) — a lone star at the sky's
+  // edge must never truncate into empty space, and a short neighbour
+  // donates the room it doesn't need. Gaps in content units (× k at
+  // render); neighbour slug lengths ride along for the fair split.
+  const labelRoom = useMemo(() => {
+    const rows = new Map<string, LayoutNode[]>()
+    for (const n of layout.nodes) {
+      const staggered = (layerCounts.get(n.layer) ?? 0) > 8 && n.col % 2 === 1
+      const key = `${n.y}:${staggered ? 1 : 0}`
+      rows.set(key, [...(rows.get(key) ?? []), n])
+    }
+    const room = new Map<
+      number,
+      { gapL: number; gapR: number; nbrL: number; nbrR: number }
+    >()
+    for (const ns of rows.values()) {
+      ns.sort((a, b) => a.x - b.x)
+      ns.forEach((n, i) => {
+        room.set(n.goal.id, {
+          gapL: i > 0 ? n.x - ns[i - 1].x : Infinity,
+          gapR: i < ns.length - 1 ? ns[i + 1].x - n.x : Infinity,
+          nbrL: i > 0 ? ns[i - 1].goal.slug.length : 0,
+          nbrR: i < ns.length - 1 ? ns[i + 1].goal.slug.length : 0,
+        })
+      })
+    }
+    return room
+  }, [layout, layerCounts])
 
   // newborn stars (ids that appear after the first load) get a brief
   // halo so a live run reads as growth, not as a diff you must spot
@@ -261,7 +281,6 @@ export default function Constellation({
   const tx = view?.tx ?? 0
   const ty = view?.ty ?? 0
   const showLabels = k >= 1.05
-  const labelBudgetPx = X_GAP
 
   // Wheel zoom must preventDefault (page would scroll); React's
   // delegated wheel handlers are passive, so attach natively.
@@ -324,6 +343,15 @@ export default function Constellation({
   // would wash the sky at that weight
   const citeCount = visibleEdges.filter((e) => e.kind === 'citation').length
   const citeOpacity = citeCount > 80 ? 0.08 : citeCount > 30 ? 0.13 : 0.22
+  // hover/selection focus: point at a star with citation threads and
+  // its threads carry the light while the rest of the web recedes —
+  // "where is this actually used" answered in place (cold-eye backlog)
+  const focusId = hovered?.goal.id ?? selectedId
+  const citeFocus =
+    focusId !== null &&
+    visibleEdges.some(
+      (e) => e.kind === 'citation' && (e.from === focusId || e.to === focusId),
+    )
   const visibleBundles = layout.bundles.filter((b) => showDead || !isDead(b.status))
   const deadEdgeCount =
     layout.edges.length -
@@ -421,14 +449,21 @@ export default function Constellation({
               // long hauls fade further: a cross-sky thread is context,
               // not content — nearby citations stay readable
               const fade = Math.min(1, Math.max(0.35, 320 / len))
+              const touched = citeFocus && (e.from === focusId || e.to === focusId)
               return (
                 <path
                   key={i}
                   d={`M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`}
                   fill="none"
                   stroke={edgeStroke(e.strategyStatus, e.kind)}
-                  strokeWidth={1}
-                  strokeOpacity={citeOpacity * fade}
+                  strokeWidth={touched ? 1.4 : 1}
+                  strokeOpacity={
+                    touched
+                      ? Math.max(0.55, citeOpacity * fade)
+                      : citeFocus
+                        ? 0.04
+                        : citeOpacity * fade
+                  }
                   vectorEffect="non-scaling-stroke"
                 />
               )
@@ -797,8 +832,22 @@ export default function Constellation({
                     fontFamily="var(--font-mono)"
                   >
                     {(() => {
-                      const budget = Math.max(12, Math.floor((labelBudgetPx * k) / 6.4))
-                      return k >= 2 || n.goal.slug.length <= budget
+                      // budget from ACTUAL neighbour room: fair split
+                      // of each gap, plus whatever a short neighbour
+                      // doesn't need (mono ≈6.4px/char on screen)
+                      const rm = labelRoom.get(n.goal.id)
+                      const side = (gap: number, nbrLen: number) => {
+                        if (!Number.isFinite(gap)) return Infinity
+                        const gapPx = gap * k
+                        return gapPx - 6 - Math.min(nbrLen * 3.2, gapPx / 2)
+                      }
+                      const half = rm
+                        ? Math.min(side(rm.gapL, rm.nbrL), side(rm.gapR, rm.nbrR))
+                        : Infinity
+                      const budget = Number.isFinite(half)
+                        ? Math.min(44, Math.max(12, Math.floor((half * 2) / 6.4)))
+                        : 44
+                      return n.goal.slug.length <= budget
                         ? n.goal.slug
                         : `${n.goal.slug.slice(0, Math.floor(budget / 2) - 1)}…${n.goal.slug.slice(-(Math.floor(budget / 2) - 1))}`
                     })()}
@@ -828,7 +877,7 @@ export default function Constellation({
           <div className="mb-1 flex items-center gap-2">
             <span className="font-mono text-xs text-ink">{hovered.goal.slug}</span>
             <span className="text-xs text-ink-faint">
-              {STATUS_LABEL[hovered.goal.status] ?? hovered.goal.status}
+              {goalStatusLabel(hovered.goal.status)}
             </span>
           </div>
           <div className="line-clamp-4 font-mono text-[11px] leading-snug text-ink-dim">
@@ -984,11 +1033,11 @@ export default function Constellation({
           <button
             className="rounded-md border border-edge bg-surface px-2.5 py-1 text-xs text-ink-dim hover:border-edge-strong hover:text-ink"
             onClick={() => setFocusFrontier(!focused)}
-            title="Fold settled subtrees into their nearest visible ancestor (+N badges)"
+            title="Tuck finished branches behind their nearest visible star (+N badges); the stars still being worked stay out"
           >
             {focused
-              ? `frontier focus — show all (${goals.length})`
-              : `focus frontier (fold ${frontier.hiddenCount})`}
+              ? `showing active work — show all (${goals.length})`
+              : `hide finished work (${frontier.hiddenCount})`}
           </button>
         )}
         {deadEdgeCount > 0 && (

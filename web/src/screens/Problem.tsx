@@ -3,6 +3,7 @@ import { usePoll } from '../lib/api'
 import { weightedBurn } from '../lib/burn'
 import { Link } from '../lib/router'
 import { compactNumber, relTime } from '../lib/format'
+import { goalStatusLabel } from '../lib/vocab'
 import { ErrorState, StatusBadge } from '../components/ui'
 import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
@@ -32,12 +33,6 @@ const GOAL_STATUS_CLS: Record<string, string> = {
   disproved: 'text-danger',
   dead: 'text-ink-faint',
   frozen: 'text-ink-faint',
-}
-
-/* internal enums don't leak: display labels for the machine's states */
-const GOAL_STATUS_LABEL: Record<string, string> = {
-  pending_strategist_review: 'awaiting review',
-  frozen: 'frozen (pre-launch)',
 }
 
 /* live work first, settled bulk after */
@@ -126,7 +121,7 @@ function GoalsList({
                   leftover reads as interrupted, not live work */}
               {g.status === 'attempting' && !engineWorking
                 ? 'interrupted'
-                : (GOAL_STATUS_LABEL[g.status] ?? g.status)}
+                : goalStatusLabel(g.status)}
             </td>
             <td
               className="max-w-md truncate py-2 pr-4 font-mono text-[11px] text-ink-dim"
@@ -269,6 +264,17 @@ function RunStrip({
       </div>
     </div>
   )
+}
+
+/** The strategist writes its standing directive in working markdown;
+ * the header shows it to a human, so strip the notation (emphasis
+ * marks, heading hashes, code ticks) and keep the words. */
+function plainDirective(s: string): string {
+  return s
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*/g, '')
+    .replace(/`/g, '')
+    .trim()
 }
 
 export default function Problem({ name }: { name: string }) {
@@ -438,7 +444,7 @@ export default function Problem({ name }: { name: string }) {
                 </span>
                 directive
               </span>
-              {data.strategist_directive}
+              {plainDirective(data.strategist_directive)}
             </span>
           </button>
         )}

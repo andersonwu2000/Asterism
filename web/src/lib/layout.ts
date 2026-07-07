@@ -233,6 +233,15 @@ export function layoutConstellation(
     children.set(e.from, [...(children.get(e.from) ?? []), e.to])
     parents.set(e.to, [...(parents.get(e.to) ?? []), e.from])
   }
+  // Deep-chain compression: an unbranching pass-through link (its
+  // parent has one child, it has one parent) costs 0.6 rows instead
+  // of a full one — a 12-link spine no longer owns 12 rows of sky.
+  // Cost-based longest path keeps the invariant that every child
+  // still sits strictly below all of its parents.
+  const linkCost = (p: number, c: number): number =>
+    (children.get(p)?.length ?? 0) === 1 && (parents.get(c)?.length ?? 0) === 1
+      ? 0.6
+      : 1
   const layer = new Map<number, number>()
   const computeLayer = (id: number, guard: number): number => {
     const memo = layer.get(id)
@@ -241,7 +250,7 @@ export function layoutConstellation(
     const ps = parents.get(id)
     const l = !ps || ps.length === 0
       ? 0
-      : Math.max(...ps.map((p) => computeLayer(p, guard + 1))) + 1
+      : Math.max(...ps.map((p) => computeLayer(p, guard + 1) + linkCost(p, id)))
     layer.set(id, l)
     return l
   }

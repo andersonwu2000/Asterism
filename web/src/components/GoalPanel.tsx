@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
+import { goalStatusLabel, originLabel, strategyStatusLabel } from '../lib/vocab'
 import { SectionLabel } from './ui'
 import type { DeadAttempt, GoalDetail } from '../lib/types'
 
@@ -90,9 +91,11 @@ export default function GoalPanel({
         {data && (
           <>
             <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-              <span className={GOAL_STATUS_CLS[data.status] ?? 'text-ink-dim'}>{data.status}</span>
+              <span className={GOAL_STATUS_CLS[data.status] ?? 'text-ink-dim'}>
+                {goalStatusLabel(data.status)}
+              </span>
               <span className="text-ink-faint">{data.kind}</span>
-              <span className="text-ink-faint">{data.origin}</span>
+              <span className="text-ink-faint">{originLabel(data.origin)}</span>
               {data.is_deliverable && <span className="text-star">deliverable</span>}
               {data.detached && <span className="text-ink-faint">detached</span>}
             </div>
@@ -144,7 +147,7 @@ export default function GoalPanel({
                                 : 'text-ink-faint'
                         }`}
                       >
-                        {s.status}
+                        {strategyStatusLabel(s.status)}
                       </span>
                     </button>
                   ))}

@@ -1,5 +1,6 @@
 import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
+import { goalStatusLabel, strategyStatusLabel } from '../lib/vocab'
 import { SectionLabel } from './ui'
 
 /** Strategy (decomposition) drill-down: the agent's proposal reasoning,
@@ -80,7 +81,7 @@ export default function StrategyPanel({
           <>
             <div className="mb-3 flex items-center gap-3 text-xs">
               <span className={STRAT_STATUS_CLS[data.status] ?? 'text-ink-dim'}>
-                {data.status}
+                {strategyStatusLabel(data.status)}
               </span>
               <span className="text-ink-faint">
                 by {data.created_by} · {relTime(data.created_at)}
@@ -96,7 +97,7 @@ export default function StrategyPanel({
                 >
                   <span className="font-mono text-xs text-ink">{sg.slug}</span>
                   <span className={`text-[11px] ${GOAL_STATUS_CLS[sg.status] ?? 'text-ink-dim'}`}>
-                    {sg.status}
+                    {goalStatusLabel(sg.status)}
                   </span>
                 </button>
               ))}
