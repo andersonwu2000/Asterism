@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { weightedBurn } from '../lib/burn'
 import { switchAccount } from '../lib/claudeAuth'
-import { compactNumber, duration, relTime } from '../lib/format'
+import { compactNumber, duration } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { Link } from '../lib/router'
 import { Button } from '../components/ui'
@@ -451,6 +451,7 @@ export default function Run() {
         </section>
       )}
 
+      {(running || burn5h > 0) && (
       <section className="mt-7">
         <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
           burn
@@ -491,32 +492,6 @@ export default function Run() {
           </div>
         </div>
       </section>
-
-      {data.recent.length > 0 && (
-        <section className="mt-7">
-          <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
-            recent decisions
-          </div>
-          <div className="flex flex-col gap-1">
-            {data.recent.map((r, i) => (
-              <div key={i} className="flex items-baseline gap-3 text-xs">
-                <span className="tnum w-16 shrink-0 text-ink-faint">{relTime(r.at)}</span>
-                <span className="text-ink-dim">{r.kind}</span>
-                {r.outcome !== 'success' && (
-                  <span className="text-ink-faint">{r.outcome.replace(/_/g, ' ')}</span>
-                )}
-              </div>
-            ))}
-          </div>
-          {data.problem && (
-            <Link
-              to={`/problems/${encodeURIComponent(data.problem)}`}
-              className="mt-2 inline-block text-[11px] text-ink-faint underline decoration-edge-strong underline-offset-2 hover:text-ink"
-            >
-              full timeline on the problem page →
-            </Link>
-          )}
-        </section>
       )}
 
       {!running && (
