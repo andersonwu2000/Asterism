@@ -308,11 +308,23 @@ function ModuleMap({
     const YG = 108
     const width = spread * XG + 170
     const pos = new Map<string, { x: number; y: number }>()
-    // dense rows stagger their labels by parity so names never merge
+    // collision-driven label rows: walk each layer in x order and
+    // drop a label to the lower row only when the upper row's last
+    // label would actually touch it (parity alone missed near-misses
+    // in narrow layers)
     const stagger = new Map<string, number>()
+    const cap = Math.max(12, Math.floor((XG * 1.9) / 6.6))
+    const labelW = (p: string) => Math.min(leafOf(p).length, cap) * 6.6
     for (const l of layers) {
       l.sort((a, b) => x.get(a)! - x.get(b)!)
-      l.forEach((p, i) => stagger.set(p, l.length > 4 ? i % 2 : 0))
+      const rightEdge = [-Infinity, -Infinity]
+      for (const p of l) {
+        const cx = (x.get(p)! - minX) * XG
+        const w = labelW(p)
+        const row = cx - w / 2 > rightEdge[0] + 26 ? 0 : 1
+        stagger.set(p, row)
+        rightEdge[row] = Math.max(rightEdge[row], cx + w / 2)
+      }
     }
     for (const f of files) {
       pos.set(f.path, {
