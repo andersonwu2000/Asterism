@@ -356,6 +356,7 @@ export function layoutConstellation(
     }
     const leafKs = ks.filter((k) => (treeKids.get(k)?.length ?? 0) === 0)
     const branchKs = ks.filter((k) => (treeKids.get(k)?.length ?? 0) > 0)
+    const ordIdx = new Map(ks.map((c, i) => [c, i]))
     // child items: each branch subtree, plus (maybe) one leaf block
     interface Item {
       kind: 'branch' | 'leaves'
@@ -363,12 +364,14 @@ export function layoutConstellation(
       leaves?: number[]
       w: number
       d: number
+      ord: number
     }
     const items: Item[] = branchKs.map((k) => ({
       kind: 'branch' as const,
       k,
       w: subW.get(k) ?? 1,
       d: (subD.get(k) ?? 0) + 1,
+      ord: ordIdx.get(k) ?? 0,
     }))
     if (leafKs.length > 8) {
       const perRow = Math.ceil(Math.sqrt(leafKs.length * 2.2))
@@ -377,13 +380,17 @@ export function layoutConstellation(
         leaves: leafKs,
         w: perRow,
         d: Math.ceil(leafKs.length / perRow),
+        ord: ordIdx.get(leafKs[0]) ?? 0,
       })
     } else {
-      for (const k of leafKs) items.push({ kind: 'branch', k, w: 1, d: 1 })
+      for (const k of leafKs) {
+        items.push({ kind: 'branch', k, w: 1, d: 1, ord: ordIdx.get(k) ?? 0 })
+      }
     }
     // shelve depth-descending (FFDH — a shelf costs the height of its
-    // deepest member, so mixed depths waste rows); ties keep id order
-    items.sort((a, b) => b.d - a.d || (a.k ?? -1) - (b.k ?? -1))
+    // deepest member, so mixed depths waste rows); ties keep the
+    // sibling order (id on pass 1, partner barycenter on pass 2)
+    items.sort((a, b) => b.d - a.d || a.ord - b.ord)
     const shelves: Item[][] = []
     let cur: Item[] = []
     let curW = 0
@@ -427,18 +434,67 @@ export function layoutConstellation(
     slot = maxEnd
     xSlot.set(id, (start0 + maxEnd - 1) / 2)
   }
-  for (const r of treeRoots) {
-    measure(r, 0)
-    const start = slot
-    const members: number[] = []
-    assign(r, 0, members, 0)
-    treeInfos.push({
-      members,
-      start,
-      end: slot - 1,
-      depth: Math.max(...members.map((m) => layer.get(m) ?? 0), 0),
-    })
-    slot += 0.6 // breathing room between families
+  for (const r of treeRoots) measure(r, 0)
+  const baseLayer = new Map(layer) // assign() adds shelf shifts — snapshot for pass 2
+  const runForest = () => {
+    slot = 0
+    xSlot.clear()
+    treeInfos.length = 0
+    for (const r of treeRoots) {
+      const start = slot
+      const members: number[] = []
+      assign(r, 0, members, 0)
+      treeInfos.push({
+        members,
+        start,
+        end: slot - 1,
+        depth: Math.max(...members.map((m) => layer.get(m) ?? 0), 0),
+      })
+      slot += 0.6 // breathing room between families
+    }
+  }
+  runForest()
+
+  // ---- pass 2: partner-barycenter sibling order ---------------------
+  // Cross-links (citations, aliases, secondary parents) are drawn as
+  // long threads wherever the id-ordered pass happens to put their
+  // endpoints. Re-order equal-depth siblings by the mean pass-1 x of
+  // each subtree's partners and lay the forest out again — threads pull
+  // toward their far ends. Partner-less subtrees rank by their own
+  // pass-1 centre, so they keep their relative order. Deterministic.
+  const partner = new Map<number, number[]>()
+  const addPartner = (a: number, b: number) => {
+    partner.set(a, [...(partner.get(a) ?? []), b])
+    partner.set(b, [...(partner.get(b) ?? []), a])
+  }
+  for (const e of edges) {
+    if (e.kind === 'citation' || e.kind === 'alias') addPartner(e.from, e.to)
+    else if (primaryParent.get(e.to) !== e.from) addPartner(e.from, e.to)
+  }
+  if (partner.size > 0) {
+    const collect = (id: number, acc: number[], guard: number): void => {
+      if (guard > goals.length + 1) return
+      for (const p of partner.get(id) ?? []) {
+        const x = xSlot.get(p)
+        if (x !== undefined) acc.push(x)
+      }
+      for (const c of treeKids.get(id) ?? []) collect(c, acc, guard + 1)
+    }
+    const rank = new Map<number, number>()
+    const rankOf = (id: number): number => {
+      const acc: number[] = []
+      collect(id, acc, 0)
+      return acc.length > 0
+        ? acc.reduce((a, b) => a + b, 0) / acc.length
+        : (xSlot.get(id) ?? 0)
+    }
+    for (const ks of treeKids.values()) {
+      for (const c of ks) rank.set(c, rankOf(c))
+      ks.sort((a, b) => (rank.get(a)! - rank.get(b)!) || a - b)
+    }
+    layer.clear()
+    for (const [id, l] of baseLayer) layer.set(id, l)
+    runForest()
   }
 
   // A singleton a citation ties to something is a 1-node component in

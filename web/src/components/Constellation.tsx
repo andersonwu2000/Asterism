@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Goal, Strategy, StrategyEdge } from '../lib/types'
-import { frontierView, layoutConstellation, X_GAP } from '../lib/layout'
+import { frontierView, layoutConstellation } from '../lib/layout'
 import { Lean } from '../lib/lean'
 import { goalStatusLabel } from '../lib/vocab'
 import type { ConstellationLayout, LayoutNode } from '../lib/layout'
@@ -332,7 +332,9 @@ export default function Constellation({
     if (view !== null) return
     const el = containerRef.current
     if (!el || layout.nodes.length === 0) return
-    setView(computeFit(el, layout))
+    const fit = computeFit(el, layout)
+    fitKRef.current = fit.k
+    setView(fit)
   }, [view, layout])
 
   // ---- poll-to-poll transition (imperative) --------------------------
@@ -346,6 +348,10 @@ export default function Constellation({
   // disturb a glide in flight.
   const viewRef = useRef<View | null>(view) // the DISPLAYED camera
   const camDriven = useRef(false) // animator owns the camera right now
+  /** the current fit-to-view scale — big skies fit far below the old
+   * hard 0.25 wheel floor (stokes fits at 0.17), which trapped anyone
+   * who zoomed in: the wheel could never get back out to the fit */
+  const fitKRef = useRef<number | null>(null)
   const shownPosRef = useRef(new Map<number, { x: number; y: number }>())
   const shownJuncRef = useRef(new Map<number, { x: number; y: number }>())
   const sceneRef = useRef<string | null>(null)
@@ -392,6 +398,9 @@ export default function Constellation({
     const juncTargets = new Map(
       layout.bundles.map((b) => [b.strategyId, { x: b.junction.x, y: b.junction.y }]),
     )
+    if (containerRef.current) {
+      fitKRef.current = computeFit(containerRef.current, layout).k
+    }
     let moved = false
     if (sameScene && shownPosRef.current.size > 0 && layout.nodes.length <= ANIM_MAX) {
       for (const [id, t] of targets) {
@@ -533,7 +542,9 @@ export default function Constellation({
       const mx = e.clientX - rect.left
       const my = e.clientY - rect.top
       const factor = Math.exp(-e.deltaY * 0.0012)
-      const nk = Math.min(4, Math.max(0.25, v.k * factor))
+      // the floor must sit BELOW the fit, or zooming in becomes a trap
+      const kLo = Math.min(0.25, (fitKRef.current ?? 1) * 0.5)
+      const nk = Math.min(4, Math.max(kLo, v.k * factor))
       // zoom about the cursor; update the ref immediately so rapid
       // wheel bursts compound instead of re-reading a stale view
       const next = {
@@ -856,8 +867,15 @@ export default function Constellation({
     [visibleBundles, byId, hasStrategyClick, selectStrategyCb],
   )
 
-  const nodesEl = useMemo(
-    () => (
+  const nodesEl = useMemo(() => {
+    // Zoom-honest sizing that PRESERVES the hierarchy: the old absolute
+    // floor bottomed root, claim and step out at the same ~7px dot, so
+    // a survey view erased exactly the marks it exists to show (owner:
+    // anchor + claim are the only nodes the user NEEDS). One shared
+    // boost scales every class — and the ring offsets — together; the
+    // cap keeps the biggest stars inside their slot on 500-star skies.
+    const boost = Math.min(Math.max(1, 0.78 / kq), 4)
+    return (
       <>
         {layout.nodes.map((n) => {
           const s = nodeStyle(n.goal, hasLive)
@@ -865,15 +883,7 @@ export default function Constellation({
             n.goal.status === 'open' ||
             n.goal.status === 'attempting' ||
             n.goal.status === 'pending_strategist_review'
-          // scale honesty: marks never drop below ~7px on screen (the
-          // live frontier gets a size bonus + a larger floor) — but
-          // the floor is capped in CONTENT units, or at extreme
-          // zoom-out the floors exceed the slot gap and stars fuse
-          // into blobs (residue_thm, 500 nodes)
-          const r = Math.max(
-            radius(n.goal) + (live ? 1.5 : 0),
-            Math.min((live ? 5.5 : 3.5) / kq, X_GAP * 0.28),
-          )
+          const r = (radius(n.goal) + (live ? 1.5 : 0)) * boost
           const lod = kq < 0.8
           const fill = lod && live ? s.stroke : s.fill
           const selected = n.goal.id === selectedId
@@ -883,7 +893,7 @@ export default function Constellation({
             live && n.goal.attempts > 0
               ? Math.min(n.goal.attempts / shelveThreshold, 1)
               : 0
-          const heatR = r + 3
+          const heatR = r + 3 * boost
           const heatC = 2 * Math.PI * heatR
           return (
             <g
@@ -920,7 +930,7 @@ export default function Constellation({
                   meanings on one radius merge into ambiguity */}
               {selected && (
                 <circle
-                  r={r + 10}
+                  r={r + 10 * boost}
                   fill="none"
                   stroke="var(--color-ink)"
                   strokeWidth={1}
@@ -931,7 +941,7 @@ export default function Constellation({
               )}
               {n.goal.origin === 'root' && (
                 <circle
-                  r={r + 7}
+                  r={r + 7 * boost}
                   fill="none"
                   stroke={s.stroke}
                   strokeWidth={0.8}
@@ -943,7 +953,7 @@ export default function Constellation({
                   human vouches for) — diamonds above the shape-
                   perception threshold (~5px), circles below it;
                   Props are the light and stay round */}
-              {DEF_KINDS.has(n.goal.kind) && r * kq >= 5 ? (
+              {DEF_KINDS.has(n.goal.kind) && r * kq >= 4.2 ? (
                 <rect
                   x={-r * 1.06}
                   y={-r * 1.06}
@@ -986,7 +996,7 @@ export default function Constellation({
               )}
               {n.goal.is_deliverable && (
                 <circle
-                  r={r + 5}
+                  r={r + 5 * boost}
                   fill="none"
                   stroke="var(--color-star)"
                   strokeWidth={1.1}
@@ -1008,7 +1018,7 @@ export default function Constellation({
               )}
               {birthsRef.current.born.has(n.goal.id) && (
                 <circle
-                  r={r + 12}
+                  r={r + 12 * boost}
                   fill="none"
                   stroke="var(--color-starlight)"
                   strokeWidth={1}
@@ -1024,7 +1034,7 @@ export default function Constellation({
               )}
               {n.goal.in_flight && (
                 <circle
-                  r={r + 8}
+                  r={r + 8 * boost}
                   fill="none"
                   stroke="var(--color-accent)"
                   strokeWidth={1}
@@ -1038,7 +1048,7 @@ export default function Constellation({
                   />
                   <animate
                     attributeName="r"
-                    values={`${r + 7};${r + 9};${r + 7}`}
+                    values={`${r + 7 * boost};${r + 9 * boost};${r + 7 * boost}`}
                     dur="1.4s"
                     repeatCount="indefinite"
                   />
@@ -1102,9 +1112,9 @@ export default function Constellation({
           )
         })}
       </>
-    ),
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [
+  }, [
       layout,
       kq,
       showLabels,
@@ -1117,8 +1127,7 @@ export default function Constellation({
       labelRoom,
       rowCounts,
       selectCb,
-    ],
-  )
+    ])
 
   if (layout.nodes.length === 0) {
     return (
@@ -1275,21 +1284,49 @@ export default function Constellation({
         >
           legend {legendOpen ? '▾' : '▸'}
         </button>
+        {/* grouped: star status | landmark marks | line kinds — and the
+            status icons must MATCH the sky (the old "open" swatch drew a
+            hollow accent ring that exists nowhere) */}
         <div
-          className={`pointer-events-none mt-1 ${legendOpen ? 'flex' : 'hidden'} flex-wrap items-center gap-3 rounded-md bg-surface/90 px-2.5 py-1 text-[11px] text-ink-faint`}
+          className={`pointer-events-none mt-1 ${legendOpen ? 'flex' : 'hidden'} flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-surface/90 px-2.5 py-1 text-[11px] text-ink-faint`}
         >
         <span className="flex items-center gap-1">
           <svg width="13" height="13" viewBox="-5 -5 10 10">
-            <circle r="3" fill="var(--color-starlight)" />
-          </svg>
-          proved
-        </span>
-        <span className="flex items-center gap-1">
-          <svg width="13" height="13" viewBox="-5 -5 10 10">
-            <circle r="3" fill="none" stroke="var(--color-accent)" strokeWidth="1.2" />
+            <circle r="3.4" fill="var(--color-star)" stroke="var(--color-starlight)" strokeWidth="0.9" />
           </svg>
           open
         </span>
+        <span className="flex items-center gap-1">
+          <svg width="13" height="13" viewBox="-5 -5 10 10">
+            <circle r="3" fill="var(--color-starlight)" opacity="0.55" />
+          </svg>
+          proved
+        </span>
+        <span
+          className="flex items-center gap-1"
+          title="the engine is writing this star right now"
+        >
+          <svg width="15" height="15" viewBox="-6 -6 12 12">
+            <circle r="2" fill="var(--color-starlight)" />
+            <circle r="4.6" fill="none" stroke="var(--color-accent)" strokeWidth="1" opacity="0.8" />
+          </svg>
+          working
+        </span>
+        <span className="flex items-center gap-1">
+          <svg width="15" height="15" viewBox="-6 -6 12 12">
+            <circle r="2.4" fill="none" stroke="var(--color-ink-faint)" strokeWidth="1" />
+            <circle
+              r="4.4"
+              fill="none"
+              stroke="var(--color-warn)"
+              strokeWidth="1.2"
+              strokeDasharray="14 28"
+              transform="rotate(-90)"
+            />
+          </svg>
+          attempts
+        </span>
+        <span className="h-3 w-px bg-edge" />
         <span className="flex items-center gap-1">
           <svg width="15" height="15" viewBox="-6 -6 12 12">
             <circle r="5" fill="none" stroke="var(--color-starlight)" strokeWidth="0.6" opacity="0.5" />
@@ -1305,17 +1342,15 @@ export default function Constellation({
           deliverable
         </span>
         <span className="flex items-center gap-1">
-          <svg width="18" height="13" viewBox="0 0 14 10">
-            <line x1="1" y1="5" x2="13" y2="5" stroke="var(--color-accent)" strokeWidth="1" strokeDasharray="3 2.5" opacity="0.7" />
+          <svg width="13" height="13" viewBox="-5 -5 10 10">
+            <rect x="-2.6" y="-2.6" width="5.2" height="5.2" transform="rotate(45)" fill="var(--color-starlight)" />
           </svg>
-          alias
+          def
         </span>
-        <span className="flex items-center gap-1" title="one proof imports another — the lemma is used there">
-          <svg width="18" height="13" viewBox="0 0 14 10">
-            <line x1="1" y1="8" x2="13" y2="2" stroke="var(--color-starlight)" strokeWidth="1" opacity="0.45" />
-          </svg>
-          cites
+        <span className="opacity-75" title="root and claims draw largest, defs next, supporting steps smallest — at any zoom">
+          bigger = more important
         </span>
+        <span className="h-3 w-px bg-edge" />
         <span
           className="flex items-center gap-1"
           title="a fork needs ALL its branches (one route); two forks on one star are competing routes — click a fork for details"
@@ -1328,25 +1363,17 @@ export default function Constellation({
           </svg>
           route
         </span>
-        <span className="flex items-center gap-1">
-          <svg width="13" height="13" viewBox="-5 -5 10 10">
-            <rect x="-2.6" y="-2.6" width="5.2" height="5.2" transform="rotate(45)" fill="var(--color-starlight)" />
+        <span className="flex items-center gap-1" title="one proof imports another — the lemma is used there">
+          <svg width="18" height="13" viewBox="0 0 14 10">
+            <line x1="1" y1="8" x2="13" y2="2" stroke="var(--color-starlight)" strokeWidth="1" opacity="0.45" />
           </svg>
-          def
+          cites
         </span>
         <span className="flex items-center gap-1">
-          <svg width="15" height="15" viewBox="-6 -6 12 12">
-            <circle r="2.4" fill="none" stroke="var(--color-ink-faint)" strokeWidth="1" />
-            <circle
-              r="4.4"
-              fill="none"
-              stroke="var(--color-warn)"
-              strokeWidth="1.2"
-              strokeDasharray="14 28"
-              transform="rotate(-90)"
-            />
+          <svg width="18" height="13" viewBox="0 0 14 10">
+            <line x1="1" y1="5" x2="13" y2="5" stroke="var(--color-accent)" strokeWidth="1" strokeDasharray="3 2.5" opacity="0.7" />
           </svg>
-          attempts
+          alias
         </span>
         </div>
       </div>
@@ -1366,7 +1393,8 @@ export default function Constellation({
               const el = containerRef.current
               if (!v || !el) return
               const { width: cw, height: ch } = el.getBoundingClientRect()
-              const nk = Math.min(4, Math.max(0.25, v.k * factor))
+              const kLo = Math.min(0.25, (fitKRef.current ?? 1) * 0.5)
+              const nk = Math.min(4, Math.max(kLo, v.k * factor))
               const next = {
                 k: nk,
                 tx: cw / 2 - ((cw / 2 - v.tx) / v.k) * nk,
