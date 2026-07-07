@@ -1046,16 +1046,14 @@ export default function Constellation({
                   +{frontier.folded.get(n.goal.id)}
                 </text>
               )}
-              {(showLabels ||
-                n.goal.origin === 'root' ||
-                n.goal.is_deliverable) && (
+              {showLabels && (
                 <text
                   // Stagger label rows by in-row parity so long slugs
                   // on adjacent stars don't collide; offsets are
                   // screen-constant like the font. Truncation is
                   // width-aware: never truncate into empty space.
-                  // Root + claims stay labelled at ANY zoom — the
-                  // survey view needs its landmarks named.
+                  // No labels in the survey view (owner): the ring IS
+                  // the far-zoom identity — names arrive with zoom.
                   y={
                     r * (n.goal.is_deliverable || n.goal.origin === 'root' ? 1.6 : 1) +
                     ((rowCounts.get(n.y) ?? 0) > 8 && n.col % 2 === 1 ? 26 : 15) / kq
