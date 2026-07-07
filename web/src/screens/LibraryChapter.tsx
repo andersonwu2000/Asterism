@@ -160,8 +160,13 @@ function probeSeed(d: LibraryChapterDecl & { file?: string }, short: string): st
   const fq = d.name ?? d.slug
   if (d.source) {
     const ns = fq.includes('.') ? fq.slice(0, fq.lastIndexOf('.')) : null
+    // `_root_.` pins the axioms check to the buffer's own top-level
+    // redefinition — with the namespace open, the bare name is
+    // ambiguous against the Library original and #print answers BOTH
     return (
-      (ns ? `open ${ns}\n\n` : '') + d.source + `\n\n#print axioms ${short}`
+      (ns ? `open ${ns}\n\n` : '') +
+      d.source +
+      `\n\n#print axioms ${ns ? '_root_.' : ''}${short}`
     )
   }
   return `#check @${fq}\n\n#print axioms ${fq}`
