@@ -117,3 +117,6 @@ blueprint/
 Papers/*/paper.*
 Papers/*/text.md
 Papers/*/.index_attempt/
+
+# setup-stub transcript (regenerates on every hidden bootstrap run)
+installer/bootstrap.log
