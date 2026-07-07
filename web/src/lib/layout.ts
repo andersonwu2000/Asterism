@@ -1394,16 +1394,28 @@ export function layoutConstellation(
       }
       return w
     }
-    // a move = new xs for a set of nodes; accept iff strictly better
+    // a move = new xs for a set of nodes; accept iff strictly better.
+    // Brightness guard: a move may not push a structural segment past
+    // the fade threshold — dimming an edge "wins" crossing weight but
+    // loses the structure it was drawn for (structure outranks the
+    // count, owner), and without the guard the optimiser learns to
+    // hide its problems in the faint layer.
     const tryMove = (moves: [number, number][]): boolean => {
       const ids = moves.map(([id]) => id)
       const aff = affectedOf(ids)
       const before = localW(aff)
+      const wasBright = aff.map((s) => s.bright)
       const prev = moves.map(([id]) => [id, px.get(id)!] as [number, number])
       for (const [id, x] of moves) px.set(id, x)
       for (const s of aff) refresh(s)
-      const after = localW(aff)
-      if (after < before - 1e-9) return true
+      let dimmed = false
+      for (let i = 0; i < aff.length; i++) {
+        if (wasBright[i] && !aff[i].bright) {
+          dimmed = true
+          break
+        }
+      }
+      if (!dimmed && localW(aff) < before - 1e-9) return true
       for (const [id, x] of prev) px.set(id, x)
       for (const s of aff) refresh(s)
       return false
@@ -1635,6 +1647,62 @@ export function layoutConstellation(
         }
       }
     }
+    // row-level leaf pass: leaves of DIFFERENT parents sharing a row
+    // are interchangeable slots too — a dense row's de-overlap sweep
+    // strands leaves seven slots from their parent (residue: primary
+    // arms 455px long crossing three trees). Reassigning slots across
+    // parents pulls each fan back together; the brightness guard keeps
+    // a leaf from being traded past the fade line.
+    const rowPass = (): void => {
+      const rows2 = new Map<number, number[]>()
+      for (const g of goals) {
+        if ((treeKids.get(g.id)?.length ?? 0) > 0) continue
+        if (!primaryParent.has(g.id)) continue
+        if (!px.has(g.id) || (byDep.get(g.id)?.length ?? 0) === 0) continue
+        const y = pyOf.get(g.id)!
+        rows2.set(y, [...(rows2.get(y) ?? []), g.id])
+      }
+      for (const row of rows2.values()) {
+        if (row.length < 2 || row.length > 80) continue
+        row.sort((a, b) => px.get(a)! - px.get(b)!)
+        // compound: same-parent leaves contiguous, families ordered by
+        // their current mean x
+        const slots = row.map((k) => px.get(k)!)
+        const fams = new Map<number, number[]>()
+        for (const k of row) {
+          const p = primaryParent.get(k)!
+          fams.set(p, [...(fams.get(p) ?? []), k])
+        }
+        if (fams.size < row.length) {
+          const fMean = (ks: number[]): number =>
+            ks.reduce((a, k) => a + px.get(k)!, 0) / ks.length
+          const target = [...fams.values()]
+            .sort((a, b) => fMean(a) - fMean(b))
+            .flat()
+          if (!target.every((k, i) => k === row[i])) {
+            if (tryMove(target.map((k, i) => [k, slots[i]]))) {
+              row.length = 0
+              row.push(...target)
+            }
+          }
+        }
+        // adjacent swaps across the whole row
+        for (let i = 0; i + 1 < row.length; i++) {
+          const a = row[i]
+          const b = row[i + 1]
+          if (primaryParent.get(a) === primaryParent.get(b)) continue
+          if (
+            tryMove([
+              [a, px.get(b)!],
+              [b, px.get(a)!],
+            ])
+          ) {
+            row[i] = b
+            row[i + 1] = a
+          }
+        }
+      }
+    }
     // proposal set: per band, left-to-right adjacent tree swaps, then a
     // mirror per tree; two sweeps let a swap unlock a mirror and back
     const compsByBand = new Map<number, Comp[]>()
@@ -1721,6 +1789,7 @@ export function layoutConstellation(
           siblingPass()
           treePass()
         }
+        rowPass()
       }
       const w = totalW()
       if (w < bestW - 1e-9) {
