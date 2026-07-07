@@ -7,16 +7,17 @@
 **Windows — no terminal needed:**
 
 1. Get this folder (download & unzip, or clone).
-2. Double-click **`installer\install.bat`**. It installs everything —
-   Python, the Lean prover, the math library, the web interface, and
-   Claude Code — narrating each step. The math library download is
-   several GB the first time; leave the window open. Claude Code asks
-   you to log in once with your Claude subscription.
-3. Double-click the new **Asterism** shortcut on your Desktop. Your
-   browser opens the console: create a problem, press Run.
+2. Double-click **`installer\install.bat`** — a minimal bootstrap
+   (Python + the engine + a Desktop shortcut), then your browser
+   opens.
+3. Finish in the browser: the **setup wizard** (`#/setup`) installs
+   the Lean prover (or adopts one you already have), lets you pick
+   the drive for the multi-GB math library, and sets up Claude Code
+   with its one-time subscription login — each step with progress
+   and retries. When every card is green: create a problem, press
+   Run.
 
-Re-running the installer is always safe — finished steps skip
-themselves.
+Re-running the bootstrap or any wizard step is always safe.
 
 **macOS / Linux:** `bash installer/install.sh`, then `asterism serve`
 and open http://127.0.0.1:8642.

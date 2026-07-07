@@ -143,6 +143,10 @@ def create_app(workspace: Path) -> FastAPI:
     from .run import register as _register_run
     _register_run(app, workspace, _ro)
 
+    # the setup wizard's backend (/api/setup/*)
+    from .setup import register as _register_setup
+    _register_setup(app, workspace)
+
     # -- meta ---------------------------------------------------------
 
     @app.get("/api/meta")

@@ -10,6 +10,7 @@ import New from './screens/New'
 import Papers, { PaperReader } from './screens/Papers'
 import Problem from './screens/Problem'
 import Run from './screens/Run'
+import Setup from './screens/Setup'
 import Telemetry from './screens/Telemetry'
 import type { Meta } from './lib/types'
 
@@ -60,6 +61,34 @@ function DaemonChip({ meta }: { meta: Meta | null }) {
       <span className={`h-1.5 w-1.5 rounded-full ${crashed ? 'bg-warn' : 'bg-ink-faint'}`} />
       {crashed ? <span className="text-warn">last run crashed</span> : 'engine idle'}
     </Link>
+  )
+}
+
+/** Engine-readiness banner: a missing Lean toolchain or Mathlib cache
+ * fails every run just as silently as a missing login — point at the
+ * wizard. 30s poll (cheap checks), hidden on the wizard itself. */
+function SetupBanner({ section }: { section: string }) {
+  const { data } = usePoll<{
+    lake: { found: boolean }
+    mathlib: { present: boolean }
+  }>('/api/setup/status', 30000)
+  if (!data || section === 'setup') return null
+  if (data.lake.found && data.mathlib.present) return null
+  return (
+    <div className="flex items-center gap-3 border-b border-edge bg-surface-2 px-4 py-2 text-xs">
+      <span className="bg-warn h-1.5 w-1.5 shrink-0 rounded-full" />
+      <span className="text-ink">
+        {data.lake.found
+          ? 'The math library is not fetched yet — runs will fail.'
+          : 'The Lean prover is not set up yet — runs will fail.'}
+      </span>
+      <Link
+        to="/setup"
+        className="rounded-md border border-edge bg-surface px-2.5 py-1 text-ink transition-colors hover:bg-surface-3"
+      >
+        Open the setup wizard
+      </Link>
+    </div>
   )
 }
 
@@ -304,6 +333,7 @@ function Shell() {
             carries its own title, the constellation gets the sky. The
             ONE exception: the auth banner (a silently-fatal state) */}
         <ClaudeBanner meta={meta} />
+        <SetupBanner section={section} />
         <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           {section === 'new' ? (
             <New />
@@ -323,6 +353,8 @@ function Shell() {
             )
           ) : section === 'run' ? (
             <Run />
+          ) : section === 'setup' ? (
+            <Setup />
           ) : section === 'settings' || section === 'telemetry' ? (
             <Telemetry />
           ) : section === 'problems' && route.segments[1] ? (
