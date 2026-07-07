@@ -45,11 +45,17 @@ and one polling hook.
 - **Inbox** (`#/inbox`) — decisions. Amend requests with word-level
   diffs + age escalation; ingest sign-offs resolve anchors/claims to
   their statements.
-- **Engine** (`#/telemetry`) — status with Lean-warm-up phase and
-  last-exit truth (finished / force-stopped / crashed), settings
-  (per-pipeline model selects + engine knobs, comment-preserving yaml
-  edits), usage (this run vs all time, weighted burn, cache hit
-  share), and a developer-log fold.
+- **Run** (`#/run`) — mission control. Status light + phase in plain
+  words (warming / planning / proving / harvesting / stopping), the
+  scoped problem's progress bar, one lane per live agent (its unit,
+  its statement, the tail of the file it is writing — spawn writes go
+  through to the real path), burn against the trailing-5h
+  subscription window, recent decisions, and Stop. Idle, it keeps
+  telling the last run's story (clean / force-stopped / crashed).
+- **Settings** (`#/settings`) — the machine room: per-pipeline model
+  selects + engine knobs (comment-preserving yaml edits), the
+  all-time usage ledger (weighted burn, cache hit share), and a
+  developer-log fold.
 
 ## Development
 

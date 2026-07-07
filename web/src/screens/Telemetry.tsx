@@ -2,136 +2,13 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { weightedBurn } from '../lib/burn'
 import { compactNumber, duration } from '../lib/format'
-import { Button, SectionLabel } from '../components/ui'
-import type { ConfigSetting, DaemonStatus, UsageProblem } from '../lib/types'
+import { SectionLabel } from '../components/ui'
+import type { ConfigSetting, UsageProblem } from '../lib/types'
 
-/** Engine panel + usage telemetry (charter §3.4); the Library browses at #/library. */
+/** Settings — the machine room: model/knob config, the all-time usage
+ * ledger, and the developer log. Liveness, lanes and burn-of-the-run
+ * live on the Run console (#/run). */
 
-/** "for 42m" / "for 3h 07m" — how long the current run has been going. */
-function runElapsed(startedAt: string): string {
-  const sec = Math.max(0, (Date.now() - Date.parse(startedAt)) / 1000)
-  return duration(sec)
-}
-
-/** Idle must not wear one face for three endings: clean finish,
- * user's force stop, and a crash each say what happened. */
-function lastExitLine(e: DaemonStatus['last_exit']): string {
-  if (!e) return 'the engine is not running'
-  if (e.rc === 0) return 'the engine is not running — the last run finished cleanly'
-  if (e.rc === null) return 'the engine is not running — you force-stopped the last run'
-  return `the last run exited abnormally (${e.error ?? 'unknown error'}) — details in the developer log`
-}
-
-function DaemonPanel() {
-  const { data: d, refresh } = usePoll<DaemonStatus>('/api/daemon', 2000)
-  const [busy, setBusy] = useState(false)
-  const [msg, setMsg] = useState<string | null>(null)
-  // Force stop is two-step (same pattern as the Inbox's Reject →
-  // Confirm reject): first press arms it, 3s of silence disarms.
-  const [confirmForce, setConfirmForce] = useState(false)
-  const forceTimer = useRef<number | null>(null)
-  useEffect(
-    () => () => {
-      if (forceTimer.current !== null) window.clearTimeout(forceTimer.current)
-    },
-    [],
-  )
-  const armForce = () => {
-    setConfirmForce(true)
-    if (forceTimer.current !== null) window.clearTimeout(forceTimer.current)
-    forceTimer.current = window.setTimeout(() => setConfirmForce(false), 3000)
-  }
-  const disarmForce = () => {
-    if (forceTimer.current !== null) window.clearTimeout(forceTimer.current)
-    forceTimer.current = null
-    setConfirmForce(false)
-  }
-
-  const act = async (path: string, body: Record<string, unknown>) => {
-    setBusy(true)
-    setMsg(null)
-    try {
-      const r = await apiPost<{ message: string }>(path, body)
-      setMsg(r.message)
-    } catch (e) {
-      setMsg(String((e as Error).message))
-    } finally {
-      setBusy(false)
-      refresh()
-    }
-  }
-
-  return (
-    <div className="rounded-lg border border-edge bg-surface p-4">
-      <div className="mb-3 flex items-baseline gap-3">
-        <span className="flex items-center gap-2.5">
-          <span
-            className={`h-2.5 w-2.5 rounded-full ${
-              d?.running ? (d.stopping ? 'bg-warn' : 'bg-ok animate-pulse') : 'bg-ink-faint'
-            }`}
-          />
-          <span className="font-display text-[22px] font-medium text-ink">
-            {d?.running ? (d.stopping ? 'Stopping' : 'Running') : 'Idle'}
-          </span>
-        </span>
-        <span className="text-xs text-ink-faint">
-          {d?.running && d.stopping
-            ? `pid ${d.pid} — draining ${d.in_flight_leases} in-flight lease${d.in_flight_leases === 1 ? '' : 's'}; if this hangs on a stale lease, Force stop is safe`
-            : d?.running
-              ? `working on ${d.scope ?? 'all problems'}${
-                  d.gateway === 'warming' ? ' · warming the Lean toolchain' : ''
-                }${
-                  d.started_at ? ` · for ${runElapsed(d.started_at)}` : ''
-                } · pid ${d.pid}${d.in_flight_leases > 0 ? ` · ${d.in_flight_leases} in flight` : ''}`
-              : lastExitLine(d?.last_exit ?? null)}
-        </span>
-      </div>
-      {d && !d.running && d.in_flight_leases > 0 && (
-        <div className="mb-3 rounded-md border border-edge bg-surface-2 px-3 py-1.5 text-xs text-ink-dim">
-          {d.in_flight_leases} orphaned work lease(s) from a previous run — reclaimed
-          automatically on the next engine start.
-        </div>
-      )}
-      <div className="flex items-center gap-2">
-        {!d?.running ? (
-          <span className="text-xs text-ink-faint">
-            to run a problem, press Run on its page — the engine works one problem at a time
-          </span>
-        ) : (
-          <>
-            <Button
-              variant="outline"
-              disabled={busy || d.stopping}
-              onClick={() => void act('/api/daemon/stop', { force: false })}
-            >
-              Stop (graceful)
-            </Button>
-            <Button
-              variant="danger"
-              disabled={busy}
-              onClick={() => {
-                if (confirmForce) {
-                  disarmForce()
-                  void act('/api/daemon/stop', { force: true })
-                } else {
-                  armForce()
-                }
-              }}
-            >
-              {confirmForce ? 'Confirm force stop' : 'Force stop'}
-            </Button>
-            {confirmForce && (
-              <span className="text-[11px] text-ink-faint">
-                kills agents mid-attempt — unfinished work is reclaimed on the next run
-              </span>
-            )}
-          </>
-        )}
-      </div>
-      {msg && <div className="mt-2 font-mono text-[11px] text-ink-dim">{msg}</div>}
-    </div>
-  )
-}
 
 function ConfigPanel() {
   const { data, refresh } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
@@ -408,11 +285,10 @@ function inner(
 export default function Telemetry() {
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
-      <h1 className="font-display mb-4 text-[22px] font-medium text-ink">Engine</h1>
+      <h1 className="font-display mb-4 text-[22px] font-medium text-ink">Settings</h1>
+      {/* liveness, lanes and burn live on the Run console (#/run) —
+          this page is the machine room: knobs, the ledger, the log */}
       <div className="flex flex-col gap-6">
-        <section>
-          <DaemonPanel />
-        </section>
         <section>
           <SectionLabel>settings</SectionLabel>
           <ConfigPanel />

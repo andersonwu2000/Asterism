@@ -1,0 +1,149 @@
+"""GET /api/run — mission control's one read.
+
+"What is the machine doing RIGHT NOW": daemon liveness + the scoped
+problem's goal tallies, one lane per live worker (unit, statement, and
+a tail of the file it is writing — spawn writes go through to the real
+path, so the goal's lean file IS the live view), burn for this run and
+for the trailing 5h (the subscription-window proxy: true plan quotas
+are not queryable, so the UI shows spend against the window instead of
+pretending to know the ceiling), and the recent decision feed.
+
+Read-only aggregation in the data.py mold: fresh read-only connection
+per request, never touches the gateway, never writes. Lives in its own
+module (not data.py) so the run surface can evolve without churning
+the shared aggregation file.
+"""
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from ..state import db
+from . import data as _data
+
+#: worker-lane file tails stay small — this is a heartbeat, not a
+#: file viewer (the Files tab reads whole files)
+_TAIL_BYTES = 2400
+_TAIL_LINES = 12
+
+
+def _tail(path: Path) -> "dict | None":
+    """Last lines + activity of a file being written. None = no file
+    yet (a worker that has not touched disk is still warming up its
+    prompt — that is itself information)."""
+    try:
+        st = path.stat()
+        with open(path, "rb") as f:
+            if st.st_size > _TAIL_BYTES:
+                f.seek(-_TAIL_BYTES, 2)
+            raw = f.read()
+    except OSError:
+        return None
+    lines = raw.decode("utf-8", errors="replace").splitlines()
+    if st.st_size > _TAIL_BYTES and len(lines) > 1:
+        lines = lines[1:]  # first line is almost surely cut mid-way
+    quiet = max(0.0, datetime.now(timezone.utc).timestamp() - st.st_mtime)
+    return {
+        "tail": "\n".join(lines[-_TAIL_LINES:]),
+        "size": int(st.st_size),
+        "quiet_sec": int(quiet),
+    }
+
+
+def run_status(conn: sqlite3.Connection, workspace: Path,
+               daemon: "dict | None") -> dict:
+    d = daemon or {}
+    running = bool(d.get("running"))
+    scope = d.get("scope") or None
+    started = d.get("started_at")
+
+    out: dict = {
+        "daemon": d,
+        "problem": scope,
+        "goals": None,
+        "workers": [],
+        "burn_run": None,
+        "burn_5h": None,
+        "recent": [],
+    }
+
+    # burn: the trailing-5h window is always worth knowing (idle spend
+    # counts against the same subscription window); this-run only
+    # exists while a run does
+    five_h_ago = (datetime.now(timezone.utc)
+                  - timedelta(hours=5)).isoformat()
+    out["burn_5h"] = _data.telemetry_usage(conn, since=five_h_ago)
+    if running and started:
+        out["burn_run"] = _data.telemetry_usage(conn, since=str(started))
+
+    # the problem under the lens: the live scope, or the last run's
+    # scope when idle (the console keeps telling the last story)
+    focus = scope or ((d.get("last_exit") or {}).get("scope"))
+    if focus:
+        counts: dict[str, int] = {}
+        for r in conn.execute(
+                "SELECT status, COUNT(*) AS n FROM goals"
+                " WHERE problem = ? GROUP BY status", (focus,)):
+            counts[str(r["status"])] = int(r["n"])
+        if counts:
+            out["goals"] = {
+                "open": counts.get("open", 0),
+                "attempting": counts.get("attempting", 0),
+                "proved": counts.get("proved", 0),
+                "total": sum(counts.values()),
+            }
+        out["problem"] = focus
+        for r in conn.execute(
+                "SELECT decision_kind, outcome, updated_at"
+                " FROM strategist_decisions"
+                " WHERE problem = ? AND outcome IS NOT NULL"
+                " ORDER BY updated_at DESC LIMIT 8", (focus,)):
+            out["recent"].append({
+                "kind": str(r["decision_kind"]),
+                "outcome": str(r["outcome"]),
+                "at": str(r["updated_at"]),
+            })
+
+    # worker lanes — queue leases owned by the LIVE pid only (same
+    # gate as the board: a dead owner's lease is residue, not work)
+    live_pid = _data._live_daemon_pid(d)
+    if live_pid is not None:
+        for r in conn.execute(
+                "SELECT q.kind AS kind, q.target_kind AS tk,"
+                " q.target_id AS tid, q.leased_at AS leased_at,"
+                " g.slug AS slug, g.statement AS statement,"
+                " g.lean_path AS lean_path"
+                " FROM queue q LEFT JOIN goals g ON q.target_kind = 'Goal'"
+                " AND g.id = CAST(q.target_id AS INTEGER)"
+                " WHERE q.owner_pid = ? ORDER BY q.leased_at", (live_pid,)):
+            lane: dict = {
+                "kind": str(r["kind"]),
+                "slug": r["slug"] if r["slug"] is not None else str(r["tid"]),
+                "statement": r["statement"],
+                "leased_at": r["leased_at"],
+                "file": None,
+                "path": None,
+            }
+            if r["lean_path"]:
+                rel = str(r["lean_path"])
+                lane["path"] = rel
+                lane["file"] = _tail(workspace / rel)
+            out["workers"].append(lane)
+    return out
+
+
+def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
+    """Mount GET /api/run. `ro` is app.py's `_ro` contextmanager —
+    borrowed so this module inherits the same 404/503 semantics."""
+
+    @app.get("/api/run")
+    def run() -> dict:
+        from ..core.cli import daemon_status
+        d = daemon_status(workspace)
+        if not (workspace / "asterism.db").exists():
+            return {"daemon": d, "problem": None, "goals": None,
+                    "workers": [], "burn_run": None, "burn_5h": None,
+                    "recent": []}
+        with ro(workspace) as conn:
+            return run_status(conn, workspace, d)

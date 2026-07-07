@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
 import { usePoll } from '../lib/api'
-import { weightedBurn } from '../lib/burn'
 import { Link } from '../lib/router'
-import { compactNumber, relTime } from '../lib/format'
+import { relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { goalStatusLabel } from '../lib/vocab'
 import { ErrorState, StatusBadge } from '../components/ui'
@@ -13,13 +12,7 @@ import DecisionTimeline from '../components/DecisionTimeline'
 import FileViewer from '../components/FileViewer'
 import ManifestEditor from '../components/ManifestEditor'
 import RunControl from '../components/RunControl'
-import type {
-  ConfigSetting,
-  DaemonStatus,
-  Goal,
-  ProblemDetail,
-  UsageProblem,
-} from '../lib/types'
+import type { DaemonStatus, Goal, ProblemDetail } from '../lib/types'
 
 type Tab = 'stars' | 'manifest' | 'goals' | 'timeline' | 'files'
 
@@ -140,19 +133,17 @@ function GoalsList({
   )
 }
 
-/** The run strip — the demo stats panel, webbed. Two lines while the
- * engine works this problem (its presence IS the truthful "running"
- * signal): phase + wall clock + goal tallies + burn, then one chip per
- * live agent. No logs — the state is the story. */
+/** The run strip — one line while the engine works this problem (its
+ * presence IS the truthful "running" signal): phase + wall clock +
+ * goal tallies. The machinery (agent lanes, live writes, burn) lives
+ * on the Run console — one link, not a second copy. */
 function RunStrip({
-  problem,
   workers,
   goals,
   startedAt,
   gateway,
   stopping,
 }: {
-  problem: string
   workers: ProblemDetail['workers']
   goals: Goal[]
   startedAt: string | null
@@ -164,14 +155,6 @@ function RunStrip({
     const t = window.setInterval(() => tick((n) => n + 1), 1000)
     return () => window.clearInterval(t)
   }, [])
-  // burn for THIS problem, this run (weighted units — quota axis)
-  const { data: usage } = usePoll<{ problems: UsageProblem[]; window?: string }>(
-    '/api/telemetry/usage',
-    10000,
-  )
-  const { data: cfg } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
-  const mine = usage?.window === 'run' ? usage.problems.find((p) => p.problem === problem) : null
-  const burn = mine ? weightedBurn(mine.kinds, cfg?.settings) : 0
 
   let wall: string | null = null
   if (startedAt) {
@@ -209,60 +192,33 @@ function RunStrip({
     [count('shelved') + count('pending_shelve_confirm'), 'shelved'],
   ]
 
-  const leaseAge = (iso: string | null) => {
-    if (!iso) return null
-    const m = Math.floor((Date.now() - Date.parse(iso)) / 60000)
-    return m < 1 ? 'just now' : `${m}m`
-  }
-
   return (
-    <div className="mt-1.5 flex flex-col gap-1">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-        <span className="flex items-center gap-1.5 text-ink" title={phaseHint[phase]}>
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ok" />
-          {phase}
+    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+      <span className="flex items-center gap-1.5 text-ink" title={phaseHint[phase]}>
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ok" />
+        {phase}
+      </span>
+      {wall && <span className="tnum font-mono text-[12px] text-ink-dim">{wall}</span>}
+      {goals.length > 0 && (
+        <span className="tnum text-ink-faint">
+          {tallies
+            .filter(([n], i) => n > 0 || i === 0)
+            .map(([n, label]) => `${n} ${label}`)
+            .join(' · ')}
         </span>
-        {wall && <span className="tnum font-mono text-[12px] text-ink-dim">{wall}</span>}
-        {goals.length > 0 && (
-          <span className="tnum text-ink-faint">
-            {tallies
-              .filter(([n], i) => n > 0 || i === 0)
-              .map(([n, label]) => `${n} ${label}`)
-              .join(' · ')}
-          </span>
-        )}
-        {burn > 0 && (
-          <span
-            className="tnum text-ink-faint"
-            title="weighted burn this run: tokens weighted by each pipeline's model price (top-model output = 1 unit) — a quota share, not a token count"
-          >
-            burn {compactNumber(Math.round(burn))}
-          </span>
-        )}
-      </div>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-        {workers.length > 0 ? (
-          workers.map((w, i) => (
-            <span
-              key={i}
-              className="flex items-center gap-1.5 rounded-full border border-edge bg-surface px-2 py-0.5"
-              title={`a ${w.kind} agent has been on this unit ${leaseAge(w.leased_at) ?? ''}`}
-            >
-              <span className="text-[11px] text-ink-dim">{w.kind.toLowerCase()}</span>
-              <span className="max-w-56 truncate font-mono text-[11px] text-ink">{w.slug}</span>
-              {leaseAge(w.leased_at) && (
-                <span className="tnum text-[10px] text-ink-faint">{leaseAge(w.leased_at)}</span>
-              )}
-            </span>
-          ))
-        ) : (
-          <span className="text-[11px] text-ink-faint">
-            {gateway === 'warming'
-              ? 'no agents yet — they spawn once the toolchain is hot'
-              : 'no agents this instant — the Strategist is planning'}
-          </span>
-        )}
-      </div>
+      )}
+      {workers.length > 0 && (
+        <span className="tnum text-ink-faint">
+          {workers.length} agent{workers.length === 1 ? '' : 's'}
+        </span>
+      )}
+      <Link
+        to="/run"
+        className="text-ink-faint underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"
+        title="the run console: agent lanes, live writes, burn"
+      >
+        run console →
+      </Link>
     </div>
   )
 }
@@ -352,7 +308,6 @@ export default function Problem({ name }: { name: string }) {
         </div>
         {data.engine_working && (
           <RunStrip
-            problem={data.name}
             workers={data.workers}
             goals={data.goals}
             startedAt={daemon?.started_at ?? null}

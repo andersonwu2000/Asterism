@@ -9,6 +9,7 @@ import LibraryChapterScreen from './screens/LibraryChapter'
 import New from './screens/New'
 import Papers, { PaperReader } from './screens/Papers'
 import Problem from './screens/Problem'
+import Run from './screens/Run'
 import Telemetry from './screens/Telemetry'
 import type { Meta } from './lib/types'
 
@@ -27,12 +28,12 @@ function DaemonChip({ meta }: { meta: Meta | null }) {
     const elapsed = mins === null ? '' : mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`
     return (
       <Link
-        to={d.scope ? `/problems/${encodeURIComponent(d.scope)}` : '/telemetry'}
+        to="/run"
         className="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap text-ink transition-colors hover:bg-surface-2"
         title={
           d.stopping
             ? 'engine stopping — finishing in-flight work'
-            : `engine working on ${d.scope ?? 'all problems'}${elapsed ? ` for ${elapsed}` : ''} — open it`
+            : `engine working on ${d.scope ?? 'all problems'}${elapsed ? ` for ${elapsed}` : ''} — open the run console`
         }
       >
         <span
@@ -48,12 +49,12 @@ function DaemonChip({ meta }: { meta: Meta | null }) {
   const crashed = d.last_exit !== null && d.last_exit.rc !== null && d.last_exit.rc !== 0
   return (
     <Link
-      to="/telemetry"
+      to="/run"
       className="group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
       title={
         crashed
-          ? `the last run exited abnormally: ${d.last_exit?.error ?? 'unknown error'} — open the Engine page`
-          : 'engine not running — open the Engine page'
+          ? `the last run exited abnormally: ${d.last_exit?.error ?? 'unknown error'} — open the run console`
+          : 'engine not running — open the run console'
       }
     >
       <span className={`h-1.5 w-1.5 rounded-full ${crashed ? 'bg-warn' : 'bg-ink-faint'}`} />
@@ -82,7 +83,7 @@ const ICONS: Record<string, ReactNode> = {
       />
     </svg>
   ),
-  telemetry: (
+  run: (
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
       <path
         d="M1.5 8.5h3l2-5 3 9 2-4h3"
@@ -91,6 +92,15 @@ const ICONS: Record<string, ReactNode> = {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  ),
+  settings: (
+    // three sliders — the machine room's knobs
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M2 4.5h12M2 8h12M2 11.5h12" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" opacity="0.55" />
+      <circle cx="10.5" cy="4.5" r="1.6" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
+      <circle cx="5" cy="8" r="1.6" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
+      <circle cx="8.5" cy="11.5" r="1.6" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
     </svg>
   ),
   library: (
@@ -121,12 +131,15 @@ function NavItem({
   label,
   active,
   badge,
+  live = false,
 }: {
   to: string
   icon: string
   label: string
   active: boolean
   badge?: number
+  /** a pulsing dot: the machine is working behind this entry */
+  live?: boolean
 }) {
   return (
     <Link
@@ -142,6 +155,7 @@ function NavItem({
         {ICONS[icon]}
       </span>
       <span className="flex-1">{label}</span>
+      {live && <span className="bg-ok h-1.5 w-1.5 animate-pulse rounded-full" />}
       {badge !== undefined && badge > 0 && (
         <span className="tnum rounded-full bg-warn/15 px-1.5 py-px text-[11px] font-medium text-warn">
           {badge}
@@ -199,6 +213,13 @@ function Shell() {
             active={section === '' || section === 'problems'}
           />
           <NavItem
+            to="/run"
+            icon="run"
+            label="Run"
+            active={section === 'run'}
+            live={meta?.daemon.running ?? false}
+          />
+          <NavItem
             to="/library"
             icon="library"
             label="Library"
@@ -218,10 +239,10 @@ function Shell() {
             badge={meta?.inbox_count}
           />
           <NavItem
-            to="/telemetry"
-            icon="telemetry"
-            label="Engine"
-            active={section === 'telemetry'}
+            to="/settings"
+            icon="settings"
+            label="Settings"
+            active={section === 'settings' || section === 'telemetry'}
           />
         </nav>
         <div className="mt-auto flex flex-col gap-1">
@@ -251,7 +272,9 @@ function Shell() {
             ) : (
               <Papers />
             )
-          ) : section === 'telemetry' ? (
+          ) : section === 'run' ? (
+            <Run />
+          ) : section === 'settings' || section === 'telemetry' ? (
             <Telemetry />
           ) : section === 'problems' && route.segments[1] ? (
             <Problem name={route.segments[1]} />

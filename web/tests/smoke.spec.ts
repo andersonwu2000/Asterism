@@ -75,9 +75,9 @@ test('library atlas renders constellations or empty state', async ({ page }) => 
   await expect(sky).toBeVisible()
 })
 
-test('telemetry: daemon panel + log + usage + library sections', async ({ page }) => {
-  await page.goto('/#/telemetry')
-  await expect(page.getByRole('heading', { name: 'Engine' })).toBeVisible()
+test('settings: knobs + log + usage ledger (telemetry route redirects)', async ({ page }) => {
+  await page.goto('/#/telemetry') // legacy route still lands here
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
   // the usage window label is daemon-truthful: "this run" only while
   // one runs; the smoke workspace is idle → all time
   for (const label of ['settings', 'usage — all time']) {
@@ -85,6 +85,14 @@ test('telemetry: daemon panel + log + usage + library sections', async ({ page }
   }
   // the summary row nests the label beside its chevron — substring match
   await expect(page.getByText('developer log')).toBeVisible()
+})
+
+test('run console: phase heading + burn + guidance, idle or live', async ({ page }) => {
+  await page.goto('/#/run')
+  await expect(
+    page.getByRole('heading', { name: /Idle|Proving|Planning|Warming up|Harvesting|Stopping/ }),
+  ).toBeVisible()
+  await expect(page.getByText('burn', { exact: true })).toBeVisible()
 })
 
 test('papers shelf renders rows or empty state', async ({ page }) => {

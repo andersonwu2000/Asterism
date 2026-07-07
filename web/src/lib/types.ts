@@ -193,6 +193,28 @@ export interface UsageProblem {
   kinds: UsageKind[]
 }
 
+/** One live worker lane on the run console (GET /api/run). */
+export interface RunWorker {
+  kind: string
+  slug: string
+  statement: string | null
+  leased_at: string | null
+  path: string | null
+  /** tail of the file it is writing — spawn writes go through to the
+   * real path, so this is the live view; null = nothing on disk yet */
+  file: { tail: string; size: number; quiet_sec: number } | null
+}
+
+export interface RunStatus {
+  daemon: DaemonStatus
+  problem: string | null
+  goals: { open: number; attempting: number; proved: number; total: number } | null
+  workers: RunWorker[]
+  burn_run: { problems: UsageProblem[] } | null
+  burn_5h: { problems: UsageProblem[] } | null
+  recent: { kind: string; outcome: string; at: string }[]
+}
+
 export interface LibraryDecl {
   slug: string
   name: string | null

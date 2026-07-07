@@ -120,6 +120,10 @@ def create_app(workspace: Path) -> FastAPI:
     workspace = workspace.resolve()
     app = FastAPI(title="Asterism", docs_url=None, redoc_url=None)
 
+    # mission control (GET /api/run) lives in its own module
+    from .run import register as _register_run
+    _register_run(app, workspace, _ro)
+
     # -- meta ---------------------------------------------------------
 
     @app.get("/api/meta")
@@ -477,8 +481,6 @@ def create_app(workspace: Path) -> FastAPI:
     def library_chapter(problem: str) -> dict:
         """The harvested Library modules ONE problem contributed —
         the reading surface (curated text), not the engine record."""
-        if not (workspace / "asterism.db").exists():
-            raise HTTPException(status_code=404, detail="no database")
         with _ro(workspace) as conn:
             d = _data.library_chapter(conn, workspace, problem)
         if d is None:
