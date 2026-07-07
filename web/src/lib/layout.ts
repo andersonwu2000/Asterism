@@ -107,10 +107,17 @@ export function layoutConstellation(
   // FLIPPED for hierarchy: the top-level claim is the parent and its
   // anchors hang beneath it (the sketch's mental model — claims on
   // top, vocabulary supporting from below).
+  // One pair of stars, one line. Precedence follows specificity:
+  // hierarchy > alias > citation — an alias pair that also cites reads
+  // as ONE dashed identity link, not two parallel curves (bt drew
+  // both: the alias loop never registered its pair and the citation
+  // dedupe only checked its own direction).
   const seenPairs = new Set(edges.map((e) => `${e.from}>${e.to}`))
+  const pairSeen = (a: number, b: number) =>
+    seenPairs.has(`${a}>${b}`) || seenPairs.has(`${b}>${a}`)
   for (const e of anchorEdges) {
     if (!byId.has(e.from) || !byId.has(e.to)) continue
-    if (seenPairs.has(`${e.to}>${e.from}`)) continue
+    if (pairSeen(e.from, e.to)) continue
     seenPairs.add(`${e.to}>${e.from}`)
     edges.push({
       from: e.to,
@@ -122,6 +129,8 @@ export function layoutConstellation(
   }
   for (const g of goals) {
     if (g.alias_target_id !== null && byId.has(g.alias_target_id)) {
+      if (pairSeen(g.id, g.alias_target_id)) continue
+      seenPairs.add(`${g.id}>${g.alias_target_id}`)
       edges.push({
         from: g.id,
         to: g.alias_target_id,
@@ -136,9 +145,8 @@ export function layoutConstellation(
   // cited def would otherwise drag half the sky under itself.
   for (const e of citationEdges) {
     if (!byId.has(e.from) || !byId.has(e.to)) continue
-    const k = `${e.from}>${e.to}`
-    if (seenPairs.has(k)) continue
-    seenPairs.add(k)
+    if (pairSeen(e.from, e.to)) continue
+    seenPairs.add(`${e.from}>${e.to}`)
     edges.push({
       from: e.from,
       to: e.to,
