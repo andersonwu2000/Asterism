@@ -11,26 +11,37 @@ and one polling hook.
 - **Board** (`#/`) — the survey sheet. Problems in attention order:
   needs you / in motion / recent (incl. just-created) / archive with
   namespace clusters. `/` focuses the filter; "New problem" lives here.
-- **New problem** (`#/new`) — a name + a natural-language description
-  (+ optional pinned Defs.lean/Root.lean behind an advanced fold). The
-  server composes the Manifest; no yaml in the UI.
+- **New problem** (`#/new`) — a name + a natural-language description,
+  paper checkboxes to ground the run, and two advanced folds (pinned
+  Defs.lean/Root.lean; engine constraints: axiom whitelist / forbidden
+  lemmas / lemma hints). Settings land in the DB via the chokepoint;
+  Manifest.md is the human prose.
 - **Problem** (`#/problems/<name>`) — the cockpit. Run/Stop for THIS
-  problem in the header (single-problem runs are the only mode);
-  health line (last progress / top blocker / paused-on-you);
-  constellation (defs are diamonds, newborn stars get a welcome halo,
-  struggle leaves grey residue); Manifest tab = NL instructions +
-  control-style settings, hot-reloaded, locked while an amend is
-  pending; Goals / Timeline (day rules, filters) / Files (Manifest
-  typeset, Lean highlighted).
+  problem in the header (single-problem runs are the only mode); a
+  run strip while the engine works it (phase in plain words, wall
+  clock, per-agent roster, weighted burn); health line whose named
+  blocker opens its star. The constellation is a two-region sky:
+  what grew from the root above the horizon, other forward work
+  below, citation threads crossing where it is used; while anything
+  is live the unproved stars carry the light and the proved mass
+  recedes (a finished sky flips back to trophy). Manifest tab = NL
+  instructions + settings controls (DB-backed, hot-reloaded) + paper
+  bindings; Goals / Timeline / Files.
+- **Papers** (`#/papers`) — the shelf. Add a PDF (or .md/.tex) by
+  path; each paper lists its size, citing problems, and index state;
+  opening one renders the original document beside a rail for
+  switching papers. Delete is refused while cited.
 - **Library** (`#/library`) — the atlas. Each harvested problem is a
   constellation of its real declarations; search lights matching
   stars; click a star to copy its citation (shift: with import).
 - **Inbox** (`#/inbox`) — decisions. Amend requests with word-level
   diffs + age escalation; ingest sign-offs resolve anchors/claims to
   their statements.
-- **Engine** (`#/telemetry`) — status (what it's working on), settings
-  (per-pipeline models + engine knobs, comment-preserving yaml edits),
-  usage (this run), and a developer-log fold.
+- **Engine** (`#/telemetry`) — status with Lean-warm-up phase and
+  last-exit truth (finished / force-stopped / crashed), settings
+  (per-pipeline model selects + engine knobs, comment-preserving yaml
+  edits), usage (this run vs all time, weighted burn, cache hit
+  share), and a developer-log fold.
 
 ## Development
 

@@ -12,17 +12,23 @@ asterism serve            # http://127.0.0.1:8642
 
 One serve process per workspace. The whole lifecycle runs in the
 browser: create a problem from a name and a natural-language
-description, press Run on its page (the engine works one problem at a
-time), and watch the constellation grow — goals are stars that light
-up as they're proved, defs render as diamonds, newborn stars carry a
-brief halo. The Manifest edits live on the problem's Manifest tab
-(natural language + control-style settings, hot-reloaded). The Library
-page draws the harvested corpus as one sky — searchable, and each star
-copies its citation. The inbox collects everything that needs a human,
-with age escalation on blocking requests. The engine page carries
-status, model/knob settings, usage, and a developer-log fold. The UI
-is read-only against the engine database; every action goes through
-the same chokepoints as the CLI.
+description (optionally grounded in shelf papers and engine
+constraints), press Run on its page (the engine works one problem at
+a time), and watch the sky: a live run strip names the phase and each
+agent's unit, and the constellation draws the proof's true shape —
+root-grown work above a horizon, other forward work beneath it with
+citation threads crossing where it is used; while anything is live
+the unproved stars carry the light. Machine settings live in the DB
+behind the Manifest tab's controls (Manifest.md stays human prose,
+hot-reloaded). The Papers page is the shelf: add PDFs by path, read
+the original in place, bind citations. The Library page draws the
+harvested corpus as one sky — searchable, and each star copies its
+citation. The inbox collects everything that needs a human, with age
+escalation on blocking requests. The engine page carries truthful
+status (warm-up phase, last-exit verdict), model selects and knobs,
+weighted-burn usage, and a developer-log fold. The UI is read-only
+against the engine database; every action goes through the same
+chokepoints as the CLI.
 
 `cd web && npm run smoke` runs the Playwright smoke suite against a
 live serve.
