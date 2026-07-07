@@ -260,12 +260,26 @@ export function layoutConstellation(
   // The old approach (per-layer index * gap, rows centered globally,
   // weak barycenter) let a parent land half a canvas away from its
   // children — 217-goal graphs became sweeping-edge spaghetti. Instead:
-  // build a primary-parent forest (min parent id), assign x bottom-up
-  // (leaf = next slot, parent = centered over its children), so
-  // families group and edges stay local. Secondary DAG edges remain as
-  // the few genuine cross-links. Deterministic throughout.
+  // build a primary-parent forest, assign x bottom-up (leaf = next
+  // slot, parent = centered over its children), so families group and
+  // edges stay local. Secondary DAG edges remain as the few genuine
+  // cross-links. Deterministic throughout.
+  //
+  // Primary parent = the DEEPEST parent (ties → min id). A multi-parent
+  // node sits one row under its deepest parent, so hanging it THERE
+  // makes the tree edge the short vertical one; hanging it under an
+  // early shallow parent (the old min-id rule) drew a near-parallel fan
+  // of cross-sky diagonals out of every hub (residue's root fan).
   const primaryParent = new Map<number, number>()
-  for (const [child, ps] of parents) primaryParent.set(child, Math.min(...ps))
+  for (const [child, ps] of parents) {
+    let best = ps[0]
+    for (const p of ps) {
+      const lp = layer.get(p) ?? 0
+      const lb = layer.get(best) ?? 0
+      if (lp > lb || (lp === lb && p < best)) best = p
+    }
+    primaryParent.set(child, best)
+  }
   const treeKids = new Map<number, number[]>()
   for (const [c, p] of primaryParent) {
     treeKids.set(p, [...(treeKids.get(p) ?? []), c])
@@ -612,13 +626,38 @@ export function layoutConstellation(
   const colOf = new Map<number, number>()
   for (const ids of rows.values()) {
     ids.sort((a, b) => (localSlot.get(a)! - localSlot.get(b)!) || a - b)
-    let prev = -Infinity
+    // Least-squares de-overlap (pool adjacent violators): in u_i =
+    // desired_i − i the min-gap-1 constraint reads "nondecreasing", and
+    // pooling violating neighbours at their mean is the optimal fit.
+    // The old sweep resolved every collision by pushing RIGHT, so a
+    // dense row slid off the parents centered above it.
+    const blocks: { sum: number; n: number }[] = []
     ids.forEach((id, i) => {
-      const x = Math.max(localSlot.get(id)!, prev + 1)
-      localSlot.set(id, x)
-      prev = x
-      colOf.set(id, i)
+      let b = { sum: localSlot.get(id)! - i, n: 1 }
+      while (
+        blocks.length > 0 &&
+        blocks[blocks.length - 1].sum / blocks[blocks.length - 1].n >=
+          b.sum / b.n
+      ) {
+        const prev = blocks.pop()!
+        b = { sum: prev.sum + b.sum, n: prev.n + b.n }
+      }
+      blocks.push(b)
     })
+    let i = 0
+    for (const b of blocks) {
+      for (let j = 0; j < b.n; j++, i++) {
+        localSlot.set(ids[i], b.sum / b.n + i)
+        colOf.set(ids[i], i)
+      }
+    }
+  }
+  // centering may push a row's left edge past zero — renormalise so the
+  // sky still starts at the padding
+  let minSlot = 0
+  for (const v of localSlot.values()) minSlot = Math.min(minSlot, v)
+  if (minSlot < 0) {
+    for (const [id, v] of localSlot) localSlot.set(id, v - minSlot)
   }
 
   const maxSlot = Math.max(...[...localSlot.values()], 0)

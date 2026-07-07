@@ -3,14 +3,58 @@ import type { Goal, Strategy, StrategyEdge } from '../lib/types'
 import { frontierView, layoutConstellation, X_GAP } from '../lib/layout'
 import { Lean } from '../lib/lean'
 import { goalStatusLabel } from '../lib/vocab'
-import type { LayoutNode } from '../lib/layout'
+import type { ConstellationLayout, LayoutNode } from '../lib/layout'
 
 /*
  * The constellation view (charter §3.3 + appendix): goals as stars in a
  * layered DAG. Far = pure dots, near = slugs, hover = statement popover,
  * click = side-panel drill-down handled by the parent. Layout is
- * deterministic — nodes never move between polls.
+ * deterministic for a given graph; when the graph changes between polls
+ * the stars GLIDE to their new places (and the camera re-frames an
+ * untouched view), so a re-layout reads as motion, not as a new map.
  */
+
+/** poll-to-poll position tween: ~half a second, fast-out. Long enough
+ * to read as motion, short enough to be over before the next poll. */
+const ANIM_MS = 550
+/** beyond this the per-frame React re-render is no longer free — big
+ * skies jump like before rather than stutter */
+const ANIM_MAX = 400
+const easeOut = (a: number) => 1 - (1 - a) ** 3
+
+interface View {
+  k: number
+  tx: number
+  ty: number
+}
+
+/** where the stars were LAST DRAWN (mid-tween capture makes an
+ * interrupted glide continue smoothly instead of snapping back) */
+interface Tween {
+  t0: number
+  fromPos: Map<number, { x: number; y: number }>
+  fromJunc: Map<number, { x: number; y: number }>
+  fromWidth: number
+  fromHorizon: number | null
+  /** camera glide — only when the user hasn't zoomed or panned */
+  fromView: View | null
+  toView: View | null
+}
+
+function computeFit(el: HTMLElement, l: ConstellationLayout): View {
+  const { width: cw, height: ch } = el.getBoundingClientRect()
+  // Fill the canvas: fit the content bounding box, allowing generous
+  // magnification for small graphs (10 stars in a void read as a
+  // failed page load — design review). Extra vertical air keeps the
+  // floating legend row off the top band's stars.
+  const kMax = l.nodes.length <= 10 ? 2.6 : 2.0
+  const k = Math.min((cw - 48) / l.width, (ch - 88) / l.height, kMax)
+  return {
+    k,
+    tx: (cw - l.width * k) / 2,
+    ty: (ch - l.height * k) / 2 + 14,
+  }
+}
 
 interface Props {
   goals: Goal[]
@@ -150,21 +194,23 @@ export default function Constellation({
       g.status === 'attempting' ||
       g.status === 'pending_strategist_review',
   )
+  // a "scene" = one problem in one focus mode; tweens never cross
+  // scenes (goal ids from another problem may collide)
+  const problemKey = goals.length > 0 ? goals[0].lean_path.split('/')[1] : ''
+  const sceneKey = `${problemKey}:${focused}`
 
   const layout = useMemo(
     () =>
       layoutConstellation(shownGoals, strategies, strategyEdges, anchorEdges, citationEdges),
     [shownGoals, strategies, strategyEdges, anchorEdges, citationEdges],
   )
-  const byId = useMemo(
-    () => new Map(layout.nodes.map((n) => [n.goal.id, n])),
-    [layout],
-  )
-  // Label stagger is collision-avoidance for dense layers; in sparse
-  // layers it reads as jitter, so apply it only where needed.
-  const layerCounts = useMemo(() => {
+  // Label stagger is collision-avoidance for dense rows; in sparse rows
+  // it reads as jitter, so apply it only where needed. Counted per
+  // ACTUAL row (y) — counting per layer number pooled every band's
+  // layer 0 into one figure and staggered sparse bands for nothing.
+  const rowCounts = useMemo(() => {
     const m = new Map<number, number>()
-    for (const n of layout.nodes) m.set(n.layer, (m.get(n.layer) ?? 0) + 1)
+    for (const n of layout.nodes) m.set(n.y, (m.get(n.y) ?? 0) + 1)
     return m
   }, [layout])
 
@@ -176,7 +222,7 @@ export default function Constellation({
   const labelRoom = useMemo(() => {
     const rows = new Map<string, LayoutNode[]>()
     for (const n of layout.nodes) {
-      const staggered = (layerCounts.get(n.layer) ?? 0) > 8 && n.col % 2 === 1
+      const staggered = (rowCounts.get(n.y) ?? 0) > 8 && n.col % 2 === 1
       const key = `${n.y}:${staggered ? 1 : 0}`
       rows.set(key, [...(rows.get(key) ?? []), n])
     }
@@ -196,7 +242,7 @@ export default function Constellation({
       })
     }
     return room
-  }, [layout, layerCounts])
+  }, [layout, rowCounts])
 
   // newborn stars (ids that appear after the first load) get a brief
   // halo so a live run reads as growth, not as a diff you must spot
@@ -237,7 +283,7 @@ export default function Constellation({
   useEffect(() => {
     userAdjusted.current = false
     setView(null)
-  }, [goals.length > 0 && goals[0].lean_path.split('/')[1], focused])
+  }, [problemKey, focused])
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -261,32 +307,157 @@ export default function Constellation({
     if (view !== null) return
     const el = containerRef.current
     if (!el || layout.nodes.length === 0) return
-    const { width: cw, height: ch } = el.getBoundingClientRect()
-    // Fill the canvas: fit the content bounding box, allowing generous
-    // magnification for small graphs (10 stars in a void read as a
-    // failed page load — design review). Tiny plates may magnify
-    // further still: four stars at atlas scale is a composition,
-    // at survey scale it's dust.
-    const kMax = layout.nodes.length <= 10 ? 2.6 : 2.0
-    // extra vertical air: the floating legend row must not sit on the
-    // top band's stars (cold-eye finding)
-    const k = Math.min((cw - 48) / layout.width, (ch - 88) / layout.height, kMax)
-    setView({
-      k,
-      tx: (cw - layout.width * k) / 2,
-      ty: (ch - layout.height * k) / 2 + 14,
-    })
+    setView(computeFit(el, layout))
   }, [view, layout])
 
-  const k = view?.k ?? 1
-  const tx = view?.tx ?? 0
-  const ty = view?.ty ?? 0
+  // ---- poll-to-poll transition --------------------------------------
+  // A structure change re-layouts the whole sky (readability outranks
+  // stillness — owner call); the tween keeps every star's IDENTITY
+  // through the move. State machine: render-phase derivation captures
+  // the last drawn frame (so an interrupted glide continues from where
+  // it visibly is), a rAF heartbeat re-renders until the clock runs
+  // out, then the camera commits to the fresh fit.
+  const viewRef = useRef<View | null>(view) // the DISPLAYED camera
+  const shownPosRef = useRef(new Map<number, { x: number; y: number }>())
+  const shownJuncRef = useRef(new Map<number, { x: number; y: number }>())
+  const shownDimsRef = useRef<{ width: number; horizonY: number | null } | null>(null)
+  const sceneRef = useRef<string | null>(null)
+  const [tw, setTw] = useState<{ layout: ConstellationLayout; tween: Tween | null }>(
+    { layout, tween: null },
+  )
+  const [, setTick] = useState(0)
+  if (tw.layout !== layout) {
+    let tween: Tween | null = null
+    if (
+      sceneRef.current === sceneKey &&
+      shownPosRef.current.size > 0 &&
+      layout.nodes.length <= ANIM_MAX
+    ) {
+      let moved = false
+      for (const n of layout.nodes) {
+        const q = shownPosRef.current.get(n.goal.id)
+        if (q && Math.hypot(q.x - n.x, q.y - n.y) > 0.5) {
+          moved = true
+          break
+        }
+      }
+      if (moved) {
+        const el = containerRef.current
+        const glide =
+          !userAdjusted.current && el !== null && viewRef.current !== null
+        tween = {
+          t0: performance.now(),
+          fromPos: new Map(shownPosRef.current),
+          fromJunc: new Map(shownJuncRef.current),
+          fromWidth: shownDimsRef.current?.width ?? layout.width,
+          fromHorizon: shownDimsRef.current?.horizonY ?? null,
+          fromView: glide ? { ...viewRef.current! } : null,
+          toView: glide ? computeFit(el!, layout) : null,
+        }
+      }
+    }
+    setTw({ layout, tween })
+  }
+  sceneRef.current = sceneKey
+
+  useEffect(() => {
+    const t = tw.tween
+    if (!t) return
+    let raf = 0
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      // commit the camera to a FRESH fit — the toView computed at
+      // derive time goes stale if the container resized mid-glide
+      const el = containerRef.current
+      if (t.toView && !userAdjusted.current && el) {
+        setView(computeFit(el, tw.layout))
+      }
+      setTw({ layout: tw.layout, tween: null })
+    }
+    const step = () => {
+      if (done) return
+      if (performance.now() - t.t0 >= ANIM_MS) {
+        finish()
+      } else {
+        setTick((x) => x + 1)
+        raf = requestAnimationFrame(step)
+      }
+    }
+    raf = requestAnimationFrame(step)
+    // rAF starves in occluded/hidden tabs — the timer guarantees the
+    // tween still ENDS there (a frozen half-glide reads as breakage)
+    const timer = window.setTimeout(finish, ANIM_MS + 50)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.clearTimeout(timer)
+    }
+  }, [tw])
+
+  const tween = tw.layout === layout ? tw.tween : null
+  const alphaRaw = tween
+    ? Math.min(1, (performance.now() - tween.t0) / ANIM_MS)
+    : 1
+  const alpha = easeOut(alphaRaw)
+  const tweening = tween !== null && alphaRaw < 1
+
+  let k = view?.k ?? 1
+  let tx = view?.tx ?? 0
+  let ty = view?.ty ?? 0
+  if (tweening && tween!.fromView && tween!.toView && !userAdjusted.current) {
+    const f = tween!.fromView
+    const g = tween!.toView
+    k = f.k + (g.k - f.k) * alpha
+    tx = f.tx + (g.tx - f.tx) * alpha
+    ty = f.ty + (g.ty - f.ty) * alpha
+  }
+  // wheel/buttons compound from the DISPLAYED camera, so grabbing the
+  // wheel mid-glide continues from what the eye sees
+  viewRef.current = view === null ? null : { k, tx, ty }
   const showLabels = k >= 1.05
+
+  // the drawn frame = lerp(last drawn, layout target)
+  const drawnPos = new Map<number, { x: number; y: number }>()
+  for (const n of layout.nodes) {
+    const f = tweening ? tween!.fromPos.get(n.goal.id) : undefined
+    drawnPos.set(
+      n.goal.id,
+      f
+        ? { x: f.x + (n.x - f.x) * alpha, y: f.y + (n.y - f.y) * alpha }
+        : { x: n.x, y: n.y },
+    )
+  }
+  const drawnJunc = new Map<number, { x: number; y: number }>()
+  for (const b of layout.bundles) {
+    const f = tweening ? tween!.fromJunc.get(b.strategyId) : undefined
+    drawnJunc.set(
+      b.strategyId,
+      f
+        ? {
+            x: f.x + (b.junction.x - f.x) * alpha,
+            y: f.y + (b.junction.y - f.y) * alpha,
+          }
+        : { x: b.junction.x, y: b.junction.y },
+    )
+  }
+  const drawnWidth = tweening
+    ? tween!.fromWidth + (layout.width - tween!.fromWidth) * alpha
+    : layout.width
+  const drawnHorizon =
+    layout.horizonY !== null && tweening && tween!.fromHorizon !== null
+      ? tween!.fromHorizon + (layout.horizonY - tween!.fromHorizon) * alpha
+      : layout.horizonY
+  if (tw.layout === layout) {
+    // never record a stale render pass (the render-phase setTw above
+    // discards this pass and re-runs with the tween in place)
+    shownPosRef.current = drawnPos
+    shownJuncRef.current = drawnJunc
+    shownDimsRef.current = { width: drawnWidth, horizonY: drawnHorizon }
+  }
 
   // Wheel zoom must preventDefault (page would scroll); React's
   // delegated wheel handlers are passive, so attach natively.
-  const viewRef = useRef(view)
-  viewRef.current = view
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -429,8 +600,8 @@ export default function Constellation({
             />
           ))}
           {visibleEdges.map((e, i) => {
-            const a = byId.get(e.from)
-            const b = byId.get(e.to)
+            const a = drawnPos.get(e.from)
+            const b = drawnPos.get(e.to)
             if (!a || !b) return null
             const dead = isDead(e.strategyStatus)
             if (e.kind === 'citation') {
@@ -497,8 +668,9 @@ export default function Constellation({
           {visibleBundles.map((b) => {
             // AND-group hyperedge: stem parent→junction, then branches.
             // Side-by-side junctions on one goal = competing strategies.
-            const parent = byId.get(b.parentId)
+            const parent = drawnPos.get(b.parentId)
             if (!parent) return null
+            const j = drawnJunc.get(b.strategyId) ?? b.junction
             const dead = isDead(b.status)
             const stroke = edgeStroke(b.status, 'strategy')
             const opacity = dead ? 0.35 : b.status === 'succeeded' ? 0.38 : 0.55
@@ -507,21 +679,21 @@ export default function Constellation({
                 <line
                   x1={parent.x}
                   y1={parent.y}
-                  x2={b.junction.x}
-                  y2={b.junction.y}
+                  x2={j.x}
+                  y2={j.y}
                   stroke={stroke}
                   strokeWidth={b.status === 'succeeded' ? 2 : 1.6}
                   strokeOpacity={opacity}
                   vectorEffect="non-scaling-stroke"
                 />
                 {b.children.map((cid) => {
-                  const c = byId.get(cid)
+                  const c = drawnPos.get(cid)
                   if (!c) return null
                   return (
                     <line
                       key={cid}
-                      x1={b.junction.x}
-                      y1={b.junction.y}
+                      x1={j.x}
+                      y1={j.y}
                       x2={c.x}
                       y2={c.y}
                       stroke={stroke}
@@ -532,8 +704,8 @@ export default function Constellation({
                   )
                 })}
                 <circle
-                  cx={b.junction.x}
-                  cy={b.junction.y}
+                  cx={j.x}
+                  cy={j.y}
                   r={2.1}
                   fill={stroke}
                   opacity={opacity}
@@ -543,8 +715,8 @@ export default function Constellation({
                     {/* a faint ring says "this fork is a thing you can
                         open" — the bare hit area was undiscoverable */}
                     <circle
-                      cx={b.junction.x}
-                      cy={b.junction.y}
+                      cx={j.x}
+                      cy={j.y}
                       r={5}
                       fill="none"
                       stroke={stroke}
@@ -553,8 +725,8 @@ export default function Constellation({
                       vectorEffect="non-scaling-stroke"
                     />
                     <circle
-                      cx={b.junction.x}
-                      cy={b.junction.y}
+                      cx={j.x}
+                      cy={j.y}
                       r={9}
                       fill="transparent"
                       className="cursor-pointer"
@@ -581,7 +753,7 @@ export default function Constellation({
               key={`b${i}`}
               x1={0}
               y1={y}
-              x2={layout.width}
+              x2={drawnWidth}
               y2={y}
               stroke="var(--color-edge)"
               strokeWidth={1}
@@ -591,21 +763,21 @@ export default function Constellation({
           {/* the horizon: above it, what grew from the root (or was
               marked a claim); below, other forward work — citation
               threads cross it where that work is actually used */}
-          {layout.horizonY !== null && (
+          {drawnHorizon !== null && (
             <g className="pointer-events-none select-none">
               <line
                 x1={0}
-                y1={layout.horizonY}
-                x2={layout.width}
-                y2={layout.horizonY}
+                y1={drawnHorizon}
+                x2={drawnWidth}
+                y2={drawnHorizon}
                 stroke="var(--color-edge-strong)"
                 strokeWidth={1}
                 strokeDasharray="1 6"
                 vectorEffect="non-scaling-stroke"
               />
               <text
-                x={layout.width}
-                y={layout.horizonY + 16 / k}
+                x={drawnWidth}
+                y={drawnHorizon + 16 / k}
                 textAnchor="end"
                 fill="var(--color-ink-faint)"
                 fontSize={10 / k}
@@ -657,10 +829,11 @@ export default function Constellation({
                 : 0
             const heatR = r + 3
             const heatC = 2 * Math.PI * heatR
+            const p = drawnPos.get(n.goal.id) ?? n
             return (
               <g
                 key={n.goal.id}
-                transform={`translate(${n.x},${n.y})`}
+                transform={`translate(${p.x},${p.y})`}
                 className="cursor-pointer"
                 onMouseEnter={() => setHovered(n)}
                 onMouseLeave={() => setHovered(null)}
@@ -824,7 +997,7 @@ export default function Constellation({
                     // survey view needs its landmarks named.
                     y={
                       r * (n.goal.is_deliverable || n.goal.origin === 'root' ? 1.6 : 1) +
-                      ((layerCounts.get(n.layer) ?? 0) > 8 && n.col % 2 === 1 ? 26 : 15) / k
+                      ((rowCounts.get(n.y) ?? 0) > 8 && n.col % 2 === 1 ? 26 : 15) / k
                     }
                     textAnchor="middle"
                     className="pointer-events-none select-none"
@@ -866,11 +1039,11 @@ export default function Constellation({
           className="pointer-events-none absolute z-10 max-w-sm rounded-md border border-edge-strong bg-surface-3 px-3 py-2"
           style={{
             left: Math.min(
-              tx + hovered.x * k + 14,
+              tx + (drawnPos.get(hovered.goal.id) ?? hovered).x * k + 14,
               (containerRef.current?.clientWidth ?? 800) - 340,
             ),
             top: Math.min(
-              ty + hovered.y * k + 14,
+              ty + (drawnPos.get(hovered.goal.id) ?? hovered).y * k + 14,
               (containerRef.current?.clientHeight ?? 600) - 120,
             ),
           }}
@@ -917,39 +1090,39 @@ export default function Constellation({
           className={`pointer-events-none mt-1 ${legendOpen ? 'flex' : 'hidden'} flex-wrap items-center gap-3 rounded-md bg-surface/90 px-2.5 py-1 text-[11px] text-ink-faint`}
         >
         <span className="flex items-center gap-1">
-          <svg width="10" height="10" viewBox="-5 -5 10 10">
+          <svg width="13" height="13" viewBox="-5 -5 10 10">
             <circle r="3" fill="var(--color-starlight)" />
           </svg>
           proved
         </span>
         <span className="flex items-center gap-1">
-          <svg width="10" height="10" viewBox="-5 -5 10 10">
+          <svg width="13" height="13" viewBox="-5 -5 10 10">
             <circle r="3" fill="none" stroke="var(--color-accent)" strokeWidth="1.2" />
           </svg>
           open
         </span>
         <span className="flex items-center gap-1">
-          <svg width="12" height="12" viewBox="-6 -6 12 12">
+          <svg width="15" height="15" viewBox="-6 -6 12 12">
             <circle r="5" fill="none" stroke="var(--color-starlight)" strokeWidth="0.6" opacity="0.5" />
             <circle r="2.8" fill="var(--color-starlight)" />
           </svg>
           root
         </span>
         <span className="flex items-center gap-1">
-          <svg width="12" height="12" viewBox="-6 -6 12 12">
+          <svg width="15" height="15" viewBox="-6 -6 12 12">
             <circle r="2.4" fill="var(--color-starlight)" />
             <circle r="4.6" fill="none" stroke="var(--color-star)" strokeWidth="0.9" opacity="0.9" />
           </svg>
           deliverable
         </span>
         <span className="flex items-center gap-1">
-          <svg width="14" height="10" viewBox="0 0 14 10">
+          <svg width="18" height="13" viewBox="0 0 14 10">
             <line x1="1" y1="5" x2="13" y2="5" stroke="var(--color-accent)" strokeWidth="1" strokeDasharray="3 2.5" opacity="0.7" />
           </svg>
           alias
         </span>
         <span className="flex items-center gap-1" title="one proof imports another — the lemma is used there">
-          <svg width="14" height="10" viewBox="0 0 14 10">
+          <svg width="18" height="13" viewBox="0 0 14 10">
             <line x1="1" y1="8" x2="13" y2="2" stroke="var(--color-starlight)" strokeWidth="1" opacity="0.45" />
           </svg>
           cites
@@ -958,7 +1131,7 @@ export default function Constellation({
           className="flex items-center gap-1"
           title="a fork needs ALL its branches (one route); two forks on one star are competing routes — click a fork for details"
         >
-          <svg width="12" height="12" viewBox="0 0 12 12">
+          <svg width="15" height="15" viewBox="0 0 12 12">
             <line x1="6" y1="1" x2="6" y2="5" stroke="var(--color-starlight)" strokeWidth="1" opacity="0.6" />
             <line x1="6" y1="5" x2="2" y2="11" stroke="var(--color-starlight)" strokeWidth="1" opacity="0.6" />
             <line x1="6" y1="5" x2="10" y2="11" stroke="var(--color-starlight)" strokeWidth="1" opacity="0.6" />
@@ -967,13 +1140,13 @@ export default function Constellation({
           route
         </span>
         <span className="flex items-center gap-1">
-          <svg width="10" height="10" viewBox="-5 -5 10 10">
+          <svg width="13" height="13" viewBox="-5 -5 10 10">
             <rect x="-2.6" y="-2.6" width="5.2" height="5.2" transform="rotate(45)" fill="var(--color-starlight)" />
           </svg>
           def
         </span>
         <span className="flex items-center gap-1">
-          <svg width="12" height="12" viewBox="-6 -6 12 12">
+          <svg width="15" height="15" viewBox="-6 -6 12 12">
             <circle r="2.4" fill="none" stroke="var(--color-ink-faint)" strokeWidth="1" />
             <circle
               r="4.4"
