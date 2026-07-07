@@ -66,7 +66,12 @@ TRIGGER_KINDS: frozenset[str] = frozenset({
 })
 
 # Files allowed in RequestUserAmend(file=...).
-USER_AMEND_FILES: frozenset[str] = frozenset({"Defs.lean", "Manifest.md"})
+# Root.lean joined 2026-07-08 (feature D live livelock): a FALSE root
+# claim is amendable — before this, the hand-back verb could not
+# point at the file that was wrong and the Strategist looped on
+# schema_invalid forever.
+USER_AMEND_FILES: frozenset[str] = frozenset(
+    {"Defs.lean", "Manifest.md", "Root.lean"})
 
 # ---------------------------------------------------------------------
 # Decision dataclass

@@ -343,11 +343,19 @@ def test_verify_request_user_amend_file_check(
 ) -> None:
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "RequestUserAmend", "problem": "p",
-        "file": "Root.lean", "proposed_body": "x", "question": "?",
+        "file": "patch.lean", "proposed_body": "x", "question": "?",
         "reason": "x",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert "Defs.lean" in err and "Manifest.md" in err
+    # Root.lean is amendable since the feature-D livelock fix
+    # (a false root claim must be hand-back-able).
+    d2, _ = strategist.parse_decision(json.dumps({
+        "kind": "RequestUserAmend", "problem": "p",
+        "file": "Root.lean", "proposed_body": "x", "question": "?",
+        "reason": "x",
+    }))
+    assert strategist.verify_decision(d2, conn, problem="p") == ""
 
 
 def test_verify_request_user_amend_blocks_second_awaiting(

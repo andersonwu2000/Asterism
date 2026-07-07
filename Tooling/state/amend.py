@@ -29,7 +29,7 @@ from pathlib import Path
 
 from . import db
 
-_ALLOWED_FILES = ("Defs.lean", "Manifest.md")
+_ALLOWED_FILES = ("Defs.lean", "Manifest.md", "Root.lean")
 
 
 def pending_amends(conn: sqlite3.Connection,
@@ -132,6 +132,28 @@ def resolve_amend(conn: sqlite3.Connection, workspace: Path,
         if not final_body.strip():
             raise ValueError("accept with empty body")
         _atomic_write(pdir / file, final_body)
+        # Root.lean amendment changes the problem's canonical statement:
+        # sync goals.statement (the CLAUDE.md file-table rule — "改 Root
+        # statement 後重 init 或 sync goals.statement"). The root also
+        # returns to 'frozen' (pre-launch): whatever proof state the OLD
+        # claim had is moot for the new one.
+        if file == "Root.lean":
+            from ..core.cli import _extract_root_statement
+            stmt = _extract_root_statement(final_body)
+            if stmt:
+                root_row = conn.execute(
+                    "SELECT id FROM goals WHERE problem = ? AND"
+                    " origin = 'root' LIMIT 1", (problem,)).fetchone()
+                if root_row is not None:
+                    conn.execute(
+                        "UPDATE goals SET statement = ?, attempts = 0,"
+                        " updated_at = ? WHERE id = ?",
+                        (stmt, db.now(), int(root_row["id"])))
+                    # Status via the chokepoint (transitions lint): also
+                    # clears integrity_verified — a rewritten root's old
+                    # probe pass is void.
+                    db.update_goal_status(conn, int(root_row["id"]),
+                                          "frozen")
 
     (pdir / f".proposed_{file}").unlink(missing_ok=True)
 

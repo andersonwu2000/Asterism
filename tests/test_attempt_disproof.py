@@ -179,6 +179,44 @@ def test_ingest_gate_blocks_on_proved_negation(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_amend_accepts_root_lean_and_syncs_statement(
+        tmp_path: Path) -> None:
+    """Livelock fix (2026-07-08): a FALSE root claim is amendable —
+    Root.lean joins the amend whitelist; accept syncs goals.statement
+    and refreezes the root (old proof state is moot for the new claim)."""
+    import json
+    from Tooling.state import amend as _amend
+    conn = _conn(tmp_path)
+    pdir = tmp_path / "Problems" / "Test" / "px"
+    pdir.mkdir(parents=True, exist_ok=True)
+    old_root = ("import Mathlib\n\nnamespace Problems.Test.px\n\n"
+                "theorem main : ∀ n : ℕ, n < 0 := by sorry\n\n"
+                "end Problems.Test.px\n")
+    (pdir / "Root.lean").write_text(old_root, encoding="utf-8")
+    rid = _db.insert_goal(
+        conn, problem="Test.px", slug="main",
+        lean_path="Problems/Test/px/Root.lean",
+        statement="∀ n : ℕ, n < 0", origin="root", depth=0,
+        status="shelved")
+    conn.execute("UPDATE goals SET attempts = 4 WHERE id = ?", (rid,))
+    new_root = old_root.replace("n < 0", "0 ≤ n")
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, payload, outcome, created_at,"
+        " updated_at) VALUES ('Test.px', 0, 'routine',"
+        " 'RequestUserAmend', ?, 'awaiting_human', 'ts', 'ts')",
+        (json.dumps({"file": "Root.lean", "proposed_body": new_root}),))
+    conn.commit()
+    out = _amend.resolve_amend(conn, tmp_path, int(cur.lastrowid),
+                               action="accept")
+    assert out["file"] == "Root.lean"
+    g = _db.get_goal(conn, rid)
+    assert g["statement"] == "∀ n : ℕ, 0 ≤ n"
+    assert g["status"] == "frozen" and g["attempts"] == 0
+    assert "0 ≤ n" in (pdir / "Root.lean").read_text(encoding="utf-8")
+    conn.close()
+
+
 def test_disproof_guidance_section_gating(tmp_path: Path) -> None:
     from Tooling.agent.phase2_context import _section_disproof_guidance
     conn = _conn(tmp_path)
