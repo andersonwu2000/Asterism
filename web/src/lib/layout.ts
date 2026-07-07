@@ -640,6 +640,102 @@ export function layoutConstellation(
         }
       }
     }
+
+    // ---- justify: bands share one width ------------------------------
+    // The greedy packer leaves ragged right edges and a lone tree sits
+    // flush left in an empty band (BT's root band). Final placement:
+    // gaps stretch evenly toward the widest band's width (capped at 4×
+    // the base gap so sparse bands don't scatter); whatever the cap
+    // leaves over centres the band instead.
+    const natural = (trees: Comp[]) =>
+      trees.reduce((a, t) => a + (t.end - t.start + 1), 0) +
+      0.6 * (trees.length - 1)
+    let targetW = 0
+    for (const trees of bandTrees.values()) {
+      targetW = Math.max(targetW, natural(trees))
+    }
+    for (const trees of bandTrees.values()) {
+      const content = trees.reduce((a, t) => a + (t.end - t.start + 1), 0)
+      const gap =
+        trees.length > 1
+          ? Math.min(2.4, 0.6 + (targetW - natural(trees)) / (trees.length - 1))
+          : 0.6
+      const total = content + gap * (trees.length - 1)
+      let cursor = Math.max(0, (targetW - total) / 2)
+      for (const t of trees) {
+        for (const m of t.members) {
+          localSlot.set(m, (xSlot.get(m) ?? 0) - t.start + cursor)
+        }
+        cursor += t.end - t.start + 1 + gap
+      }
+    }
+
+    // ---- vertical adjacency: connected bands become neighbours -------
+    // Band ORDER was pure depth bookkeeping, so how many rows a
+    // cross-band edge spans was luck. Re-order bands (within their
+    // region — the root's band stays first, the horizon still splits
+    // the regions) by the mean position of the bands they link to; a
+    // band every tree depends on rises to sit beside its dependents.
+    {
+      const nBands = bandDepth.length
+      const hb = horizonBand ?? nBands
+      const links = new Map<number, number[]>()
+      for (const t of treeInfos) {
+        const b = bandOfNode.get(t.members[0])
+        if (b === undefined) continue
+        for (const m of t.members) {
+          for (const p of partner.get(m) ?? []) {
+            const c = bandOfNode.get(p)
+            if (c !== undefined && c !== b) {
+              links.set(b, [...(links.get(b) ?? []), c])
+            }
+          }
+        }
+      }
+      const mainsB: number[] = []
+      const belowB: number[] = []
+      for (let b = 0; b < nBands; b++) (b < hb ? mainsB : belowB).push(b)
+      const posOf = new Map<number, number>()
+      const refresh = () => {
+        let i = 0
+        for (const b of mainsB) posOf.set(b, i++)
+        for (const b of belowB) posOf.set(b, i++)
+      }
+      refresh()
+      for (let sweep = 0; sweep < 2; sweep++) {
+        const sc = new Map<number, number>()
+        for (let b = 0; b < nBands; b++) {
+          const ls = links.get(b)
+          sc.set(
+            b,
+            ls && ls.length > 0
+              ? ls.reduce((a, c) => a + posOf.get(c)!, 0) / ls.length
+              : posOf.get(b)!,
+          )
+        }
+        mainsB.sort((a, b) => {
+          const sa = a === 0 ? -1 : sc.get(a)!
+          const sb = b === 0 ? -1 : sc.get(b)!
+          return sa - sb || a - b
+        })
+        belowB.sort((a, b) => sc.get(a)! - sc.get(b)! || a - b)
+        refresh()
+      }
+      let identity = true
+      for (let b = 0; b < nBands; b++) {
+        if (posOf.get(b) !== b) {
+          identity = false
+          break
+        }
+      }
+      if (!identity) {
+        for (const [id, b] of bandOfNode) bandOfNode.set(id, posOf.get(b) ?? b)
+        const newDepth: number[] = []
+        for (let b = 0; b < nBands; b++) newDepth[posOf.get(b)!] = bandDepth[b]
+        bandDepth.length = 0
+        bandDepth.push(...newDepth)
+      }
+    }
   }
 
   // Truly unlinked forward work: a compact grid block, last.
