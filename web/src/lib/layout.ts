@@ -604,6 +604,7 @@ export function layoutConstellation(
   const isHub = (id: number) =>
     (citPartner.get(id)?.length ?? 0) >= hubThreshold
   const hubComps: Comp[] = []
+  const ultraHubs = new Set<number>()
   for (const id of singletonIds) {
     if (!isHub(id)) continue
     xSlot.set(id, slot)
@@ -759,6 +760,7 @@ export function layoutConstellation(
     const lo = isMain(comp) ? 0 : (horizonBand ?? 0)
     const target = Math.max(lo, Math.min(band, Math.round(mean)))
     if ((citPartner.get(id)?.length ?? 0) >= goals.length * 0.25) {
+      ultraHubs.add(id)
       // an ultra-hub (a quarter of the sky cites it) gets a thin band
       // of its OWN: alone in the band, the optimiser can put it exactly
       // at its citers' centre of mass — the sun earns its own orbit
@@ -820,6 +822,9 @@ export function layoutConstellation(
     for (let sweep = 0; sweep < 2; sweep++) {
       for (const trees of bandTrees.values()) {
         if (trees.length === 0) continue
+        // an ultra-hub band stays PLATE-CENTRED (owner: the sun reads
+        // best in the middle, even at some crossing cost)
+        if (trees.length === 1 && ultraHubs.has(trees[0].members[0])) continue
         // desired shift per tree = the mean signed offset of its
         // cross-link partners (the least-squares optimum for a rigid
         // move); weight = link count
