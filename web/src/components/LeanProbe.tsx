@@ -1,15 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
-import { apiPost } from '../lib/api'
+import { useState } from 'react'
 import { Lean } from '../lib/lean'
 import { LeanEditor } from './LeanEditor'
+import { useLeanSession, type LeanCursor } from '../lib/leanSession'
 
 /*
- * The reader's Lean scratch pipeline, client side (POST /api/lean/eval).
- * Two consumers share it: the New page's authoring check (debounced
- * whole-buffer elaborate of Defs + Root) and the chapter's probe block
- * (a prefilled `#print axioms <decl>` the reader can edit and re-run).
- * `#check` / `#print` output arrives as severity-"information"
- * diagnostics — rendered as results, not as problems.
+ * Runnable Lean blocks, ONE mechanism everywhere: the interactive
+ * engine session (same as the New page's Defs/Root editors). A probe
+ * is just a live block seeded with `#print axioms <decl>` in its
+ * declaration's module scope — pause typing and it elaborates, `#`
+ * command output reads as results, the caret's goal shows when it
+ * sits inside a `by` proof. No run button.
  */
 
 export type EvalDiag = {
@@ -17,23 +17,6 @@ export type EvalDiag = {
   col: number | null
   severity: string
   message: string
-}
-
-export type EvalResult =
-  | { status: 'warming'; phase?: string }
-  | {
-      status: 'ok'
-      ok: boolean
-      wall_sec: number
-      parts: Record<string, EvalDiag[]>
-      preamble: EvalDiag[]
-    }
-
-export function evalLean(
-  parts: { id: string; code: string }[],
-  imports: string[],
-): Promise<EvalResult> {
-  return apiPost<EvalResult>('/api/lean/eval', { parts, imports })
 }
 
 const isProblem = (d: EvalDiag) => d.severity === 'error' || d.severity === 'warning'
@@ -79,9 +62,7 @@ export function DiagList({ diags }: { diags: EvalDiag[] }) {
   )
 }
 
-/** One probe block under a chapter declaration: prefilled
- * `#print axioms <fq>`, editable, ctrl/cmd-enter or Run. Runs once on
- * open — one click answers "which axioms does this stand on". */
+/** One live probe block under a chapter declaration. */
 export function LeanProbe({
   fq,
   module,
@@ -92,70 +73,39 @@ export function LeanProbe({
   onClose?: () => void
 }) {
   const [code, setCode] = useState(`#print axioms ${fq}`)
-  const [phase, setPhase] = useState<'idle' | 'running' | 'warming'>('idle')
-  const [out, setOut] = useState<{ diags: EvalDiag[]; wall: number } | null>(null)
-  const seq = useRef(0)
-  const retry = useRef<number | null>(null)
-  const codeRef = useRef(code)
-  codeRef.current = code
-
-  const run = async () => {
-    const my = ++seq.current
-    if (retry.current != null) window.clearTimeout(retry.current)
-    setPhase('running')
-    try {
-      const r = await evalLean(
-        [{ id: 'probe', code: codeRef.current }],
-        module ? [module] : [],
-      )
-      if (my !== seq.current) return
-      if (r.status === 'warming') {
-        setPhase('warming')
-        retry.current = window.setTimeout(() => void run(), 5000)
-        return
-      }
-      setOut({ diags: [...r.preamble, ...(r.parts.probe ?? [])], wall: r.wall_sec })
-      setPhase('idle')
-    } catch (e) {
-      if (my !== seq.current) return
-      setOut({
-        diags: [
-          {
-            line: null,
-            col: null,
-            severity: 'error',
-            message: String((e as Error).message),
-          },
-        ],
-        wall: 0,
-      })
-      setPhase('idle')
-    }
-  }
-
-  useEffect(() => {
-    void run()
-    return () => {
-      seq.current++ // orphan any in-flight response
-      if (retry.current != null) window.clearTimeout(retry.current)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
+  const [cursor, setCursor] = useState<LeanCursor | null>(null)
+  const s = useLeanSession({
+    enabled: true,
+    parts: [{ id: 'probe', code }],
+    imports: module ? [module] : [],
+    cursor,
+  })
+  const diags = [...s.preamble, ...(s.parts.probe ?? [])]
+  const status =
+    s.phase === 'warming'
+      ? 'engine warming — resumes on its own (a cold start can take a minute)'
+      : s.phase === 'busy'
+        ? 'the engine editor slot is busy elsewhere — retrying'
+        : s.phase === 'connecting'
+          ? 'connecting…'
+          : s.phase === 'checking'
+            ? 'checking…'
+            : s.detail
+              ? `engine error: ${s.detail}`
+              : ''
+  const goalText =
+    cursor && s.goal && s.goal !== 'no goals' && !s.goal.startsWith('<no goals')
+      ? s.goal.replace(/^```lean\n?/, '').replace(/\n?```\s*$/, '')
+      : null
   return (
     <div className="mt-2 ml-[22px] max-w-4xl">
       <div className="rounded-md border border-edge bg-white/[0.02]">
         <LeanEditor
           value={code}
           onChange={setCode}
+          onCaret={(pos) => setCursor({ part: 'probe', ...pos })}
           heightClass="min-h-16 h-auto field-sizing-content"
           frameless
-          onKeyDown={(e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-              e.preventDefault()
-              void run()
-            }
-          }}
         />
         <div className="flex items-center gap-3 border-t border-edge px-3 py-1.5">
           {onClose && (
@@ -166,26 +116,18 @@ export function LeanProbe({
               close
             </button>
           )}
-          <span className="text-[10px] text-ink-faint">
-            {phase === 'warming'
-              ? 'engine warming — retries on its own (can take a minute)'
-              : phase === 'running'
-                ? 'running…'
-                : out
-                  ? `${out.wall.toFixed(1)}s`
-                  : ''}
-          </span>
-          <button
-            className="ml-auto cursor-pointer rounded border border-edge px-2.5 py-0.5 font-mono text-[11px] text-ink-dim transition-colors hover:border-edge-strong hover:text-ink disabled:cursor-default disabled:text-ink-faint"
-            disabled={phase !== 'idle'}
-            onClick={() => void run()}
-            title="ctrl+enter"
-          >
-            ▸ run
-          </button>
+          <span className="text-[10px] text-ink-faint">{status}</span>
         </div>
       </div>
-      {out && <DiagList diags={out.diags} />}
+      {goalText && (
+        <pre className="mt-1.5 overflow-x-auto rounded-md border border-edge px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink">
+          <span className="mr-2 text-[10px] tracking-widest text-ink-faint uppercase">
+            goal
+          </span>
+          {goalText}
+        </pre>
+      )}
+      <DiagList diags={diags} />
     </div>
   )
 }

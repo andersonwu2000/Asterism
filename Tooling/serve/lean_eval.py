@@ -243,6 +243,7 @@ def register(app: FastAPI, workspace: Path) -> None:
         token: "str | None" = None
         spans: "list[tuple[str, int, int]]" = []
         n_pre = 0
+        built: "set[str]" = set()  # Library modules lake-built this connection
         try:
             while True:
                 msg = await ws.receive_json()
@@ -262,8 +263,26 @@ def register(app: FastAPI, workspace: Path) -> None:
                         await ws.send_json({"type": "warming", "seq": seq,
                                             "phase": phase})
                         continue
-                    text, n_pre, spans = _assemble(
-                        parts, list(msg.get("imports") or []))
+                    imports = list(msg.get("imports") or [])
+                    # chapter probes import Library modules — same
+                    # incremental freshness build the one-shot path
+                    # does (the gateway imports on-disk oleans as-is),
+                    # once per module per connection
+                    lib_mods = [m for m in imports
+                                if m.startswith("Library.")
+                                and m not in built]
+                    if lib_mods:
+                        from ..pipeline._lake import lake_build_modules
+                        ok, detail = await asyncio.to_thread(
+                            lake_build_modules, workspace, lib_mods)
+                        if not ok:
+                            await ws.send_json({
+                                "type": "error", "seq": seq,
+                                "detail": "module rebuild failed: "
+                                          + (detail or "")[:400]})
+                            continue
+                        built.update(lib_mods)
+                    text, n_pre, spans = _assemble(parts, imports)
                     cur = _global_cursor(msg.get("cursor"), spans)
                     r: dict = {}
                     for _attempt in (1, 2):
