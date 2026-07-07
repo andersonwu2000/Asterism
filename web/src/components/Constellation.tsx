@@ -73,7 +73,18 @@ function computeFit(el: HTMLElement, l: ConstellationLayout): View {
   // failed page load — design review). Extra vertical air keeps the
   // floating legend row off the top band's stars.
   const kMax = l.nodes.length <= 10 ? 2.6 : 2.0
-  const k = Math.min((cw - 48) / l.width, (ch - 88) / l.height, kMax)
+  let k = Math.min((cw - 48) / l.width, (ch - 88) / l.height, kMax)
+  if (k >= 1.05 && l.nodes.length > 0) {
+    // labels render at this zoom, screen-constant (10.5px mono,
+    // centred): an edge node's half-label hangs OUTSIDE the node
+    // bounding box and got cropped (Run's trophy sky). Budget the
+    // widest half-label; if that would push k below the label
+    // threshold, sit just under it instead — no labels, no crop.
+    const maxChars = Math.max(...l.nodes.map((n) => n.goal.slug.length))
+    const halfLabel = Math.min((maxChars * 6.4) / 2, cw / 4)
+    const k2 = Math.min(k, (cw - 48 - 2 * halfLabel) / l.width)
+    k = k2 >= 1.05 ? k2 : Math.min(k, 1.049)
+  }
   return {
     k,
     tx: (cw - l.width * k) / 2,

@@ -127,11 +127,14 @@ function QuotaMeter({
   resetsAt: string | null
 }) {
   const clamped = Math.max(0, Math.min(100, pct))
+  // pinned to en-US: the UI speaks English — a system-locale weekday
+  // ("週四上午") in an otherwise English page reads as a glitch
   const resets = resetsAt
-    ? new Date(resetsAt).toLocaleString(undefined, {
+    ? new Date(resetsAt).toLocaleString('en-US', {
         weekday: clamped >= 0 && label.includes('week') ? 'short' : undefined,
         hour: '2-digit',
         minute: '2-digit',
+        hour12: false,
       })
     : null
   return (

@@ -263,7 +263,7 @@ function DeclEntry({
             className="overflow-x-auto rounded-md border border-edge bg-white/[0.02] px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink"
             title={d.signature}
           >
-            <Lean code={conciseSignature(d.signature, short)} />
+            <Lean code={conciseSignature(d.signature, short)} declHead />
           </pre>
           <button
             className="absolute right-2 bottom-2 cursor-pointer rounded border border-edge bg-surface px-2.5 py-0.5 font-mono text-[11px] text-ink-dim opacity-0 transition-opacity group-hover/sig:opacity-100 hover:border-edge-strong hover:text-ink"

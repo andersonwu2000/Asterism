@@ -414,7 +414,7 @@ export default function Board() {
         </div>
         <Link
           to="/new"
-          className="rounded-md border border-edge px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-edge-strong hover:text-ink"
+          className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
         >
           New problem
         </Link>

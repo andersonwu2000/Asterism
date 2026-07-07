@@ -42,11 +42,14 @@ const NUM_RE = /\d[\d.]*/y
 // are types/math objects, so they share the sort ink
 const MATH_ALPHA_RE = /[ℂ-ℸ\u{1D400}-\u{1D7FF}]+/uy
 
-export function tokenizeLean(src: string): Tok[] {
+export function tokenizeLean(src: string, declHead = false): Tok[] {
   const toks: Tok[] = []
   let plain = ''
-  // armed after a declaring keyword: the next word is the decl name
-  let expectDecl = false
+  // armed after a declaring keyword: the next word is the decl name.
+  // `declHead` arms it from the start — concise signatures drop the
+  // `theorem`/`def` keyword but their head name is still THE name and
+  // must carry the same ink as everywhere else
+  let expectDecl = declHead
   const flush = () => {
     if (plain !== '') {
       toks.push({ t: 'plain', s: plain })
@@ -179,9 +182,9 @@ const CMT_CODE_RE = /(`[^`\n]+`)/
  * ink, so it drops into any <pre>/<code>/table cell unchanged.
  * Defensive on input — a non-string (bad API shape) must degrade to
  * text, never crash the page (ReviewTree live-run lesson). */
-export function Lean({ code }: { code: string }): ReactNode {
+export function Lean({ code, declHead = false }: { code: string; declHead?: boolean }): ReactNode {
   if (typeof code !== 'string') code = String(code ?? '')
-  return tokenizeLean(code).map((t, i) => {
+  return tokenizeLean(code, declHead).map((t, i) => {
     if (t.t === 'cmt') {
       return (
         <span key={i} className={TOK_CLS.cmt!}>

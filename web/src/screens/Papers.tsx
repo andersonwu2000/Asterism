@@ -64,7 +64,6 @@ function ShelfRow({ p, onChanged }: { p: PaperShelfItem; onChanged: () => void }
             {p.source_name}
           </Link>
         </td>
-        <td className="pr-4 font-mono text-[11px] text-ink-faint">{p.id}</td>
         <td className="tnum pr-4 text-xs whitespace-nowrap text-ink-dim">{sizeLabel(p)}</td>
         <td className="pr-4">
           {p.bound.length === 0 ? (
@@ -207,7 +206,6 @@ export default function Papers() {
           <thead>
             <tr className="border-b border-edge text-xs text-ink-faint">
               <th className="py-2 pr-4 pl-3 font-medium">paper</th>
-              <th className="w-[110px] py-2 pr-4 font-medium">id</th>
               <th className="w-[140px] py-2 pr-4 font-medium">size</th>
               <th className="w-[220px] py-2 pr-4 font-medium">cited by</th>
               <th className="w-[90px] py-2 pr-4 font-medium">

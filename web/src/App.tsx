@@ -123,9 +123,9 @@ function ClaudeBanner({ meta }: { meta: Meta | null }) {
       <span className="text-ink">
         {installed
           ? 'Claude Code is not logged in — runs will fail until you log in.'
-          : 'Claude Code is not installed — double-click installer\\install.bat to set everything up.'}
+          : 'Claude Code is not installed — the setup wizard can install it.'}
       </span>
-      {installed && (
+      {installed ? (
         <button
           className="cursor-pointer rounded-md border border-edge bg-surface px-2.5 py-1 text-ink transition-colors hover:bg-surface-3"
           disabled={busy}
@@ -133,6 +133,13 @@ function ClaudeBanner({ meta }: { meta: Meta | null }) {
         >
           Open the login window
         </button>
+      ) : (
+        <Link
+          to="/setup"
+          className="rounded-md border border-edge bg-surface px-2.5 py-1 text-ink transition-colors hover:bg-surface-3"
+        >
+          Open setup
+        </Link>
       )}
       {msg && <span className="text-ink-faint">{msg}</span>}
     </div>
@@ -171,12 +178,11 @@ const ICONS: Record<string, ReactNode> = {
     </svg>
   ),
   settings: (
-    // three sliders — the machine room's knobs
+    // two sliders — the machine room's knobs (three read as noise at 15px)
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <path d="M2 4.5h12M2 8h12M2 11.5h12" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" opacity="0.55" />
-      <circle cx="10.5" cy="4.5" r="1.6" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
-      <circle cx="5" cy="8" r="1.6" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
-      <circle cx="8.5" cy="11.5" r="1.6" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
+      <path d="M2 5.5h12M2 10.5h12" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" opacity="0.55" />
+      <circle cx="10" cy="5.5" r="1.7" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
+      <circle cx="6" cy="10.5" r="1.7" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
     </svg>
   ),
   library: (

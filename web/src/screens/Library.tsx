@@ -160,7 +160,7 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
           </div>
           {hover.decl.signature && (
             <div className="mt-0.5 line-clamp-3 font-mono text-[10px] leading-snug break-words text-ink-dim">
-              <Lean code={hover.decl.signature} />
+              <Lean code={hover.decl.signature} declHead />
             </div>
           )}
           <div className="mt-1 text-[10px] text-ink-faint">
