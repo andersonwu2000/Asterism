@@ -598,10 +598,15 @@ export default function Constellation({
               n.goal.status === 'open' ||
               n.goal.status === 'attempting' ||
               n.goal.status === 'pending_strategist_review'
-            // scale honesty: marks never drop below ~7px on screen, and
-            // the live frontier gets a size bonus + a larger screen
-            // minimum — the unproved few must be findable at ANY zoom
-            const r = Math.max(radius(n.goal) + (live ? 1.5 : 0), (live ? 5.5 : 3.5) / k)
+            // scale honesty: marks never drop below ~7px on screen (the
+            // live frontier gets a size bonus + a larger floor) — but
+            // the floor is capped in CONTENT units, or at extreme
+            // zoom-out the floors exceed the slot gap and stars fuse
+            // into blobs (residue_thm, 500 nodes)
+            const r = Math.max(
+              radius(n.goal) + (live ? 1.5 : 0),
+              Math.min((live ? 5.5 : 3.5) / k, X_GAP * 0.28),
+            )
             const lod = k < 0.8
             const fill = lod && live ? s.stroke : s.fill
             const selected = n.goal.id === selectedId

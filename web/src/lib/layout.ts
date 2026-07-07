@@ -279,44 +279,136 @@ export function layoutConstellation(
     depth: number
   }
   const treeInfos: Comp[] = []
-  const assign = (id: number, guard: number, members: number[]): void => {
+  // Subtree measurements (leaf-grid semantics included) feed the
+  // shelf decision below.
+  const subW = new Map<number, number>()
+  const subD = new Map<number, number>()
+  const measure = (id: number, guard: number): void => {
+    if (guard > goals.length + 1 || subW.has(id)) return
+    const ks = treeKids.get(id) ?? []
+    const leafKs = ks.filter((k) => (treeKids.get(k)?.length ?? 0) === 0)
+    const branchKs = ks.filter((k) => (treeKids.get(k)?.length ?? 0) > 0)
+    if (ks.length === 0) {
+      subW.set(id, 1)
+      subD.set(id, 0)
+      return
+    }
+    for (const k of branchKs) measure(k, guard + 1)
+    let w = branchKs.reduce((a, k) => a + (subW.get(k) ?? 1), 0)
+    let dep = branchKs.reduce((a, k) => Math.max(a, (subD.get(k) ?? 0) + 1), 0)
+    if (leafKs.length > 8) {
+      const perRow = Math.ceil(Math.sqrt(leafKs.length * 2.2))
+      w += perRow
+      dep = Math.max(dep, Math.ceil(leafKs.length / perRow))
+    } else if (leafKs.length > 0) {
+      w += leafKs.length
+      dep = Math.max(dep, 1)
+    }
+    subW.set(id, Math.max(w, 1))
+    subD.set(id, dep)
+  }
+
+  // Intra-tree shelf wrap: one mega-tree (residue: 189 slots wide,
+  // 18 deep) locks the whole sky into a ribbon no band packing can
+  // fix. When a node's children exceed the cap, they wrap into
+  // shelves stacked beneath it — the tree folds toward a square.
+  // ×2.2: trees fill their bounding box at roughly half density, so
+  // the ideal-area width underestimates — compensate toward 16:9
+  const SHELF_CAP = Math.max(14, Math.ceil(Math.sqrt(goals.length) * 2.2))
+
+  const assign = (
+    id: number,
+    guard: number,
+    members: number[],
+    shift: number,
+  ): void => {
     if (guard > goals.length + 1 || xSlot.has(id)) return
     members.push(id)
+    layer.set(id, (layer.get(id) ?? 0) + shift)
     const ks = treeKids.get(id) ?? []
     if (ks.length === 0) {
       xSlot.set(id, slot)
       slot += 1
       return
     }
-    // Wide leaf fans wrap into a grid: a claim resting on thirty
-    // anchors must not become a thirty-slot clothesline (sphere's
-    // full-width rows).
     const leafKs = ks.filter((k) => (treeKids.get(k)?.length ?? 0) === 0)
     const branchKs = ks.filter((k) => (treeKids.get(k)?.length ?? 0) > 0)
+    // child items: each branch subtree, plus (maybe) one leaf block
+    interface Item {
+      kind: 'branch' | 'leaves'
+      k?: number
+      leaves?: number[]
+      w: number
+      d: number
+    }
+    const items: Item[] = branchKs.map((k) => ({
+      kind: 'branch' as const,
+      k,
+      w: subW.get(k) ?? 1,
+      d: (subD.get(k) ?? 0) + 1,
+    }))
     if (leafKs.length > 8) {
       const perRow = Math.ceil(Math.sqrt(leafKs.length * 2.2))
-      const start = slot
-      const base = layer.get(id) ?? 0
-      leafKs.forEach((k, i) => {
-        if (xSlot.has(k)) return
-        members.push(k)
-        xSlot.set(k, start + (i % perRow))
-        layer.set(k, base + 1 + Math.floor(i / perRow))
+      items.push({
+        kind: 'leaves',
+        leaves: leafKs,
+        w: perRow,
+        d: Math.ceil(leafKs.length / perRow),
       })
-      slot = start + Math.min(leafKs.length, perRow)
-      for (const k of branchKs) assign(k, guard + 1, members)
-      xSlot.set(id, (start + slot - 1) / 2)
-      return
+    } else {
+      for (const k of leafKs) items.push({ kind: 'branch', k, w: 1, d: 1 })
     }
-    for (const k of ks) assign(k, guard + 1, members)
-    const first = xSlot.get(ks[0])
-    const last = xSlot.get(ks[ks.length - 1])
-    xSlot.set(id, first !== undefined && last !== undefined ? (first + last) / 2 : slot++)
+    // shelve depth-descending (FFDH — a shelf costs the height of its
+    // deepest member, so mixed depths waste rows); ties keep id order
+    items.sort((a, b) => b.d - a.d || (a.k ?? -1) - (b.k ?? -1))
+    const shelves: Item[][] = []
+    let cur: Item[] = []
+    let curW = 0
+    for (const it of items) {
+      if (curW > 0 && curW + it.w > SHELF_CAP) {
+        shelves.push(cur)
+        cur = []
+        curW = 0
+      }
+      cur.push(it)
+      curW += it.w
+    }
+    if (cur.length > 0) shelves.push(cur)
+
+    const start0 = slot
+    let maxEnd = slot
+    let yOff = 0
+    const myLayer = layer.get(id) ?? 0
+    for (const shelf of shelves) {
+      slot = start0
+      let shelfDepth = 1
+      for (const it of shelf) {
+        if (it.kind === 'leaves' && it.leaves) {
+          const perRow = it.w
+          const gStart = slot
+          it.leaves.forEach((k, i) => {
+            if (xSlot.has(k)) return
+            members.push(k)
+            xSlot.set(k, gStart + (i % perRow))
+            layer.set(k, myLayer + 1 + yOff + Math.floor(i / perRow))
+          })
+          slot = gStart + Math.min(it.leaves.length, perRow)
+        } else if (it.k !== undefined) {
+          assign(it.k, guard + 1, members, shift + yOff)
+        }
+        shelfDepth = Math.max(shelfDepth, it.d)
+      }
+      maxEnd = Math.max(maxEnd, slot)
+      yOff += shelfDepth
+    }
+    slot = maxEnd
+    xSlot.set(id, (start0 + maxEnd - 1) / 2)
   }
   for (const r of treeRoots) {
+    measure(r, 0)
     const start = slot
     const members: number[] = []
-    assign(r, 0, members)
+    assign(r, 0, members, 0)
     treeInfos.push({
       members,
       start,
@@ -389,11 +481,14 @@ export function layoutConstellation(
   const memberComp = new Map<number, Comp>()
   for (const c of treeInfos) for (const m of c.members) memberComp.set(m, c)
   const mains = treeInfos.filter(isMain)
-  // the root's own component leads the sky
+  // Shelf packing (FFDH): depth-descending order makes each band
+  // depth-homogeneous — mixed bands waste the full height of their
+  // deepest tree under every shallow one (residue_thm ballooned to a
+  // 189-slot ribbon). The root's component still leads the sky.
   mains.sort((a, b) => {
     const ra = a.members.some((id) => byId.get(id)?.origin === 'root') ? 0 : 1
     const rb = b.members.some((id) => byId.get(id)?.origin === 'root') ? 0 : 1
-    return ra - rb || a.start - b.start
+    return ra - rb || b.depth - a.depth || a.start - b.start
   })
   const mainSet = new Set(mains)
   const rest = treeInfos.filter((c) => !mainSet.has(c))
@@ -416,13 +511,26 @@ export function layoutConstellation(
       }
     return xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : Infinity
   }
-  linked.sort((a, b) => meanPartnerSlot(a) - meanPartnerSlot(b) || a.start - b.start)
+  // depth first (shelf packing), citer position as the tiebreak
+  linked.sort(
+    (a, b) =>
+      b.depth - a.depth ||
+      meanPartnerSlot(a) - meanPartnerSlot(b) ||
+      a.start - b.start,
+  )
+  unlinkedTrees.sort((a, b) => b.depth - a.depth || a.start - b.start)
 
   // ---- Band packing (the region break forces a new band) -------------
-  const maxDepthAll = Math.max(...treeInfos.map((t) => t.depth), 0)
+  // Band width from ACTUAL cell area, not worst-case depth: a shallow
+  // 300-tree forest sized by its one deep tree became a 5:1 ribbon
+  // (residue_thm). Aim ≈16:9: W² = (16/9)·(Y/X)·area.
+  const cellArea = treeInfos.reduce(
+    (a, t) => a + (t.end - t.start + 1) * (t.depth + 1.7),
+    0,
+  )
   const targetBand = Math.max(
     16,
-    Math.ceil(Math.sqrt(Math.max(slot, 1) * (maxDepthAll + 2) * (Y_GAP / X_GAP) * 1.7)),
+    Math.ceil(Math.sqrt(cellArea * (16 / 9) * (Y_GAP / X_GAP))),
   )
   const bandOfNode = new Map<number, number>()
   const localSlot = new Map<number, number>()
