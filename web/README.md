@@ -43,8 +43,11 @@ and one polling hook.
   signatures). The engine record (goals, attempts) stays on the
   problem page, one link away.
 - **Inbox** (`#/inbox`) — decisions. Amend requests with word-level
-  diffs + age escalation; ingest sign-offs resolve anchors/claims to
-  their statements.
+  diffs + age escalation; ingest sign-offs show every vouchable
+  statement in full (defs with their bodies — the construction is
+  what you vouch for) and carry the Library decision: approve as
+  "harvest to Library" or "archive only" — a human signs, nothing is
+  harvested automatically.
 - **Run** (`#/run`) — mission control. Status light + phase in plain
   words (warming / planning / proving / harvesting / stopping), the
   scoped problem's progress bar, one lane per live agent (its unit,
