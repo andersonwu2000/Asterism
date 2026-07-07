@@ -34,6 +34,12 @@ and one polling hook.
 - **Library** (`#/library`) — the atlas. Each harvested problem is a
   constellation of its real declarations; search lights matching
   stars; click a star to copy its citation (shift: with import).
+  Opening a constellation reads its **chapter**
+  (`#/library/<problem>`): the curated modules as a textbook — module
+  docstrings as prose, each declaration with its docstring and
+  kernel-true signature in source order, main results (the claims a
+  human vouched for) leading. The engine record (goals, attempts)
+  stays on the problem page, one link away.
 - **Inbox** (`#/inbox`) — decisions. Amend requests with word-level
   diffs + age escalation; ingest sign-offs resolve anchors/claims to
   their statements.

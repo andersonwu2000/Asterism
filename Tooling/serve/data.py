@@ -635,6 +635,162 @@ def library(conn: sqlite3.Connection) -> dict:
     return {"problems": out}
 
 
+# ---------------------------------------------------------------------
+# Library chapter — the harvested modules of ONE problem, read for
+# humans. The Library exists for readability (near-Mathlib files, fit
+# to upstream or to read), so its reading surface shows the CURATED
+# text: module docstrings as prose, per-decl docstrings, and the
+# kernel-true signature from the declInfo oracle (stored at bridge
+# time). File parsing here is read-side visualization only — nothing
+# it extracts feeds soundness (same standing as `_citation_edges`).
+# ---------------------------------------------------------------------
+
+_MODULE_DOC_RE = re.compile(r"/-!(.*?)-/", re.S)
+_DOCSTRING_RE = re.compile(r"/--(.*?)-/", re.S)
+_DECL_RE = re.compile(
+    r"^(?:@\[[^\]]*\]\s*)?(?:noncomputable\s+)?(?:private\s+|protected\s+)?"
+    r"(theorem|lemma|def|abbrev|structure|class|instance|inductive)\s+"
+    r"([A-Za-z0-9_'₀-₉α-ω.]+)",
+    re.M)
+_IMPORT_RE = re.compile(r"^import\s+([\w.]+)", re.M)
+
+
+def _stmt_head(text: str, start: int) -> str:
+    """The declaration header from `start` to its top-level `:=` /
+    `where` — the statement without the proof body. Bracket-depth walk,
+    display fallback only (the oracle signature wins when stored)."""
+    depth = 0
+    i = start
+    limit = min(len(text), start + 4000)
+    while i < limit:
+        ch = text[i]
+        if ch in "([{⟨":
+            depth += 1
+        elif ch in ")]}⟩":
+            depth -= 1
+        elif depth == 0:
+            if text.startswith(":=", i):
+                return text[start:i].rstrip()
+            if text.startswith("where", i) and (i == 0 or text[i - 1].isspace()):
+                return text[start:i].rstrip()
+            if text.startswith("\n\n", i):  # header can't span a blank line
+                return text[start:i].rstrip()
+        i += 1
+    return text[start:limit].rstrip()
+
+
+def _scan_library_file(
+        text: str) -> "tuple[str, dict[str, tuple[int, str, str, str]], list[str]]":
+    """(module_doc, {short_decl_name: (offset, docstring, kind, stmt)},
+    imports)."""
+    m = _MODULE_DOC_RE.search(text)
+    module_doc = m.group(1).strip() if m else ""
+    docs: "dict[str, tuple[int, str, str, str]]" = {}
+    doc_ends = [(d.end(), d.group(1).strip()) for d in _DOCSTRING_RE.finditer(text)]
+    for dm in _DECL_RE.finditer(text):
+        name = dm.group(2).split(".")[-1]
+        if name in docs:
+            continue  # first occurrence wins (aliases repeat names)
+        doc = ""
+        for end, body in doc_ends:
+            if end > dm.start():
+                break
+            # attached iff only whitespace/attributes separate them
+            gap = text[end:dm.start()]
+            if re.fullmatch(r"(?:\s|@\[[^\]]*\])*", gap):
+                doc = body
+        docs[name] = (dm.start(), doc, dm.group(1), _stmt_head(text, dm.start()))
+    return module_doc, docs, _IMPORT_RE.findall(text)
+
+
+def library_chapter(conn: sqlite3.Connection, workspace: Path,
+                    problem: str) -> "dict | None":
+    """One bridged problem's contributed Library modules, in import
+    order, each decl carrying its docstring + oracle signature and its
+    goal-side meaning (claim = deliverable, def-kind = vocabulary)."""
+    rows = conn.execute(
+        "SELECT ld.* FROM library_decls ld"
+        " JOIN problems p ON p.name = ld.problem"
+        " WHERE ld.problem = ? AND p.library_bridged_at IS NOT NULL"
+        " AND ld.lifecycle IN ('migrated','cleaned')"
+        " ORDER BY ld.id", (problem,)).fetchall()
+    if not rows:
+        return None
+    prow = conn.execute(
+        "SELECT library_bridged_at FROM problems WHERE name = ?",
+        (problem,)).fetchone()
+    goal_meta = {
+        str(g["slug"]): {"is_deliverable": bool(g["is_deliverable"]),
+                         "goal_kind": str(g["kind"])}
+        for g in conn.execute(
+            "SELECT slug, kind, is_deliverable FROM goals WHERE problem = ?",
+            (problem,))}
+
+    per_file: "dict[str, list[sqlite3.Row]]" = {}
+    for r in rows:
+        per_file.setdefault(str(r["target_file"] or ""), []).append(r)
+    scanned: "dict[str, tuple[str, dict, list[str]]]" = {}
+    for path in per_file:
+        try:
+            text = (workspace / path).read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        scanned[path] = _scan_library_file(text)
+
+    # Import order tells the story: a module comes after the siblings
+    # it imports (Kahn; ties keep path order for determinism).
+    mod_of = {path: path.removesuffix(".lean").replace("/", ".")
+              for path in per_file}
+    ordered: "list[str]" = []
+    pending = sorted(per_file)
+    placed: "set[str]" = set()
+    while pending:
+        progressed = False
+        for path in list(pending):
+            deps = [i for i in scanned[path][2]
+                    if i in mod_of.values() and i != mod_of[path]]
+            if all(any(mod_of[q] == d and q in placed for q in per_file)
+                   for d in deps):
+                ordered.append(path)
+                placed.add(path)
+                pending.remove(path)
+                progressed = True
+        if not progressed:  # import cycle can't happen; guard anyway
+            ordered.extend(pending)
+            break
+
+    files = []
+    for path in ordered:
+        module_doc, docs, _imports = scanned[path]
+        decls = []
+        for r in per_file[path]:
+            slug = str(r["slug"])
+            short = str(r["target_name"] or slug).split(".")[-1]
+            offset, doc, file_kind, file_stmt = docs.get(
+                short, (1 << 30, "", "", ""))
+            meta = goal_meta.get(slug, {})
+            decls.append({
+                "slug": slug,
+                "name": r["target_name"],
+                # oracle values win; older harvests fall back to the
+                # curated source text (display only)
+                "signature": r["signature"] or file_stmt or None,
+                "decl_kind": r["decl_kind"] or file_kind or None,
+                "doc": doc,
+                "is_deliverable": bool(meta.get("is_deliverable", False)),
+                "_offset": offset,
+            })
+        decls.sort(key=lambda d: d["_offset"])  # source order = narrative
+        for d in decls:
+            del d["_offset"]
+        files.append({"path": path, "module_doc": module_doc, "decls": decls})
+    return {
+        "problem": problem,
+        "bridged_at": prow["library_bridged_at"] if prow else None,
+        "files": files,
+    }
+
+
 def telemetry_usage(conn: sqlite3.Connection, *,
                     since: "str | None" = None) -> dict:
     """spawn_usage aggregation: totals per problem and per (problem,

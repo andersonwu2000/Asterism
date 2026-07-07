@@ -207,6 +207,29 @@ export interface LibraryProblem {
   decls: LibraryDecl[]
 }
 
+/** One declaration in a Library chapter (GET /api/library/{problem}):
+ * curated docstring + kernel-true signature, in source order. */
+export interface LibraryChapterDecl {
+  slug: string
+  name: string | null
+  signature: string | null
+  decl_kind: string | null
+  doc: string
+  is_deliverable: boolean
+}
+
+export interface LibraryChapterFile {
+  path: string
+  module_doc: string
+  decls: LibraryChapterDecl[]
+}
+
+export interface LibraryChapter {
+  problem: string
+  bridged_at: string | null
+  files: LibraryChapterFile[]
+}
+
 /** A problem citing a shelf paper, as reported by GET /api/papers. */
 export interface PaperBoundRef {
   problem: string

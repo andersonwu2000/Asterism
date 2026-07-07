@@ -135,9 +135,9 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
       </svg>
       {/* the section header carries the namespace — the card shows the leaf */}
       <Link
-        to={`/problems/${encodeURIComponent(p.problem)}`}
+        to={`/library/${encodeURIComponent(p.problem)}`}
         className="group block pb-1"
-        title={`open ${p.problem}`}
+        title={`read ${p.problem} — the curated modules, as a chapter`}
       >
         <span className="block truncate px-1 font-mono text-[13px] text-ink transition-colors group-hover:text-starlight">
           {leaf}
@@ -244,7 +244,7 @@ export default function Library() {
         </div>
         <p className="mb-5 -mt-3 max-w-[70ch] text-xs text-ink-faint">
           Every harvested problem is a constellation; its stars are the declarations it
-          contributed. Hover a star to read it, click a name to revisit the problem.
+          contributed. Hover a star to read it, click a name to open the chapter.
         </p>
         {problems.length === 0 ? (
           <div className="py-16 text-center text-xs text-ink-faint">

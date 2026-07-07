@@ -5,6 +5,7 @@ import { usePoll } from './lib/api'
 import Board from './screens/Board'
 import Inbox from './screens/Inbox'
 import Library from './screens/Library'
+import LibraryChapterScreen from './screens/LibraryChapter'
 import New from './screens/New'
 import Papers, { PaperReader } from './screens/Papers'
 import Problem from './screens/Problem'
@@ -239,7 +240,11 @@ function Shell() {
           ) : section === 'inbox' ? (
             <Inbox />
           ) : section === 'library' ? (
-            <Library />
+            route.segments[1] ? (
+              <LibraryChapterScreen problem={route.segments[1]} />
+            ) : (
+              <Library />
+            )
           ) : section === 'papers' ? (
             route.segments[1] ? (
               <PaperReader id={route.segments[1]} />

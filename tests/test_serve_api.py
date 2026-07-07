@@ -631,6 +631,66 @@ def test_library_lists_bridged_decls(workspace: Path) -> None:
     assert lib["problems"][0]["decls"][0]["name"] == "Asterism.mainThm"
 
 
+def test_library_chapter_reads_curated_modules(workspace: Path) -> None:
+    """GET /api/library/{p}: modules in import order, decls in source
+    order with docstrings from the curated file, deliverable flag from
+    the goal side. 404 for unbridged problems."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p", library_bridged_at=db.now())
+    gid = db.insert_goal(conn, problem="p", slug="main_thm",
+                         lean_path="Problems/p/proofs/main_thm.lean",
+                         statement="True", origin="root", status="proved")
+    db.mark_deliverable(conn, gid, True)
+    ts = db.now()
+    for slug, tf, tn, sig, kind in [
+            ("main_thm", "Library/X/Main.lean", "Lib.X.Main.mainThm",
+             "sig", "theorem"),
+            ("helper", "Library/X/Main.lean", "Lib.X.Main.helper",
+             "sig", "theorem"),
+            # pre-oracle harvest row: no stored signature/kind — the
+            # curated source text stands in (display fallback)
+            ("base_def", "Library/X/Defs.lean", "Lib.X.Defs.baseDef",
+             None, None)]:
+        conn.execute(
+            "INSERT INTO library_decls (problem, slug, lifecycle,"
+            " target_file, target_name, signature, decl_kind, created_at,"
+            " updated_at) VALUES ('p', ?, 'cleaned', ?, ?, ?, ?, ?, ?)",
+            (slug, tf, tn, sig, kind, ts, ts))
+    conn.commit()
+    conn.close()
+    (workspace / "Library" / "X").mkdir(parents=True)
+    (workspace / "Library" / "X" / "Defs.lean").write_text(
+        "import Mathlib\n/-!\n# Base defs\nThe vocabulary.\n-/\n"
+        "/-- The base object. -/\ndef baseDef : Nat := 0\n",
+        encoding="utf-8")
+    (workspace / "Library" / "X" / "Main.lean").write_text(
+        "import Library.X.Defs\n/-!\n# Main\n-/\n"
+        "/-- A helper step. -/\ntheorem helper : True := trivial\n"
+        "/-- The main result. -/\n@[simp]\ntheorem mainThm : True := trivial\n",
+        encoding="utf-8")
+
+    c = _client(workspace)
+    ch = c.get("/api/library/p").json()
+    # Defs precedes Main (Main imports it), regardless of path order
+    assert [f["path"] for f in ch["files"]] == [
+        "Library/X/Defs.lean", "Library/X/Main.lean"]
+    assert "vocabulary" in ch["files"][0]["module_doc"]
+    main = ch["files"][1]
+    # source order, not DB order: helper is declared first
+    assert [d["slug"] for d in main["decls"]] == ["helper", "main_thm"]
+    # docstring attaches across the @[simp] attribute line
+    assert main["decls"][1]["doc"] == "The main result."
+    assert main["decls"][1]["is_deliverable"] is True
+    assert main["decls"][0]["is_deliverable"] is False
+    # stored oracle signature wins; a pre-oracle row falls back to the
+    # curated source header (statement, no proof body)
+    assert main["decls"][0]["signature"] == "sig"
+    base = ch["files"][0]["decls"][0]
+    assert base["signature"] == "def baseDef : Nat"
+    assert base["decl_kind"] == "def"
+    assert c.get("/api/library/nope").status_code == 404
+
+
 def test_review_refresh_async_job(workspace: Path, monkeypatch) -> None:
     """The refresh job recomputes + stores the snapshot off-request (the
     only gateway-legal path). Gateway is monkeypatched out (test fence)."""

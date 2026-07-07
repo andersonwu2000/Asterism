@@ -473,6 +473,19 @@ def create_app(workspace: Path) -> FastAPI:
         with _ro(workspace) as conn:
             return _data.library(conn)
 
+    @app.get("/api/library/{problem}")
+    def library_chapter(problem: str) -> dict:
+        """The harvested Library modules ONE problem contributed —
+        the reading surface (curated text), not the engine record."""
+        if not (workspace / "asterism.db").exists():
+            raise HTTPException(status_code=404, detail="no database")
+        with _ro(workspace) as conn:
+            d = _data.library_chapter(conn, workspace, problem)
+        if d is None:
+            raise HTTPException(status_code=404,
+                                detail=f"{problem} has no bridged Library work")
+        return d
+
     @app.get("/api/telemetry/usage")
     def usage() -> dict:
         """Burn figures. While a daemon runs, the window is THIS run
