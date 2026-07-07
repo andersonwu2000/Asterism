@@ -456,55 +456,30 @@ export function layoutConstellation(
   // each subtree's partners and lay the forest out again — threads pull
   // toward their far ends. Partner-less subtrees rank by their own
   // pass-1 centre, so they keep their relative order. Deterministic.
-  //
-  // Links are INK-WEIGHTED throughout (owner kept dragging trees toward
-  // their BRIGHT threads while the layout averaged in dozens of
-  // whisper-faint links to dead/shelved dust — smul_form's 110 mostly-
-  // invisible citations anchored it a plate away from its visible
-  // work). The layout optimises what the eye actually sees: citations
-  // are quiet threads, dead/shelved endpoints barely register.
-  interface Link {
-    o: number
-    w: number
-  }
-  const dimStatus = (id: number): boolean => {
-    const s = byId.get(id)?.status
-    return s === 'dead' || s === 'shelved' || s === 'disproved'
-  }
-  const partner = new Map<number, Link[]>()
-  const addPartner = (a: number, b: number, kind: LayoutEdge['kind']) => {
-    let w = kind === 'citation' ? 0.3 : kind === 'alias' ? 0.6 : 1
-    if (dimStatus(a) || dimStatus(b)) w *= 0.25
-    partner.set(a, [...(partner.get(a) ?? []), { o: b, w }])
-    partner.set(b, [...(partner.get(b) ?? []), { o: a, w }])
+  const partner = new Map<number, number[]>()
+  const addPartner = (a: number, b: number) => {
+    partner.set(a, [...(partner.get(a) ?? []), b])
+    partner.set(b, [...(partner.get(b) ?? []), a])
   }
   for (const e of edges) {
-    if (e.kind === 'citation' || e.kind === 'alias') {
-      addPartner(e.from, e.to, e.kind)
-    } else if (primaryParent.get(e.to) !== e.from) {
-      addPartner(e.from, e.to, e.kind)
-    }
+    if (e.kind === 'citation' || e.kind === 'alias') addPartner(e.from, e.to)
+    else if (primaryParent.get(e.to) !== e.from) addPartner(e.from, e.to)
   }
   if (partner.size > 0) {
-    const collect = (
-      id: number,
-      acc: { x: number; w: number }[],
-      guard: number,
-    ): void => {
+    const collect = (id: number, acc: number[], guard: number): void => {
       if (guard > goals.length + 1) return
-      for (const { o, w } of partner.get(id) ?? []) {
-        const x = xSlot.get(o)
-        if (x !== undefined) acc.push({ x, w })
+      for (const p of partner.get(id) ?? []) {
+        const x = xSlot.get(p)
+        if (x !== undefined) acc.push(x)
       }
       for (const c of treeKids.get(id) ?? []) collect(c, acc, guard + 1)
     }
     const rank = new Map<number, number>()
     const rankOf = (id: number): number => {
-      const acc: { x: number; w: number }[] = []
+      const acc: number[] = []
       collect(id, acc, 0)
-      const tw = acc.reduce((a, l) => a + l.w, 0)
-      return tw > 0
-        ? acc.reduce((a, l) => a + l.x * l.w, 0) / tw
+      return acc.length > 0
+        ? acc.reduce((a, b) => a + b, 0) / acc.length
         : (xSlot.get(id) ?? 0)
     }
     for (const ks of treeKids.values()) {
@@ -516,6 +491,15 @@ export function layoutConstellation(
     runForest()
   }
 
+  // A singleton a citation ties to something is a 1-node component in
+  // the normal flow (it HAS structure); only the truly unlinked
+  // grid-pack into the final block.
+  const citPartner = new Map<number, number[]>()
+  for (const e of edges) {
+    if (e.kind !== 'citation') continue
+    citPartner.set(e.from, [...(citPartner.get(e.from) ?? []), e.to])
+    citPartner.set(e.to, [...(citPartner.get(e.to) ?? []), e.from])
+  }
   // Main-ness mirrors the engine's alive CTE (root ∪ detached ∪ …):
   // the root, top-level claims, and strategist-injected spines
   // (detached) are the proof's main body even before they connect.
@@ -545,42 +529,21 @@ export function layoutConstellation(
     })
     slot += 0.6
   }
-  // A HUB singleton (≥3 cross-links — smul_form carries 110) must stay
-  // free: a bed is rigid, its seat is the average of everyone in it,
-  // and a hub chained to that average parks a plate away from its
-  // dependents. Free hubs become 1-member components the band
-  // optimiser can seat individually; ordinary singletons still bed
-  // (a run of lone stars reads as a clothesline).
-  const hubInk = (id: number) =>
-    (partner.get(id) ?? []).reduce((a, l) => a + l.w, 0)
-  const freeSingles = singletonIds.filter((id) => hubInk(id) >= 2)
-  const freeSet = new Set(freeSingles)
-  const freedComps: Comp[] = []
-  for (const id of [...freeSingles].sort((a, b) => a - b)) {
-    gridComp([id])
-    freedComps.push(treeInfos[treeInfos.length - 1])
-  }
-  const mainSingles = singletonIds.filter((id) => mainish(id) && !freeSet.has(id))
+  const mainSingles = singletonIds.filter(mainish)
   const linkedSingles = singletonIds.filter(
-    (id) => !mainish(id) && !freeSet.has(id) && partner.has(id),
+    (id) => !mainish(id) && citPartner.has(id),
   )
   const partnerMean = (id: number) => {
-    let s = 0
-    let tw = 0
-    for (const { o, w } of partner.get(id) ?? []) {
-      const x = xSlot.get(o)
-      if (x !== undefined) {
-        s += x * w
-        tw += w
-      }
-    }
-    return tw > 0 ? s / tw : Infinity
+    const xs = (citPartner.get(id) ?? [])
+      .map((p) => xSlot.get(p))
+      .filter((v): v is number => v !== undefined)
+    return xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : Infinity
   }
   linkedSingles.sort((a, b) => partnerMean(a) - partnerMean(b) || a - b)
   gridComp(mainSingles)
   gridComp(linkedSingles)
   const unlinkedSingles = singletonIds.filter(
-    (id) => !partner.has(id) && !mainish(id) && !freeSet.has(id),
+    (id) => !citPartner.has(id) && !mainish(id),
   )
 
   // ---- Two-region sky ------------------------------------------------
@@ -594,20 +557,18 @@ export function layoutConstellation(
   /** mean pass-1 x of a tree's cross-link partners in OTHER trees —
    * fallback = its own centre (keeps the current order) */
   const treePartnerMean = (c: Comp): number => {
-    let s = 0
-    let tw = 0
+    const xs: number[] = []
     for (const m of c.members) {
-      for (const { o, w } of partner.get(m) ?? []) {
-        if (memberComp.get(o) !== c) {
-          const x = xSlot.get(o)
-          if (x !== undefined) {
-            s += x * w
-            tw += w
-          }
+      for (const p of partner.get(m) ?? []) {
+        if (memberComp.get(p) !== c) {
+          const x = xSlot.get(p)
+          if (x !== undefined) xs.push(x)
         }
       }
     }
-    return tw > 0 ? s / tw : (c.start + c.end) / 2
+    return xs.length > 0
+      ? xs.reduce((a, b) => a + b, 0) / xs.length
+      : (c.start + c.end) / 2
   }
   // Shelf packing (FFDH): depth-descending order makes each band
   // depth-homogeneous — mixed bands waste the full height of their
@@ -627,13 +588,10 @@ export function layoutConstellation(
   })
   const mainSet = new Set(mains)
   const rest = treeInfos.filter((c) => !mainSet.has(c))
-  // region ties count EVERY cross-link kind (the partner map), not
-  // just citations — a hub anchor whose 110 links are secondary
-  // hierarchy edges was sinking into the unlinked cellar
   const touchesMain = (c: Comp) =>
     c.members.some((id) =>
-      (partner.get(id) ?? []).some((l) => {
-        const pc = memberComp.get(l.o)
+      (citPartner.get(id) ?? []).some((p) => {
+        const pc = memberComp.get(p)
         return pc !== undefined && mainSet.has(pc)
       }),
     )
@@ -641,17 +599,13 @@ export function layoutConstellation(
   const linkedSet = new Set(linked)
   const unlinkedTrees = rest.filter((c) => !linkedSet.has(c))
   const meanPartnerSlot = (c: Comp) => {
-    let s = 0
-    let tw = 0
+    const xs: number[] = []
     for (const id of c.members)
-      for (const { o, w } of partner.get(id) ?? []) {
-        const pc = memberComp.get(o)
-        if (pc && mainSet.has(pc)) {
-          s += (xSlot.get(o) ?? 0) * w
-          tw += w
-        }
+      for (const p of citPartner.get(id) ?? []) {
+        const pc = memberComp.get(p)
+        if (pc && mainSet.has(pc)) xs.push(xSlot.get(p) ?? 0)
       }
-    return tw > 0 ? s / tw : Infinity
+    return xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : Infinity
   }
   // depth first (shelf packing), citer position as the tiebreak
   linked.sort(
@@ -706,39 +660,6 @@ export function layoutConstellation(
     pack(unlinkedTrees)
   }
 
-  // A freed hub can sit in ANY band (depth 0, width 1): re-seat it in
-  // the band holding the plurality of its partners — within its own
-  // region, so the horizon keeps its meaning. The depth queue was
-  // dumping every hub into the cellar band, a plate away from the 110
-  // trees depending on it; the optimiser below then seats it
-  // horizontally.
-  for (const c of freedComps) {
-    const id = c.members[0]
-    const own = bandOfNode.get(id)
-    if (own === undefined) continue
-    const hb = horizonBand ?? Number.POSITIVE_INFINITY
-    const region = (b: number) => (b < hb ? 0 : 1)
-    // the WEIGHTED median partner band minimises total vertical ink —
-    // a plurality vote can park the hub at one extreme of its fan
-    const bs: { b: number; w: number }[] = []
-    for (const { o, w } of partner.get(id) ?? []) {
-      const b = bandOfNode.get(o)
-      if (b !== undefined && region(b) === region(own)) bs.push({ b, w })
-    }
-    if (bs.length > 0) {
-      bs.sort((x, y) => x.b - y.b)
-      const half = bs.reduce((a, l) => a + l.w, 0) / 2
-      let acc = 0
-      for (const l of bs) {
-        acc += l.w
-        if (acc >= half) {
-          bandOfNode.set(id, l.b)
-          break
-        }
-      }
-    }
-  }
-
   // ---- band composition -----------------------------------------------
   // Band MEMBERSHIP stays FFDH's (depth homogeneity = vertical
   // economy); every horizontal decision inside a band belongs to one
@@ -780,7 +701,7 @@ export function layoutConstellation(
         cursor += t.end - t.start + 1 + GAP
       }
     }
-    for (let sweep = 0; sweep < 3; sweep++) {
+    for (let sweep = 0; sweep < 2; sweep++) {
       for (const trees of bandTrees.values()) {
         if (trees.length === 0) continue
         // desired shift per tree = the mean signed offset of its
@@ -801,12 +722,12 @@ export function layoutConstellation(
           for (const m of t.members) {
             const mx = localSlot.get(m)
             if (mx === undefined) continue
-            for (const { o, w: lw } of partner.get(m) ?? []) {
-              if (memberComp.get(o) === t) continue
-              const px = localSlot.get(o)
+            for (const p of partner.get(m) ?? []) {
+              if (memberComp.get(p) === t) continue
+              const px = localSlot.get(p)
               if (px !== undefined) {
-                sum += (px - mx) * lw
-                n += lw
+                sum += px - mx
+                n++
               }
             }
           }
@@ -885,15 +806,15 @@ export function layoutConstellation(
     {
       const nBands = bandDepth.length
       const hb = horizonBand ?? nBands
-      const links = new Map<number, { b: number; w: number }[]>()
+      const links = new Map<number, number[]>()
       for (const t of treeInfos) {
         const b = bandOfNode.get(t.members[0])
         if (b === undefined) continue
         for (const m of t.members) {
-          for (const { o, w } of partner.get(m) ?? []) {
-            const c = bandOfNode.get(o)
+          for (const p of partner.get(m) ?? []) {
+            const c = bandOfNode.get(p)
             if (c !== undefined && c !== b) {
-              links.set(b, [...(links.get(b) ?? []), { b: c, w }])
+              links.set(b, [...(links.get(b) ?? []), c])
             }
           }
         }
@@ -912,11 +833,10 @@ export function layoutConstellation(
         const sc = new Map<number, number>()
         for (let b = 0; b < nBands; b++) {
           const ls = links.get(b)
-          const tw = ls ? ls.reduce((a, l) => a + l.w, 0) : 0
           sc.set(
             b,
-            ls && tw > 0
-              ? ls.reduce((a, l) => a + posOf.get(l.b)! * l.w, 0) / tw
+            ls && ls.length > 0
+              ? ls.reduce((a, c) => a + posOf.get(c)!, 0) / ls.length
               : posOf.get(b)!,
           )
         }
