@@ -147,6 +147,10 @@ def create_app(workspace: Path) -> FastAPI:
     from .setup import register as _register_setup
     _register_setup(app, workspace)
 
+    # reader's Lean scratch pipeline (POST /api/lean/eval)
+    from .lean_eval import register as _register_lean_eval
+    _register_lean_eval(app, workspace)
+
     # -- meta ---------------------------------------------------------
 
     @app.get("/api/meta")
