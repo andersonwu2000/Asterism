@@ -93,7 +93,11 @@ function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
         <div className="mt-2 text-[11px] text-ink-faint">
           {w.kind === 'Strategist'
             ? 'reading the state, deciding the next moves — nothing on disk yet'
-            : 'nothing on disk yet — composing its prompt'}
+            : w.kind === 'Forward'
+              ? 'building new vocabulary and claims — each landed brick appears as a new star'
+              : w.kind === 'Librarian'
+                ? 'curating finished work into the Library'
+                : 'nothing on disk yet — composing its prompt'}
         </div>
       )}
     </div>
