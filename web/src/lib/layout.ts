@@ -491,15 +491,6 @@ export function layoutConstellation(
     runForest()
   }
 
-  // A singleton a citation ties to something is a 1-node component in
-  // the normal flow (it HAS structure); only the truly unlinked
-  // grid-pack into the final block.
-  const citPartner = new Map<number, number[]>()
-  for (const e of edges) {
-    if (e.kind !== 'citation') continue
-    citPartner.set(e.from, [...(citPartner.get(e.from) ?? []), e.to])
-    citPartner.set(e.to, [...(citPartner.get(e.to) ?? []), e.from])
-  }
   // Main-ness mirrors the engine's alive CTE (root ∪ detached ∪ …):
   // the root, top-level claims, and strategist-injected spines
   // (detached) are the proof's main body even before they connect.
@@ -529,12 +520,26 @@ export function layoutConstellation(
     })
     slot += 0.6
   }
-  const mainSingles = singletonIds.filter(mainish)
+  // A HUB singleton (≥3 cross-links — smul_form carries 110) must stay
+  // free: a bed is rigid, its seat is the average of everyone in it,
+  // and a hub chained to that average parks a plate away from its
+  // dependents. Free hubs become 1-member components the band
+  // optimiser can seat individually; ordinary singletons still bed
+  // (a run of lone stars reads as a clothesline).
+  const hubLinks = (id: number) => partner.get(id)?.length ?? 0
+  const freeSingles = singletonIds.filter((id) => hubLinks(id) >= 3)
+  const freeSet = new Set(freeSingles)
+  const freedComps: Comp[] = []
+  for (const id of [...freeSingles].sort((a, b) => a - b)) {
+    gridComp([id])
+    freedComps.push(treeInfos[treeInfos.length - 1])
+  }
+  const mainSingles = singletonIds.filter((id) => mainish(id) && !freeSet.has(id))
   const linkedSingles = singletonIds.filter(
-    (id) => !mainish(id) && citPartner.has(id),
+    (id) => !mainish(id) && !freeSet.has(id) && partner.has(id),
   )
   const partnerMean = (id: number) => {
-    const xs = (citPartner.get(id) ?? [])
+    const xs = (partner.get(id) ?? [])
       .map((p) => xSlot.get(p))
       .filter((v): v is number => v !== undefined)
     return xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : Infinity
@@ -543,7 +548,7 @@ export function layoutConstellation(
   gridComp(mainSingles)
   gridComp(linkedSingles)
   const unlinkedSingles = singletonIds.filter(
-    (id) => !citPartner.has(id) && !mainish(id),
+    (id) => !partner.has(id) && !mainish(id) && !freeSet.has(id),
   )
 
   // ---- Two-region sky ------------------------------------------------
@@ -588,9 +593,12 @@ export function layoutConstellation(
   })
   const mainSet = new Set(mains)
   const rest = treeInfos.filter((c) => !mainSet.has(c))
+  // region ties count EVERY cross-link kind (the partner map), not
+  // just citations — a hub anchor whose 110 links are secondary
+  // hierarchy edges was sinking into the unlinked cellar
   const touchesMain = (c: Comp) =>
     c.members.some((id) =>
-      (citPartner.get(id) ?? []).some((p) => {
+      (partner.get(id) ?? []).some((p) => {
         const pc = memberComp.get(p)
         return pc !== undefined && mainSet.has(pc)
       }),
@@ -601,7 +609,7 @@ export function layoutConstellation(
   const meanPartnerSlot = (c: Comp) => {
     const xs: number[] = []
     for (const id of c.members)
-      for (const p of citPartner.get(id) ?? []) {
+      for (const p of partner.get(id) ?? []) {
         const pc = memberComp.get(p)
         if (pc && mainSet.has(pc)) xs.push(xSlot.get(p) ?? 0)
       }
@@ -660,6 +668,31 @@ export function layoutConstellation(
     pack(unlinkedTrees)
   }
 
+  // A freed hub can sit in ANY band (depth 0, width 1): re-seat it in
+  // the band holding the plurality of its partners — within its own
+  // region, so the horizon keeps its meaning. The depth queue was
+  // dumping every hub into the cellar band, a plate away from the 110
+  // trees depending on it; the optimiser below then seats it
+  // horizontally.
+  for (const c of freedComps) {
+    const id = c.members[0]
+    const own = bandOfNode.get(id)
+    if (own === undefined) continue
+    const hb = horizonBand ?? Number.POSITIVE_INFINITY
+    const region = (b: number) => (b < hb ? 0 : 1)
+    // the MEDIAN partner band minimises total vertical span (L1) —
+    // a plurality vote can park the hub at one extreme of its fan
+    const bs: number[] = []
+    for (const p of partner.get(id) ?? []) {
+      const b = bandOfNode.get(p)
+      if (b !== undefined && region(b) === region(own)) bs.push(b)
+    }
+    if (bs.length > 0) {
+      bs.sort((x, y) => x - y)
+      bandOfNode.set(id, bs[Math.floor(bs.length / 2)])
+    }
+  }
+
   // ---- band composition -----------------------------------------------
   // Band MEMBERSHIP stays FFDH's (depth homogeneity = vertical
   // economy); every horizontal decision inside a band belongs to one
@@ -701,7 +734,7 @@ export function layoutConstellation(
         cursor += t.end - t.start + 1 + GAP
       }
     }
-    for (let sweep = 0; sweep < 2; sweep++) {
+    for (let sweep = 0; sweep < 3; sweep++) {
       for (const trees of bandTrees.values()) {
         if (trees.length === 0) continue
         // desired shift per tree = the mean signed offset of its
