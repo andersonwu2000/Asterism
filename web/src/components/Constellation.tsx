@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Goal, Strategy, StrategyEdge } from '../lib/types'
 import { frontierView, layoutConstellation, X_GAP } from '../lib/layout'
 import { Lean } from '../lib/lean'
@@ -12,13 +12,21 @@ import type { ConstellationLayout, LayoutNode } from '../lib/layout'
  * deterministic for a given graph; when the graph changes between polls
  * the stars GLIDE to their new places (and the camera re-frames an
  * untouched view), so a re-layout reads as motion, not as a new map.
+ *
+ * Rendering is budgeted for 400-star skies (charter §7): the heavy
+ * layers (edges / routes / stars) are memoized JSX, so a pan re-renders
+ * nothing and a zoom re-renders only on ~8% scale buckets; the glide is
+ * applied imperatively (attribute writes per rAF frame, zero React
+ * work); star glow is a radial-gradient halo, not a Gaussian filter —
+ * a finished sky glows on ~300 stars at once and filters made every
+ * repaint pay for that.
  */
 
 /** poll-to-poll position tween: ~half a second, fast-out. Long enough
  * to read as motion, short enough to be over before the next poll. */
 const ANIM_MS = 550
-/** beyond this the per-frame React re-render is no longer free — big
- * skies jump like before rather than stutter */
+/** above this a sky stops animating and just jumps — even attribute
+ * sweeps have a budget */
 const ANIM_MAX = 400
 const easeOut = (a: number) => 1 - (1 - a) ** 3
 
@@ -34,11 +42,28 @@ interface Tween {
   t0: number
   fromPos: Map<number, { x: number; y: number }>
   fromJunc: Map<number, { x: number; y: number }>
-  fromWidth: number
-  fromHorizon: number | null
   /** camera glide — only when the user hasn't zoomed or panned */
   fromView: View | null
   toView: View | null
+}
+
+/** Citation bow — single source for the initial render AND the
+ * animator's per-frame rewrites. Bow grows with span (a fixed cap
+ * flattened long horizontals back into wires); endpoint-id parity mixes
+ * directions so parallel threads separate. */
+function citePath(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  from: number,
+  to: number,
+): { d: string; len: number } {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const len = Math.hypot(dx, dy) || 1
+  const bow = Math.min(150, len * 0.18) * ((from + to) % 2 === 0 ? 1 : -1)
+  const mx = (a.x + b.x) / 2 + (-dy / len) * bow
+  const my = (a.y + b.y) / 2 + (dx / len) * bow
+  return { d: `M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`, len }
 }
 
 function computeFit(el: HTMLElement, l: ConstellationLayout): View {
@@ -310,151 +335,190 @@ export default function Constellation({
     setView(computeFit(el, layout))
   }, [view, layout])
 
-  // ---- poll-to-poll transition --------------------------------------
+  // ---- poll-to-poll transition (imperative) --------------------------
   // A structure change re-layouts the whole sky (readability outranks
   // stillness — owner call); the tween keeps every star's IDENTITY
-  // through the move. State machine: render-phase derivation captures
-  // the last drawn frame (so an interrupted glide continues from where
-  // it visibly is), a rAF heartbeat re-renders until the clock runs
-  // out, then the camera commits to the fresh fit.
+  // through the move. React always renders the TARGET sky; the animator
+  // below interpolates by writing DOM attributes directly through the
+  // element registries — at 370 nodes one React render costs ~10ms
+  // (measured on stokes), an attribute sweep doesn't. Unrelated
+  // re-renders (hover, selection) diff target-vs-target and so never
+  // disturb a glide in flight.
   const viewRef = useRef<View | null>(view) // the DISPLAYED camera
+  const camDriven = useRef(false) // animator owns the camera right now
   const shownPosRef = useRef(new Map<number, { x: number; y: number }>())
   const shownJuncRef = useRef(new Map<number, { x: number; y: number }>())
-  const shownDimsRef = useRef<{ width: number; horizonY: number | null } | null>(null)
   const sceneRef = useRef<string | null>(null)
-  const [tw, setTw] = useState<{ layout: ConstellationLayout; tween: Tween | null }>(
-    { layout, tween: null },
+  const outerGRef = useRef<SVGGElement | null>(null)
+  const nodeEls = useRef(new Map<number, SVGGElement>())
+  const juncEls = useRef(new Map<number, SVGGElement>())
+  const edgeEls = useRef(
+    new Map<SVGElement, { from: number; to: number; cite: boolean }>(),
   )
-  const [, setTick] = useState(0)
-  if (tw.layout !== layout) {
-    let tween: Tween | null = null
-    if (
-      sceneRef.current === sceneKey &&
-      shownPosRef.current.size > 0 &&
-      layout.nodes.length <= ANIM_MAX
-    ) {
-      let moved = false
-      for (const n of layout.nodes) {
-        const q = shownPosRef.current.get(n.goal.id)
-        if (q && Math.hypot(q.x - n.x, q.y - n.y) > 0.5) {
+  const stemEls = useRef(new Map<SVGLineElement, { parent: number; sid: number }>())
+  const branchEls = useRef(new Map<SVGLineElement, { sid: number; child: number }>())
+  const animRef = useRef({ raf: 0, timer: 0 })
+
+  const k = view?.k ?? 1
+  const tx = view?.tx ?? 0
+  const ty = view?.ty ?? 0
+  // wheel/buttons/drag compound from the DISPLAYED camera, so grabbing
+  // the controls mid-glide continues from what the eye sees
+  if (!camDriven.current) {
+    viewRef.current = view === null ? null : { k, tx, ty }
+  }
+  const showLabels = k >= 1.05
+  // Quantized zoom for the memoized layers: panning is k-free, and a
+  // wheel burst re-renders content only when it crosses an ~8% bucket —
+  // in between, the outer transform scales everything smoothly and the
+  // compensated sizes ride within ±8% of ideal.
+  const kq = useMemo(() => {
+    const step = Math.log(1.08)
+    return Math.exp(Math.round(Math.log(Math.max(k, 0.05)) / step) * step)
+  }, [k])
+
+  useLayoutEffect(() => {
+    const sameScene = sceneRef.current === sceneKey
+    sceneRef.current = sceneKey
+    const anim = animRef.current
+    const stop = () => {
+      if (anim.raf) cancelAnimationFrame(anim.raf)
+      if (anim.timer) window.clearTimeout(anim.timer)
+      anim.raf = 0
+      anim.timer = 0
+      camDriven.current = false
+    }
+    const targets = new Map(layout.nodes.map((n) => [n.goal.id, { x: n.x, y: n.y }]))
+    const juncTargets = new Map(
+      layout.bundles.map((b) => [b.strategyId, { x: b.junction.x, y: b.junction.y }]),
+    )
+    let moved = false
+    if (sameScene && shownPosRef.current.size > 0 && layout.nodes.length <= ANIM_MAX) {
+      for (const [id, t] of targets) {
+        const q = shownPosRef.current.get(id)
+        if (q && Math.hypot(q.x - t.x, q.y - t.y) > 0.5) {
           moved = true
           break
         }
       }
-      if (moved) {
-        const el = containerRef.current
-        const glide =
-          !userAdjusted.current && el !== null && viewRef.current !== null
-        tween = {
-          t0: performance.now(),
-          fromPos: new Map(shownPosRef.current),
-          fromJunc: new Map(shownJuncRef.current),
-          fromWidth: shownDimsRef.current?.width ?? layout.width,
-          fromHorizon: shownDimsRef.current?.horizonY ?? null,
-          fromView: glide ? { ...viewRef.current! } : null,
-          toView: glide ? computeFit(el!, layout) : null,
+    }
+    if (!moved) {
+      // new scene, oversized sky, or nothing moved: the freshly rendered
+      // targets ARE the picture
+      stop()
+      shownPosRef.current = targets
+      shownJuncRef.current = juncTargets
+      return
+    }
+    stop()
+    const glide =
+      !userAdjusted.current && containerRef.current !== null && viewRef.current !== null
+    const tween: Tween = {
+      t0: performance.now(),
+      fromPos: new Map(shownPosRef.current),
+      fromJunc: new Map(shownJuncRef.current),
+      fromView: glide ? { ...viewRef.current! } : null,
+      toView: glide ? computeFit(containerRef.current!, layout) : null,
+    }
+    camDriven.current = tween.toView !== null
+
+    const apply = (alpha: number) => {
+      const shown = new Map<number, { x: number; y: number }>()
+      for (const [id, t] of targets) {
+        const f = tween.fromPos.get(id)
+        const x = f ? f.x + (t.x - f.x) * alpha : t.x
+        const y = f ? f.y + (t.y - f.y) * alpha : t.y
+        shown.set(id, { x, y })
+        nodeEls.current.get(id)?.setAttribute('transform', `translate(${x},${y})`)
+      }
+      shownPosRef.current = shown
+      const shownJ = new Map<number, { x: number; y: number }>()
+      for (const [sid, t] of juncTargets) {
+        const f = tween.fromJunc.get(sid)
+        const x = f ? f.x + (t.x - f.x) * alpha : t.x
+        const y = f ? f.y + (t.y - f.y) * alpha : t.y
+        shownJ.set(sid, { x, y })
+        juncEls.current.get(sid)?.setAttribute('transform', `translate(${x},${y})`)
+      }
+      shownJuncRef.current = shownJ
+      for (const [el, m] of edgeEls.current) {
+        const a = shown.get(m.from)
+        const b = shown.get(m.to)
+        if (!a || !b) continue
+        if (m.cite) {
+          el.setAttribute('d', citePath(a, b, m.from, m.to).d)
+        } else {
+          el.setAttribute('x1', String(a.x))
+          el.setAttribute('y1', String(a.y))
+          el.setAttribute('x2', String(b.x))
+          el.setAttribute('y2', String(b.y))
         }
       }
+      for (const [el, m] of stemEls.current) {
+        const a = shown.get(m.parent)
+        const j = shownJ.get(m.sid)
+        if (!a || !j) continue
+        el.setAttribute('x1', String(a.x))
+        el.setAttribute('y1', String(a.y))
+        el.setAttribute('x2', String(j.x))
+        el.setAttribute('y2', String(j.y))
+      }
+      for (const [el, m] of branchEls.current) {
+        const j = shownJ.get(m.sid)
+        const c = shown.get(m.child)
+        if (!j || !c) continue
+        el.setAttribute('x1', String(j.x))
+        el.setAttribute('y1', String(j.y))
+        el.setAttribute('x2', String(c.x))
+        el.setAttribute('y2', String(c.y))
+      }
+      if (tween.fromView && tween.toView && !userAdjusted.current) {
+        const f = tween.fromView
+        const g = tween.toView
+        const cam = {
+          k: f.k + (g.k - f.k) * alpha,
+          tx: f.tx + (g.tx - f.tx) * alpha,
+          ty: f.ty + (g.ty - f.ty) * alpha,
+        }
+        viewRef.current = cam
+        outerGRef.current?.setAttribute(
+          'transform',
+          `translate(${cam.tx},${cam.ty}) scale(${cam.k})`,
+        )
+      }
     }
-    setTw({ layout, tween })
-  }
-  sceneRef.current = sceneKey
-
-  useEffect(() => {
-    const t = tw.tween
-    if (!t) return
-    let raf = 0
     let done = false
     const finish = () => {
       if (done) return
       done = true
-      // commit the camera to a FRESH fit — the toView computed at
-      // derive time goes stale if the container resized mid-glide
-      const el = containerRef.current
-      if (t.toView && !userAdjusted.current && el) {
-        setView(computeFit(el, tw.layout))
+      apply(1)
+      stop()
+      // commit the camera through React with a FRESH fit — the derive-
+      // time toView goes stale if the container resized mid-glide
+      if (tween.toView && !userAdjusted.current && containerRef.current) {
+        setView(computeFit(containerRef.current, layout))
       }
-      setTw({ layout: tw.layout, tween: null })
     }
     const step = () => {
       if (done) return
-      if (performance.now() - t.t0 >= ANIM_MS) {
+      const a = (performance.now() - tween.t0) / ANIM_MS
+      if (a >= 1) {
         finish()
-      } else {
-        setTick((x) => x + 1)
-        raf = requestAnimationFrame(step)
+        return
       }
+      apply(easeOut(a))
+      anim.raf = requestAnimationFrame(step)
     }
-    raf = requestAnimationFrame(step)
+    apply(0) // before paint: the freshly rendered targets must not flash
+    anim.raf = requestAnimationFrame(step)
     // rAF starves in occluded/hidden tabs — the timer guarantees the
     // tween still ENDS there (a frozen half-glide reads as breakage)
-    const timer = window.setTimeout(finish, ANIM_MS + 50)
+    anim.timer = window.setTimeout(finish, ANIM_MS + 50)
     return () => {
-      cancelAnimationFrame(raf)
-      window.clearTimeout(timer)
+      done = true
+      stop()
     }
-  }, [tw])
-
-  const tween = tw.layout === layout ? tw.tween : null
-  const alphaRaw = tween
-    ? Math.min(1, (performance.now() - tween.t0) / ANIM_MS)
-    : 1
-  const alpha = easeOut(alphaRaw)
-  const tweening = tween !== null && alphaRaw < 1
-
-  let k = view?.k ?? 1
-  let tx = view?.tx ?? 0
-  let ty = view?.ty ?? 0
-  if (tweening && tween!.fromView && tween!.toView && !userAdjusted.current) {
-    const f = tween!.fromView
-    const g = tween!.toView
-    k = f.k + (g.k - f.k) * alpha
-    tx = f.tx + (g.tx - f.tx) * alpha
-    ty = f.ty + (g.ty - f.ty) * alpha
-  }
-  // wheel/buttons compound from the DISPLAYED camera, so grabbing the
-  // wheel mid-glide continues from what the eye sees
-  viewRef.current = view === null ? null : { k, tx, ty }
-  const showLabels = k >= 1.05
-
-  // the drawn frame = lerp(last drawn, layout target)
-  const drawnPos = new Map<number, { x: number; y: number }>()
-  for (const n of layout.nodes) {
-    const f = tweening ? tween!.fromPos.get(n.goal.id) : undefined
-    drawnPos.set(
-      n.goal.id,
-      f
-        ? { x: f.x + (n.x - f.x) * alpha, y: f.y + (n.y - f.y) * alpha }
-        : { x: n.x, y: n.y },
-    )
-  }
-  const drawnJunc = new Map<number, { x: number; y: number }>()
-  for (const b of layout.bundles) {
-    const f = tweening ? tween!.fromJunc.get(b.strategyId) : undefined
-    drawnJunc.set(
-      b.strategyId,
-      f
-        ? {
-            x: f.x + (b.junction.x - f.x) * alpha,
-            y: f.y + (b.junction.y - f.y) * alpha,
-          }
-        : { x: b.junction.x, y: b.junction.y },
-    )
-  }
-  const drawnWidth = tweening
-    ? tween!.fromWidth + (layout.width - tween!.fromWidth) * alpha
-    : layout.width
-  const drawnHorizon =
-    layout.horizonY !== null && tweening && tween!.fromHorizon !== null
-      ? tween!.fromHorizon + (layout.horizonY - tween!.fromHorizon) * alpha
-      : layout.horizonY
-  if (tw.layout === layout) {
-    // never record a stale render pass (the render-phase setTw above
-    // discards this pass and re-runs with the tween in place)
-    shownPosRef.current = drawnPos
-    shownJuncRef.current = drawnJunc
-    shownDimsRef.current = { width: drawnWidth, horizonY: drawnHorizon }
-  }
+  }, [layout, sceneKey])
 
   // Wheel zoom must preventDefault (page would scroll); React's
   // delegated wheel handlers are passive, so attach natively.
@@ -486,19 +550,22 @@ export default function Constellation({
   }, [])
 
   const onPointerDown = (e: React.PointerEvent) => {
-    if (view === null) return
-    drag.current = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty, moved: false }
+    const v = viewRef.current
+    if (v === null) return
+    // base the drag on the DISPLAYED camera (a glide may be driving it)
+    drag.current = { x: e.clientX, y: e.clientY, tx: v.tx, ty: v.ty, moved: false }
     ;(e.target as Element).setPointerCapture(e.pointerId)
   }
   const onPointerMove = (e: React.PointerEvent) => {
     const d = drag.current
-    if (!d || view === null) return
+    const v = viewRef.current
+    if (!d || v === null) return
     const dx = e.clientX - d.x
     const dy = e.clientY - d.y
     if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true
     if (d.moved) {
       userAdjusted.current = true
-      setView({ k: view.k, tx: d.tx + dx, ty: d.ty + dy })
+      setView({ k: v.k, tx: d.tx + dx, ty: d.ty + dy })
     }
   }
   const onPointerUp = (e: React.PointerEvent) => {
@@ -507,28 +574,60 @@ export default function Constellation({
     if (d && !d.moved && (e.target as Element).tagName === 'svg') onSelect(null)
   }
 
+  // the incoming callbacks may be fresh lambdas every parent render —
+  // route them through refs so the memoized layers can hold still
+  const onSelectRef = useRef(onSelect)
+  onSelectRef.current = onSelect
+  const selectCb = useCallback((id: number) => onSelectRef.current(id), [])
+  const onSelectStrategyRef = useRef(onSelectStrategy)
+  onSelectStrategyRef.current = onSelectStrategy
+  const selectStrategyCb = useCallback(
+    (id: number) => onSelectStrategyRef.current?.(id),
+    [],
+  )
+  const hasStrategyClick = onSelectStrategy !== undefined
+
   const isDead = (s: string) => s === 'dead' || s === 'superseded'
-  const visibleEdges = layout.edges.filter(
-    (e) => showDead || e.kind === 'alias' || !isDead(e.strategyStatus),
+  const visibleEdges = useMemo(
+    () =>
+      layout.edges.filter(
+        (e) => showDead || e.kind === 'alias' || !isDead(e.strategyStatus),
+      ),
+    [layout, showDead],
+  )
+  const visibleBundles = useMemo(
+    () => layout.bundles.filter((b) => showDead || !isDead(b.status)),
+    [layout, showDead],
   )
   // density-stepped: a handful of citations read at 0.22; a hundred
   // would wash the sky at that weight
-  const citeCount = visibleEdges.filter((e) => e.kind === 'citation').length
+  const citeCount = useMemo(
+    () => visibleEdges.filter((e) => e.kind === 'citation').length,
+    [visibleEdges],
+  )
   const citeOpacity = citeCount > 80 ? 0.08 : citeCount > 30 ? 0.13 : 0.22
   // hover/selection focus: point at a star with citation threads and
   // its threads carry the light while the rest of the web recedes —
-  // "where is this actually used" answered in place (cold-eye backlog)
+  // "where is this actually used" answered in place (cold-eye backlog).
+  // Null unless the focus target HAS citations, so hovering ordinary
+  // stars leaves the memoized edge layer untouched.
   const focusId = hovered?.goal.id ?? selectedId
-  const citeFocus =
+  const citeFocusId =
     focusId !== null &&
     visibleEdges.some(
       (e) => e.kind === 'citation' && (e.from === focusId || e.to === focusId),
     )
-  const visibleBundles = layout.bundles.filter((b) => showDead || !isDead(b.status))
+      ? focusId
+      : null
   const deadEdgeCount =
     layout.edges.length -
     visibleEdges.length +
     layout.bundles.filter((b) => isDead(b.status)).length
+
+  const byId = useMemo(
+    () => new Map(layout.nodes.map((n) => [n.goal.id, n])),
+    [layout],
+  )
 
   // Faint background stardust — deterministic per problem, pure
   // atmosphere (opacity kept below signal level).
@@ -547,6 +646,479 @@ export default function Constellation({
       o: 0.04 + rand() * 0.1,
     }))
   }, [])
+
+  // ---- memoized layers ----------------------------------------------
+  // Each layer's JSX is cached until ITS inputs change: panning touches
+  // none of them (one transform write), zooming only crosses kq buckets,
+  // hovering re-renders the edge layer only when the target has
+  // citation threads. All positions are layout targets — the animator
+  // moves them between renders.
+  const dustEl = useMemo(
+    () => (
+      <>
+        {dust.map((d, i) => (
+          <circle
+            key={`d${i}`}
+            cx={d.x}
+            cy={d.y}
+            r={(d.r * 0.8) / Math.max(kq, 0.5)}
+            fill="var(--color-ink)"
+            opacity={d.o * 0.45}
+          />
+        ))}
+      </>
+    ),
+    [dust, kq],
+  )
+
+  const edgesEl = useMemo(
+    () => (
+      <>
+        {visibleEdges.map((e, i) => {
+          const a = byId.get(e.from)
+          const b = byId.get(e.to)
+          if (!a || !b) return null
+          const dead = isDead(e.strategyStatus)
+          const reg = (el: SVGElement | null) => {
+            if (!el) return
+            edgeEls.current.set(el, {
+              from: e.from,
+              to: e.to,
+              cite: e.kind === 'citation',
+            })
+            return () => {
+              edgeEls.current.delete(el)
+            }
+          }
+          if (e.kind === 'citation') {
+            // Citations bow sideways as quiet threads: parallel long
+            // straights merge into fog on cite-heavy skies (sphere:
+            // 100+ edges); a bow separates neighbours, and opacity
+            // steps down with density so the trees stay in front.
+            const { d, len } = citePath(a, b, e.from, e.to)
+            // long hauls fade further: a cross-sky thread is context,
+            // not content — nearby citations stay readable
+            const fade = Math.min(1, Math.max(0.35, 320 / len))
+            const touched =
+              citeFocusId !== null && (e.from === citeFocusId || e.to === citeFocusId)
+            return (
+              <path
+                key={i}
+                ref={reg}
+                d={d}
+                fill="none"
+                stroke={edgeStroke(e.strategyStatus, e.kind)}
+                strokeWidth={touched ? 1.4 : 1}
+                strokeOpacity={
+                  touched
+                    ? Math.max(0.55, citeOpacity * fade)
+                    : citeFocusId !== null
+                      ? 0.04
+                      : citeOpacity * fade
+                }
+                vectorEffect="non-scaling-stroke"
+              />
+            )
+          }
+          return (
+            <line
+              key={i}
+              ref={reg}
+              x1={a.x}
+              y1={a.y}
+              x2={b.x}
+              y2={b.y}
+              stroke={edgeStroke(e.strategyStatus, e.kind)}
+              strokeWidth={e.strategyStatus === 'succeeded' ? 1.2 : 1}
+              strokeOpacity={
+                dead
+                  ? 0.35
+                  : e.kind === 'alias'
+                    ? 0.5
+                    : e.kind === 'anchor'
+                      ? 0.3
+                      : e.strategyStatus === 'succeeded'
+                        ? 0.38
+                        : 0.55
+              }
+              strokeDasharray={e.kind === 'alias' ? '4 4' : undefined}
+              vectorEffect="non-scaling-stroke"
+            />
+          )
+        })}
+      </>
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visibleEdges, byId, citeFocusId, citeOpacity],
+  )
+
+  const bundlesEl = useMemo(
+    () => (
+      <>
+        {visibleBundles.map((b) => {
+          // AND-group hyperedge: stem parent→junction, then branches.
+          // Side-by-side junctions on one goal = competing strategies.
+          const parent = byId.get(b.parentId)
+          if (!parent) return null
+          const dead = isDead(b.status)
+          const stroke = edgeStroke(b.status, 'strategy')
+          const opacity = dead ? 0.35 : b.status === 'succeeded' ? 0.38 : 0.55
+          return (
+            <g key={`s${b.strategyId}`}>
+              <line
+                ref={(el) => {
+                  if (!el) return
+                  stemEls.current.set(el, { parent: b.parentId, sid: b.strategyId })
+                  return () => {
+                    stemEls.current.delete(el)
+                  }
+                }}
+                x1={parent.x}
+                y1={parent.y}
+                x2={b.junction.x}
+                y2={b.junction.y}
+                stroke={stroke}
+                strokeWidth={b.status === 'succeeded' ? 2 : 1.6}
+                strokeOpacity={opacity}
+                vectorEffect="non-scaling-stroke"
+              />
+              {b.children.map((cid) => {
+                const c = byId.get(cid)
+                if (!c) return null
+                return (
+                  <line
+                    key={cid}
+                    ref={(el) => {
+                      if (!el) return
+                      branchEls.current.set(el, { sid: b.strategyId, child: cid })
+                      return () => {
+                        branchEls.current.delete(el)
+                      }
+                    }}
+                    x1={b.junction.x}
+                    y1={b.junction.y}
+                    x2={c.x}
+                    y2={c.y}
+                    stroke={stroke}
+                    strokeWidth={b.status === 'succeeded' ? 1.4 : 1}
+                    strokeOpacity={opacity}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )
+              })}
+              <g
+                ref={(el) => {
+                  if (!el) return
+                  juncEls.current.set(b.strategyId, el)
+                  return () => {
+                    juncEls.current.delete(b.strategyId)
+                  }
+                }}
+                transform={`translate(${b.junction.x},${b.junction.y})`}
+              >
+                <circle r={2.1} fill={stroke} opacity={opacity} />
+                {hasStrategyClick && (
+                  <>
+                    {/* a faint ring says "this fork is a thing you can
+                        open" — the bare hit area was undiscoverable */}
+                    <circle
+                      r={5}
+                      fill="none"
+                      stroke={stroke}
+                      strokeWidth={0.8}
+                      opacity={opacity * 0.35}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    <circle
+                      r={9}
+                      fill="transparent"
+                      className="cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        selectStrategyCb(b.strategyId)
+                      }}
+                    >
+                      <title>
+                        one route: this fork needs ALL its branches; a second
+                        fork on the same star is a competing route — click for
+                        details (s{b.strategyId}, {b.status})
+                      </title>
+                    </circle>
+                  </>
+                )}
+              </g>
+            </g>
+          )
+        })}
+      </>
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visibleBundles, byId, hasStrategyClick, selectStrategyCb],
+  )
+
+  const nodesEl = useMemo(
+    () => (
+      <>
+        {layout.nodes.map((n) => {
+          const s = nodeStyle(n.goal, hasLive)
+          const live =
+            n.goal.status === 'open' ||
+            n.goal.status === 'attempting' ||
+            n.goal.status === 'pending_strategist_review'
+          // scale honesty: marks never drop below ~7px on screen (the
+          // live frontier gets a size bonus + a larger floor) — but
+          // the floor is capped in CONTENT units, or at extreme
+          // zoom-out the floors exceed the slot gap and stars fuse
+          // into blobs (residue_thm, 500 nodes)
+          const r = Math.max(
+            radius(n.goal) + (live ? 1.5 : 0),
+            Math.min((live ? 5.5 : 3.5) / kq, X_GAP * 0.28),
+          )
+          const lod = kq < 0.8
+          const fill = lod && live ? s.stroke : s.fill
+          const selected = n.goal.id === selectedId
+          // Attempts heat ring: arc fraction of the shelve threshold,
+          // only meaningful while the goal is still being worked.
+          const heatFrac =
+            live && n.goal.attempts > 0
+              ? Math.min(n.goal.attempts / shelveThreshold, 1)
+              : 0
+          const heatR = r + 3
+          const heatC = 2 * Math.PI * heatR
+          return (
+            <g
+              key={n.goal.id}
+              ref={(el) => {
+                if (!el) return
+                nodeEls.current.set(n.goal.id, el)
+                return () => {
+                  nodeEls.current.delete(n.goal.id)
+                }
+              }}
+              transform={`translate(${n.x},${n.y})`}
+              className="cursor-pointer"
+              onMouseEnter={() => setHovered(n)}
+              onMouseLeave={() => setHovered(null)}
+              onClick={(e) => {
+                e.stopPropagation()
+                selectCb(n.goal.id)
+              }}
+            >
+              {/* glow = a radial-gradient halo UNDER the star; the old
+                  per-star Gaussian filter made a finished sky (300
+                  glowing stars) pay filter cost on every repaint */}
+              {s.glow && (
+                <circle
+                  r={r * 2.5}
+                  fill="url(#star-halo)"
+                  opacity={s.opacity}
+                  pointerEvents="none"
+                />
+              )}
+              {/* ring slots are disjoint (heat r+3, deliverable r+5,
+                  root r+7, in-flight r+8, selection r+10) — two
+                  meanings on one radius merge into ambiguity */}
+              {selected && (
+                <circle
+                  r={r + 10}
+                  fill="none"
+                  stroke="var(--color-ink)"
+                  strokeWidth={1}
+                  strokeOpacity={0.8}
+                  strokeDasharray="2 3"
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+              {n.goal.origin === 'root' && (
+                <circle
+                  r={r + 7}
+                  fill="none"
+                  stroke={s.stroke}
+                  strokeWidth={0.8}
+                  opacity={s.opacity * 0.5}
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+              {/* defs are the meaning-bearers (the anchor surface a
+                  human vouches for) — diamonds above the shape-
+                  perception threshold (~5px), circles below it;
+                  Props are the light and stay round */}
+              {DEF_KINDS.has(n.goal.kind) && r * kq >= 5 ? (
+                <rect
+                  x={-r * 1.06}
+                  y={-r * 1.06}
+                  width={r * 2.12}
+                  height={r * 2.12}
+                  transform="rotate(45)"
+                  fill={fill}
+                  stroke={s.stroke}
+                  strokeWidth={1.4}
+                  opacity={s.opacity}
+                  vectorEffect="non-scaling-stroke"
+                >
+                  {engineWorking && n.goal.status === 'attempting' && (
+                    <animate
+                      attributeName="opacity"
+                      values="1;0.45;1"
+                      dur="1.6s"
+                      repeatCount="indefinite"
+                    />
+                  )}
+                </rect>
+              ) : (
+                <circle
+                  r={r}
+                  fill={fill}
+                  stroke={s.stroke}
+                  strokeWidth={1.4}
+                  opacity={s.opacity}
+                  vectorEffect="non-scaling-stroke"
+                >
+                  {engineWorking && n.goal.status === 'attempting' && (
+                    <animate
+                      attributeName="opacity"
+                      values="1;0.45;1"
+                      dur="1.6s"
+                      repeatCount="indefinite"
+                    />
+                  )}
+                </circle>
+              )}
+              {n.goal.is_deliverable && (
+                <circle
+                  r={r + 5}
+                  fill="none"
+                  stroke="var(--color-star)"
+                  strokeWidth={1.1}
+                  opacity={0.9}
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+              {heatFrac > 0 && (
+                <circle
+                  r={heatR}
+                  fill="none"
+                  stroke="var(--color-starlight)"
+                  strokeWidth={1.2}
+                  strokeOpacity={0.4 + heatFrac * 0.5}
+                  strokeDasharray={`${heatC * heatFrac} ${heatC}`}
+                  transform="rotate(-90)"
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+              {birthsRef.current.born.has(n.goal.id) && (
+                <circle
+                  r={r + 12}
+                  fill="none"
+                  stroke="var(--color-starlight)"
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                >
+                  <animate
+                    attributeName="stroke-opacity"
+                    values="0.8;0.1;0.8"
+                    dur="1.8s"
+                    repeatCount="indefinite"
+                  />
+                </circle>
+              )}
+              {n.goal.in_flight && (
+                <circle
+                  r={r + 8}
+                  fill="none"
+                  stroke="var(--color-accent)"
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                >
+                  <animate
+                    attributeName="stroke-opacity"
+                    values="0.7;0.15;0.7"
+                    dur="1.4s"
+                    repeatCount="indefinite"
+                  />
+                  <animate
+                    attributeName="r"
+                    values={`${r + 7};${r + 9};${r + 7}`}
+                    dur="1.4s"
+                    repeatCount="indefinite"
+                  />
+                </circle>
+              )}
+              {focused && (frontier.folded.get(n.goal.id) ?? 0) > 0 && (
+                <text
+                  x={r + 4 / kq}
+                  y={-r}
+                  className="pointer-events-none select-none"
+                  fill="var(--color-ink-faint)"
+                  fontSize={9.5 / kq}
+                  fontFamily="var(--font-mono)"
+                >
+                  +{frontier.folded.get(n.goal.id)}
+                </text>
+              )}
+              {(showLabels ||
+                n.goal.origin === 'root' ||
+                n.goal.is_deliverable) && (
+                <text
+                  // Stagger label rows by in-row parity so long slugs
+                  // on adjacent stars don't collide; offsets are
+                  // screen-constant like the font. Truncation is
+                  // width-aware: never truncate into empty space.
+                  // Root + claims stay labelled at ANY zoom — the
+                  // survey view needs its landmarks named.
+                  y={
+                    r * (n.goal.is_deliverable || n.goal.origin === 'root' ? 1.6 : 1) +
+                    ((rowCounts.get(n.y) ?? 0) > 8 && n.col % 2 === 1 ? 26 : 15) / kq
+                  }
+                  textAnchor="middle"
+                  className="pointer-events-none select-none"
+                  fill={selected ? 'var(--color-ink)' : 'var(--color-ink-dim)'}
+                  fontSize={10.5 / kq}
+                  fontFamily="var(--font-mono)"
+                >
+                  {(() => {
+                    // budget from ACTUAL neighbour room: fair split
+                    // of each gap, plus whatever a short neighbour
+                    // doesn't need (mono ≈6.4px/char on screen)
+                    const rm = labelRoom.get(n.goal.id)
+                    const side = (gap: number, nbrLen: number) => {
+                      if (!Number.isFinite(gap)) return Infinity
+                      const gapPx = gap * kq
+                      return gapPx - 6 - Math.min(nbrLen * 3.2, gapPx / 2)
+                    }
+                    const half = rm
+                      ? Math.min(side(rm.gapL, rm.nbrL), side(rm.gapR, rm.nbrR))
+                      : Infinity
+                    const budget = Number.isFinite(half)
+                      ? Math.min(44, Math.max(12, Math.floor((half * 2) / 6.4)))
+                      : 44
+                    return n.goal.slug.length <= budget
+                      ? n.goal.slug
+                      : `${n.goal.slug.slice(0, Math.floor(budget / 2) - 1)}…${n.goal.slug.slice(-(Math.floor(budget / 2) - 1))}`
+                  })()}
+                </text>
+              )}
+            </g>
+          )
+        })}
+      </>
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      layout,
+      kq,
+      showLabels,
+      selectedId,
+      hasLive,
+      engineWorking,
+      shelveThreshold,
+      focused,
+      frontier,
+      labelRoom,
+      rowCounts,
+      selectCb,
+    ],
+  )
 
   if (layout.nodes.length === 0) {
     return (
@@ -568,13 +1140,13 @@ export default function Constellation({
         onPointerUp={onPointerUp}
       >
         <defs>
-          <filter id="star-glow" x="-150%" y="-150%" width="400%" height="400%">
-            <feGaussianBlur stdDeviation="3.2" result="b" />
-            <feMerge>
-              <feMergeNode in="b" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
+          {/* star glow as a gradient halo — one shared paint server,
+              instead of a Gaussian filter evaluated per glowing star */}
+          <radialGradient id="star-halo">
+            <stop offset="0%" stopColor="var(--color-starlight)" stopOpacity="0.5" />
+            <stop offset="40%" stopColor="var(--color-starlight)" stopOpacity="0.16" />
+            <stop offset="100%" stopColor="var(--color-starlight)" stopOpacity="0" />
+          </radialGradient>
           {/* atmosphere: two faint nebulae + a vignette, screen-space so
               they sit behind the sky rather than inside it */}
           <radialGradient id="nebula-a" cx="30%" cy="24%" r="55%">
@@ -588,164 +1160,10 @@ export default function Constellation({
         </defs>
         <rect width="100%" height="100%" fill="url(#nebula-a)" />
         <rect width="100%" height="100%" fill="url(#nebula-b)" />
-        <g transform={`translate(${tx},${ty}) scale(${k})`}>
-          {dust.map((d, i) => (
-            <circle
-              key={`d${i}`}
-              cx={d.x}
-              cy={d.y}
-              r={(d.r * 0.8) / Math.max(k, 0.5)}
-              fill="var(--color-ink)"
-              opacity={d.o * 0.45}
-            />
-          ))}
-          {visibleEdges.map((e, i) => {
-            const a = drawnPos.get(e.from)
-            const b = drawnPos.get(e.to)
-            if (!a || !b) return null
-            const dead = isDead(e.strategyStatus)
-            if (e.kind === 'citation') {
-              // Citations bow sideways as quiet threads: parallel long
-              // straights merge into fog on cite-heavy skies (sphere:
-              // 100+ edges); a bow separates neighbours, and opacity
-              // steps down with density so the trees stay in front.
-              const dx = b.x - a.x
-              const dy = b.y - a.y
-              const len = Math.hypot(dx, dy) || 1
-              // bow grows with span (a 46px cap flattened long
-              // horizontals back into wires); parity mixes directions
-              const bow =
-                Math.min(150, len * 0.18) * ((e.from + e.to) % 2 === 0 ? 1 : -1)
-              const mx = (a.x + b.x) / 2 + (-dy / len) * bow
-              const my = (a.y + b.y) / 2 + (dx / len) * bow
-              // long hauls fade further: a cross-sky thread is context,
-              // not content — nearby citations stay readable
-              const fade = Math.min(1, Math.max(0.35, 320 / len))
-              const touched = citeFocus && (e.from === focusId || e.to === focusId)
-              return (
-                <path
-                  key={i}
-                  d={`M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`}
-                  fill="none"
-                  stroke={edgeStroke(e.strategyStatus, e.kind)}
-                  strokeWidth={touched ? 1.4 : 1}
-                  strokeOpacity={
-                    touched
-                      ? Math.max(0.55, citeOpacity * fade)
-                      : citeFocus
-                        ? 0.04
-                        : citeOpacity * fade
-                  }
-                  vectorEffect="non-scaling-stroke"
-                />
-              )
-            }
-            return (
-              <line
-                key={i}
-                x1={a.x}
-                y1={a.y}
-                x2={b.x}
-                y2={b.y}
-                stroke={edgeStroke(e.strategyStatus, e.kind)}
-                strokeWidth={e.strategyStatus === 'succeeded' ? 1.2 : 1}
-                strokeOpacity={
-                  dead
-                    ? 0.35
-                    : e.kind === 'alias'
-                      ? 0.5
-                      : e.kind === 'anchor'
-                        ? 0.3
-                        : e.strategyStatus === 'succeeded'
-                          ? 0.38
-                          : 0.55
-                }
-                strokeDasharray={e.kind === 'alias' ? '4 4' : undefined}
-                vectorEffect="non-scaling-stroke"
-              />
-            )
-          })}
-          {visibleBundles.map((b) => {
-            // AND-group hyperedge: stem parent→junction, then branches.
-            // Side-by-side junctions on one goal = competing strategies.
-            const parent = drawnPos.get(b.parentId)
-            if (!parent) return null
-            const j = drawnJunc.get(b.strategyId) ?? b.junction
-            const dead = isDead(b.status)
-            const stroke = edgeStroke(b.status, 'strategy')
-            const opacity = dead ? 0.35 : b.status === 'succeeded' ? 0.38 : 0.55
-            return (
-              <g key={`s${b.strategyId}`}>
-                <line
-                  x1={parent.x}
-                  y1={parent.y}
-                  x2={j.x}
-                  y2={j.y}
-                  stroke={stroke}
-                  strokeWidth={b.status === 'succeeded' ? 2 : 1.6}
-                  strokeOpacity={opacity}
-                  vectorEffect="non-scaling-stroke"
-                />
-                {b.children.map((cid) => {
-                  const c = drawnPos.get(cid)
-                  if (!c) return null
-                  return (
-                    <line
-                      key={cid}
-                      x1={j.x}
-                      y1={j.y}
-                      x2={c.x}
-                      y2={c.y}
-                      stroke={stroke}
-                      strokeWidth={b.status === 'succeeded' ? 1.4 : 1}
-                      strokeOpacity={opacity}
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  )
-                })}
-                <circle
-                  cx={j.x}
-                  cy={j.y}
-                  r={2.1}
-                  fill={stroke}
-                  opacity={opacity}
-                />
-                {onSelectStrategy && (
-                  <>
-                    {/* a faint ring says "this fork is a thing you can
-                        open" — the bare hit area was undiscoverable */}
-                    <circle
-                      cx={j.x}
-                      cy={j.y}
-                      r={5}
-                      fill="none"
-                      stroke={stroke}
-                      strokeWidth={0.8}
-                      opacity={opacity * 0.35}
-                      vectorEffect="non-scaling-stroke"
-                    />
-                    <circle
-                      cx={j.x}
-                      cy={j.y}
-                      r={9}
-                      fill="transparent"
-                      className="cursor-pointer"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onSelectStrategy(b.strategyId)
-                      }}
-                    >
-                      <title>
-                        one route: this fork needs ALL its branches; a second
-                        fork on the same star is a competing route — click for
-                        details (s{b.strategyId}, {b.status})
-                      </title>
-                    </circle>
-                  </>
-                )}
-              </g>
-            )
-          })}
+        <g ref={outerGRef} transform={`translate(${tx},${ty}) scale(${k})`}>
+          {dustEl}
+          {edgesEl}
+          {bundlesEl}
           {/* band hairlines: bands stack independent trees — equal y
               across bands means nothing, so mark the seams */}
           {layout.bandTops.map((y, i) => (
@@ -753,7 +1171,7 @@ export default function Constellation({
               key={`b${i}`}
               x1={0}
               y1={y}
-              x2={drawnWidth}
+              x2={layout.width}
               y2={y}
               stroke="var(--color-edge)"
               strokeWidth={1}
@@ -763,21 +1181,21 @@ export default function Constellation({
           {/* the horizon: above it, what grew from the root (or was
               marked a claim); below, other forward work — citation
               threads cross it where that work is actually used */}
-          {drawnHorizon !== null && (
+          {layout.horizonY !== null && (
             <g className="pointer-events-none select-none">
               <line
                 x1={0}
-                y1={drawnHorizon}
-                x2={drawnWidth}
-                y2={drawnHorizon}
+                y1={layout.horizonY}
+                x2={layout.width}
+                y2={layout.horizonY}
                 stroke="var(--color-edge-strong)"
                 strokeWidth={1}
                 strokeDasharray="1 6"
                 vectorEffect="non-scaling-stroke"
               />
               <text
-                x={drawnWidth}
-                y={drawnHorizon + 16 / k}
+                x={layout.width}
+                y={layout.horizonY + 16 / k}
                 textAnchor="end"
                 fill="var(--color-ink-faint)"
                 fontSize={10 / k}
@@ -800,236 +1218,7 @@ export default function Constellation({
               unlinked · {layout.singlesBlock.count}
             </text>
           )}
-          {layout.nodes.map((n) => {
-            const s = nodeStyle(n.goal, hasLive)
-            const live =
-              n.goal.status === 'open' ||
-              n.goal.status === 'attempting' ||
-              n.goal.status === 'pending_strategist_review'
-            // scale honesty: marks never drop below ~7px on screen (the
-            // live frontier gets a size bonus + a larger floor) — but
-            // the floor is capped in CONTENT units, or at extreme
-            // zoom-out the floors exceed the slot gap and stars fuse
-            // into blobs (residue_thm, 500 nodes)
-            const r = Math.max(
-              radius(n.goal) + (live ? 1.5 : 0),
-              Math.min((live ? 5.5 : 3.5) / k, X_GAP * 0.28),
-            )
-            const lod = k < 0.8
-            const fill = lod && live ? s.stroke : s.fill
-            const selected = n.goal.id === selectedId
-            // Attempts heat ring: arc fraction of the shelve threshold,
-            // only meaningful while the goal is still being worked.
-            const heatFrac =
-              (n.goal.status === 'open' ||
-                n.goal.status === 'attempting' ||
-                n.goal.status === 'pending_strategist_review') &&
-              n.goal.attempts > 0
-                ? Math.min(n.goal.attempts / shelveThreshold, 1)
-                : 0
-            const heatR = r + 3
-            const heatC = 2 * Math.PI * heatR
-            const p = drawnPos.get(n.goal.id) ?? n
-            return (
-              <g
-                key={n.goal.id}
-                transform={`translate(${p.x},${p.y})`}
-                className="cursor-pointer"
-                onMouseEnter={() => setHovered(n)}
-                onMouseLeave={() => setHovered(null)}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onSelect(n.goal.id)
-                }}
-              >
-                {/* ring slots are disjoint (heat r+3, deliverable r+5,
-                    root r+7, in-flight r+8, selection r+10) — two
-                    meanings on one radius merge into ambiguity */}
-                {selected && (
-                  <circle
-                    r={r + 10}
-                    fill="none"
-                    stroke="var(--color-ink)"
-                    strokeWidth={1}
-                    strokeOpacity={0.8}
-                    strokeDasharray="2 3"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                )}
-                {n.goal.origin === 'root' && (
-                  <circle
-                    r={r + 7}
-                    fill="none"
-                    stroke={s.stroke}
-                    strokeWidth={0.8}
-                    opacity={s.opacity * 0.5}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                )}
-                {/* defs are the meaning-bearers (the anchor surface a
-                    human vouches for) — diamonds above the shape-
-                    perception threshold (~5px), circles below it;
-                    Props are the light and stay round */}
-                {DEF_KINDS.has(n.goal.kind) && r * k >= 5 ? (
-                  <rect
-                    x={-r * 1.06}
-                    y={-r * 1.06}
-                    width={r * 2.12}
-                    height={r * 2.12}
-                    transform="rotate(45)"
-                    fill={fill}
-                    stroke={s.stroke}
-                    strokeWidth={1.4}
-                    opacity={s.opacity}
-                    filter={s.glow ? 'url(#star-glow)' : undefined}
-                    vectorEffect="non-scaling-stroke"
-                  >
-                    {engineWorking && n.goal.status === 'attempting' && (
-                      <animate
-                        attributeName="opacity"
-                        values="1;0.45;1"
-                        dur="1.6s"
-                        repeatCount="indefinite"
-                      />
-                    )}
-                  </rect>
-                ) : (
-                  <circle
-                    r={r}
-                    fill={fill}
-                    stroke={s.stroke}
-                    strokeWidth={1.4}
-                    opacity={s.opacity}
-                    filter={s.glow ? 'url(#star-glow)' : undefined}
-                    vectorEffect="non-scaling-stroke"
-                  >
-                    {engineWorking && n.goal.status === 'attempting' && (
-                      <animate
-                        attributeName="opacity"
-                        values="1;0.45;1"
-                        dur="1.6s"
-                        repeatCount="indefinite"
-                      />
-                    )}
-                  </circle>
-                )}
-                {n.goal.is_deliverable && (
-                  <circle
-                    r={r + 5}
-                    fill="none"
-                    stroke="var(--color-star)"
-                    strokeWidth={1.1}
-                    opacity={0.9}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                )}
-                {heatFrac > 0 && (
-                  <circle
-                    r={heatR}
-                    fill="none"
-                    stroke="var(--color-starlight)"
-                    strokeWidth={1.2}
-                    strokeOpacity={0.4 + heatFrac * 0.5}
-                    strokeDasharray={`${heatC * heatFrac} ${heatC}`}
-                    transform="rotate(-90)"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                )}
-                {birthsRef.current.born.has(n.goal.id) && (
-                  <circle
-                    r={r + 12}
-                    fill="none"
-                    stroke="var(--color-starlight)"
-                    strokeWidth={1}
-                    vectorEffect="non-scaling-stroke"
-                  >
-                    <animate
-                      attributeName="stroke-opacity"
-                      values="0.8;0.1;0.8"
-                      dur="1.8s"
-                      repeatCount="indefinite"
-                    />
-                  </circle>
-                )}
-                {n.goal.in_flight && (
-                  <circle
-                    r={r + 8}
-                    fill="none"
-                    stroke="var(--color-accent)"
-                    strokeWidth={1}
-                    vectorEffect="non-scaling-stroke"
-                  >
-                    <animate
-                      attributeName="stroke-opacity"
-                      values="0.7;0.15;0.7"
-                      dur="1.4s"
-                      repeatCount="indefinite"
-                    />
-                    <animate
-                      attributeName="r"
-                      values={`${r + 7};${r + 9};${r + 7}`}
-                      dur="1.4s"
-                      repeatCount="indefinite"
-                    />
-                  </circle>
-                )}
-                {focused && (frontier.folded.get(n.goal.id) ?? 0) > 0 && (
-                  <text
-                    x={r + 4 / k}
-                    y={-r}
-                    className="pointer-events-none select-none"
-                    fill="var(--color-ink-faint)"
-                    fontSize={9.5 / k}
-                    fontFamily="var(--font-mono)"
-                  >
-                    +{frontier.folded.get(n.goal.id)}
-                  </text>
-                )}
-                {(showLabels ||
-                  n.goal.origin === 'root' ||
-                  n.goal.is_deliverable) && (
-                  <text
-                    // Stagger label rows by in-layer parity so long
-                    // slugs on adjacent stars don't collide; offsets are
-                    // screen-constant like the font. Truncation is
-                    // width-aware: never truncate into empty space.
-                    // Root + claims stay labelled at ANY zoom — the
-                    // survey view needs its landmarks named.
-                    y={
-                      r * (n.goal.is_deliverable || n.goal.origin === 'root' ? 1.6 : 1) +
-                      ((rowCounts.get(n.y) ?? 0) > 8 && n.col % 2 === 1 ? 26 : 15) / k
-                    }
-                    textAnchor="middle"
-                    className="pointer-events-none select-none"
-                    fill={selected ? 'var(--color-ink)' : 'var(--color-ink-dim)'}
-                    fontSize={10.5 / k}
-                    fontFamily="var(--font-mono)"
-                  >
-                    {(() => {
-                      // budget from ACTUAL neighbour room: fair split
-                      // of each gap, plus whatever a short neighbour
-                      // doesn't need (mono ≈6.4px/char on screen)
-                      const rm = labelRoom.get(n.goal.id)
-                      const side = (gap: number, nbrLen: number) => {
-                        if (!Number.isFinite(gap)) return Infinity
-                        const gapPx = gap * k
-                        return gapPx - 6 - Math.min(nbrLen * 3.2, gapPx / 2)
-                      }
-                      const half = rm
-                        ? Math.min(side(rm.gapL, rm.nbrL), side(rm.gapR, rm.nbrR))
-                        : Infinity
-                      const budget = Number.isFinite(half)
-                        ? Math.min(44, Math.max(12, Math.floor((half * 2) / 6.4)))
-                        : 44
-                      return n.goal.slug.length <= budget
-                        ? n.goal.slug
-                        : `${n.goal.slug.slice(0, Math.floor(budget / 2) - 1)}…${n.goal.slug.slice(-(Math.floor(budget / 2) - 1))}`
-                    })()}
-                  </text>
-                )}
-              </g>
-            )
-          })}
+          {nodesEl}
         </g>
       </svg>
 
@@ -1039,11 +1228,11 @@ export default function Constellation({
           className="pointer-events-none absolute z-10 max-w-sm rounded-md border border-edge-strong bg-surface-3 px-3 py-2"
           style={{
             left: Math.min(
-              tx + (drawnPos.get(hovered.goal.id) ?? hovered).x * k + 14,
+              tx + (shownPosRef.current.get(hovered.goal.id) ?? hovered).x * k + 14,
               (containerRef.current?.clientWidth ?? 800) - 340,
             ),
             top: Math.min(
-              ty + (drawnPos.get(hovered.goal.id) ?? hovered).y * k + 14,
+              ty + (shownPosRef.current.get(hovered.goal.id) ?? hovered).y * k + 14,
               (containerRef.current?.clientHeight ?? 600) - 120,
             ),
           }}
