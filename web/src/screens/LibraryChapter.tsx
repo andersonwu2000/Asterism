@@ -161,16 +161,6 @@ function DeclEntry({
           </span>
         )}
         {copied && <span className="text-[10px] text-ink-faint">copied</span>}
-        <button
-          className={
-            'cursor-pointer font-mono text-[10px] transition-colors hover:text-ink ' +
-            (probing ? 'text-ink-dim' : 'text-ink-faint')
-          }
-          onClick={() => setProbing((v) => !v)}
-          title="run Lean against this declaration — opens with #print axioms, edit freely"
-        >
-          {probing ? 'close probe' : '▸ probe'}
-        </button>
         {onOpenModule && d.file && (
           <button
             className="ml-auto cursor-pointer font-mono text-[10px] text-ink-faint transition-colors hover:text-ink"
@@ -188,11 +178,28 @@ function DeclEntry({
         />
       )}
       {d.signature && (
-        <pre className="mt-2 ml-[22px] max-w-4xl overflow-x-auto rounded-md border border-edge bg-white/[0.02] px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink">
-          <Lean code={d.signature} />
-        </pre>
+        <div className="group/sig relative mt-2 ml-[22px] max-w-4xl">
+          <pre className="overflow-x-auto rounded-md border border-edge bg-white/[0.02] px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink">
+            <Lean code={d.signature} />
+          </pre>
+          {!probing && (
+            <button
+              className="absolute right-2 bottom-2 cursor-pointer rounded border border-edge bg-surface px-2.5 py-0.5 font-mono text-[11px] text-ink-dim opacity-0 transition-opacity group-hover/sig:opacity-100 hover:border-edge-strong hover:text-ink"
+              onClick={() => setProbing(true)}
+              title="run Lean against this declaration — opens with #print axioms, edit freely"
+            >
+              ▸ run
+            </button>
+          )}
+        </div>
       )}
-      {probing && <LeanProbe fq={d.name ?? d.slug} module={module} />}
+      {probing && (
+        <LeanProbe
+          fq={d.name ?? d.slug}
+          module={module}
+          onClose={() => setProbing(false)}
+        />
+      )}
     </div>
   )
 }

@@ -82,7 +82,15 @@ export function DiagList({ diags }: { diags: EvalDiag[] }) {
 /** One probe block under a chapter declaration: prefilled
  * `#print axioms <fq>`, editable, ctrl/cmd-enter or Run. Runs once on
  * open — one click answers "which axioms does this stand on". */
-export function LeanProbe({ fq, module }: { fq: string; module?: string }) {
+export function LeanProbe({
+  fq,
+  module,
+  onClose,
+}: {
+  fq: string
+  module?: string
+  onClose?: () => void
+}) {
   const [code, setCode] = useState(`#print axioms ${fq}`)
   const [phase, setPhase] = useState<'idle' | 'running' | 'warming'>('idle')
   const [out, setOut] = useState<{ diags: EvalDiag[]; wall: number } | null>(null)
@@ -150,6 +158,14 @@ export function LeanProbe({ fq, module }: { fq: string; module?: string }) {
           }}
         />
         <div className="flex items-center gap-3 border-t border-edge px-3 py-1.5">
+          {onClose && (
+            <button
+              className="cursor-pointer font-mono text-[10px] text-ink-faint transition-colors hover:text-ink"
+              onClick={onClose}
+            >
+              close
+            </button>
+          )}
           <span className="text-[10px] text-ink-faint">
             {phase === 'warming'
               ? 'engine warming — retries on its own (can take a minute)'
