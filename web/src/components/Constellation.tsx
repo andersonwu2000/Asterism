@@ -787,9 +787,11 @@ export default function Constellation({
                   : e.strategyStatus === 'succeeded'
                     ? 0.38
                     : 0.55) * lineFade
-          // past ~5 slots a straight hierarchy edge reads as a stray
-          // WIRE (the owner circled one) — a bow reads as a relation
-          if (span > 560) {
+          // past the long-haul boundary (same 480 as the fade — one
+          // concept, one number) a straight hierarchy edge reads as a
+          // stray WIRE (the owner circled one); a bow reads as a
+          // relation
+          if (span > 480) {
             return (
               <path
                 key={i}
@@ -868,7 +870,7 @@ export default function Constellation({
                 const c = byId.get(cid)
                 if (!c) return null
                 const branchSpan = Math.hypot(c.x - b.junction.x, c.y - b.junction.y)
-                const curved = branchSpan > 560
+                const curved = branchSpan > 480
                 const regBranch = (el: SVGElement | null) => {
                   if (!el) return
                   branchEls.current.set(el, { sid: b.strategyId, child: cid, curved })

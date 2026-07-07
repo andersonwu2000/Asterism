@@ -712,9 +712,10 @@ export function layoutConstellation(
     // ---- justify: bands share one width ------------------------------
     // The greedy packer leaves ragged right edges and a lone tree sits
     // flush left in an empty band (BT's root band). Final placement:
-    // gaps stretch evenly toward the widest band's width (capped at 4×
-    // the base gap so sparse bands don't scatter); whatever the cap
-    // leaves over centres the band instead.
+    // gaps stretch evenly toward the widest band's width — capped at
+    // 2× the base gap: stretching further tore connected neighbours
+    // apart and their threads grew right back (stokes stubs). What the
+    // cap leaves over centres the band instead.
     const natural = (trees: Comp[]) =>
       trees.reduce((a, t) => a + (t.end - t.start + 1), 0) +
       0.6 * (trees.length - 1)
@@ -726,7 +727,7 @@ export function layoutConstellation(
       const content = trees.reduce((a, t) => a + (t.end - t.start + 1), 0)
       const gap =
         trees.length > 1
-          ? Math.min(2.4, 0.6 + (targetW - natural(trees)) / (trees.length - 1))
+          ? Math.min(1.2, 0.6 + (targetW - natural(trees)) / (trees.length - 1))
           : 0.6
       const total = content + gap * (trees.length - 1)
       let cursor = Math.max(0, (targetW - total) / 2)
