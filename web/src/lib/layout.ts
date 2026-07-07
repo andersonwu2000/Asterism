@@ -1781,6 +1781,9 @@ export function layoutConstellation(
     let bestW = Infinity
     for (const coarseFirst of [true, false]) {
       restore(seed)
+      // two sweeps: the third buys ~2 crossings on residue for +65%
+      // engine time — the layout runs on every data refresh, so the
+      // main thread wins that trade
       for (let sweep = 0; sweep < 2; sweep++) {
         if (coarseFirst) {
           treePass()
