@@ -194,8 +194,11 @@ export default function Constellation({
   shelveThreshold = 8,
   engineWorking = false,
 }: Props) {
-  // Frontier focus: on for big live graphs by default (attention +
-  // charter §7 perf bar); terminal problems always show everything.
+  // Frontier focus is OPT-IN (owner, after 70 goals silently drew as 6
+  // stars): the default sky always shows everything — ink inversion
+  // already makes the live few the brightest objects, and rendering is
+  // budgeted for 500 stars. "Hide finished work" remains a button for
+  // deliberately watching the frontier alone.
   const [focusFrontier, setFocusFrontier] = useState<boolean | null>(null)
   const [legendOpen, setLegendOpen] = useState<boolean>(() => {
     try {
@@ -209,7 +212,7 @@ export default function Constellation({
     [goals, strategies, strategyEdges],
   )
   const focusable = frontier.hiddenCount > 0
-  const focused = focusable && (focusFrontier ?? goals.length > 60)
+  const focused = focusable && focusFrontier === true
   const shownGoals = focused ? frontier.goals : goals
   // ink inversion gate: while anything is live the unproved few carry
   // the light; a finished sky lets the proved shine
