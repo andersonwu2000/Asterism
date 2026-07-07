@@ -37,14 +37,14 @@
   --color-ok: #9da0a8; /* settled-good — quiet mid-grey */
 
   /* Code ink (owner-approved exception to the achromatic rule: code
-   * and `code spans` may carry hue). Saturation stays LOW (~15-25%) —
-   * tinted greys, not highlighter; lightness matches the ink ladder
-   * so nothing shouts. UI chrome stays achromatic. */
-  --color-syn-kw: #a3accc; /* keywords — cool steel */
-  --color-syn-sort: #8fb5aa; /* Type/Prop/Sort — sea glass */
-  --color-syn-str: #a9b590; /* strings — moss */
-  --color-syn-num: #c2b190; /* numerals — parchment */
-  --color-syn-attr: #a99e8c; /* @[attributes] — dim parchment */
+   * and `code spans` carry hue). Muted, not neon — saturation sits
+   * around 40-55% (first cut at ~20% read as plain grey); lightness
+   * stays near the ink ladder. UI chrome stays achromatic. */
+  --color-syn-kw: #de8e9f; /* keywords — dusty crimson */
+  --color-syn-sort: #85bad7; /* Type/Prop/Sort — sky */
+  --color-syn-str: #a6c18b; /* strings — moss */
+  --color-syn-num: #d5ac7c; /* numerals — amber */
+  --color-syn-attr: #b3a0cf; /* @[attributes] — lavender */
 
   --font-sans:
     "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
