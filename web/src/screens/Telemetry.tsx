@@ -283,11 +283,18 @@ function inner(
 }
 
 export default function Telemetry() {
+  const { data: daemon } = usePoll<{ running: boolean }>('/api/daemon', 5000)
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
       <h1 className="font-display mb-4 text-[22px] font-medium text-ink">Settings</h1>
       {/* liveness, lanes and burn live on the Run console (#/run) —
           this page is the machine room: knobs, the ledger, the log */}
+      {daemon?.running && (
+        <div className="mb-4 rounded-md border border-edge bg-surface-2 px-3 py-2 text-xs text-ink-dim">
+          A run is live — the engine reads its configuration once at start, so every change
+          here lands on the <span className="text-ink">next</span> run.
+        </div>
+      )}
       <div className="flex flex-col gap-6">
         <section>
           <SectionLabel>settings</SectionLabel>

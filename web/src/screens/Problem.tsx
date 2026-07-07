@@ -477,7 +477,11 @@ export default function Problem({ name }: { name: string }) {
           {/* the manifest editor stays mounted (hidden, not unmounted) so
               an unsaved draft survives a tab switch */}
           <div className={tab === 'manifest' ? undefined : 'hidden'}>
-            <ManifestEditor problem={data.name} onDirtyChange={setManifestDirty} />
+            <ManifestEditor
+              problem={data.name}
+              onDirtyChange={setManifestDirty}
+              bridged={data.status === 'bridged'}
+            />
           </div>
           {tab === 'goals' && (
             <GoalsList

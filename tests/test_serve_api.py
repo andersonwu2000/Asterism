@@ -1039,6 +1039,54 @@ def test_manifest_get_and_update(workspace: Path) -> None:
     assert "problem: Test.editme" in text
 
 
+def test_manifest_axiom_gate_locked_after_creation(workspace: Path) -> None:
+    """Mutability inventory (owner, 2026-07-08): the axiom gate is
+    creation-fixed — the gate re-reads it per validation, so a mid-life
+    edit would re-tune soundness under live proofs. Same-value writes
+    (the UI round-trips the whole settings object) still pass."""
+    c = _client(workspace)
+    c.post("/api/problems/create", json={
+        "name": "Test.gate", "body": "# Test.gate\n",
+        "settings": {"axioms_whitelist": ["propext", "Quot.sound"]}})
+    # widening → refused
+    r = c.post("/api/problems/Test.gate/manifest", json={
+        "settings": {"axioms_whitelist":
+                     ["propext", "Quot.sound", "Classical.choice"]}})
+    assert r.status_code == 409
+    assert "AXIOMS_LOCKED" in r.json()["detail"]
+    # narrowing → refused too (the gate never changes, either way)
+    r = c.post("/api/problems/Test.gate/manifest", json={
+        "settings": {"axioms_whitelist": ["propext"]}})
+    assert r.status_code == 409
+    # identical round-trip (order-insensitive) → fine
+    r = c.post("/api/problems/Test.gate/manifest", json={
+        "settings": {"axioms_whitelist": ["Quot.sound", "propext"],
+                     "forbidden_lemmas": ["kuhn*"]}})
+    assert r.status_code == 200, r.text
+    got = c.get("/api/problems/Test.gate/manifest").json()["settings"]
+    assert got["forbidden_lemmas"] == ["kuhn*"]
+
+
+def test_manifest_library_settles_after_bridge(workspace: Path) -> None:
+    c = _client(workspace)
+    c.post("/api/problems/create", json={
+        "name": "Test.settled", "body": "# Test.settled\n",
+        "settings": {"library": True}})
+    conn = _open_db(workspace)
+    conn.execute("UPDATE problems SET library_bridged_at = ? WHERE name = ?",
+                 (db.now(), "Test.settled"))
+    conn.commit()
+    conn.close()
+    r = c.post("/api/problems/Test.settled/manifest", json={
+        "settings": {"library": False}})
+    assert r.status_code == 409
+    assert "LIBRARY_SETTLED" in r.json()["detail"]
+    # same-value round-trip stays fine
+    r = c.post("/api/problems/Test.settled/manifest", json={
+        "settings": {"library": True}})
+    assert r.status_code == 200, r.text
+
+
 def test_manifest_update_blocked_by_pending_amend(workspace: Path) -> None:
     c = _client(workspace)
     c.post("/api/problems/create", json={

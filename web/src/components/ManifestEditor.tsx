@@ -162,9 +162,12 @@ function PapersBlock({ problem }: { problem: string }) {
 export default function ManifestEditor({
   problem,
   onDirtyChange,
+  bridged = false,
 }: {
   problem: string
   onDirtyChange?: (dirty: boolean) => void
+  /** work already in the Library — the `library` flag is settled */
+  bridged?: boolean
 }) {
   const [data, setData] = useState<ManifestData | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -259,16 +262,21 @@ export default function ManifestEditor({
             spellCheck={false}
           />
         </div>
-        <label className="flex items-center gap-2 text-xs text-ink-dim">
+        <label
+          className={`flex items-center gap-2 text-xs text-ink-dim ${bridged ? 'opacity-60' : ''}`}
+          title={bridged ? "settled — this problem's work is already in the Library" : undefined}
+        >
           <input
             type="checkbox"
             checked={settings.library}
+            disabled={bridged}
             onChange={(e) => {
               setSettings({ ...settings, library: e.target.checked })
               touch()
             }}
           />
           harvest finished work into the Library
+          {bridged && <span className="text-[10px] text-ink-faint">· settled — already in the Library</span>}
         </label>
         <ListField
           label="forbidden lemmas"
@@ -288,15 +296,33 @@ export default function ManifestEditor({
             touch()
           }}
         />
-        <ListField
-          label="axiom whitelist"
-          hint="add axiom"
-          values={settings.axioms_whitelist}
-          onChange={(v) => {
-            setSettings({ ...settings, axioms_whitelist: v })
-            touch()
-          }}
-        />
+        {/* the axiom gate is FIXED AT CREATION (server enforces 409):
+            the gate re-reads it per validation, so a mid-life edit
+            would re-tune soundness under live proofs — display only */}
+        <div>
+          <div className="mb-1 flex items-baseline gap-2 text-[11px] font-medium tracking-widest text-ink-faint uppercase">
+            axiom whitelist
+            <span className="font-normal tracking-normal normal-case">
+              — fixed when the problem is created; set it on the New problem form
+            </span>
+          </div>
+          {settings.axioms_whitelist.length === 0 ? (
+            <span className="text-xs text-ink-faint">
+              empty — the gate admits nothing beyond the kernel's defaults
+            </span>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {settings.axioms_whitelist.map((a) => (
+                <span
+                  key={a}
+                  className="rounded-full border border-edge bg-surface px-2 py-0.5 font-mono text-[11px] text-ink-dim"
+                >
+                  {a}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
         <div className="flex items-center gap-3">
           <Button variant="primary" disabled={busy || !dirty} onClick={() => void save()}>
             {busy ? 'Saving…' : 'Save'}

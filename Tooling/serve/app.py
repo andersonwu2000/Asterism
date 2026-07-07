@@ -268,11 +268,45 @@ def create_app(workspace: Path) -> FastAPI:
             conn = db.connect(workspace / "asterism.db")
             try:
                 known = conn.execute(
-                    "SELECT 1 FROM problems WHERE name = ?",
+                    "SELECT library_bridged_at FROM problems WHERE name = ?",
                     (problem,)).fetchone()
                 if known is None:
                     raise HTTPException(status_code=404,
                                         detail=f"unknown problem {problem!r}")
+                # Mutability classes (owner's inventory, 2026-07-08).
+                # The axiom gate is FIXED AT CREATION: ManifestCache
+                # hot-reloads and the gate re-reads it per validation,
+                # so a mid-life edit would re-tune soundness under
+                # live (and past) proofs — the one genuinely dangerous
+                # knob. Enforced here, not just hidden in the UI.
+                current = {
+                    "axioms_whitelist": [], "library": False}
+                mpath = db.problem_dir(workspace, problem) / "Manifest.md"
+                if mpath.exists():
+                    parsed = _mfst.parse(mpath)
+                    current["axioms_whitelist"] = list(parsed.axioms_whitelist)
+                    current["library"] = bool(parsed.library)
+                current.update(_settings.read(conn, problem))
+                if "axioms_whitelist" in body.settings:
+                    asked = sorted(str(a) for a in
+                                   (body.settings["axioms_whitelist"] or []))
+                    have = sorted(str(a) for a in current["axioms_whitelist"])
+                    if asked != have:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="AXIOMS_LOCKED: the axiom gate is fixed"
+                                   " when the problem is created — it never"
+                                   " changes mid-life")
+                # `library` settles once the harvest bridged: flipping
+                # it after that is a no-op wearing a control's face.
+                if ("library" in body.settings
+                        and known["library_bridged_at"] is not None
+                        and bool(body.settings["library"])
+                        != bool(current["library"])):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="LIBRARY_SETTLED: this problem's work is"
+                               " already in the Library")
                 for key, value in body.settings.items():
                     try:
                         _settings.write(conn, problem, key, value)
