@@ -649,7 +649,7 @@ _MODULE_DOC_RE = re.compile(r"/-!(.*?)-/", re.S)
 _DOCSTRING_RE = re.compile(r"/--(.*?)-/", re.S)
 _DECL_RE = re.compile(
     r"^(?:@\[[^\]]*\]\s*)?(?:noncomputable\s+)?(?:private\s+|protected\s+)?"
-    r"(theorem|lemma|def|abbrev|structure|class|instance|inductive)\s+"
+    r"(theorem|lemma|def|abbrev|structure|class|instance|inductive|alias)\s+"
     r"([A-Za-z0-9_'₀-₉α-ω.]+)",
     re.M)
 _IMPORT_RE = re.compile(r"^import\s+([\w.]+)", re.M)
@@ -681,8 +681,9 @@ def _stmt_head(text: str, start: int) -> str:
 
 def _scan_library_file(
         text: str) -> "tuple[str, dict[str, tuple[int, str, str, str]], list[str]]":
-    """(module_doc, {short_decl_name: (offset, docstring, kind, stmt)},
-    imports)."""
+    """(module_doc, {short_decl_name: (line, docstring, kind, stmt)},
+    imports). `line` is 1-based — same domain as the oracle-backed
+    `library_decls.src_line`, so the two sort keys mix cleanly."""
     m = _MODULE_DOC_RE.search(text)
     module_doc = m.group(1).strip() if m else ""
     docs: "dict[str, tuple[int, str, str, str]]" = {}
@@ -695,12 +696,48 @@ def _scan_library_file(
         for end, body in doc_ends:
             if end > dm.start():
                 break
-            # attached iff only whitespace/attributes separate them
+            # attached iff only whitespace/attributes/line comments
+            # separate them (corpus writes `--` notes between doc and
+            # decl; those must not orphan the docstring)
             gap = text[end:dm.start()]
-            if re.fullmatch(r"(?:\s|@\[[^\]]*\])*", gap):
+            if re.fullmatch(r"(?:\s|@\[[^\]]*\]|--[^\n]*)*", gap):
                 doc = body
-        docs[name] = (dm.start(), doc, dm.group(1), _stmt_head(text, dm.start()))
+        docs[name] = (text.count("\n", 0, dm.start()) + 1, doc,
+                      dm.group(1), _stmt_head(text, dm.start()))
     return module_doc, docs, _IMPORT_RE.findall(text)
+
+
+#: path str -> (mtime_ns, module_doc, docs, imports, word-set) — the
+#: _cite_file_cache pattern: stat everything, re-read only changes.
+#: The chapter is polled every 30s; steady-state must be ~stat-only.
+_chapter_scan_cache: "dict[str, tuple[int, str, dict, list[str], frozenset]]" = {}
+
+
+def _scanned_library_file(
+        workspace: Path, path: str,
+) -> "tuple[str, dict[str, tuple[int, str, str, str]], list[str], frozenset]":
+    """Mtime-memoized `_scan_library_file` plus the file's whole-word
+    token set — `short in words` is equivalent to the boundary-guarded
+    regex search because decl short names are single `[\\w']+` tokens."""
+    fp = workspace / path
+    try:
+        mtime = fp.stat().st_mtime_ns
+    except OSError:
+        _chapter_scan_cache.pop(path, None)
+        return "", {}, [], frozenset()
+    cached = _chapter_scan_cache.get(path)
+    if cached is None or cached[0] != mtime:
+        try:
+            # errors="replace": presentation must never fail the page
+            # (same policy as _cite_file_cache)
+            text = fp.read_text(encoding="utf-8", errors="replace")
+        except OSError:  # transient read failure — retry next request
+            return "", {}, [], frozenset()
+        module_doc, docs, imports = _scan_library_file(text)
+        cached = (mtime, module_doc, docs, imports,
+                  frozenset(re.findall(r"[\w']+", text)))
+        _chapter_scan_cache[path] = cached
+    return cached[1], cached[2], cached[3], cached[4]
 
 
 def library_chapter(conn: sqlite3.Connection, workspace: Path,
@@ -709,16 +746,13 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
     order, each decl carrying its docstring + oracle signature and its
     goal-side meaning (claim = deliverable, def-kind = vocabulary)."""
     rows = conn.execute(
-        "SELECT ld.* FROM library_decls ld"
+        "SELECT ld.*, p.library_bridged_at FROM library_decls ld"
         " JOIN problems p ON p.name = ld.problem"
         " WHERE ld.problem = ? AND p.library_bridged_at IS NOT NULL"
         " AND ld.lifecycle IN ('migrated','cleaned')"
         " ORDER BY ld.id", (problem,)).fetchall()
     if not rows:
         return None
-    prow = conn.execute(
-        "SELECT library_bridged_at FROM problems WHERE name = ?",
-        (problem,)).fetchone()
     goal_meta = {
         str(g["slug"]): {"is_deliverable": bool(g["is_deliverable"]),
                          "goal_kind": str(g["kind"])}
@@ -729,29 +763,24 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
     per_file: "dict[str, list[sqlite3.Row]]" = {}
     for r in rows:
         per_file.setdefault(str(r["target_file"] or ""), []).append(r)
-    texts: "dict[str, str]" = {}
-    scanned: "dict[str, tuple[str, dict, list[str]]]" = {}
-    for path in per_file:
-        try:
-            texts[path] = (workspace / path).read_text(encoding="utf-8")
-        except OSError:
-            texts[path] = ""
-        scanned[path] = _scan_library_file(texts[path])
+    scanned = {path: _scanned_library_file(workspace, path)
+               for path in per_file}
 
     # Import order tells the story: a module comes after the siblings
     # it imports (Kahn; ties keep path order for determinism).
     mod_of = {path: path.removesuffix(".lean").replace("/", ".")
               for path in per_file}
+    mod_paths = {v: k for k, v in mod_of.items()}
+    deps_of = {path: [d for d in scanned[path][2]
+                      if d in mod_paths and d != mod_of[path]]
+               for path in per_file}
     ordered: "list[str]" = []
     pending = sorted(per_file)
     placed: "set[str]" = set()
     while pending:
         progressed = False
         for path in list(pending):
-            deps = [i for i in scanned[path][2]
-                    if i in mod_of.values() and i != mod_of[path]]
-            if all(any(mod_of[q] == d and q in placed for q in per_file)
-                   for d in deps):
+            if all(mod_paths[d] in placed for d in deps_of[path]):
                 ordered.append(path)
                 placed.add(path)
                 pending.remove(path)
@@ -766,22 +795,26 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
     # files keep reaching for is a keystone by demonstration — the
     # honest importance weight for the highlights view. Whole-word
     # heuristic (blueprint precedent), display only.
-    mod_paths = {v: k for k, v in mod_of.items()}
     files = []
     for path in ordered:
-        module_doc, docs, imports = scanned[path]
-        decls = []
+        module_doc, docs, imports, _words = scanned[path]
+        keyed: "list[tuple[int, dict]]" = []
         for r in per_file[path]:
             slug = str(r["slug"])
             short = str(r["target_name"] or slug).split(".")[-1]
-            offset, doc, file_kind, file_stmt = docs.get(
+            line, doc, file_kind, file_stmt = docs.get(
                 short, (1 << 30, "", "", ""))
+            # oracle values win (v24: docstring/src_line stored at bridge;
+            # docstring '' = confirmed none, NULL = pre-backfill row →
+            # curated source text fallback)
+            if r["docstring"] is not None:
+                doc = r["docstring"]
+            if r["src_line"] is not None:
+                line = int(r["src_line"])
             meta = goal_meta.get(slug, {})
-            pat = re.compile(
-                r"(?<![\w'])" + re.escape(short) + r"(?![\w'])")
-            used_by = sum(
-                1 for q, t in texts.items() if q != path and pat.search(t))
-            decls.append({
+            used_by = sum(1 for q in per_file
+                          if q != path and short in scanned[q][3])
+            keyed.append((line, {
                 "slug": slug,
                 "name": r["target_name"],
                 # oracle values win; older harvests fall back to the
@@ -791,11 +824,9 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
                 "doc": doc,
                 "is_deliverable": bool(meta.get("is_deliverable", False)),
                 "used_by": used_by,
-                "_offset": offset,
-            })
-        decls.sort(key=lambda d: d["_offset"])  # source order = narrative
-        for d in decls:
-            del d["_offset"]
+            }))
+        keyed.sort(key=lambda t: t[0])  # source order = narrative
+        decls = [d for _, d in keyed]
         files.append({
             "path": path,
             "module_doc": module_doc,
@@ -806,7 +837,7 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
         })
     return {
         "problem": problem,
-        "bridged_at": prow["library_bridged_at"] if prow else None,
+        "bridged_at": rows[0]["library_bridged_at"],
         "files": files,
     }
 
