@@ -417,10 +417,14 @@ export function layoutConstellation(
     // keeps neighbours honest. Pure leaf fans (no branch children)
     // already sit under their parent, and >8 leaves live in a grid.
     if (branchKs.length > 0 && leafKs.length > 0 && leafKs.length <= 8) {
+      // alternate sides — one-sided hugging cocked the parent's head
+      // to the fan's end (owner); the spine child holds the centre
+      // slot, leaves flank it symmetrically
       const px = xSlot.get(id)!
-      const dir = lean === -1 ? -1 : 1
       leafKs.forEach((k, i) => {
-        xSlot.set(k, px + dir * (i + 1))
+        const step = Math.floor(i / 2) + 1
+        const side = i % 2 === 0 ? 1 : -1
+        xSlot.set(k, px + side * step)
       })
     }
   }

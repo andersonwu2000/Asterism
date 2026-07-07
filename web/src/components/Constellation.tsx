@@ -628,6 +628,58 @@ export default function Constellation({
     [layout],
   )
 
+  // The legend shows only what THIS sky contains (owner) — a swatch
+  // for a mark that never appears is homework.
+  const present = useMemo(() => {
+    let open = false
+    let working = false
+    let proved = false
+    let shelved = false
+    let dead = false
+    let attempts = false
+    let root = false
+    let claim = false
+    let anchor = false
+    for (const g of goals) {
+      const live =
+        g.status === 'open' ||
+        g.status === 'attempting' ||
+        g.status === 'pending_strategist_review'
+      if (live) open = true
+      if (engineWorking && (g.status === 'attempting' || g.in_flight)) working = true
+      if (g.status === 'proved') proved = true
+      if (g.status === 'shelved') shelved = true
+      if (g.status === 'dead') dead = true
+      if (live && g.attempts > 0) attempts = true
+      if (g.origin === 'root') root = true
+      if (g.is_deliverable) claim = true
+      if (DEF_KINDS.has(g.kind)) anchor = true
+    }
+    return {
+      open,
+      working,
+      proved,
+      shelved,
+      dead,
+      attempts,
+      root,
+      claim,
+      anchor,
+      route: layout.bundles.length > 0,
+      cites: layout.edges.some((e) => e.kind === 'citation'),
+      alias: layout.edges.some((e) => e.kind === 'alias'),
+    }
+  }, [goals, layout, engineWorking])
+  const legendStatus =
+    present.open ||
+    present.working ||
+    present.proved ||
+    present.shelved ||
+    present.dead ||
+    present.attempts
+  const legendMarks = present.root || present.claim || present.anchor
+  const legendLines = present.route || present.cites || present.alias
+
   // Faint background stardust — deterministic per problem, pure
   // atmosphere (opacity kept below signal level).
   const dust = useMemo(() => {
@@ -998,15 +1050,16 @@ export default function Constellation({
                 />
               )}
               {/* defs are the meaning-bearers (the anchor surface a
-                  human vouches for) — diamonds above the shape-
-                  perception threshold (~5px), circles below it;
-                  Props are the light and stay round */}
-              {DEF_KINDS.has(n.goal.kind) && r * kq >= 4.2 ? (
+                  human vouches for) — ALWAYS diamonds (a zoom-dependent
+                  fallback to circles read as two different marks);
+                  smaller than the circle radius so the ring keeps a
+                  clear margin from the corners. Props stay round. */}
+              {DEF_KINDS.has(n.goal.kind) ? (
                 <rect
-                  x={-r * 1.06}
-                  y={-r * 1.06}
-                  width={r * 2.12}
-                  height={r * 2.12}
+                  x={-r * 0.85}
+                  y={-r * 0.85}
+                  width={r * 1.7}
+                  height={r * 1.7}
                   transform="rotate(45)"
                   fill={fill}
                   stroke={s.stroke}
@@ -1298,13 +1351,16 @@ export default function Constellation({
         >
         {/* STATUS group — swatches carry the TRUE inking (brightness,
             blink); the shape is fixed so only the status axis varies */}
-        <span className="flex items-center gap-1" title="not yet proved — the engine still owes this star">
+        {present.open && (
+<span className="flex items-center gap-1" title="not yet proved — the engine still owes this star">
           <svg width="13" height="13" viewBox="-5 -5 10 10">
             <circle r="3.4" fill="var(--color-star)" stroke="var(--color-starlight)" strokeWidth="0.9" />
           </svg>
           open
         </span>
-        <span
+        )}
+        {present.working && (
+<span
           className="flex items-center gap-1"
           title="the engine is writing this star right now — it blinks"
         >
@@ -1320,7 +1376,9 @@ export default function Constellation({
           </svg>
           working
         </span>
-        <span
+        )}
+        {present.proved && (
+<span
           className="flex items-center gap-1"
           title={
             hasLive
@@ -1333,19 +1391,25 @@ export default function Constellation({
           </svg>
           proved
         </span>
-        <span className="flex items-center gap-1" title="set aside after repeated failed attempts">
+        )}
+        {present.shelved && (
+<span className="flex items-center gap-1" title="set aside after repeated failed attempts">
           <svg width="13" height="13" viewBox="-5 -5 10 10">
             <circle r="3" fill="var(--color-ink-faint)" opacity="0.6" />
           </svg>
           shelved
         </span>
-        <span className="flex items-center gap-1" title="an abandoned path (edges hidden behind “show dead paths”)">
+        )}
+        {present.dead && (
+<span className="flex items-center gap-1" title="an abandoned path (edges hidden behind “show dead paths”)">
           <svg width="13" height="13" viewBox="-5 -5 10 10">
             <circle r="2.6" fill="var(--color-edge-strong)" opacity="0.55" />
           </svg>
           dead
         </span>
-        <span
+        )}
+        {present.attempts && (
+<span
           className="flex items-center gap-1"
           title="failed attempts burned on a live star — the arc fills toward the shelving threshold"
         >
@@ -1362,10 +1426,12 @@ export default function Constellation({
           </svg>
           attempts
         </span>
-        <span className="h-3 w-px bg-edge" />
+        )}
+        {legendStatus && legendMarks && <span className="h-3 w-px bg-edge" />}
         {/* IDENTITY group — neutral tone on purpose: here only ring,
             shape and size speak; brightness belongs to the status axis */}
-        <span
+        {present.root && (
+<span
           className="flex items-center gap-1"
           title="the problem's own statement — the largest ringed star"
         >
@@ -1375,7 +1441,9 @@ export default function Constellation({
           </svg>
           root
         </span>
-        <span
+        )}
+        {present.claim && (
+<span
           className="flex items-center gap-1"
           title="a top-level result you sign off on — the ring marks everything the human vouches for"
         >
@@ -1385,7 +1453,9 @@ export default function Constellation({
           </svg>
           claim
         </span>
-        <span
+        )}
+        {present.anchor && (
+<span
           className="flex items-center gap-1"
           title="a definition the claims are made of — vouching a claim vouches its anchors (the diamond marks a def)"
         >
@@ -1395,8 +1465,12 @@ export default function Constellation({
           </svg>
           anchor
         </span>
-        <span className="h-3 w-px bg-edge" />
-        <span
+        )}
+        {(legendStatus || legendMarks) && legendLines && (
+          <span className="h-3 w-px bg-edge" />
+        )}
+        {present.route && (
+<span
           className="flex items-center gap-1"
           title="a fork needs ALL its branches (one route); two forks on one star are competing routes — click a fork for details"
         >
@@ -1408,18 +1482,23 @@ export default function Constellation({
           </svg>
           route
         </span>
-        <span className="flex items-center gap-1" title="one proof imports another — the lemma is used there">
+        )}
+        {present.cites && (
+<span className="flex items-center gap-1" title="one proof imports another — the lemma is used there">
           <svg width="18" height="13" viewBox="0 0 14 10">
             <line x1="1" y1="8" x2="13" y2="2" stroke="var(--color-starlight)" strokeWidth="1" opacity="0.45" />
           </svg>
           cites
         </span>
-        <span className="flex items-center gap-1">
+        )}
+        {present.alias && (
+<span className="flex items-center gap-1">
           <svg width="18" height="13" viewBox="0 0 14 10">
             <line x1="1" y1="5" x2="13" y2="5" stroke="var(--color-accent)" strokeWidth="1" strokeDasharray="3 2.5" opacity="0.7" />
           </svg>
           alias
         </span>
+        )}
         </div>
       </div>
       <div className="absolute bottom-3 left-3 flex overflow-hidden rounded-md border border-edge bg-surface">
