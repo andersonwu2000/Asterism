@@ -925,38 +925,28 @@ export default function Constellation({
                   pointerEvents="none"
                 />
               )}
-              {/* THE permanent ring mark: a double ring = the signed
-                  surface (root, claim, anchor) — the only nodes the
-                  user must find, at any zoom (owner call; the old
-                  root/deliverable single rings are retired). Ring slots
-                  stay disjoint: heat r+3, double ring r+5/r+8, working
-                  r+11, selection r+14, birth r+16 — two meanings on
-                  one radius merge into ambiguity. */}
+              {/* Two orthogonal axes, two channels (owner): IDENTITY
+                  speaks in ring + shape + size — THE permanent ring is
+                  a single ring = the signed surface (root, claim,
+                  anchor); STATUS speaks in brightness + blink and never
+                  borrows a ring. Activity marks keep disjoint slots:
+                  heat arc r+3, signed ring r+5.5, selection r+9,
+                  birth halo r+12. */}
               {(n.goal.origin === 'root' ||
                 n.goal.is_deliverable ||
                 DEF_KINDS.has(n.goal.kind)) && (
-                <>
-                  <circle
-                    r={r + 5 * boost}
-                    fill="none"
-                    stroke={s.stroke}
-                    strokeWidth={1.1}
-                    opacity={s.opacity * 0.8}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  <circle
-                    r={r + 8 * boost}
-                    fill="none"
-                    stroke={s.stroke}
-                    strokeWidth={0.9}
-                    opacity={s.opacity * 0.55}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                </>
+                <circle
+                  r={r + 5.5 * boost}
+                  fill="none"
+                  stroke={s.stroke}
+                  strokeWidth={1.2}
+                  opacity={s.opacity * 0.75}
+                  vectorEffect="non-scaling-stroke"
+                />
               )}
               {selected && (
                 <circle
-                  r={r + 14 * boost}
+                  r={r + 9 * boost}
                   fill="none"
                   stroke="var(--color-ink)"
                   strokeWidth={1}
@@ -982,14 +972,17 @@ export default function Constellation({
                   opacity={s.opacity}
                   vectorEffect="non-scaling-stroke"
                 >
-                  {engineWorking && n.goal.status === 'attempting' && (
-                    <animate
-                      attributeName="opacity"
-                      values="1;0.45;1"
-                      dur="1.6s"
-                      repeatCount="indefinite"
-                    />
-                  )}
+                  {/* working = the star itself BLINKS (owner: no ring
+                      for activity) — gated on daemon liveness */}
+                  {engineWorking &&
+                    (n.goal.status === 'attempting' || n.goal.in_flight) && (
+                      <animate
+                        attributeName="opacity"
+                        values="1;0.35;1"
+                        dur="1.4s"
+                        repeatCount="indefinite"
+                      />
+                    )}
                 </rect>
               ) : (
                 <circle
@@ -1000,14 +993,17 @@ export default function Constellation({
                   opacity={s.opacity}
                   vectorEffect="non-scaling-stroke"
                 >
-                  {engineWorking && n.goal.status === 'attempting' && (
-                    <animate
-                      attributeName="opacity"
-                      values="1;0.45;1"
-                      dur="1.6s"
-                      repeatCount="indefinite"
-                    />
-                  )}
+                  {/* working = the star itself BLINKS (owner: no ring
+                      for activity) — gated on daemon liveness */}
+                  {engineWorking &&
+                    (n.goal.status === 'attempting' || n.goal.in_flight) && (
+                      <animate
+                        attributeName="opacity"
+                        values="1;0.35;1"
+                        dur="1.4s"
+                        repeatCount="indefinite"
+                      />
+                    )}
                 </circle>
               )}
               {heatFrac > 0 && (
@@ -1024,7 +1020,7 @@ export default function Constellation({
               )}
               {birthsRef.current.born.has(n.goal.id) && (
                 <circle
-                  r={r + 16 * boost}
+                  r={r + 12 * boost}
                   fill="none"
                   stroke="var(--color-starlight)"
                   strokeWidth={1}
@@ -1034,28 +1030,6 @@ export default function Constellation({
                     attributeName="stroke-opacity"
                     values="0.8;0.1;0.8"
                     dur="1.8s"
-                    repeatCount="indefinite"
-                  />
-                </circle>
-              )}
-              {n.goal.in_flight && (
-                <circle
-                  r={r + 11 * boost}
-                  fill="none"
-                  stroke="var(--color-accent)"
-                  strokeWidth={1}
-                  vectorEffect="non-scaling-stroke"
-                >
-                  <animate
-                    attributeName="stroke-opacity"
-                    values="0.7;0.15;0.7"
-                    dur="1.4s"
-                    repeatCount="indefinite"
-                  />
-                  <animate
-                    attributeName="r"
-                    values={`${r + 10 * boost};${r + 12 * boost};${r + 10 * boost}`}
-                    dur="1.4s"
                     repeatCount="indefinite"
                   />
                 </circle>
@@ -1296,29 +1270,59 @@ export default function Constellation({
         <div
           className={`pointer-events-none mt-1 ${legendOpen ? 'flex' : 'hidden'} flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-surface/90 px-2.5 py-1 text-[11px] text-ink-faint`}
         >
-        <span className="flex items-center gap-1">
+        {/* STATUS group — swatches carry the TRUE inking (brightness,
+            blink); the shape is fixed so only the status axis varies */}
+        <span className="flex items-center gap-1" title="not yet proved — the engine still owes this star">
           <svg width="13" height="13" viewBox="-5 -5 10 10">
             <circle r="3.4" fill="var(--color-star)" stroke="var(--color-starlight)" strokeWidth="0.9" />
           </svg>
           open
         </span>
-        <span className="flex items-center gap-1">
-          <svg width="13" height="13" viewBox="-5 -5 10 10">
-            <circle r="3" fill="var(--color-starlight)" opacity="0.55" />
-          </svg>
-          proved
-        </span>
         <span
           className="flex items-center gap-1"
-          title="the engine is writing this star right now"
+          title="the engine is writing this star right now — it blinks"
         >
-          <svg width="15" height="15" viewBox="-6 -6 12 12">
-            <circle r="2" fill="var(--color-starlight)" />
-            <circle r="4.6" fill="none" stroke="var(--color-accent)" strokeWidth="1" opacity="0.8" />
+          <svg width="13" height="13" viewBox="-5 -5 10 10">
+            <circle r="3.2" fill="var(--color-starlight)">
+              <animate
+                attributeName="opacity"
+                values="1;0.3;1"
+                dur="1.4s"
+                repeatCount="indefinite"
+              />
+            </circle>
           </svg>
           working
         </span>
-        <span className="flex items-center gap-1">
+        <span
+          className="flex items-center gap-1"
+          title={
+            hasLive
+              ? 'proved — recedes to the background while work continues'
+              : 'proved — a finished sky lets them shine'
+          }
+        >
+          <svg width="13" height="13" viewBox="-5 -5 10 10">
+            <circle r="3" fill="var(--color-starlight)" opacity={hasLive ? 0.5 : 1} />
+          </svg>
+          proved
+        </span>
+        <span className="flex items-center gap-1" title="set aside after repeated failed attempts">
+          <svg width="13" height="13" viewBox="-5 -5 10 10">
+            <circle r="3" fill="var(--color-ink-faint)" opacity="0.6" />
+          </svg>
+          shelved
+        </span>
+        <span className="flex items-center gap-1" title="an abandoned path (edges hidden behind “show dead paths”)">
+          <svg width="13" height="13" viewBox="-5 -5 10 10">
+            <circle r="2.6" fill="var(--color-edge-strong)" opacity="0.55" />
+          </svg>
+          dead
+        </span>
+        <span
+          className="flex items-center gap-1"
+          title="failed attempts burned on a live star — the arc fills toward the shelving threshold"
+        >
           <svg width="15" height="15" viewBox="-6 -6 12 12">
             <circle r="2.4" fill="none" stroke="var(--color-ink-faint)" strokeWidth="1" />
             <circle
@@ -1333,25 +1337,25 @@ export default function Constellation({
           attempts
         </span>
         <span className="h-3 w-px bg-edge" />
+        {/* IDENTITY group — neutral tone on purpose: here only ring,
+            shape and size speak; brightness belongs to the status axis */}
         <span
           className="flex items-center gap-1"
-          title="the problem's own statement — the largest double-ringed star"
+          title="the problem's own statement — the largest ringed star"
         >
           <svg width="19" height="19" viewBox="-9 -9 18 18">
-            <circle r="8" fill="none" stroke="var(--color-starlight)" strokeWidth="0.7" opacity="0.55" />
-            <circle r="5.8" fill="none" stroke="var(--color-starlight)" strokeWidth="0.9" opacity="0.8" />
-            <circle r="3.2" fill="var(--color-starlight)" />
+            <circle r="6.6" fill="none" stroke="var(--color-ink-dim)" strokeWidth="1" opacity="0.8" />
+            <circle r="3.6" fill="var(--color-ink-dim)" />
           </svg>
           root
         </span>
         <span
           className="flex items-center gap-1"
-          title="a top-level result you sign off on — double rings mark everything the human vouches for"
+          title="a top-level result you sign off on — the ring marks everything the human vouches for"
         >
           <svg width="17" height="17" viewBox="-8 -8 16 16">
-            <circle r="7" fill="none" stroke="var(--color-starlight)" strokeWidth="0.7" opacity="0.55" />
-            <circle r="4.9" fill="none" stroke="var(--color-starlight)" strokeWidth="0.9" opacity="0.8" />
-            <circle r="2.5" fill="var(--color-starlight)" />
+            <circle r="5.6" fill="none" stroke="var(--color-ink-dim)" strokeWidth="1" opacity="0.8" />
+            <circle r="2.7" fill="var(--color-ink-dim)" />
           </svg>
           claim
         </span>
@@ -1360,15 +1364,17 @@ export default function Constellation({
           title="a definition the claims are made of — vouching a claim vouches its anchors (the diamond marks a def)"
         >
           <svg width="17" height="17" viewBox="-8 -8 16 16">
-            <circle r="7" fill="none" stroke="var(--color-starlight)" strokeWidth="0.7" opacity="0.55" />
-            <circle r="4.9" fill="none" stroke="var(--color-starlight)" strokeWidth="0.9" opacity="0.8" />
-            <rect x="-1.9" y="-1.9" width="3.8" height="3.8" transform="rotate(45)" fill="var(--color-starlight)" />
+            <circle r="5.6" fill="none" stroke="var(--color-ink-dim)" strokeWidth="1" opacity="0.8" />
+            <rect x="-2" y="-2" width="4" height="4" transform="rotate(45)" fill="var(--color-ink-dim)" />
           </svg>
           anchor
         </span>
-        <span className="flex items-center gap-1" title="an intermediate proof step">
+        <span
+          className="flex items-center gap-1"
+          title="an unringed star is an intermediate step — its brightness is its status; the ring is what you sign"
+        >
           <svg width="13" height="13" viewBox="-5 -5 10 10">
-            <circle r="2" fill="var(--color-starlight)" opacity="0.8" />
+            <circle r="2" fill="var(--color-ink-dim)" opacity="0.8" />
           </svg>
           step
         </span>
