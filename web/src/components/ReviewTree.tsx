@@ -23,6 +23,10 @@ function entryName(e: ReviewEntry): string {
   return typeof e === 'string' ? e : String(e?.name ?? '')
 }
 
+function entrySignature(e: ReviewEntry): string | null {
+  return typeof e === 'string' ? null : (e?.signature ?? null)
+}
+
 function PaperPane({ pid, anchor }: { pid: string; anchor: string }) {
   const { data, error } = usePoll<{ found: boolean; content: string }>(
     `/api/papers/${encodeURIComponent(pid)}/section?anchor=${encodeURIComponent(anchor)}`,
@@ -45,8 +49,22 @@ function PaperPane({ pid, anchor }: { pid: string; anchor: string }) {
 }
 
 /** One vouchable decl with its actual mathematics — signing off means
- * reading the statement, not recognizing a name (anchor+claim §1). */
-function VouchRow({ name, goal, claim }: { name: string; goal: Goal | null; claim?: boolean }) {
+ * reading the statement, not recognizing a name (anchor+claim §1).
+ * `signature` (the declaration header, server-extracted) is the
+ * readable truth; goal.statement is the fallback (for defs it's just
+ * the target sort — worthless to a reader). */
+function VouchRow({
+  name,
+  goal,
+  signature,
+  claim,
+}: {
+  name: string
+  goal: Goal | null
+  signature?: string | null
+  claim?: boolean
+}) {
+  const text = signature ?? goal?.statement ?? null
   return (
     <div className="mb-1.5">
       <div className="flex items-baseline gap-2">
@@ -59,9 +77,9 @@ function VouchRow({ name, goal, claim }: { name: string; goal: Goal | null; clai
         </span>
         {goal && <span className="text-[10px] text-ink-faint">{goal.kind}</span>}
       </div>
-      {goal && (
-        <pre className="mt-1 ml-1 line-clamp-3 border-l border-edge pl-2 font-mono text-[11px] leading-snug break-words whitespace-pre-wrap text-ink-dim">
-          <Lean code={goal.statement} />
+      {text && (
+        <pre className="mt-1 ml-1 border-l border-edge pl-2 font-mono text-[11px] leading-snug break-words whitespace-pre-wrap text-ink-dim">
+          <Lean code={text} />
         </pre>
       )}
     </div>
@@ -114,6 +132,13 @@ function Deliverable({
           {d.folded > 0 && ` · ${d.folded} folded`}
         </span>
       </button>
+      {/* the statement is the thing being vouched for — it reads
+          WITHOUT a click (owner: put what must be read on the sheet) */}
+      {(d.signature ?? resolve(d.fq)?.statement) && (
+        <pre className="border-t border-edge/60 px-3 py-2 font-mono text-[11px] leading-snug break-words whitespace-pre-wrap text-ink-dim">
+          <Lean code={(d.signature ?? resolve(d.fq)?.statement) as string} />
+        </pre>
+      )}
       {open && (
         <div className="border-t border-edge px-3 py-2">
           {d.error && <div className="mb-2 text-xs text-danger">{d.error}</div>}
@@ -167,6 +192,7 @@ function Deliverable({
                     key={entryName(c)}
                     name={entryName(c)}
                     goal={resolve(entryName(c))}
+                    signature={entrySignature(c)}
                     claim
                   />
                 ))}
@@ -178,7 +204,12 @@ function Deliverable({
               <SectionLabel>anchors — what the statement stands on</SectionLabel>
               <div>
                 {d.anchors.map((a) => (
-                  <VouchRow key={entryName(a)} name={entryName(a)} goal={resolve(entryName(a))} />
+                  <VouchRow
+                    key={entryName(a)}
+                    name={entryName(a)}
+                    goal={resolve(entryName(a))}
+                    signature={entrySignature(a)}
+                  />
                 ))}
               </div>
             </>

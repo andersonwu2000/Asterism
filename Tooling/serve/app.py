@@ -319,10 +319,54 @@ def create_app(workspace: Path) -> FastAPI:
                 "message": "OK: saved — the engine picks changes up on"
                            " its next tick"}
 
+    def _vouch_signature(conn, problem: str, name: str,
+                         cache: dict) -> "str | None":
+        """The declaration header for one vouchable name — signing off
+        means READING the statement (owner), and goals.statement for a
+        def is just its target sort. Read-side display extraction from
+        the proof file (the chapter page's machinery), never soundness."""
+        from .data import _scan_library_file
+        slug = str(name).split(".")[-1]
+        row = conn.execute(
+            "SELECT lean_path FROM goals WHERE problem = ? AND slug = ?"
+            " ORDER BY id DESC LIMIT 1", (problem, slug)).fetchone()
+        if row is None or not row["lean_path"]:
+            return None
+        path = str(row["lean_path"])
+        if path not in cache:
+            try:
+                text = (workspace / path).read_text(
+                    encoding="utf-8", errors="replace")
+                cache[path] = _scan_library_file(text)[1]
+            except OSError:
+                cache[path] = {}
+        hit = cache[path].get(slug)
+        return hit[3] if hit else None
+
     @app.get("/api/problems/{problem}/review")
     def review(problem: str) -> dict:
         with _ro(workspace) as conn:
             d = _data.review(conn, problem)
+            if d is not None:
+                # the vouch surface is small (deliverables ∪ anchors) —
+                # attach every entry's readable signature, and normalize
+                # anchor/claim entries to records (they arrive as bare
+                # names OR {kind, module, name})
+                cache: dict = {}
+                for dv in d.get("deliverables") or []:
+                    prob = str(dv.get("problem") or problem)
+                    dv["signature"] = _vouch_signature(
+                        conn, prob, str(dv.get("slug") or dv.get("fq")),
+                        cache)
+                    for key in ("anchors", "claims"):
+                        norm = []
+                        for e in dv.get(key) or []:
+                            rec = dict(e) if isinstance(e, dict) else \
+                                {"name": str(e)}
+                            rec["signature"] = _vouch_signature(
+                                conn, prob, str(rec.get("name", "")), cache)
+                            norm.append(rec)
+                        dv[key] = norm
         if d is None:
             raise HTTPException(
                 status_code=404,

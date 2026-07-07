@@ -153,7 +153,9 @@ export interface InboxResponse {
 /** Anchor/claim entries in the review snapshot arrive as bare names
  * OR as {kind, module, name} records (the recompute path emits the
  * latter — live-run catch, 2026-07-08). */
-export type ReviewEntry = string | { kind?: string; module?: string | null; name: string }
+export type ReviewEntry =
+  | string
+  | { kind?: string; module?: string | null; name: string; signature?: string | null }
 
 export interface ReviewDeliverable {
   fq: string
@@ -167,6 +169,9 @@ export interface ReviewDeliverable {
   anchors: ReviewEntry[]
   claims: ReviewEntry[]
   folded: number
+  /** the declaration header, server-extracted from the proof file —
+   * what the human actually reads before vouching */
+  signature?: string | null
 }
 
 export interface ReviewResponse {

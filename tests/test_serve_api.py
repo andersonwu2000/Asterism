@@ -1039,6 +1039,54 @@ def test_manifest_get_and_update(workspace: Path) -> None:
     assert "problem: Test.editme" in text
 
 
+def test_review_get_enriches_vouch_signatures(workspace: Path) -> None:
+    """The sign-off sheet carries what the human READS: every
+    deliverable + anchor entry gets its declaration header from the
+    proof file (goals.statement for a def is just the target sort);
+    bare-name and record-shaped entries both normalize to records."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    db.insert_goal(conn, problem="p", slug="is_widget",
+                   lean_path="Problems/p/proofs/L_is_widget.lean",
+                   statement="Prop", origin="forward", status="proved")
+    db.insert_goal(conn, problem="p", slug="widget_stable",
+                   lean_path="Problems/p/proofs/L_widget_stable.lean",
+                   statement="∀ w, is_widget w", origin="forward",
+                   status="proved")
+    db.set_review_snapshot(conn, "p", json.dumps({
+        "deliverables": [{
+            "fq": "Problems.p.widget_stable", "problem": "p",
+            "slug": "widget_stable", "ok": True, "error": None,
+            "kind": "theorem", "module": None, "paper": "",
+            "folded": 0, "claims": [],
+            # one record-shaped + one bare-name anchor
+            "anchors": [{"kind": "def", "module": "m",
+                         "name": "Problems.p.is_widget"},
+                        "Problems.p.is_widget"],
+        }],
+        "union_count": 1}))
+    conn.commit()
+    conn.close()
+    pdir = workspace / "Problems" / "p" / "proofs"
+    pdir.mkdir(parents=True)
+    (pdir / "L_is_widget.lean").write_text(
+        "import Mathlib\n/-- A widget predicate. -/\n"
+        "def is_widget (w : Nat) : Prop := w = w\n", encoding="utf-8")
+    (pdir / "L_widget_stable.lean").write_text(
+        "import Mathlib\ntheorem widget_stable : ∀ w, is_widget w := by\n"
+        "  intro w; rfl\n", encoding="utf-8")
+
+    d = _client(workspace).get("/api/problems/p/review").json()
+    dv = d["deliverables"][0]
+    assert dv["signature"] == "theorem widget_stable : ∀ w, is_widget w"
+    assert all(isinstance(a, dict) for a in dv["anchors"])
+    assert dv["anchors"][0]["signature"] == \
+        "def is_widget (w : Nat) : Prop"
+    assert dv["anchors"][1] == {
+        "name": "Problems.p.is_widget",
+        "signature": "def is_widget (w : Nat) : Prop"}
+
+
 def test_manifest_axiom_gate_locked_after_creation(workspace: Path) -> None:
     """Mutability inventory (owner, 2026-07-08): the axiom gate is
     creation-fixed — the gate re-reads it per validation, so a mid-life
