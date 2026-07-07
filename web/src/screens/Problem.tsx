@@ -97,7 +97,7 @@ function GoalsList({
               >
                 {g.slug}
               </button>
-              {g.is_deliverable && <span className="ml-1.5 text-star" title="deliverable">◈</span>}
+              {g.is_deliverable && <span className="ml-1.5 text-star" title="claim — you sign off on this">◈</span>}
             </td>
             <td
               className={`py-2 pr-4 text-xs ${

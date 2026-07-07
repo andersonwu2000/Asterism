@@ -156,10 +156,10 @@ function Deliverable({
             <button
               className="rounded-md border border-danger/40 px-2 py-1 text-[11px] text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
               disabled={busy}
-              title="Kill this deliverable + everything whose meaning depends on it (slow — recomputes closures)"
+              title="Kill this claim + everything whose meaning depends on it (slow — recomputes closures)"
               onClick={() => (rejecting ? void reject() : setRejecting(true))}
             >
-              {busy ? 'rejecting…' : rejecting ? 'confirm reject' : 'reject this deliverable'}
+              {busy ? 'rejecting…' : rejecting ? 'confirm reject' : 'reject this claim'}
             </button>
           </div>
           {d.paper && (

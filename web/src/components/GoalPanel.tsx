@@ -97,7 +97,7 @@ export default function GoalPanel({
               </span>
               <span className="text-ink-faint">{data.kind}</span>
               <span className="text-ink-faint">{originLabel(data.origin)}</span>
-              {data.is_deliverable && <span className="text-star">deliverable</span>}
+              {data.is_deliverable && <span className="text-star">claim</span>}
               {data.detached && <span className="text-ink-faint">detached</span>}
             </div>
             <SectionLabel>statement</SectionLabel>

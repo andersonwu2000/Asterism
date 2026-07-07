@@ -925,27 +925,43 @@ export default function Constellation({
                   pointerEvents="none"
                 />
               )}
-              {/* ring slots are disjoint (heat r+3, deliverable r+5,
-                  root r+7, in-flight r+8, selection r+10) — two
-                  meanings on one radius merge into ambiguity */}
+              {/* THE permanent ring mark: a double ring = the signed
+                  surface (root, claim, anchor) — the only nodes the
+                  user must find, at any zoom (owner call; the old
+                  root/deliverable single rings are retired). Ring slots
+                  stay disjoint: heat r+3, double ring r+5/r+8, working
+                  r+11, selection r+14, birth r+16 — two meanings on
+                  one radius merge into ambiguity. */}
+              {(n.goal.origin === 'root' ||
+                n.goal.is_deliverable ||
+                DEF_KINDS.has(n.goal.kind)) && (
+                <>
+                  <circle
+                    r={r + 5 * boost}
+                    fill="none"
+                    stroke={s.stroke}
+                    strokeWidth={1.1}
+                    opacity={s.opacity * 0.8}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  <circle
+                    r={r + 8 * boost}
+                    fill="none"
+                    stroke={s.stroke}
+                    strokeWidth={0.9}
+                    opacity={s.opacity * 0.55}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                </>
+              )}
               {selected && (
                 <circle
-                  r={r + 10 * boost}
+                  r={r + 14 * boost}
                   fill="none"
                   stroke="var(--color-ink)"
                   strokeWidth={1}
                   strokeOpacity={0.8}
                   strokeDasharray="2 3"
-                  vectorEffect="non-scaling-stroke"
-                />
-              )}
-              {n.goal.origin === 'root' && (
-                <circle
-                  r={r + 7 * boost}
-                  fill="none"
-                  stroke={s.stroke}
-                  strokeWidth={0.8}
-                  opacity={s.opacity * 0.5}
                   vectorEffect="non-scaling-stroke"
                 />
               )}
@@ -994,16 +1010,6 @@ export default function Constellation({
                   )}
                 </circle>
               )}
-              {n.goal.is_deliverable && (
-                <circle
-                  r={r + 5 * boost}
-                  fill="none"
-                  stroke="var(--color-star)"
-                  strokeWidth={1.1}
-                  opacity={0.9}
-                  vectorEffect="non-scaling-stroke"
-                />
-              )}
               {heatFrac > 0 && (
                 <circle
                   r={heatR}
@@ -1018,7 +1024,7 @@ export default function Constellation({
               )}
               {birthsRef.current.born.has(n.goal.id) && (
                 <circle
-                  r={r + 12 * boost}
+                  r={r + 16 * boost}
                   fill="none"
                   stroke="var(--color-starlight)"
                   strokeWidth={1}
@@ -1034,7 +1040,7 @@ export default function Constellation({
               )}
               {n.goal.in_flight && (
                 <circle
-                  r={r + 8 * boost}
+                  r={r + 11 * boost}
                   fill="none"
                   stroke="var(--color-accent)"
                   strokeWidth={1}
@@ -1048,7 +1054,7 @@ export default function Constellation({
                   />
                   <animate
                     attributeName="r"
-                    values={`${r + 7 * boost};${r + 9 * boost};${r + 7 * boost}`}
+                    values={`${r + 10 * boost};${r + 12 * boost};${r + 10 * boost}`}
                     dur="1.4s"
                     repeatCount="indefinite"
                   />
@@ -1327,28 +1333,44 @@ export default function Constellation({
           attempts
         </span>
         <span className="h-3 w-px bg-edge" />
-        <span className="flex items-center gap-1">
-          <svg width="15" height="15" viewBox="-6 -6 12 12">
-            <circle r="5" fill="none" stroke="var(--color-starlight)" strokeWidth="0.6" opacity="0.5" />
-            <circle r="2.8" fill="var(--color-starlight)" />
+        <span
+          className="flex items-center gap-1"
+          title="the problem's own statement — the largest double-ringed star"
+        >
+          <svg width="19" height="19" viewBox="-9 -9 18 18">
+            <circle r="8" fill="none" stroke="var(--color-starlight)" strokeWidth="0.7" opacity="0.55" />
+            <circle r="5.8" fill="none" stroke="var(--color-starlight)" strokeWidth="0.9" opacity="0.8" />
+            <circle r="3.2" fill="var(--color-starlight)" />
           </svg>
           root
         </span>
-        <span className="flex items-center gap-1">
-          <svg width="15" height="15" viewBox="-6 -6 12 12">
-            <circle r="2.4" fill="var(--color-starlight)" />
-            <circle r="4.6" fill="none" stroke="var(--color-star)" strokeWidth="0.9" opacity="0.9" />
+        <span
+          className="flex items-center gap-1"
+          title="a top-level result you sign off on — double rings mark everything the human vouches for"
+        >
+          <svg width="17" height="17" viewBox="-8 -8 16 16">
+            <circle r="7" fill="none" stroke="var(--color-starlight)" strokeWidth="0.7" opacity="0.55" />
+            <circle r="4.9" fill="none" stroke="var(--color-starlight)" strokeWidth="0.9" opacity="0.8" />
+            <circle r="2.5" fill="var(--color-starlight)" />
           </svg>
-          deliverable
+          claim
         </span>
-        <span className="flex items-center gap-1">
+        <span
+          className="flex items-center gap-1"
+          title="a definition the claims are made of — vouching a claim vouches its anchors (the diamond marks a def)"
+        >
+          <svg width="17" height="17" viewBox="-8 -8 16 16">
+            <circle r="7" fill="none" stroke="var(--color-starlight)" strokeWidth="0.7" opacity="0.55" />
+            <circle r="4.9" fill="none" stroke="var(--color-starlight)" strokeWidth="0.9" opacity="0.8" />
+            <rect x="-1.9" y="-1.9" width="3.8" height="3.8" transform="rotate(45)" fill="var(--color-starlight)" />
+          </svg>
+          anchor
+        </span>
+        <span className="flex items-center gap-1" title="an intermediate proof step">
           <svg width="13" height="13" viewBox="-5 -5 10 10">
-            <rect x="-2.6" y="-2.6" width="5.2" height="5.2" transform="rotate(45)" fill="var(--color-starlight)" />
+            <circle r="2" fill="var(--color-starlight)" opacity="0.8" />
           </svg>
-          def
-        </span>
-        <span className="opacity-75" title="root and claims draw largest, defs next, supporting steps smallest — at any zoom">
-          bigger = more important
+          step
         </span>
         <span className="h-3 w-px bg-edge" />
         <span
