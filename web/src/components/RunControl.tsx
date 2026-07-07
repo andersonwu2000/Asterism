@@ -8,8 +8,7 @@ import type { DaemonStatus } from '../lib/types'
  * problem at a time, from that problem's page. Honesty constraint: the
  * engine is ONE process per workspace with a scope filter, so when it
  * is busy on another scope this control says so instead of pretending
- * per-problem runs are independent. Pattern/global runs live on the
- * Engine page as the advanced path.
+ * per-problem runs are independent.
  */
 
 export default function RunControl({ problem }: { problem: string }) {
@@ -82,8 +81,8 @@ export default function RunControl({ problem }: { problem: string }) {
               <span className="max-w-96 text-[11px] leading-snug text-danger">
                 the last run crashed
                 {d.last_exit.error?.includes('gateway')
-                  ? ' while starting the Lean toolchain — Run again usually clears it; if it repeats, see the developer log on the Engine page'
-                  : ` (${d.last_exit.error ?? 'unknown error'}) — see the developer log on the Engine page`}
+                  ? ' while starting the Lean toolchain — Run again usually clears it; if it repeats, see the engine log on the Run page'
+                  : ` (${d.last_exit.error ?? 'unknown error'}) — see the engine log on the Run page`}
               </span>
             )}
           <button

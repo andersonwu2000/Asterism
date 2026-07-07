@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { weightedBurn } from '../lib/burn'
 import { compactNumber, duration } from '../lib/format'
@@ -6,9 +6,9 @@ import { SectionLabel } from '../components/ui'
 import { logout, switchAccount } from '../lib/claudeAuth'
 import type { ConfigSetting, Meta, UsageProblem } from '../lib/types'
 
-/** Settings — the machine room: model/knob config, the all-time usage
- * ledger, and the developer log. Liveness, lanes and burn-of-the-run
- * live on the Run console (#/run). */
+/** Settings — the machine room: account, model/knob config, and the
+ * all-time usage ledger. Liveness, lanes, burn-of-the-run and the
+ * engine log live on the Run console (#/run). */
 
 
 function ConfigPanel() {
@@ -90,52 +90,6 @@ function ConfigPanel() {
   )
 }
 
-
-function LogTail() {
-  const [lines, setLines] = useState<string[]>([])
-  const boxRef = useRef<HTMLDivElement>(null)
-  const stickBottom = useRef(true)
-
-  useEffect(() => {
-    const es = new EventSource('/api/events/stream')
-    es.onmessage = (e) => {
-      setLines((prev) => {
-        const next = [...prev, e.data as string]
-        return next.length > 500 ? next.slice(next.length - 500) : next
-      })
-    }
-    return () => es.close()
-  }, [])
-
-  useEffect(() => {
-    const el = boxRef.current
-    if (el && stickBottom.current) el.scrollTop = el.scrollHeight
-  }, [lines])
-
-  // Empty panels collapse to one line — a 260px empty box conveys one
-  // sentence (design review).
-  if (lines.length === 0) {
-    return (
-      <div className="rounded-lg border border-edge bg-surface px-3 py-2 text-xs text-ink-faint">
-        No log output yet — the tail picks up when a daemon run starts.
-      </div>
-    )
-  }
-  return (
-    <div
-      ref={boxRef}
-      className="h-64 overflow-y-auto rounded-lg border border-edge bg-bg p-3"
-      onScroll={(e) => {
-        const el = e.currentTarget
-        stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30
-      }}
-    >
-      <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
-        {lines.join('\n')}
-      </pre>
-    </div>
-  )
-}
 
 function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
@@ -364,17 +318,6 @@ export default function Telemetry() {
         <section>
           <SectionLabel>settings</SectionLabel>
           <ConfigPanel />
-        </section>
-        <section>
-          <details className="group">
-            <summary className="cursor-pointer list-none text-[11px] font-medium tracking-widest text-ink-faint/70 uppercase transition-colors hover:text-ink-dim">
-              <span className="mr-1 inline-block text-[9px] transition-transform duration-150 group-open:rotate-90">▸</span>
-              developer log
-            </summary>
-            <div className="mt-2">
-              <LogTail />
-            </div>
-          </details>
         </section>
         <section>
           <UsageTable />

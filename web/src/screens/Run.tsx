@@ -8,6 +8,7 @@ import { Link } from '../lib/router'
 import { Button } from '../components/ui'
 import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
+import LogTail from '../components/LogTail'
 import type { ConfigSetting, ProblemDetail, RunStatus, RunWorker } from '../lib/types'
 
 /*
@@ -172,6 +173,7 @@ export default function Run() {
   const [msg, setMsg] = useState<string | null>(null)
   const [switching, setSwitching] = useState(false)
   const [switchMsg, setSwitchMsg] = useState<string | null>(null)
+  const [logOpen, setLogOpen] = useState(false)
   const doSwitch = async () => {
     setSwitching(true)
     try {
@@ -496,6 +498,24 @@ export default function Run() {
         </div>
       </section>
       )}
+
+      {/* the run's own log lives where the run's story is told —
+          collapsed: it's the "what actually happened" window for a
+          crashed or misbehaving run, not part of the narrative. The
+          tail mounts only while open (a collapsed <details> still
+          mounts children — the SSE stream would run forever) */}
+      <section className="mt-7">
+        <details
+          className="group"
+          onToggle={(e) => setLogOpen((e.currentTarget as HTMLDetailsElement).open)}
+        >
+          <summary className="cursor-pointer list-none text-[11px] font-medium tracking-[0.14em] text-ink-faint/70 uppercase transition-colors hover:text-ink-dim">
+            <span className="mr-1 inline-block text-[9px] transition-transform duration-150 group-open:rotate-90">▸</span>
+            engine log
+          </summary>
+          <div className="mt-2">{logOpen && <LogTail />}</div>
+        </details>
+      </section>
 
       {!running && (
         <p className="mt-8 text-xs text-ink-faint">
