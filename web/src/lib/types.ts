@@ -150,6 +150,11 @@ export interface InboxResponse {
   signoffs: Signoff[]
 }
 
+/** Anchor/claim entries in the review snapshot arrive as bare names
+ * OR as {kind, module, name} records (the recompute path emits the
+ * latter — live-run catch, 2026-07-08). */
+export type ReviewEntry = string | { kind?: string; module?: string | null; name: string }
+
 export interface ReviewDeliverable {
   fq: string
   problem: string
@@ -159,8 +164,8 @@ export interface ReviewDeliverable {
   kind: string
   module: string | null
   paper: string
-  anchors: string[]
-  claims: string[]
+  anchors: ReviewEntry[]
+  claims: ReviewEntry[]
   folded: number
 }
 

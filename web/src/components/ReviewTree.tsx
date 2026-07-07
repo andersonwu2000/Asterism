@@ -2,7 +2,13 @@ import { useMemo, useState } from 'react'
 import { apiGet, apiPost, usePoll } from '../lib/api'
 import { Lean } from '../lib/lean'
 import { SectionLabel } from './ui'
-import type { Goal, ProblemDetail, ReviewDeliverable, ReviewResponse } from '../lib/types'
+import type {
+  Goal,
+  ProblemDetail,
+  ReviewDeliverable,
+  ReviewEntry,
+  ReviewResponse,
+} from '../lib/types'
 import { relTime } from '../lib/format'
 
 /** Ingest sign-off review: the anchor closure of each deliverable,
@@ -10,6 +16,12 @@ import { relTime } from '../lib/format'
  * snapshot; GET never touches the gateway. */
 
 const PAPER_RE = /^paper: (.*?)\s+\(Papers\/(.+?)\/text\.md\)$/
+
+/** snapshot anchor/claim entries: bare names or {name, kind, module}
+ * records (the recompute path emits records — live-run catch) */
+function entryName(e: ReviewEntry): string {
+  return typeof e === 'string' ? e : String(e?.name ?? '')
+}
 
 function PaperPane({ pid, anchor }: { pid: string; anchor: string }) {
   const { data, error } = usePoll<{ found: boolean; content: string }>(
@@ -151,7 +163,12 @@ function Deliverable({
               <SectionLabel>claims — what is asserted</SectionLabel>
               <div className="mb-2">
                 {d.claims.map((c) => (
-                  <VouchRow key={c} name={c} goal={resolve(c)} claim />
+                  <VouchRow
+                    key={entryName(c)}
+                    name={entryName(c)}
+                    goal={resolve(entryName(c))}
+                    claim
+                  />
                 ))}
               </div>
             </>
@@ -161,7 +178,7 @@ function Deliverable({
               <SectionLabel>anchors — what the statement stands on</SectionLabel>
               <div>
                 {d.anchors.map((a) => (
-                  <VouchRow key={a} name={a} goal={resolve(a)} />
+                  <VouchRow key={entryName(a)} name={entryName(a)} goal={resolve(entryName(a))} />
                 ))}
               </div>
             </>

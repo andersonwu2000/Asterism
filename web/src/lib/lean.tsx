@@ -176,8 +176,11 @@ const CMT_CODE_CLS = 'text-syn-num/90'
 const CMT_CODE_RE = /(`[^`\n]+`)/
 
 /** Inline-highlighted Lean: emits spans only where a token carries
- * ink, so it drops into any <pre>/<code>/table cell unchanged. */
+ * ink, so it drops into any <pre>/<code>/table cell unchanged.
+ * Defensive on input — a non-string (bad API shape) must degrade to
+ * text, never crash the page (ReviewTree live-run lesson). */
 export function Lean({ code }: { code: string }): ReactNode {
+  if (typeof code !== 'string') code = String(code ?? '')
   return tokenizeLean(code).map((t, i) => {
     if (t.t === 'cmt') {
       return (
