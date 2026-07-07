@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Goal, Strategy, StrategyEdge } from '../lib/types'
-import { frontierView, layoutConstellation } from '../lib/layout'
+import { layoutConstellation } from '../lib/layout'
 import { Lean } from '../lib/lean'
 import { goalStatusLabel } from '../lib/vocab'
 import type { ConstellationLayout, LayoutNode } from '../lib/layout'
@@ -194,12 +194,9 @@ export default function Constellation({
   shelveThreshold = 8,
   engineWorking = false,
 }: Props) {
-  // Frontier focus is OPT-IN (owner, after 70 goals silently drew as 6
-  // stars): the default sky always shows everything — ink inversion
-  // already makes the live few the brightest objects, and rendering is
-  // budgeted for 500 stars. "Hide finished work" remains a button for
-  // deliberately watching the frontier alone.
-  const [focusFrontier, setFocusFrontier] = useState<boolean | null>(null)
+  // The sky ALWAYS shows everything (owner: the stars that need you
+  // are already the brightest). Frontier folding and the dead-paths
+  // toggle are retired — hiding structure read as bugs, not focus.
   const [legendOpen, setLegendOpen] = useState<boolean>(() => {
     try {
       return localStorage.getItem('cst-legend') !== 'closed'
@@ -207,13 +204,6 @@ export default function Constellation({
       return true
     }
   })
-  const frontier = useMemo(
-    () => frontierView(goals, strategies, strategyEdges),
-    [goals, strategies, strategyEdges],
-  )
-  const focusable = frontier.hiddenCount > 0
-  const focused = focusable && focusFrontier === true
-  const shownGoals = focused ? frontier.goals : goals
   // ink inversion gate: while anything is live the unproved few carry
   // the light; a finished sky lets the proved shine
   const hasLive = goals.some(
@@ -222,15 +212,15 @@ export default function Constellation({
       g.status === 'attempting' ||
       g.status === 'pending_strategist_review',
   )
-  // a "scene" = one problem in one focus mode; tweens never cross
-  // scenes (goal ids from another problem may collide)
+  // a "scene" = one problem; tweens never cross scenes (goal ids from
+  // another problem may collide)
   const problemKey = goals.length > 0 ? goals[0].lean_path.split('/')[1] : ''
-  const sceneKey = `${problemKey}:${focused}`
+  const sceneKey = problemKey
 
   const layout = useMemo(
     () =>
-      layoutConstellation(shownGoals, strategies, strategyEdges, anchorEdges, citationEdges),
-    [shownGoals, strategies, strategyEdges, anchorEdges, citationEdges],
+      layoutConstellation(goals, strategies, strategyEdges, anchorEdges, citationEdges),
+    [goals, strategies, strategyEdges, anchorEdges, citationEdges],
   )
   // Label stagger is collision-avoidance for dense rows; in sparse rows
   // it reads as jitter, so apply it only where needed. Counted per
@@ -299,7 +289,6 @@ export default function Constellation({
   const containerRef = useRef<HTMLDivElement>(null)
   const [view, setView] = useState<{ k: number; tx: number; ty: number } | null>(null)
   const [hovered, setHovered] = useState<LayoutNode | null>(null)
-  const [showDead, setShowDead] = useState(false)
   const drag = useRef<{ x: number; y: number; tx: number; ty: number; moved: boolean } | null>(null)
 
   // Initial fit — once per problem and on frontier-focus toggles (not
@@ -311,7 +300,7 @@ export default function Constellation({
   useEffect(() => {
     userAdjusted.current = false
     setView(null)
-  }, [problemKey, focused])
+  }, [problemKey])
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -601,23 +590,17 @@ export default function Constellation({
   )
   const hasStrategyClick = onSelectStrategy !== undefined
 
+  // Dead routes stay on the map as whisper-faint residue (the toggle is
+  // retired): a grey star with no edge read as floating dust — the
+  // struggle keeps its shape, at an opacity that never competes.
   const isDead = (s: string) => s === 'dead' || s === 'superseded'
-  const visibleEdges = useMemo(
-    () =>
-      layout.edges.filter(
-        (e) => showDead || e.kind === 'alias' || !isDead(e.strategyStatus),
-      ),
-    [layout, showDead],
-  )
-  const visibleBundles = useMemo(
-    () => layout.bundles.filter((b) => showDead || !isDead(b.status)),
-    [layout, showDead],
-  )
+  const visibleEdges = layout.edges
+  const visibleBundles = layout.bundles
   // density-stepped: a handful of citations read at 0.22; a hundred
   // would wash the sky at that weight
   const citeCount = useMemo(
-    () => visibleEdges.filter((e) => e.kind === 'citation').length,
-    [visibleEdges],
+    () => layout.edges.filter((e) => e.kind === 'citation').length,
+    [layout],
   )
   const citeOpacity = citeCount > 80 ? 0.08 : citeCount > 30 ? 0.13 : 0.22
   // hover/selection focus: point at a star with citation threads and
@@ -628,15 +611,11 @@ export default function Constellation({
   const focusId = hovered?.goal.id ?? selectedId
   const citeFocusId =
     focusId !== null &&
-    visibleEdges.some(
+    layout.edges.some(
       (e) => e.kind === 'citation' && (e.from === focusId || e.to === focusId),
     )
       ? focusId
       : null
-  const deadEdgeCount =
-    layout.edges.length -
-    visibleEdges.length +
-    layout.bundles.filter((b) => isDead(b.status)).length
 
   const byId = useMemo(
     () => new Map(layout.nodes.map((n) => [n.goal.id, n])),
@@ -746,7 +725,7 @@ export default function Constellation({
               strokeWidth={e.strategyStatus === 'succeeded' ? 1.2 : 1}
               strokeOpacity={
                 dead
-                  ? 0.35
+                  ? 0.18
                   : e.kind === 'alias'
                     ? 0.5
                     : e.kind === 'anchor'
@@ -776,7 +755,7 @@ export default function Constellation({
           if (!parent) return null
           const dead = isDead(b.status)
           const stroke = edgeStroke(b.status, 'strategy')
-          const opacity = dead ? 0.35 : b.status === 'succeeded' ? 0.38 : 0.55
+          const opacity = dead ? 0.18 : b.status === 'succeeded' ? 0.38 : 0.55
           return (
             <g key={`s${b.strategyId}`}>
               <line
@@ -1037,18 +1016,6 @@ export default function Constellation({
                   />
                 </circle>
               )}
-              {focused && (frontier.folded.get(n.goal.id) ?? 0) > 0 && (
-                <text
-                  x={r + 4 / kq}
-                  y={-r}
-                  className="pointer-events-none select-none"
-                  fill="var(--color-ink-faint)"
-                  fontSize={9.5 / kq}
-                  fontFamily="var(--font-mono)"
-                >
-                  +{frontier.folded.get(n.goal.id)}
-                </text>
-              )}
               {showLabels && (
                 <text
                   // Stagger label rows by in-row parity so long slugs
@@ -1103,8 +1070,6 @@ export default function Constellation({
       hasLive,
       engineWorking,
       shelveThreshold,
-      focused,
-      frontier,
       labelRoom,
       rowCounts,
       selectCb,
@@ -1438,27 +1403,6 @@ export default function Constellation({
         >
           fit
         </button>
-      </div>
-      <div className="absolute right-3 bottom-3 flex gap-2">
-        {focusable && (
-          <button
-            className="rounded-md border border-edge bg-surface px-2.5 py-1 text-xs text-ink-dim hover:border-edge-strong hover:text-ink"
-            onClick={() => setFocusFrontier(!focused)}
-            title="Tuck finished branches behind their nearest visible star (+N badges); the stars still being worked stay out"
-          >
-            {focused
-              ? `showing active work — show all (${goals.length})`
-              : `hide finished work (${frontier.hiddenCount})`}
-          </button>
-        )}
-        {deadEdgeCount > 0 && (
-          <button
-            className="rounded-md border border-edge bg-surface px-2.5 py-1 text-xs text-ink-dim hover:border-edge-strong hover:text-ink"
-            onClick={() => setShowDead((v) => !v)}
-          >
-            {showDead ? 'hide' : 'show'} dead paths ({deadEdgeCount})
-          </button>
-        )}
       </div>
     </div>
   )
