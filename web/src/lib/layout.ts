@@ -358,7 +358,27 @@ export function layoutConstellation(
       yOff += shelfDepth
     }
     slot = maxEnd
-    xSlot.set(id, (start0 + maxEnd - 1) / 2)
+    // Parent placement (owner: tree interiors meandered): span-centre
+    // let side leaves drag every chain link 0.5+ slots sideways — a
+    // staircase. Follow the SPINE when there is exactly one branch
+    // child (chains run plumb, leaves hang beside); otherwise sit at
+    // the midpoint of the child ROOTS (fork angles symmetric), the
+    // classic tidy-tree rule. Row de-overlap still guards collisions.
+    const placedBranches = branchKs.filter((c) => xSlot.has(c))
+    if (placedBranches.length === 1) {
+      xSlot.set(id, xSlot.get(placedBranches[0])!)
+    } else {
+      let lo = Infinity
+      let hi = -Infinity
+      for (const c of ks) {
+        const x = xSlot.get(c)
+        if (x !== undefined) {
+          lo = Math.min(lo, x)
+          hi = Math.max(hi, x)
+        }
+      }
+      xSlot.set(id, lo <= hi ? (lo + hi) / 2 : (start0 + maxEnd - 1) / 2)
+    }
   }
   for (const r of treeRoots) measure(r, 0)
   const baseLayer = new Map(layer) // assign() adds shelf shifts — snapshot for pass 2
