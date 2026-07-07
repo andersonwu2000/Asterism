@@ -864,6 +864,59 @@ def test_problem_detail_citation_edges(workspace: Path) -> None:
     assert all(e["from"] != e["to"] for e in d["citation_edges"])
 
 
+def test_citation_edges_from_strategy_scratch(workspace: Path) -> None:
+    """A Backward assembly's citations live in the strategy's scratch
+    patch, not in any goal's own L_ file. A succeeded strategy's
+    non-child imports are its goal's citations; child imports are the
+    hierarchy (already bundle arms) and never double as citations;
+    dead strategies' imports are dead attempts, not story."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    parent = db.insert_goal(conn, problem="p", slug="parent_thm",
+                            lean_path="Problems/p/proofs/L_parent_thm.lean",
+                            statement="True", origin="backward")
+    child = db.insert_goal(conn, problem="p", slug="child_lemma",
+                           lean_path="Problems/p/proofs/L_child_lemma.lean",
+                           statement="True", origin="backward")
+    brick = db.insert_goal(conn, problem="p", slug="forward_brick",
+                           lean_path="Problems/p/proofs/L_forward_brick.lean",
+                           statement="True", origin="forward")
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, status, created_by,"
+        " created_at, scratch_path) VALUES (?, 'x', 'succeeded', 'test', ?,"
+        " 'Problems/p/proofs/_strategy_s1.lean')", (parent, ts))
+    sid = int(cur.lastrowid)
+    conn.execute(
+        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
+        " VALUES (?, ?, 0)", (sid, child))
+    conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, status, created_by,"
+        " created_at, scratch_path) VALUES (?, 'x', 'dead', 'test', ?,"
+        " 'Problems/p/proofs/_strategy_s2.lean')", (parent, ts))
+    conn.commit()
+    conn.close()
+    pdir = workspace / "Problems" / "p" / "proofs"
+    pdir.mkdir(parents=True)
+    for slug in ("parent_thm", "child_lemma", "forward_brick"):
+        (pdir / f"L_{slug}.lean").write_text(
+            f"import Mathlib\ntheorem {slug} : True := trivial\n",
+            encoding="utf-8")
+    patch = ("import Mathlib\n"
+             "import Problems.p.proofs.L_child_lemma\n"
+             "import Problems.p.proofs.L_forward_brick\n"
+             "theorem parent_thm : True := trivial\n")
+    (pdir / "_strategy_s1.lean").write_text(patch, encoding="utf-8")
+    # the dead attempt cites a different brick — must never surface
+    (pdir / "_strategy_s2.lean").write_text(
+        patch.replace("L_forward_brick", "L_child_lemma"),
+        encoding="utf-8")
+    d = _client(workspace).get("/api/problems/p").json()
+    edges = d["citation_edges"]
+    assert {"from": brick, "to": parent} in edges  # the forward brick links
+    assert {"from": child, "to": parent} not in edges  # hierarchy, not cite
+
+
 def test_papers_bookshelf_flow(workspace: Path) -> None:
     """Top-level bookshelf: add by path (content-hash idempotent),
     list with bindings, read text + original, delete guarded by

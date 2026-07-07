@@ -193,42 +193,75 @@ _CITE_RE = re.compile(
 _cite_file_cache: "dict[str, tuple[int, list[tuple[str, str]]]]" = {}
 
 
+def _scan_imports(fp: Path) -> "list[tuple[str, str]]":
+    """Cached `import Problems.<p>.proofs.L_<slug>` scan of one file.
+    Missing files / read errors yield [] — presentation never fails."""
+    key = str(fp)
+    try:
+        mtime = fp.stat().st_mtime_ns
+    except OSError:
+        _cite_file_cache.pop(key, None)
+        return []
+    cached = _cite_file_cache.get(key)
+    if cached is None or cached[0] != mtime:
+        try:
+            text = fp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        cites = [(m.group(1), m.group(2))
+                 for m in _CITE_RE.finditer(text)]
+        _cite_file_cache[key] = (mtime, cites)
+    return _cite_file_cache[key][1]
+
+
 def _citation_edges(workspace: Path, problem: str,
-                    goals: "list[dict]") -> "list[dict]":
+                    goals: "list[dict]",
+                    strategies: "list[dict] | None" = None,
+                    strategy_edges: "list[dict] | None" = None,
+                    ) -> "list[dict]":
     """[{from: cited goal id, to: citing goal id}] within `problem`,
-    from proof-file import lines. Missing files / read errors are
-    skipped — presentation must never fail the page."""
+    from proof-file import lines.
+
+    Two homes of truth. A goal's own `L_<slug>.lean` rarely imports
+    siblings — the assembling proof of a Backward strategy lives in its
+    scratch patch (`strategies.scratch_path`), and THAT is where most
+    citations happen (banach_tarski: 248 of 261 sibling import lines).
+    A succeeded strategy's non-child imports are the goal's citations;
+    its child imports are the hierarchy already drawn as bundle arms.
+    Without the scratch scan every Forward brick consumed by an
+    assembly floated unlinked and the sky shattered (bt: 10 edges
+    where 79 exist)."""
     slug_to_id = {g["slug"]: g["id"] for g in goals}
     out: list[dict] = []
     seen: set[tuple[int, int]] = set()
-    for g in goals:
-        fp = workspace / str(g["lean_path"])
-        key = str(fp)
-        try:
-            mtime = fp.stat().st_mtime_ns
-        except OSError:
-            _cite_file_cache.pop(key, None)
-            continue
-        cached = _cite_file_cache.get(key)
-        if cached is None or cached[0] != mtime:
-            try:
-                text = fp.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            cites = [(m.group(1), m.group(2))
-                     for m in _CITE_RE.finditer(text)]
-            _cite_file_cache[key] = (mtime, cites)
-        for prob, slug in _cite_file_cache[key][1]:
-            if prob != problem:
-                continue  # cross-problem import — not this sky's edge
-            tid = slug_to_id.get(slug)
-            if tid is None or tid == g["id"]:
-                continue
-            pair = (int(tid), int(g["id"]))
-            if pair in seen:
-                continue
+
+    def emit(prob: str, slug: str, citer_id: int,
+             exclude: "set[int]") -> None:
+        if prob != problem:
+            return  # cross-problem import — not this sky's edge
+        tid = slug_to_id.get(slug)
+        if tid is None or int(tid) == citer_id or int(tid) in exclude:
+            return
+        pair = (int(tid), citer_id)
+        if pair not in seen:
             seen.add(pair)
             out.append({"from": pair[0], "to": pair[1]})
+
+    for g in goals:
+        for prob, slug in _scan_imports(workspace / str(g["lean_path"])):
+            emit(prob, slug, int(g["id"]), set())
+
+    strat_kids: "dict[int, set[int]]" = {}
+    for e in strategy_edges or []:
+        strat_kids.setdefault(int(e["strategy_id"]), set()).add(
+            int(e["subgoal_id"]))
+    for s in strategies or []:
+        sp = str(s.get("scratch_path") or "")
+        if str(s.get("status")) != "succeeded" or not sp:
+            continue
+        for prob, slug in _scan_imports(workspace / sp):
+            emit(prob, slug, int(s["goal_id"]),
+                 strat_kids.get(int(s["id"]), set()))
     return out
 
 
@@ -385,7 +418,8 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
     goal_ids = {g["id"] for g in goals}
     strategies = []
     for s in conn.execute(
-            "SELECT id, goal_id, status, created_by, created_at"
+            "SELECT id, goal_id, status, created_by, created_at,"
+            " scratch_path"
             " FROM strategies ORDER BY id"):
         if int(s["goal_id"]) in goal_ids:
             strategies.append({
@@ -394,6 +428,7 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
                 "status": str(s["status"]),
                 "created_by": str(s["created_by"]),
                 "created_at": str(s["created_at"]),
+                "scratch_path": str(s["scratch_path"] or ""),
             })
     strat_ids = {s["id"] for s in strategies}
     edges = []
@@ -528,7 +563,8 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
         # proof-file import citations (the DAG's cross-links): what the
         # tree views under-report — a Forward product cited by two
         # nodes has real structure
-        "citation_edges": _citation_edges(workspace, problem, goals),
+        "citation_edges": _citation_edges(
+            workspace, problem, goals, strategies, edges),
         "decisions": decisions,
         "proof_files": proof_files,
     }
