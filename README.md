@@ -36,6 +36,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-06
+- Built a browser interface for the framework, with a dashboard of running problems, an interactive proof-tree view for each one, a queue for decisions needing human review, and a control panel for the background proving process.
+- Refined the interface's visual design through dozens of iteration passes, including an external design audit, a full color-palette overhaul, and accessibility and layout fixes.
+- Added a pipeline for ingesting research papers and tracing proof claims back to their sources, exercised on two new test problems about traces of SL(2,ℤ) monodromy matrices.
+- Fixed assorted backend issues, including a race condition that could bypass a final sign-off check, and added per-run token accounting to the database.
+
 ### 2026-07-05
 - Extended the automated prover so its forward-exploration stage can now invent new inductive types, structures, and named instances rather than only lemmas, with database and validation support exercised on fresh toy problems.
 - Added a Hilbert-style propositional calculus benchmark whose target is the deduction theorem, alongside other small test problems.
@@ -165,9 +171,6 @@ live serve.
 ### 2026-06-07
 - Began deduplicating the automatically generated lemma library, dropping entries that merely re-prove results already in Mathlib.
 - Added detection of trivial wrapper lemmas alongside an LLM-assisted pass for subtler duplicates, run per file in parallel with a separate verdict for each declaration.
-
-### 2026-06-06
-- Cleaned up duplicate entries in the shared library of proven results, adding a safeguard so that a result still relied on by another problem is never removed.
 
 <!-- ASTERISM-PROGRESS:END -->
 
