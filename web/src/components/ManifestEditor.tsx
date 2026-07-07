@@ -3,6 +3,7 @@ import { apiDelete, apiGet, apiPost } from '../lib/api'
 import { Link } from '../lib/router'
 import { Button } from './ui'
 import ListField from './ListField'
+import { MarkdownEditor } from '../lib/markdown'
 import type { ManifestData, PaperShelfItem, ProblemPaperBinding } from '../lib/types'
 
 /*
@@ -252,14 +253,12 @@ export default function ManifestEditor({
           <div className="mb-1 text-[11px] font-medium tracking-widest text-ink-faint uppercase">
             instructions — natural language, hot-reloaded
           </div>
-          <textarea
-            className="h-96 w-full resize-y rounded-md border border-edge bg-surface p-3 font-mono text-xs leading-relaxed text-ink focus:border-ink-faint focus:outline-none disabled:opacity-60"
+          <MarkdownEditor
             value={body}
-            onChange={(e) => {
-              setBody(e.target.value)
+            onChange={(v) => {
+              setBody(v)
               touch()
             }}
-            spellCheck={false}
           />
         </div>
         <label
