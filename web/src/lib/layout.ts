@@ -660,13 +660,11 @@ export function layoutConstellation(
     pack(unlinkedTrees)
   }
 
-  // ---- within-band tree slide (owner: threads travel the whole sky
-  // for no reason — MOVING TREES shortens them). Band membership stays
-  // FFDH's (depth homogeneity = vertical economy); the ORDER inside a
-  // band belongs to connectivity: each tree slides toward the mean x
-  // of its cross-link partners, wherever they sit. Bands share the
-  // x-origin, so localSlot compares across bands directly. Two sweeps
-  // let both ends of a thread move.
+  // ---- band composition -----------------------------------------------
+  // Band MEMBERSHIP stays FFDH's (depth homogeneity = vertical
+  // economy); every horizontal decision inside a band belongs to one
+  // optimiser below. Bands share the x-origin, so localSlot compares
+  // across bands directly.
   {
     const bandTrees = new Map<number, Comp[]>()
     for (const t of treeInfos) {
@@ -674,68 +672,122 @@ export function layoutConstellation(
       if (b === undefined) continue
       bandTrees.set(b, [...(bandTrees.get(b) ?? []), t])
     }
-    for (let sweep = 0; sweep < 2; sweep++) {
-      for (const trees of bandTrees.values()) {
-        if (trees.length < 2) continue
-        const score = new Map<Comp, number>()
-        for (const t of trees) {
-          const xs: number[] = []
-          for (const m of t.members) {
-            for (const p of partner.get(m) ?? []) {
-              if (memberComp.get(p) !== t) {
-                const x = localSlot.get(p)
-                if (x !== undefined) xs.push(x)
-              }
-            }
-          }
-          const m0 = t.members[0]
-          const centre =
-            (localSlot.get(m0) ?? 0) -
-            ((xSlot.get(m0) ?? 0) - t.start) +
-            (t.end - t.start) / 2
-          score.set(
-            t,
-            xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : centre,
-          )
-        }
-        trees.sort((a, b) => score.get(a)! - score.get(b)!)
-        let cursor = 0
-        for (const t of trees) {
-          for (const m of t.members) {
-            localSlot.set(m, (xSlot.get(m) ?? 0) - t.start + cursor)
-          }
-          cursor += t.end - t.start + 1 + 0.6
-        }
-      }
-    }
-
-    // ---- justify: bands share one width ------------------------------
-    // The greedy packer leaves ragged right edges and a lone tree sits
-    // flush left in an empty band (BT's root band). Final placement:
-    // gaps stretch evenly toward the widest band's width — capped at
-    // 2× the base gap: stretching further tore connected neighbours
-    // apart and their threads grew right back (stokes stubs). What the
-    // cap leaves over centres the band instead.
+    // ONE optimiser replaces the old slide + justify + centring trio
+    // (owner: repeated patching bred edge cases — the three were
+    // partial answers to the same question and fought each other:
+    // justify tore apart what the slide pulled together). Objective:
+    // per band, place rigid trees to minimise Σ(squared tether length)
+    // subject to a minimum gap and the plate bounds — which is exactly
+    // WEIGHTED interval isotonic regression, the same PAVA law the
+    // node rows already obey. Unlinked trees hold their (pre-centred)
+    // place at low weight, so a linkless neighbour cannot shove a
+    // heavily-linked tree; order follows desired centres. Two sweeps
+    // let both ends of a thread move.
+    const GAP = 0.6
     const natural = (trees: Comp[]) =>
       trees.reduce((a, t) => a + (t.end - t.start + 1), 0) +
-      0.6 * (trees.length - 1)
+      GAP * (trees.length - 1)
     let targetW = 0
     for (const trees of bandTrees.values()) {
       targetW = Math.max(targetW, natural(trees))
     }
+    // pre-centre every band: the no-information default is balance
     for (const trees of bandTrees.values()) {
-      const content = trees.reduce((a, t) => a + (t.end - t.start + 1), 0)
-      const gap =
-        trees.length > 1
-          ? Math.min(1.2, 0.6 + (targetW - natural(trees)) / (trees.length - 1))
-          : 0.6
-      const total = content + gap * (trees.length - 1)
-      let cursor = Math.max(0, (targetW - total) / 2)
+      let cursor = Math.max(0, (targetW - natural(trees)) / 2)
       for (const t of trees) {
         for (const m of t.members) {
           localSlot.set(m, (xSlot.get(m) ?? 0) - t.start + cursor)
         }
-        cursor += t.end - t.start + 1 + gap
+        cursor += t.end - t.start + 1 + GAP
+      }
+    }
+    for (let sweep = 0; sweep < 2; sweep++) {
+      for (const trees of bandTrees.values()) {
+        if (trees.length === 0) continue
+        // desired shift per tree = the mean signed offset of its
+        // cross-link partners (the least-squares optimum for a rigid
+        // move); weight = link count
+        interface Placed {
+          t: Comp
+          w: number
+          desired: number // desired LEFT edge
+          wt: number
+        }
+        const items: Placed[] = trees.map((t) => {
+          const w = t.end - t.start + 1
+          const m0 = t.members[0]
+          const off = (localSlot.get(m0) ?? 0) - ((xSlot.get(m0) ?? 0) - t.start)
+          let sum = 0
+          let n = 0
+          for (const m of t.members) {
+            const mx = localSlot.get(m)
+            if (mx === undefined) continue
+            for (const p of partner.get(m) ?? []) {
+              if (memberComp.get(p) === t) continue
+              const px = localSlot.get(p)
+              if (px !== undefined) {
+                sum += px - mx
+                n++
+              }
+            }
+          }
+          return {
+            t,
+            w,
+            desired: off + (n > 0 ? sum / n : 0),
+            wt: n > 0 ? n : 0.25,
+          }
+        })
+        items.sort((a, b) => a.desired - b.desired || a.t.start - b.t.start)
+        // weighted PAVA in gap-cumulated space (u = left − prefix)
+        let prefix = 0
+        const u: number[] = []
+        for (const it of items) {
+          u.push(it.desired - prefix)
+          prefix += it.w + GAP
+        }
+        const blocks: { sum: number; wt: number; n: number }[] = []
+        items.forEach((it, i) => {
+          let b = { sum: u[i] * it.wt, wt: it.wt, n: 1 }
+          while (
+            blocks.length > 0 &&
+            blocks[blocks.length - 1].sum / blocks[blocks.length - 1].wt >=
+              b.sum / b.wt
+          ) {
+            const prev = blocks.pop()!
+            b = { sum: prev.sum + b.sum, wt: prev.wt + b.wt, n: prev.n + b.n }
+          }
+          blocks.push(b)
+        })
+        const lefts: number[] = []
+        {
+          let i = 0
+          let acc = 0
+          for (const b of blocks) {
+            const base = b.sum / b.wt
+            for (let j = 0; j < b.n; j++, i++) {
+              lefts.push(base + acc)
+              acc += items[i].w + GAP
+            }
+          }
+        }
+        // project into the plate: two clamp passes preserve order+gaps
+        for (let i = 0; i < items.length; i++) {
+          const lo = i === 0 ? 0 : lefts[i - 1] + items[i - 1].w + GAP
+          lefts[i] = Math.max(lefts[i], lo)
+        }
+        for (let i = items.length - 1; i >= 0; i--) {
+          const hi =
+            i === items.length - 1
+              ? targetW - items[i].w
+              : lefts[i + 1] - GAP - items[i].w
+          lefts[i] = Math.min(lefts[i], hi)
+        }
+        items.forEach((it, i) => {
+          for (const m of it.t.members) {
+            localSlot.set(m, (xSlot.get(m) ?? 0) - it.t.start + lefts[i])
+          }
+        })
       }
     }
 
