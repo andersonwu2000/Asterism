@@ -259,6 +259,9 @@ export interface LibraryChapterDecl {
   signature: string | null
   decl_kind: string | null
   doc: string
+  /** the decl's real source block (attributes + header + proof body,
+   * docstring excluded) — the run state seeds a live editor with it */
+  source: string | null
   is_deliverable: boolean
   /** how many OTHER modules of this problem reach for it — the
    * keystone weight (ingest weakens the claim flags; demonstrated

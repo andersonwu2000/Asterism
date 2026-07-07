@@ -684,15 +684,20 @@ def _stmt_head(text: str, start: int) -> str:
 
 
 def _scan_library_file(
-        text: str) -> "tuple[str, dict[str, tuple[int, str, str, str]], list[str]]":
-    """(module_doc, {short_decl_name: (line, docstring, kind, stmt)},
-    imports). `line` is 1-based — same domain as the oracle-backed
-    `library_decls.src_line`, so the two sort keys mix cleanly."""
+        text: str,
+) -> "tuple[str, dict[str, tuple[int, str, str, str, str | None]], list[str]]":
+    """(module_doc, {short_decl_name: (line, docstring, kind, stmt,
+    source)}, imports). `line` is 1-based — same domain as the
+    oracle-backed `library_decls.src_line`, so the two sort keys mix
+    cleanly. `source` is the decl's full source block (attributes +
+    header + body, docstring excluded) — the chapter's run state seeds
+    an editor with it."""
     m = _MODULE_DOC_RE.search(text)
     module_doc = m.group(1).strip() if m else ""
-    docs: "dict[str, tuple[int, str, str, str]]" = {}
+    docs: "dict[str, tuple[int, str, str, str, str | None]]" = {}
     doc_ends = [(d.end(), d.group(1).strip()) for d in _DOCSTRING_RE.finditer(text)]
-    for dm in _DECL_RE.finditer(text):
+    matches = list(_DECL_RE.finditer(text))
+    for i, dm in enumerate(matches):
         name = dm.group(2).split(".")[-1]
         if name in docs:
             continue  # first occurrence wins (aliases repeat names)
@@ -706,8 +711,23 @@ def _scan_library_file(
             gap = text[end:dm.start()]
             if re.fullmatch(r"(?:\s|@\[[^\]]*\]|--[^\n]*)*", gap):
                 doc = body
+        nxt = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        src = text[dm.start():nxt].rstrip()
+        # the tail may be the NEXT decl's docstring / section header /
+        # `... in`-modifier lines (set_option, open, attributes) or an
+        # `end Foo` namespace closer — all belong to what follows, not
+        # to this decl; strip until the block ends in real content
+        while True:
+            tail = re.search(
+                r"\n\s*(?:/(?:--|-!)(?:(?!-/)[\s\S])*-/|end\s+[\w.]+"
+                r"|(?:set_option|open)[^\n]*\bin|@\[[^\]]*\]"
+                r"|--[^\n]*)\s*$", src)
+            if not tail:
+                break
+            src = src[:tail.start()].rstrip()
         docs[name] = (text.count("\n", 0, dm.start()) + 1, doc,
-                      dm.group(1), _stmt_head(text, dm.start()))
+                      dm.group(1), _stmt_head(text, dm.start()),
+                      src or None)
     return module_doc, docs, _IMPORT_RE.findall(text)
 
 
@@ -803,8 +823,8 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
         for r in per_file[path]:
             slug = str(r["slug"])
             short = str(r["target_name"] or slug).split(".")[-1]
-            line, doc, file_kind, file_stmt = docs.get(
-                short, (1 << 30, "", "", ""))
+            line, doc, file_kind, file_stmt, file_src = docs.get(
+                short, (1 << 30, "", "", "", None))
             # oracle values win (v24: docstring/src_line stored at bridge;
             # docstring '' = confirmed none, NULL = pre-backfill row →
             # curated source text fallback)
@@ -822,6 +842,9 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
                 "signature": r["signature"] or file_stmt or None,
                 "decl_kind": r["decl_kind"] or file_kind or None,
                 "doc": doc,
+                # the decl's real source block — the run state seeds a
+                # live editor with it (proof included, editable)
+                "source": file_src,
                 "is_deliverable": deliverable.get(slug, False),
                 "used_by": used_by,
             }))

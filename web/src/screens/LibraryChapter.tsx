@@ -152,6 +152,21 @@ function shortenLibraryNames(s: string): string {
   return s.replace(/\bLibrary(?:\.[A-Za-z0-9_'₀-₉]+)*\.([A-Za-z0-9_'₀-₉]+)/g, '$1')
 }
 
+/** The run state's editor content: the decl's REAL source (proof
+ * included — rewrite it, the axioms check below answers for YOUR
+ * version), opened in its namespace so sibling references resolve.
+ * Decls whose source the scan missed fall back to a #check probe. */
+function probeSeed(d: LibraryChapterDecl & { file?: string }, short: string): string {
+  const fq = d.name ?? d.slug
+  if (d.source) {
+    const ns = fq.includes('.') ? fq.slice(0, fq.lastIndexOf('.')) : null
+    return (
+      (ns ? `open ${ns}\n\n` : '') + d.source + `\n\n#print axioms ${short}`
+    )
+  }
+  return `#check @${fq}\n\n#print axioms ${fq}`
+}
+
 function DeclEntry({
   d,
   module,
@@ -257,7 +272,7 @@ function DeclEntry({
         <LeanProbe
           fq={d.name ?? d.slug}
           module={module}
-          seed={`#check @${d.name ?? d.slug}\n\n#print axioms ${d.name ?? d.slug}`}
+          seed={probeSeed(d, short)}
           onClose={() => setProbing(false)}
         />
       )}

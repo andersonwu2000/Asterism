@@ -99,6 +99,9 @@ export function LeanProbe({
     cursor && s.goal && s.goal !== 'no goals' && !s.goal.startsWith('<no goals')
       ? s.goal.replace(/^```lean\n?/, '').replace(/\n?```\s*$/, '')
       : null
+  // two frames, like Defs/Root: the editor, and ONE InfoView below
+  // (goal at cursor on top, messages/output under it)
+  const hasInfo = status !== '' || goalText != null || diags.length > 0
   return (
     <div className="mt-2 ml-[22px] max-w-4xl">
       <div className="rounded-md border border-edge bg-white/[0.02]">
@@ -109,27 +112,31 @@ export function LeanProbe({
           heightClass="min-h-16 h-auto field-sizing-content"
           frameless
         />
-        <div className="flex items-center gap-3 border-t border-edge px-3 py-1.5">
-          {onClose && (
+        {onClose && (
+          <div className="flex items-center border-t border-edge px-3 py-1">
             <button
               className="cursor-pointer font-mono text-[10px] text-ink-faint transition-colors hover:text-ink"
               onClick={onClose}
             >
               close
             </button>
-          )}
-          <span className="text-[10px] text-ink-faint">{status}</span>
-        </div>
+          </div>
+        )}
       </div>
-      {goalText && (
-        <pre className="mt-1.5 overflow-x-auto rounded-md border border-edge px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink">
-          <span className="mr-2 text-[10px] tracking-widest text-ink-faint uppercase">
-            goal
-          </span>
-          {goalText}
-        </pre>
+      {hasInfo && (
+        <div className="mt-1.5 rounded-md border border-edge px-3 py-2">
+          {status !== '' && <div className="text-[11px] text-ink-faint">{status}</div>}
+          {goalText && (
+            <pre className="overflow-x-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink">
+              <span className="mr-2 text-[10px] tracking-widest text-ink-faint uppercase">
+                goal
+              </span>
+              {goalText}
+            </pre>
+          )}
+          <DiagList diags={diags} />
+        </div>
       )}
-      <DiagList diags={diags} />
     </div>
   )
 }
