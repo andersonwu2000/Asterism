@@ -73,20 +73,26 @@ export default function New() {
     ...(check.parts.defs ?? []),
     ...(check.parts.root ?? []),
   ])
+  // buffer verdict only — engine lifecycle states live in the goal
+  // panel, where the eye already is
   const checkWord =
+    check.phase === 'checking'
+      ? 'checking…'
+      : check.phase === 'ready' && !check.detail
+        ? nErr === 0
+          ? '✓ elaborates'
+          : `${nErr} error${nErr === 1 ? '' : 's'}`
+        : ''
+  const engineWord =
     check.phase === 'warming'
-      ? 'engine warming — checks resume on their own'
+      ? 'engine warming — the check resumes on its own (a cold start can take a minute)'
       : check.phase === 'busy'
-        ? 'engine editor slot is busy elsewhere — retrying'
-        : check.phase === 'checking' || check.phase === 'connecting'
-          ? 'checking…'
+        ? 'the engine editor slot is busy elsewhere — retrying'
+        : check.phase === 'connecting'
+          ? 'connecting to the engine…'
           : check.detail
             ? `engine error: ${check.detail}`
-            : check.phase === 'ready'
-              ? nErr === 0
-                ? '✓ elaborates'
-                : `${nErr} error${nErr === 1 ? '' : 's'}`
-              : ''
+            : null
 
   const nameOk = NAME_RE.test(name)
   // concrete reason, live as the user types (or after a blur): silent
@@ -230,18 +236,26 @@ export default function New() {
             />
             <DiagList diags={check.parts.root ?? []} />
           </div>
-          {check.phase !== 'idle' && cursor && (
+          {check.phase !== 'idle' && (
             <div className="rounded-md border border-edge bg-white/[0.02]">
               <div className="flex items-baseline gap-2 border-b border-edge px-3 py-1.5">
                 <span className="text-[10px] tracking-widest text-ink-faint uppercase">
                   goal at cursor
                 </span>
-                <span className="font-mono text-[10px] text-ink-faint">
-                  {cursor.part} L{cursor.line}
-                </span>
+                {cursor && (
+                  <span className="font-mono text-[10px] text-ink-faint">
+                    {cursor.part} L{cursor.line}
+                  </span>
+                )}
               </div>
               <pre className="max-h-56 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
-                {check.goal && check.goal !== 'no goals' ? (
+                {engineWord ? (
+                  <span className="text-ink-dim">{engineWord}</span>
+                ) : !cursor ? (
+                  <span className="text-ink-faint">
+                    — place the cursor inside a `by` proof to see its goal
+                  </span>
+                ) : check.goal && check.goal !== 'no goals' ? (
                   check.goal.replace(/^```lean\n?/, '').replace(/\n?```\s*$/, '')
                 ) : (
                   <span className="text-ink-faint">
@@ -251,7 +265,7 @@ export default function New() {
                   </span>
                 )}
               </pre>
-              {check.note && (
+              {check.note && !engineWord && (
                 <div className="border-t border-edge px-3 py-1.5 text-[10px] text-ink-faint">
                   {check.note}
                 </div>
