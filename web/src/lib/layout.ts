@@ -212,6 +212,23 @@ export function layoutConstellation(
   }
   for (const ks of treeKids.values()) ks.sort((a, b) => a - b)
 
+  // Child → the strategy of its primary hierarchy edge, kept only when
+  // that strategy bundles (≥2 children): these are the junction fans
+  // whose arms the shelf order can tangle.
+  const stratSize = new Map<number, number>()
+  for (const e of edges) {
+    if (e.kind !== 'strategy') continue
+    stratSize.set(e.strategyId, (stratSize.get(e.strategyId) ?? 0) + 1)
+  }
+  const stratOfChild = new Map<number, number>()
+  for (const e of edges) {
+    if (e.kind !== 'strategy') continue
+    if (primaryParent.get(e.to) !== e.from) continue
+    if ((stratSize.get(e.strategyId) ?? 0) < 2) continue
+    const prev = stratOfChild.get(e.to)
+    if (prev === undefined || e.strategyId < prev) stratOfChild.set(e.to, e.strategyId)
+  }
+
   const isSingleton = (id: number) =>
     !primaryParent.has(id) && (treeKids.get(id)?.length ?? 0) === 0
   const treeRoots = goals
@@ -302,9 +319,15 @@ export function layoutConstellation(
     }))
     if (leafKs.length > 8) {
       const perRow = Math.ceil(Math.sqrt(leafKs.length * 2.2))
+      // inside the grid, leaves of one strategy cluster (row-major):
+      // each junction's arms fan toward a compact block, not a stripe
+      const gridLeaves = [...leafKs].sort(
+        (a, b) =>
+          (stratOfChild.get(a) ?? -1) - (stratOfChild.get(b) ?? -1) || a - b,
+      )
       items.push({
         kind: 'leaves',
-        leaves: leafKs,
+        leaves: gridLeaves,
         w: perRow,
         d: Math.ceil(leafKs.length / perRow),
         ord: ordIdx.get(leafKs[0]) ?? 0,
@@ -1137,6 +1160,457 @@ export function layoutConstellation(
     layer: layer.get(g.id) ?? 0,
     col: colOf.get(g.id) ?? 0,
   }))
+
+  // ---- crossing-driven refinement -----------------------------------
+  // Everything above optimises a PROXY (tether length, barycenter,
+  // contiguity) and the proxies fight at the margins: enforcing
+  // junction contiguity blindly traded 4 same-parent crossings for 28
+  // cross-tree ones on residue. So the final pass optimises the real
+  // objective — the weighted crossing count the sky is judged by
+  // (bright×bright 1, bright×faint 0.2, faint×faint 0.05, ultra-hub
+  // starburst excluded), the same law as scripts/sky-crossings.mjs.
+  // Bounded discrete moves on the final geometry — mirror a tree, swap
+  // two band-adjacent trees — accepted only on strict improvement,
+  // evaluated incrementally (only segments touching moved nodes are
+  // retested). Deterministic: fixed proposal order, exact arithmetic.
+  if (goals.length <= 600) {
+    const px = new Map<number, number>()
+    const pyOf = new Map<number, number>()
+    for (const n of nodes) {
+      px.set(n.goal.id, n.x)
+      pyOf.set(n.goal.id, n.y)
+    }
+    // bundle groups (≥2 children); OR offsets are recomputed from the
+    // CURRENT geometry on every evaluation — the engine's junction law
+    // must be byte-identical to the builder's, or accepted moves stop
+    // being improvements once the real bundles are built
+    interface EngineGroup {
+      sid: number
+      parent: number
+      children: number[]
+    }
+    const groups: EngineGroup[] = []
+    const groupsByParent = new Map<number, EngineGroup[]>()
+    {
+      const byStrat = new Map<number, LayoutEdge[]>()
+      for (const e of edges) {
+        if (e.kind !== 'strategy') continue
+        byStrat.set(e.strategyId, [...(byStrat.get(e.strategyId) ?? []), e])
+      }
+      for (const [sid, es] of [...byStrat].sort((a, b) => a[0] - b[0])) {
+        if (es.length < 2) continue
+        const children = es.map((e) => e.to).filter((c) => px.has(c))
+        if (children.length < 2 || !px.has(es[0].from)) continue
+        const g: EngineGroup = { sid, parent: es[0].from, children }
+        groups.push(g)
+        groupsByParent.set(g.parent, [...(groupsByParent.get(g.parent) ?? []), g])
+      }
+    }
+    interface Seg {
+      x1: number
+      y1: number
+      x2: number
+      y2: number
+      bxLo: number
+      bxHi: number
+      byLo: number
+      byHi: number
+      bright: boolean
+      cite: boolean
+      mark: number
+      grp?: EngineGroup
+      end?: number // arm child / stem parent, junction is the other end
+    }
+    const segs: Seg[] = []
+    const byDep = new Map<number, Seg[]>()
+    const dep = (id: number, s: Seg) => byDep.set(id, [...(byDep.get(id) ?? []), s])
+    const finish = (s: Seg): void => {
+      s.bxLo = Math.min(s.x1, s.x2)
+      s.bxHi = Math.max(s.x1, s.x2)
+      s.byLo = Math.min(s.y1, s.y2)
+      s.byHi = Math.max(s.y1, s.y2)
+      s.bright = !s.cite && Math.hypot(s.x2 - s.x1, s.y2 - s.y1) <= 480
+    }
+    const junctionOf = (g: EngineGroup): { x: number; y: number } => {
+      const pxx = px.get(g.parent)!
+      const pyy = pyOf.get(g.parent)!
+      const meanCx = (gg: EngineGroup): number =>
+        gg.children.reduce((a, c) => a + px.get(c)!, 0) / gg.children.length
+      const cx = meanCx(g)
+      const cyMin = Math.min(...g.children.map((c) => pyOf.get(c)!))
+      const sibs = groupsByParent.get(g.parent) ?? [g]
+      let orOff = 0
+      if (sibs.length > 1) {
+        const ranked = [...sibs].sort((a, b) => meanCx(a) - meanCx(b) || a.sid - b.sid)
+        orOff = (ranked.indexOf(g) - (sibs.length - 1) / 2) * 18
+      }
+      return { x: pxx + (cx - pxx) * 0.35 + orOff, y: pyy + (cyMin - pyy) * 0.45 }
+    }
+    const reSeg = (s: Seg): void => {
+      if (s.grp !== undefined) {
+        const j = junctionOf(s.grp)
+        const other = s.end!
+        s.x1 = j.x
+        s.y1 = j.y
+        s.x2 = px.get(other)!
+        s.y2 = pyOf.get(other)!
+      }
+      finish(s)
+    }
+    // segments touching an ultra-hub weigh 0 in the objective (the
+    // sun's starburst is a design choice) — never build them at all
+    const bundled = new Set<number>()
+    for (const g of groups) {
+      const hubP = ultraHubs.has(g.parent)
+      const gSegs: Seg[] = []
+      if (!hubP) {
+        gSegs.push({
+          x1: 0, y1: 0,
+          x2: px.get(g.parent)!, y2: pyOf.get(g.parent)!,
+          bxLo: 0, bxHi: 0, byLo: 0, byHi: 0,
+          bright: false, cite: false, mark: 0, grp: g, end: g.parent,
+        })
+        for (const c of g.children) {
+          if (ultraHubs.has(c)) continue
+          gSegs.push({
+            x1: 0, y1: 0,
+            x2: px.get(c)!, y2: pyOf.get(c)!,
+            bxLo: 0, bxHi: 0, byLo: 0, byHi: 0,
+            bright: false, cite: false, mark: 0, grp: g, end: c,
+          })
+        }
+      }
+      if (gSegs.length === 0) continue
+      segs.push(...gSegs)
+      // every group seg moves when ANY sibling group's member moves —
+      // the OR rank (and so the junction) is a function of them all
+      const depIds = new Set<number>([g.parent])
+      for (const sib of groupsByParent.get(g.parent) ?? [g]) {
+        for (const c of sib.children) depIds.add(c)
+      }
+      for (const id of depIds) for (const s of gSegs) dep(id, s)
+    }
+    // strategy edges that belong to a bundle are drawn as arms, not
+    // plain edges — mirror the builder's split
+    {
+      const cnt = new Map<number, number>()
+      for (const e of edges) {
+        if (e.kind === 'strategy') cnt.set(e.strategyId, (cnt.get(e.strategyId) ?? 0) + 1)
+      }
+      for (const e of edges) {
+        if (e.kind === 'strategy' && (cnt.get(e.strategyId) ?? 0) >= 2) bundled.add(e.strategyId)
+      }
+    }
+    for (const e of edges) {
+      if (e.kind === 'strategy' && bundled.has(e.strategyId)) continue
+      if (ultraHubs.has(e.from) || ultraHubs.has(e.to)) continue
+      const a = px.get(e.from)
+      const b = px.get(e.to)
+      if (a === undefined || b === undefined) continue
+      const s: Seg = {
+        x1: a, y1: pyOf.get(e.from)!,
+        x2: b, y2: pyOf.get(e.to)!,
+        bxLo: 0, bxHi: 0, byLo: 0, byHi: 0,
+        bright: false, cite: e.kind === 'citation', mark: 0,
+      }
+      finish(s)
+      segs.push(s)
+      dep(e.from, s)
+      dep(e.to, s)
+    }
+    for (const s of segs) if (s.grp !== undefined) reSeg(s)
+    // plain segs need endpoint refresh on move too
+    const plainEnds = new Map<Seg, [number, number]>()
+    for (const [id, list] of byDep) {
+      for (const s of list) {
+        if (s.grp !== undefined) continue
+        const ends = plainEnds.get(s) ?? ([-1, -1] as [number, number])
+        if (ends[0] === -1) ends[0] = id
+        else if (ends[0] !== id && ends[1] === -1) ends[1] = id
+        plainEnds.set(s, ends)
+      }
+    }
+    const refresh = (s: Seg): void => {
+      if (s.grp !== undefined) {
+        reSeg(s)
+        return
+      }
+      const ends = plainEnds.get(s)
+      if (!ends) return
+      s.x1 = px.get(ends[0])!
+      s.y1 = pyOf.get(ends[0])!
+      if (ends[1] !== -1) {
+        s.x2 = px.get(ends[1])!
+        s.y2 = pyOf.get(ends[1])!
+      }
+      finish(s)
+    }
+    const inter = (s: Seg, t: Seg): boolean => {
+      const dd = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number) =>
+        (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+      const eq = (x1: number, y1: number, x2: number, y2: number) =>
+        Math.abs(x1 - x2) < 1e-6 && Math.abs(y1 - y2) < 1e-6
+      if (
+        eq(s.x1, s.y1, t.x1, t.y1) ||
+        eq(s.x1, s.y1, t.x2, t.y2) ||
+        eq(s.x2, s.y2, t.x1, t.y1) ||
+        eq(s.x2, s.y2, t.x2, t.y2)
+      ) {
+        return false
+      }
+      const d1 = dd(t.x1, t.y1, t.x2, t.y2, s.x1, s.y1)
+      const d2 = dd(t.x1, t.y1, t.x2, t.y2, s.x2, s.y2)
+      const d3 = dd(s.x1, s.y1, s.x2, s.y2, t.x1, t.y1)
+      const d4 = dd(s.x1, s.y1, s.x2, s.y2, t.x2, t.y2)
+      return (
+        ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+        ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+      )
+    }
+    const pairW = (s: Seg, t: Seg): number => {
+      if (s.bxHi < t.bxLo || t.bxHi < s.bxLo || s.byHi < t.byLo || t.byHi < s.byLo) return 0
+      if (!inter(s, t)) return 0
+      return s.bright && t.bright ? 1 : s.bright || t.bright ? 0.2 : 0.05
+    }
+    const affectedOf = (ids: number[]): Seg[] => {
+      const set = new Set<Seg>()
+      for (const id of ids) for (const s of byDep.get(id) ?? []) set.add(s)
+      return [...set]
+    }
+    let markGen = 0
+    const localW = (aff: Seg[]): number => {
+      markGen += 1
+      for (const s of aff) s.mark = markGen
+      let w = 0
+      for (let i = 0; i < aff.length; i++) {
+        const s = aff[i]
+        for (let j = i + 1; j < aff.length; j++) w += pairW(s, aff[j])
+        for (const t of segs) {
+          if (t.mark !== markGen) w += pairW(s, t)
+        }
+      }
+      return w
+    }
+    // a move = new xs for a set of nodes; accept iff strictly better
+    const tryMove = (moves: [number, number][]): boolean => {
+      const ids = moves.map(([id]) => id)
+      const aff = affectedOf(ids)
+      const before = localW(aff)
+      const prev = moves.map(([id]) => [id, px.get(id)!] as [number, number])
+      for (const [id, x] of moves) px.set(id, x)
+      for (const s of aff) refresh(s)
+      const after = localW(aff)
+      if (after < before - 1e-9) return true
+      for (const [id, x] of prev) px.set(id, x)
+      for (const s of aff) refresh(s)
+      return false
+    }
+    // sibling blocks: a parent's child subtrees, each a rigid x-block.
+    // Only pairwise-disjoint blocks (= shelf-mates) may permute; a
+    // wrapped shelf or leaf grid overlaps in x and stays fixed.
+    const subMembers = new Map<number, number[]>()
+    const membersOf = (k: number): number[] => {
+      const memo = subMembers.get(k)
+      if (memo) return memo
+      const acc: number[] = []
+      const stack = [k]
+      while (stack.length > 0) {
+        const id = stack.pop()!
+        if (acc.length > goals.length) break
+        acc.push(id)
+        for (const c of treeKids.get(id) ?? []) stack.push(c)
+      }
+      subMembers.set(k, acc)
+      return acc
+    }
+    interface Block {
+      k: number
+      grp: number
+      lo: number
+      hi: number
+    }
+    const blocksOf = (p: number): Block[] | null => {
+      const ks = (treeKids.get(p) ?? []).filter((k) => px.has(k))
+      if (ks.length < 2) return null
+      const blocks: Block[] = []
+      for (const k of ks) {
+        let lo = Infinity
+        let hi = -Infinity
+        for (const m of membersOf(k)) {
+          const x = px.get(m)
+          if (x === undefined) continue
+          lo = Math.min(lo, x)
+          hi = Math.max(hi, x)
+        }
+        if (!isFinite(lo)) continue
+        blocks.push({ k, grp: stratOfChild.get(k) ?? -(k + 2), lo, hi })
+      }
+      blocks.sort((a, b) => a.lo - b.lo)
+      for (let i = 0; i + 1 < blocks.length; i++) {
+        if (blocks[i].hi >= blocks[i + 1].lo) return null
+      }
+      return blocks.length >= 2 ? blocks : null
+    }
+    // lay blocks into the same span in a new order: widths ride along,
+    // the original gap sequence stays
+    const arrangeMoves = (blocks: Block[], order: Block[]): [number, number][] => {
+      const gaps: number[] = []
+      for (let i = 0; i + 1 < blocks.length; i++) gaps.push(blocks[i + 1].lo - blocks[i].hi)
+      const moves: [number, number][] = []
+      let cursor = blocks[0].lo
+      order.forEach((b, i) => {
+        const d = cursor - b.lo
+        if (Math.abs(d) > 1e-9) {
+          for (const m of membersOf(b.k)) {
+            const x = px.get(m)
+            if (x !== undefined) moves.push([m, x + d])
+          }
+        }
+        cursor += b.hi - b.lo + (i < gaps.length ? gaps[i] : 0)
+      })
+      return moves
+    }
+    const siblingPass = (): void => {
+      const parentsWithKids = [...treeKids.keys()].sort((a, b) => a - b)
+      for (const p of parentsWithKids) {
+        const blocks = blocksOf(p)
+        if (!blocks) continue
+        // (a) compound proposal: same-strategy blocks contiguous,
+        // groups ordered by mean x — the jump adjacent swaps can't make
+        const byGrp = new Map<number, Block[]>()
+        for (const b of blocks) byGrp.set(b.grp, [...(byGrp.get(b.grp) ?? []), b])
+        if (byGrp.size < blocks.length) {
+          const gMean = (bs: Block[]): number =>
+            bs.reduce((a, b) => a + (b.lo + b.hi) / 2, 0) / bs.length
+          const grouped = [...byGrp.values()]
+            .sort((a, b) => gMean(a) - gMean(b))
+            .flat()
+          const same = grouped.every((b, i) => b === blocks[i])
+          if (!same) tryMove(arrangeMoves(blocks, grouped))
+        }
+        // (b) adjacent block swaps, one bubble sweep
+        let cur = blocksOf(p)
+        if (!cur) continue
+        for (let i = 0; i + 1 < cur.length; i++) {
+          const order = [...cur]
+          const t = order[i]
+          order[i] = order[i + 1]
+          order[i + 1] = t
+          if (tryMove(arrangeMoves(cur, order))) {
+            cur = blocksOf(p)
+            if (!cur) break
+          }
+        }
+        // (c) mirror a child block in place
+        if (cur) {
+          for (const b of cur) {
+            if (b.hi - b.lo < 1e-9) continue
+            const moves: [number, number][] = []
+            for (const m of membersOf(b.k)) {
+              const x = px.get(m)
+              if (x !== undefined) moves.push([m, b.lo + b.hi - x])
+            }
+            tryMove(moves)
+          }
+        }
+      }
+    }
+    // proposal set: per band, left-to-right adjacent tree swaps, then a
+    // mirror per tree; two sweeps let a swap unlock a mirror and back
+    const compsByBand = new Map<number, Comp[]>()
+    for (const t of treeInfos) {
+      const b = bandOfNode.get(t.members[0])
+      if (b === undefined) continue
+      compsByBand.set(b, [...(compsByBand.get(b) ?? []), t])
+    }
+    const extent = (t: Comp): [number, number] => {
+      let lo = Infinity
+      let hi = -Infinity
+      for (const m of t.members) {
+        const x = px.get(m)
+        if (x === undefined) continue
+        lo = Math.min(lo, x)
+        hi = Math.max(hi, x)
+      }
+      return [lo, hi]
+    }
+    const treePass = (): void => {
+      for (const [, comps] of [...compsByBand].sort((a, b) => a[0] - b[0])) {
+        comps.sort((a, b) => extent(a)[0] - extent(b)[0])
+        for (let i = 0; i + 1 < comps.length; i++) {
+          const [aLo, aHi] = extent(comps[i])
+          const [bLo, bHi] = extent(comps[i + 1])
+          if (!isFinite(aLo) || !isFinite(bLo)) continue
+          const gap = bLo - aHi
+          const dB = aLo - bLo
+          const dA = bHi - bLo + gap
+          const moves: [number, number][] = []
+          for (const m of comps[i].members) {
+            const x = px.get(m)
+            if (x !== undefined) moves.push([m, x + dA])
+          }
+          for (const m of comps[i + 1].members) {
+            const x = px.get(m)
+            if (x !== undefined) moves.push([m, x + dB])
+          }
+          if (tryMove(moves)) {
+            const t = comps[i]
+            comps[i] = comps[i + 1]
+            comps[i + 1] = t
+          }
+        }
+        for (const t of comps) {
+          if (t.members.length < 2) continue
+          const [lo, hi] = extent(t)
+          if (!isFinite(lo)) continue
+          const moves: [number, number][] = []
+          for (const m of t.members) {
+            const x = px.get(m)
+            if (x !== undefined) moves.push([m, lo + hi - x])
+          }
+          tryMove(moves)
+        }
+      }
+    }
+    // Greedy is path-dependent and neither schedule dominates (coarse
+    // first won stokes/residue, fine first won sphere/green): run BOTH
+    // from the same seed and keep whichever final sky scores better on
+    // the full objective. Deterministic, and the schedule choice stops
+    // being a tuning knob.
+    const totalW = (): number => {
+      let w = 0
+      for (let i = 0; i < segs.length; i++) {
+        for (let j = i + 1; j < segs.length; j++) w += pairW(segs[i], segs[j])
+      }
+      return w
+    }
+    const seed = new Map(px)
+    const restore = (state: Map<number, number>): void => {
+      for (const [id, x] of state) px.set(id, x)
+      for (const s of segs) refresh(s)
+    }
+    let best: Map<number, number> | null = null
+    let bestW = Infinity
+    for (const coarseFirst of [true, false]) {
+      restore(seed)
+      for (let sweep = 0; sweep < 2; sweep++) {
+        if (coarseFirst) {
+          treePass()
+          siblingPass()
+        } else {
+          siblingPass()
+          treePass()
+        }
+      }
+      const w = totalW()
+      if (w < bestW - 1e-9) {
+        bestW = w
+        best = new Map(px)
+      }
+    }
+    if (best) restore(best)
+    for (const n of nodes) n.x = px.get(n.goal.id) ?? n.x
+  }
 
   // Hyperedge bundles: group strategy edges by strategy; ≥2 children
   // form an AND-bundle with a junction point, single-child strategies
