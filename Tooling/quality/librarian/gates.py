@@ -29,10 +29,12 @@ from pathlib import Path
 
 # Matches a Lean import line, tolerating the newer `public import` /
 # `private import` module-system prefixes mathlib now emits. Captures the
-# dotted module path.
-_IMPORT_RE = re.compile(
-    r"^\s*(?:public\s+|private\s+)?import\s+([A-Za-z_][\w.]*)\s*$"
-)
+# dotted module path. The pattern STRING is public — the one spelling of
+# a Lean import line; other consumers (serve chapter) compile it with
+# their own flags (re.M for whole-text scans).
+IMPORT_LINE_PATTERN = (
+    r"^\s*(?:public\s+|private\s+)?import\s+([A-Za-z_][\w.]*)\s*$")
+_IMPORT_RE = re.compile(IMPORT_LINE_PATTERN)
 
 # Roots a self-contained Library file is allowed to import.
 _ALLOWED_ROOTS = ("Mathlib", "Library", "Init", "Std", "Batteries", "Lean")

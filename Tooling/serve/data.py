@@ -13,6 +13,8 @@ import re
 import sqlite3
 from pathlib import Path
 
+from ..pipeline.librarian.astslice import _library_module_of
+from ..quality.librarian.gates import IMPORT_LINE_PATTERN
 from ..state import db
 
 
@@ -652,7 +654,9 @@ _DECL_RE = re.compile(
     r"(theorem|lemma|def|abbrev|structure|class|instance|inductive|alias)\s+"
     r"([A-Za-z0-9_'₀-₉α-ω.]+)",
     re.M)
-_IMPORT_RE = re.compile(r"^import\s+([\w.]+)", re.M)
+# the one spelling of a Lean import line (public/private prefixes,
+# leading whitespace — gates.py owns it), compiled for whole-text scans
+_IMPORT_RE = re.compile(IMPORT_LINE_PATTERN, re.M)
 
 
 def _stmt_head(text: str, start: int) -> str:
@@ -766,8 +770,7 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
 
     # Import order tells the story: a module comes after the siblings
     # it imports (Kahn; ties keep path order for determinism).
-    mod_of = {path: path.removesuffix(".lean").replace("/", ".")
-              for path in per_file}
+    mod_of = {path: _library_module_of(path) for path in per_file}
     mod_paths = {v: k for k, v in mod_of.items()}
     deps_of = {path: [d for d in scanned[path][2]
                       if d in mod_paths and d != mod_of[path]]
