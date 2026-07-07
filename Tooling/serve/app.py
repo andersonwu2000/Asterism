@@ -73,6 +73,13 @@ class RejectIngestBody(BaseModel):
     reason: str | None = None
 
 
+class ApproveIngestBody(BaseModel):
+    """The Library decision is made HERE, information in hand (owner:
+    a human signs; nothing enters the Library automatically). None =
+    keep the standing flag."""
+    library: bool | None = None
+
+
 class RejectDeclBody(BaseModel):
     decl: str  # slug or Problems.<problem>.<slug> FQN (as review prints)
     reason: str | None = None
@@ -625,15 +632,29 @@ def create_app(workspace: Path) -> FastAPI:
             conn.close()
 
     @app.post("/api/problems/{problem}/approve-ingest")
-    def approve_ingest(problem: str) -> dict:
+    def approve_ingest(problem: str,
+                       body: "ApproveIngestBody | None" = None) -> dict:
         import argparse
         from ..core import cli as _cli
+        # the harvest decision lands with the signature: write the
+        # library flag through the chokepoint BEFORE approving (the
+        # librarian scheduler reads it after sign-off, so this is the
+        # last honest moment to set it)
+        if body is not None and body.library is not None:
+            from ..state import settings as _settings
+            conn = db.connect(workspace / "asterism.db")
+            try:
+                _settings.write(conn, problem, "library",
+                                bool(body.library))
+            finally:
+                conn.close()
         code = _cli.cmd_approve_ingest(argparse.Namespace(problem=problem))
         if code != 0:
             raise HTTPException(
                 status_code=409,
                 detail=f"{problem!r} is not awaiting ingest sign-off")
-        return {"problem": problem, "action": "approve-ingest"}
+        return {"problem": problem, "action": "approve-ingest",
+                "library": None if body is None else body.library}
 
     @app.post("/api/problems/{problem}/reject-ingest")
     def reject_ingest(problem: str, body: RejectIngestBody) -> dict:

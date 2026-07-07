@@ -148,15 +148,19 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const act = async (action: 'approve' | 'reject') => {
+  // the Library decision is made HERE, statements in hand — approving
+  // carries it (owner: a human signs; nothing is harvested by default)
+  const act = async (action: 'harvest' | 'archive' | 'reject') => {
     setBusy(true)
     setError(null)
     try {
-      if (action === 'approve') {
-        await apiPost(`/api/problems/${encodeURIComponent(s.problem)}/approve-ingest`)
-      } else {
+      if (action === 'reject') {
         await apiPost(`/api/problems/${encodeURIComponent(s.problem)}/reject-ingest`, {
           reason: reason || undefined,
+        })
+      } else {
+        await apiPost(`/api/problems/${encodeURIComponent(s.problem)}/approve-ingest`, {
+          library: action === 'harvest',
         })
       }
       onDone()
@@ -185,8 +189,16 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
       </div>
       {error && <div className="mb-2 text-xs text-danger">{error}</div>}
       <div className="flex items-center gap-2">
-        <Button variant="star" disabled={busy} onClick={() => void act('approve')}>
+        <Button variant="star" disabled={busy} onClick={() => void act('harvest')}>
           Approve — harvest to Library
+        </Button>
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => void act('archive')}
+          title="accept the results but keep them out of the Library — the proofs stay archived with the problem"
+        >
+          Approve — archive only
         </Button>
         <div className="ml-auto flex items-center gap-2">
           {rejecting && (

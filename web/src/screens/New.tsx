@@ -20,7 +20,6 @@ const DEFAULT_AXIOMS = ['propext', 'Quot.sound', 'Classical.choice']
 export default function New() {
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
-  const [library, setLibrary] = useState(true)
   const [showLean, setShowLean] = useState(false)
   const [defs, setDefs] = useState('')
   const [root, setRoot] = useState('')
@@ -74,7 +73,10 @@ export default function New() {
         name,
         body,
         settings: {
-          library,
+          // whether finished work enters the Library is decided by a
+          // human AT SIGN-OFF (owner: no automatic harvest) — true
+          // here just raises that review gate when the problem ends
+          library: true,
           axioms_whitelist: axioms,
           forbidden_lemmas: forbidden,
           lemma_hints: hints,
@@ -153,10 +155,10 @@ export default function New() {
         </div>
       )}
 
-      <label className="mt-4 flex items-center gap-2 text-xs text-ink-dim">
-        <input type="checkbox" checked={library} onChange={(e) => setLibrary(e.target.checked)} />
-        keep finished work in the Library for reuse
-      </label>
+      <p className="mt-4 text-[11px] text-ink-faint">
+        When the engine finishes, the results wait for your sign-off — whether they enter the
+        Library is decided there, not here.
+      </p>
 
       <button
         className="mt-4 mb-2 block text-xs text-ink-dim transition-colors hover:text-ink"

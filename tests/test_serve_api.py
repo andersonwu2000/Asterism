@@ -492,6 +492,29 @@ def test_approve_ingest_via_api(workspace: Path, monkeypatch) -> None:
     assert c.post("/api/problems/p/approve-ingest").status_code == 409
 
 
+def test_approve_ingest_carries_the_library_decision(
+        workspace: Path, monkeypatch) -> None:
+    """The Library decision is made AT SIGN-OFF (owner: a human signs,
+    nothing is harvested automatically): approve {library: false}
+    writes the flag through the settings chokepoint before approving;
+    a bodyless approve keeps the standing flag (legacy callers)."""
+    from Tooling.state import settings as _settings
+    conn = _open_db(workspace)
+    _add_problem(conn, "p", ingest_signoff_pending=1, ingested_at=db.now())
+    _settings.write(conn, "p", "library", True)
+    conn.commit()
+    conn.close()
+    monkeypatch.chdir(workspace)
+    c = _client(workspace)
+    r = c.post("/api/problems/p/approve-ingest", json={"library": False})
+    assert r.status_code == 200
+    assert r.json()["library"] is False
+    conn = db.connect(workspace / "asterism.db")
+    assert _settings.read(conn, "p")["library"] is False
+    assert not db.problem_ingest_signoff_pending(conn, "p")
+    conn.close()
+
+
 def test_reject_ingest_via_api(workspace: Path, monkeypatch) -> None:
     conn = _open_db(workspace)
     _add_problem(conn, "p", ingest_signoff_pending=1, ingested_at=db.now())
