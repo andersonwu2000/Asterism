@@ -5,7 +5,9 @@ import { compactNumber, duration, relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { Link } from '../lib/router'
 import { Button } from '../components/ui'
-import type { ConfigSetting, RunStatus, RunWorker } from '../lib/types'
+import Constellation from '../components/Constellation'
+import GoalPanel from '../components/GoalPanel'
+import type { ConfigSetting, ProblemDetail, RunStatus, RunWorker } from '../lib/types'
 
 /*
  * Run — mission control. The one page that answers "what is the
@@ -76,19 +78,27 @@ function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
         </div>
       )}
       {w.file ? (
-        <>
-          <pre className="mt-2 max-h-44 overflow-hidden rounded-md border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
-            <Lean code={w.file.tail} />
-          </pre>
-          <div className="tnum mt-1 text-[10px] text-ink-faint">
+        // the tail folds away (owner: the sky owns the space) — the
+        // activity line IS the summary, one click opens the text
+        <details className="group/tail mt-2">
+          <summary className="tnum flex cursor-pointer list-none items-center gap-1.5 text-[10px] text-ink-faint transition-colors hover:text-ink-dim">
+            <span
+              className="inline-block text-[9px] transition-transform duration-150 group-open/tail:rotate-90"
+              aria-hidden
+            >
+              ▸
+            </span>
             {quiet !== null && quiet <= 12
               ? 'writing now'
               : `last write ${duration(quiet ?? 0)} ago`}
             {' · '}
             {compactNumber(w.file.size)} bytes
             {w.path && <span className="ml-1 font-mono">· {w.path.split('/').pop()}</span>}
-          </div>
-        </>
+          </summary>
+          <pre className="mt-1.5 max-h-44 overflow-hidden rounded-md border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
+            <Lean code={w.file.tail} />
+          </pre>
+        </details>
       ) : (
         <div className="mt-2 text-[11px] text-ink-faint">
           {w.kind === 'Strategist'
@@ -143,6 +153,15 @@ function QuotaMeter({
 export default function Run() {
   const { data, refresh } = usePoll<RunStatus>('/api/run', 2000)
   const { data: cfg } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
+  // the sky rides along (owner: the console shows the constellation):
+  // full problem detail only when a problem is in focus
+  const focusProblem = data?.problem ?? null
+  const { data: detail } = usePoll<ProblemDetail>(
+    focusProblem ? `/api/problems/${encodeURIComponent(focusProblem)}` : null,
+    3000,
+  )
+  const [selGoal, setSelGoal] = useState<number | null>(null)
+  useEffect(() => setSelGoal(null), [focusProblem])
   useTick(1000)
 
   const [busy, setBusy] = useState(false)
@@ -295,6 +314,33 @@ export default function Run() {
       )}
 
       {msg && <div className="mt-3 text-xs text-ink-dim">{msg}</div>}
+
+      {detail && focusProblem && detail.goals.length > 0 && (
+        <section className="mt-6">
+          <div className="flex h-[52vh] overflow-hidden rounded-lg border border-edge bg-bg">
+            <div className="relative min-w-0 flex-1">
+              <Constellation
+                goals={detail.goals}
+                strategies={detail.strategies}
+                strategyEdges={detail.strategy_edges}
+                anchorEdges={detail.anchor_edges}
+                citationEdges={detail.citation_edges}
+                selectedId={selGoal}
+                onSelect={setSelGoal}
+                shelveThreshold={detail.shelve_threshold}
+                engineWorking={detail.engine_working}
+              />
+            </div>
+            {selGoal !== null && (
+              <GoalPanel
+                problem={focusProblem}
+                goalId={selGoal}
+                onClose={() => setSelGoal(null)}
+              />
+            )}
+          </div>
+        </section>
+      )}
 
       {running && (
         <section className="mt-7">
