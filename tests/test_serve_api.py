@@ -1078,13 +1078,16 @@ def test_review_get_enriches_vouch_signatures(workspace: Path) -> None:
 
     d = _client(workspace).get("/api/problems/p/review").json()
     dv = d["deliverables"][0]
+    # propositions: statement head only (the kernel owns the proof)
     assert dv["signature"] == "theorem widget_stable : ∀ w, is_widget w"
     assert all(isinstance(a, dict) for a in dv["anchors"])
+    # def-kinds: FULL source incl. the := body — the construction IS
+    # what the human vouches for (owner: type alone is unreadable)
     assert dv["anchors"][0]["signature"] == \
-        "def is_widget (w : Nat) : Prop"
+        "def is_widget (w : Nat) : Prop := w = w"
     assert dv["anchors"][1] == {
         "name": "Problems.p.is_widget",
-        "signature": "def is_widget (w : Nat) : Prop"}
+        "signature": "def is_widget (w : Nat) : Prop := w = w"}
 
 
 def test_manifest_axiom_gate_locked_after_creation(workspace: Path) -> None:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import sqlite3
 import threading
 import time
@@ -319,13 +320,25 @@ def create_app(workspace: Path) -> FastAPI:
                 "message": "OK: saved — the engine picks changes up on"
                            " its next tick"}
 
+    # what the human reads before vouching, per kind (anchor+claim §:
+    # data-defs are vouched BY BODY — the construction IS the meaning;
+    # propositions are vouched by statement, the kernel owns the proof)
+    _ANY_DECL_RE = re.compile(
+        r"^(?:@\[[^\]]*\]\s*)?(?:noncomputable\s+)?"
+        r"(?:private\s+|protected\s+)?"
+        r"(theorem|lemma|def|abbrev|structure|class|instance|inductive)\s+"
+        r"([A-Za-z0-9_'₀-₉α-ω.]+)",
+        re.M)
+    _PROP_KINDS = {"theorem", "lemma"}
+
     def _vouch_signature(conn, problem: str, name: str,
                          cache: dict) -> "str | None":
-        """The declaration header for one vouchable name — signing off
-        means READING the statement (owner), and goals.statement for a
-        def is just its target sort. Read-side display extraction from
-        the proof file (the chapter page's machinery), never soundness."""
-        from .data import _scan_library_file
+        """The vouchable source for one name — statement head for
+        propositions, FULL source incl. `:=` body for def-kinds
+        (owner: a definition without its body is not readable).
+        Read-side display extraction from the proof file, never
+        soundness."""
+        from .data import _stmt_head
         slug = str(name).split(".")[-1]
         row = conn.execute(
             "SELECT lean_path FROM goals WHERE problem = ? AND slug = ?"
@@ -335,13 +348,24 @@ def create_app(workspace: Path) -> FastAPI:
         path = str(row["lean_path"])
         if path not in cache:
             try:
-                text = (workspace / path).read_text(
+                cache[path] = (workspace / path).read_text(
                     encoding="utf-8", errors="replace")
-                cache[path] = _scan_library_file(text)[1]
             except OSError:
-                cache[path] = {}
-        hit = cache[path].get(slug)
-        return hit[3] if hit else None
+                cache[path] = ""
+        text = cache[path]
+        decls = list(_ANY_DECL_RE.finditer(text))
+        for i, m in enumerate(decls):
+            if m.group(2).split(".")[-1] != slug:
+                continue
+            if m.group(1) in _PROP_KINDS:
+                return _stmt_head(text, m.start())
+            seg = text[m.start():
+                       decls[i + 1].start() if i + 1 < len(decls)
+                       else len(text)]
+            # trim the closing `end Namespace` line off the last decl
+            seg = re.sub(r"\n\s*end\s[\w.]*\s*$", "", seg.rstrip())
+            return seg.rstrip()
+        return None
 
     @app.get("/api/problems/{problem}/review")
     def review(problem: str) -> dict:
