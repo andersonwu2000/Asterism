@@ -1048,6 +1048,10 @@ def _remap_inlined_diags(
 
 
 def _summarize_goal(result) -> str:
+    if result is None:
+        # plainGoal null = position outside any proof/tactic block —
+        # NOT str(None): "None" read as a goal named None (owner hit it)
+        return "no goals"
     if not isinstance(result, dict):
         return str(result)
     rendered = result.get("rendered")
@@ -1060,9 +1064,19 @@ def _summarize_goal(result) -> str:
 
 
 def _goal_present(result) -> bool:
-    """True iff plainGoal returned a live goal (vs an empty/closed state)."""
-    return isinstance(result, dict) and bool(
-        result.get("rendered") or result.get("goals"))
+    """True iff plainGoal returned a live goal (vs an empty/closed state).
+
+    `rendered == "no goals"` is Lean's CLOSED state, not a live goal —
+    it is exactly what a query at/inside/after a `sorry` returns, so
+    treating that truthy string as present had silently disabled the
+    B#4 sorry-fallback (goal_at answered "no goals" on a sorry line
+    instead of re-querying the token start for the real goal)."""
+    if not isinstance(result, dict):
+        return False
+    if result.get("goals"):
+        return True
+    rendered = result.get("rendered")
+    return bool(rendered) and str(rendered).strip() != "no goals"
 
 
 def _sorry_start_col(meta, line: int) -> "int | None":

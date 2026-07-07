@@ -1592,3 +1592,18 @@ def test_compilation_for_interactive_is_identity(tmp_path: Path) -> None:
     merged, line_map = lsp_gateway._compilation_for(meta)
     assert merged == meta.file_content
     assert line_map == [1, 2]
+
+
+def test_goal_present_closed_state_is_not_a_goal() -> None:
+    """Lean's rendered "no goals" is the CLOSED state — treating that
+    truthy string as a live goal silently disabled the B#4
+    sorry-fallback (a sorry-line query answered 'no goals' instead of
+    re-querying the token start)."""
+    gp = lsp_gateway._goal_present
+    assert gp({"goals": ["⊢ True"]}) is True
+    assert gp({"rendered": "```lean\nn : ℕ\n⊢ 2 * n = n + n\n```"}) is True
+    assert gp({"rendered": "no goals", "goals": []}) is False
+    assert gp({"rendered": "", "goals": []}) is False
+    assert gp(None) is False
+    # None position (outside any proof) summarizes readably, not "None"
+    assert lsp_gateway._summarize_goal(None) == "no goals"

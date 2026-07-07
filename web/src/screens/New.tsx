@@ -255,12 +255,12 @@ export default function New() {
                   <span className="text-ink-faint">
                     — place the cursor inside a `by` proof to see its goal
                   </span>
-                ) : check.goal && check.goal !== 'no goals' ? (
+                ) : check.goal && check.goal !== 'no goals' && !check.goal.startsWith('<no goals') ? (
                   check.goal.replace(/^```lean\n?/, '').replace(/\n?```\s*$/, '')
                 ) : (
                   <span className="text-ink-faint">
-                    {check.goal === 'no goals'
-                      ? 'no goals — cursor is outside an open proof'
+                    {check.goal
+                      ? 'no goals — outside an open proof, or the proof is complete here'
                       : '— place the cursor inside a `by` proof to see its goal'}
                   </span>
                 )}
