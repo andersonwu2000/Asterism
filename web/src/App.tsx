@@ -1,7 +1,7 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { RouterProvider, useRoute, Link } from './lib/router'
-import { usePoll } from './lib/api'
+import { apiPost, usePoll } from './lib/api'
 import Board from './screens/Board'
 import Inbox from './screens/Inbox'
 import Library from './screens/Library'
@@ -60,6 +60,53 @@ function DaemonChip({ meta }: { meta: Meta | null }) {
       <span className={`h-1.5 w-1.5 rounded-full ${crashed ? 'bg-warn' : 'bg-ink-faint'}`} />
       {crashed ? <span className="text-warn">last run crashed</span> : 'engine idle'}
     </Link>
+  )
+}
+
+/** Auth banner — the one condition that silently fails EVERY run.
+ * The login flow itself is Claude Code's own wizard; the button just
+ * opens it in a terminal window, and the 3s meta poll turns the
+ * banner off the moment the credentials land. */
+function ClaudeBanner({ meta }: { meta: Meta | null }) {
+  const [msg, setMsg] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  if (!meta || (meta.claude?.installed && meta.claude?.logged_in)) return null
+  const installed = meta.claude?.installed ?? false
+  const openLogin = async () => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await apiPost<{ opened: boolean; manual?: string }>('/api/claude/login', {})
+      setMsg(
+        r.opened
+          ? 'a login window opened — finish there; this banner clears itself'
+          : `couldn't open a terminal — run "${r.manual ?? 'claude'}" yourself`,
+      )
+    } catch (e) {
+      setMsg(String((e as Error).message))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="flex items-center gap-3 border-b border-edge bg-surface-2 px-4 py-2 text-xs">
+      <span className="bg-warn h-1.5 w-1.5 shrink-0 rounded-full" />
+      <span className="text-ink">
+        {installed
+          ? 'Claude Code is not logged in — runs will fail until you log in.'
+          : 'Claude Code is not installed — double-click installer\\install.bat to set everything up.'}
+      </span>
+      {installed && (
+        <button
+          className="cursor-pointer rounded-md border border-edge bg-surface px-2.5 py-1 text-ink transition-colors hover:bg-surface-3"
+          disabled={busy}
+          onClick={() => void openLogin()}
+        >
+          Open the login window
+        </button>
+      )}
+      {msg && <span className="text-ink-faint">{msg}</span>}
+    </div>
   )
 }
 
@@ -254,7 +301,9 @@ function Shell() {
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         {/* no top chrome — the sidebar carries "where am I", each screen
-            carries its own title, the constellation gets the sky */}
+            carries its own title, the constellation gets the sky. The
+            ONE exception: the auth banner (a silently-fatal state) */}
+        <ClaudeBanner meta={meta} />
         <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           {section === 'new' ? (
             <New />

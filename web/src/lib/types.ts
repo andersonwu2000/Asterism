@@ -360,4 +360,6 @@ export interface Meta {
   db: 'ok' | 'missing' | 'behind'
   daemon: DaemonStatus
   inbox_count: number
+  /** auth awareness (the login itself is Claude Code's own wizard) */
+  claude: { installed: boolean; logged_in: boolean }
 }

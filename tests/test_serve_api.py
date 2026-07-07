@@ -74,6 +74,17 @@ def test_meta_fresh_workspace_no_db(workspace: Path) -> None:
     assert body["db"] == "missing"
     assert body["inbox_count"] == 0
     assert body["daemon"]["running"] is False
+    # auth awareness rides meta (the login itself is Claude Code's own
+    # first-run flow — the UI only knows the state and opens it)
+    assert set(body["claude"]) == {"installed", "logged_in"}
+
+
+def test_claude_login_needs_the_cli(workspace: Path, monkeypatch) -> None:
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    r = _client(workspace).post("/api/claude/login")
+    assert r.status_code == 409
+    assert "installer" in r.json()["detail"]
 
 
 def test_meta_never_creates_the_db(workspace: Path) -> None:

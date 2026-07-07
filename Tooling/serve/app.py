@@ -158,7 +158,50 @@ def create_app(workspace: Path) -> FastAPI:
             "db": db_state,
             "daemon": daemon_status(workspace),
             "inbox_count": inbox_n,
+            "claude": _claude_status(),
         }
+
+    def _claude_status() -> dict:
+        """Auth awareness, not auth implementation: the login flow
+        itself belongs to Claude Code (its OAuth client, its
+        credentials file) — the UI only needs to KNOW the state and
+        open the official wizard. Cheap checks, polled with meta."""
+        import shutil
+        installed = shutil.which("claude") is not None
+        logged_in = (Path.home() / ".claude"
+                     / ".credentials.json").exists()
+        return {"installed": installed, "logged_in": logged_in}
+
+    @app.post("/api/claude/login")
+    def claude_login() -> dict:
+        """Open the OFFICIAL login: a terminal window running
+        `claude` (its first-run flow does the OAuth dance and writes
+        the credentials). The UI polls /api/meta until logged_in
+        flips. Best-effort per platform; on failure the caller shows
+        the manual command."""
+        import shutil
+        import subprocess
+        import sys
+        if not shutil.which("claude"):
+            raise HTTPException(
+                status_code=409,
+                detail="claude CLI is not installed — run the installer"
+                       " (installer/install.bat) first")
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(
+                    ["cmd", "/k", "claude"],
+                    creationflags=subprocess.CREATE_NEW_CONSOLE)
+            elif sys.platform == "darwin":
+                subprocess.Popen(
+                    ["osascript", "-e",
+                     'tell application "Terminal" to do script "claude"'])
+            else:
+                raise OSError("no terminal spawner for this platform")
+        except OSError as e:
+            return {"opened": False, "manual": "claude",
+                    "detail": str(e)}
+        return {"opened": True}
 
     # -- reads ----------------------------------------------------------
 
