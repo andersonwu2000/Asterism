@@ -34,6 +34,9 @@ export type GoalStatus =
 
 export interface Goal {
   id: number
+  /** the goal's birth annotation — the decomposer's sub-goal comment
+   * or the strategist brief's first paragraph; prose, display-only */
+  doc?: string | null
   slug: string
   status: GoalStatus
   kind: string

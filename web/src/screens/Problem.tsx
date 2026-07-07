@@ -121,10 +121,19 @@ function GoalsList({
                   : goalStatusLabel(g.status)}
             </td>
             <td
-              className="max-w-md truncate py-2 pr-4 font-mono text-[11px] text-ink-dim"
+              className="max-w-md truncate py-2 pr-4 text-[12px] text-ink-dim"
               title={g.statement}
             >
-              <Lean code={stripBinders(g.statement)} />
+              {/* the birth annotation reads; the full type is one
+                  click away (and on hover) — a binder wall truncated
+                  at 60 chars said nothing */}
+              {g.doc ? (
+                g.doc
+              ) : (
+                <span className="font-mono text-[11px]">
+                  <Lean code={stripBinders(g.statement)} />
+                </span>
+              )}
             </td>
             <td className="py-2 pr-4 text-right text-xs text-ink-faint">
               {g.attempts > 0 ? g.attempts : null}

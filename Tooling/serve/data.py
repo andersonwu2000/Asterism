@@ -232,6 +232,84 @@ def _citation_edges(workspace: Path, problem: str,
     return out
 
 
+def _comment_block(lines: "list[str]", start: int, slug: str,
+                   siblings: "list[str]") -> str:
+    """Collect the `--` comment run from `start`, stopping at a
+    non-comment line or at a SIBLING sub-goal's anchor."""
+    out = []
+    for ln in lines[start:]:
+        s = ln.strip()
+        if not s.startswith("--"):
+            break
+        if out and (re.search(r"Sub-goal\s", s)
+                    or any(sib != slug and sib in s for sib in siblings)):
+            break
+        out.append(s.lstrip("-").strip())
+    text = " ".join(out)
+    text = re.sub(r"\s+", " ", text).strip()
+    # the goal column already names the slug — drop the annotation's
+    # own `Sub-goal A `slug`:` prefix (same fact twice) and md bold
+    text = re.sub(r"^Sub-goal\s+\S+\s*(?:`[^`]*`\s*)?[:—-]\s*", "", text)
+    return text.replace("**", "")[:300]
+
+
+def _goal_docs(conn: sqlite3.Connection, problem: str) -> "dict[int, str]":
+    """goal_id → its birth annotation, the best available prose:
+
+    - backward goals: the parent strategy `proposal_md`'s slug-anchored
+      `--` comment block (the decomposer annotates every sub-goal);
+      when the prose names hypotheses instead of the minted slug, fall
+      back to the proposal's LEADING comment block — the decomposition's
+      overall story, still that goal's birth certificate.
+    - forward/injected goals: the strategist decision brief's first
+      paragraph (joined via `produced_goal_id`).
+
+    Display-only prose for the goals table; the full type is one click
+    away on the goal panel."""
+    docs: "dict[int, str]" = {}
+    # strategist briefs (Inject / MarkDeliverable produce goals)
+    for r in conn.execute(
+            "SELECT produced_goal_id AS gid, brief FROM strategist_decisions"
+            " WHERE problem = ? AND produced_goal_id IS NOT NULL"
+            " AND brief IS NOT NULL", (problem,)):
+        body = re.sub(r"(?m)^#{1,4}\s.*$", "", str(r["brief"]))
+        para = next((p.strip() for p in re.split(r"\n\s*\n", body)
+                     if p.strip()), "")
+        if para:
+            docs[int(r["gid"])] = (
+                re.sub(r"\s+", " ", para).replace("**", "")[:300])
+    # backward sub-goals: parent proposal's comment blocks
+    by_strategy: "dict[int, list[sqlite3.Row]]" = {}
+    for r in conn.execute(
+            "SELECT sg.strategy_id AS sid, sg.subgoal_id AS gid,"
+            " g.slug AS slug, s.proposal_md AS md"
+            " FROM strategy_subgoals sg"
+            " JOIN goals g ON g.id = sg.subgoal_id"
+            " JOIN strategies s ON s.id = sg.strategy_id"
+            " WHERE g.problem = ?", (problem,)):
+        by_strategy.setdefault(int(r["sid"]), []).append(r)
+    for rows in by_strategy.values():
+        md = rows[0]["md"] or ""
+        lines = md.splitlines()
+        siblings = [str(r["slug"]) for r in rows]
+        lead = next((i for i, ln in enumerate(lines)
+                     if ln.strip().startswith("--")), None)
+        for r in rows:
+            gid, slug = int(r["gid"]), str(r["slug"])
+            if gid in docs:
+                continue  # a strategist brief outranks the proposal
+            anchor = next((i for i, ln in enumerate(lines)
+                           if ln.strip().startswith("--") and slug in ln),
+                          None)
+            block = (_comment_block(lines, anchor, slug, siblings)
+                     if anchor is not None else
+                     _comment_block(lines, lead, slug, siblings)
+                     if lead is not None else "")
+            if block:
+                docs[gid] = block
+    return docs
+
+
 def problem_detail(conn: sqlite3.Connection, workspace: Path,
                    problem: str, *,
                    daemon: "dict | None" = None) -> dict | None:
@@ -278,6 +356,7 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
                 "leased_at": r["leased_at"],
             })
 
+    goal_docs = _goal_docs(conn, problem)
     goals = []
     for g in conn.execute(
             "SELECT id, slug, status, kind, origin, depth, detached,"
@@ -286,6 +365,7 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             " ORDER BY id", (problem,)):
         goals.append({
             "id": int(g["id"]),
+            "doc": goal_docs.get(int(g["id"])),
             "slug": str(g["slug"]),
             "status": str(g["status"]),
             "kind": str(g["kind"]),
