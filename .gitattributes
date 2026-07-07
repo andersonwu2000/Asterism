@@ -1,0 +1,4 @@
+# Shell scripts must stay LF — a CRLF checkout on Windows would break
+# them the moment the folder is copied to macOS/Linux (installer/*.sh).
+*.sh text eol=lf
+# VBScript/PowerShell run fine either way; keep the repo default.

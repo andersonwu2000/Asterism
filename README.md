@@ -2,13 +2,37 @@
 
 <!-- Add your project overview here. -->
 
-## Web UI
+## Install
+
+**Windows — no terminal needed:**
+
+1. Get this folder (download & unzip, or clone).
+2. Double-click **`installer\install.bat`**. It installs everything —
+   Python, the Lean prover, the math library, the web interface, and
+   Claude Code — narrating each step. The math library download is
+   several GB the first time; leave the window open. Claude Code asks
+   you to log in once with your Claude subscription.
+3. Double-click the new **Asterism** shortcut on your Desktop. Your
+   browser opens the console: create a problem, press Run.
+
+Re-running the installer is always safe — finished steps skip
+themselves.
+
+**macOS / Linux:** `bash installer/install.sh`, then `asterism serve`
+and open http://127.0.0.1:8642.
+
+<details>
+<summary>Manual install (developers)</summary>
 
 ```
 pip install -e .
 cd web && npm install && npm run build && cd ..
+lake exe cache get        # Mathlib olean cache
 asterism serve            # http://127.0.0.1:8642
 ```
+</details>
+
+## Web UI
 
 One serve process per workspace. The whole lifecycle runs in the
 browser: create a problem from a name and a natural-language
