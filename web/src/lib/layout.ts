@@ -738,7 +738,13 @@ export function layoutConstellation(
             wt: n > 0 ? n : 0.25,
           }
         })
-        items.sort((a, b) => a.desired - b.desired || a.t.start - b.t.start)
+        // order by desired CENTRE — comparing left edges biased wide
+        // trees leftward and stranded stubs on the wrong side of the
+        // tree they feed (owner: "swap those two and the crossings go")
+        items.sort(
+          (a, b) =>
+            a.desired + a.w / 2 - (b.desired + b.w / 2) || a.t.start - b.t.start,
+        )
         // weighted PAVA in gap-cumulated space (u = left − prefix)
         let prefix = 0
         const u: number[] = []
@@ -951,7 +957,9 @@ export function layoutConstellation(
   // Hyperedge bundles: group strategy edges by strategy; ≥2 children
   // form an AND-bundle with a junction point, single-child strategies
   // stay plain edges. OR alternatives (several strategies on one goal)
-  // get deterministic side-by-side junction offsets, ordered by id.
+  // get deterministic side-by-side junction offsets — ordered by their
+  // children's mean x (id order let sibling junctions sit on the wrong
+  // sides and their branches crossed for no reason).
   const nodePos = new Map(nodes.map((n) => [n.goal.id, n]))
   const byStrategy = new Map<number, LayoutEdge[]>()
   for (const e of edges) {
@@ -963,7 +971,21 @@ export function layoutConstellation(
     if (es.length < 2) continue
     perParent.set(es[0].from, [...(perParent.get(es[0].from) ?? []), sid])
   }
-  for (const sids of perParent.values()) sids.sort((a, b) => a - b)
+  const stratMeanX = (sid: number): number => {
+    let s = 0
+    let n = 0
+    for (const e of byStrategy.get(sid) ?? []) {
+      const p = nodePos.get(e.to)
+      if (p) {
+        s += p.x
+        n++
+      }
+    }
+    return n > 0 ? s / n : 0
+  }
+  for (const sids of perParent.values()) {
+    sids.sort((a, b) => stratMeanX(a) - stratMeanX(b) || a - b)
+  }
 
   const bundles: LayoutBundle[] = []
   const plainEdges: LayoutEdge[] = []
