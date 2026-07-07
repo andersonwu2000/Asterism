@@ -1607,3 +1607,43 @@ def test_goal_present_closed_state_is_not_a_goal() -> None:
     assert gp(None) is False
     # None position (outside any proof) summarizes readably, not "None"
     assert lsp_gateway._summarize_goal(None) == "no goals"
+
+
+def test_interactive_reclaim_evicts_stale_interactive_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Last editor wins: a new interactive registration evicts a prior
+    interactive claim (orphaned by a hard-killed serve, or an older
+    tab) — releasing the reserved slot — while pipeline claims are
+    untouchable by construction."""
+    target = tmp_path / "scratch.lean"
+    target.write_text("import Mathlib\n", encoding="utf-8")
+    slots = [_make_fake_slot(0, claimed_by="pipe-A"),
+             _make_reserved_slot(1)]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+                        lambda **kw: None)
+    tok1, err1 = lsp_gateway._register_session_internal(
+        pipeline_id="interactive-old", target_path=target,
+        problem="", workspace=tmp_path, log_path=None,
+        kind="interactive", interactive=True)
+    assert err1 is None
+    # simulate the endpoint's reclaim: busy → evict interactive claims
+    tok2, err2 = lsp_gateway._register_session_internal(
+        pipeline_id="interactive-new", target_path=target,
+        problem="", workspace=tmp_path, log_path=None,
+        kind="interactive", interactive=True)
+    assert "interactive slot busy" in (err2 or "")
+    with lsp_gateway._state.sessions_lock:
+        stale = [t for t, m in lsp_gateway._state.sessions.items()
+                 if m.kind == "interactive"]
+    for t in stale:
+        lsp_gateway._release_session_internal(t)
+    tok3, err3 = lsp_gateway._register_session_internal(
+        pipeline_id="interactive-new", target_path=target,
+        problem="", workspace=tmp_path, log_path=None,
+        kind="interactive", interactive=True)
+    assert err3 is None and tok3
+    assert slots[0].claimed_by == "pipe-A"       # pipeline untouched
+    assert slots[1].claimed_by == "interactive-new"
+    lsp_gateway._release_session_internal(tok3)

@@ -1856,11 +1856,27 @@ async def interactive_register(request: Request):
     scratch_dir.mkdir(parents=True, exist_ok=True)
     scratch = scratch_dir / f"interactive_{uuid.uuid4().hex[:8]}.lean"
     scratch.write_text(content, encoding="utf-8")
-    token, err = _register_session_internal(
-        pipeline_id=f"interactive-{scratch.stem.split('_')[1]}",
-        target_path=scratch, problem="", workspace=ws,
-        log_path=None, kind="interactive", interactive=True,
-    )
+    def _claim() -> "tuple[str, str | None]":
+        return _register_session_internal(
+            pipeline_id=f"interactive-{scratch.stem.split('_')[1]}",
+            target_path=scratch, problem="", workspace=ws,
+            log_path=None, kind="interactive", interactive=True,
+        )
+
+    token, err = _claim()
+    if err and err.startswith("interactive slot busy"):
+        # Last editor wins. The holder is either an orphan (serve
+        # hard-killed before its release — otherwise it waits out the
+        # 900s sweep) or another live tab; either way the session the
+        # user is opening NOW is the one that matters. Pipeline slots
+        # are untouchable by construction — this evicts interactive
+        # claims only.
+        with _state.sessions_lock:
+            stale = [t for t, m in _state.sessions.items()
+                     if m.kind == "interactive"]
+        for t in stale:
+            _release_session_internal(t)
+        token, err = _claim()
     if err:
         scratch.unlink(missing_ok=True)
         busy = err.startswith("interactive slot busy")
