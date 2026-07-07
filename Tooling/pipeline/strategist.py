@@ -418,36 +418,6 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         if not db.deliverables(conn, problem=problem) and not root_proved:
             return ("Ingest requires at least one marked deliverable "
                     "(MarkDeliverable) or a proved root goal")
-        # Feature D (class fix, live bypass 2026-07-08): a ¬-headed
-        # marked deliverable the user never named is a DISPROOF being
-        # substituted for the requested claim — the first live run
-        # routed its negation through Inject (no AttemptDisproof
-        # linkage) and Ingested without any human touch. Whatever the
-        # route, delivering a negation the Manifest didn't ask for
-        # requires one user round-trip (RequestUserAmend) first.
-        mfst_path = db.problem_dir(workspace or Path.cwd(),
-                                   problem) / "Manifest.md"
-        try:
-            mfst_text = mfst_path.read_text(encoding="utf-8")
-        except OSError:
-            mfst_text = ""
-        for d_row in db.deliverables(conn, problem=problem):
-            stmt = str(d_row["statement"] or "").lstrip()
-            named = f"`{d_row['slug']}`" in mfst_text
-            if stmt.startswith("¬") and not named:
-                amended = conn.execute(
-                    "SELECT 1 FROM strategist_decisions WHERE problem = ?"
-                    " AND decision_kind = 'RequestUserAmend'"
-                    " AND outcome IN ('accepted', 'consumed') LIMIT 1",
-                    (problem,)).fetchone()
-                if amended is None:
-                    return (f"Ingest blocked: marked deliverable "
-                            f"`{d_row['slug']}` is a negation the "
-                            f"Manifest never asked for — a disproof "
-                            f"does not substitute for the requested "
-                            f"claim. RequestUserAmend first (hand the "
-                            f"disproof back); Ingest after the user "
-                            f"responds")
         # Feature D — a PROVED negation of a still-pursued target blocks
         # the terminal judgment: the user asked for P and the kernel
         # says ¬P; the honest exit is RequestUserAmend (hand the
@@ -456,7 +426,8 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         # negation was adopted as the deliverable). Both-proved is a
         # CONSISTENCY ALARM: an axiom leak or framework bug upstream.
         settled = conn.execute(
-            "SELECT d.target_id AS t, gp.status AS ts, gn.slug AS ns"
+            "SELECT d.id AS did, d.target_id AS t, gp.status AS ts,"
+            " gn.slug AS ns"
             " FROM strategist_decisions d"
             " JOIN goals gn ON gn.id = d.produced_goal_id"
             " JOIN goals gp ON gp.id = d.target_id"
@@ -477,6 +448,22 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                         f"proved ({row['ns']}) while the target is "
                         f"still pursued — RequestUserAmend to hand the "
                         f"disproof back, or retire the target")
+            # 返回用戶 enforcement (decision-pure, user call 2026-07-08):
+            # a kernel-settled disproof requires one user round-trip
+            # AFTER it — a RequestUserAmend resolved later than this
+            # AttemptDisproof decision (ordered by decision id; no
+            # Manifest text guessing).
+            amended = conn.execute(
+                "SELECT 1 FROM strategist_decisions WHERE problem = ?"
+                " AND decision_kind = 'RequestUserAmend'"
+                " AND outcome IN ('accepted', 'consumed')"
+                " AND id > ? LIMIT 1",
+                (problem, int(row["did"]))).fetchone()
+            if amended is None:
+                return (f"Ingest blocked: the disproof of g{row['t']} "
+                        f"({row['ns']}) has not been handed back — "
+                        f"RequestUserAmend first; Ingest after the "
+                        f"user responds")
         return ""
 
     if k == "RequestUserAmend":
