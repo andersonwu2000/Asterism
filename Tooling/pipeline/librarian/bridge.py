@@ -14,11 +14,13 @@ from .schedule import _harvested_decls
 # ---------------------------------------------------------------------
 
 def _backfill_decl_signatures(conn, *, problem, workspace) -> None:
-    """Fill `library_decls.{signature, decl_kind}` for every placed decl from
-    the declInfo oracle (one warm elaborate per harvested file — oleans are
-    warm at bridge end). BEST-EFFORT: on any miss the columns stay NULL and
-    consumers (dedupe pool) fall back to parsing the .lean file, i.e. today's
-    behavior; the bridge outcome is never blocked by this."""
+    """Fill `library_decls.{signature, decl_kind, docstring, src_line}` for
+    every placed decl from the declInfo oracle (one warm elaborate per
+    harvested file — oleans are warm at bridge end). BEST-EFFORT: on any miss
+    the columns stay NULL and consumers (dedupe pool, serve chapter) fall
+    back to parsing the .lean file, i.e. today's behavior; the bridge outcome
+    is never blocked by this. Also the one-shot backfill worker for
+    already-bridged problems (`asterism library-backfill-declinfo`)."""
     from ...lsp import lifecycle as gw
     by_file: "dict[str, list]" = {}
     for r in _harvested_decls(conn, problem):
@@ -40,10 +42,14 @@ def _backfill_decl_signatures(conn, *, problem, workspace) -> None:
         for r in rows:
             d = by_name.get(str(r["target_name"]))
             if d and d.get("signature"):
+                rng = d.get("range") or {}
                 db.set_library_signature(
                     conn, problem=problem, slug=str(r["slug"]),
                     signature=str(d["signature"]),
-                    decl_kind=str(d.get("kind") or ""))
+                    decl_kind=str(d.get("kind") or ""),
+                    # '' = oracle confirmed no docstring (≠ NULL/unknown)
+                    docstring=str(d.get("docstring") or ""),
+                    src_line=rng.get("startLine"))
 
 
 def _finish_bridge(conn, *, problem, workspace, note: str) -> None:

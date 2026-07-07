@@ -231,7 +231,15 @@ _WATERMARKS = {
     # dissolve) — table only; accessors live in state/settings.py.
     # 4410→4425 (2026-07-07): unbind_paper (papers-page uncheck — the
     # write pair of bind_paper).
-    "Tooling/state/db.py": 4425,
+    # 4425→3000 (2026-07-07): the ratchet fired at v24 (library_decls
+    # docstring/src_line) and collected the debt this block called for —
+    # migrations + user_version stepping split to db_migrations.py
+    # (~1500 lines out). Next cut if growth resumes: helper-family split
+    # (#11 opportunistic list).
+    "Tooling/state/db.py": 3000,
+    # Born 2026-07-07 from the db.py split (v24): additive backfills +
+    # user_version stepping. Grows by one block per schema version.
+    "Tooling/state/db_migrations.py": 1560,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

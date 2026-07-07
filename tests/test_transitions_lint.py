@@ -42,12 +42,14 @@ _RAW_STATUS_UPDATE_RE = re.compile(
 
 # posix path relative to Tooling/ → pinned count of allowed raw status UPDATEs.
 _ALLOWED: dict[str, int] = {
-    # The official mutators themselves + versioned migration backfills:
-    #   update_goal_status (2 branches: proved keeps integrity_verified,
-    #   non-proved clears it), update_strategy_status, and the disproved /
-    #   bootstrap-frozen migration backfills (migrations run at vocabulary-
-    #   change points — the state machine's edges don't apply to them).
-    "state/db.py": 5,
+    # The official mutators themselves: update_goal_status (2 branches:
+    # proved keeps integrity_verified, non-proved clears it) and
+    # update_strategy_status.
+    "state/db.py": 3,
+    # The disproved / bootstrap-frozen migration backfills (migrations run
+    # at vocabulary-change points — the state machine's edges don't apply
+    # to them). Split out of db.py 2026-07-07 (v24 schema rework).
+    "state/db_migrations.py": 2,
     # Startup bulk repairs (half-baked strategies → dead, open↔attempting
     # resync). Deliberately raw: a bulk UPDATE skips update_strategy_status's
     # inject-outcome hook, compensated by null_inject_redispatch_specs — see

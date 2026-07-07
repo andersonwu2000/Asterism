@@ -2043,6 +2043,53 @@ def cmd_drift_check(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_library_backfill_declinfo(args: argparse.Namespace) -> int:
+    """One-shot v24 backfill: re-run the bridge's declInfo pass over every
+    already-bridged problem so `library_decls.{signature, decl_kind,
+    docstring, src_line}` are filled for pre-oracle harvests too (new
+    bridges persist them inline). Idempotent — re-running overwrites with
+    the same kernel-true facts. Needs a warm gateway (started here);
+    best-effort per file, same contract as the bridge-time pass."""
+    from ..lsp import lifecycle as gateway_lifecycle
+    from ..pipeline.librarian.bridge import _backfill_decl_signatures
+    workspace = Path.cwd()
+    conn = db.connect()
+    try:
+        probs = [str(r["name"]) for r in conn.execute(
+            "SELECT DISTINCT p.name FROM problems p"
+            " JOIN library_decls ld ON ld.problem = p.name"
+            " WHERE p.library_bridged_at IS NOT NULL"
+            " AND ld.lifecycle IN ('migrated','cleaned')"
+            " ORDER BY p.name")]
+        only = getattr(args, "scope", None)
+        if only:
+            probs = [p for p in probs if only in p]
+        if not probs:
+            print("nothing to backfill")
+            return 0
+        gateway_lifecycle.start_gateway(workspace)
+        for i, prob in enumerate(probs, 1):
+            # resume-friendly: a problem whose placed rows all carry
+            # src_line is done (oracle-miss rows re-elaborate on --force)
+            missing = conn.execute(
+                "SELECT COUNT(*) FROM library_decls WHERE problem = ?"
+                " AND lifecycle IN ('migrated','cleaned')"
+                " AND src_line IS NULL", (prob,)).fetchone()[0]
+            if not missing and not getattr(args, "force", False):
+                print(f"[{i}/{len(probs)}] {prob} — complete, skipped",
+                      flush=True)
+                continue
+            print(f"[{i}/{len(probs)}] {prob}", flush=True)
+            _backfill_decl_signatures(conn, problem=prob, workspace=workspace)
+        n_total, n_done = conn.execute(
+            "SELECT COUNT(*), SUM(src_line IS NOT NULL) FROM library_decls"
+            " WHERE lifecycle IN ('migrated','cleaned')").fetchone()
+        print(f"done: {n_done}/{n_total} placed decls carry declInfo facts")
+    finally:
+        conn.close()
+    return 0
+
+
 def cmd_logs(args: argparse.Namespace) -> int:
     """List / tail framework run logs from `.asterism/logs/`.
     Default: list with sizes, mtime, sorted newest first.
@@ -2386,6 +2433,18 @@ def main(argv: list[str] | None = None) -> int:
         "--scope", type=str, default=None, metavar="PROBLEM",
         help="limit to a problem (LIKE pattern), e.g. residue_thm")
     p_drift.set_defaults(func=cmd_drift_check)
+
+    p_libbackfill = sub.add_parser(
+        "library-backfill-declinfo",
+        help="one-shot v24 backfill: fill library_decls docstring/src_line "
+             "(+signature/kind) from the declInfo oracle for bridged problems")
+    p_libbackfill.add_argument(
+        "--scope", type=str, default=None, metavar="PROBLEM",
+        help="limit to problems whose name contains this substring")
+    p_libbackfill.add_argument(
+        "--force", action="store_true",
+        help="re-elaborate problems already marked complete")
+    p_libbackfill.set_defaults(func=cmd_library_backfill_declinfo)
 
     p_prune = sub.add_parser(
         "prune",

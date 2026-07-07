@@ -1,0 +1,1538 @@
+"""state.db_migrations — additive column backfills + user_version
+stepping, split out of db.py at the v24 schema rework (the file-size
+ratchet's documented natural cut). Runs on every init_schema call;
+each step is idempotent. New steps append here, and the version pin
+tests (test_db_phase7 / test_phase2_migration) assert the terminal
+user_version."""
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from .db import now
+
+# v21 (frontend charter §5-2) — per-spawn token/turn accounting. Created
+# in the migration chain (fresh DBs start at user_version 0 and run the
+# whole chain, so SCHEMA does not duplicate it).
+_SPAWN_USAGE_DDL = """
+CREATE TABLE IF NOT EXISTS spawn_usage (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    pipeline_id   TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    problem       TEXT,
+    input_tokens  INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_new_tokens  INTEGER NOT NULL DEFAULT 0,
+    turns         INTEGER NOT NULL DEFAULT 0,
+    wall_sec      REAL,
+    ts            TEXT NOT NULL
+)
+"""
+
+
+def apply(conn: sqlite3.Connection) -> None:
+    """Bring an existing DB up to the current schema version."""
+    # Additive migrations for older DBs (CREATE TABLE IF NOT EXISTS is
+    # a no-op when the table already exists, so blind ALTER TABLE is
+    # needed to backfill columns added in later versions). Idempotent
+    # via "duplicate column name" detection.
+    for col, ddl in (
+        # Routine-only Strategist clock (T1 fires on its own cadence; see the
+        # SCHEMA comment on problems.last_routine_at). Additive nullable
+        # column — no user_version bump needed (same pattern as bootstrap_done
+        # / strategist_directive).
+        ("last_routine_at",
+         "ALTER TABLE problems ADD COLUMN last_routine_at TEXT NULL"
+         " DEFAULT NULL"),
+        ("alias_target_id",
+         "ALTER TABLE goals ADD COLUMN alias_target_id INTEGER NULL"
+         " DEFAULT NULL REFERENCES goals(id)"),
+        # Migration entry for older DBs created before entry_kind landed.
+        # The CREATE TABLE above already declares this column with a
+        # CHECK constraint; this ALTER picks up disk DBs created prior
+        # and adds the column with the same NOT NULL default. SQLite
+        # ALTER TABLE can't add CHECK after the fact; the CHECK is only
+        # enforced for new DBs, but `insert_goal` is the only writer of
+        # this column and it always passes a validated value.
+        ("entry_kind",
+         "ALTER TABLE goals ADD COLUMN entry_kind TEXT NOT NULL"
+         " DEFAULT 'Builder'"),
+        # See SCHEMA comment on `goals.integrity_verified` for rationale.
+        # New rows default to 0; backfill below promotes pre-migration
+        # proved roots to 1.
+        ("integrity_verified",
+         "ALTER TABLE goals ADD COLUMN integrity_verified INTEGER NOT NULL"
+         " DEFAULT 0"),
+        # Phase 2 — problems columns. Pure ADD COLUMN (no CHECK extension
+        # on existing columns); idempotent. See `docs/archive/design/phase2/pipelines.md`
+        # §4.1 for semantics.
+        ("bootstrap_done",
+         "ALTER TABLE problems ADD COLUMN bootstrap_done INTEGER NOT NULL"
+         " DEFAULT 0 CHECK(bootstrap_done IN (0,1))"),
+        ("strategist_directive",
+         "ALTER TABLE problems ADD COLUMN strategist_directive TEXT"
+         " NULL DEFAULT NULL"),
+        ("last_strategist_at",
+         "ALTER TABLE problems ADD COLUMN last_strategist_at TEXT"
+         " NULL DEFAULT NULL"),
+        # Phase 2.5 — Strategist multi-Inject batch grouping. Same UUID
+        # across all Inject rows committed in one briefs-list decision
+        # (every Inject is a batch under the unified schema; N=1 is
+        # degenerate). Cascade fires Strategist with
+        # trigger_kind='inject_batch_done' when the last Forward in
+        # the batch finishes. Pure ADD COLUMN (no CHECK on this column);
+        # the CHECK widening for trigger_kind happens via
+        # _migrate_to_phase3 below.
+        ("batch_id",
+         "ALTER TABLE strategist_decisions ADD COLUMN batch_id TEXT"
+         " NULL DEFAULT NULL"),
+        # Phase 2.5 evolution — Inject decision's "completion" was
+        # originally filled when the Forward agent finished writing
+        # (sorry-bearing or otherwise). That caused inject_batch_done
+        # to fire while produced lemmas were still `:= by sorry`,
+        # leading Strategist to Reopen parent goals whose new deps
+        # were unproven and Backward to leaf-bypass-cite them →
+        # sorryAx rollback (observed residue_thm 2026-05-19, goals
+        # 1741 / 1768 / 1759 / 1753). The fix shifts "completion" to
+        # "produced lemma reached a terminal status (proved /
+        # shelved / disproved)" — the Inject decision tracks the
+        # goal it produced via `produced_goal_id` and its `outcome`
+        # is filled when that goal terminates, not when the agent
+        # finishes. Pure ADD COLUMN, no CHECK to widen.
+        ("produced_goal_id",
+         "ALTER TABLE strategist_decisions ADD COLUMN produced_goal_id"
+         " INTEGER NULL DEFAULT NULL"
+         " REFERENCES goals(id) ON DELETE SET NULL"),
+        # Inject(Backward/Builder) outcome-tracking — see the column
+        # comment in SCHEMA above. Closes the Strategist wake-up
+        # asymmetry where only Forward batches fired `inject_batch_
+        # done`.
+        ("produced_strategy_id",
+         "ALTER TABLE strategist_decisions ADD COLUMN produced_strategy_id"
+         " INTEGER NULL DEFAULT NULL"
+         " REFERENCES strategies(id) ON DELETE SET NULL"),
+        # #4 — rich terminal-decline reasoning (Forward `## Why` etc.) so
+        # the Strategist sees WHY its brief was declined, not just the
+        # coarse `outcome` enum. Additive nullable — no user_version bump.
+        ("outcome_detail",
+         "ALTER TABLE strategist_decisions ADD COLUMN outcome_detail TEXT"
+         " NULL DEFAULT NULL"),
+        # anchor+claim architecture — top-level deliverable marker set by
+        # the Strategist. Additive defaulted (CHECK only enforced for
+        # fresh DBs; `mark_deliverable` is the sole writer and passes
+        # 0/1). No user_version bump (same pattern as bootstrap_done).
+        ("is_deliverable",
+         "ALTER TABLE goals ADD COLUMN is_deliverable INTEGER NOT NULL"
+         " DEFAULT 0"),
+        # anchor+claim (v14) — per-problem ingest sign-off pause flag. Additive
+        # defaulted; sole writers are the Strategist `Ingest` commit (set) and
+        # `asterism approve-ingest` / `reject-ingest` (clear). No version bump.
+        ("ingest_signoff_pending",
+         "ALTER TABLE problems ADD COLUMN ingest_signoff_pending INTEGER NOT"
+         " NULL DEFAULT 0"),
+    ):
+        try:
+            conn.execute(ddl)
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
+    # Phase 2.5 — index on the freshly-added batch_id column. Lives
+    # here (post-ALTER) rather than in SCHEMA because executescript
+    # runs CREATE INDEX in declaration order, before the additive
+    # ALTER block above ever runs — on pre-Phase 2.5 DBs that would
+    # fail with "no such column: batch_id".
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sd_batch_id"
+        " ON strategist_decisions(batch_id)"
+    )
+    # Backfill: mark every already-proved root as verified. Prior to
+    # this column existing, `library.maybe_promote` (later
+    # `verify.root_integrity_gate`) ran an axiom_probe on every proved
+    # root every dispatcher tick — so any row currently sitting at
+    # status='proved' has been kernel-axiom-validated under whatever
+    # gate code was active at the time, just without a persistent
+    # marker. The backfill turns that implicit history into explicit
+    # DB state so the first post-migration dispatcher tick doesn't
+    # re-pay ~30s × N proved roots (244 miniF2F + N stalls dispatch
+    # ~110min on a benchmark-loaded workspace). Only meaningful on
+    # the migration tick — on a fresh DB built from SCHEMA there are
+    # no proved rows yet, so this is a no-op.
+    conn.execute(
+        "UPDATE goals SET integrity_verified = 1"
+        " WHERE origin = 'root' AND status = 'proved'"
+        "   AND integrity_verified = 0"
+    )
+    # Phase 7-D — drop the former cross-pipeline session_id columns.
+    # The in-pipeline retry helper (Tooling/pipeline/_retry.py) keeps
+    # sid as a local var for the pipeline's lifetime; the columns are
+    # vestigial. Idempotent: a fresh DB built from the current SCHEMA
+    # never had them, so DROP COLUMN raises "no such column" and we
+    # swallow. Requires SQLite >= 3.35.0 (Python 3.12 ships ≥ 3.40).
+    for col in ("builder_session_id", "backward_session_id"):
+        try:
+            conn.execute(f"ALTER TABLE goals DROP COLUMN {col}")
+        except sqlite3.OperationalError as e:
+            if "no such column" not in str(e).lower():
+                raise
+    conn.commit()
+
+    # Phase 2 migration — CHECK-extension table-rebuild for
+    # goals/pipelines/queue (SQLite cannot ALTER existing CHECK). Gated
+    # by `PRAGMA user_version < 2`; fresh DBs (built directly from the
+    # updated SCHEMA) skip the rebuild via the `'detached' in goals_cols`
+    # detection. Idempotent.
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v < 2:
+        goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+        if 'detached' not in goals_cols:
+            _migrate_to_phase2(conn)
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+    if v < 3:
+        # Phase 2.5 — strategist_decisions.trigger_kind CHECK adds
+        # 'inject_batch_done'. SQLite cannot extend CHECK in place;
+        # rebuild required. Fresh DBs built from the updated SCHEMA
+        # already have the widened CHECK + idx_sd_batch_id; the rebuild
+        # short-circuits via the duplicate-index probe inside.
+        _migrate_to_phase3(conn)
+        conn.execute("PRAGMA user_version = 3")
+        conn.commit()
+    if v < 4:
+        # Phase 4 — goals.kind CHECK widens to accept 'def', 'structure',
+        # 'class' (non-theorem toolkit kinds Forward can produce). Same
+        # rebuild pattern as phase 3; idempotent via the in-DDL probe.
+        _migrate_to_phase4(conn)
+        conn.execute("PRAGMA user_version = 4")
+        conn.commit()
+    if v < 5:
+        # Phase 5 — goals.status CHECK widens to accept 'frozen' (root
+        # pre-launch state). Same rebuild pattern. Backfill: roots in
+        # problems with bootstrap_done=0 flip to 'frozen' (matches the
+        # legacy gate semantic — those roots were waiting for first_launch
+        # anyway).
+        _migrate_to_phase5(conn)
+        conn.execute("PRAGMA user_version = 5")
+        conn.commit()
+    if v < 6:
+        # Phase 6 — goals.status CHECK widens to accept 'dead' (terminal
+        # for parent_needs_fix decline). Hard terminal like disproved
+        # but doesn't block dedupe (same statement may be valid under a
+        # different parent strategy). Same rebuild pattern as phase 5.
+        # No backfill: pre-Phase-6 rows used 'shelved' for the
+        # parent_needs_fix case; leaving them as 'shelved' is safe (just
+        # means they're reopenable, which is harmless for already-completed
+        # runs).
+        _migrate_to_phase6(conn)
+        conn.execute("PRAGMA user_version = 6")
+        conn.commit()
+    if v < 7:
+        # Phase 7 — pipelines.kind + queue.kind CHECK widen to accept
+        # 'Librarian' (the Library-ization pipeline). Same rebuild
+        # pattern as earlier phases; idempotent via in-DDL CHECK probe.
+        # No backfill: no pre-Phase-7 rows ever had kind='Librarian'.
+        _migrate_to_phase7(conn)
+        conn.execute("PRAGMA user_version = 7")
+        conn.commit()
+    if v < 8:
+        # Phase 8 — library_decls.lifecycle CHECK widens to accept 'cleaned'
+        # (Step 4 PR-ready state, after 'migrated'). Same rebuild pattern;
+        # idempotent via the in-DDL CHECK probe. No backfill: pre-Phase-8
+        # rows never had 'cleaned'.
+        _migrate_to_phase8(conn)
+        conn.execute("PRAGMA user_version = 8")
+        conn.commit()
+    if v < 9:
+        # Phase 9 — library_decls gains `reopen_note` (the constraint a
+        # downstream `needs-upstream` decline passes to a re-opened upstream's
+        # re-cleanup). Plain ADD COLUMN (nullable) — no table rebuild. Guarded
+        # so a fresh DB built from the updated SCHEMA (column already present)
+        # doesn't double-add.
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(library_decls)")}
+        if "reopen_note" not in cols:
+            conn.execute(
+                "ALTER TABLE library_decls ADD COLUMN reopen_note TEXT")
+        conn.execute("PRAGMA user_version = 9")
+        conn.commit()
+    if v < 10:
+        # Phase 10 — library_decls gains `renamed_from` (the ORIGINAL fqn of a
+        # P4-renamed kept decl; target_name holds the new fqn). Consumer files
+        # read {renamed_from → target_name} as deferred-rewire renames. Plain
+        # ADD COLUMN (nullable) — no table rebuild. Guarded so a fresh DB built
+        # from the updated SCHEMA (column already present) doesn't double-add.
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(library_decls)")}
+        if "renamed_from" not in cols:
+            conn.execute(
+                "ALTER TABLE library_decls ADD COLUMN renamed_from TEXT")
+        conn.execute("PRAGMA user_version = 10")
+        conn.commit()
+    if v < 11:
+        # Phase 11 — widen `strategies.status` CHECK to accept 'stalled'
+        # (a parked-but-reopenable strategy whose subgoals all settled with
+        # >=1 soft-shelved). Same rebuild pattern as phase 5/7/8. No
+        # backfill: pre-Phase-11 rows in this state lingered as 'proposed';
+        # the reconcile backstop migrates them to 'stalled' at runtime.
+        _migrate_to_phase11(conn)
+        conn.execute("PRAGMA user_version = 11")
+        conn.commit()
+    if v < 12:
+        # Phase 12 — kb_entries drops `scope`. Breadth now reads off `node_id`
+        # alone (NULL = problem-wide, set = node-bound); the scope enum was
+        # 100% determined by node_id presence and its structural-depth model
+        # was abandoned (lesson retrieval is semantic, not subtree-walk).
+        # Idempotent: only drop when the column is still present (fresh DBs
+        # built from the updated SCHEMA never had it). DROP COLUMN needs
+        # SQLite >= 3.35.0 (Python 3.12 ships >= 3.40).
+        kb_cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(kb_entries)")}
+        if "scope" in kb_cols:
+            conn.execute("ALTER TABLE kb_entries DROP COLUMN scope")
+        conn.execute("PRAGMA user_version = 12")
+        conn.commit()
+    if v < 13:
+        # Phase 13 — strategist_decisions.decision_kind CHECK widens to
+        # accept 'MarkDeliverable' (anchor+claim architecture). SQLite
+        # cannot ALTER a CHECK in place; rebuild required. Idempotent via
+        # the in-DDL probe (fresh DBs built from the widened SCHEMA
+        # short-circuit).
+        _migrate_to_phase13(conn)
+        conn.execute("PRAGMA user_version = 13")
+        conn.commit()
+    if v < 14:
+        # Phase 14 — strategist_decisions.decision_kind CHECK widens again to
+        # accept 'Ingest' (anchor+claim harvest trigger). Same table-rebuild
+        # pattern as v13; idempotent via the in-DDL probe. (The additive
+        # `problems.ingest_signoff_pending` column is handled by the ALTER
+        # block above — no rebuild needed for it.)
+        _migrate_to_phase14(conn)
+        conn.execute("PRAGMA user_version = 14")
+        conn.commit()
+    if v < 15:
+        # v15 — the additive-column COLLAPSE (task #10). Versions ≤14 grew a
+        # second, UNVERSIONED migration channel: the blind-ALTER block above
+        # (12 columns added over months with "no user_version bump needed"
+        # notes), which made `user_version` an incomplete description of a
+        # DB — two v14 DBs could differ by several columns depending on
+        # which code revision last opened them (a live hazard for restores
+        # from the .bak fleet and cross-revision reads). The ALTER block
+        # runs earlier in THIS SAME init_schema pass, so stamping 15 here
+        # certifies: v15 ⟹ the full additive set is present. POLICY from
+        # v15 on: every new column ships as a versioned migration step —
+        # the legacy ALTER block is FROZEN at 13 entries (ratchet-pinned by
+        # test_db_phase7.py::test_additive_alter_block_is_frozen).
+        conn.execute("PRAGMA user_version = 15")
+        conn.commit()
+    if v < 16:
+        # v16 — Phase 6 (Root/Defs optional): `problems.ingested_at` is the
+        # problem-level terminal state (Ingest = the only exit trigger).
+        # Post-v15 discipline: a versioned step, NOT the frozen ALTER block.
+        # Backfill: legacy problems whose root is proved+integrity_verified
+        # are marked ingested ONCE so the new stall predicate ("Ingest not
+        # yet emitted") does not re-trigger a Strategist on completed runs
+        # (Phase 6 decision ②, 2026-07-04).
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
+        if "ingested_at" not in cols:
+            conn.execute("ALTER TABLE problems ADD COLUMN ingested_at TEXT")
+        conn.execute(
+            "UPDATE problems SET ingested_at = ?"
+            " WHERE ingested_at IS NULL AND name IN ("
+            "   SELECT problem FROM goals WHERE origin = 'root'"
+            "   AND status = 'proved' AND integrity_verified = 1)",
+            (now(),),
+        )
+        conn.execute("PRAGMA user_version = 16")
+        conn.commit()
+    if v < 17:
+        # v17 — queue contract upgrade (arch-review task #3): `problem`
+        # (scope-safe recovery/pop — #74's structural fix), `payload` (JSON;
+        # librarian per-file units stop smuggling `problem\x1ffile` through
+        # target_id), `owner_pid`/`leased_at` (lease semantics — cross-
+        # process in-flight visibility for concurrent dispatchers). The
+        # queue is transient (cleared per-scope at startup, refill
+        # re-derives), so no backfill: pre-v17 rows carry problem='' and
+        # are swept by the next startup like any stale row.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(queue)")}
+        for name, ddl in (
+            ("problem", "ALTER TABLE queue ADD COLUMN problem TEXT NOT NULL"
+                        " DEFAULT ''"),
+            ("payload", "ALTER TABLE queue ADD COLUMN payload TEXT"),
+            ("owner_pid", "ALTER TABLE queue ADD COLUMN owner_pid INTEGER"),
+            ("leased_at", "ALTER TABLE queue ADD COLUMN leased_at TEXT"),
+        ):
+            if name not in cols:
+                conn.execute(ddl)
+        conn.execute("PRAGMA user_version = 17")
+        conn.commit()
+    if v < 18:
+        # v18 — Library index moves into the DB (arch-review task #4, user
+        # design call: SoT=DB, INDEX.md deleted).
+        #   * library_decls.{signature, decl_kind}: kernel-true facts filled
+        #     at bridge time from the declInfo oracle (NULL = not yet
+        #     backfilled; consumers fall back to reading the .lean file).
+        #   * problems.{library_bridged_at, library_bridge_note}: the chain's
+        #     terminal done-marker (was: the `## <problem>` section existing
+        #     in Library/INDEX.md — the ONE librarian checkpoint living
+        #     outside the DB, string-matched four ways by consumers).
+        # One-time backfill: parse the still-on-disk INDEX.md (workspace =
+        # the DB file's parent) and mark its sections' problems bridged, so
+        # already-harvested problems don't re-bridge after the cut-over.
+        # :memory: / fresh DBs have no file and skip.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(library_decls)")}
+        if "signature" not in cols:
+            conn.execute("ALTER TABLE library_decls ADD COLUMN signature TEXT")
+        if "decl_kind" not in cols:
+            conn.execute("ALTER TABLE library_decls ADD COLUMN decl_kind TEXT")
+        pcols = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
+        if "library_bridged_at" not in pcols:
+            conn.execute(
+                "ALTER TABLE problems ADD COLUMN library_bridged_at TEXT")
+        if "library_bridge_note" not in pcols:
+            conn.execute(
+                "ALTER TABLE problems ADD COLUMN library_bridge_note TEXT")
+        db_file = ""
+        for _seq, _name, _file in conn.execute("PRAGMA database_list"):
+            if _name == "main":
+                db_file = _file or ""
+        if db_file:
+            legacy_index = Path(db_file).resolve().parent / "Library" / "INDEX.md"
+            if legacy_index.is_file():
+                try:
+                    sections = [
+                        ln[3:].strip()
+                        for ln in legacy_index.read_text(
+                            encoding="utf-8", errors="replace").splitlines()
+                        if ln.startswith("## ")]
+                except OSError:
+                    sections = []
+                for prob in sections:
+                    conn.execute(
+                        "UPDATE problems SET library_bridged_at = ?,"
+                        " library_bridge_note = 'backfilled from legacy"
+                        " INDEX.md (v18 migration)'"
+                        " WHERE name = ? AND library_bridged_at IS NULL",
+                        (now(), prob))
+        conn.execute("PRAGMA user_version = 18")
+        conn.commit()
+    if v < 19:
+        # v19 — goals.kind CHECK widens to accept 'inductive' (Forward may
+        # mint new inductive types; the anchor+claim review carries the
+        # trust surface — kernel anchorClosure already walks ctors). Same
+        # rebuild pattern as phase 4; idempotent via the in-DDL probe.
+        _migrate_to_v19(conn)
+        conn.execute("PRAGMA user_version = 19")
+        conn.commit()
+    if v < 20:
+        # v20 — goals.kind CHECK widens to accept 'instance' (named data
+        # instances from Forward; anonymous rejected at parse). Same
+        # live-column rebuild as v19, generalized.
+        _widen_goals_kind_check(conn, ("theorem", "def", "structure",
+                                       "class", "inductive", "instance"))
+        conn.execute("PRAGMA user_version = 20")
+        conn.commit()
+    if v < 21:
+        # v21 — spawn_usage: per-spawn token/turn accounting lands in the
+        # DB (frontend charter §5-2). Historically the numbers lived only
+        # in `[usage]` log lines + dead_attempts.artifacts (failed spawns
+        # only), so successful spawns had no queryable spend and every
+        # cost analysis was log archaeology.
+        conn.execute(_SPAWN_USAGE_DDL)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_spawn_usage_problem"
+            " ON spawn_usage(problem, ts)")
+        conn.execute("PRAGMA user_version = 21")
+        conn.commit()
+    if v < 22:
+        # v22 — review snapshot (frontend charter §5-4): the anchor
+        # closure needs a warm gateway (30s+ cold), so readers (serve
+        # API GET, CLI default) must not compute it — the Ingest commit
+        # stores it here while the gateway is warm; recompute is an
+        # explicit act.
+        pcols = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
+        if "review_snapshot" not in pcols:
+            conn.execute(
+                "ALTER TABLE problems ADD COLUMN review_snapshot TEXT")
+        if "review_snapshot_at" not in pcols:
+            conn.execute(
+                "ALTER TABLE problems ADD COLUMN review_snapshot_at TEXT")
+        conn.execute("PRAGMA user_version = 22")
+        conn.commit()
+    if v < 23:
+        # v23 — paper pipeline v2 (D11): pipelines.kind + queue.kind
+        # CHECK widen to 'Scholar'; strategist_decisions.decision_kind
+        # widens to 'FetchPaper'. problem_papers itself needs no step
+        # (CREATE TABLE IF NOT EXISTS in SCHEMA).
+        _migrate_to_v23(conn)
+        conn.execute("PRAGMA user_version = 23")
+        conn.commit()
+    if v < 24:
+        # v24 — library_decls gains {docstring, src_line}: the remaining
+        # declInfo-oracle facts the bridge already receives per file but
+        # used to discard. The Library chapter's reading surface (serve)
+        # becomes a DB read for doc + narrative order; its regex file
+        # parse demotes to fallback for not-yet-backfilled rows.
+        #   * docstring: '' = oracle confirmed the decl has no docstring;
+        #     NULL = not yet backfilled (consumer falls back to file).
+        #   * src_line: 1-based startLine of the decl's command range.
+        # Backfill for already-bridged problems: one-shot
+        # `asterism library-backfill-declinfo` (needs a warm gateway, so
+        # not done here in-migration).
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(library_decls)")}
+        if "docstring" not in cols:
+            conn.execute("ALTER TABLE library_decls ADD COLUMN docstring TEXT")
+        if "src_line" not in cols:
+            conn.execute("ALTER TABLE library_decls ADD COLUMN src_line INTEGER")
+        conn.execute("PRAGMA user_version = 24")
+        conn.commit()
+
+
+def _migrate_to_v19(conn: sqlite3.Connection) -> None:
+    """v19 — widen `goals.kind` CHECK to also accept 'inductive'.
+    SQLite cannot ALTER a CHECK; rebuild the table with the new clause,
+    copy every row, swap (same pattern as phase 4 / 13 / 14).
+
+    The DDL below is a point-in-time snapshot of the goals SCHEMA at
+    v18 (all columns through the additive ALTER block: entry_kind /
+    integrity_verified / alias_target_id / is_deliverable) — it must
+    stay column-for-column identical to the SCHEMA constant, differing
+    only by the widened CHECK. The INSERT column list is computed from
+    the LIVE table: older DBs reach this step through the phase-2/4
+    rebuilds, whose point-in-time snapshots predate late additive
+    columns (`is_deliverable`) — those columns are re-added by the
+    blind ALTER block only on the NEXT init_schema pass, so within this
+    pass the live table may lack them. Missing columns take the new
+    DDL's defaults (is_deliverable → 0), which is the correct backfill.
+
+    Pre-condition: PRAGMA user_version < 19.
+    Post-condition (caller sets user_version = 19):
+      - goals.kind CHECK accepts 'inductive'
+      - all rows + idx_goals_status preserved
+    """
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='goals'"
+    ).fetchone()
+    if chk and "'inductive'" in (chk["sql"] or ""):
+        return  # CHECK already wide (fresh DB from SCHEMA, or re-run)
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("""
+            CREATE TABLE _new_goals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem     TEXT    NOT NULL REFERENCES problems(name),
+                slug        TEXT    NOT NULL,
+                lean_path   TEXT    NOT NULL UNIQUE,
+                statement   TEXT    NOT NULL,
+                kind        TEXT    NOT NULL DEFAULT 'theorem'
+                                CHECK(kind IN ('theorem','def','structure',
+                                               'class','inductive')),
+                origin      TEXT    NOT NULL
+                                CHECK(origin IN ('root','backward','forward')),
+                status      TEXT    NOT NULL
+                                CHECK(status IN ('open','attempting','proved',
+                                                 'shelved',
+                                                 'pending_strategist_review',
+                                                 'disproved','frozen','dead')),
+                depth       INTEGER NOT NULL DEFAULT 0,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                                CHECK(entry_kind IN ('Builder','Backward')),
+                integrity_verified INTEGER NOT NULL DEFAULT 0
+                                CHECK(integrity_verified IN (0,1)),
+                detached    INTEGER NOT NULL DEFAULT 0
+                                CHECK(detached IN (0,1)),
+                alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                is_deliverable INTEGER NOT NULL DEFAULT 0
+                                CHECK(is_deliverable IN (0,1)),
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            )""")
+        new_cols = ["id", "problem", "slug", "lean_path", "statement",
+                    "kind", "origin", "status", "depth", "attempts",
+                    "entry_kind", "integrity_verified", "detached",
+                    "alias_target_id", "is_deliverable",
+                    "created_at", "updated_at"]
+        live_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+        copy_cols = ", ".join(c for c in new_cols if c in live_cols)
+        conn.execute(
+            f"INSERT INTO _new_goals ({copy_cols})"
+            f" SELECT {copy_cols} FROM goals")
+        conn.executescript("""
+            DROP TABLE goals;
+            ALTER TABLE _new_goals RENAME TO goals;
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"v19 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_v23(conn: sqlite3.Connection) -> None:
+    """v23 — three CHECK widens for the Scholar pipeline (paper v2):
+    pipelines.kind / queue.kind gain 'Scholar'; strategist_decisions.
+    decision_kind gains 'FetchPaper'. SQLite cannot ALTER a CHECK.
+
+    * queue is TRANSIENT (swept per-scope at startup, refill re-derives)
+      → dropped and recreated from the updated SCHEMA, no row copy.
+      Migrations run before any daemon, so no live lease is lost.
+    * pipelines / strategist_decisions are history → rebuild-and-copy
+      (point-in-time snapshots of their v22 shapes, explicit column
+      lists — physical order differs on ALTER-grown DBs).
+    Idempotent via the in-DDL probes."""
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table'"
+        " AND name='pipelines'").fetchone()
+    if chk and "'Scholar'" in (chk["sql"] or ""):
+        return  # fresh DB from SCHEMA, or re-run
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_pipelines (
+                id          TEXT PRIMARY KEY,
+                kind        TEXT NOT NULL
+                                CHECK(kind IN ('Builder','Backward','Verify',
+                                               'Strategist','Forward',
+                                               'Librarian','Scholar')),
+                target_id   TEXT NOT NULL,
+                target_kind TEXT NOT NULL
+                                CHECK(target_kind IN ('Goal','Strategy',
+                                                      'Problem')),
+                status      TEXT NOT NULL
+                                CHECK(status IN ('succeeded','failed')),
+                outcome     TEXT NOT NULL,
+                started_at  TEXT NOT NULL,
+                finished_at TEXT NOT NULL
+            );
+            INSERT INTO _new_pipelines
+                (id, kind, target_id, target_kind, status, outcome,
+                 started_at, finished_at)
+            SELECT id, kind, target_id, target_kind, status, outcome,
+                   started_at, finished_at
+            FROM pipelines;
+            DROP TABLE pipelines;
+            ALTER TABLE _new_pipelines RENAME TO pipelines;
+
+            DROP TABLE queue;
+            CREATE TABLE queue (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind        TEXT NOT NULL
+                                CHECK(kind IN ('Builder','Backward','Verify',
+                                               'Strategist','Forward',
+                                               'Librarian','Scholar')),
+                target_id   TEXT NOT NULL,
+                target_kind TEXT NOT NULL DEFAULT 'Goal'
+                                CHECK(target_kind IN ('Goal','Strategy',
+                                                      'Problem')),
+                priority    INTEGER NOT NULL DEFAULT 0,
+                decision_id INTEGER NULL DEFAULT NULL
+                                REFERENCES strategist_decisions(id),
+                problem     TEXT NOT NULL DEFAULT '',
+                payload     TEXT,
+                owner_pid   INTEGER,
+                leased_at   TEXT,
+                created_at  TEXT NOT NULL
+            );
+
+            CREATE TABLE _new_strategist_decisions (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem             TEXT NOT NULL REFERENCES problems(name),
+                triggered_at_tick   INTEGER NOT NULL,
+                trigger_kind        TEXT NOT NULL
+                                        CHECK(trigger_kind IN
+                                              ('first_launch','pending_review',
+                                               'routine','inject_batch_done')),
+                decision_kind       TEXT NOT NULL
+                                        CHECK(decision_kind IN
+                                              ('Inject','ConfirmShelve','Reopen',
+                                               'EmitDirective','InitializeDefs',
+                                               'RequestUserAmend','Noop',
+                                               'MarkDeliverable','Ingest',
+                                               'FetchPaper')),
+                target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                brief               TEXT NULL DEFAULT NULL,
+                reason              TEXT NULL DEFAULT NULL,
+                payload             TEXT NOT NULL DEFAULT '{}',
+                batch_id            TEXT NULL DEFAULT NULL,
+                produced_goal_id    INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                                        ON DELETE SET NULL,
+                produced_strategy_id INTEGER NULL DEFAULT NULL
+                                        REFERENCES strategies(id) ON DELETE SET NULL,
+                outcome             TEXT NULL DEFAULT NULL,
+                outcome_detail      TEXT NULL DEFAULT NULL,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
+            );
+            INSERT INTO _new_strategist_decisions
+                (id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                 target_id, brief, reason, payload, batch_id, produced_goal_id,
+                 produced_strategy_id, outcome, outcome_detail,
+                 created_at, updated_at)
+            SELECT id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                   target_id, brief, reason, payload, batch_id, produced_goal_id,
+                   produced_strategy_id, outcome, outcome_detail,
+                   created_at, updated_at
+            FROM strategist_decisions;
+            DROP TABLE strategist_decisions;
+            ALTER TABLE _new_strategist_decisions RENAME TO strategist_decisions;
+            CREATE INDEX IF NOT EXISTS idx_sd_problem
+                ON strategist_decisions(problem);
+            CREATE INDEX IF NOT EXISTS idx_sd_outcome
+                ON strategist_decisions(outcome);
+            CREATE INDEX IF NOT EXISTS idx_sd_batch_id
+                ON strategist_decisions(batch_id);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"v23 migration left FK violations: {fk_violations[:5]}")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _widen_goals_kind_check(conn: sqlite3.Connection,
+                            kinds: "tuple[str, ...]") -> None:
+    """The v19 live-column goals rebuild, generalized: rebuild `goals`
+    with `kind CHECK(kind IN kinds)`. Probes on the NEWEST kind (last
+    element) — present in the live DDL means the CHECK is already wide
+    (fresh DB from SCHEMA, or re-run). All v19 caveats apply (see
+    `_migrate_to_v19`): INSERT column list computed from the live table
+    because phase-2/4 rebuild snapshots predate late additive columns.
+
+    Callers are versioned steps; each passes the full kind tuple as of
+    its version, so this function has no per-version state of its own."""
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='goals'"
+    ).fetchone()
+    probe = f"'{kinds[-1]}'"
+    if chk and probe in (chk["sql"] or ""):
+        return
+    kinds_sql = ",".join(f"'{k}'" for k in kinds)
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute(f"""
+            CREATE TABLE _new_goals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem     TEXT    NOT NULL REFERENCES problems(name),
+                slug        TEXT    NOT NULL,
+                lean_path   TEXT    NOT NULL UNIQUE,
+                statement   TEXT    NOT NULL,
+                kind        TEXT    NOT NULL DEFAULT 'theorem'
+                                CHECK(kind IN ({kinds_sql})),
+                origin      TEXT    NOT NULL
+                                CHECK(origin IN ('root','backward','forward')),
+                status      TEXT    NOT NULL
+                                CHECK(status IN ('open','attempting','proved',
+                                                 'shelved',
+                                                 'pending_strategist_review',
+                                                 'disproved','frozen','dead')),
+                depth       INTEGER NOT NULL DEFAULT 0,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                                CHECK(entry_kind IN ('Builder','Backward')),
+                integrity_verified INTEGER NOT NULL DEFAULT 0
+                                CHECK(integrity_verified IN (0,1)),
+                detached    INTEGER NOT NULL DEFAULT 0
+                                CHECK(detached IN (0,1)),
+                alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                is_deliverable INTEGER NOT NULL DEFAULT 0
+                                CHECK(is_deliverable IN (0,1)),
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            )""")
+        new_cols = ["id", "problem", "slug", "lean_path", "statement",
+                    "kind", "origin", "status", "depth", "attempts",
+                    "entry_kind", "integrity_verified", "detached",
+                    "alias_target_id", "is_deliverable",
+                    "created_at", "updated_at"]
+        live_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+        copy_cols = ", ".join(c for c in new_cols if c in live_cols)
+        conn.execute(
+            f"INSERT INTO _new_goals ({copy_cols})"
+            f" SELECT {copy_cols} FROM goals")
+        conn.executescript("""
+            DROP TABLE goals;
+            ALTER TABLE _new_goals RENAME TO goals;
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"goals kind-CHECK widen left FK violations: "
+                f"{fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase11(conn: sqlite3.Connection) -> None:
+    """Phase 11 — widen `strategies.status` CHECK to accept 'stalled'.
+    SQLite cannot ALTER a CHECK; rebuild the table with the new clause,
+    copy rows, swap. Idempotent: skips when the CHECK is already wide.
+
+    Pre-condition: PRAGMA user_version < 11.
+    Post-condition (caller sets user_version = 11):
+      - strategies.status CHECK accepts 'stalled'
+      - All existing rows preserved unchanged
+    """
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table'"
+        " AND name='strategies'"
+    ).fetchone()
+    # Table absent (fresh DB) → init_schema's CREATE already built the wide
+    # CHECK; nothing to rebuild. Wide already → skip.
+    if not chk or "'stalled'" in (chk["sql"] or ""):
+        return
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_strategies (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                goal_id      INTEGER NOT NULL REFERENCES goals(id),
+                lean_path    TEXT    NOT NULL,
+                scratch_path TEXT    NOT NULL DEFAULT '',
+                status       TEXT    NOT NULL
+                                 CHECK(status IN ('proposed','succeeded',
+                                                  'dead','superseded',
+                                                  'stalled')),
+                proposal_md  TEXT    NOT NULL DEFAULT '',
+                created_by   TEXT    NOT NULL,
+                created_at   TEXT NOT NULL
+            );
+            INSERT INTO _new_strategies SELECT * FROM strategies;
+            DROP TABLE strategies;
+            ALTER TABLE _new_strategies RENAME TO strategies;
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 11 migration left FK violations: {fk_violations[:5]}")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase8(conn: sqlite3.Connection) -> None:
+    """Phase 8 — widen `library_decls.lifecycle` CHECK to accept 'cleaned'.
+    SQLite cannot ALTER a CHECK; rebuild the table with the new clause, copy
+    rows, swap. Idempotent: skips when the CHECK is already wide.
+
+    Pre-condition: PRAGMA user_version < 8.
+    Post-condition (caller sets user_version = 8):
+      - library_decls.lifecycle CHECK accepts 'cleaned'
+      - All existing rows preserved unchanged
+    """
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table'"
+        " AND name='library_decls'"
+    ).fetchone()
+    # Table absent (pre-Librarian DB) → init_schema's CREATE already built the
+    # wide CHECK; nothing to rebuild. Wide already → skip.
+    if not chk or "'cleaned'" in (chk["sql"] or ""):
+        return
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_library_decls (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem         TEXT NOT NULL REFERENCES problems(name),
+                slug            TEXT NOT NULL,
+                source_goal_id  INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                                    ON DELETE SET NULL,
+                verdict         TEXT NULL DEFAULT NULL,
+                citation        TEXT NULL DEFAULT NULL,
+                target_file     TEXT NULL DEFAULT NULL,
+                target_name     TEXT NULL DEFAULT NULL,
+                file_order      INTEGER NULL DEFAULT NULL,
+                lifecycle       TEXT NOT NULL DEFAULT 'candidate'
+                                    CHECK(lifecycle IN (
+                                      'candidate','deduped','classified',
+                                      'migrated','cleaned','dropped','cited')),
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            );
+            INSERT INTO _new_library_decls SELECT * FROM library_decls;
+            DROP TABLE library_decls;
+            ALTER TABLE _new_library_decls RENAME TO library_decls;
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 8 migration left FK violations: {fk_violations[:5]}")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase7(conn: sqlite3.Connection) -> None:
+    """Phase 7 — widen `pipelines.kind` and `queue.kind` CHECK to accept
+    'Librarian'. SQLite cannot ALTER a CHECK constraint; rebuild each
+    table with the new CHECK clause, copy rows, swap.
+
+    Pre-condition: PRAGMA user_version < 7.
+
+    Post-condition (caller sets user_version = 7):
+      - pipelines.kind CHECK accepts 'Librarian'
+      - queue.kind CHECK accepts 'Librarian'
+      - All existing rows preserved unchanged
+    """
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        # --- pipelines rebuild (skip if CHECK already wide) ---
+        chk = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table'"
+            " AND name='pipelines'"
+        ).fetchone()
+        if not (chk and "'Librarian'" in (chk["sql"] or "")):
+            conn.executescript("""
+                CREATE TABLE _new_pipelines (
+                    id          TEXT PRIMARY KEY,
+                    kind        TEXT NOT NULL
+                                    CHECK(kind IN ('Builder','Backward','Verify',
+                                                   'Strategist','Forward',
+                                                   'Librarian')),
+                    target_id   TEXT NOT NULL,
+                    target_kind TEXT NOT NULL
+                                    CHECK(target_kind IN ('Goal','Strategy','Problem')),
+                    status      TEXT NOT NULL CHECK(status IN ('succeeded','failed')),
+                    outcome     TEXT NOT NULL,
+                    started_at  TEXT NOT NULL,
+                    finished_at TEXT NOT NULL
+                );
+                INSERT INTO _new_pipelines SELECT * FROM pipelines;
+                DROP TABLE pipelines;
+                ALTER TABLE _new_pipelines RENAME TO pipelines;
+                CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
+            """)
+
+        # --- queue rebuild (skip if CHECK already wide) ---
+        chk = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table'"
+            " AND name='queue'"
+        ).fetchone()
+        if not (chk and "'Librarian'" in (chk["sql"] or "")):
+            conn.executescript("""
+                CREATE TABLE _new_queue (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind        TEXT NOT NULL
+                                    CHECK(kind IN ('Builder','Backward','Verify',
+                                                   'Strategist','Forward',
+                                                   'Librarian')),
+                    target_id   TEXT NOT NULL,
+                    target_kind TEXT NOT NULL DEFAULT 'Goal'
+                                    CHECK(target_kind IN ('Goal','Strategy','Problem')),
+                    priority    INTEGER NOT NULL DEFAULT 0,
+                    decision_id INTEGER NULL DEFAULT NULL REFERENCES strategist_decisions(id),
+                    created_at  TEXT NOT NULL
+                );
+                INSERT INTO _new_queue (id, kind, target_id, target_kind,
+                    priority, decision_id, created_at)
+                SELECT id, kind, target_id, target_kind,
+                    priority, decision_id, created_at FROM queue;
+                DROP TABLE queue;
+                ALTER TABLE _new_queue RENAME TO queue;
+                CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
+            """)
+
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 7 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase2(conn: sqlite3.Connection) -> None:
+    """Phase 2 schema migration for pre-Phase 2 DBs.
+
+    Rebuilds goals / pipelines / queue to widen CHECK constraints and
+    add new columns. Backfills existing `shelved` rows into `disproved`
+    based on dead_attempts.failure_reason = 'agent_infeasible'.
+
+    Pre-condition: PRAGMA user_version < 2 AND goals table lacks the
+    Phase 2 `detached` column (i.e. genuinely pre-Phase 2 schema).
+
+    Post-condition (caller sets PRAGMA user_version = 2):
+      - goals.origin CHECK accepts 'forward'
+      - goals.status CHECK accepts 'pending_strategist_review', 'disproved'
+      - goals has new `detached` column (default 0)
+      - pipelines.kind CHECK accepts 'Strategist', 'Forward'
+      - pipelines.target_kind CHECK accepts 'Problem'
+      - queue.kind CHECK accepts 'Strategist', 'Forward'
+      - queue has new `target_kind` column (default 'Goal') + `decision_id`
+        column (NULL FK)
+
+    Failure recovery: SQLite executescript implicit-commits between
+    statements, so a mid-rebuild failure leaves the DB in an
+    inconsistent state. Operator should `cp asterism.db
+    asterism.db.pre_phase2_<UTC>` before first daemon start under
+    Phase 2 code (per `docs/internal/archive/phase2_migration_plan.md §E`).
+    """
+    # PRAGMA foreign_keys cannot be set inside a transaction.
+    # connect() leaves us at autocommit (isolation_level default).
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        # --- goals rebuild: extend origin/status CHECK + add detached ---
+        # INSERT SELECT lists columns explicitly (new `detached` not in
+        # source); it gets the DEFAULT 0 from _new_goals schema.
+        conn.executescript("""
+            CREATE TABLE _new_goals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem     TEXT    NOT NULL REFERENCES problems(name),
+                slug        TEXT    NOT NULL,
+                lean_path   TEXT    NOT NULL UNIQUE,
+                statement   TEXT    NOT NULL,
+                kind        TEXT    NOT NULL DEFAULT 'theorem'
+                                CHECK(kind IN ('theorem')),
+                origin      TEXT    NOT NULL
+                                CHECK(origin IN ('root','backward','forward')),
+                status      TEXT    NOT NULL
+                                CHECK(status IN ('open','attempting','proved',
+                                                 'shelved',
+                                                 'pending_strategist_review',
+                                                 'disproved')),
+                depth       INTEGER NOT NULL DEFAULT 0,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                                CHECK(entry_kind IN ('Builder','Backward')),
+                integrity_verified INTEGER NOT NULL DEFAULT 0
+                                CHECK(integrity_verified IN (0,1)),
+                detached    INTEGER NOT NULL DEFAULT 0
+                                CHECK(detached IN (0,1)),
+                alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            );
+            INSERT INTO _new_goals (id, problem, slug, lean_path, statement,
+                kind, origin, status, depth, attempts, entry_kind,
+                integrity_verified, alias_target_id, created_at, updated_at)
+            SELECT id, problem, slug, lean_path, statement,
+                kind, origin, status, depth, attempts, entry_kind,
+                integrity_verified, alias_target_id, created_at, updated_at
+            FROM goals;
+            DROP TABLE goals;
+            ALTER TABLE _new_goals RENAME TO goals;
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+        """)
+
+        # Backfill: existing 'shelved' rows whose latest decline gave a
+        # counterexample (failure_reason='agent_infeasible') represent
+        # the new 'disproved' semantic. Must run AFTER goals rebuild so
+        # the new CHECK accepts 'disproved'. dead_attempts is intact
+        # (no rebuild on it).
+        conn.execute("""
+            UPDATE goals SET status = 'disproved'
+            WHERE status = 'shelved'
+              AND id IN (
+                SELECT DISTINCT target_id FROM dead_attempts
+                WHERE target_kind = 'Goal'
+                  AND failure_reason = 'agent_infeasible'
+              )
+        """)
+
+        # --- pipelines rebuild: extend kind + target_kind CHECK ---
+        conn.executescript("""
+            CREATE TABLE _new_pipelines (
+                id          TEXT PRIMARY KEY,
+                kind        TEXT NOT NULL
+                                CHECK(kind IN ('Builder','Backward','Verify',
+                                               'Strategist','Forward')),
+                target_id   TEXT NOT NULL,
+                target_kind TEXT NOT NULL
+                                CHECK(target_kind IN ('Goal','Strategy','Problem')),
+                status      TEXT NOT NULL CHECK(status IN ('succeeded','failed')),
+                outcome     TEXT NOT NULL,
+                started_at  TEXT NOT NULL,
+                finished_at TEXT NOT NULL
+            );
+            INSERT INTO _new_pipelines SELECT * FROM pipelines;
+            DROP TABLE pipelines;
+            ALTER TABLE _new_pipelines RENAME TO pipelines;
+            CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
+        """)
+
+        # --- queue rebuild: extend kind CHECK + add target_kind, decision_id ---
+        conn.executescript("""
+            CREATE TABLE _new_queue (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind        TEXT NOT NULL
+                                CHECK(kind IN ('Builder','Backward','Verify',
+                                               'Strategist','Forward')),
+                target_id   TEXT NOT NULL,
+                target_kind TEXT NOT NULL DEFAULT 'Goal'
+                                CHECK(target_kind IN ('Goal','Strategy','Problem')),
+                priority    INTEGER NOT NULL DEFAULT 0,
+                decision_id INTEGER NULL DEFAULT NULL REFERENCES strategist_decisions(id),
+                created_at  TEXT NOT NULL
+            );
+            INSERT INTO _new_queue (id, kind, target_id, priority, created_at)
+            SELECT id, kind, target_id, priority, created_at FROM queue;
+            DROP TABLE queue;
+            ALTER TABLE _new_queue RENAME TO queue;
+            CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
+        """)
+
+        # Validate FK integrity post-rebuild
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 2 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase4(conn: sqlite3.Connection) -> None:
+    """Phase 4 — widen `goals.kind` CHECK to accept Forward non-theorem
+    artifacts (`def`, `structure`, `class`). Rebuild required because
+    SQLite cannot ALTER a CHECK constraint in place.
+
+    Pre-condition: PRAGMA user_version < 4. Existing rows are preserved
+    unchanged — pre-Phase 4 DBs only had `kind='theorem'` so the
+    rebuild has no data-shape concerns.
+
+    Post-condition (caller sets user_version = 4):
+      - goals.kind CHECK accepts {'theorem','def','structure','class'}
+      - All existing rows + indexes preserved
+    """
+    # Skip if widened CHECK already in place (fresh DB built from
+    # current SCHEMA, or repeat migration).
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='goals'"
+    ).fetchone()
+    if chk and "'structure'" in (chk["sql"] or ""):
+        return
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_goals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem     TEXT    NOT NULL REFERENCES problems(name),
+                slug        TEXT    NOT NULL,
+                lean_path   TEXT    NOT NULL UNIQUE,
+                statement   TEXT    NOT NULL,
+                kind        TEXT    NOT NULL DEFAULT 'theorem'
+                                CHECK(kind IN ('theorem','def',
+                                               'structure','class')),
+                origin      TEXT    NOT NULL
+                                CHECK(origin IN ('root','backward','forward')),
+                status      TEXT    NOT NULL
+                                CHECK(status IN ('open','attempting','proved',
+                                                 'shelved',
+                                                 'pending_strategist_review',
+                                                 'disproved')),
+                depth       INTEGER NOT NULL DEFAULT 0,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                                CHECK(entry_kind IN ('Builder','Backward')),
+                integrity_verified INTEGER NOT NULL DEFAULT 0
+                                CHECK(integrity_verified IN (0,1)),
+                detached    INTEGER NOT NULL DEFAULT 0
+                                CHECK(detached IN (0,1)),
+                alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            );
+            INSERT INTO _new_goals SELECT * FROM goals;
+            DROP TABLE goals;
+            ALTER TABLE _new_goals RENAME TO goals;
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 4 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase6(conn: sqlite3.Connection) -> None:
+    """Phase 6 — widen `goals.status` CHECK to accept 'dead' (terminal
+    for parent_needs_fix decline). Hard terminal but doesn't block dedupe
+    (same statement may be valid under a different parent strategy).
+    Same rebuild pattern as phase 5.
+
+    Pre-condition: PRAGMA user_version < 6.
+
+    Post-condition (caller sets user_version = 6):
+      - goals.status CHECK accepts {'open','attempting','proved','shelved',
+        'pending_strategist_review','disproved','frozen','dead'}
+      - All existing rows preserved unchanged
+    """
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='goals'"
+    ).fetchone()
+    if chk and "'dead'" in (chk["sql"] or ""):
+        return
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_goals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem     TEXT    NOT NULL REFERENCES problems(name),
+                slug        TEXT    NOT NULL,
+                lean_path   TEXT    NOT NULL UNIQUE,
+                statement   TEXT    NOT NULL,
+                kind        TEXT    NOT NULL DEFAULT 'theorem'
+                                CHECK(kind IN ('theorem','def',
+                                               'structure','class')),
+                origin      TEXT    NOT NULL
+                                CHECK(origin IN ('root','backward','forward')),
+                status      TEXT    NOT NULL
+                                CHECK(status IN ('open','attempting','proved',
+                                                 'shelved',
+                                                 'pending_strategist_review',
+                                                 'disproved','frozen','dead')),
+                depth       INTEGER NOT NULL DEFAULT 0,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                                CHECK(entry_kind IN ('Builder','Backward')),
+                integrity_verified INTEGER NOT NULL DEFAULT 0
+                                CHECK(integrity_verified IN (0,1)),
+                detached    INTEGER NOT NULL DEFAULT 0
+                                CHECK(detached IN (0,1)),
+                alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            );
+            INSERT INTO _new_goals SELECT * FROM goals;
+            DROP TABLE goals;
+            ALTER TABLE _new_goals RENAME TO goals;
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 6 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase5(conn: sqlite3.Connection) -> None:
+    """Phase 5 — widen `goals.status` CHECK to accept 'frozen' (root
+    pre-launch state). Same rebuild pattern as phase 4. Backfill: for
+    every problem with bootstrap_done=0 flip its root goal's status from
+    'open' to 'frozen' — the legacy bootstrap_done=0 condition is exactly
+    the new frozen condition.
+
+    Pre-condition: PRAGMA user_version < 5.
+
+    Post-condition (caller sets user_version = 5):
+      - goals.status CHECK accepts {'open','attempting','proved','shelved',
+        'pending_strategist_review','disproved','frozen'}
+      - Roots of bootstrap_done=0 problems are 'frozen'
+      - All other rows preserved unchanged
+    """
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='goals'"
+    ).fetchone()
+    if chk and "'frozen'" in (chk["sql"] or ""):
+        return
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_goals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem     TEXT    NOT NULL REFERENCES problems(name),
+                slug        TEXT    NOT NULL,
+                lean_path   TEXT    NOT NULL UNIQUE,
+                statement   TEXT    NOT NULL,
+                kind        TEXT    NOT NULL DEFAULT 'theorem'
+                                CHECK(kind IN ('theorem','def',
+                                               'structure','class')),
+                origin      TEXT    NOT NULL
+                                CHECK(origin IN ('root','backward','forward')),
+                status      TEXT    NOT NULL
+                                CHECK(status IN ('open','attempting','proved',
+                                                 'shelved',
+                                                 'pending_strategist_review',
+                                                 'disproved','frozen')),
+                depth       INTEGER NOT NULL DEFAULT 0,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                                CHECK(entry_kind IN ('Builder','Backward')),
+                integrity_verified INTEGER NOT NULL DEFAULT 0
+                                CHECK(integrity_verified IN (0,1)),
+                detached    INTEGER NOT NULL DEFAULT 0
+                                CHECK(detached IN (0,1)),
+                alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            );
+            INSERT INTO _new_goals SELECT * FROM goals;
+            DROP TABLE goals;
+            ALTER TABLE _new_goals RENAME TO goals;
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+        """)
+        prob_cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(problems)")}
+        if "bootstrap_done" in prob_cols:
+            conn.execute(
+                "UPDATE goals SET status = 'frozen', updated_at = ? "
+                " WHERE origin = 'root' AND status = 'open' "
+                "   AND problem IN (SELECT name FROM problems "
+                "                    WHERE bootstrap_done = 0)",
+                (now(),),
+            )
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 5 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase3(conn: sqlite3.Connection) -> None:
+    """Phase 2.5 — widen strategist_decisions.trigger_kind CHECK to
+    accept 'inject_batch_done'. SQLite cannot ALTER a CHECK constraint;
+    rebuild the table with the new CHECK clause, copy rows, swap.
+
+    Pre-condition: PRAGMA user_version < 3. The previous phase 2 ALTER
+    TABLE ADD COLUMN block has already added `batch_id` to the live
+    table (additive, no CHECK on that column), so the rebuild here only
+    has to widen the trigger_kind CHECK and preserve every other column.
+
+    Post-condition (caller sets user_version = 3):
+      - strategist_decisions.trigger_kind CHECK accepts 'inject_batch_done'
+      - idx_sd_batch_id index present (matches SCHEMA constant)
+      - All existing rows preserved unchanged
+    """
+    # Skip if rebuild already happened (fresh DB built from current
+    # SCHEMA has the widened CHECK + index already; this lets the
+    # phase 3 guard be idempotent on those DBs).
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table'"
+        " AND name = 'strategist_decisions'"
+    ).fetchone()
+    if chk and "inject_batch_done" in (chk["sql"] or ""):
+        # CHECK already wide enough; just ensure the index exists.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sd_batch_id"
+            " ON strategist_decisions(batch_id)")
+        conn.commit()
+        return
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_strategist_decisions (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem             TEXT NOT NULL REFERENCES problems(name),
+                triggered_at_tick   INTEGER NOT NULL,
+                trigger_kind        TEXT NOT NULL
+                                        CHECK(trigger_kind IN
+                                              ('first_launch','pending_review',
+                                               'routine','inject_batch_done')),
+                decision_kind       TEXT NOT NULL
+                                        -- 'Reopen'/'InitializeDefs': LEGACY, never
+                                        -- emitted now (see strategist.DECISION_KINDS);
+                                        -- kept so pre-2026-05-28 rows stay valid.
+                                        CHECK(decision_kind IN
+                                              ('Inject','ConfirmShelve','Reopen',
+                                               'EmitDirective','InitializeDefs',
+                                               'RequestUserAmend','Noop')),
+                target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                brief               TEXT NULL DEFAULT NULL,
+                reason              TEXT NULL DEFAULT NULL,
+                payload             TEXT NOT NULL DEFAULT '{}',
+                batch_id            TEXT NULL DEFAULT NULL,
+                outcome             TEXT NULL DEFAULT NULL,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
+            );
+            INSERT INTO _new_strategist_decisions
+                (id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                 target_id, brief, reason, payload, batch_id, outcome,
+                 created_at, updated_at)
+            SELECT id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                   target_id, brief, reason, payload, batch_id, outcome,
+                   created_at, updated_at
+            FROM strategist_decisions;
+            DROP TABLE strategist_decisions;
+            ALTER TABLE _new_strategist_decisions RENAME TO strategist_decisions;
+            CREATE INDEX IF NOT EXISTS idx_sd_problem
+                ON strategist_decisions(problem);
+            CREATE INDEX IF NOT EXISTS idx_sd_outcome
+                ON strategist_decisions(outcome);
+            CREATE INDEX IF NOT EXISTS idx_sd_batch_id
+                ON strategist_decisions(batch_id);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 3 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase13(conn: sqlite3.Connection) -> None:
+    """Phase 13 — widen strategist_decisions.decision_kind CHECK to accept
+    'MarkDeliverable' (anchor+claim architecture). SQLite cannot ALTER a
+    CHECK; rebuild the table with the new CHECK, copy every row, swap.
+
+    The DDL below is a point-in-time snapshot of the strategist_decisions
+    SCHEMA at v13 (all columns added through v12's additive ALTERs:
+    produced_goal_id / produced_strategy_id / outcome_detail) — it must
+    stay column-for-column identical to the SCHEMA constant, differing
+    only by the widened CHECK. Idempotent: fresh DBs already carry the
+    widened CHECK, so the probe short-circuits.
+
+    Post-condition (caller sets user_version = 13):
+      - decision_kind CHECK accepts 'MarkDeliverable'
+      - all rows + indexes preserved
+    """
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table'"
+        " AND name = 'strategist_decisions'"
+    ).fetchone()
+    if chk and "MarkDeliverable" in (chk["sql"] or ""):
+        return  # CHECK already wide (fresh DB from SCHEMA, or re-run)
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_strategist_decisions (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem             TEXT NOT NULL REFERENCES problems(name),
+                triggered_at_tick   INTEGER NOT NULL,
+                trigger_kind        TEXT NOT NULL
+                                        CHECK(trigger_kind IN
+                                              ('first_launch','pending_review',
+                                               'routine','inject_batch_done')),
+                decision_kind       TEXT NOT NULL
+                                        CHECK(decision_kind IN
+                                              ('Inject','ConfirmShelve','Reopen',
+                                               'EmitDirective','InitializeDefs',
+                                               'RequestUserAmend','Noop',
+                                               'MarkDeliverable')),
+                target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                brief               TEXT NULL DEFAULT NULL,
+                reason              TEXT NULL DEFAULT NULL,
+                payload             TEXT NOT NULL DEFAULT '{}',
+                batch_id            TEXT NULL DEFAULT NULL,
+                produced_goal_id    INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                                        ON DELETE SET NULL,
+                produced_strategy_id INTEGER NULL DEFAULT NULL
+                                        REFERENCES strategies(id) ON DELETE SET NULL,
+                outcome             TEXT NULL DEFAULT NULL,
+                outcome_detail      TEXT NULL DEFAULT NULL,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
+            );
+            INSERT INTO _new_strategist_decisions
+                (id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                 target_id, brief, reason, payload, batch_id, produced_goal_id,
+                 produced_strategy_id, outcome, outcome_detail,
+                 created_at, updated_at)
+            SELECT id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                   target_id, brief, reason, payload, batch_id, produced_goal_id,
+                   produced_strategy_id, outcome, outcome_detail,
+                   created_at, updated_at
+            FROM strategist_decisions;
+            DROP TABLE strategist_decisions;
+            ALTER TABLE _new_strategist_decisions RENAME TO strategist_decisions;
+            CREATE INDEX IF NOT EXISTS idx_sd_problem
+                ON strategist_decisions(problem);
+            CREATE INDEX IF NOT EXISTS idx_sd_outcome
+                ON strategist_decisions(outcome);
+            CREATE INDEX IF NOT EXISTS idx_sd_batch_id
+                ON strategist_decisions(batch_id);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 13 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase14(conn: sqlite3.Connection) -> None:
+    """Phase 14 — widen strategist_decisions.decision_kind CHECK to also
+    accept 'Ingest' (anchor+claim harvest trigger). Same point-in-time
+    table-rebuild snapshot as v13 (all columns through v12's additive
+    ALTERs), CHECK now carrying both 'MarkDeliverable' and 'Ingest'.
+    Idempotent via the probe. Post: caller sets user_version = 14."""
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table'"
+        " AND name = 'strategist_decisions'"
+    ).fetchone()
+    if chk and "'Ingest'" in (chk["sql"] or ""):
+        return  # CHECK already carries 'Ingest'
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_strategist_decisions (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem             TEXT NOT NULL REFERENCES problems(name),
+                triggered_at_tick   INTEGER NOT NULL,
+                trigger_kind        TEXT NOT NULL
+                                        CHECK(trigger_kind IN
+                                              ('first_launch','pending_review',
+                                               'routine','inject_batch_done')),
+                decision_kind       TEXT NOT NULL
+                                        CHECK(decision_kind IN
+                                              ('Inject','ConfirmShelve','Reopen',
+                                               'EmitDirective','InitializeDefs',
+                                               'RequestUserAmend','Noop',
+                                               'MarkDeliverable','Ingest')),
+                target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                brief               TEXT NULL DEFAULT NULL,
+                reason              TEXT NULL DEFAULT NULL,
+                payload             TEXT NOT NULL DEFAULT '{}',
+                batch_id            TEXT NULL DEFAULT NULL,
+                produced_goal_id    INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                                        ON DELETE SET NULL,
+                produced_strategy_id INTEGER NULL DEFAULT NULL
+                                        REFERENCES strategies(id) ON DELETE SET NULL,
+                outcome             TEXT NULL DEFAULT NULL,
+                outcome_detail      TEXT NULL DEFAULT NULL,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
+            );
+            INSERT INTO _new_strategist_decisions
+                (id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                 target_id, brief, reason, payload, batch_id, produced_goal_id,
+                 produced_strategy_id, outcome, outcome_detail,
+                 created_at, updated_at)
+            SELECT id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                   target_id, brief, reason, payload, batch_id, produced_goal_id,
+                   produced_strategy_id, outcome, outcome_detail,
+                   created_at, updated_at
+            FROM strategist_decisions;
+            DROP TABLE strategist_decisions;
+            ALTER TABLE _new_strategist_decisions RENAME TO strategist_decisions;
+            CREATE INDEX IF NOT EXISTS idx_sd_problem
+                ON strategist_decisions(problem);
+            CREATE INDEX IF NOT EXISTS idx_sd_outcome
+                ON strategist_decisions(outcome);
+            CREATE INDEX IF NOT EXISTS idx_sd_batch_id
+                ON strategist_decisions(batch_id);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 14 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
