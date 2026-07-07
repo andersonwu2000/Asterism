@@ -560,14 +560,37 @@ export function layoutConstellation(
   const memberComp = new Map<number, Comp>()
   for (const c of treeInfos) for (const m of c.members) memberComp.set(m, c)
   const mains = treeInfos.filter(isMain)
+  /** mean pass-1 x of a tree's cross-link partners in OTHER trees —
+   * fallback = its own centre (keeps the current order) */
+  const treePartnerMean = (c: Comp): number => {
+    const xs: number[] = []
+    for (const m of c.members) {
+      for (const p of partner.get(m) ?? []) {
+        if (memberComp.get(p) !== c) {
+          const x = xSlot.get(p)
+          if (x !== undefined) xs.push(x)
+        }
+      }
+    }
+    return xs.length > 0
+      ? xs.reduce((a, b) => a + b, 0) / xs.length
+      : (c.start + c.end) / 2
+  }
   // Shelf packing (FFDH): depth-descending order makes each band
   // depth-homogeneous — mixed bands waste the full height of their
   // deepest tree under every shallow one (residue_thm ballooned to a
-  // 189-slot ribbon). The root's component still leads the sky.
+  // 189-slot ribbon). The root's component still leads the sky; among
+  // equal depths, connected trees queue together so the greedy packer
+  // tends to drop them into the SAME band.
   mains.sort((a, b) => {
     const ra = a.members.some((id) => byId.get(id)?.origin === 'root') ? 0 : 1
     const rb = b.members.some((id) => byId.get(id)?.origin === 'root') ? 0 : 1
-    return ra - rb || b.depth - a.depth || a.start - b.start
+    return (
+      ra - rb ||
+      b.depth - a.depth ||
+      treePartnerMean(a) - treePartnerMean(b) ||
+      a.start - b.start
+    )
   })
   const mainSet = new Set(mains)
   const rest = treeInfos.filter((c) => !mainSet.has(c))
@@ -641,6 +664,56 @@ export function layoutConstellation(
     horizonBand = band
     pack(linked)
     pack(unlinkedTrees)
+  }
+
+  // ---- within-band tree slide (owner: threads travel the whole sky
+  // for no reason — MOVING TREES shortens them). Band membership stays
+  // FFDH's (depth homogeneity = vertical economy); the ORDER inside a
+  // band belongs to connectivity: each tree slides toward the mean x
+  // of its cross-link partners, wherever they sit. Bands share the
+  // x-origin, so localSlot compares across bands directly. Two sweeps
+  // let both ends of a thread move.
+  {
+    const bandTrees = new Map<number, Comp[]>()
+    for (const t of treeInfos) {
+      const b = bandOfNode.get(t.members[0])
+      if (b === undefined) continue
+      bandTrees.set(b, [...(bandTrees.get(b) ?? []), t])
+    }
+    for (let sweep = 0; sweep < 2; sweep++) {
+      for (const trees of bandTrees.values()) {
+        if (trees.length < 2) continue
+        const score = new Map<Comp, number>()
+        for (const t of trees) {
+          const xs: number[] = []
+          for (const m of t.members) {
+            for (const p of partner.get(m) ?? []) {
+              if (memberComp.get(p) !== t) {
+                const x = localSlot.get(p)
+                if (x !== undefined) xs.push(x)
+              }
+            }
+          }
+          const m0 = t.members[0]
+          const centre =
+            (localSlot.get(m0) ?? 0) -
+            ((xSlot.get(m0) ?? 0) - t.start) +
+            (t.end - t.start) / 2
+          score.set(
+            t,
+            xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : centre,
+          )
+        }
+        trees.sort((a, b) => score.get(a)! - score.get(b)!)
+        let cursor = 0
+        for (const t of trees) {
+          for (const m of t.members) {
+            localSlot.set(m, (xSlot.get(m) ?? 0) - t.start + cursor)
+          }
+          cursor += t.end - t.start + 1 + 0.6
+        }
+      }
+    }
   }
 
   // Truly unlinked forward work: a compact grid block, last.
