@@ -258,22 +258,52 @@ export default function Run() {
 
       {running && (
         <section className="mt-7">
-          <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
-            agents{workers.length > 0 && ` · ${workers.length}`}
-          </div>
-          {workers.length === 0 ? (
-            <div className="text-xs text-ink-faint">
-              {d.gateway === 'warming'
-                ? 'none yet — they spawn once the toolchain is hot'
-                : 'none this instant — between batches'}
-            </div>
-          ) : (
-            <div className="grid gap-3 lg:grid-cols-2">
-              {workers.map((w, i) => (
-                <Lane key={`${w.kind}:${w.slug}:${i}`} w={w} problem={data.problem} />
-              ))}
-            </div>
-          )}
+          {/* the pool IS the machine's width: dispatch.pool slots,
+              each busy (a lane) or free (a dashed vacancy) — parallel
+              capacity readable at a glance (owner's ask) */}
+          {(() => {
+            const pool =
+              Number(cfg?.settings.find((s) => s.key === 'dispatch.pool')?.resolved ?? 0) || 0
+            const slotCount = Math.max(pool, workers.length)
+            const freeHint =
+              d.gateway === 'warming'
+                ? 'free — agents spawn once the toolchain is hot'
+                : 'free — waiting for the dispatcher'
+            return (
+              <>
+                <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
+                  slots
+                  {slotCount > 0 && (
+                    <span className="tnum ml-2 font-normal tracking-normal normal-case text-ink-faint/80">
+                      {workers.length}/{slotCount} busy
+                    </span>
+                  )}
+                </div>
+                {slotCount === 0 ? (
+                  <div className="text-xs text-ink-faint">
+                    none this instant — between batches
+                  </div>
+                ) : (
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    {workers.map((w, i) => (
+                      <Lane key={`${w.kind}:${w.slug}:${i}`} w={w} problem={data.problem} />
+                    ))}
+                    {Array.from({ length: Math.max(0, slotCount - workers.length) }).map(
+                      (_, i) => (
+                        <div
+                          key={`free${i}`}
+                          className="flex min-h-24 items-center justify-center rounded-lg border border-dashed border-edge text-[11px] text-ink-faint"
+                          title="one of dispatch.pool parallel work slots"
+                        >
+                          {freeHint}
+                        </div>
+                      ),
+                    )}
+                  </div>
+                )}
+              </>
+            )
+          })()}
         </section>
       )}
 
