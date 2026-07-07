@@ -1369,15 +1369,6 @@ export default function Constellation({
           </svg>
           anchor
         </span>
-        <span
-          className="flex items-center gap-1"
-          title="an unringed star is an intermediate step — its brightness is its status; the ring is what you sign"
-        >
-          <svg width="13" height="13" viewBox="-5 -5 10 10">
-            <circle r="2" fill="var(--color-ink-dim)" opacity="0.8" />
-          </svg>
-          step
-        </span>
         <span className="h-3 w-px bg-edge" />
         <span
           className="flex items-center gap-1"
