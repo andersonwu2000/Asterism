@@ -41,9 +41,10 @@
    * around 40-55% (first cut at ~20% read as plain grey); lightness
    * stays near the ink ladder. UI chrome stays achromatic. */
   --color-syn-kw: #de8e9f; /* keywords — dusty crimson */
-  --color-syn-sort: #85bad7; /* Type/Prop/Sort — sky */
+  --color-syn-decl: #8ab6dd; /* the name being declared — sky */
+  --color-syn-sort: #82c0ae; /* Type/Prop/Sort + math alphabets (ℝ, 𝓡) — teal */
   --color-syn-str: #a6c18b; /* strings — moss */
-  --color-syn-num: #d5ac7c; /* numerals — amber */
+  --color-syn-num: #d5ac7c; /* numerals + `refs` inside comments — amber */
   --color-syn-attr: #b3a0cf; /* @[attributes] — lavender */
 
   --font-sans:
