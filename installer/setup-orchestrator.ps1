@@ -28,18 +28,21 @@ function Ok($msg)   { Emit ("[OK] " + $msg) }
 function Note($msg) { Emit ("[NOTE] " + $msg) }
 function Warn($msg) { Emit ("[WARN] " + $msg) }
 function Tick($msg) { Emit ("[TICK] " + $msg) }
+function Human($msg){ Emit ("[HUMAN] " + $msg) }   # a move only the user can make
 
-function Run-Stream($file, $arguments, $cwd) {
+function Run-Stream($file, $arguments, $cwd, [switch]$AsTick) {
     # run a command, feeding each output line to the progress log. stderr
     # merged in (native, no OEM mojibake as Python had). ErrorAction
     # Continue so a non-zero exit / stderr line never throws past us.
+    # -AsTick: emit each line as a single UPDATING tick instead of piling
+    # up thousands of rows (mathlib cache-get, the Lean toolchain pull).
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     $oldloc = Get-Location
     try {
         if ($cwd) { Set-Location $cwd }
         & $file @arguments 2>&1 | ForEach-Object {
             $line = "$_".TrimEnd()
-            if ($line -ne '') { Note ("  " + $line) }
+            if ($line -ne '') { if ($AsTick) { Tick $line } else { Note ("  " + $line) } }
         }
         return $LASTEXITCODE
     } catch {
@@ -118,9 +121,9 @@ function Spawn-ClaudeLogin {
         } else {
             Start-Process $c -ArgumentList @('auth', 'login', '--claudeai') -WindowStyle Hidden
         }
-        Note 'your browser opened for the Claude login - click Authorize; the rest keeps going'
+        Human 'A browser tab opened for the Claude login - click Authorize. The rest keeps installing meanwhile.'
     } catch {
-        Note 'run `claude auth login` in a terminal to sign in - the rest continues'
+        Human 'Run `claude auth login` in a terminal to sign in - the rest keeps installing.'
     }
 }
 
@@ -156,14 +159,14 @@ function Install-Lean($elanHome) {
     # surprise-downloads the PINNED toolchain (hundreds of MB) - pull it
     # here so later probes meet a ready lake
     Note 'fetching the pinned Lean toolchain (first run only)...'
-    Run-Stream $lake @('--version') $Root | Out-Null
+    Run-Stream $lake @('--version') $Root -AsTick | Out-Null
     return (Get-LakeStatus).found
 }
 
 # ---- Mathlib (lake) --------------------------------------------------
 function Fetch-Mathlib {
     Note 'fetching the prebuilt math library (several GB on first run)...'
-    Run-Stream 'lake' @('exe', 'cache', 'get') $Root | Out-Null
+    Run-Stream 'lake' @('exe', 'cache', 'get') $Root -AsTick | Out-Null
     Note "building the engine's Lean server (a few minutes)..."
     Run-Stream 'lake' @('build', 'lean-asterism-server') $Root | Out-Null
     return (Get-MathlibStatus $Root).present
@@ -201,6 +204,12 @@ try {
     $lakePath = $dec.lake_path
     $failures = @()
 
+    # the checklist the page draws up front - names MUST match the
+    # Step '...' calls below (the page fills each row's status in as its
+    # step runs, so the user sees the whole roadmap and what is left)
+    Emit ('[PLAN] ' + (@('Python', 'Asterism engine', 'Claude Code', 'Git',
+        'Lean theorem prover', 'Math library (Mathlib)', 'Asterism console') -join '|'))
+
     # 1. Python
     Step 'Python'
     if (Get-PyVersion) { Ok ('already installed  (' + (Get-PyVersion) + ')') }
@@ -224,7 +233,7 @@ try {
     else { $failures += 'Claude Code' }
     Repair-ClaudePath
     $cs = Get-ClaudeStatus
-    if ($cs.installed -and -not $cs.logged_in) { Step 'Claude login'; Spawn-ClaudeLogin }
+    if ($cs.installed -and -not $cs.logged_in) { Spawn-ClaudeLogin }
 
     # 4. Git
     Step 'Git'

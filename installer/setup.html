@@ -41,13 +41,34 @@
   .btn:hover { background: #f4f5f8; }
   .btn:disabled { opacity: .5; cursor: default; }
   .hint { color: #67696f; font-size: 12px; margin-left: .8rem; }
-  .console { margin-top: .2rem; background: #0c0c10; border: 1px solid #1a1a1f; border-radius: 8px;
-             max-height: 22rem; overflow-y: auto; padding: .7rem 1rem;
-             font: 12px/1.7 "Cascadia Code", "Consolas", monospace; }
-  .console .ln { white-space: pre-wrap; word-break: break-word; }
-  .console .step { color: #ededf0; margin-top: .5rem; } .console .step:first-child { margin-top: 0; }
-  .console .ok { color: #8fb98f; } .console .note { color: #6a6c72; } .console .warn { color: #d8a657; }
-  .console .tick { color: #8a8d94; }
+  /* the one move only the user can make - kept out of the collapsible
+     rows so it can't hide in a closed log */
+  .human { margin: 0 0 1.1rem; padding: .7rem 1rem; border: 1px solid #2a2a30; border-radius: 8px;
+           background: #141418; color: #f2f3f6; font-size: 13px; }
+  /* install checklist: one row per target, click to expand its log */
+  .checklist { margin-top: .1rem; }
+  .item { border-top: 1px solid #17171b; }
+  .item:first-child { border-top: none; }
+  .ihead { display: flex; align-items: center; gap: .7rem; padding: .55rem .2rem; cursor: pointer;
+           user-select: none; border-radius: 5px; }
+  .ihead:hover { background: #0e0e12; }
+  .g { width: 1.15em; flex: none; text-align: center; font-size: 12px; }
+  .g.pend { color: #46474d; } .g.done { color: #ededf0; } .g.warn { color: #f2f3f6; font-weight: 700; }
+  .g.run .pulse { margin: 0; }
+  .iname { color: #c9cbd0; font-size: 13px; }
+  .item.pending .iname { color: #6a6c72; }
+  .item.done .iname { color: #9da0a8; }
+  .istat { margin-left: auto; color: #67696f; font-size: 12px; font-family: "Consolas", monospace;
+           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 56%; }
+  .item.running .istat { color: #a2a4ab; }
+  .chev { flex: none; margin-left: .3rem; color: #46474d; transition: transform .15s ease; }
+  .item.open .chev { transform: rotate(90deg); }
+  .ilog { display: none; max-height: 15rem; overflow-y: auto; margin: 0 0 .5rem 1.85rem;
+          padding: .45rem .7rem; background: #0c0c10; border-left: 1px solid #1a1a1f; border-radius: 4px;
+          font: 12px/1.7 "Cascadia Code", "Consolas", monospace; }
+  .item.open .ilog { display: block; }
+  .ilog .ln { white-space: pre-wrap; word-break: break-word; color: #8a8d94; }
+  .ilog .ln.tick { color: #a2a4ab; }
   .pulse { display: inline-block; width: .5em; height: .5em; border-radius: 50%; background: #8a8d94;
            margin-right: .8em; vertical-align: middle; animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: .25 } 50% { opacity: 1 } }
@@ -68,7 +89,12 @@
     </div>
     <div id="decide" style="display:none"></div>
     <div id="progress" style="display:none">
-      <div class="card"><div class="lbl">Installing</div><div id="console" class="console"></div></div>
+      <div id="human" class="human" style="display:none"></div>
+      <div class="card"><div class="lbl">Installing</div><div id="checklist" class="checklist"></div></div>
+      <div id="retry" style="display:none; margin-top:1rem">
+        <button class="btn" id="retryBtn">Try the unfinished steps again</button>
+        <span class="hint">finished parts are skipped</span>
+      </div>
     </div>
   </div>
   <script>
@@ -127,42 +153,87 @@
           var elan = document.getElementById('elan'); if (elan) body.elan_home = elan.value
           var lake = document.getElementById('lake'); if (lake) body.lake_path = lake.value
         }
+        decisions = body
         fetch('/install', { method:'POST', body: JSON.stringify(body) }).then(startProgress)
       }
     }
 
     // ---- progress view --------------------------------------------------
-    var solidCount = 0, tickEl = null
-    function renderLog(lines){
-      var box = document.getElementById('console')
-      var solids = [], latestTick = null, tickIsLast = false
+    // The flat log is parsed into one group per [STEP]; [PLAN] seeds the
+    // whole roadmap up front so pending rows show before they start.
+    var lastLines = [], openState = {}, decisions = null
+    var GLYPH = {
+      pending: '<span class="g pend">&#9675;</span>',
+      running: '<span class="g run"><span class="pulse"></span></span>',
+      done:    '<span class="g done">&#10003;</span>',
+      warn:    '<span class="g warn">!</span>'
+    }
+    function parseLog(lines){
+      var order=[], groups={}, human=null, cur=null
+      function ensure(n){ if(!groups[n]){ groups[n]={name:n,status:'pending',detail:[],tick:null,stat:''}; order.push(n) } return groups[n] }
       for (var i=0;i<lines.length;i++){
-        var m = /^\[(STEP|OK|NOTE|WARN|TICK)\]\s([\s\S]*)$/.exec(lines[i])
-        var k = m?m[1]:'NOTE', t = m?m[2]:lines[i]
-        if (k==='TICK'){ latestTick=t; tickIsLast=true } else { solids.push({k:k.toLowerCase(),t:t}); tickIsLast=false }
+        var m = /^\[(PLAN|STEP|OK|NOTE|WARN|TICK|HUMAN)\]\s?([\s\S]*)$/.exec(lines[i])
+        if(!m){ if(cur) groups[cur].detail.push(lines[i]); continue }
+        var k=m[1], t=m[2]
+        if(k==='PLAN'){ var ps=t.split('|'); for(var j=0;j<ps.length;j++) ensure(ps[j]) }
+        else if(k==='STEP'){ cur=t; var g=ensure(t); if(g.status!=='done'&&g.status!=='warn') g.status='running'; g.tick=null }
+        else if(k==='OK'){ if(cur){ groups[cur].status='done'; groups[cur].stat=t } }
+        else if(k==='WARN'){ if(cur){ groups[cur].status='warn'; groups[cur].detail.push(t); if(!groups[cur].stat) groups[cur].stat='needs attention' } }
+        else if(k==='NOTE'){ if(cur) groups[cur].detail.push(t) }
+        else if(k==='TICK'){ if(cur) groups[cur].tick=t }
+        else if(k==='HUMAN'){ human=t }
       }
-      for (var j=solidCount;j<solids.length;j++){
-        var e = el('div','ln '+solids[j].k, esc(solids[j].t)); if(tickEl) box.insertBefore(e,tickEl); else box.appendChild(e)
+      return {order:order, groups:groups, human:human}
+    }
+    function isOpen(g){ return (g.name in openState) ? openState[g.name] : (g.status==='running'||g.status==='warn') }
+    function render(lines){
+      lastLines = lines
+      var p = parseLog(lines)
+      var hb = document.getElementById('human')
+      if(p.human){ hb.style.display=''; hb.innerHTML='<span class="pulse"></span>'+esc(p.human) } else { hb.style.display='none' }
+      var box = document.getElementById('checklist'), html=''
+      for (var i=0;i<p.order.length;i++){
+        var g = p.groups[p.order[i]], open = isOpen(g)
+        var inline = g.status==='running' ? esc(g.tick || (g.detail.length ? g.detail[g.detail.length-1].replace(/^\s+/,'') : 'working&hellip;'))
+                   : g.status==='pending' ? '' : esc(g.stat)
+        var detail=''
+        if(open){
+          var start = Math.max(0, g.detail.length - 140)
+          if(start>0) detail += '<div class="ln">&hellip; '+start+' earlier line(s)</div>'
+          for(var d=start; d<g.detail.length; d++) detail += '<div class="ln">'+esc(g.detail[d])+'</div>'
+          if(g.status==='running' && g.tick) detail += '<div class="ln tick"><span class="pulse"></span>'+esc(g.tick)+'</div>'
+        }
+        html += '<div class="item '+g.status+(open?' open':'')+'" data-name="'+esc(g.name)+'">'
+              +   '<div class="ihead">'+(GLYPH[g.status]||GLYPH.pending)
+              +     '<span class="iname">'+esc(g.name)+'</span><span class="istat">'+inline+'</span>'
+              +     '<span class="chev">&#8250;</span></div>'
+              +   '<div class="ilog">'+detail+'</div></div>'
       }
-      solidCount = solids.length
-      if (tickIsLast && latestTick!=null){
-        if(!tickEl){ tickEl=el('div','ln tick',''); box.appendChild(tickEl) }
-        tickEl.innerHTML = '<span class="pulse"></span>'+esc(latestTick)
-      } else if (tickEl){ box.removeChild(tickEl); tickEl=null }
-      box.scrollTop = box.scrollHeight
+      box.innerHTML = html
+      var heads = box.querySelectorAll('.ihead')
+      for (var h=0;h<heads.length;h++){
+        heads[h].onclick = (function(g){ return function(){ openState[g.name] = !isOpen(g); render(lastLines) } })(p.groups[p.order[h]])
+      }
+      var run = box.querySelector('.item.running.open .ilog'); if(run) run.scrollTop = run.scrollHeight
     }
     function startProgress(){
-      document.getElementById('lede').innerHTML = "Installing everything now &mdash; this runs a while; leave the page open."
+      document.getElementById('lede').innerHTML = "Installing everything now &mdash; leave this page open. Open any row to watch its log."
       document.getElementById('decide').style.display='none'
+      document.getElementById('retry').style.display='none'
       document.getElementById('progress').style.display=''
       poll()
     }
     function poll(){
       fetch('/progress').then(function(r){return r.json()}).then(function(p){
-        renderLog(p.log||[])
+        render(p.log||[])
         if (p.state==='done'){ setTimeout(gotoEngine, 800); return }
+        if (p.state==='failed'){ document.getElementById('retry').style.display=''; return }
         setTimeout(poll, 1000)
       }).catch(function(){ setTimeout(poll, 1500) })
+    }
+    document.getElementById('retryBtn').onclick = function(){
+      openState = {}
+      fetch('/install', { method:'POST', body: JSON.stringify(decisions||{lean_mode:'install'}) }).then(startProgress)
     }
     function gotoEngine(){
       // ask our own server (same origin) whether :8642 is listening - a
