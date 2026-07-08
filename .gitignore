@@ -121,3 +121,5 @@ Papers/*/.index_attempt/
 # setup-stub transcript + live progress tap (regenerate every run)
 installer/bootstrap.log
 installer/setup-progress.log
+installer/setup-done.marker
+installer/setup-decisions.json

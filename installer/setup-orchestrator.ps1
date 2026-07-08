@@ -2,10 +2,16 @@
 # decisions the web page collected, streaming progress the server tails.
 # This is the PowerShell home of the install knowledge (it grew out of
 # Tooling/serve/setup.py). Steps no-op when already satisfied, and truth
-# is taken from the WORLD (re-detection), never an installer's exit
-# code. PS 5.1, ASCII only.
+# is taken from the WORLD (re-detection), never an installer's exit code.
+#
+# TWO DOWNLOAD LANES run concurrently: lane A = Lean + Mathlib (the
+# multi-GB long pole), lane B = Python + engine + Claude Code + Git. Main
+# spawns both, waits, then JOINS on the console step (which needs the
+# engine from B and Mathlib from A). Every progress line is tagged with
+# its step, so the page attributes interleaved output to the right row
+# and can show two rows running at once. PS 5.1, ASCII only.
 
-param([string]$DecisionsFile)
+param([string]$DecisionsFile, [string]$Lane = 'main')
 
 $ErrorActionPreference = 'Continue'
 # Capture child-process output as UTF-8. winget (the Git step), git, pip
@@ -21,13 +27,21 @@ $ProgressLog = Join-Path $PSScriptRoot 'setup-progress.log'
 $DoneMarker  = Join-Path $PSScriptRoot 'setup-done.marker'
 $PyVer = '3.12.10'
 
-# ---- progress log (tags the web page renders) -----------------------
-function Emit($s) { try { Add-Content -Path $ProgressLog -Value $s -Encoding UTF8 } catch {} }
-function Step($msg) { Emit ("[STEP] " + $msg) }
-function Ok($msg)   { Emit ("[OK] " + $msg) }
-function Note($msg) { Emit ("[NOTE] " + $msg) }
-function Warn($msg) { Emit ("[WARN] " + $msg) }
-function Tick($msg) { Emit ("[TICK] " + $msg) }
+# ---- progress log — ONE file, several writers (two lanes + main). A
+#      named mutex serializes the appends; every line carries its step
+#      ([TAG|Step]) so the page attributes interleaved lanes correctly. -
+$script:LogMutex = New-Object System.Threading.Mutex($false, 'AsterismSetupProgress')
+$script:CurStep = ''
+function Emit($s) {
+    try { [void]$script:LogMutex.WaitOne() } catch {}
+    try { Add-Content -Path $ProgressLog -Value $s -Encoding UTF8 } catch {}
+    finally { try { $script:LogMutex.ReleaseMutex() } catch {} }
+}
+function Step($name) { $script:CurStep = $name; Emit ("[STEP|" + $name + "] ") }
+function Ok($msg)   { Emit ("[OK|" + $script:CurStep + "] " + $msg) }
+function Note($msg) { Emit ("[NOTE|" + $script:CurStep + "] " + $msg) }
+function Warn($msg) { Emit ("[WARN|" + $script:CurStep + "] " + $msg) }
+function Tick($msg) { Emit ("[TICK|" + $script:CurStep + "] " + $msg) }
 function Human($msg){ Emit ("[HUMAN] " + $msg) }   # a move only the user can make
 
 function Run-Stream($file, $arguments, $cwd, [switch]$AsTick) {
@@ -194,55 +208,51 @@ function Start-Serve($py) {
     return $false
 }
 
-# =====================================================================
-try {
+function Read-Decisions {
+    $f = if ($DecisionsFile) { $DecisionsFile } else { Join-Path $PSScriptRoot 'setup-decisions.json' }
     $dec = @{}
-    if ($DecisionsFile -and (Test-Path $DecisionsFile)) {
-        try { $dec = Get-Content $DecisionsFile -Raw | ConvertFrom-Json } catch {}
-    }
-    $leanMode = if ($dec.lean_mode) { $dec.lean_mode } else { 'install' }
-    $elanHome = if ($dec.elan_home) { $dec.elan_home } elseif ($env:ELAN_HOME) { $env:ELAN_HOME } else { Join-Path $env:USERPROFILE '.elan' }
-    $lakePath = $dec.lake_path
-    $failures = @()
+    if (Test-Path $f) { try { $dec = Get-Content $f -Raw | ConvertFrom-Json } catch {} }
+    return $dec
+}
 
-    # the checklist the page draws up front - names MUST match the
-    # Step '...' calls below (the page fills each row's status in as its
-    # step runs, so the user sees the whole roadmap and what is left)
-    Emit ('[PLAN] ' + (@('Python', 'Asterism engine', 'Claude Code', 'Git',
-        'Lean theorem prover', 'Math library (Mathlib)', 'Asterism console') -join '|'))
-
-    # 1. Python
+# ---- lane B: Python -> engine -> Claude Code (+login) -> Git ---------
+function Lane-B {
     Step 'Python'
     if (Get-PyVersion) { Ok ('already installed  (' + (Get-PyVersion) + ')') }
     elseif (Install-Python) { Ok ('Python installed  (' + (Get-PyVersion) + ')') }
-    else { Warn 'Python did not install'; $failures += 'Python' }
+    else { Warn 'Python did not install' }
     $py = Resolve-Py
 
-    # 2. Engine
     if ($py) {
         Step 'Asterism engine'
         if (Test-Engine $py) { Ok 'already installed' }
         elseif (Install-Engine $py) { Ok 'engine installed' }
-        else { Warn 'the engine did not install'; $failures += 'engine' }
+        else { Warn 'the engine did not install' }
     }
 
-    # 3. Claude Code FIRST among the tools (its login needs the human,
-    #    who is still at the keyboard) - then fire the browser login
+    # Claude first among the tools so its browser login (the one human
+    # step) surfaces early, while the long Mathlib download runs in lane A
     Step 'Claude Code'
     if ((Get-ClaudeStatus).installed) { Ok 'already installed' }
     elseif (Install-Claude) { Ok 'Claude Code installed' }
-    else { $failures += 'Claude Code' }
+    else { Warn 'could not install automatically' }
     Repair-ClaudePath
     $cs = Get-ClaudeStatus
     if ($cs.installed -and -not $cs.logged_in) { Spawn-ClaudeLogin }
 
-    # 4. Git
     Step 'Git'
     if (Test-Git) { Ok 'already installed' }
     elseif (Install-Git) { Ok 'Git installed' }
-    else { Warn 'Git did not install'; $failures += 'Git' }
+    else { Warn 'Git did not install' }
+}
 
-    # 5. Lean
+# ---- lane A: Lean -> Mathlib (the multi-GB long pole) ----------------
+function Lane-A {
+    $dec = Read-Decisions
+    $leanMode = if ($dec.lean_mode) { $dec.lean_mode } else { 'install' }
+    $elanHome = if ($dec.elan_home) { $dec.elan_home } elseif ($env:ELAN_HOME) { $env:ELAN_HOME } else { Join-Path $env:USERPROFILE '.elan' }
+    $lakePath = $dec.lake_path
+
     Step 'Lean theorem prover'
     if ((Get-LakeStatus).found) {
         Ok ('already installed  (' + (Get-LakeStatus).version + ')')
@@ -251,20 +261,44 @@ try {
             $dir = if ($lakePath.ToLower().EndsWith('lake.exe')) { Split-Path -Parent $lakePath } else { $lakePath }
             Prepend-UserPath $dir
         }
-        if ((Get-LakeStatus).found) { Ok 'using your existing Lean' } else { Warn 'lake not found at the path given'; $failures += 'Lean' }
+        if ((Get-LakeStatus).found) { Ok 'using your existing Lean' } else { Warn 'lake not found at the path given' }
     } elseif (Install-Lean $elanHome) {
         Ok 'Lean toolchain installed'
-    } else { $failures += 'Lean' }
+    } else { Warn 'Lean did not install' }
 
-    # 6. Mathlib
     if ((Get-LakeStatus).found) {
         Step 'Math library (Mathlib)'
         if ((Get-MathlibStatus $Root).present) { Ok 'already present' }
         elseif (Fetch-Mathlib) { Ok 'Math library ready' }
-        else { Warn 'the math library did not finish'; $failures += 'Mathlib' }
+        else { Warn 'the math library did not finish' }
     }
+}
 
-    # 7. bring the console up (and wait for it, so done == reachable)
+# =====================================================================
+if ($Lane -eq 'A') { try { Lane-A } catch { Warn ('lane error: ' + $_.Exception.Message) }; return }
+if ($Lane -eq 'B') { try { Lane-B } catch { Warn ('lane error: ' + $_.Exception.Message) }; return }
+
+# ---- main: clear, plan, run BOTH lanes concurrently, join on console -
+try {
+    if (Test-Path $ProgressLog) { Clear-Content $ProgressLog -ErrorAction SilentlyContinue }
+    if (Test-Path $DoneMarker) { Remove-Item $DoneMarker -Force -ErrorAction SilentlyContinue }
+
+    # the checklist the page draws up front - names MUST match the Step
+    # '...' calls in the lanes (two of these rows run at once)
+    Emit ('[PLAN] ' + (@('Python', 'Asterism engine', 'Claude Code', 'Git',
+        'Lean theorem prover', 'Math library (Mathlib)', 'Asterism console') -join '|'))
+
+    # spawn the two lanes as hidden children of this script. ArgumentList
+    # as ONE string (not an array) so the quoted path survives spaces -
+    # array quoting through Start-Process is the trap that broke -c once.
+    $common = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    $pB = Start-Process powershell -PassThru -WindowStyle Hidden -ArgumentList "$common -Lane B"
+    $pA = Start-Process powershell -PassThru -WindowStyle Hidden -ArgumentList "$common -Lane A"
+    if ($pB) { $pB.WaitForExit() }
+    if ($pA) { $pA.WaitForExit() }
+
+    # join: the console needs the engine (lane B) AND Mathlib (lane A)
+    $py = Resolve-Py
     $engineUp = $false
     if ($py -and (Test-Engine $py)) {
         Step 'Asterism console'
@@ -272,24 +306,25 @@ try {
         else { Warn 'the console did not come up on port 8642 - see the lines above' }
     }
 
-    # end-to-end truth check (installers can exit 0 after a child dies)
-    $missing = @()
-    if (-not (Get-PyVersion)) { $missing += 'Python' }
-    if (-not (Test-Engine (Resolve-Py))) { $missing += 'engine' }
-    if (-not (Get-ClaudeStatus).installed) { $missing += 'Claude Code' }
-    if (-not (Test-Git)) { $missing += 'Git' }
-    if (-not (Get-LakeStatus).found) { $missing += 'Lean' } elseif (-not (Get-MathlibStatus $Root).present) { $missing += 'Mathlib' }
-    if (-not $engineUp) { $missing += 'console' }
-    foreach ($m in $missing) { if ($failures -notcontains $m) { $failures += $m } }
-
-    if ($failures.Count -gt 0) {
-        Warn ('setup finished with problems: ' + ($failures -join ', ') + ' - press the button again to retry just those')
-        Set-Content $DoneMarker 'failed' -Encoding ASCII
-    } else {
-        Ok 'everything is ready'
-        Set-Content $DoneMarker 'done' -Encoding ASCII
+    # end-to-end truth check (installers can exit 0 after a child dies);
+    # each row re-derived from the WORLD, a miss flags its checklist row
+    $checks = @(
+        @{ row = 'Python';                 ok = [bool](Get-PyVersion) }
+        @{ row = 'Asterism engine';        ok = (Test-Engine (Resolve-Py)) }
+        @{ row = 'Claude Code';            ok = (Get-ClaudeStatus).installed }
+        @{ row = 'Git';                    ok = (Test-Git) }
+        @{ row = 'Lean theorem prover';    ok = (Get-LakeStatus).found }
+        @{ row = 'Math library (Mathlib)'; ok = ((Get-LakeStatus).found -and (Get-MathlibStatus $Root).present) }
+        @{ row = 'Asterism console';       ok = $engineUp }
+    )
+    $failed = @()
+    foreach ($c in $checks) {
+        if (-not $c.ok) { $failed += $c.row; $script:CurStep = $c.row; Warn 'not ready - press Set up Asterism again to retry' }
     }
+
+    if ($failed.Count -gt 0) { Set-Content $DoneMarker 'failed' -Encoding ASCII }
+    else { Set-Content $DoneMarker 'done' -Encoding ASCII }
 } catch {
-    Warn ('setup hit an error: ' + $_.Exception.Message)
+    Human ('setup hit an error: ' + $_.Exception.Message)
     Set-Content $DoneMarker 'failed' -Encoding ASCII
 }

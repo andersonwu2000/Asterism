@@ -169,20 +169,27 @@
       done:    '<span class="g done">&#10003;</span>',
       warn:    '<span class="g warn">!</span>'
     }
+    // Lines are [TAG|Step] payload (two install lanes interleave, so each
+    // line names its own step); [PLAN]/[HUMAN] carry no step. Untagged
+    // lines attach to the last step seen (a wrapped continuation line).
     function parseLog(lines){
-      var order=[], groups={}, human=null, cur=null
+      var order=[], groups={}, human=null, last=null
       function ensure(n){ if(!groups[n]){ groups[n]={name:n,status:'pending',detail:[],tick:null,stat:''}; order.push(n) } return groups[n] }
       for (var i=0;i<lines.length;i++){
-        var m = /^\[(PLAN|STEP|OK|NOTE|WARN|TICK|HUMAN)\]\s?([\s\S]*)$/.exec(lines[i])
-        if(!m){ if(cur) groups[cur].detail.push(lines[i]); continue }
-        var k=m[1], t=m[2]
-        if(k==='PLAN'){ var ps=t.split('|'); for(var j=0;j<ps.length;j++) ensure(ps[j]) }
-        else if(k==='STEP'){ cur=t; var g=ensure(t); if(g.status!=='done'&&g.status!=='warn') g.status='running'; g.tick=null }
-        else if(k==='OK'){ if(cur){ groups[cur].status='done'; groups[cur].stat=t } }
-        else if(k==='WARN'){ if(cur){ groups[cur].status='warn'; groups[cur].detail.push(t); if(!groups[cur].stat) groups[cur].stat='needs attention' } }
-        else if(k==='NOTE'){ if(cur) groups[cur].detail.push(t) }
-        else if(k==='TICK'){ if(cur) groups[cur].tick=t }
-        else if(k==='HUMAN'){ human=t }
+        var m = /^\[(PLAN|STEP|OK|NOTE|WARN|TICK|HUMAN)(?:\|([^\]]*))?\]\s?([\s\S]*)$/.exec(lines[i])
+        if(!m){ if(last) groups[last].detail.push(lines[i]); continue }
+        var k=m[1], step=m[2], t=m[3]
+        if(k==='PLAN'){ var ps=t.split('|'); for(var j=0;j<ps.length;j++) ensure(ps[j]); continue }
+        if(k==='HUMAN'){ human=t; continue }
+        var name = step || last
+        if(!name) continue
+        last = name
+        var g = ensure(name)
+        if(k==='STEP'){ if(g.status!=='done'&&g.status!=='warn') g.status='running'; g.tick=null }
+        else if(k==='OK'){ g.status='done'; g.stat=t }
+        else if(k==='WARN'){ g.status='warn'; g.detail.push(t); if(!g.stat) g.stat='needs attention' }
+        else if(k==='NOTE'){ g.detail.push(t) }
+        else if(k==='TICK'){ g.tick=t }
       }
       return {order:order, groups:groups, human:human}
     }

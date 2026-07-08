@@ -14,20 +14,33 @@ function Refresh-Path {
     $env:Path = $m + ';' + $u
 }
 
+# The two setup lanes both persist user-env changes (PATH, ELAN_HOME); a
+# named mutex serializes those read-modify-writes so a concurrent PATH
+# edit can't lost-update the other lane's (SetEnvironmentVariable is a
+# plain HKCU write with no locking of its own).
+$script:EnvMutex = New-Object System.Threading.Mutex($false, 'AsterismSetupEnv')
+
 function Persist-UserEnv($name, $value) {
     # SetEnvironmentVariable, NOT setx — setx truncates PATH at 1024
+    try { [void]$script:EnvMutex.WaitOne() } catch {}
     try { [Environment]::SetEnvironmentVariable($name, $value, 'User') } catch {}
+    finally { try { $script:EnvMutex.ReleaseMutex() } catch {} }
 }
 
 function Prepend-UserPath($directory) {
     # add a dir to the persistent user PATH (idempotent) AND to this
-    # process, so both this run and future sessions see the tool
-    $cur = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not $cur) { $cur = '' }
-    $parts = $cur -split ';' | Where-Object { $_ -ne '' }
-    if ($parts -notcontains $directory) {
-        Persist-UserEnv 'Path' (($directory + ';' + $cur).TrimEnd(';'))
-    }
+    # process, so both this run and future sessions see the tool. The
+    # persistent read-modify-write is held under the mutex (re-reading
+    # PATH inside it) so two lanes can't clobber each other's edit.
+    try { [void]$script:EnvMutex.WaitOne() } catch {}
+    try {
+        $cur = [Environment]::GetEnvironmentVariable('Path', 'User')
+        if (-not $cur) { $cur = '' }
+        $parts = $cur -split ';' | Where-Object { $_ -ne '' }
+        if ($parts -notcontains $directory) {
+            [Environment]::SetEnvironmentVariable('Path', (($directory + ';' + $cur).TrimEnd(';')), 'User')
+        }
+    } catch {} finally { try { $script:EnvMutex.ReleaseMutex() } catch {} }
     if (($env:Path -split ';') -notcontains $directory) {
         $env:Path = $directory + ';' + $env:Path
     }
