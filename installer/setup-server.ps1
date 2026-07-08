@@ -139,14 +139,23 @@ try {
                     # package-in-use collision) - just watch the one running
                     Send-Text $stream '200 OK' 'application/json' '{"started":false,"reason":"already running"}'
                 } else {
-                    Remove-Item $ProgressLog, $DoneMarker -ErrorAction SilentlyContinue
-                    $decFile = Join-Path $PSScriptRoot 'setup-decisions.json'
-                    Set-Content -Path $decFile -Value $req.body -Encoding UTF8
-                    $p = Start-Process -FilePath 'powershell' -PassThru -WindowStyle Hidden -ArgumentList @(
-                        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-                        (Join-Path $PSScriptRoot 'setup-orchestrator.ps1'), '-DecisionsFile', $decFile)
-                    if ($p) { $script:OrchPid = $p.Id }
-                    Send-Text $stream '200 OK' 'application/json' '{"started":true}'
+                    $dec = @{}
+                    try { $dec = $req.body | ConvertFrom-Json } catch {}
+                    # the check round: a bad answer stops HERE, at the
+                    # button, never half an hour into an unattended run
+                    $pf = @(Test-Preflight $dec $Root)
+                    if ($pf.Count -gt 0) {
+                        Send-Text $stream '200 OK' 'application/json' (ConvertTo-Json -Compress @{ started = $false; errors = $pf })
+                    } else {
+                        Remove-Item $ProgressLog, $DoneMarker -ErrorAction SilentlyContinue
+                        $decFile = Join-Path $PSScriptRoot 'setup-decisions.json'
+                        Set-Content -Path $decFile -Value $req.body -Encoding UTF8
+                        $p = Start-Process -FilePath 'powershell' -PassThru -WindowStyle Hidden -ArgumentList @(
+                            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                            (Join-Path $PSScriptRoot 'setup-orchestrator.ps1'), '-DecisionsFile', $decFile)
+                        if ($p) { $script:OrchPid = $p.Id }
+                        Send-Text $stream '200 OK' 'application/json' '{"started":true}'
+                    }
                 }
             }
             else {

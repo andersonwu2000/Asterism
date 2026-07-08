@@ -115,7 +115,8 @@
       var d = document.getElementById('decide'); d.innerHTML=''; d.style.display=''
       var card = el('div','card')
       card.appendChild(el('div','lbl','Before it runs'))
-      card.appendChild(el('div',null,'<div style="color:#a2a4ab;font-size:12.5px;margin:.4rem 0">Asterism lives at <span style="font-family:Consolas,monospace;color:#ededf0">'+esc(s.repo)+'</span> — the math library (~5 GB) lands here too</div>'))
+      var free = (s.repo_free_gb!=null) ? ' <span style="color:#67696f">('+esc(s.repo_free_gb)+' GB free here)</span>' : ''
+      card.appendChild(el('div',null,'<div style="color:#a2a4ab;font-size:12.5px;margin:.4rem 0">Asterism lives at <span style="font-family:Consolas,monospace;color:#ededf0">'+esc(s.repo)+'</span> — the math library (~5 GB) lands here too'+free+'</div>'))
 
       var needLean = !s.lean.found
       if (needLean){
@@ -127,7 +128,8 @@
         var sub = el('div',null,''); sub.style.margin='.2rem 0'
         sub.innerHTML =
           '<span id="leanInstall"><span style="color:#67696f;font-size:12px">Lean toolchain (~1 GB) goes to </span>'+
-          '<select id="elan"><option value="'+esc(s.elan_home)+'">'+esc(s.elan_home)+' (default)</option></select></span>'+
+          '<input id="elan" type="text" value="'+esc(s.elan_home).replace(/"/g,'&quot;')+'">'+
+          '<span style="color:#67696f;font-size:12px;margin-left:.5rem">any folder on any drive</span></span>'+
           '<span id="leanExisting" style="display:none"><input id="lake" type="text" placeholder="path to lake.exe or its folder"></span>'
         card.appendChild(sub)
       } else {
@@ -155,8 +157,30 @@
           var lake = document.getElementById('lake'); if (lake) body.lake_path = lake.value
         }
         decisions = body
-        fetch('/install', { method:'POST', body: JSON.stringify(body) }).then(startProgress)
+        postInstall(body, function(){ btn.disabled = false })
       }
+    }
+
+    // POST /install and act on the answer: started -> watch; preflight
+    // errors -> show them at the button and stay on the decisions view;
+    // already-running -> just watch the run that exists
+    function postInstall(body, onRefused){
+      fetch('/install', { method:'POST', body: JSON.stringify(body) })
+        .then(function(r){ return r.json() })
+        .then(function(res){
+          if (res.started || res.reason === 'already running'){ startProgress(); return }
+          var box = document.getElementById('preflight')
+          if (!box){
+            box = el('div', null, ''); box.id = 'preflight'
+            box.style.cssText = 'margin-top:.8rem;font-size:12.5px;color:#f2f3f6'
+            var card = document.querySelector('#decide .card'); if (card) card.appendChild(box)
+          }
+          var lines = ''
+          for (var i=0;i<(res.errors||[]).length;i++) lines += '<div>! '+esc(res.errors[i])+'</div>'
+          box.innerHTML = lines || '<div>! setup could not start - check the answers above</div>'
+          if (onRefused) onRefused()
+        })
+        .catch(function(){ if (onRefused) onRefused() })
     }
 
     // ---- progress view --------------------------------------------------
@@ -243,7 +267,7 @@
     }
     document.getElementById('retryBtn').onclick = function(){
       openState = {}
-      fetch('/install', { method:'POST', body: JSON.stringify(decisions||{lean_mode:'install'}) }).then(startProgress)
+      postInstall(decisions||{lean_mode:'install'})
     }
     function gotoEngine(){
       // ask our own server (same origin) whether :8642 is listening - a
@@ -264,7 +288,7 @@
         // skips and it brings the console up, then we hand off. Without
         // this, a stale 'done' marker left the page waiting on :8642
         // forever with nothing there to start it.
-        fetch('/install', { method:'POST', body:'{}' }).then(startProgress)
+        postInstall({})
         return
       }
       fetch('/progress').then(function(r){return r.json()}).then(function(p){

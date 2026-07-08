@@ -375,4 +375,6 @@ export interface Meta {
   inbox_count: number
   /** auth awareness (the login itself is Claude Code's own wizard) */
   claude: { installed: boolean; logged_in: boolean; subscription: string | null }
+  /** the console's Lean-layer self-check (can break long after install) */
+  lean_ready: { lake: boolean; mathlib: boolean }
 }

@@ -141,12 +141,23 @@ function Test-Git {
 
 # ---- the whole picture ----------------------------------------------
 
+function Get-FreeGB($path) {
+    # free space on the drive a path lives on (the math library lands
+    # next to the repo, so the user should see that number up front)
+    try {
+        $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($path))
+        $d = New-Object System.IO.DriveInfo($root)
+        return [math]::Round($d.AvailableFreeSpace / 1GB, 1)
+    } catch { return $null }
+}
+
 function Get-SetupStatus($workspace) {
     $py = Get-PyVersion
     $lake = Get-LakeStatus
     $claude = Get-ClaudeStatus
     return @{
         repo        = $workspace
+        repo_free_gb = (Get-FreeGB $workspace)
         python      = @{ found = [bool]$py; version = $py }
         engine      = @{ present = (Test-Engine (Resolve-Py)) }
         git         = @{ found = (Test-Git) }
@@ -155,4 +166,52 @@ function Get-SetupStatus($workspace) {
         claude      = @{ installed = $claude.installed; logged_in = $claude.logged_in }
         elan_home   = $(if ($env:ELAN_HOME) { $env:ELAN_HOME } else { Join-Path $env:USERPROFILE '.elan' })
     }
+}
+
+function Test-Preflight($decisions, $workspace) {
+    # the check round BEFORE anything installs (owner: a bad answer
+    # must surface at the button, not half an hour into an unattended
+    # run). Returns a list of blocking problems; empty = go.
+    $errors = @()
+    $lakeStatus = Get-LakeStatus
+    if (-not $lakeStatus.found) {
+        if ($decisions.lean_mode -eq 'existing') {
+            $p = $decisions.lake_path
+            if (-not $p) {
+                $errors += 'point at your lake.exe (or its folder) first'
+            } else {
+                $exe = if ($p.ToLower().EndsWith('lake.exe')) { $p } else { Join-Path $p 'lake.exe' }
+                if (-not (Test-Path $exe)) {
+                    $errors += ('no lake at ' + $exe)
+                } else {
+                    # validate by RUNNING it (a Job so a hung lake cannot
+                    # hang the check; a healthy one answers instantly)
+                    $job = Start-Job -ScriptBlock { param($e) & $e --version 2>$null } -ArgumentList $exe
+                    $done = Wait-Job $job -Timeout 15
+                    $out = if ($done) { Receive-Job $job } else { $null }
+                    Remove-Job $job -Force -ErrorAction SilentlyContinue
+                    if (-not $out) { $errors += ($exe + ' exists but `lake --version` failed') }
+                }
+            }
+        } else {
+            # NOT $home - that is a read-only PowerShell automatic var
+            $eh = if ($decisions.elan_home) { $decisions.elan_home } else { Join-Path $env:USERPROFILE '.elan' }
+            try {
+                $full = [System.IO.Path]::GetFullPath($eh)
+                $root = [System.IO.Path]::GetPathRoot($full)
+                if (-not (Test-Path $root)) { $errors += ('drive ' + $root + ' does not exist') }
+                else {
+                    $gb = Get-FreeGB $full
+                    if ($gb -ne $null -and $gb -lt 2) { $errors += ('only ' + $gb + ' GB free on ' + $root + ' - the Lean toolchain needs ~1 GB') }
+                }
+            } catch { $errors += ('not a usable folder path: ' + $eh) }
+        }
+    }
+    if (-not (Get-MathlibStatus $workspace).present) {
+        $gb = Get-FreeGB $workspace
+        if ($gb -ne $null -and $gb -lt 8) {
+            $errors += ('only ' + $gb + ' GB free where Asterism lives - the math library needs ~5 GB; free some space first')
+        }
+    }
+    return $errors
 }

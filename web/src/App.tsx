@@ -110,6 +110,26 @@ function ClaudeBanner({ meta }: { meta: Meta | null }) {
   )
 }
 
+/** Lean-layer self-check banner — the OTHER silently-fatal state (a
+ * missing toolchain or math library fails every run just like a
+ * missing login), and it can break long after install: a moved .elan,
+ * a cleaned disk. Rides the same meta poll (server memoizes the
+ * check); the remedy is re-running the setup, which skips whatever is
+ * still healthy. */
+function LeanBanner({ meta }: { meta: Meta | null }) {
+  if (!meta?.lean_ready || (meta.lean_ready.lake && meta.lean_ready.mathlib)) return null
+  return (
+    <div className="flex items-center gap-3 border-b border-edge bg-surface-2 px-4 py-2 text-xs">
+      <span className="bg-warn h-1.5 w-1.5 shrink-0 rounded-full" />
+      <span className="text-ink">
+        {meta.lean_ready.lake
+          ? 'The math library is missing or incomplete — runs will fail. Re-run Setup Asterism.exe; finished parts are skipped.'
+          : 'The Lean prover is missing or broken — runs will fail. Re-run Setup Asterism.exe; finished parts are skipped.'}
+      </span>
+    </div>
+  )
+}
+
 const ICONS: Record<string, ReactNode> = {
   board: (
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -303,6 +323,7 @@ function Shell() {
             carries its own title, the constellation gets the sky. The
             ONE exception: the auth banner (a silently-fatal state) */}
         <ClaudeBanner meta={meta} />
+        <LeanBanner meta={meta} />
         <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           {section === 'new' ? (
             <New />

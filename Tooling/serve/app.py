@@ -229,7 +229,41 @@ def create_app(workspace: Path) -> FastAPI:
             "daemon": daemon_status(workspace),
             "inbox_count": inbox_n,
             "claude": _claude_status(),
+            "lean_ready": _lean_ready(),
         }
+
+    _lean_ready_memo: dict = {"at": 0.0, "value": None}
+
+    def _lean_ready() -> dict:
+        """The console's SELF-CHECK (owner call): a missing Lean layer
+        fails every run as silently as a missing login — and it can
+        break long after install (a moved .elan, a cleaned disk). Same
+        class as the auth banner, so it rides the same meta poll.
+        Filesystem-only on purpose (no subprocess in a 3s-poll path —
+        the side-effect fence agrees): which() catches the moved/
+        deleted toolchain; a present-but-corrupt lake is the contract
+        suite's job at run time. Memoized 60s (rglob walks a tree)."""
+        import os
+        import shutil
+        now = time.monotonic()
+        if _lean_ready_memo["value"] is not None and \
+                now - _lean_ready_memo["at"] < 60:
+            return _lean_ready_memo["value"]
+        lake_ok = shutil.which("lake") is not None
+        mathlib_ok = False
+        build = (workspace / ".lake" / "packages" / "mathlib" / ".lake"
+                 / "build" / "lib")
+        if build.exists():
+            for _p in build.rglob("*.olean"):
+                mathlib_ok = True
+                break
+        server = workspace / ".lake" / "build" / "bin" / (
+            "lean-asterism-server.exe" if os.name == "nt"
+            else "lean-asterism-server")
+        mathlib_ok = mathlib_ok and server.exists()
+        value = {"lake": lake_ok, "mathlib": mathlib_ok}
+        _lean_ready_memo.update(at=now, value=value)
+        return value
 
     def _claude_status() -> dict:
         """Auth awareness, not auth implementation: the login flow
