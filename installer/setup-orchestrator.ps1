@@ -131,10 +131,14 @@ function Spawn-ClaudeLogin {
     $c = Resolve-Claude
     if (-not $c) { return }
     try {
+        # Minimized, NOT Hidden: the console is the safety net for
+        # Claude Code's paste-a-code fallback (browser can't reach the
+        # localhost callback) - hidden, that fallback is unreachable
+        # and the "a browser tab opened" line becomes a lie
         if ($c.ToLower().EndsWith('.cmd')) {
-            Start-Process 'cmd.exe' -ArgumentList @('/c', $c, 'auth', 'login', '--claudeai') -WindowStyle Hidden
+            Start-Process 'cmd.exe' -ArgumentList @('/c', $c, 'auth', 'login', '--claudeai') -WindowStyle Minimized
         } else {
-            Start-Process $c -ArgumentList @('auth', 'login', '--claudeai') -WindowStyle Hidden
+            Start-Process $c -ArgumentList @('auth', 'login', '--claudeai') -WindowStyle Minimized
         }
         Human 'A browser tab opened for the Claude login - click Authorize. The rest keeps installing meanwhile.'
     } catch {
@@ -206,6 +210,25 @@ function Start-Serve($py) {
         if ($i % 3 -eq 0) { Tick ('starting the console (' + $i + 's)') }
     }
     return $false
+}
+
+function Install-Shortcut {
+    # the reopen story: after setup the DAILY entry point is this
+    # Desktop shortcut (launch.vbs -> launch.ps1 reuses or starts the
+    # console) - the exe is only the first-run door. This step vanished
+    # when install.ps1 retired; without it there is no way back in
+    # after a reboot short of re-running setup.
+    try {
+        $sh = New-Object -ComObject WScript.Shell
+        $desktop = $sh.SpecialFolders.Item('Desktop')
+        $lnk = $sh.CreateShortcut((Join-Path $desktop 'Asterism.lnk'))
+        $lnk.TargetPath = 'wscript.exe'
+        $lnk.Arguments = '"' + (Join-Path $Root 'installer\launch.vbs') + '"'
+        $lnk.WorkingDirectory = $Root
+        $lnk.Description = 'Asterism - open the proving console'
+        $lnk.Save()
+        Note 'Desktop shortcut created (the everyday way back in)'
+    } catch { Warn ('could not create the Desktop shortcut: ' + $_.Exception.Message) }
 }
 
 function Read-Decisions {
@@ -305,6 +328,7 @@ try {
     $engineUp = $false
     if ($py -and (Test-Engine $py)) {
         Step 'Asterism console'
+        Install-Shortcut
         if (Start-Serve $py) { $engineUp = $true; Ok 'the console is up' }
         else { Warn 'the console did not come up on port 8642 - see the lines above' }
     }

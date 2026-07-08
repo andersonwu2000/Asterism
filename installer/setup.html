@@ -258,8 +258,19 @@
     // ---- boot -----------------------------------------------------------
     fetch('/status').then(function(r){return r.json()}).then(function(s){
       if (allDone(s) && s.engine_up){ location.replace(ENGINE); return }
+      if (allDone(s)){
+        // everything is installed, the console just isn't running (a
+        // reboot, a later day) - re-fire the orchestrator: every step
+        // skips and it brings the console up, then we hand off. Without
+        // this, a stale 'done' marker left the page waiting on :8642
+        // forever with nothing there to start it.
+        fetch('/install', { method:'POST', body:'{}' }).then(startProgress)
+        return
+      }
       fetch('/progress').then(function(r){return r.json()}).then(function(p){
-        if (p.log && p.log.length){ startProgress() } else { renderDecide(s) }
+        // a finished ('done') log with components missing is stale -
+        // fall through to the decisions view instead of watching it
+        if (p.log && p.log.length && p.state !== 'done'){ startProgress() } else { renderDecide(s) }
       }).catch(function(){ renderDecide(s) })
     }).catch(function(){
       document.getElementById('lede').textContent = 'Waiting for the setup service...'

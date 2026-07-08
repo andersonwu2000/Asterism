@@ -18,6 +18,12 @@ $Root = Split-Path -Parent $PSScriptRoot           # repo root
 $ProgressLog = Join-Path $PSScriptRoot 'setup-progress.log'
 $DoneMarker  = Join-Path $PSScriptRoot 'setup-done.marker'
 $HtmlPath    = Join-Path $PSScriptRoot 'setup.html'
+$script:OrchPid = 0
+
+function Orchestrator-Alive {
+    if (-not $script:OrchPid) { return $false }
+    return [bool](Get-Process -Id $script:OrchPid -ErrorAction SilentlyContinue)
+}
 
 function Engine-Up {
     $c = New-Object System.Net.Sockets.TcpClient
@@ -81,10 +87,14 @@ function Send-Text($stream, $status, $ct, $text) {
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Port)
 try { $listener.Start() } catch { exit 0 }
 
+# sliding idle deadline: the page polls every second while open, so
+# the server lives as long as anyone is watching (a fixed 2h cutoff
+# died UNDER a slow Mathlib download and stranded the page mid-install)
 $deadline = (Get-Date).AddHours(2)
 try {
     while ((Get-Date) -lt $deadline) {
         if (-not $listener.Pending()) { Start-Sleep -Milliseconds 150; continue }
+        $deadline = (Get-Date).AddHours(2)
         $client = $listener.AcceptTcpClient()
         try {
             $stream = $client.GetStream()
@@ -114,17 +124,30 @@ try {
                     } catch {}
                 }
                 $state = if (Test-Path $DoneMarker) { (Get-Content $DoneMarker -Raw).Trim() } else { 'running' }
+                # a 'running' state with a DEAD orchestrator (crash, kill,
+                # server restarted over a stale log) must not spin the
+                # page forever - report it as failed so retry surfaces
+                if ($state -eq 'running' -and -not (Orchestrator-Alive)) { $state = 'failed' }
                 Send-Text $stream '200 OK' 'application/json' (ConvertTo-Json -Compress @{ state = $state; log = $log })
             }
             elseif ($req.method -eq 'POST' -and $path -eq '/install') {
                 # body = JSON of decisions { lean_mode, elan_home, lake_path }
-                Remove-Item $ProgressLog, $DoneMarker -ErrorAction SilentlyContinue
-                $decFile = Join-Path $PSScriptRoot 'setup-decisions.json'
-                Set-Content -Path $decFile -Value $req.body -Encoding UTF8
-                Start-Process -FilePath 'powershell' -WindowStyle Hidden -ArgumentList @(
-                    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-                    (Join-Path $PSScriptRoot 'setup-orchestrator.ps1'), '-DecisionsFile', $decFile) | Out-Null
-                Send-Text $stream '200 OK' 'application/json' '{"started":true}'
+                if (Orchestrator-Alive) {
+                    # a second tab / an impatient retry must not spawn a
+                    # SECOND orchestrator over a live one (two concurrent
+                    # installers of the same component = the documented
+                    # package-in-use collision) - just watch the one running
+                    Send-Text $stream '200 OK' 'application/json' '{"started":false,"reason":"already running"}'
+                } else {
+                    Remove-Item $ProgressLog, $DoneMarker -ErrorAction SilentlyContinue
+                    $decFile = Join-Path $PSScriptRoot 'setup-decisions.json'
+                    Set-Content -Path $decFile -Value $req.body -Encoding UTF8
+                    $p = Start-Process -FilePath 'powershell' -PassThru -WindowStyle Hidden -ArgumentList @(
+                        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                        (Join-Path $PSScriptRoot 'setup-orchestrator.ps1'), '-DecisionsFile', $decFile)
+                    if ($p) { $script:OrchPid = $p.Id }
+                    Send-Text $stream '200 OK' 'application/json' '{"started":true}'
+                }
             }
             else {
                 Send-Text $stream '404 Not Found' 'text/plain' 'not found'

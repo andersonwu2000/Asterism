@@ -10,10 +10,10 @@ $Root = Split-Path -Parent $PSScriptRoot
 $up = Get-NetTCPConnection -LocalPort 8642 -State Listen -ErrorAction SilentlyContinue
 if (-not $up) {
     # console entry point without relying on the pip Scripts dir being
-    # on PATH: import the CLI directly under the py launcher.
-    # Start-Process does NOT quote args itself (PS 5.1) — wrap the code
-    # or py receives it word-split.
-    $code = "import sys; sys.argv=['asterism','serve']; from Tooling.core.cli import main; raise SystemExit(main())"
+    # on PATH. `-m Tooling.core.cli serve` (the codebase's canonical
+    # invocation), NOT inline `-c` code — Start-Process word-splits the
+    # quoted code (python saw `-c import` -> SyntaxError; same fix as
+    # setup-orchestrator's Start-Serve).
     # resolve the py launcher: a shortcut-spawned session may not have
     # it on PATH yet (per-user install PATH edits land on next logon)
     $py = 'py'
@@ -23,7 +23,7 @@ if (-not $up) {
             if (Test-Path $p) { $py = $p; break }
         }
     }
-    Start-Process -FilePath $py -ArgumentList @('-3.12', '-c', ('"' + $code + '"')) `
+    Start-Process -FilePath $py -ArgumentList @('-3.12', '-m', 'Tooling.core.cli', 'serve') `
         -WorkingDirectory $Root -WindowStyle Hidden
     # wait for the port (fresh start takes a few seconds)
     for ($i = 0; $i -lt 60; $i++) {
