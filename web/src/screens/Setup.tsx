@@ -7,9 +7,15 @@ import { Button } from '../components/ui'
  * The setup wizard — the bootstrap's second half, in the browser
  * (owner's calls: browser wizard over a native one; detect an
  * existing Lean rather than install a second; pick the drive the
- * multi-GB toolchain lands on; Windows first). Not a forced linear
- * flow: a checklist of components, each with its state and its one
- * action. Everything is safe to retry.
+ * multi-GB toolchain lands on; Windows first; decisions are collected
+ * UP FRONT so the whole install runs unattended after one click —
+ * nothing discovers a missing answer while the user is away).
+ *
+ * Shape: a decisions card (only the questions that still matter),
+ * one primary button, then a progress card — component checklist +
+ * the live log of the one-click job. The login is the single step
+ * that needs a human; its window opens early (Claude installs first)
+ * and its row stays yellow until done.
  */
 
 interface SetupStatus {
@@ -17,6 +23,7 @@ interface SetupStatus {
   platform: string
   lake: { found: boolean; path: string | null; version: string | null }
   mathlib: { present: boolean }
+  git: { found: boolean }
   claude: { installed: boolean; logged_in: boolean }
   elan_home: string
   disks: { mount: string; free_gb: number; total_gb: number }[]
@@ -46,28 +53,6 @@ function StatusDot({ ok, busy = false }: { ok: boolean; busy?: boolean }) {
   )
 }
 
-function Card({
-  ok,
-  busy = false,
-  title,
-  children,
-}: {
-  ok: boolean
-  busy?: boolean
-  title: string
-  children: React.ReactNode
-}) {
-  return (
-    <div className="rounded-lg border border-edge bg-surface p-4">
-      <div className="mb-2 flex items-center gap-2.5">
-        <StatusDot ok={ok} busy={busy} />
-        <span className="text-sm font-medium text-ink">{title}</span>
-      </div>
-      {children}
-    </div>
-  )
-}
-
 function JobLog({ job }: { job: Job }) {
   const ref = useRef<HTMLPreElement>(null)
   useEffect(() => {
@@ -77,10 +62,36 @@ function JobLog({ job }: { job: Job }) {
   return (
     <pre
       ref={ref}
-      className="mt-2 max-h-40 overflow-y-auto rounded-md border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim"
+      className="mt-3 max-h-64 overflow-y-auto rounded-md border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim"
     >
       {job.log.join('\n')}
     </pre>
+  )
+}
+
+/** one row of the progress checklist */
+function StepRow({
+  ok,
+  busy = false,
+  title,
+  detail,
+  children,
+}: {
+  ok: boolean
+  busy?: boolean
+  title: string
+  detail?: React.ReactNode
+  children?: React.ReactNode
+}) {
+  return (
+    <div className="flex items-start gap-2.5 py-1.5">
+      <span className="mt-1"><StatusDot ok={ok} busy={busy} /></span>
+      <div className="min-w-0 flex-1">
+        <span className="text-sm text-ink">{title}</span>
+        {detail && <span className="ml-2 text-xs text-ink-faint">{detail}</span>}
+        {children}
+      </div>
+    </div>
   )
 }
 
@@ -88,87 +99,69 @@ export default function Setup() {
   const { data: st, refresh } = usePoll<SetupStatus>('/api/setup/status', 4000)
   const [err, setErr] = useState<string | null>(null)
 
-  // Lean card state
+  // decisions (collected before the run starts)
   const [leanMode, setLeanMode] = useState<'install' | 'existing'>('install')
   const [elanHome, setElanHome] = useState<string | null>(null)
   const [lakePath, setLakePath] = useState('')
-  const [leanBusy, setLeanBusy] = useState(false)
-  const leanJob = useJob('lean', true)
-  const mathlibJob = useJob('mathlib', true)
-  const claudeJob = useJob('claude', true)
+  const [starting, setStarting] = useState(false)
+
+  const job = useJob('all', true)
 
   if (!st) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
 
   const repoDrive = st.repo.slice(0, 3)
   const repoDisk = st.disks.find((d) => st.repo.toLowerCase().startsWith(d.mount.toLowerCase()))
-  const allDone = st.lake.found && st.mathlib.present && st.claude.installed && st.claude.logged_in
+  const allDone =
+    st.lake.found && st.mathlib.present && st.git.found && st.claude.installed && st.claude.logged_in
+  const running = job.state === 'running'
+  const anythingStarted = job.state !== 'idle' || st.lake.found || st.mathlib.present || st.claude.installed
+  // which decisions still matter
+  const needsLeanDecision = !st.lake.found
 
-  const act = async (path: string, body?: unknown) => {
+  const startAll = async () => {
     setErr(null)
+    setStarting(true)
     try {
-      await apiPost(path, body ?? {})
+      await apiPost('/api/setup/run-all', {
+        lean_mode: needsLeanDecision ? leanMode : 'auto',
+        elan_home: elanHome ?? st.elan_home,
+        lake_path: leanMode === 'existing' ? lakePath : null,
+      })
     } catch (e) {
       setErr(String((e as Error).message))
     } finally {
+      setStarting(false)
       refresh()
     }
   }
 
-  const submitLakePath = async () => {
-    setLeanBusy(true)
-    setErr(null)
-    try {
-      await apiPost('/api/setup/lake-path', { path: lakePath })
-      refresh()
-    } catch (e) {
-      setErr(String((e as Error).message))
-    } finally {
-      setLeanBusy(false)
-    }
-  }
+  const openLogin = () => void apiPost('/api/claude/login', {}).catch((e) => setErr(String(e.message)))
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
       <h1 className="font-display text-[26px] font-medium text-ink">Set up Asterism</h1>
       <p className="mt-1 max-w-[64ch] text-xs text-ink-faint">
-        Four components, each safe to retry. Green all the way down means the engine is ready —
-        nothing here needs a terminal.
+        Answer what's below, press the button, walk away. The one thing that needs you is the
+        Claude login — its window opens in the first minute.
       </p>
       {err && <div className="mt-3 text-xs text-warn">{err}</div>}
 
-      <div className="mt-6 flex flex-col gap-4">
-        {/* 1 — where Asterism lives */}
-        <Card ok title="Asterism itself">
-          <div className="text-xs text-ink-dim">
-            installed at <span className="font-mono text-ink">{st.repo}</span>
+      {/* ------------------------------------------------ decisions */}
+      {!allDone && (
+        <div className="mt-6 rounded-lg border border-edge bg-surface p-4">
+          <div className="text-sm font-medium text-ink">Before it runs</div>
+
+          <div className="mt-2 text-xs text-ink-dim">
+            Asterism lives at <span className="font-mono text-ink">{st.repo}</span>
             {repoDisk && (
               <span className="tnum ml-2 text-ink-faint">
-                ({repoDisk.free_gb} GB free on {repoDrive})
+                — the math library (~5 GB) lands there too ({repoDisk.free_gb} GB free on {repoDrive})
               </span>
             )}
           </div>
-          <p className="mt-1 text-[11px] text-ink-faint">
-            To move it: close Asterism, move the whole folder, run installer\install.bat once
-            from the new place.
-          </p>
-        </Card>
 
-        {/* 2 — Lean */}
-        <Card
-          ok={st.lake.found}
-          busy={leanJob.state === 'running'}
-          title="Lean theorem prover"
-        >
-          {st.lake.found ? (
-            <div className="text-xs text-ink-dim">
-              <span className="text-ok">found</span> ·{' '}
-              <span className="font-mono">{st.lake.version}</span>
-              <div className="mt-0.5 truncate font-mono text-[11px] text-ink-faint">
-                {st.lake.path}
-              </div>
-            </div>
-          ) : (
-            <>
+          {needsLeanDecision ? (
+            <div className="mt-3">
               <div className="mb-2 flex gap-4 text-xs">
                 <label className="flex cursor-pointer items-center gap-1.5 text-ink-dim">
                   <input
@@ -176,7 +169,7 @@ export default function Setup() {
                     checked={leanMode === 'install'}
                     onChange={() => setLeanMode('install')}
                   />
-                  install it for me
+                  install Lean for me
                 </label>
                 <label className="flex cursor-pointer items-center gap-1.5 text-ink-dim">
                   <input
@@ -189,7 +182,7 @@ export default function Setup() {
               </div>
               {leanMode === 'install' ? (
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-[11px] text-ink-faint">install to drive</span>
+                  <span className="text-[11px] text-ink-faint">Lean toolchain (~1 GB) goes to</span>
                   <select
                     className="rounded border border-edge bg-bg px-2 py-1 font-mono text-xs text-ink focus:outline-none"
                     value={elanHome ?? st.elan_home}
@@ -204,100 +197,144 @@ export default function Setup() {
                         </option>
                       ))}
                   </select>
-                  <Button
-                    variant="primary"
-                    disabled={leanJob.state === 'running'}
-                    onClick={() =>
-                      void act('/api/setup/install-lean', { elan_home: elanHome ?? st.elan_home })
-                    }
-                  >
-                    {leanJob.state === 'running' ? 'Installing…' : 'Install Lean'}
-                  </Button>
-                  <span className="text-[11px] text-ink-faint">~1 GB, a few minutes</span>
                 </div>
               ) : (
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    className="w-96 rounded border border-edge bg-bg px-2 py-1 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
-                    placeholder="path to lake.exe or its folder (e.g. C:\Users\me\.elan\bin)"
-                    value={lakePath}
-                    onChange={(e) => setLakePath(e.target.value)}
-                  />
-                  <Button variant="primary" disabled={leanBusy || lakePath === ''} onClick={() => void submitLakePath()}>
-                    {leanBusy ? 'Checking…' : 'Use this Lean'}
-                  </Button>
-                </div>
+                <input
+                  className="w-96 rounded border border-edge bg-bg px-2 py-1 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+                  placeholder="path to lake.exe or its folder (e.g. C:\Users\me\.elan\bin)"
+                  value={lakePath}
+                  onChange={(e) => setLakePath(e.target.value)}
+                />
               )}
-              <JobLog job={leanJob} />
-            </>
-          )}
-        </Card>
-
-        {/* 3 — Mathlib cache */}
-        <Card
-          ok={st.mathlib.present}
-          busy={mathlibJob.state === 'running'}
-          title="Math library (Mathlib)"
-        >
-          {st.mathlib.present ? (
-            <div className="text-xs text-ink-dim">
-              <span className="text-ok">ready</span> — the prebuilt cache is in place
             </div>
           ) : (
-            <>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  variant="primary"
-                  disabled={!st.lake.found || mathlibJob.state === 'running'}
-                  onClick={() => void act('/api/setup/fetch-mathlib')}
-                  title={st.lake.found ? undefined : 'install Lean first'}
-                >
-                  {mathlibJob.state === 'running' ? 'Fetching…' : 'Fetch the math library'}
+            <div className="mt-2 text-xs text-ink-dim">
+              Lean: <span className="text-ok">found</span> ·{' '}
+              <span className="font-mono">{st.lake.version}</span>
+            </div>
+          )}
+
+          <div className="mt-4 flex items-center gap-3">
+            <Button
+              variant="primary"
+              disabled={running || starting || (leanMode === 'existing' && needsLeanDecision && lakePath === '')}
+              onClick={() => void startAll()}
+            >
+              {running
+                ? 'Setting everything up…'
+                : anythingStarted
+                  ? 'Finish the setup'
+                  : 'Set everything up'}
+            </Button>
+            <span className="text-[11px] text-ink-faint">
+              {running
+                ? 'leave this page open or come back later — it keeps going'
+                : 'safe to press again at any time; finished parts are skipped'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------ progress */}
+      {(anythingStarted || allDone) && (
+        <div className="mt-4 rounded-lg border border-edge bg-surface p-4">
+          <div className="mb-1 text-sm font-medium text-ink">Progress</div>
+
+          <StepRow ok title="Asterism itself" detail={<span className="font-mono">{st.repo}</span>} />
+
+          <StepRow
+            ok={st.claude.installed}
+            busy={running && !st.claude.installed}
+            title="Claude Code"
+            detail={
+              st.claude.installed
+                ? 'installed — the AI that writes the proofs'
+                : running
+                  ? 'installing…'
+                  : undefined
+            }
+          />
+
+          <StepRow
+            ok={st.claude.logged_in}
+            busy={false}
+            title="Claude login"
+            detail={
+              st.claude.logged_in
+                ? 'logged in — your Claude subscription pays for the proving'
+                : st.claude.installed
+                  ? 'the one step that needs you'
+                  : 'waits for Claude Code'
+            }
+          >
+            {st.claude.installed && !st.claude.logged_in && (
+              <div className="mt-1.5">
+                <Button variant="primary" onClick={openLogin}>
+                  Open the login window
                 </Button>
-                <span className="text-[11px] text-ink-faint">
-                  several GB, lands next to Asterism on {repoDrive}
-                  {repoDisk && ` (${repoDisk.free_gb} GB free)`} — one time; leave this page open
+                <span className="ml-2 text-[11px] text-ink-faint">
+                  log in there — everything else keeps going on its own
                 </span>
               </div>
-              <JobLog job={mathlibJob} />
-            </>
-          )}
-        </Card>
+            )}
+          </StepRow>
 
-        {/* 4 — Claude Code */}
-        <Card
-          ok={st.claude.installed && st.claude.logged_in}
-          busy={claudeJob.state === 'running'}
-          title="Claude Code (the AI that writes the proofs)"
-        >
-          {!st.claude.installed ? (
-            <>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="primary"
-                  disabled={claudeJob.state === 'running'}
-                  onClick={() => void act('/api/setup/install-claude')}
-                >
-                  {claudeJob.state === 'running' ? 'Installing…' : 'Install Claude Code'}
-                </Button>
-              </div>
-              <JobLog job={claudeJob} />
-            </>
-          ) : !st.claude.logged_in ? (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-ink-dim">installed — one login left</span>
-              <Button variant="primary" onClick={() => void act('/api/claude/login')}>
-                Open the login window
-              </Button>
-            </div>
-          ) : (
-            <div className="text-xs text-ink-dim">
-              <span className="text-ok">installed and logged in</span> — your Claude
-              subscription pays for the proving
+          <StepRow
+            ok={st.git.found}
+            busy={running && !st.git.found}
+            title="Git"
+            detail={
+              st.git.found
+                ? 'found — the engine records proofs with it'
+                : running
+                  ? 'installing…'
+                  : 'needed to fetch the math library and record proofs'
+            }
+          />
+
+          <StepRow
+            ok={st.lake.found}
+            busy={running && st.git.found && !st.lake.found}
+            title="Lean theorem prover"
+            detail={
+              st.lake.found ? (
+                <>
+                  <span className="font-mono">{st.lake.version}</span>
+                  <span className="ml-2 truncate font-mono text-[11px]">{st.lake.path}</span>
+                </>
+              ) : running ? (
+                'installing… (~1 GB)'
+              ) : undefined
+            }
+          />
+
+          <StepRow
+            ok={st.mathlib.present}
+            busy={running && st.lake.found && !st.mathlib.present}
+            title="Math library (Mathlib)"
+            detail={
+              st.mathlib.present
+                ? 'ready — the prebuilt cache is in place'
+                : running
+                  ? st.lake.found
+                    ? 'fetching… (several GB, the long step)'
+                    : 'waits for Lean'
+                  : st.lake.found
+                    ? 'not fetched yet (several GB)'
+                    : 'waits for Lean'
+            }
+          />
+
+          {job.state === 'failed' && (
+            <div className="mt-2 text-xs text-warn">
+              some steps failed — the log below has the details; press the button above to retry
+              just those
             </div>
           )}
-        </Card>
-      </div>
+
+          <JobLog job={job} />
+        </div>
+      )}
 
       <div className="mt-8 flex items-center gap-3">
         {allDone ? (
@@ -314,7 +351,7 @@ export default function Setup() {
           </>
         ) : (
           <span className="text-[11px] text-ink-faint">
-            this page keeps itself up to date — finish the yellow cards above in any order
+            this page keeps itself up to date — closing it does not stop the install
           </span>
         )}
       </div>

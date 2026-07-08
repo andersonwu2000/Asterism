@@ -80,11 +80,14 @@ def test_meta_fresh_workspace_no_db(workspace: Path) -> None:
 
 
 def test_claude_login_needs_the_cli(workspace: Path, monkeypatch) -> None:
-    import shutil
-    monkeypatch.setattr(shutil, "which", lambda _: None)
+    # patch the resolver, not shutil.which — claude_exe also probes
+    # the CLI's known install homes on the real filesystem
+    import Tooling.serve.app as _app
+    monkeypatch.setattr(_app, "claude_exe", lambda: None)
     r = _client(workspace).post("/api/claude/login")
     assert r.status_code == 409
-    assert "installer" in r.json()["detail"]
+    # points at the setup wizard, not a script (install.bat retired)
+    assert "setup" in r.json()["detail"]
 
 
 def test_claude_logout_retires_the_session_file(

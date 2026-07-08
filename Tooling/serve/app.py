@@ -135,6 +135,47 @@ def datetime_now_compact() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
+def claude_exe() -> "str | None":
+    """Resolve the claude CLI. PATH first; then its known install
+    homes — the official installer's PATH edit lands in NEW sessions
+    (and on a fresh Windows it can miss entirely), so a serve started
+    before/during the install would otherwise report 'not installed'
+    about a CLI that is sitting right there."""
+    import os
+    import shutil
+    p = shutil.which("claude")
+    if p:
+        return p
+    candidates = [Path.home() / ".local" / "bin" / "claude.exe"]
+    if os.environ.get("APPDATA"):
+        candidates.append(
+            Path(os.environ["APPDATA"]) / "npm" / "claude.cmd")
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return None
+
+
+def spawn_claude_login() -> None:
+    """Open the OFFICIAL Claude Code login: a terminal window running
+    `claude` (its first-run flow does the OAuth dance and writes the
+    credentials). Module-level so the setup wizard's one-click flow
+    can pop the window the moment the CLI lands. Raises OSError when
+    no terminal can be spawned on this platform."""
+    import subprocess
+    import sys
+    exe = claude_exe() or "claude"
+    if sys.platform == "win32":
+        subprocess.Popen(["cmd", "/k", exe],
+                         creationflags=subprocess.CREATE_NEW_CONSOLE)
+    elif sys.platform == "darwin":
+        subprocess.Popen(
+            ["osascript", "-e",
+             f'tell application "Terminal" to do script "{exe}"'])
+    else:
+        raise OSError("no terminal spawner for this platform")
+
+
 def create_app(workspace: Path) -> FastAPI:
     workspace = workspace.resolve()
     app = FastAPI(title="Asterism", docs_url=None, redoc_url=None)
@@ -186,8 +227,7 @@ def create_app(workspace: Path) -> FastAPI:
         credentials file) — the UI only needs to KNOW the state and
         open the official wizard. Cheap checks, polled with meta."""
         import json as _json
-        import shutil
-        installed = shutil.which("claude") is not None
+        installed = claude_exe() is not None
         creds = _creds_path()
         logged_in = creds.exists()
         subscription = None
@@ -222,30 +262,16 @@ def create_app(workspace: Path) -> FastAPI:
 
     @app.post("/api/claude/login")
     def claude_login() -> dict:
-        """Open the OFFICIAL login: a terminal window running
-        `claude` (its first-run flow does the OAuth dance and writes
-        the credentials). The UI polls /api/meta until logged_in
-        flips. Best-effort per platform; on failure the caller shows
-        the manual command."""
-        import shutil
-        import subprocess
-        import sys
-        if not shutil.which("claude"):
+        """Open the OFFICIAL login (see spawn_claude_login). The UI
+        polls /api/meta until logged_in flips. Best-effort per
+        platform; on failure the caller shows the manual command."""
+        if claude_exe() is None:
             raise HTTPException(
                 status_code=409,
-                detail="claude CLI is not installed — run the installer"
-                       " (installer/install.bat) first")
+                detail="claude CLI is not installed — finish the setup"
+                       " wizard (#/setup) first")
         try:
-            if sys.platform == "win32":
-                subprocess.Popen(
-                    ["cmd", "/k", "claude"],
-                    creationflags=subprocess.CREATE_NEW_CONSOLE)
-            elif sys.platform == "darwin":
-                subprocess.Popen(
-                    ["osascript", "-e",
-                     'tell application "Terminal" to do script "claude"'])
-            else:
-                raise OSError("no terminal spawner for this platform")
+            spawn_claude_login()
         except OSError as e:
             return {"opened": False, "manual": "claude",
                     "detail": str(e)}

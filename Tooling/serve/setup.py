@@ -1,17 +1,23 @@
 """The setup wizard's backend — /api/setup/*.
 
-The bootstrap (installer/install.bat) does the least it can: Python,
-the engine, a browser. Everything long or decision-shaped lands here,
-in the browser, with progress and retries: the Lean toolchain (install
-via elan — onto a drive the user picks — or point at an existing
-installation), the multi-GB Mathlib cache, Claude Code. Owner's calls:
-browser wizard over a native one; detect an existing Lean rather than
-installing a second; Windows first.
+The bootstrap (installer/install.ps1, fronted by "Setup Asterism.exe")
+does the least it can: Python, the engine, a browser. Everything long
+or decision-shaped lands here, in the browser: the Lean toolchain
+(install via elan — onto a drive the user picks — or point at an
+existing installation), the multi-GB Mathlib cache, Claude Code.
+Owner's calls: browser wizard over a native one; detect an existing
+Lean rather than installing a second; Windows first; decisions are
+collected UP FRONT and the whole install runs unattended after one
+click, so nothing waits on a user who walked away.
 
 Design notes
 - Read status is cheap and side-effect free; mutations are explicit
   POSTs. Long work runs as named async jobs (the review-refresh
-  pattern) with a live log tail the UI polls.
+  pattern) with a live log tail the UI polls. The one-click flow is
+  the "all" job: Claude Code first (fast, so its login window opens
+  while the user is still at the keyboard), then Lean, then Mathlib
+  (the long unattended stretch). Each step is skipped when already
+  satisfied, so retry = press the same button again.
 - PATH/ELAN_HOME persistence uses [Environment]::SetEnvironmentVariable
   (User scope) via PowerShell — `setx` silently truncates PATH at 1024
   chars, which is how installers eat people's PATHs.
@@ -69,9 +75,16 @@ def mathlib_status(workspace: Path) -> dict:
 
 
 def claude_status() -> dict:
-    from .app import _creds_path
-    return {"installed": shutil.which("claude") is not None,
+    from .app import _creds_path, claude_exe
+    return {"installed": claude_exe() is not None,
             "logged_in": _creds_path().exists()}
+
+
+def git_status() -> dict:
+    """The engine records proofs in git and lake fetches Mathlib's
+    sources with it — a fresh machine (no dev tools) does not have
+    it."""
+    return {"found": shutil.which("git") is not None}
 
 
 def disks() -> "list[dict]":
@@ -113,12 +126,12 @@ def _job_state(name: str) -> dict:
                 "rc": j.get("rc")}
 
 
-def _start_job(name: str, worker) -> dict:  # noqa: ANN001
+def _start_job(name: str, worker, log_maxlen: int = 40) -> dict:  # noqa: ANN001
     with _jobs_lock:
         j = _jobs.get(name)
         if j and j["state"] == "running":
             return {"state": "running", "log": list(j["log"])}
-        j = {"state": "running", "log": deque(maxlen=40)}
+        j = {"state": "running", "log": deque(maxlen=log_maxlen)}
         _jobs[name] = j
 
     def run() -> None:
@@ -180,53 +193,164 @@ def _prepend_user_path(directory: str, log) -> None:  # noqa: ANN001
 # workers
 # ---------------------------------------------------------------------
 
-def _install_lean_worker(elan_home: str):  # noqa: ANN001
-    def worker(log) -> int:  # noqa: ANN001
-        import urllib.request
-        log("downloading elan-init...")
-        tmp = Path(os.environ.get("TEMP", ".")) / "elan-init.ps1"
-        urllib.request.urlretrieve(
-            "https://elan.lean-lang.org/elan-init.ps1", tmp)
-        env = dict(os.environ)
-        env["ELAN_HOME"] = elan_home
-        log(f"installing the Lean toolchain into {elan_home} ...")
-        rc = _stream(["powershell", "-NoProfile", "-ExecutionPolicy",
-                      "Bypass", "-File", str(tmp), "-y"], log, env=env)
-        if rc != 0:
-            return rc
-        bin_dir = str(Path(elan_home) / "bin")
-        _persist_user_env("ELAN_HOME", elan_home, log)
-        _prepend_user_path(bin_dir, log)
-        log("Lean toolchain installed")
-        return 0
-    return worker
+def _download(url: str, dest: Path, log) -> int:  # noqa: ANN001
+    """Download via PowerShell (SChannel), NOT urllib: a fresh
+    Windows populates its root-CA store lazily on first use, which
+    SChannel triggers and OpenSSL-backed Python does not — urllib
+    dies with CERTIFICATE_VERIFY_FAILED on exactly the machines this
+    wizard exists for (seen live in a Windows Sandbox)."""
+    return _stream(
+        ["powershell", "-NoProfile", "-Command",
+         "$ProgressPreference='SilentlyContinue';"
+         "[Net.ServicePointManager]::SecurityProtocol="
+         "[Net.SecurityProtocolType]::Tls12;"
+         f"Invoke-WebRequest -UseBasicParsing -Uri '{url}'"
+         f" -OutFile '{dest}'"], log)
 
 
-def _fetch_mathlib_worker(workspace: Path):
-    def worker(log) -> int:  # noqa: ANN001
-        log("fetching the prebuilt math library (several GB on the"
-            " first run; incremental after that)...")
-        rc = _stream(["lake", "exe", "cache", "get"], log, cwd=workspace)
-        log("done" if rc == 0 else f"lake exited {rc}")
+def _step_install_lean(elan_home: str, log) -> int:  # noqa: ANN001
+    log("downloading elan-init...")
+    tmp = Path(os.environ.get("TEMP", ".")) / "elan-init.ps1"
+    rc = _download("https://elan.lean-lang.org/elan-init.ps1", tmp, log)
+    if rc != 0 or not tmp.exists():
+        log("could not download elan-init")
+        return rc or 1
+    env = dict(os.environ)
+    env["ELAN_HOME"] = elan_home
+    log(f"installing the Lean toolchain into {elan_home} ...")
+    rc = _stream(["powershell", "-NoProfile", "-ExecutionPolicy",
+                  "Bypass", "-File", str(tmp), "-y"], log, env=env)
+    if rc != 0:
         return rc
-    return worker
+    bin_dir = str(Path(elan_home) / "bin")
+    _persist_user_env("ELAN_HOME", elan_home, log)
+    _prepend_user_path(bin_dir, log)
+    log("Lean toolchain installed")
+    return 0
 
 
-def _install_claude_worker():
-    def worker(log) -> int:  # noqa: ANN001
-        # official native installer first; npm as the fallback
-        log("installing Claude Code (official installer)...")
-        rc = _stream(["powershell", "-NoProfile", "-Command",
-                      "irm https://claude.ai/install.ps1 | iex"], log)
-        if rc == 0 and shutil.which("claude"):
+def _step_fetch_mathlib(workspace: Path, log) -> int:  # noqa: ANN001
+    log("fetching the prebuilt math library (several GB on the"
+        " first run; incremental after that)...")
+    rc = _stream(["lake", "exe", "cache", "get"], log, cwd=workspace)
+    log("done" if rc == 0 else f"lake exited {rc}")
+    return rc
+
+
+def _step_install_claude(log) -> int:  # noqa: ANN001
+    from .app import claude_exe
+
+    def _repair_path() -> None:
+        # the official installer's own PATH edit lands in NEW
+        # sessions (and can miss entirely on a fresh Windows) — put
+        # the CLI's home on PATH ourselves so this serve, its daemon
+        # spawns, and the login window all find a bare `claude`
+        exe = claude_exe()
+        if exe and shutil.which("claude") is None:
+            _prepend_user_path(str(Path(exe).parent), log)
+
+    # official native installer first; npm as the fallback
+    log("installing Claude Code (official installer)...")
+    rc = _stream(["powershell", "-NoProfile", "-Command",
+                  "irm https://claude.ai/install.ps1 | iex"], log)
+    if rc == 0 and claude_exe():
+        _repair_path()
+        return 0
+    if shutil.which("npm"):
+        log("native installer unavailable - trying npm...")
+        rc = _stream(["npm", "install", "-g",
+                      "@anthropic-ai/claude-code"], log)
+        if rc == 0 and claude_exe():
+            _repair_path()
             return 0
-        if shutil.which("npm"):
-            log("native installer unavailable - trying npm...")
-            return _stream(["npm", "install", "-g",
-                            "@anthropic-ai/claude-code"], log)
-        log("could not install automatically - see docs.claude.com for"
-            " the manual install, then re-check")
+    log("could not install automatically - see docs.claude.com for"
+        " the manual install, then re-check")
+    return 1
+
+
+def _step_install_git(log) -> int:  # noqa: ANN001
+    log("installing Git (winget)...")
+    # pin the community source (matches installer/install.ps1: msstore
+    # being unreachable must not turn into an interactive prompt)
+    rc = _stream(["winget", "install", "-e", "--id", "Git.Git",
+                  "--source", "winget", "--silent",
+                  "--accept-package-agreements",
+                  "--accept-source-agreements"], log)
+    if rc != 0:
+        return rc
+    # winget's machine-PATH edit lands in new sessions — repair for
+    # THIS process so the mathlib fetch right after can spawn git
+    for cand in (r"C:\Program Files\Git\cmd",
+                 r"C:\Program Files (x86)\Git\cmd"):
+        if Path(cand).exists() and shutil.which("git") is None:
+            os.environ["PATH"] = cand + os.pathsep + \
+                os.environ.get("PATH", "")
+    if shutil.which("git") is None:
+        log("git installed but not found on PATH - restart Asterism"
+            " and press the button again")
         return 1
+    log("Git installed")
+    return 0
+
+
+def _setup_all_worker(workspace: Path, elan_home: "str | None"):
+    """The one-click flow. Claude Code goes FIRST: it is the quick
+    step whose login needs a human, so its window should open while
+    the user is still at the keyboard; Lean and the multi-GB Mathlib
+    fetch then run unattended. Every step no-ops when already
+    satisfied — pressing the button again after a failure only redoes
+    what is missing."""
+    def worker(log) -> int:  # noqa: ANN001
+        failures: "list[str]" = []
+
+        if not claude_status()["installed"]:
+            log("— Claude Code —")
+            if _step_install_claude(log) != 0:
+                failures.append("Claude Code")
+        st_claude = claude_status()
+        if st_claude["installed"] and not st_claude["logged_in"]:
+            from .app import spawn_claude_login
+            try:
+                spawn_claude_login()
+                log("a Claude login window just opened - log in there"
+                    " whenever you're ready; everything below keeps"
+                    " going on its own")
+            except OSError:
+                log("open a terminal and run `claude` to log in - the"
+                    " rest continues on its own")
+
+        if not git_status()["found"]:
+            log("— Git —")
+            if sys.platform != "win32":
+                log("the wizard installs Git on Windows only for now"
+                    " - install it with your package manager")
+                failures.append("Git")
+            elif _step_install_git(log) != 0:
+                failures.append("Git")
+
+        if not lake_status()["found"]:
+            log("— Lean toolchain —")
+            if sys.platform != "win32":
+                log("the wizard installs Lean on Windows only for now"
+                    " - run installer/install.sh")
+                failures.append("Lean")
+            elif _step_install_lean(elan_home or default_elan_home(),
+                                    log) != 0:
+                failures.append("Lean")
+
+        if lake_status()["found"] and \
+                not mathlib_status(workspace)["present"]:
+            log("— Math library —")
+            if _step_fetch_mathlib(workspace, log) != 0:
+                failures.append("Mathlib")
+
+        if failures:
+            log("setup finished with failures: " + ", ".join(failures)
+                + " - press the button again to retry just those")
+            return 1
+        log("all set - only the Claude login needs you, if it still"
+            " shows yellow above")
+        return 0
     return worker
 
 
@@ -242,6 +366,31 @@ class InstallLeanBody(BaseModel):
     elan_home: str | None = None
 
 
+class RunAllBody(BaseModel):
+    # lean_mode 'existing' adopts lake_path (validated at POST time,
+    # BEFORE the unattended run starts); 'install' uses elan_home
+    lean_mode: str = "install"
+    elan_home: str | None = None
+    lake_path: str | None = None
+
+
+def _adopt_lake_path(raw: str) -> dict:
+    """Validate a user-supplied Lean by RUNNING it, then put it on
+    PATH. Shared by the standalone endpoint and the one-click flow."""
+    p = Path(raw).expanduser()
+    exe = p if p.is_file() else \
+        p / ("lake.exe" if os.name == "nt" else "lake")
+    if not exe.exists():
+        raise HTTPException(status_code=422, detail=f"no lake at {exe}")
+    version = _run_version(str(exe), ["--version"])
+    if version is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{exe} exists but `lake --version` failed")
+    _prepend_user_path(str(exe.parent), lambda _line: None)
+    return {"ok": True, "version": version, "path": str(exe)}
+
+
 def register(app, workspace: Path) -> None:  # noqa: ANN001
     @app.get("/api/setup/status")
     def setup_status() -> dict:
@@ -253,6 +402,7 @@ def register(app, workspace: Path) -> None:  # noqa: ANN001
             "platform": sys.platform,
             "lake": lake,
             "mathlib": mathlib,
+            "git": git_status(),
             "claude": claude_status(),
             "elan_home": default_elan_home(),
             "disks": disks(),
@@ -269,20 +419,23 @@ def register(app, workspace: Path) -> None:  # noqa: ANN001
     def setup_lake_path(body: LakePathBody) -> dict:
         """The user already has Lean: point at it instead of
         installing a second one (owner). Validates by RUNNING it."""
-        p = Path(body.path).expanduser()
-        exe = p if p.is_file() else \
-            p / ("lake.exe" if os.name == "nt" else "lake")
-        if not exe.exists():
-            raise HTTPException(status_code=422,
-                                detail=f"no lake at {exe}")
-        version = _run_version(str(exe), ["--version"])
-        if version is None:
-            raise HTTPException(
-                status_code=422,
-                detail=f"{exe} exists but `lake --version` failed")
-        _prepend_user_path(str(exe.parent), lambda _line: None)
-        return {"ok": True, "version": version,
-                "path": str(exe)}
+        return _adopt_lake_path(body.path)
+
+    @app.post("/api/setup/run-all")
+    def setup_run_all(body: "RunAllBody | None" = None) -> dict:
+        """The one-click flow: every decision arrives in this body,
+        then the whole install runs unattended (Claude first so its
+        login window opens while the user is still around)."""
+        b = body or RunAllBody()
+        if b.lean_mode == "existing":
+            if not b.lake_path:
+                raise HTTPException(status_code=422,
+                                    detail="lake_path is required for"
+                                           " lean_mode=existing")
+            _adopt_lake_path(b.lake_path)   # 422s now, not mid-run
+        return _start_job(
+            "all", _setup_all_worker(workspace, b.elan_home),
+            log_maxlen=120)
 
     @app.post("/api/setup/install-lean")
     def setup_install_lean(body: "InstallLeanBody | None" = None) -> dict:
@@ -293,14 +446,16 @@ def register(app, workspace: Path) -> None:  # noqa: ANN001
                        " now — run installer/install.sh")
         home = (body.elan_home if body and body.elan_home
                 else default_elan_home())
-        return _start_job("lean", _install_lean_worker(home))
+        return _start_job(
+            "lean", lambda log: _step_install_lean(home, log))
 
     @app.post("/api/setup/fetch-mathlib")
     def setup_fetch_mathlib() -> dict:
         if not lake_status()["found"]:
             raise HTTPException(status_code=409,
                                 detail="install Lean first")
-        return _start_job("mathlib", _fetch_mathlib_worker(workspace))
+        return _start_job(
+            "mathlib", lambda log: _step_fetch_mathlib(workspace, log))
 
     @app.post("/api/setup/install-claude")
     def setup_install_claude() -> dict:
@@ -309,4 +464,4 @@ def register(app, workspace: Path) -> None:  # noqa: ANN001
                 status_code=409,
                 detail="the wizard installs Claude Code on Windows only"
                        " for now — see installer/install.sh")
-        return _start_job("claude", _install_claude_worker())
+        return _start_job("claude", _step_install_claude)
