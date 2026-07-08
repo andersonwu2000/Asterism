@@ -1799,6 +1799,118 @@ export function layoutConstellation(
         }
       }
     }
+    // fan untangle: two strategies of ONE parent whose fans interleave
+    // (a child of A standing on B's side and vice versa) — the
+    // junction is a DERIVED function of the children's positions, so
+    // no single-fan move can uncross them; the fix is exchanging the
+    // two children. Cheap pre-filter (the swap must shorten both
+    // children's distance to their own junction in sum); tryMove's
+    // lexicographic objective is still the judge, and junctions
+    // recompute through the group dependency wiring.
+    const fanUntangle = (): void => {
+      const dbg = (globalThis as { __skyDbg?: Record<string, number> }).__skyDbg
+      for (const [, gs] of [...groupsByParent].sort((a, b) => a[0] - b[0])) {
+        if (gs.length < 2) continue
+        if (dbg) dbg.parents = (dbg.parents ?? 0) + 1
+        for (let i = 0; i < gs.length; i++) {
+          for (let j = i + 1; j < gs.length; j++) {
+            const A = gs[i]
+            const B = gs[j]
+            for (const a of A.children) {
+              if ((treeKids.get(a)?.length ?? 0) > 0) continue
+              for (const b of B.children) {
+                if (a === b) continue
+                if ((treeKids.get(b)?.length ?? 0) > 0) continue
+                if (dbg) dbg.pairs = (dbg.pairs ?? 0) + 1
+                if (pyOf.get(a) !== pyOf.get(b)) continue
+                if (dbg) dbg.sameRow = (dbg.sameRow ?? 0) + 1
+                // no distance pre-filter: the junction CHASES its
+                // children (it is their mean), so static distance
+                // arithmetic self-defeats — the objective is the only
+                // honest judge, and same-row cross-fan pairs are few
+                const xa = px.get(a)!
+                const xb = px.get(b)!
+                if (
+                  tryMove([
+                    [a, xb],
+                    [b, xa],
+                  ])
+                ) {
+                  if (dbg) dbg.accepted = (dbg.accepted ?? 0) + 1
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    // row order pass: the residue autopsy's dominant remaining shape
+    // is same-row children whose SLOT order disagrees with their
+    // attachment points' x order — pairwise swaps get vetoed (the
+    // junction chases its children, side crossings appear), a local
+    // optimum. The classic fact: for straight fans onto fixed
+    // attachment points, the non-crossing assignment is the ORDER-
+    // PRESERVING one. So per row, reassign the interchangeable leaves
+    // onto their own slot multiset sorted by attachment x — ONE
+    // compound proposal per row, judged whole by the objective.
+    const rowOrderPass = (): void => {
+      const rows4 = new Map<number, number[]>()
+      for (const n of nodes) {
+        const id = n.goal.id
+        if (!px.has(id)) continue
+        if ((treeKids.get(id)?.length ?? 0) > 0) continue
+        if ((byDep.get(id)?.length ?? 0) === 0) continue
+        const y = pyOf.get(id)!
+        rows4.set(y, [...(rows4.get(y) ?? []), id])
+      }
+      for (const row of rows4.values()) {
+        if (row.length < 2 || row.length > 80) continue
+        row.sort((a, b) => px.get(a)! - px.get(b)!)
+        const slots = row.map((k) => px.get(k)!)
+        const attach = (k: number): number => {
+          const x = px.get(k)!
+          const y = pyOf.get(k)!
+          let pull = 0
+          let m = 0
+          for (const s of byDep.get(k) ?? []) {
+            const farX =
+              Math.abs(s.x1 - x) < 1e-6 && Math.abs(s.y1 - y) < 1e-6 ? s.x2 : s.x1
+            pull += farX
+            m += 1
+          }
+          return m > 0 ? pull / m : x
+        }
+        const target = [...row].sort((a, b) => attach(a) - attach(b) || px.get(a)! - px.get(b)!)
+        if (!target.every((k, i) => k === row[i])) {
+          tryMove(target.map((k, i) => [k, slots[i]] as [number, number]))
+        }
+        // second proposal: FAN CONTIGUITY — group the row by its
+        // strategy fan (parent, min sid), fans ordered by junction x,
+        // members by attachment inside. Blind contiguity enforcement
+        // was falsified once (-4 bought +28 cross-tree); as a JUDGED
+        // proposal the objective simply rejects it where that happens.
+        const fanKey = (k: number): number => {
+          const p = primaryParent.get(k)
+          if (p === undefined) return -(k + 2)
+          const sid = sidOfChild.get(p)?.get(k)
+          return sid === undefined ? -(k + 2) : p * 100000 + sid
+        }
+        const fans = new Map<number, number[]>()
+        for (const k of row) fans.set(fanKey(k), [...(fans.get(fanKey(k)) ?? []), k])
+        if (fans.size < row.length) {
+          const fMean = (ks: number[]): number =>
+            ks.reduce((a, k) => a + attach(k), 0) / ks.length
+          const target2 = [...fans.values()]
+            .sort((a, b) => fMean(a) - fMean(b))
+            .map((ks) => [...ks].sort((a, b) => attach(a) - attach(b) || px.get(a)! - px.get(b)!))
+            .flat()
+          const cur = [...row].sort((a, b) => px.get(a)! - px.get(b)!)
+          if (!target2.every((k, i) => k === cur[i])) {
+            tryMove(target2.map((k, i) => [k, slots[i]] as [number, number]))
+          }
+        }
+      }
+    }
     // proposal set: per band, left-to-right adjacent tree swaps, then a
     // mirror per tree; two sweeps let a swap unlock a mirror and back
     const compsByBand = new Map<number, Comp[]>()
@@ -1909,7 +2021,11 @@ export function layoutConstellation(
           treePass()
         }
         rowPass()
-        if (modernMode) rescuePass()
+        if (modernMode) {
+          rowOrderPass()
+          rescuePass()
+          fanUntangle()
+        }
       }
       const w = totalW()
       if (better(w, bestW)) {
