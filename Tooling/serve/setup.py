@@ -193,12 +193,15 @@ def _prepend_user_path(directory: str, log) -> None:  # noqa: ANN001
          "[Environment]::GetEnvironmentVariable('Path', 'User')"],
         capture_output=True, text=True, timeout=30,
         encoding="utf-8", errors="replace").stdout.strip()
-    if directory.lower() in current.lower():
-        return
-    _persist_user_env("Path", f"{directory};{current}", log)
-    # and for THIS process, so status flips without a restart (daemons
-    # started from serve inherit this environment)
-    os.environ["PATH"] = directory + os.pathsep + os.environ.get("PATH", "")
+    if directory.lower() not in current.lower():
+        _persist_user_env("Path", f"{directory};{current}", log)
+    # ALWAYS repair THIS process too, even when the registry already
+    # has the entry — an earlier (failed) run may have persisted it
+    # while this process still cannot see the tool; skipping here left
+    # `lake` invisible until a restart (seen live in a sandbox run)
+    if directory.lower() not in os.environ.get("PATH", "").lower():
+        os.environ["PATH"] = directory + os.pathsep + \
+            os.environ.get("PATH", "")
 
 
 # ---------------------------------------------------------------------
