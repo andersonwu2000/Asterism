@@ -5,6 +5,7 @@ import { Button } from '../components/ui'
 import ListField from '../components/ListField'
 import { DiagList, countErrors } from '../components/LeanProbe'
 import { useLeanSession, type LeanCursor } from '../lib/leanSession'
+import { claimLeanSlot, releaseLeanSlot, useLeanSlotActive } from '../lib/leanSlot'
 import { LeanEditor } from '../components/LeanEditor'
 import type { PaperShelfItem } from '../lib/types'
 
@@ -58,8 +59,14 @@ export default function New() {
   // slot). Pause typing → elaborate + diagnostics; move the caret →
   // the goal at that position (live inside `by` blocks).
   const [cursor, setCursor] = useState<LeanCursor | null>(null)
+  // the reader's Lean runs on ONE reserved slot; the authoring check
+  // holds it only while an editor here is focused (claimed on focus).
+  const slotId = 'new-authoring'
+  const leanActive = useLeanSlotActive(slotId)
+  useEffect(() => () => releaseLeanSlot(slotId), [])
   const check = useLeanSession({
     enabled: showLean && (defs.trim() !== '' || root.trim() !== ''),
+    active: leanActive,
     parts: [
       { id: 'defs', code: defs },
       { id: 'root', code: root },
@@ -82,15 +89,17 @@ export default function New() {
           : `${nErr} error${nErr === 1 ? '' : 's'}`
         : ''
   const engineWord =
-    check.phase === 'warming'
-      ? 'engine warming — the check resumes on its own (a cold start can take a minute)'
-      : check.phase === 'busy'
-        ? 'the engine editor slot is busy elsewhere — retrying'
-        : check.phase === 'connecting'
-          ? 'connecting to the engine…'
-          : check.detail
-            ? `engine error: ${check.detail}`
-            : null
+    check.phase === 'dormant'
+      ? 'click into a box below to check — the Lean engine follows your cursor'
+      : check.phase === 'warming'
+        ? 'engine warming — the check resumes on its own (a cold start can take a minute)'
+        : check.phase === 'busy'
+          ? 'the engine editor slot is busy elsewhere — retrying'
+          : check.phase === 'connecting'
+            ? 'connecting to the engine…'
+            : check.detail
+              ? `engine error: ${check.detail}`
+              : null
 
   const nameOk = NAME_RE.test(name)
   // concrete reason, live as the user types (or after a blur): silent
@@ -214,6 +223,7 @@ export default function New() {
               value={defs}
               onChange={setDefs}
               onCaret={(pos) => setCursor({ part: 'defs', ...pos })}
+              onFocus={() => claimLeanSlot(slotId)}
               placeholder={`import Mathlib\n\nnamespace Problems.${name || '<name>'}\n\n-- your definitions\n\nend Problems.${name || '<name>'}`}
             />
             <DiagList diags={check.parts.defs ?? []} />
@@ -227,6 +237,7 @@ export default function New() {
               value={root}
               onChange={setRoot}
               onCaret={(pos) => setCursor({ part: 'root', ...pos })}
+              onFocus={() => claimLeanSlot(slotId)}
               placeholder={`import Mathlib\nimport Problems.${name || '<name>'}.Defs\n\nnamespace Problems.${name || '<name>'}\n\ntheorem main : <statement> := by sorry\n\nend Problems.${name || '<name>'}`}
             />
             <DiagList diags={check.parts.root ?? []} />

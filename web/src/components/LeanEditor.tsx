@@ -18,20 +18,27 @@ export function LeanEditor({
   value,
   onChange,
   onCaret,
+  onFocus,
   onKeyDown,
   placeholder,
   heightClass = 'h-40',
   frameless = false,
+  autoFocus = false,
 }: {
   value: string
   onChange: (v: string) => void
   onCaret?: (pos: { line: number; col: number }) => void
+  /** editor gained focus — the host claims the reserved Lean slot */
+  onFocus?: () => void
   onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void
   placeholder?: string
   /** textarea height utility — the textarea drives the box size */
   heightClass?: string
   /** skip border/background chrome (host provides its own frame) */
   frameless?: boolean
+  /** focus on mount (a probe opened by the user runs right away; a
+   * background tab can't steal focus, so it stays dormant) */
+  autoFocus?: boolean
 }) {
   const preRef = useRef<HTMLPreElement>(null)
   const caret = (e: { currentTarget: HTMLTextAreaElement }) =>
@@ -64,6 +71,8 @@ export function LeanEditor({
         }
         style={{ caretColor: 'var(--color-ink)' }}
         value={value}
+        autoFocus={autoFocus}
+        onFocus={onFocus}
         onChange={(e) => {
           onChange(e.target.value)
           caret(e)

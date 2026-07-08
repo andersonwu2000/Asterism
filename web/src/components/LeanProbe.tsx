@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { Lean } from '../lib/lean'
 import { LeanEditor } from './LeanEditor'
 import { useLeanSession, type LeanCursor } from '../lib/leanSession'
+import { claimLeanSlot, releaseLeanSlot, useLeanSlotActive } from '../lib/leanSlot'
 
 /*
  * Runnable Lean blocks, ONE mechanism everywhere: the interactive
@@ -76,25 +77,33 @@ export function LeanProbe({
 }) {
   const [code, setCode] = useState(seed ?? `#print axioms ${fq}`)
   const [cursor, setCursor] = useState<LeanCursor | null>(null)
+  // the reader's Lean runs on ONE reserved slot; this block only holds
+  // it while it's the surface the user is in (claimed on focus / open).
+  const slotId = useId()
+  const active = useLeanSlotActive(slotId)
+  useEffect(() => () => releaseLeanSlot(slotId), [slotId])
   const s = useLeanSession({
     enabled: true,
+    active,
     parts: [{ id: 'probe', code }],
     imports: module ? [module] : [],
     cursor,
   })
   const diags = [...s.preamble, ...(s.parts.probe ?? [])]
   const status =
-    s.phase === 'warming'
-      ? 'engine warming — resumes on its own (a cold start can take a minute)'
-      : s.phase === 'busy'
-        ? 'the engine editor slot is busy elsewhere — retrying'
-        : s.phase === 'connecting'
-          ? 'connecting…'
-          : s.phase === 'checking'
-            ? 'checking…'
-            : s.detail
-              ? `engine error: ${s.detail}`
-              : ''
+    s.phase === 'dormant'
+      ? 'click into this block to check — the Lean engine follows your cursor'
+      : s.phase === 'warming'
+        ? 'engine warming — resumes on its own (a cold start can take a minute)'
+        : s.phase === 'busy'
+          ? 'the engine editor slot is busy elsewhere — retrying'
+          : s.phase === 'connecting'
+            ? 'connecting…'
+            : s.phase === 'checking'
+              ? 'checking…'
+              : s.detail
+                ? `engine error: ${s.detail}`
+                : ''
   const goalText =
     cursor && s.goal && s.goal !== 'no goals' && !s.goal.startsWith('<no goals')
       ? s.goal.replace(/^```lean\n?/, '').replace(/\n?```\s*$/, '')
@@ -109,6 +118,8 @@ export function LeanProbe({
           value={code}
           onChange={setCode}
           onCaret={(pos) => setCursor({ part: 'probe', ...pos })}
+          onFocus={() => claimLeanSlot(slotId)}
+          autoFocus
           heightClass="min-h-16 h-auto field-sizing-content"
           frameless
         />

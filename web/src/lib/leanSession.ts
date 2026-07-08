@@ -14,7 +14,7 @@ import type { EvalDiag } from '../components/LeanProbe'
 export type LeanCursor = { part: string; line: number; col: number }
 
 export type LeanSessionState = {
-  phase: 'idle' | 'connecting' | 'warming' | 'busy' | 'checking' | 'ready'
+  phase: 'idle' | 'connecting' | 'warming' | 'busy' | 'checking' | 'ready' | 'dormant'
   parts: Record<string, EvalDiag[]>
   preamble: EvalDiag[]
   goal: string | null
@@ -28,11 +28,14 @@ const IDLE: LeanSessionState = {
 
 export function useLeanSession(opts: {
   enabled: boolean
+  /** whether this surface currently holds the single reserved slot;
+   * enabled-but-inactive = paused (WS torn down, last result kept) */
+  active?: boolean
   parts: { id: string; code: string }[]
   imports?: string[]
   cursor: LeanCursor | null
 }): LeanSessionState {
-  const { enabled, cursor } = opts
+  const { enabled, cursor, active = true } = opts
   const [state, setState] = useState<LeanSessionState>(IDLE)
   const ws = useRef<WebSocket | null>(null)
   const seq = useRef(0)
@@ -68,10 +71,18 @@ export function useLeanSession(opts: {
     )
   }
 
-  // connection lifecycle — reconnect with backoff while enabled
+  // connection lifecycle — reconnect with backoff while enabled AND
+  // active (this surface holds the reserved slot). Enabled-but-inactive
+  // is a pause: the prior run's cleanup tears the WS down (releasing the
+  // slot), and we keep the last result on screen marked 'dormant' until
+  // the user comes back to this surface.
   useEffect(() => {
     if (!enabled) {
       setState(IDLE)
+      return
+    }
+    if (!active) {
+      setState((s) => ({ ...s, phase: 'dormant' }))
       return
     }
     let closed = false
@@ -128,7 +139,7 @@ export function useLeanSession(opts: {
       ws.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled])
+  }, [enabled, active])
 
   // buffer changes → debounced sync
   useEffect(() => {
