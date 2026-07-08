@@ -215,7 +215,7 @@ function Read-Decisions {
     return $dec
 }
 
-# ---- lane B: Python -> engine -> Claude Code (+login) -> Git ---------
+# ---- lane B: Python -> engine -> Claude Code (+login) ---------------
 function Lane-B {
     Step 'Python'
     if (Get-PyVersion) { Ok ('already installed  (' + (Get-PyVersion) + ')') }
@@ -230,8 +230,8 @@ function Lane-B {
         else { Warn 'the engine did not install' }
     }
 
-    # Claude first among the tools so its browser login (the one human
-    # step) surfaces early, while the long Mathlib download runs in lane A
+    # Claude last in this lane so its browser login (the one human step)
+    # surfaces while the long Mathlib download runs in lane A
     Step 'Claude Code'
     if ((Get-ClaudeStatus).installed) { Ok 'already installed' }
     elseif (Install-Claude) { Ok 'Claude Code installed' }
@@ -239,19 +239,22 @@ function Lane-B {
     Repair-ClaudePath
     $cs = Get-ClaudeStatus
     if ($cs.installed -and -not $cs.logged_in) { Spawn-ClaudeLogin }
-
-    Step 'Git'
-    if (Test-Git) { Ok 'already installed' }
-    elseif (Install-Git) { Ok 'Git installed' }
-    else { Warn 'Git did not install' }
 }
 
-# ---- lane A: Lean -> Mathlib (the multi-GB long pole) ----------------
+# ---- lane A: Git -> Lean -> Mathlib (the multi-GB long pole) ---------
 function Lane-A {
     $dec = Read-Decisions
     $leanMode = if ($dec.lean_mode) { $dec.lean_mode } else { 'install' }
     $elanHome = if ($dec.elan_home) { $dec.elan_home } elseif ($env:ELAN_HOME) { $env:ELAN_HOME } else { Join-Path $env:USERPROFILE '.elan' }
     $lakePath = $dec.lake_path
+
+    # Git FIRST in this lane: `lake exe cache get` clones Mathlib over
+    # git, so the math library step fails ("failed to execute 'git'")
+    # without it. Only lake needs git, so it rides the Lean lane, not B.
+    Step 'Git'
+    if (Test-Git) { Ok 'already installed' }
+    elseif (Install-Git) { Ok 'Git installed' }
+    else { Warn 'Git did not install' }
 
     Step 'Lean theorem prover'
     if ((Get-LakeStatus).found) {
