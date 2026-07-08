@@ -14,7 +14,16 @@ if (-not $up) {
     # Start-Process does NOT quote args itself (PS 5.1) — wrap the code
     # or py receives it word-split.
     $code = "import sys; sys.argv=['asterism','serve']; from Tooling.core.cli import main; raise SystemExit(main())"
-    Start-Process -FilePath 'py' -ArgumentList @('-3.12', '-c', ('"' + $code + '"')) `
+    # resolve the py launcher: a shortcut-spawned session may not have
+    # it on PATH yet (per-user install PATH edits land on next logon)
+    $py = 'py'
+    if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
+        foreach ($p in @((Join-Path $env:LOCALAPPDATA 'Programs\Python\Launcher\py.exe'),
+                         'C:\Windows\py.exe')) {
+            if (Test-Path $p) { $py = $p; break }
+        }
+    }
+    Start-Process -FilePath $py -ArgumentList @('-3.12', '-c', ('"' + $code + '"')) `
         -WorkingDirectory $Root -WindowStyle Hidden
     # wait for the port (fresh start takes a few seconds)
     for ($i = 0; $i -lt 60; $i++) {

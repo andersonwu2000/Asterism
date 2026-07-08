@@ -55,6 +55,18 @@ function Refresh-Path {
     $env:Path = $m + ';' + $u
 }
 
+function Resolve-Py {
+    # the py launcher may not be on PATH yet in this very session even
+    # after a successful install - probe its two canonical homes
+    $c = Get-Command py -ErrorAction SilentlyContinue
+    if ($c) { return $c.Source }
+    foreach ($p in @((Join-Path $env:LOCALAPPDATA 'Programs\Python\Launcher\py.exe'),
+                     'C:\Windows\py.exe')) {
+        if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
 try {
 
 Write-Host ''
@@ -75,27 +87,42 @@ if ($winget) {
 
 # ---------------------------------------------------------------- 2/4
 Step 2 'Python 3.12...'
+$Py = Resolve-Py
 $havePy = $false
-try {
-    $v = & py -3.12 -V 2>$null
-    if ($v) { $havePy = $true }
-} catch {}
+if ($Py) {
+    try {
+        $v = & $Py -3.12 -V 2>$null
+        if ($v) { $havePy = $true }
+    } catch {}
+}
 if ($havePy) {
     Ok ("already installed  (" + $v + ")")
 } else {
     Note 'Installing Python 3.12 (silent)...'
-    winget install -e --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
+    # pin the community source: without it winget may stop to ask which
+    # source to use whenever msstore is unreachable (sandbox, some
+    # corporate networks) - and an unanswered prompt means no install
+    winget install -e --id Python.Python.3.12 --source winget --silent --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -ne 0) {
+        Fail-Visible ('winget could not install Python 3.12 (exit ' +
+            $LASTEXITCODE + ') - see the log above.')
+    }
     Refresh-Path
+    $Py = Resolve-Py
+    if (-not $Py) {
+        Fail-Visible ('Python installed but its "py" launcher was not' +
+            ' found - close this window and run the setup again.')
+    }
     Ok 'Python 3.12 installed'
 }
 
 # ---------------------------------------------------------------- 3/4
 Step 3 'The Asterism engine...'
-& py -3.12 -m pip install -e $Root --quiet --disable-pip-version-check
+& $Py -3.12 -m pip install -e $Root --quiet --disable-pip-version-check
 if ($LASTEXITCODE -ne 0) {
     # a RUNNING console locks its own asterism.exe (WinError 32) - a
     # re-run over a live install is fine as long as the engine imports
-    & py -3.12 -c "import Tooling" 2>$null
+    & $Py -3.12 -c "import Tooling" 2>$null
     if ($LASTEXITCODE -eq 0) {
         Ok 'engine already installed (the running console keeps its file locked)'
     } else {
