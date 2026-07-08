@@ -86,6 +86,60 @@ function Resolve-Py {
     return $null
 }
 
+function PyWorks {
+    # $null unless `py -3.12 -V` runs; returns the launcher path so the
+    # caller can use it. Refreshes PATH first (a just-installed launcher
+    # lands there only for new sessions).
+    Refresh-Path
+    $p = Resolve-Py
+    if (-not $p) { return $null }
+    try { if (& $p -3.12 -V 2>$null) { return $p } } catch {}
+    return $null
+}
+
+function Install-Python {
+    # winget's silent Python install has been seen to ZOMBIE: it drops
+    # the interpreter, then the installer process hangs (flat CPU) and
+    # winget waits on it forever, stalling a hidden bootstrap with no
+    # sign of life. So: run winget in the background, show a heartbeat
+    # so the browser page proves it is alive, cap the wait, and trust
+    # the VERIFIED interpreter (py -3.12 -V) over winget's exit code.
+    # --disable-interactivity: a hidden install must never block on a
+    # prompt. --source winget pins the community source (msstore can
+    # stall to ask which source when unreachable).
+    $wingetArgs = @('install', '-e', '--id', 'Python.Python.3.12',
+        '--source', 'winget', '--silent', '--disable-interactivity',
+        '--accept-package-agreements', '--accept-source-agreements')
+    # via cmd: winget is an app-execution-alias that Start-Process does
+    # not always launch cleanly by name; cmd resolves it off PATH
+    $proc = Start-Process -FilePath 'cmd.exe' `
+        -ArgumentList (@('/c', 'winget') + $wingetArgs) -PassThru -NoNewWindow
+    $started = Get-Date
+    $timeoutSec = 300
+    $landed = $false
+    while ($true) {
+        Start-Sleep -Seconds 5
+        $elapsed = [int]((Get-Date) - $started).TotalSeconds
+        # the interpreter may already be usable even while the installer
+        # process lingers - that is enough to move on
+        if (PyWorks) { Note ('  Python is in place (' + $elapsed + 's) - finishing up'); $landed = $true; break }
+        Note ('  installing Python... (' + $elapsed + 's)')
+        if ($proc.HasExited) { break }
+        if ($elapsed -ge $timeoutSec) {
+            Warn ('  winget has not finished after ' + $timeoutSec + 's - using what landed')
+            break
+        }
+    }
+    # reap the launcher + winget + any lingering (possibly zombie)
+    # Python installer so nothing is left holding the session
+    if ($proc -and -not $proc.HasExited) { try { Stop-Process -Id $proc.Id -Force } catch {} }
+    foreach ($n in 'winget', 'WindowsPackageManagerServer', 'python-3.12.10-amd64') {
+        Get-Process $n -ErrorAction SilentlyContinue |
+            ForEach-Object { try { Stop-Process -Id $_.Id -Force } catch {} }
+    }
+    return $landed
+}
+
 try {
 
 Write-Host ''
@@ -117,22 +171,27 @@ if ($Py) {
 if ($havePy) {
     Ok ("already installed  (" + $v + ")")
 } else {
-    Note 'Installing Python 3.12 (silent)...'
-    # pin the community source: without it winget may stop to ask which
-    # source to use whenever msstore is unreachable (sandbox, some
-    # corporate networks) - and an unanswered prompt means no install
-    winget install -e --id Python.Python.3.12 --source winget --silent --accept-package-agreements --accept-source-agreements
-    if ($LASTEXITCODE -ne 0) {
-        Fail-Visible ('winget could not install Python 3.12 (exit ' +
-            $LASTEXITCODE + ') - see the log above.')
-    }
-    Refresh-Path
-    $Py = Resolve-Py
+    Note 'Installing Python 3.12 (this can take a minute or two)...'
+    [void](Install-Python)
+    $Py = PyWorks
     if (-not $Py) {
-        Fail-Visible ('Python installed but its "py" launcher was not' +
-            ' found - close this window and run the setup again.')
+        Fail-Visible ('Python did not install - see the log above.' +
+            ' Close this window and run the setup again.')
     }
-    Ok 'Python 3.12 installed'
+    Ok ('Python 3.12 installed  (' + (& $Py -3.12 -V 2>$null) + ')')
+}
+
+# A zombie installer (above) can leave Python WITHOUT pip - the exact
+# stall we hit. pip is a stdlib bootstrap away, so complete it here
+# rather than failing the engine step for a missing module.
+if (-not (& $Py -3.12 -m pip --version 2>$null)) {
+    Note 'Completing Python (adding pip)...'
+    & $Py -3.12 -m ensurepip --upgrade 2>$null | Out-Null
+    if (-not (& $Py -3.12 -m pip --version 2>$null)) {
+        Fail-Visible ('Python is present but has no pip and ensurepip' +
+            ' could not add it - run the setup again.')
+    }
+    Ok 'pip ready'
 }
 
 # ---------------------------------------------------------------- 3/4
