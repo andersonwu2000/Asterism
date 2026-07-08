@@ -97,47 +97,65 @@ function PyWorks {
     return $null
 }
 
+$PyVer = '3.12.10'
+
 function Install-Python {
-    # winget's silent Python install has been seen to ZOMBIE: it drops
-    # the interpreter, then the installer process hangs (flat CPU) and
-    # winget waits on it forever, stalling a hidden bootstrap with no
-    # sign of life. So: run winget in the background, show a heartbeat
-    # so the browser page proves it is alive, cap the wait, and trust
-    # the VERIFIED interpreter (py -3.12 -V) over winget's exit code.
-    # --disable-interactivity: a hidden install must never block on a
-    # prompt. --source winget pins the community source (msstore can
-    # stall to ask which source when unreachable).
-    $wingetArgs = @('install', '-e', '--id', 'Python.Python.3.12',
-        '--source', 'winget', '--silent', '--disable-interactivity',
-        '--accept-package-agreements', '--accept-source-agreements')
-    # via cmd: winget is an app-execution-alias that Start-Process does
-    # not always launch cleanly by name; cmd resolves it off PATH
-    $proc = Start-Process -FilePath 'cmd.exe' `
-        -ArgumentList (@('/c', 'winget') + $wingetArgs) -PassThru -NoNewWindow
+    # NOT via winget: winget installs the FULL Python (7+ sub-MSIs), and
+    # in a constrained MSI environment (Windows Sandbox, some locked-down
+    # machines) each sub-MSI crawls - tcltk alone took 2 min in testing,
+    # so the whole thing looks hung for 10+ minutes. Instead, download
+    # the official installer and install a MINIMAL Python DIRECTLY: core
+    # + pip + launcher, NO Tcl/Tk / docs / tests / headers (Asterism
+    # needs none of them). Per-user so a non-elevated double-click needs
+    # no UAC. Faster and more predictable on real machines too; winget
+    # stays for the browser wizard's Git step.
+    $url = 'https://www.python.org/ftp/python/' + $PyVer + '/python-' + $PyVer + '-amd64.exe'
+    $exe = Join-Path $env:TEMP ('python-' + $PyVer + '-amd64.exe')
+
+    # reap a stuck installer from a prior attempt FIRST: a half-finished
+    # slow install holds the Windows Installer, so a re-run would hit
+    # "another installation is in progress" (the close-and-retry trap)
+    Get-Process ('python-' + $PyVer + '-amd64') -ErrorAction SilentlyContinue |
+        ForEach-Object { try { Stop-Process -Id $_.Id -Force } catch {} }
+
+    if (-not (Test-Path $exe) -or (Get-Item $exe).Length -lt 20MB) {
+        Note '  downloading Python...'
+        $ProgressPreference = 'SilentlyContinue'
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $exe
+        } catch {
+            Fail-Visible ('Could not download Python from python.org (' +
+                $_.Exception.Message + '). Check the internet connection' +
+                ' and run the setup again.')
+        }
+    }
+
+    Note '  installing Python (core + pip, no extras)...'
+    $installArgs = @('/quiet', 'InstallAllUsers=0', 'PrependPath=1',
+        'Include_launcher=1', 'Include_pip=1',
+        'Include_tcltk=0', 'Include_doc=0', 'Include_test=0', 'Include_dev=0')
+    $proc = Start-Process -FilePath $exe -ArgumentList $installArgs -PassThru
     $started = Get-Date
-    $timeoutSec = 300
-    $landed = $false
+    # a real machine finishes in well under a minute; the generous cap is
+    # only for pathologically slow virtualized MSI (sandbox ~20x slower)
+    $timeoutSec = 900
     while ($true) {
         Start-Sleep -Seconds 5
         $elapsed = [int]((Get-Date) - $started).TotalSeconds
-        # the interpreter may already be usable even while the installer
-        # process lingers - that is enough to move on
-        if (PyWorks) { Note ('  Python is in place (' + $elapsed + 's) - finishing up'); $landed = $true; break }
-        Note ('  installing Python... (' + $elapsed + 's)')
+        # the launcher lands before the last sub-MSI - once py works we
+        # are done, no need to wait for the process to exit
+        if (PyWorks) { Note ('  Python is ready (' + $elapsed + 's)'); return $true }
         if ($proc.HasExited) { break }
         if ($elapsed -ge $timeoutSec) {
-            Warn ('  winget has not finished after ' + $timeoutSec + 's - using what landed')
+            Warn ('  Python installer still running after ' + $timeoutSec +
+                's - checking what landed')
             break
         }
+        Note ('  installing Python... (' + $elapsed + 's)')
     }
-    # reap the launcher + winget + any lingering (possibly zombie)
-    # Python installer so nothing is left holding the session
     if ($proc -and -not $proc.HasExited) { try { Stop-Process -Id $proc.Id -Force } catch {} }
-    foreach ($n in 'winget', 'WindowsPackageManagerServer', 'python-3.12.10-amd64') {
-        Get-Process $n -ErrorAction SilentlyContinue |
-            ForEach-Object { try { Stop-Process -Id $_.Id -Force } catch {} }
-    }
-    return $landed
+    return [bool](PyWorks)
 }
 
 try {
