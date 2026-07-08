@@ -1,9 +1,9 @@
 # Asterism setup orchestrator — installs every dependency, driven by the
 # decisions the web page collected, streaming progress the server tails.
-# This is the PowerShell home of the install knowledge that used to live
-# in Tooling/serve/setup.py + installer/install.ps1. Steps no-op when
-# already satisfied, and truth is taken from the WORLD (re-detection),
-# never an installer's exit code. PS 5.1, ASCII only.
+# This is the PowerShell home of the install knowledge (it grew out of
+# Tooling/serve/setup.py). Steps no-op when already satisfied, and truth
+# is taken from the WORLD (re-detection), never an installer's exit
+# code. PS 5.1, ASCII only.
 
 param([string]$DecisionsFile)
 
@@ -52,7 +52,8 @@ function Run-Stream($file, $arguments, $cwd, [switch]$AsTick) {
     }
 }
 
-# ---- Python (minimal, direct — see installer/install.ps1 rationale) --
+# ---- Python (minimal, direct: core + pip only; python.org's full MSI
+#      bundle drags in tcl/tk/docs/tests and its servicing is slow) -----
 function Install-Python {
     Get-Process ('python-' + $PyVer + '-amd64') -ErrorAction SilentlyContinue |
         ForEach-Object { try { Stop-Process -Id $_.Id -Force } catch {} }

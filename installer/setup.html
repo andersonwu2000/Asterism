@@ -185,7 +185,9 @@
       }
       return {order:order, groups:groups, human:human}
     }
-    function isOpen(g){ return (g.name in openState) ? openState[g.name] : (g.status==='running'||g.status==='warn') }
+    // logs collapsed by default (the running row still shows its live
+    // tick inline); only a failed step auto-opens so its error is seen
+    function isOpen(g){ return (g.name in openState) ? openState[g.name] : (g.status==='warn') }
     function render(lines){
       lastLines = lines
       var p = parseLog(lines)
