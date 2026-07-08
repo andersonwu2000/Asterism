@@ -61,7 +61,10 @@ def lake_status() -> dict:
 
 def mathlib_status(workspace: Path) -> dict:
     """Present = the olean cache has actually landed (a bare checkout
-    has the package dir but an empty build tree)."""
+    has the package dir but an empty build tree) AND the framework's
+    own Lean server is built — the engine's contract suite refuses to
+    start without its declInfo/axiom-probe RPCs (a fresh machine has
+    the cache but not the binary; seen live in a sandbox run)."""
     build = (workspace / ".lake" / "packages" / "mathlib" / ".lake"
              / "build" / "lib")
     present = False
@@ -71,7 +74,10 @@ def mathlib_status(workspace: Path) -> dict:
         for p in build.rglob("*.olean"):
             present = True
             break
-    return {"present": present}
+    server = workspace / ".lake" / "build" / "bin" / (
+        "lean-asterism-server.exe" if os.name == "nt"
+        else "lean-asterism-server")
+    return {"present": present and server.exists()}
 
 
 def claude_status() -> dict:
@@ -260,6 +266,15 @@ def _step_fetch_mathlib(workspace: Path, log) -> int:  # noqa: ANN001
     log("fetching the prebuilt math library (several GB on the"
         " first run; incremental after that)...")
     rc = _stream(["lake", "exe", "cache", "get"], log, cwd=workspace)
+    if rc != 0:
+        log(f"lake exited {rc}")
+        return rc
+    # the engine talks to Lean through its own server (declInfo /
+    # axiom probes); without this build the contract suite rightly
+    # refuses to start the daemon
+    log("building the engine's Lean server (a few minutes)...")
+    rc = _stream(["lake", "build", "lean-asterism-server"], log,
+                 cwd=workspace)
     log("done" if rc == 0 else f"lake exited {rc}")
     return rc
 
