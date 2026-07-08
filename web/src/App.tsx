@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { RouterProvider, useRoute, Link, navigate } from './lib/router'
+import { RouterProvider, useRoute, Link } from './lib/router'
 import { apiPost, usePoll } from './lib/api'
 import Board from './screens/Board'
 import Inbox from './screens/Inbox'
@@ -10,7 +10,6 @@ import New from './screens/New'
 import Papers, { PaperReader } from './screens/Papers'
 import Problem from './screens/Problem'
 import Run from './screens/Run'
-import Setup from './screens/Setup'
 import Telemetry from './screens/Telemetry'
 import type { Meta } from './lib/types'
 
@@ -64,34 +63,6 @@ function DaemonChip({ meta }: { meta: Meta | null }) {
   )
 }
 
-/** Engine-readiness banner: a missing Lean toolchain or Mathlib cache
- * fails every run just as silently as a missing login — point at the
- * wizard. 30s poll (cheap checks), hidden on the wizard itself. */
-function SetupBanner({ section }: { section: string }) {
-  const { data } = usePoll<{
-    lake: { found: boolean }
-    mathlib: { present: boolean }
-  }>('/api/setup/status', 30000)
-  if (!data || section === 'setup') return null
-  if (data.lake.found && data.mathlib.present) return null
-  return (
-    <div className="flex items-center gap-3 border-b border-edge bg-surface-2 px-4 py-2 text-xs">
-      <span className="bg-warn h-1.5 w-1.5 shrink-0 rounded-full" />
-      <span className="text-ink">
-        {data.lake.found
-          ? 'The math library is not fetched yet — runs will fail.'
-          : 'The Lean prover is not set up yet — runs will fail.'}
-      </span>
-      <Link
-        to="/setup"
-        className="rounded-md border border-edge bg-surface px-2.5 py-1 text-ink transition-colors hover:bg-surface-3"
-      >
-        Open the setup wizard
-      </Link>
-    </div>
-  )
-}
-
 /** Auth banner — the one condition that silently fails EVERY run.
  * The login flow itself is Claude Code's own wizard; the button just
  * opens it in a terminal window, and the 3s meta poll turns the
@@ -123,9 +94,9 @@ function ClaudeBanner({ meta }: { meta: Meta | null }) {
       <span className="text-ink">
         {installed
           ? 'Claude Code is not logged in — runs will fail until you log in.'
-          : 'Claude Code is not installed — the setup wizard can install it.'}
+          : 'Claude Code is not installed — re-run Setup Asterism.exe to install it.'}
       </span>
-      {installed ? (
+      {installed && (
         <button
           className="cursor-pointer rounded-md border border-edge bg-surface px-2.5 py-1 text-ink transition-colors hover:bg-surface-3"
           disabled={busy}
@@ -133,13 +104,6 @@ function ClaudeBanner({ meta }: { meta: Meta | null }) {
         >
           Log in with your browser
         </button>
-      ) : (
-        <Link
-          to="/setup"
-          className="rounded-md border border-edge bg-surface px-2.5 py-1 text-ink transition-colors hover:bg-surface-3"
-        >
-          Open setup
-        </Link>
       )}
       {msg && <span className="text-ink-faint">{msg}</span>}
     </div>
@@ -250,10 +214,6 @@ function NavItem({
 function Shell() {
   const route = useRoute()
   const { data: meta } = usePoll<Meta>('/api/meta', 3000)
-  const { data: setup } = usePoll<{
-    lake: { found: boolean }
-    mathlib: { present: boolean }
-  }>('/api/setup/status', 30000)
   const section = route.segments[0] ?? ''
   const workspaceName = meta ? (meta.workspace.split(/[\\/]/).pop() ?? '') : ''
   // the tab title carries the inbox count — the one place a decision
@@ -262,26 +222,6 @@ function Shell() {
   useEffect(() => {
     document.title = inboxCount > 0 ? `(${inboxCount}) Asterism` : 'Asterism'
   }, [inboxCount])
-
-  // First-run gate: a fresh install redirects here to the Board, which
-  // LOOKS ready while every run would fail (no Lean / Claude / Mathlib).
-  // Land the user on the setup wizard ONCE on load when setup is
-  // incomplete, so "installed" and "usable" aren't two different things.
-  // Ref-guarded: fire only once, so a user who navigates back to the
-  // Board on purpose is not yanked away (Mathlib is a long step).
-  const gatedRef = useRef(false)
-  useEffect(() => {
-    if (gatedRef.current || !setup || !meta) return
-    const done =
-      setup.lake.found &&
-      setup.mathlib.present &&
-      (meta.claude?.installed ?? false) &&
-      (meta.claude?.logged_in ?? false)
-    gatedRef.current = true // decide once, either way
-    if (!done && (section === '' || section === 'problems')) {
-      navigate('/setup')
-    }
-  }, [setup, meta, section])
 
   return (
     <div className="flex h-full">
@@ -363,7 +303,6 @@ function Shell() {
             carries its own title, the constellation gets the sky. The
             ONE exception: the auth banner (a silently-fatal state) */}
         <ClaudeBanner meta={meta} />
-        <SetupBanner section={section} />
         <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           {section === 'new' ? (
             <New />
@@ -383,8 +322,6 @@ function Shell() {
             )
           ) : section === 'run' ? (
             <Run />
-          ) : section === 'setup' ? (
-            <Setup />
           ) : section === 'settings' || section === 'telemetry' ? (
             <Telemetry />
           ) : section === 'problems' && route.segments[1] ? (
