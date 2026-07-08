@@ -1911,6 +1911,91 @@ export function layoutConstellation(
         }
       }
     }
+    // chain straighten: a spine node with ONE continuing subtree child
+    // plus side leaves sits at the tidy MIDPOINT of its children — as
+    // the leaves alternate sides the midpoints alternate too, and the
+    // spine renders as a staircase (owner circled one wandering 871px
+    // over six links). No existing move touches internal nodes at all,
+    // which is why the staircase survived every pass. Propose sliding
+    // the parent onto its spine child's x (or the child under the
+    // parent), occupancy-guarded so stars never stack, judged whole —
+    // the length term rewards the straightening, crossings veto abuse.
+    const rowXs = (): Map<number, number[]> => {
+      const m = new Map<number, number[]>()
+      for (const n of nodes) {
+        if (!px.has(n.goal.id)) continue
+        const y = pyOf.get(n.goal.id)!
+        m.set(y, [...(m.get(y) ?? []), n.goal.id])
+      }
+      return m
+    }
+    const chainStraighten = (): void => {
+      const dbg = (globalThis as { __skyDbg?: Record<string, number> }).__skyDbg
+      const bump = (key: string): void => {
+        if (dbg) dbg[key] = (dbg[key] ?? 0) + 1
+      }
+      const rows = rowXs()
+      const occupied = (y: number, x: number, exclude: Set<number>): boolean => {
+        for (const o of rows.get(y) ?? []) {
+          if (!exclude.has(o) && Math.abs(px.get(o)! - x) < 60) return true
+        }
+        return false
+      }
+      // this is the first move family that mints NEW x positions (all
+      // others exchange existing slots), so EVERY moved member needs
+      // an occupancy check — stars must never stack
+      const clearForAll = (moves: [number, number][]): boolean => {
+        const moving = new Set(moves.map(([id]) => id))
+        for (const [id, x] of moves) {
+          if (occupied(pyOf.get(id)!, x, moving)) return false
+        }
+        return true
+      }
+      for (const n of nodes) {
+        const k = n.goal.id
+        const ks = (treeKids.get(k) ?? []).filter((c) => px.has(c))
+        if (ks.length === 0) continue
+        const spines = ks.filter((c) => (treeKids.get(c)?.length ?? 0) > 0)
+        if (spines.length !== 1) continue
+        const c = spines[0]
+        const xk = px.get(k)!
+        const xc = px.get(c)!
+        if (Math.abs(xk - xc) < 20) continue
+        bump('chainCand')
+        // parent slides over the spine child — WITH its side leaves
+        // (they are what dragged it off the spine; left behind, their
+        // longer arms make the honest judge veto the straightening)
+        const d0 = xc - xk
+        const pMove: [number, number][] = [[k, xc]]
+        for (const leaf of ks) {
+          if (leaf === c) continue
+          if ((treeKids.get(leaf)?.length ?? 0) > 0) continue
+          const lx = px.get(leaf)
+          if (lx !== undefined) pMove.push([leaf, lx + d0])
+        }
+        if (clearForAll(pMove)) {
+          bump('chainPClear')
+          if (tryMove(pMove)) {
+            bump('chainPAcc')
+            continue
+          }
+        } else if (clearForAll([[k, xc]]) && tryMove([[k, xc]])) {
+          // leaves blocked: the bare slide still gets its day in court
+          bump('chainPAcc')
+          continue
+        }
+        const d = xk - xc
+        const cMoves: [number, number][] = []
+        for (const m of membersOf(c)) {
+          const x = px.get(m)
+          if (x !== undefined) cMoves.push([m, x + d])
+        }
+        if (clearForAll(cMoves)) {
+          bump('chainCClear')
+          if (tryMove(cMoves)) bump('chainCAcc')
+        }
+      }
+    }
     // proposal set: per band, left-to-right adjacent tree swaps, then a
     // mirror per tree; two sweeps let a swap unlock a mirror and back
     const compsByBand = new Map<number, Comp[]>()
@@ -2023,6 +2108,7 @@ export function layoutConstellation(
         rowPass()
         if (modernMode) {
           rowOrderPass()
+          chainStraighten()
           rescuePass()
           fanUntangle()
         }
