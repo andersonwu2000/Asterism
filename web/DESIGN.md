@@ -1,0 +1,64 @@
+# Asterism — the visual language
+
+The contract for EVERY user-facing surface: the web console (`web/`),
+the installer pages (`installer/*.html`), whatever comes next. Read
+this before writing or changing UI. Architecture and stack live in
+`docs/internal/frontend_design.md`; this file is the visual language
+only, and only the settled parts of it.
+
+## Ink
+
+- The chrome is **achromatic** — greys, black, white. No color
+  anywhere without the owner's explicit per-instance sign-off.
+- Encode with five axes instead of hue: **brightness, weight, shape,
+  motion, inversion**.
+- **Subtraction outranks addition.** The settled norm earns no ink;
+  ink is for exceptions. Never draw the same fact twice.
+- Identity and state are separate channels: identity = ring / shape /
+  size; state = brightness / blink. Never mix the two axes in one
+  mark (a legend swatch that carried both was a systemic bug source).
+
+## The one sanctioned color: code
+
+Lean — and only code — is colored, by the **single shared tokenizer**
+`web/src/lib/lean.tsx` (six low-saturation inks; the file is the SoT
+for the values). Every Lean fragment on every screen goes through it.
+No rainbow brackets, no editor underlines: reading ink, not tooling
+ink.
+
+## Type — three voices
+
+- **Inter** = the UI voice. **JetBrains Mono** = identifiers and code.
+  **Fraunces** = the display voice (page titles, wordmark).
+- Self-contained pages that cannot load fonts (installer) use the
+  system stand-ins for the same three voices: Segoe UI / Consolas /
+  Georgia.
+
+## Glyphs — the sky's vocabulary, reused everywhere
+
+- **Diamond = definition (data); circle = proposition.**
+- **Single ring = a sign-off surface** (root / claim / anchor); bigger
+  = more important. No other permanent rings.
+- State is brightness: while work is live the unproved stars carry the
+  light and the proved mass recedes; a finished sky flips back to
+  trophy. Writing-now = the star itself blinks.
+- Dead/shelved = very faint residue, never hidden. **The sky is always
+  complete** — ink inversion is the only focus mechanism; no hide/
+  filter toggles.
+
+## Interaction
+
+- Hover / selection = focus: related ink brightens, the rest recedes.
+  Prefer dimming over popups.
+- Actions with consequences confirm **in place, two-step** — the
+  second click names what happens ("Confirm — engine runs now"). No
+  modal dialogs.
+- Engine states speak inside the panel they affect, in plain words.
+  The audience is mathematicians: human words in the UI, engine
+  vocabulary in tooltips (`web/src/lib/vocab.ts` is the enum→word
+  layer).
+
+## Copy
+
+- Quiet, lowercase-leaning, one sentence. Say what happens next, not
+  what the system did internally. UI text is English.
