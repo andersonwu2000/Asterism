@@ -118,5 +118,6 @@ Papers/*/paper.*
 Papers/*/text.md
 Papers/*/.index_attempt/
 
-# setup-stub transcript (regenerates on every hidden bootstrap run)
+# setup-stub transcript + live progress tap (regenerate every run)
 installer/bootstrap.log
+installer/setup-progress.log

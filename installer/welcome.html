@@ -4,10 +4,14 @@
 <meta charset="utf-8">
 <title>Setting up Asterism…</title>
 <!-- Opened by "Setup Asterism.exe" the moment the hidden bootstrap
-     starts. Self-contained (no network assets): it only polls
-     localhost with an image beacon — file:// pages may not fetch()
-     http, but they may load images — and replaces itself with the
-     console the moment the engine answers. -->
+     starts. Self-contained (no network assets). Two localhost taps,
+     both via resource loads a file:// page is allowed to make (it may
+     NOT fetch() http):
+       - an <img> beacon on :8642 (the real engine) -> when it answers,
+         this page becomes the console
+       - a <script> JSONP poll on :8641 (setup-logserver.ps1) -> the
+         hidden installer's progress, streamed in line by line so the
+         user sees it working. -->
 <style>
   :root { color-scheme: dark; }
   html, body { height: 100%; margin: 0; }
@@ -16,30 +20,42 @@
     font: 14px/1.6 "Segoe UI", system-ui, sans-serif;
     display: flex; align-items: center; justify-content: center;
   }
-  .wrap { max-width: 34rem; padding: 2rem; text-align: center; }
+  .wrap { max-width: 40rem; width: 90%; padding: 2rem; text-align: center; }
   .mark { font-size: 15px; letter-spacing: .35em; color: #9da0a8;
           text-transform: uppercase; }
-  h1 { font-family: Georgia, serif; font-weight: 500; font-size: 28px;
+  h1 { font-family: Georgia, serif; font-weight: 500; font-size: 26px;
        margin: 1rem 0 .5rem; }
   p { color: #a2a4ab; margin: .4rem 0; }
-  .hint { color: #67696f; font-size: 12px; margin-top: 2rem; }
-  code { background: #17171b; padding: 1px 6px; border-radius: 4px;
-         font-size: 12px; }
-  .sky { margin: 1.6rem auto 0; width: 160px; }
+  .sky { margin: 1.2rem auto .4rem; width: 140px; }
   .star { animation: tw 2.4s ease-in-out infinite; }
   .star.b { animation-delay: .8s; } .star.c { animation-delay: 1.6s; }
   @keyframes tw { 0%,100% { opacity: .25 } 50% { opacity: 1 } }
+
+  .console {
+    margin: 1.6rem 0 0; text-align: left;
+    background: #101014; border: 1px solid #1e1e24; border-radius: 8px;
+    height: 15rem; overflow-y: auto; padding: .8rem 1rem;
+    font: 12px/1.7 "Cascadia Code", "Consolas", ui-monospace, monospace;
+  }
+  .console .ln { white-space: pre-wrap; word-break: break-word; }
+  .console .step { color: #ededf0; margin-top: .5rem; }
+  .console .step:first-child { margin-top: 0; }
+  .console .ok   { color: #8fb98f; }
+  .console .note { color: #6a6c72; }
+  .console .warn { color: #d8a657; }
+  .console .waiting { color: #55575d; font-style: italic; }
+  .glyph { display: inline-block; width: 1.4em; color: inherit; opacity: .8; }
+  .fallback { color: #67696f; font-size: 12px; margin-top: 1rem; min-height: 1.4em; }
+  code { background: #17171b; padding: 1px 6px; border-radius: 4px; font-size: 12px; }
 </style>
 </head>
 <body>
   <div class="wrap">
     <div class="mark">Asterism</div>
     <h1>Setting things up&hellip;</h1>
-    <p>Python and the engine are installing quietly in the background
-       &mdash; usually one to three minutes.</p>
-    <p><strong>Keep this page open.</strong> It becomes the Asterism
-       console by itself the moment the engine is ready; the setup
-       wizard takes it from there.</p>
+    <p>Installing quietly in the background &mdash; usually one to three
+       minutes. <strong>Keep this page open;</strong> it becomes the
+       console by itself when the engine is ready.</p>
     <svg class="sky" viewBox="0 0 160 60" aria-hidden="true">
       <path d="M20 44 L74 14 L128 36" stroke="#67696f" stroke-width="1"
             fill="none" opacity="0.4"/>
@@ -47,18 +63,82 @@
       <circle class="star b" cx="74" cy="14" r="4.2" fill="#f4f5f8"/>
       <circle class="star c" cx="128" cy="36" r="2.8" fill="#f4f5f8"/>
     </svg>
-    <p class="hint">Nothing after five minutes? Read
-      <code>installer\bootstrap.log</code>, or right-click
-      <code>installer\install.ps1</code> and choose
-      &ldquo;Run with PowerShell&rdquo; to watch the installer work.</p>
+    <div id="console" class="console">
+      <div class="ln waiting">Waiting for the installer&hellip;</div>
+    </div>
+    <div id="fallback" class="fallback"></div>
   </div>
   <script>
-    (function poll() {
-      var i = new Image();
-      i.onload = function () { location.replace('http://127.0.0.1:8642/'); };
-      i.onerror = function () { setTimeout(poll, 2000); };
-      i.src = 'http://127.0.0.1:8642/favicon.svg?' + Date.now();
-    })();
+    (function () {
+      var box = document.getElementById('console')
+      var fallback = document.getElementById('fallback')
+      var shown = 0            // lines already rendered
+      var everGot = false      // did the log tap ever answer?
+      var emptyPolls = 0       // consecutive answers with no lines yet
+      var redirected = false
+
+      var GLYPH = { step: '', ok: '✓ ', note: '· ', warn: '⚠ ' }
+
+      // the JSONP callback the log server calls back into
+      window.__asterismLog = function (lines) {
+        everGot = true
+        if (!lines || !lines.length) { emptyPolls++; return }
+        emptyPolls = 0
+        if (shown === 0) box.innerHTML = ''   // clear the "waiting" line
+        for (var i = shown; i < lines.length; i++) {
+          var m = /^\[(STEP|OK|NOTE|WARN)\]\s([\s\S]*)$/.exec(lines[i])
+          var kind = m ? m[1].toLowerCase() : 'note'
+          var text = m ? m[2] : lines[i]
+          var el = document.createElement('div')
+          el.className = 'ln ' + kind
+          var g = GLYPH[kind] || ''
+          el.innerHTML = (g ? '<span class="glyph">' + g + '</span>' : '') +
+                         text.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+          box.appendChild(el)
+        }
+        shown = lines.length
+        box.scrollTop = box.scrollHeight
+      }
+
+      // poll the log tap by injecting a fresh <script> (a file:// page
+      // may load http scripts, but may not fetch http)
+      function pollLog() {
+        if (redirected) return
+        var s = document.createElement('script')
+        s.src = 'http://127.0.0.1:8641/log?cb=' + Date.now()
+        s.onload = s.onerror = function () {
+          if (s.parentNode) s.parentNode.removeChild(s)
+          setTimeout(pollLog, 900)
+        }
+        document.head.appendChild(s)
+      }
+
+      // the log server may not exist (port taken, blocked) - after a
+      // while with no answer, point at the file so the user is not stuck
+      setInterval(function () {
+        if (redirected) return
+        if (!everGot) {
+          fallback.textContent =
+            'Still preparing… if nothing appears, the log is at installer\\bootstrap.log'
+        } else if (emptyPolls > 6) {
+          fallback.textContent = 'Starting the installer…'
+        } else {
+          fallback.textContent = ''
+        }
+      }, 4000)
+
+      // the engine-ready beacon: an <img> load a file:// page IS allowed
+      function pollEngine() {
+        if (redirected) return
+        var i = new Image()
+        i.onload = function () { redirected = true; location.replace('http://127.0.0.1:8642/') }
+        i.onerror = function () { setTimeout(pollEngine, 2000) }
+        i.src = 'http://127.0.0.1:8642/favicon.svg?' + Date.now()
+      }
+
+      pollLog()
+      pollEngine()
+    })()
   </script>
 </body>
 </html>

@@ -23,18 +23,37 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot   # repo root (this file lives in installer\)
 $Total = 4
 
+# The browser welcome page tails this clean, tagged log through a tiny
+# localhost JSONP server (setup-logserver.ps1) so a hidden install
+# still shows progress live - a novice watching a silent spinner for
+# three minutes assumes it hung.
+$ProgressLog = Join-Path $PSScriptRoot 'setup-progress.log'
+try { Set-Content -Path $ProgressLog -Value '' -Encoding ASCII } catch {}
+function Progress-Line($s) {
+    try { Add-Content -Path $ProgressLog -Value $s -Encoding ASCII } catch {}
+}
+
 if ($FromStub) {
     # hidden run: the log is the console
     try { Start-Transcript -Path (Join-Path $PSScriptRoot 'bootstrap.log') -Force | Out-Null } catch {}
+    # stand up the log tap BEFORE the slow steps so the welcome page
+    # has something to show from the first second
+    try {
+        Start-Process -FilePath 'powershell' -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+            (Join-Path $PSScriptRoot 'setup-logserver.ps1'),
+            $ProgressLog, '8641', '8642') | Out-Null
+    } catch {}
 }
 
 function Step($n, $msg) {
     Write-Host ''
     Write-Host ("[$n/$Total] " + $msg) -ForegroundColor Cyan
+    Progress-Line ("[STEP] [$n/$Total] " + $msg)
 }
-function Ok($msg)   { Write-Host ('   OK   ' + $msg) -ForegroundColor Green }
-function Note($msg) { Write-Host ('        ' + $msg) -ForegroundColor DarkGray }
-function Warn($msg) { Write-Host ('   !!   ' + $msg) -ForegroundColor Yellow }
+function Ok($msg)   { Write-Host ('   OK   ' + $msg) -ForegroundColor Green; Progress-Line ('[OK] ' + $msg) }
+function Note($msg) { Write-Host ('        ' + $msg) -ForegroundColor DarkGray; Progress-Line ('[NOTE] ' + $msg) }
+function Warn($msg) { Write-Host ('   !!   ' + $msg) -ForegroundColor Yellow; Progress-Line ('[WARN] ' + $msg) }
 
 function Fail-Visible($msg) {
     # a hidden installer must never fail silently
