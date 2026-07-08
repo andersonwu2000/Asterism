@@ -56,7 +56,7 @@ def test_setup_jobs_idle_then_stubbed_run(workspace: Path,
 
     # stub the step: the job machinery (state + log tail) is the
     # thing under test, not elan
-    def fake_step(_home: str, log) -> int:  # noqa: ANN001
+    def fake_step(_home: str, _ws, log) -> int:  # noqa: ANN001
         log("hello from the stub")
         return 0
     monkeypatch.setattr(_setup, "_step_install_lean", fake_step)

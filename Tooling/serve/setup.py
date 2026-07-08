@@ -229,7 +229,7 @@ def _download(url: str, dest: Path, log) -> int:  # noqa: ANN001
          f" -OutFile '{dest}'"], log)
 
 
-def _step_install_lean(elan_home: str, log) -> int:  # noqa: ANN001
+def _step_install_lean(elan_home: str, workspace: Path, log) -> int:  # noqa: ANN001
     log("downloading elan-init...")
     tmp = Path(os.environ.get("TEMP", ".")) / "elan-init.ps1"
     rc = _download("https://elan.lean-lang.org/elan-init.ps1", tmp, log)
@@ -258,6 +258,19 @@ def _step_install_lean(elan_home: str, log) -> int:  # noqa: ANN001
         return 1
     _persist_user_env("ELAN_HOME", elan_home, log)
     _prepend_user_path(str(bin_dir), log)
+    # elan-init -NoPrompt only RECORDS the default toolchain — the
+    # first `lake` inside the workspace then surprise-downloads the
+    # PINNED toolchain (lean-toolchain, hundreds of MB), which no
+    # 15s status probe survives. Pull it here, streamed into the log,
+    # so every later probe meets a ready lake.
+    log("fetching the pinned Lean toolchain (first run only)...")
+    rc = _stream([str(bin_dir / ("lake.exe" if os.name == "nt"
+                                 else "lake")), "--version"],
+                 log, cwd=workspace)
+    if rc != 0:
+        log("the pinned toolchain did not come down cleanly - press"
+            " the button again to resume")
+        return rc
     log("Lean toolchain installed")
     return 0
 
@@ -385,7 +398,7 @@ def _setup_all_worker(workspace: Path, elan_home: "str | None"):
                     " - run installer/install.sh")
                 failures.append("Lean")
             elif _step_install_lean(elan_home or default_elan_home(),
-                                    log) != 0:
+                                    workspace, log) != 0:
                 failures.append("Lean")
 
         if lake_status()["found"] and \
@@ -513,7 +526,7 @@ def register(app, workspace: Path) -> None:  # noqa: ANN001
         home = (body.elan_home if body and body.elan_home
                 else default_elan_home())
         return _start_job(
-            "lean", lambda log: _step_install_lean(home, log))
+            "lean", lambda log: _step_install_lean(home, workspace, log))
 
     @app.post("/api/setup/fetch-mathlib")
     def setup_fetch_mathlib() -> dict:
