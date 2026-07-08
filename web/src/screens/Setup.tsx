@@ -15,7 +15,7 @@ import { Button } from '../components/ui'
  * one primary button, then a progress card — component checklist +
  * the live log of the one-click job. The login is the single step
  * that needs a human; its window opens early (Claude installs first)
- * and its row stays yellow until done.
+ * and its status dot stays bright (warn) until done.
  */
 
 interface SetupStatus {
@@ -141,8 +141,9 @@ export default function Setup() {
     <div className="mx-auto max-w-3xl px-6 py-8">
       <h1 className="font-display text-[26px] font-medium text-ink">Set up Asterism</h1>
       <p className="mt-1 max-w-[64ch] text-xs text-ink-faint">
-        Answer what's below, press the button, walk away. The one thing that needs you is the
-        Claude login — a browser tab opens in the first minute; click Authorize.
+        {allDone
+          ? "Everything's installed and logged in — you're ready to prove."
+          : "Answer what's below, press the button, walk away. The one thing that needs you is the Claude login — a browser tab opens in the first minute; click Authorize."}
       </p>
       {err && <div className="mt-3 text-xs text-warn">{err}</div>}
 
@@ -342,9 +343,11 @@ export default function Setup() {
       <div className="mt-8 flex items-center gap-3">
         {allDone ? (
           <>
+            {/* the app's one primary-button voice: bg-ink, brighten on
+                hover (not a bespoke bg-star + opacity fade) */}
             <Link
               to="/"
-              className="rounded-md bg-star px-4 py-2 text-sm font-medium text-bg transition-opacity hover:opacity-90"
+              className="rounded-md bg-ink px-4 py-2 text-sm font-medium text-bg transition-colors hover:bg-starlight"
             >
               Everything's ready — open the Board
             </Link>
