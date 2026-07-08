@@ -101,6 +101,18 @@ function PyWorks {
     return $null
 }
 
+function PipWorks($py) {
+    # a SAFE pip probe. Under $ErrorActionPreference='Stop', a native
+    # command writing to stderr (python's "No module named pip") is
+    # wrapped as a terminating NativeCommandError - so a bare probe
+    # THROWS past the caller. Drop to Continue and read the exit code.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $null = & $py -3.12 -m pip --version 2>$null; return ($LASTEXITCODE -eq 0) }
+    catch { return $false }
+    finally { $ErrorActionPreference = $prev }
+}
+
 $PyVer = '3.12.10'
 
 function Install-Python {
@@ -144,13 +156,14 @@ function Install-Python {
     # a real machine finishes in well under a minute; the generous cap is
     # only for pathologically slow virtualized MSI (sandbox ~20x slower)
     $timeoutSec = 900
-    while ($true) {
+    # WAIT FOR THE INSTALLER TO EXIT - not just for `py` to work. The
+    # launcher MSI lands (py -V works) BEFORE the pip MSI, so returning
+    # on PyWorks alone leaves Python without pip and the engine step
+    # dies on "No module named pip". Full exit means every sub-MSI, pip
+    # included, is done.
+    while (-not $proc.HasExited) {
         Start-Sleep -Seconds 5
         $elapsed = [int]((Get-Date) - $started).TotalSeconds
-        # the launcher lands before the last sub-MSI - once py works we
-        # are done, no need to wait for the process to exit
-        if (PyWorks) { Note ('  Python is ready (' + $elapsed + 's)'); return $true }
-        if ($proc.HasExited) { break }
         if ($elapsed -ge $timeoutSec) {
             Warn ('  Python installer still running after ' + $timeoutSec +
                 's - checking what landed')
@@ -203,13 +216,17 @@ if ($havePy) {
     Ok ('Python 3.12 installed  (' + (& $Py -3.12 -V 2>$null) + ')')
 }
 
-# A zombie installer (above) can leave Python WITHOUT pip - the exact
-# stall we hit. pip is a stdlib bootstrap away, so complete it here
-# rather than failing the engine step for a missing module.
-if (-not (& $Py -3.12 -m pip --version 2>$null)) {
+# Backstop: if Python somehow arrived without pip, bootstrap it with
+# the stdlib's ensurepip rather than failing the engine step for a
+# missing module. (Waiting for the installer to fully exit above should
+# already have pip; this only fires on a surprise.)
+if (-not (PipWorks $Py)) {
     Note 'Completing Python (adding pip)...'
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & $Py -3.12 -m ensurepip --upgrade 2>$null | Out-Null
-    if (-not (& $Py -3.12 -m pip --version 2>$null)) {
+    $ErrorActionPreference = $eap
+    if (-not (PipWorks $Py)) {
         Fail-Visible ('Python is present but has no pip and ensurepip' +
             ' could not add it - run the setup again.')
     }
