@@ -67,6 +67,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-07
+- Added the ability for readers to run Lean code directly in the browser, including a live display of the proof goal at the cursor while editing.
+- Built agent-driven fetching of cited papers from academic databases (arXiv, OpenAlex, Crossref), with an in-app shelf for viewing the PDFs alongside problems.
+- Moved harvesting of proved definitions into the shared library behind an explicit human sign-off step, and reworked the library so it reads like a textbook.
+- Shipped a Windows installer with a browser-based setup wizard, and overhauled the run-monitoring console and proof-graph visualizations for readability and performance.
+
 ### 2026-07-06
 - Built a browser interface for the framework, with a dashboard of running problems, an interactive proof-tree view for each one, a queue for decisions needing human review, and a control panel for the background proving process.
 - Refined the interface's visual design through dozens of iteration passes, including an external design audit, a full color-palette overhaul, and accessibility and layout fixes.
@@ -198,10 +204,6 @@ live serve.
 - Built a pipeline that scans its library of already-proven results and removes duplicate and definitionally-equal lemmas, processing declarations in dependency order with isolated type-checking.
 - Fixed a parser that mishandled theorem statements whose conclusions carry quantifiers, and repaired a regression that had been crashing the deduplication pass.
 - Sped that pass up sharply by reading the shared problem corpus only once, cutting one classification step from about 240 to 21 seconds.
-
-### 2026-06-07
-- Began deduplicating the automatically generated lemma library, dropping entries that merely re-prove results already in Mathlib.
-- Added detection of trivial wrapper lemmas alongside an LLM-assisted pass for subtler duplicates, run per file in parallel with a separate verdict for each declaration.
 
 <!-- ASTERISM-PROGRESS:END -->
 
