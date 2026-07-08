@@ -53,7 +53,8 @@ static class Program
         {
             MessageBox.Show(
                 "Could not start the installer: " + e.Message +
-                "\n\nFallback: double-click installer\\install.bat.",
+                "\n\nFallback: right-click installer\\install.ps1" +
+                " and choose \"Run with PowerShell\".",
                 "Asterism", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }

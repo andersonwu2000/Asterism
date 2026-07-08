@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Asterism installer (macOS / Linux). Run:  bash installer/install.sh
 # Idempotent — re-running skips finished steps. The Windows story
-# (install.bat / Desktop shortcut) lives next to this file.
+# ("Setup Asterism.exe" / install.ps1 / Desktop shortcut) lives next
+# to this file.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 step() { printf '\n\033[36m[%s/6] %s\033[0m\n' "$1" "$2"; }
