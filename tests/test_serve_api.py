@@ -560,6 +560,28 @@ def test_approve_ingest_carries_the_library_decision(
     conn.close()
 
 
+def test_approve_harvest_starts_the_run(workspace: Path,
+                                        monkeypatch) -> None:
+    """'Harvest to Library' harvests NOW (owner call: the click IS the
+    go signal) — approve {library: true} best-effort starts a scoped
+    once-run; a busy engine must not undo the approval."""
+    import Tooling.core.cli as _cli
+    calls: list = []
+    monkeypatch.setattr(
+        _cli, "daemon_start",
+        lambda ws, scope=None, once=False: (calls.append((scope, once))
+                                            or (0, "started pid 1")))
+    conn = _open_db(workspace)
+    _add_problem(conn, "p", ingest_signoff_pending=1, ingested_at=db.now())
+    conn.close()
+    monkeypatch.chdir(workspace)
+    r = _client(workspace).post("/api/problems/p/approve-ingest",
+                                json={"library": True})
+    assert r.status_code == 200
+    assert r.json()["harvest_run"] == "started"
+    assert calls == [("p", True)]
+
+
 def test_reject_ingest_via_api(workspace: Path, monkeypatch) -> None:
     conn = _open_db(workspace)
     _add_problem(conn, "p", ingest_signoff_pending=1, ingested_at=db.now())

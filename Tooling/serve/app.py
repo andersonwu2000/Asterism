@@ -769,8 +769,18 @@ def create_app(workspace: Path) -> FastAPI:
             raise HTTPException(
                 status_code=409,
                 detail=f"{problem!r} is not awaiting ingest sign-off")
+        # "harvest to Library" means harvest NOW, not on some future
+        # run the user has to know to start (owner call: the click IS
+        # the go signal). Best-effort: a busy engine doesn't undo the
+        # approval — the harvest then rides the next run naturally.
+        harvest_run = None
+        if body is not None and body.library:
+            from ..core.cli import daemon_start
+            rc, msg = daemon_start(workspace, scope=problem, once=True)
+            harvest_run = "started" if rc == 0 else f"not started: {msg}"
         return {"problem": problem, "action": "approve-ingest",
-                "library": None if body is None else body.library}
+                "library": None if body is None else body.library,
+                "harvest_run": harvest_run}
 
     @app.post("/api/problems/{problem}/reject-ingest")
     def reject_ingest(problem: str, body: RejectIngestBody) -> dict:

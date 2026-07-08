@@ -144,6 +144,7 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
 
 function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
   const [rejecting, setRejecting] = useState(false)
+  const [confirmingHarvest, setConfirmingHarvest] = useState(false)
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -189,13 +190,32 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
       </div>
       {error && <div className="mb-2 text-xs text-danger">{error}</div>}
       <div className="flex items-center gap-2">
-        <Button variant="star" disabled={busy} onClick={() => void act('harvest')}>
-          Approve — harvest to Library
+        <Button
+          variant="star"
+          disabled={busy}
+          onClick={() =>
+            confirmingHarvest ? void act('harvest') : setConfirmingHarvest(true)
+          }
+          title={
+            confirmingHarvest
+              ? 'approves and starts the harvest run right away'
+              : undefined
+          }
+        >
+          {confirmingHarvest ? 'Confirm — engine runs now' : 'Approve — harvest to Library'}
         </Button>
+        {confirmingHarvest && (
+          <span className="text-[11px] text-ink-faint">
+            the engine starts harvesting immediately
+          </span>
+        )}
         <Button
           variant="outline"
           disabled={busy}
-          onClick={() => void act('archive')}
+          onClick={() => {
+            setConfirmingHarvest(false)
+            void act('archive')
+          }}
           title="accept the results but keep them out of the Library — the proofs stay archived with the problem"
         >
           Approve — archive only
