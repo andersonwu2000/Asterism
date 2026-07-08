@@ -165,10 +165,13 @@
       }).catch(function(){ setTimeout(poll, 1500) })
     }
     function gotoEngine(){
-      var img = new Image()
-      img.onload = function(){ location.replace(ENGINE) }
-      img.onerror = function(){ setTimeout(gotoEngine, 1500) }
-      img.src = ENGINE + 'favicon.svg?' + Date.now()
+      // ask our own server (same origin) whether :8642 is listening - a
+      // TCP check, so it needs no particular path to be served and no
+      // cross-origin image load. Redirect the moment the console is up.
+      fetch('/status').then(function(r){return r.json()}).then(function(s){
+        if (s.engine_up){ location.replace(ENGINE); return }
+        setTimeout(gotoEngine, 1200)
+      }).catch(function(){ setTimeout(gotoEngine, 1500) })
     }
 
     // ---- boot -----------------------------------------------------------

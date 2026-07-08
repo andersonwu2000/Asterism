@@ -171,11 +171,23 @@ function Fetch-Mathlib {
 
 # ---- start the app's engine ------------------------------------------
 function Start-Serve($py) {
-    $up = Get-NetTCPConnection -LocalPort 8642 -State Listen -ErrorAction SilentlyContinue
-    if ($up) { return }
+    if (Get-NetTCPConnection -LocalPort 8642 -State Listen -ErrorAction SilentlyContinue) { return $true }
     Note 'starting the Asterism console...'
-    $code = "import sys; sys.argv=['asterism','serve']; from Tooling.core.cli import main; raise SystemExit(main())"
-    Start-Process -FilePath $py -ArgumentList @('-3.12', '-c', ('"' + $code + '"')) -WorkingDirectory $Root -WindowStyle Hidden
+    # -m, not -c: passing the launch as inline code through Start-Process
+    # got split on spaces (python saw `-c import` -> SyntaxError). `-m
+    # Tooling.core.cli serve` is the codebase's own canonical invocation.
+    # cwd = repo root - serve needs lakefile.lean, Problems/, Library/ and
+    # Tooling/prompts/ at runtime.
+    Start-Process -FilePath $py -ArgumentList @('-3.12', '-m', 'Tooling.core.cli', 'serve') `
+        -WorkingDirectory $Root -WindowStyle Hidden
+    # wait for the port to bind so "everything is ready" never fires while
+    # the console is still unreachable (the page hands off on engine_up)
+    for ($i = 1; $i -le 90; $i++) {
+        Start-Sleep -Seconds 1
+        if (Get-NetTCPConnection -LocalPort 8642 -State Listen -ErrorAction SilentlyContinue) { return $true }
+        if ($i % 3 -eq 0) { Tick ('starting the console (' + $i + 's)') }
+    }
+    return $false
 }
 
 # =====================================================================
@@ -242,8 +254,13 @@ try {
         else { Warn 'the math library did not finish'; $failures += 'Mathlib' }
     }
 
-    # 7. bring the console up
-    if ($py -and (Test-Engine $py)) { Start-Serve $py }
+    # 7. bring the console up (and wait for it, so done == reachable)
+    $engineUp = $false
+    if ($py -and (Test-Engine $py)) {
+        Step 'Asterism console'
+        if (Start-Serve $py) { $engineUp = $true; Ok 'the console is up' }
+        else { Warn 'the console did not come up on port 8642 - see the lines above' }
+    }
 
     # end-to-end truth check (installers can exit 0 after a child dies)
     $missing = @()
@@ -252,6 +269,7 @@ try {
     if (-not (Get-ClaudeStatus).installed) { $missing += 'Claude Code' }
     if (-not (Test-Git)) { $missing += 'Git' }
     if (-not (Get-LakeStatus).found) { $missing += 'Lean' } elseif (-not (Get-MathlibStatus $Root).present) { $missing += 'Mathlib' }
+    if (-not $engineUp) { $missing += 'console' }
     foreach ($m in $missing) { if ($failures -notcontains $m) { $failures += $m } }
 
     if ($failures.Count -gt 0) {

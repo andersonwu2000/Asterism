@@ -54,10 +54,15 @@ function Get-PyVersion {
 }
 
 function Test-Engine($py) {
-    # `import Tooling` succeeds = the engine package is installed
+    # engine "ready" = the package imports AND its web deps are present.
+    # Critical: -P (Python 3.11+) stops Python prepending the cwd/script
+    # dir to sys.path, so this detects a real *install* - not the Tooling/
+    # source directory the setup happens to run from. Plain `import
+    # Tooling` was true from the very first second (before pip ran),
+    # which made the engine step self-skip and serve start with no deps.
     if (-not $py) { return $false }
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try { $null = & $py -3.12 -c 'import Tooling' 2>$null; return ($LASTEXITCODE -eq 0) }
+    try { $null = & $py -3.12 -P -c 'import Tooling, fastapi, uvicorn' 2>$null; return ($LASTEXITCODE -eq 0) }
     catch { return $false } finally { $ErrorActionPreference = $prev }
 }
 
