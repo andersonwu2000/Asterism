@@ -1562,6 +1562,12 @@ def run(workspace: Path, *, once: bool = False,
     # toolchain cannot change without the suite running once.
     from ..quality import lean_contracts
     if not lean_contracts.check_on_startup(workspace):
+        # the warm workers themselves are usually what a red contract
+        # indicts (stock-lean fallback when the server binary landed
+        # after warm-up) — leaving that gateway alive would wedge
+        # every retry into the same failure via reuse
+        from ..lsp import lifecycle
+        lifecycle.kill_current_gateway()
         _exit_pool_fast(pool)
         return 2
 

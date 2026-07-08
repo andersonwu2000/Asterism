@@ -183,6 +183,22 @@ def _kill_stale_gateway(pid) -> None:
         f"{_gateway_port()} within 30s")
 
 
+def kill_current_gateway() -> None:
+    """Kill whatever gateway answers this workspace's health port and
+    wait for the port to free. Contract-failure remedy: a red lean
+    contract usually indicts the WARM WORKERS themselves (e.g. they
+    fell back to stock `lean` because lean-asterism-server was built
+    after warm-up), and a reused gateway would wedge every retry into
+    the same failure. Best-effort; no-op when nothing is running."""
+    h = _ping_health()
+    if h is None:
+        return
+    try:
+        _kill_stale_gateway(h.get("pid"))
+    except RuntimeError as e:
+        print(f"[gateway] kill after contract failure: {e}", flush=True)
+
+
 def start_gateway(workspace: Path,
                   ready_timeout: float | None = None) -> subprocess.Popen:
     """Launch `python -m Tooling.lsp_gateway` as subprocess. Blocks
