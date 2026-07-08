@@ -236,9 +236,13 @@ export default function Setup() {
       )}
 
       {/* ------------------------------------------------ progress */}
-      {(anythingStarted || allDone) && (
-        <div className="mt-4 rounded-lg border border-edge bg-surface p-4">
-          <div className="mb-1 text-sm font-medium text-ink">Progress</div>
+      {/* always visible: a user who arrived from the "Claude Code is not
+          installed" banner must SEE Claude Code in the list here, not
+          only after pressing the button */}
+      <div className="mt-4 rounded-lg border border-edge bg-surface p-4">
+        <div className="mb-1 text-sm font-medium text-ink">
+          {anythingStarted ? 'Progress' : 'What the setup installs'}
+        </div>
 
           <StepRow ok title="Asterism itself" detail={<span className="font-mono">{st.repo}</span>} />
 
@@ -251,7 +255,7 @@ export default function Setup() {
                 ? 'installed — the AI that writes the proofs'
                 : running
                   ? 'installing…'
-                  : undefined
+                  : 'the AI that writes the proofs — installed for you'
             }
           />
 
@@ -334,7 +338,6 @@ export default function Setup() {
 
           <JobLog job={job} />
         </div>
-      )}
 
       <div className="mt-8 flex items-center gap-3">
         {allDone ? (

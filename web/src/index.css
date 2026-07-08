@@ -99,8 +99,10 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Native form controls join the achromatic scheme */
-input[type='checkbox'] {
+/* Native form controls join the achromatic scheme (radios were still
+   defaulting to the OS accent blue — the setup wizard's Lean choice) */
+input[type='checkbox'],
+input[type='radio'] {
   accent-color: var(--color-ink-dim);
 }
 

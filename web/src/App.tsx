@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { RouterProvider, useRoute, Link } from './lib/router'
+import { RouterProvider, useRoute, Link, navigate } from './lib/router'
 import { apiPost, usePoll } from './lib/api'
 import Board from './screens/Board'
 import Inbox from './screens/Inbox'
@@ -250,6 +250,10 @@ function NavItem({
 function Shell() {
   const route = useRoute()
   const { data: meta } = usePoll<Meta>('/api/meta', 3000)
+  const { data: setup } = usePoll<{
+    lake: { found: boolean }
+    mathlib: { present: boolean }
+  }>('/api/setup/status', 30000)
   const section = route.segments[0] ?? ''
   const workspaceName = meta ? (meta.workspace.split(/[\\/]/).pop() ?? '') : ''
   // the tab title carries the inbox count — the one place a decision
@@ -258,6 +262,26 @@ function Shell() {
   useEffect(() => {
     document.title = inboxCount > 0 ? `(${inboxCount}) Asterism` : 'Asterism'
   }, [inboxCount])
+
+  // First-run gate: a fresh install redirects here to the Board, which
+  // LOOKS ready while every run would fail (no Lean / Claude / Mathlib).
+  // Land the user on the setup wizard ONCE on load when setup is
+  // incomplete, so "installed" and "usable" aren't two different things.
+  // Ref-guarded: fire only once, so a user who navigates back to the
+  // Board on purpose is not yanked away (Mathlib is a long step).
+  const gatedRef = useRef(false)
+  useEffect(() => {
+    if (gatedRef.current || !setup || !meta) return
+    const done =
+      setup.lake.found &&
+      setup.mathlib.present &&
+      (meta.claude?.installed ?? false) &&
+      (meta.claude?.logged_in ?? false)
+    gatedRef.current = true // decide once, either way
+    if (!done && (section === '' || section === 'problems')) {
+      navigate('/setup')
+    }
+  }, [setup, meta, section])
 
   return (
     <div className="flex h-full">
