@@ -106,10 +106,40 @@ input[type='radio'] {
   accent-color: var(--color-ink-dim);
 }
 
-/* Thin dark scrollbars */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-edge-strong) transparent;
+/* Scrollbars — a quiet floating pill, not the OS default. Chromium
+   ignores ::-webkit-scrollbar on any element that also sets
+   scrollbar-color, so the standard props are fenced to engines without
+   the pseudo-element (Firefox); Chromium/WebKit gets the pill below. */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-edge-strong) transparent;
+  }
+}
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+/* transparent border + padding-box clip = a slim pill that floats off
+   the edge instead of a slab filling the gutter */
+::-webkit-scrollbar-thumb {
+  min-height: 40px;
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background: var(--color-edge-strong);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-faint);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:active {
+  background: var(--color-ink-dim);
+  background-clip: padding-box;
 }
 
 /* Panels and cards surface with a small rise — enough to feel placed,
