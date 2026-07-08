@@ -185,7 +185,6 @@ export default function New() {
                   onChange={() => togglePaper(p.id)}
                 />
                 <span className="font-mono text-[12px] text-ink">{p.source_name}</span>
-                <span className="font-mono text-[10px] text-ink-faint">{p.id}</span>
               </label>
             ))}
           </div>
