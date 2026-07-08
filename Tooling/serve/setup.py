@@ -375,12 +375,12 @@ def _setup_all_worker(workspace: Path, elan_home: "str | None"):
             from .app import spawn_claude_login
             try:
                 spawn_claude_login()
-                log("a Claude login window just opened - log in there"
-                    " whenever you're ready; everything below keeps"
-                    " going on its own")
+                log("your browser just opened for the Claude login -"
+                    " click Authorize whenever you're ready; everything"
+                    " below keeps going on its own")
             except OSError:
-                log("open a terminal and run `claude` to log in - the"
-                    " rest continues on its own")
+                log("open a terminal and run `claude auth login` to sign"
+                    " in - the rest continues on its own")
 
         if not git_status()["found"]:
             log("— Git —")

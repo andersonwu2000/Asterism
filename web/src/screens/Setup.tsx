@@ -142,7 +142,7 @@ export default function Setup() {
       <h1 className="font-display text-[26px] font-medium text-ink">Set up Asterism</h1>
       <p className="mt-1 max-w-[64ch] text-xs text-ink-faint">
         Answer what's below, press the button, walk away. The one thing that needs you is the
-        Claude login — its window opens in the first minute.
+        Claude login — a browser tab opens in the first minute; click Authorize.
       </p>
       {err && <div className="mt-3 text-xs text-warn">{err}</div>}
 
@@ -270,10 +270,10 @@ export default function Setup() {
             {st.claude.installed && !st.claude.logged_in && (
               <div className="mt-1.5">
                 <Button variant="primary" onClick={openLogin}>
-                  Open the login window
+                  Log in with your browser
                 </Button>
                 <span className="ml-2 text-[11px] text-ink-faint">
-                  log in there — everything else keeps going on its own
+                  a browser tab opens — click Authorize, and you're done
                 </span>
               </div>
             )}

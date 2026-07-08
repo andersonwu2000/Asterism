@@ -424,7 +424,7 @@ export default function Run() {
               className="ml-auto cursor-pointer font-normal tracking-normal normal-case underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink disabled:opacity-50"
               disabled={switching}
               onClick={() => void doSwitch()}
-              title="log this account out and open the login window for another — running agents keep their session; new work uses the new account"
+              title="sign in as another account in your browser — running agents keep their session, new work uses the account you pick; your current login stays until you finish"
             >
               switch account
             </button>

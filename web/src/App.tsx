@@ -108,8 +108,8 @@ function ClaudeBanner({ meta }: { meta: Meta | null }) {
       const r = await apiPost<{ opened: boolean; manual?: string }>('/api/claude/login', {})
       setMsg(
         r.opened
-          ? 'a login window opened — finish there; this banner clears itself'
-          : `couldn't open a terminal — run "${r.manual ?? 'claude'}" yourself`,
+          ? 'a browser tab opened — click Authorize; this banner clears itself'
+          : `couldn't open a terminal — run "${r.manual ?? 'claude auth login'}" yourself`,
       )
     } catch (e) {
       setMsg(String((e as Error).message))
@@ -131,7 +131,7 @@ function ClaudeBanner({ meta }: { meta: Meta | null }) {
           disabled={busy}
           onClick={() => void openLogin()}
         >
-          Open the login window
+          Log in with your browser
         </button>
       ) : (
         <Link

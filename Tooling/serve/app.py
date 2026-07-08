@@ -157,21 +157,35 @@ def claude_exe() -> "str | None":
 
 
 def spawn_claude_login() -> None:
-    """Open the OFFICIAL Claude Code login: a terminal window running
-    `claude` (its first-run flow does the OAuth dance and writes the
-    credentials). Module-level so the setup wizard's one-click flow
-    can pop the window the moment the CLI lands. Raises OSError when
-    no terminal can be spawned on this platform."""
+    """Hand off to Claude Code's OWN browser login. `claude auth login`
+    opens the user's browser straight to the Anthropic OAuth page and
+    finishes through a localhost callback - the user clicks Authorize
+    and is done, no `/login` slash-command to know or type. The console
+    we spawn is a transient launcher: it closes itself the instant
+    `claude` exits, and is visible only as the safety net for Claude
+    Code's code-paste fallback (rare - browser can't reach the callback
+    on WSL/SSH/blocked ports). We never touch the OAuth secrets; the
+    whole flow is Claude Code's. Module-level so the setup wizard's
+    one-click flow can trigger it the moment the CLI lands. Raises
+    OSError when no console can be spawned on this platform."""
     import subprocess
     import sys
     exe = claude_exe() or "claude"
+    args = ["auth", "login", "--claudeai"]
     if sys.platform == "win32":
-        subprocess.Popen(["cmd", "/k", exe],
-                         creationflags=subprocess.CREATE_NEW_CONSOLE)
+        if exe.lower().endswith((".cmd", ".bat")):
+            # a batch shim must go through cmd; /c (not /k) so the
+            # window closes itself once login finishes
+            subprocess.Popen(["cmd", "/c", exe, *args],
+                             creationflags=subprocess.CREATE_NEW_CONSOLE)
+        else:
+            subprocess.Popen([exe, *args],
+                             creationflags=subprocess.CREATE_NEW_CONSOLE)
     elif sys.platform == "darwin":
+        cmd = " ".join([exe, *args])
         subprocess.Popen(
             ["osascript", "-e",
-             f'tell application "Terminal" to do script "{exe}"'])
+             f'tell application "Terminal" to do script "{cmd}"'])
     else:
         raise OSError("no terminal spawner for this platform")
 
@@ -262,9 +276,13 @@ def create_app(workspace: Path) -> FastAPI:
 
     @app.post("/api/claude/login")
     def claude_login() -> dict:
-        """Open the OFFICIAL login (see spawn_claude_login). The UI
-        polls /api/meta until logged_in flips. Best-effort per
-        platform; on failure the caller shows the manual command."""
+        """Open Claude Code's own browser login (see
+        spawn_claude_login). This is ALSO the account switch: signing
+        in as another account overwrites the session, so switching
+        needs no prior logout - if the user cancels, the current
+        session is untouched. The UI polls /api/meta until the account
+        flips. Best-effort per platform; on failure the caller shows
+        the manual command."""
         if claude_exe() is None:
             raise HTTPException(
                 status_code=409,
@@ -273,8 +291,13 @@ def create_app(workspace: Path) -> FastAPI:
         try:
             spawn_claude_login()
         except OSError as e:
-            return {"opened": False, "manual": "claude",
+            return {"opened": False, "manual": "claude auth login",
                     "detail": str(e)}
+        # a switch changes which account's meters are live - drop the
+        # memo so the new account's plan windows show without the
+        # 2-minute wait
+        from .run import reset_quota_memo
+        reset_quota_memo()
         return {"opened": True}
 
     # -- reads ----------------------------------------------------------
