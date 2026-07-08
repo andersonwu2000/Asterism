@@ -150,11 +150,23 @@ def _start_job(name: str, worker, log_maxlen: int = 40) -> dict:  # noqa: ANN001
 
 def _stream(cmd: "list[str]", log, cwd: "Path | None" = None,  # noqa: ANN001
             env: "dict | None" = None) -> int:
-    """Run a command, feeding each output line to the job log."""
+    """Run a command, feeding each output line to the job log.
+
+    Decoding: console tools write the OEM codepage when piped (winget
+    on a zh-TW Windows writes cp950, whose TRAIL bytes land in ASCII
+    letters — decoded as utf-8 that turns into a??c?. mojibake, seen
+    live in a sandbox run). The 'oem' codec exists on Windows only;
+    ASCII-only output (elan, the claude installer) decodes the same
+    under both."""
     from ..core.process_group import no_window_creationflags
+    # stdin is CLOSED: a tool that stops to ask a question must fail
+    # fast (EOF) and show up in the log, never hang the job forever —
+    # elan-init's menu did exactly that when its flag was misspelled
     proc = subprocess.Popen(
-        cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+        cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True,
+        encoding="oem" if os.name == "nt" else "utf-8",
         errors="replace", creationflags=no_window_creationflags())
     assert proc.stdout is not None
     for line in proc.stdout:
@@ -218,13 +230,23 @@ def _step_install_lean(elan_home: str, log) -> int:  # noqa: ANN001
     env = dict(os.environ)
     env["ELAN_HOME"] = elan_home
     log(f"installing the Lean toolchain into {elan_home} ...")
+    # the official script's flag is -NoPrompt (there is no -y); the
+    # repo's lean-toolchain file pins the actual toolchain later
     rc = _stream(["powershell", "-NoProfile", "-ExecutionPolicy",
-                  "Bypass", "-File", str(tmp), "-y"], log, env=env)
+                  "Bypass", "-File", str(tmp), "-NoPrompt", "1"],
+                 log, env=env)
     if rc != 0:
         return rc
-    bin_dir = str(Path(elan_home) / "bin")
+    bin_dir = Path(elan_home) / "bin"
+    # trust the WORLD, not the script's exit code (a wrapper exits 0
+    # even when the installer under it was killed mid-menu)
+    if not (bin_dir / ("lake.exe" if os.name == "nt"
+                       else "lake")).exists():
+        log(f"elan-init exited cleanly but no lake landed in {bin_dir}"
+            " - see the lines above")
+        return 1
     _persist_user_env("ELAN_HOME", elan_home, log)
-    _prepend_user_path(bin_dir, log)
+    _prepend_user_path(str(bin_dir), log)
     log("Lean toolchain installed")
     return 0
 
@@ -343,6 +365,22 @@ def _setup_all_worker(workspace: Path, elan_home: "str | None"):
             log("— Math library —")
             if _step_fetch_mathlib(workspace, log) != 0:
                 failures.append("Mathlib")
+
+        # end-to-end truth check: steps can misreport (an installer
+        # exiting 0 after its child died) — re-derive every component
+        # from the world before declaring victory
+        still_missing = []
+        if not claude_status()["installed"]:
+            still_missing.append("Claude Code")
+        if not git_status()["found"]:
+            still_missing.append("Git")
+        if not lake_status()["found"]:
+            still_missing.append("Lean")
+        elif not mathlib_status(workspace)["present"]:
+            still_missing.append("Mathlib")
+        for name in still_missing:
+            if name not in failures:
+                failures.append(name)
 
         if failures:
             log("setup finished with failures: " + ", ".join(failures)
