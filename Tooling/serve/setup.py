@@ -230,11 +230,13 @@ def _step_install_lean(elan_home: str, log) -> int:  # noqa: ANN001
     env = dict(os.environ)
     env["ELAN_HOME"] = elan_home
     log(f"installing the Lean toolchain into {elan_home} ...")
-    # the official script's flag is -NoPrompt (there is no -y); the
-    # repo's lean-toolchain file pins the actual toolchain later
+    # the official script's flag is -NoPrompt (there is no -y), and
+    # it is [bool]-typed — `-File` passes strings only, which PS
+    # refuses to coerce, so invoke via -Command to pass a real $true;
+    # the repo's lean-toolchain file pins the actual toolchain later
     rc = _stream(["powershell", "-NoProfile", "-ExecutionPolicy",
-                  "Bypass", "-File", str(tmp), "-NoPrompt", "1"],
-                 log, env=env)
+                  "Bypass", "-Command",
+                  f"& '{tmp}' -NoPrompt $true"], log, env=env)
     if rc != 0:
         return rc
     bin_dir = Path(elan_home) / "bin"
