@@ -54,6 +54,10 @@ function Step($n, $msg) {
 function Ok($msg)   { Write-Host ('   OK   ' + $msg) -ForegroundColor Green; Progress-Line ('[OK] ' + $msg) }
 function Note($msg) { Write-Host ('        ' + $msg) -ForegroundColor DarkGray; Progress-Line ('[NOTE] ' + $msg) }
 function Warn($msg) { Write-Host ('   !!   ' + $msg) -ForegroundColor Yellow; Progress-Line ('[WARN] ' + $msg) }
+# a heartbeat for a long step: the browser page collapses every [TICK]
+# into ONE live line that updates in place (not a new row each time),
+# so a slow install reads as one progressing line, not a flood.
+function Tick($msg) { Write-Host ('        ' + $msg) -ForegroundColor DarkGray; Progress-Line ('[TICK] ' + $msg) }
 
 function Fail-Visible($msg) {
     # a hidden installer must never fail silently
@@ -152,7 +156,7 @@ function Install-Python {
                 's - checking what landed')
             break
         }
-        Note ('  installing Python... (' + $elapsed + 's)')
+        Tick ('installing Python (' + $elapsed + 's)')
     }
     if ($proc -and -not $proc.HasExited) { try { Stop-Process -Id $proc.Id -Force } catch {} }
     return [bool](PyWorks)

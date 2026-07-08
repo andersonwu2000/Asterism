@@ -44,6 +44,14 @@
   .console .note { color: #6a6c72; }
   .console .warn { color: #d8a657; }
   .console .waiting { color: #55575d; font-style: italic; }
+  /* the single live "working" line - collapses all heartbeats into one
+     row with a pulsing dot, so a slow step reads as one progressing
+     line instead of a flood of near-identical rows */
+  .console .tick { color: #8a8d94; }
+  .pulse { display: inline-block; width: .5em; height: .5em; border-radius: 50%;
+           background: #8a8d94; margin-right: .9em; vertical-align: middle;
+           animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: .25 } 50% { opacity: 1 } }
   .glyph { display: inline-block; width: 1.4em; color: inherit; opacity: .8; }
   .fallback { color: #67696f; font-size: 12px; margin-top: 1rem; min-height: 1.4em; }
   code { background: #17171b; padding: 1px 6px; border-radius: 4px; font-size: 12px; }
@@ -72,31 +80,53 @@
     (function () {
       var box = document.getElementById('console')
       var fallback = document.getElementById('fallback')
-      var shown = 0            // lines already rendered
+      var solidCount = 0       // real (non-heartbeat) lines rendered
+      var tickEl = null        // the single live "working" line, if any
       var everGot = false      // did the log tap ever answer?
       var emptyPolls = 0       // consecutive answers with no lines yet
       var redirected = false
 
       var GLYPH = { step: '', ok: '✓ ', note: '· ', warn: '⚠ ' }
+      function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;') }
 
-      // the JSONP callback the log server calls back into
+      // the JSONP callback the log server calls back into. [TICK] lines
+      // are heartbeats for one long step - they all collapse into a
+      // single trailing live line; every other tag is a real row.
       window.__asterismLog = function (lines) {
         everGot = true
         if (!lines || !lines.length) { emptyPolls++; return }
         emptyPolls = 0
-        if (shown === 0) box.innerHTML = ''   // clear the "waiting" line
-        for (var i = shown; i < lines.length; i++) {
-          var m = /^\[(STEP|OK|NOTE|WARN)\]\s([\s\S]*)$/.exec(lines[i])
-          var kind = m ? m[1].toLowerCase() : 'note'
+        if (box.querySelector('.waiting')) box.innerHTML = ''
+
+        var solids = []
+        var latestTick = null
+        var tickIsLast = false
+        for (var i = 0; i < lines.length; i++) {
+          var m = /^\[(STEP|OK|NOTE|WARN|TICK)\]\s([\s\S]*)$/.exec(lines[i])
+          var kind = m ? m[1] : 'NOTE'
           var text = m ? m[2] : lines[i]
-          var el = document.createElement('div')
-          el.className = 'ln ' + kind
-          var g = GLYPH[kind] || ''
-          el.innerHTML = (g ? '<span class="glyph">' + g + '</span>' : '') +
-                         text.replace(/&/g, '&amp;').replace(/</g, '&lt;')
-          box.appendChild(el)
+          if (kind === 'TICK') { latestTick = text; tickIsLast = true }
+          else { solids.push({ kind: kind.toLowerCase(), text: text }); tickIsLast = false }
         }
-        shown = lines.length
+
+        for (var j = solidCount; j < solids.length; j++) {
+          var el = document.createElement('div')
+          el.className = 'ln ' + solids[j].kind
+          var g = GLYPH[solids[j].kind] || ''
+          el.innerHTML = (g ? '<span class="glyph">' + g + '</span>' : '') + esc(solids[j].text)
+          if (tickEl) box.insertBefore(el, tickEl)
+          else box.appendChild(el)
+        }
+        solidCount = solids.length
+
+        // show the live line only while a heartbeat is the MOST RECENT
+        // activity; once the next real row arrives, the step is done
+        if (tickIsLast && latestTick !== null) {
+          if (!tickEl) { tickEl = document.createElement('div'); tickEl.className = 'ln tick'; box.appendChild(tickEl) }
+          tickEl.innerHTML = '<span class="pulse"></span>' + esc(latestTick)
+        } else if (tickEl) {
+          box.removeChild(tickEl); tickEl = null
+        }
         box.scrollTop = box.scrollHeight
       }
 
