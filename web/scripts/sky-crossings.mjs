@@ -78,6 +78,15 @@ function metric(d, lay) {
       }
     }
   }
+  // unnecessary line length (owner: a co-objective, 2026-07-09) —
+  // bright structural ink beyond a 150px allowance per segment, in
+  // units of 1000px ("kilopixels of excess bright rope")
+  let len = 0
+  for (const s of segs) {
+    if (!s.bright || s.hub) continue
+    len += Math.max(0, Math.hypot(s.x2 - s.x1, s.y2 - s.y1) - 150)
+  }
+  len = Math.round(len / 100) / 10
   let bb = 0
   let bf = 0
   let ff = 0
@@ -111,7 +120,7 @@ function metric(d, lay) {
       else ff++
     }
   }
-  return { bb, bf, ff, hub, score: Math.round((bb + bf * 0.2 + ff * 0.05) * 10) / 10 }
+  return { bb, bf, ff, hub, len, score: Math.round((bb + bf * 0.2 + ff * 0.05) * 10) / 10 }
 }
 
 const problems = process.argv.slice(2).length > 0 ? process.argv.slice(2) : DEFAULT_PROBLEMS

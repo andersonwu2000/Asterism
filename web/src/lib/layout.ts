@@ -1229,6 +1229,7 @@ export function layoutConstellation(
       bright: boolean
       cite: boolean
       mark: number
+      len: number // excess bright length (px beyond the allowance)
       grp?: EngineGroup
       end?: number // arm child / stem parent, junction is the other end
     }
@@ -1240,7 +1241,13 @@ export function layoutConstellation(
       s.bxHi = Math.max(s.x1, s.x2)
       s.byLo = Math.min(s.y1, s.y2)
       s.byHi = Math.max(s.y1, s.y2)
-      s.bright = !s.cite && Math.hypot(s.x2 - s.x1, s.y2 - s.y1) <= 480
+      const span = Math.hypot(s.x2 - s.x1, s.y2 - s.y1)
+      s.bright = !s.cite && span <= 480
+      // unnecessary length is a co-objective (owner, 2026-07-09):
+      // bright structural rope beyond a 150px allowance costs weight —
+      // 500px of excess ≈ one bright crossing, so length breaks ties
+      // and kills long hauls but never outbids a bb fix
+      s.len = s.bright ? Math.max(0, span - 150) / 500 : 0
     }
     const junctionOf = (g: EngineGroup): { x: number; y: number } => {
       const pxx = px.get(g.parent)!
@@ -1279,7 +1286,7 @@ export function layoutConstellation(
           x1: 0, y1: 0,
           x2: px.get(g.parent)!, y2: pyOf.get(g.parent)!,
           bxLo: 0, bxHi: 0, byLo: 0, byHi: 0,
-          bright: false, cite: false, mark: 0, grp: g, end: g.parent,
+          bright: false, cite: false, mark: 0, len: 0, grp: g, end: g.parent,
         })
         for (const c of g.children) {
           if (ultraHubs.has(c)) continue
@@ -1287,7 +1294,7 @@ export function layoutConstellation(
             x1: 0, y1: 0,
             x2: px.get(c)!, y2: pyOf.get(c)!,
             bxLo: 0, bxHi: 0, byLo: 0, byHi: 0,
-            bright: false, cite: false, mark: 0, grp: g, end: c,
+            bright: false, cite: false, mark: 0, len: 0, grp: g, end: c,
           })
         }
       }
@@ -1322,7 +1329,7 @@ export function layoutConstellation(
         x1: a, y1: pyOf.get(e.from)!,
         x2: b, y2: pyOf.get(e.to)!,
         bxLo: 0, bxHi: 0, byLo: 0, byHi: 0,
-        bright: false, cite: e.kind === 'citation', mark: 0,
+        bright: false, cite: e.kind === 'citation', mark: 0, len: 0,
       }
       finish(s)
       segs.push(s)
@@ -1389,18 +1396,40 @@ export function layoutConstellation(
       return [...set]
     }
     let markGen = 0
-    const localW = (aff: Seg[]): number => {
+    // three-component objective, LEXICOGRAPHIC: bright-bright count
+    // first (the owner's "bb never grows" is the engine's OWN law, not
+    // just the metric script's verdict — a scalar let +1 bb be bought
+    // with -6 bf), weighted crossings second, length third (a single
+    // scalar traded stokes bb 3->6 for length in calibration).
+    interface W3 {
+      bb: number
+      c: number
+      l: number
+    }
+    const better = (a: W3, b: W3): boolean =>
+      a.bb < b.bb - 1e-9 ||
+      (Math.abs(a.bb - b.bb) < 1e-9 &&
+        (a.c < b.c - 1e-9 ||
+          (Math.abs(a.c - b.c) < 1e-9 && a.l < b.l - 1e-9)))
+    const localW = (aff: Seg[]): W3 => {
       markGen += 1
       for (const s of aff) s.mark = markGen
-      let w = 0
+      let bb = 0
+      let c = 0
+      let l = 0
+      const add = (w: number): void => {
+        c += w
+        if (w === 1) bb += 1
+      }
       for (let i = 0; i < aff.length; i++) {
         const s = aff[i]
-        for (let j = i + 1; j < aff.length; j++) w += pairW(s, aff[j])
+        l += s.len // per-segment additive — incremental for free
+        for (let j = i + 1; j < aff.length; j++) add(pairW(s, aff[j]))
         for (const t of segs) {
-          if (t.mark !== markGen) w += pairW(s, t)
+          if (t.mark !== markGen) add(pairW(s, t))
         }
       }
-      return w
+      return { bb, c, l }
     }
     // a move = new xs for a set of nodes; accept iff strictly better.
     // Brightness guard: a move may not push a structural segment past
@@ -1408,6 +1437,7 @@ export function layoutConstellation(
     // loses the structure it was drawn for (structure outranks the
     // count, owner), and without the guard the optimiser learns to
     // hide its problems in the faint layer.
+    let modern = true
     const tryMove = (moves: [number, number][]): boolean => {
       const ids = moves.map(([id]) => id)
       const aff = affectedOf(ids)
@@ -1423,7 +1453,14 @@ export function layoutConstellation(
           break
         }
       }
-      if (!dimmed && localW(aff) < before - 1e-9) return true
+      if (!dimmed) {
+        const after = localW(aff)
+        // legacy mode is BYTE-faithful to the pre-length engine (c
+        // only): greedy is path-dependent, so the old recipe stays in
+        // the schedule portfolio as the no-regression floor
+        const ok = modern ? better(after, before) : after.c < before.c - 1e-9
+        if (ok) return true
+      }
       for (const [id, x] of prev) px.set(id, x)
       for (const s of aff) refresh(s)
       return false
@@ -1711,6 +1748,57 @@ export function layoutConstellation(
         }
       }
     }
+    // long-haul rescue: a node stranded far from where its bright ink
+    // pulls (an arm spanning three families, a 430px cross-fan haul)
+    // is both a length offender and a crossing farm — adjacent swaps
+    // never reach it because the destination is slots away. Compute
+    // each row-node's PULL (mean x of its bright segments' far ends),
+    // and for the badly displaced, try swapping with the row members
+    // nearest the pull point. Bounded: ≤3 candidates per node, rows
+    // reused from the row pass discipline (same-y = interchangeable).
+    const rescuePass = (): void => {
+      const rows3 = new Map<number, number[]>()
+      for (const n of nodes) {
+        if (!px.has(n.goal.id)) continue
+        if ((byDep.get(n.goal.id)?.length ?? 0) === 0) continue
+        if ((treeKids.get(n.goal.id)?.length ?? 0) > 0) continue // leaves only: rigid subtrees stay whole
+        const y = pyOf.get(n.goal.id)!
+        rows3.set(y, [...(rows3.get(y) ?? []), n.goal.id])
+      }
+      for (const row of rows3.values()) {
+        if (row.length < 2 || row.length > 80) continue
+        for (const k of row) {
+          const x = px.get(k)!
+          const y = pyOf.get(k)!
+          let pull = 0
+          let m = 0
+          for (const s of byDep.get(k) ?? []) {
+            if (!s.bright) continue
+            // the far end = whichever endpoint is not this node's
+            const farX = Math.abs(s.x1 - x) < 1e-6 && Math.abs(s.y1 - y) < 1e-6 ? s.x2 : s.x1
+            pull += farX
+            m += 1
+          }
+          if (m === 0) continue
+          pull /= m
+          if (Math.abs(x - pull) < 250) continue
+          const cands = row
+            .filter((o) => o !== k)
+            .sort((a, b) => Math.abs(px.get(a)! - pull) - Math.abs(px.get(b)! - pull))
+            .slice(0, 3)
+          for (const o of cands) {
+            if (
+              tryMove([
+                [k, px.get(o)!],
+                [o, px.get(k)!],
+              ])
+            ) {
+              break
+            }
+          }
+        }
+      }
+    }
     // proposal set: per band, left-to-right adjacent tree swaps, then a
     // mirror per tree; two sweeps let a swap unlock a mirror and back
     const compsByBand = new Map<number, Comp[]>()
@@ -1773,12 +1861,19 @@ export function layoutConstellation(
     // from the same seed and keep whichever final sky scores better on
     // the full objective. Deterministic, and the schedule choice stops
     // being a tuning knob.
-    const totalW = (): number => {
-      let w = 0
+    const totalW = (): W3 => {
+      let bb = 0
+      let c = 0
+      let l = 0
       for (let i = 0; i < segs.length; i++) {
-        for (let j = i + 1; j < segs.length; j++) w += pairW(segs[i], segs[j])
+        l += segs[i].len
+        for (let j = i + 1; j < segs.length; j++) {
+          const w = pairW(segs[i], segs[j])
+          c += w
+          if (w === 1) bb += 1
+        }
       }
-      return w
+      return { bb, c, l }
     }
     const seed = new Map(px)
     const restore = (state: Map<number, number>): void => {
@@ -1786,14 +1881,27 @@ export function layoutConstellation(
       for (const s of segs) refresh(s)
     }
     let best: Map<number, number> | null = null
-    let bestW = Infinity
-    for (const coarseFirst of [true, false]) {
+    let bestW: W3 = { bb: Infinity, c: Infinity, l: Infinity }
+    // schedule PORTFOLIO: {coarse-first, fine-first} × {modern, legacy}.
+    // Modern = bb-first lexicographic acceptance + length tie-breaks +
+    // the long-haul rescue pass; legacy = the pre-length engine
+    // verbatim. Greedy is path-dependent — modern found residue
+    // bb 22→21 but wandered stokes 3→4 — so the old recipe stays in
+    // the pool as a mechanical no-regression floor, and the final
+    // (bb, c, len) lexicographic pick keeps whichever sky is best.
+    for (const [coarse, modernMode] of [
+      [true, true],
+      [false, true],
+      [true, false],
+      [false, false],
+    ] as [boolean, boolean][]) {
       restore(seed)
+      modern = modernMode
       // two sweeps: the third buys ~2 crossings on residue for +65%
       // engine time — the layout runs on every data refresh, so the
       // main thread wins that trade
       for (let sweep = 0; sweep < 2; sweep++) {
-        if (coarseFirst) {
+        if (coarse) {
           treePass()
           siblingPass()
         } else {
@@ -1801,9 +1909,10 @@ export function layoutConstellation(
           treePass()
         }
         rowPass()
+        if (modernMode) rescuePass()
       }
       const w = totalW()
-      if (w < bestW - 1e-9) {
+      if (better(w, bestW)) {
         bestW = w
         best = new Map(px)
       }

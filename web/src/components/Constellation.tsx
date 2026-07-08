@@ -228,11 +228,37 @@ export default function Constellation({
   const problemKey = goals.length > 0 ? goals[0].lean_path.split('/')[1] : ''
   const sceneKey = problemKey
 
-  const layout = useMemo(
-    () =>
-      layoutConstellation(goals, strategies, strategyEdges, anchorEdges, citationEdges),
-    [goals, strategies, strategyEdges, anchorEdges, citationEdges],
-  )
+  // Layout is keyed on CONTENT, not poll identity: every 2s poll hands
+  // back fresh arrays, and re-running the ~0.5s layout engine per tick
+  // during a live run was pure waste (the sky rarely changes shape).
+  // The signature covers exactly what geometry depends on — the node
+  // set, statuses (dead paths draw differently), and the edge lists.
+  // The signature must cover every MUTABLE field the render layer
+  // reads through the cached layout's captured objects (n.goal.*,
+  // edge.strategyStatus) — a field left out would render stale ink
+  // until something else changed. Geometry itself only depends on the
+  // node set and edge lists.
+  const layoutSig = useMemo(() => {
+    let a = 0
+    const mix = (s: string): void => {
+      for (let i = 0; i < s.length; i++) a = (a * 31 + s.charCodeAt(i)) | 0
+    }
+    for (const g of goals)
+      mix(`${g.id}:${g.status}:${g.attempts}:${g.dead_attempts}:${g.in_flight ? 1 : 0}:${g.is_deliverable ? 1 : 0};`)
+    for (const s of strategies) mix(`${s.id}:${s.status};`)
+    for (const e of strategyEdges) mix(`${e.strategy_id}>${e.subgoal_id}:${e.position};`)
+    for (const e of anchorEdges) mix(`${e.from}>${e.to};`)
+    for (const e of citationEdges) mix(`${e.from}>${e.to};`)
+    return `${goals.length}|${strategies.length}|${strategyEdges.length}|${anchorEdges.length}|${citationEdges.length}#${a}`
+  }, [goals, strategies, strategyEdges, anchorEdges, citationEdges])
+  const layoutCache = useRef<{ sig: string; value: ReturnType<typeof layoutConstellation> } | null>(null)
+  const layout = useMemo(() => {
+    if (layoutCache.current?.sig === layoutSig) return layoutCache.current.value
+    const v = layoutConstellation(goals, strategies, strategyEdges, anchorEdges, citationEdges)
+    layoutCache.current = { sig: layoutSig, value: v }
+    return v
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sig IS the content key
+  }, [layoutSig])
   // Label stagger is collision-avoidance for dense rows; in sparse rows
   // it reads as jitter, so apply it only where needed. Counted per
   // ACTUAL row (y) — counting per layer number pooled every band's
