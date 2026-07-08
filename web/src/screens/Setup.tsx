@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { Link } from '../lib/router'
-import { Button } from '../components/ui'
+import { Button, SectionLabel } from '../components/ui'
 
 /*
  * The setup wizard — the bootstrap's second half, in the browser
@@ -42,11 +42,23 @@ function useJob(name: string, active: boolean): Job {
   return data ?? { state: 'idle', log: [] }
 }
 
-function StatusDot({ ok, busy = false }: { ok: boolean; busy?: boolean }) {
+// warn (the brightest token) is reserved for THE HUMAN'S MOVE — only a
+// step with `attention` earns it while pending; every other pending
+// (machine) step sits quiet at ink-faint, so the one row that needs the
+// user is the only loud one.
+function StatusDot({
+  ok,
+  busy = false,
+  attention = false,
+}: {
+  ok: boolean
+  busy?: boolean
+  attention?: boolean
+}) {
   return (
     <span
       className={`h-2 w-2 shrink-0 rounded-full ${
-        busy ? 'bg-accent animate-pulse' : ok ? 'bg-ok' : 'bg-warn'
+        busy ? 'bg-accent animate-pulse' : ok ? 'bg-ok' : attention ? 'bg-warn' : 'bg-ink-faint'
       }`}
       aria-hidden
     />
@@ -73,19 +85,21 @@ function JobLog({ job }: { job: Job }) {
 function StepRow({
   ok,
   busy = false,
+  attention = false,
   title,
   detail,
   children,
 }: {
   ok: boolean
   busy?: boolean
+  attention?: boolean
   title: string
   detail?: React.ReactNode
   children?: React.ReactNode
 }) {
   return (
     <div className="flex items-start gap-2.5 py-1.5">
-      <span className="mt-1"><StatusDot ok={ok} busy={busy} /></span>
+      <span className="mt-1"><StatusDot ok={ok} busy={busy} attention={attention} /></span>
       <div className="min-w-0 flex-1">
         <span className="text-sm text-ink">{title}</span>
         {detail && <span className="ml-2 text-xs text-ink-faint">{detail}</span>}
@@ -139,7 +153,7 @@ export default function Setup() {
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
-      <h1 className="font-display text-[26px] font-medium text-ink">Set up Asterism</h1>
+      <h1 className="font-display text-[22px] font-medium text-ink">Set up Asterism</h1>
       <p className="mt-1 max-w-[64ch] text-xs text-ink-faint">
         {allDone
           ? "Everything's installed and logged in — you're ready to prove."
@@ -150,9 +164,9 @@ export default function Setup() {
       {/* ------------------------------------------------ decisions */}
       {!allDone && (
         <div className="mt-6 rounded-lg border border-edge bg-surface p-4">
-          <div className="text-sm font-medium text-ink">Before it runs</div>
+          <SectionLabel>Before it runs</SectionLabel>
 
-          <div className="mt-2 text-xs text-ink-dim">
+          <div className="mt-1 text-xs text-ink-dim">
             Asterism lives at <span className="font-mono text-ink">{st.repo}</span>
             {repoDisk && (
               <span className="tnum ml-2 text-ink-faint">
@@ -185,7 +199,7 @@ export default function Setup() {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-[11px] text-ink-faint">Lean toolchain (~1 GB) goes to</span>
                   <select
-                    className="rounded border border-edge bg-bg px-2 py-1 font-mono text-xs text-ink focus:outline-none"
+                    className="rounded border border-edge bg-bg px-2 py-1 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
                     value={elanHome ?? st.elan_home}
                     onChange={(e) => setElanHome(e.target.value)}
                   >
@@ -240,12 +254,10 @@ export default function Setup() {
       {/* always visible: a user who arrived from the "Claude Code is not
           installed" banner must SEE Claude Code in the list here, not
           only after pressing the button */}
-      <div className="mt-4 rounded-lg border border-edge bg-surface p-4">
-        <div className="mb-1 text-sm font-medium text-ink">
-          {anythingStarted ? 'Progress' : 'What the setup installs'}
-        </div>
+      <div className="mt-6 rounded-lg border border-edge bg-surface p-4">
+        <SectionLabel>{anythingStarted ? 'Progress' : 'What the setup installs'}</SectionLabel>
 
-          <StepRow ok title="Asterism itself" detail={<span className="font-mono">{st.repo}</span>} />
+        <StepRow ok title="Asterism itself" />
 
           <StepRow
             ok={st.claude.installed}
@@ -263,6 +275,7 @@ export default function Setup() {
           <StepRow
             ok={st.claude.logged_in}
             busy={false}
+            attention={st.claude.installed && !st.claude.logged_in}
             title="Claude login"
             detail={
               st.claude.logged_in
@@ -343,11 +356,11 @@ export default function Setup() {
       <div className="mt-8 flex items-center gap-3">
         {allDone ? (
           <>
-            {/* the app's one primary-button voice: bg-ink, brighten on
-                hover (not a bespoke bg-star + opacity fade) */}
+            {/* the app's one primary-button voice: bg-ink + semibold,
+                brighten on hover — same metrics as every other primary */}
             <Link
               to="/"
-              className="rounded-md bg-ink px-4 py-2 text-sm font-medium text-bg transition-colors hover:bg-starlight"
+              className="rounded-md bg-ink px-4 py-2 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
             >
               Everything's ready — open the Board
             </Link>
