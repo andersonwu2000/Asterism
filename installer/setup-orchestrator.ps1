@@ -8,6 +8,12 @@
 param([string]$DecisionsFile)
 
 $ErrorActionPreference = 'Continue'
+# Capture child-process output as UTF-8. winget (the Git step), git, pip
+# and elan all emit UTF-8; PS 5.1 would otherwise decode their stdout with
+# the OEM code page and mangle every Unicode glyph (progress bars, box
+# drawing) - which the ASCII progress log then flattened to a flood of '?'.
+# The progress page is UTF-8 end to end, so decode + log to match.
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $Root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'setup-lib.ps1')
 
@@ -16,7 +22,7 @@ $DoneMarker  = Join-Path $PSScriptRoot 'setup-done.marker'
 $PyVer = '3.12.10'
 
 # ---- progress log (tags the web page renders) -----------------------
-function Emit($s) { try { Add-Content -Path $ProgressLog -Value $s -Encoding ASCII } catch {} }
+function Emit($s) { try { Add-Content -Path $ProgressLog -Value $s -Encoding UTF8 } catch {} }
 function Step($msg) { Emit ("[STEP] " + $msg) }
 function Ok($msg)   { Emit ("[OK] " + $msg) }
 function Note($msg) { Emit ("[NOTE] " + $msg) }
