@@ -1120,31 +1120,96 @@ export function layoutConstellation(
     rows.set(key, [...(rows.get(key) ?? []), g.id])
   }
   const colOf = new Map<number, number>()
-  for (const ids of rows.values()) {
+  // weighted least-squares de-overlap (pool adjacent violators): in
+  // u_i = desired_i − i the min-gap-1 constraint reads "nondecreasing",
+  // and pooling violating neighbours at their WEIGHTED mean is the
+  // optimal fit. The old sweep resolved every collision by pushing
+  // RIGHT, so a dense row slid off the parents centered above it.
+  const solveRow = (
+    ids: number[],
+    desired: (id: number) => number,
+    weight: (id: number) => number,
+  ): void => {
     ids.sort((a, b) => (localSlot.get(a)! - localSlot.get(b)!) || a - b)
-    // Least-squares de-overlap (pool adjacent violators): in u_i =
-    // desired_i − i the min-gap-1 constraint reads "nondecreasing", and
-    // pooling violating neighbours at their mean is the optimal fit.
-    // The old sweep resolved every collision by pushing RIGHT, so a
-    // dense row slid off the parents centered above it.
-    const blocks: { sum: number; n: number }[] = []
+    const blocks: { sum: number; w: number; n: number }[] = []
     ids.forEach((id, i) => {
-      let b = { sum: localSlot.get(id)! - i, n: 1 }
+      const wi = weight(id)
+      let b = { sum: (desired(id) - i) * wi, w: wi, n: 1 }
       while (
         blocks.length > 0 &&
-        blocks[blocks.length - 1].sum / blocks[blocks.length - 1].n >=
-          b.sum / b.n
+        blocks[blocks.length - 1].sum / blocks[blocks.length - 1].w >=
+          b.sum / b.w
       ) {
         const prev = blocks.pop()!
-        b = { sum: prev.sum + b.sum, n: prev.n + b.n }
+        b = { sum: prev.sum + b.sum, w: prev.w + b.w, n: prev.n + b.n }
       }
       blocks.push(b)
     })
     let i = 0
     for (const b of blocks) {
       for (let j = 0; j < b.n; j++, i++) {
-        localSlot.set(ids[i], b.sum / b.n + i)
+        localSlot.set(ids[i], b.sum / b.w + i)
         colOf.set(ids[i], i)
+      }
+    }
+  }
+  // snapshot the DESIGNED geometry before the crowd starts shoving:
+  // assign/pass-2/band-optimiser moves are rigid or deliberate, so the
+  // relative offsets here are the intended family shapes
+  const designSlot = new Map(localSlot)
+  for (const ids of rows.values()) {
+    solveRow(ids, (id) => localSlot.get(id)!, () => 1)
+  }
+  // ---- alignment sweeps (owner: optimise the ARRANGEMENT, not the
+  // aftermath). The one-shot de-overlap displaces each row's nodes by
+  // whatever its own crowd demands, so a chain zigzags and a small
+  // tree tilts off its parent. Classic Sugiyama coordinate refinement:
+  // alternate down/up sweeps where a node's desire is its PRIMARY
+  // parent's slot (down) or its children's spine/mean (up), each row
+  // re-solved by the same weighted isotonic law — order within a row
+  // NEVER changes (crossing decisions stay), families just compress
+  // toward alignment where the crowd allows. Target-less nodes tether
+  // to their current slot at low weight so the band optimiser's
+  // placement is respected, not re-litigated.
+  {
+    const rowsOrdered = [...rows.entries()]
+      .map(([k, ids]) => {
+        const [b, l] = k.split(':').map(Number)
+        return { y: (bandYBase[b] ?? 0) + l, ids }
+      })
+      .sort((a, b) => a.y - b.y)
+    const TETHER = 0.15
+    // desire = follow the relative offset the ARRANGEMENT designed,
+    // from where the relative anchor actually IS now. Collapsing
+    // children onto the parent's x (v1 of this sweep) destroyed the
+    // designed fan spreads and bb exploded 3-20x — the sweep's job is
+    // translating families back into their designed SHAPE, never
+    // reshaping them.
+    const off = (id: number, other: number): number =>
+      (designSlot.get(id) ?? 0) - (designSlot.get(other) ?? 0)
+    const downDesire = (id: number): { d: number; w: number } => {
+      const p = primaryParent.get(id)
+      if (p !== undefined && localSlot.has(p)) {
+        return { d: localSlot.get(p)! + off(id, p), w: 1 }
+      }
+      return { d: localSlot.get(id)!, w: TETHER }
+    }
+    const upDesire = (id: number): { d: number; w: number } => {
+      const ks = (treeKids.get(id) ?? []).filter((c) => localSlot.has(c))
+      if (ks.length === 0) return { d: localSlot.get(id)!, w: TETHER }
+      let sum = 0
+      for (const c of ks) sum += localSlot.get(c)! + off(id, c)
+      return { d: sum / ks.length, w: 1 }
+    }
+    for (const dir of ['down', 'up', 'down'] as const) {
+      const seq = dir === 'down' ? rowsOrdered : [...rowsOrdered].reverse()
+      const desire = dir === 'down' ? downDesire : upDesire
+      for (const { ids } of seq) {
+        solveRow(
+          ids,
+          (id) => desire(id).d,
+          (id) => desire(id).w,
+        )
       }
     }
   }
