@@ -334,6 +334,14 @@ def _setup_all_worker(workspace: Path, elan_home: "str | None"):
             log("— Claude Code —")
             if _step_install_claude(log) != 0:
                 failures.append("Claude Code")
+        # claude can be installed yet OFF PATH (its installer's PATH
+        # edit missing entirely on a fresh Windows) — and the engine
+        # spawns agents with the bare name; repair unconditionally,
+        # not only on the install-branch
+        from .app import claude_exe
+        _exe = claude_exe()
+        if _exe and shutil.which("claude") is None:
+            _prepend_user_path(str(Path(_exe).parent), log)
         st_claude = claude_status()
         if st_claude["installed"] and not st_claude["logged_in"]:
             from .app import spawn_claude_login
