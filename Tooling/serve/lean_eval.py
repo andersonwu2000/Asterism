@@ -31,6 +31,7 @@ from pathlib import Path
 
 import asyncio
 
+import anyio
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
@@ -349,4 +350,10 @@ def register(app: FastAPI, workspace: Path) -> None:
             pass
         finally:
             if token is not None:
-                await asyncio.to_thread(gw.interactive_release, token)
+                # Task teardown (TestClient exit, server shutdown) can
+                # cancel this handler right after the disconnect lands;
+                # an unshielded await here is a cancellation checkpoint
+                # and the release silently dies with it, leaking the
+                # reserved slot. Shield so the slot always comes back.
+                with anyio.CancelScope(shield=True):
+                    await asyncio.to_thread(gw.interactive_release, token)
