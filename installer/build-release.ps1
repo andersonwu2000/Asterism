@@ -45,6 +45,11 @@ foreach ($d in $exclude) {
     $p = Join-Path $stage $d
     if (Test-Path $p) { Remove-Item -Recurse -Force $p }
 }
+# the console ships BUILT (web\dist rides in step 3); its sources,
+# test rigs and build configs are dev freight - a runner never touches
+# them, and whoever wants to hack the frontend clones the repo
+$webDev = Join-Path $stage 'web'
+if (Test-Path $webDev) { Remove-Item -Recurse -Force $webDev }
 
 Write-Host '[3/4] Adding the built web console...'
 Copy-Item -Recurse (Join-Path $root 'web\dist') (Join-Path $stage 'web\dist')
