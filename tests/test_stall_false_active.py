@@ -204,6 +204,53 @@ def test_park_last_route_escalates_to_review(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_bfs_routes_over_budget_open_goal_to_review(
+        tmp_path: Path) -> None:
+    """Organic budget guard (putnam_2025_b6 hot moot loop, 4,317
+    pipelines): an OPEN goal at/over SHELVE_THRESHOLD must go to T2
+    review, never to a dispatch whose retry pre-loop would moot it and
+    leave it open for the next tick."""
+    from Tooling.core.dispatcher import bfs_refill
+    from Tooling.state import thresholds
+    conn = _conn(tmp_path)
+    g = _goal(conn, "over_budget", status="open")
+    conn.execute("UPDATE goals SET attempts = ? WHERE id = ?",
+                 (thresholds.SHELVE_THRESHOLD, g))
+    conn.commit()
+
+    bfs_refill(conn, running=set())
+
+    assert str(_db.get_goal(conn, g)["status"]) == (
+        "pending_strategist_review")
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind IN "
+        "('Backward','Builder')").fetchone()["n"] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+        " AND target_id = ?", (P,)).fetchone()["n"] == 1
+    conn.close()
+
+
+def test_bfs_dispatches_goal_with_remaining_budget(
+        tmp_path: Path) -> None:
+    """Below the threshold the organic path is untouched."""
+    from Tooling.core.dispatcher import bfs_refill
+    from Tooling.state import thresholds
+    conn = _conn(tmp_path)
+    g = _goal(conn, "has_budget", status="open")
+    conn.execute("UPDATE goals SET attempts = ? WHERE id = ?",
+                 (thresholds.SHELVE_THRESHOLD - 1, g))
+    conn.commit()
+
+    bfs_refill(conn, running=set())
+
+    assert str(_db.get_goal(conn, g)["status"]) == "open"
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE target_id = ?",
+        (str(g),)).fetchone()["n"] == 1
+    conn.close()
+
+
 def test_park_with_remaining_route_stays_attempting(
         tmp_path: Path) -> None:
     """A second live strategy on the goal → no escalation."""

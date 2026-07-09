@@ -450,6 +450,22 @@ def bfs_refill(conn: sqlite3.Connection,
         # already covers this goal — defer organic routing this tick.
         if goal_has_any_pipeline(gid):
             continue
+        # Organic budget guard: an OPEN goal at/over SHELVE_THRESHOLD has
+        # no organic budget left (the retry pre-loop would moot it with
+        # budget<=0 and leave it open → re-enqueued next tick → hot moot
+        # loop; putnam_2025_b6 2026-07-09, 4,317 moot pipelines). Such a
+        # goal exists only via non-cascade paths (Inject force-reopen
+        # keeps attempts; recovery reopen) — cascade itself routes to
+        # review AT the threshold crossing. Send it to the same T2
+        # review instead of dispatching: over-threshold means "the
+        # Strategist decides", whichever door the goal came through.
+        if int(g["attempts"]) >= thresholds.SHELVE_THRESHOLD:
+            print(f"[bfs] g{gid} open with attempts={g['attempts']} >= "
+                  f"shelve_threshold={thresholds.SHELVE_THRESHOLD} — "
+                  f"routing to strategist review, not dispatch",
+                  flush=True)
+            transitions._enqueue_strategist_review(conn, int(g["id"]))
+            continue
         kind = next_worker_kind(g)
         if kind_cooled(kind):
             continue

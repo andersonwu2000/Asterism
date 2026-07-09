@@ -624,8 +624,12 @@ def run_with_session_retries(
         else:
             budget = budget_threshold - int(goal["attempts"])
         if budget <= 0:
-            # Defensive — bfs_refill should already filter goals at/over
-            # threshold. Reach here only on dispatch races.
+            # Defensive — bfs_refill routes open goals at/over
+            # SHELVE_THRESHOLD to strategist review instead of dispatching
+            # (organic budget guard, 2026-07-09; before that guard existed
+            # this branch hot-looped — moot leaves the goal `open`, the
+            # next tick re-enqueues it: putnam_2025_b6, 4,317 moot
+            # pipelines). Reach here only on dispatch races.
             print(f"[retry-moot] g{goal_id} pre-loop: budget={budget} "
                   f"(budget_threshold={budget_threshold} - "
                   f"attempts={int(goal['attempts'])}); status="
