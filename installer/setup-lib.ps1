@@ -58,41 +58,75 @@ function Resolve-Py {
     return $null
 }
 
-function Get-PyTag {
-    # the engine needs >=3.12 (pyproject), not ==3.12: a user who
-    # pre-installed 3.13 was told "no Python" and the wizard installed
-    # a second one next to it (seen live in a sandbox). Prefer 3.12
-    # (the tested floor), accept newer.
+function Get-PyCmd {
+    # a COMMAND, not just a path: @{ exe; tag; ver }. The engine needs
+    # ANY Python >=3.12 (pyproject) - the py launcher's, a direct
+    # python.exe (PATH, python.org per-user, miniconda/anaconda - a
+    # tester's conda Python was invisible to the launcher-only probe),
+    # or the folder-local embedded one the wizard drops when no MSI
+    # will land on the machine. tag is $null for direct interpreters.
     Refresh-Path
-    $p = Resolve-Py
-    if (-not $p) { return $null }
-    foreach ($tag in @('-3.12', '-3.13', '-3.14')) {
-        try { $v = & $p $tag -V 2>$null; if ($v) { return $tag } } catch {}
+    $l = Resolve-Py
+    if ($l) {
+        foreach ($tag in @('-3.12', '-3.13', '-3.14')) {
+            try { $v = & $l $tag -V 2>$null; if ($v) { return @{ exe = $l; tag = $tag; ver = "$v".Trim() } } } catch {}
+        }
+    }
+    $repo = Split-Path -Parent $PSScriptRoot
+    $cands = @((Join-Path $repo '.tools\python\python.exe'))
+    $c = Get-Command python -ErrorAction SilentlyContinue
+    if ($c) { $cands += $c.Source }
+    $cands += (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe')
+    $cands += (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe')
+    $cands += (Join-Path $env:USERPROFILE 'miniconda3\python.exe')
+    $cands += (Join-Path $env:USERPROFILE 'anaconda3\python.exe')
+    foreach ($p in $cands) {
+        if (-not $p -or -not (Test-Path $p)) { continue }
+        try {
+            # the Store's WindowsApps python.exe alias prints nothing -
+            # the version gate skips it safely
+            $v = & $p -V 2>$null
+            if ("$v" -match 'Python 3\.(\d+)' -and [int]$matches[1] -ge 12) {
+                return @{ exe = $p; tag = $null; ver = "$v".Trim() }
+            }
+        } catch {}
     }
     return $null
 }
 
-function Get-PyVersion {
-    $p = Resolve-Py
-    if (-not $p) { return $null }
-    $tag = Get-PyTag
-    if (-not $tag) { return $null }
-    try { $v = & $p $tag -V 2>$null; if ($v) { return "$v".Trim() } } catch {}
+function Py-Args([hashtable]$cmd, [string[]]$rest) {
+    if ($cmd.tag) { return @($cmd.tag) + $rest }
+    return $rest
+}
+
+function Get-PyTag {
+    $c = Get-PyCmd
+    if ($c) { return $c.tag }
     return $null
 }
 
-function Test-Engine($py) {
+function Get-PyVersion {
+    $c = Get-PyCmd
+    if ($c) { return $c.ver }
+    return $null
+}
+
+function Test-Engine($py = $null) {
     # engine "ready" = the package imports AND its web deps are present.
     # Critical: -P (Python 3.11+) stops Python prepending the cwd/script
     # dir to sys.path, so this detects a real *install* - not the Tooling/
     # source directory the setup happens to run from. Plain `import
     # Tooling` was true from the very first second (before pip ran),
     # which made the engine step self-skip and serve start with no deps.
-    if (-not $py) { return $false }
-    $tag = Get-PyTag
-    if (-not $tag) { return $false }
+    # ($py param kept for old call sites; resolution is Get-PyCmd's.)
+    $c = Get-PyCmd
+    if (-not $c) { return $false }
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try { $null = & $py $tag -P -c 'import Tooling, fastapi, uvicorn' 2>$null; return ($LASTEXITCODE -eq 0) }
+    try {
+        $args2 = Py-Args $c @('-P', '-c', 'import Tooling, fastapi, uvicorn')
+        $null = & $c.exe @args2 2>$null
+        return ($LASTEXITCODE -eq 0)
+    }
     catch { return $false } finally { $ErrorActionPreference = $prev }
 }
 

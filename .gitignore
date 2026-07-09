@@ -124,3 +124,6 @@ installer/setup-progress.log
 installer/setup-done.marker
 installer/setup-decisions.json
 installer/setup-orchestrator.pid
+
+# folder-local embedded Python (wizard fallback when no MSI lands)
+.tools/

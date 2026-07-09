@@ -26,17 +26,15 @@ if (-not $up) {
     # FAST readiness check before any waiting: on a machine where the
     # engine was never installed, the old flow stalled 30s on a port
     # that could never bind before pivoting to setup
-    $py = Resolve-Py
-    if (-not $py -or -not (Test-Engine $py) -or
+    $c = Get-PyCmd
+    if (-not $c -or -not (Test-Engine) -or
         -not (Test-Path (Join-Path $Root 'web\dist\index.html'))) {
         Open-Setup
         return
     }
     # `-m Tooling.core.cli serve` (the canonical invocation), NOT
     # inline `-c` code - Start-Process word-splits the quoted code
-    $tag = Get-PyTag
-    if (-not $tag) { Open-Setup; return }
-    Start-Process -FilePath $py -ArgumentList @($tag, '-m', 'Tooling.core.cli', 'serve') `
+    Start-Process -FilePath $c.exe -ArgumentList (Py-Args $c @('-m', 'Tooling.core.cli', 'serve')) `
         -WorkingDirectory $Root -WindowStyle Hidden
     # wait for the port (fresh start takes a few seconds)
     for ($i = 0; $i -lt 60; $i++) {

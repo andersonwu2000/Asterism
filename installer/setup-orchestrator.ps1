@@ -156,7 +156,7 @@ function Install-Python {
     # .msi is gone, so even uninstalling hits path-not-found; seen
     # live). Don't fight the corpse: a DIFFERENT minor registers under
     # different product codes and lands clean, and the whole pipeline
-    # accepts >=3.12 via Get-PyTag.
+    # accepts >=3.12 via Get-PyCmd.
     if (-not (Get-PyVersion)) {
         Note 'Python 3.12 will not land on this machine - trying Python 3.13 instead...'
         $exe = Get-PyBundle '3.13.1'
@@ -164,27 +164,62 @@ function Install-Python {
             $rc = Invoke-PyInstaller $installArgs 'installing Python 3.13'
             if ($rc -ne 0 -and $rc -ne 3010 -and $null -ne $rc) {
                 Warn ('Python 3.13 installer exit code ' + $rc)
-                Note '  both versions failing the same way usually means antivirus or policy is blocking installer payloads in TEMP'
             }
         }
+    }
+    # LAST resort, and immune to the whole MSI failure class: the
+    # embeddable build is just files - no installer, no elevation, no
+    # per-user registration to orphan - dropped INSIDE the Asterism
+    # folder, where it lives and dies with the folder.
+    if (-not (Get-PyVersion)) {
+        Note 'no installer will land on this machine - dropping a self-contained Python inside the Asterism folder instead...'
+        if (-not (Install-PyEmbedded)) { return $false }
     }
     $py = Get-PyVersion
     if (-not $py) { return $false }
     # complete pip if the installer left it out
-    $tag = Get-PyTag
-    if ($tag -and -not (& (Resolve-Py) $tag -m pip --version 2>$null)) {
+    $c = Get-PyCmd
+    $pipProbe = Py-Args $c @('-m', 'pip', '--version')
+    if (-not (& $c.exe @pipProbe 2>$null)) {
         Note 'adding pip (ensurepip)...'
-        & (Resolve-Py) $tag -m ensurepip --upgrade 2>$null | Out-Null
+        $ep = Py-Args $c @('-m', 'ensurepip', '--upgrade')
+        & $c.exe @ep 2>$null | Out-Null
     }
     return [bool](Get-PyVersion)
 }
 
-function Install-Engine($py) {
+function Install-PyEmbedded {
+    $ProgressPreference = 'SilentlyContinue'
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $zip = Join-Path $env:TEMP 'python-embed.zip'
+    $url = 'https://www.python.org/ftp/python/' + $PyVer + '/python-' + $PyVer + '-embed-amd64.zip'
+    Note 'downloading the embeddable Python...'
+    try { Invoke-WebRequest -Uri $url -OutFile $zip } catch { Warn ('download failed: ' + $_.Exception.Message); return $false }
+    $dest = Join-Path $Root '.tools\python'
+    Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    try { Expand-Archive -Path $zip -DestinationPath $dest -Force } catch { Warn ('unpack failed: ' + $_.Exception.Message); return $false }
+    # the ._pth file gates the import system: 'import site' must be
+    # uncommented or pip's site-packages never load
+    $pth = Get-ChildItem $dest -Filter 'python3*._pth' | Select-Object -First 1
+    if ($pth) {
+        (Get-Content $pth.FullName) -replace '^#\s*import site', 'import site' |
+            Set-Content $pth.FullName -Encoding ASCII
+    }
+    Note 'wiring pip...'
+    $gp = Join-Path $env:TEMP 'get-pip.py'
+    try { Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile $gp } catch { Warn ('get-pip download failed: ' + $_.Exception.Message); return $false }
+    Run-Stream (Join-Path $dest 'python.exe') @($gp, '--no-warn-script-location') $null | Out-Null
+    Remove-Item $zip, $gp -Force -ErrorAction SilentlyContinue
+    return [bool](Get-PyVersion)
+}
+
+function Install-Engine {
     Note 'installing the Asterism engine...'
-    $tag = Get-PyTag
-    if (-not $tag) { return $false }
-    Run-Stream $py @($tag, '-m', 'pip', 'install', '-e', $Root, '--quiet', '--disable-pip-version-check') $null | Out-Null
-    return (Test-Engine $py)
+    $c = Get-PyCmd
+    if (-not $c) { return $false }
+    Run-Stream $c.exe (Py-Args $c @('-m', 'pip', 'install', '-e', $Root, '--quiet', '--disable-pip-version-check')) $null | Out-Null
+    return (Test-Engine)
 }
 
 # ---- Claude Code (official installer, npm fallback, PATH repair) -----
@@ -272,7 +307,7 @@ function Fetch-Mathlib {
 }
 
 # ---- start the app's engine ------------------------------------------
-function Start-Serve($py) {
+function Start-Serve {
     if (Get-NetTCPConnection -LocalPort 8642 -State Listen -ErrorAction SilentlyContinue) { return $true }
     Note 'starting the Asterism console...'
     # -m, not -c: passing the launch as inline code through Start-Process
@@ -280,9 +315,9 @@ function Start-Serve($py) {
     # Tooling.core.cli serve` is the codebase's own canonical invocation.
     # cwd = repo root - serve needs lakefile.lean, Problems/, Library/ and
     # Tooling/prompts/ at runtime.
-    $tag = Get-PyTag
-    if (-not $tag) { return $false }
-    Start-Process -FilePath $py -ArgumentList @($tag, '-m', 'Tooling.core.cli', 'serve') `
+    $c = Get-PyCmd
+    if (-not $c) { return $false }
+    Start-Process -FilePath $c.exe -ArgumentList (Py-Args $c @('-m', 'Tooling.core.cli', 'serve')) `
         -WorkingDirectory $Root -WindowStyle Hidden
     # wait for the port to bind so "everything is ready" never fires while
     # the console is still unreachable (the page hands off on engine_up)
@@ -334,12 +369,11 @@ function Lane-B {
     if (Get-PyVersion) { Ok ('already installed  (' + (Get-PyVersion) + ')') }
     elseif (Install-Python) { Ok ('Python installed  (' + (Get-PyVersion) + ')') }
     else { Warn 'Python did not install' }
-    $py = Resolve-Py
 
-    if ($py) {
+    if (Get-PyCmd) {
         Step 'Asterism engine'
-        if (Test-Engine $py) { Ok 'already installed' }
-        elseif (Install-Engine $py) { Ok 'engine installed' }
+        if (Test-Engine) { Ok 'already installed' }
+        elseif (Install-Engine) { Ok 'engine installed' }
         else { Warn 'the engine did not install' }
     }
 
@@ -419,12 +453,11 @@ try {
     if ($pA) { $pA.WaitForExit() }
 
     # join: the console needs the engine (lane B) AND Mathlib (lane A)
-    $py = Resolve-Py
     $engineUp = $false
-    if ($py -and (Test-Engine $py)) {
+    if (Test-Engine) {
         Step 'Asterism console'
         Install-Shortcut
-        if (Start-Serve $py) {
+        if (Start-Serve) {
             $engineUp = $true
             Ok 'up - from now on, the "Asterism" shortcut on your Desktop opens it'
         }
@@ -435,7 +468,7 @@ try {
     # each row re-derived from the WORLD, a miss flags its checklist row
     $checks = @(
         @{ row = 'Python';                 ok = [bool](Get-PyVersion) }
-        @{ row = 'Asterism engine';        ok = (Test-Engine (Resolve-Py)) }
+        @{ row = 'Asterism engine';        ok = (Test-Engine) }
         @{ row = 'Claude Code';            ok = (Get-ClaudeStatus).installed }
         @{ row = 'Git';                    ok = (Test-Git) }
         @{ row = 'Lean theorem prover';    ok = (Get-LakeStatus).found }
