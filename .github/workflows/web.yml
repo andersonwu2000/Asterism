@@ -1,0 +1,44 @@
+# Frontend gate: oxlint + tsc/vite build + vitest layout laws.
+#
+# The engine CI (ci.yml) never touches web/ — a busted tsc or a layout
+# regression used to surface only at release-zip build time on the dev
+# workstation. The vitest tier checks the sky engine's LAWS (plate
+# bounds, occupancy, determinism, referential integrity) against real
+# problem states frozen in web/src/lib/__fixtures__/ — production
+# scale, no server needed. The playwright smoke suite (web/tests/) is
+# NOT run here: it needs a live `asterism serve` over a real workspace.
+name: Web
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+  workflow_dispatch:
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Lint (oxlint)
+        run: npm run lint
+      - name: Typecheck + build (tsc -b && vite build)
+        run: npm run build
+      - name: Layout laws (vitest)
+        run: npm test
