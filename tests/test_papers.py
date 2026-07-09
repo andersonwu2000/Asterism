@@ -12,6 +12,11 @@ from Tooling.papers import index as paper_index
 from Tooling.papers import shelf
 from Tooling.state import manifest
 
+# Absolute, cwd-independent — `Path("Tooling/prompts").resolve()` broke the
+# suite when pytest ran from any cwd other than the repo root (production
+# callers use the module-relative pipeline.PROMPT_DIR, which is absolute).
+_PROMPT_DIR = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
+
 
 # ---------------------------------------------------------------------
 # shelf
@@ -123,8 +128,7 @@ def test_index_small_doc_exemption_no_spawn(tmp_path: Path,
         raise AssertionError("spawn must not run for exempt docs")
     monkeypatch.setattr(agent_pkg, "spawn_llm", _boom)
     out = paper_index.generate_index(
-        tmp_path, meta.id,
-        prompt_dir=Path("Tooling/prompts").resolve())
+        tmp_path, meta.id, prompt_dir=_PROMPT_DIR)
     assert out is None
     assert not shelf.map_path(tmp_path, meta.id).exists()
 
@@ -140,7 +144,7 @@ def test_index_generate_stamps_framework_frontmatter(tmp_path: Path,
                       "- [p.1] theorem 1: main\n", encoding="utf-8")
     monkeypatch.setattr(agent_pkg, "spawn_llm", _fake_spawn)
     out = paper_index.generate_index(
-        tmp_path, meta.id, prompt_dir=Path("Tooling/prompts").resolve())
+        tmp_path, meta.id, prompt_dir=_PROMPT_DIR)
     assert out == mp
     body = mp.read_text(encoding="utf-8")
     # Framework stamp is the only frontmatter; agent's is stripped.
@@ -155,7 +159,7 @@ def test_index_missing_map_is_loud(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(agent_pkg, "spawn_llm", lambda **kw: None)
     with pytest.raises(RuntimeError, match="without writing"):
         paper_index.generate_index(
-            tmp_path, meta.id, prompt_dir=Path("Tooling/prompts").resolve())
+            tmp_path, meta.id, prompt_dir=_PROMPT_DIR)
 
 
 # ---------------------------------------------------------------------

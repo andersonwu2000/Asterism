@@ -752,42 +752,60 @@ def _inline_sibling_stubs(
 
     Returns `(merged, line_map)` where `line_map[i]` is the 1-indexed line
     of the ORIGINAL `content` that merged line `i + 1` corresponds to, or
-    `None` for a hoisted-import / sibling-stub line. The caller remaps
+    `None` for a framework / sibling-stub line. A hoisted import that the
+    AGENT wrote keeps its original line number (a bad `import` line is the
+    agent's own diagnostic, not sibling noise). The caller remaps
     diagnostics back to the agent's content frame and tags / drops the
     sibling-region ones, so line numbers stay meaningful (it must NOT
-    reintroduce the very buffer/line desync T1 just fixed)."""
-    all_imports: list[str] = []
+    reintroduce the very buffer/line desync T1 just fixed).
 
-    def _add_import(line: str) -> None:
-        if line not in all_imports:
-            all_imports.append(line)
+    Each sibling block is wrapped in an anonymous `section … end`: a
+    stub's file-scope `open`/`variable` commands are module-local after
+    commit (`import` does not propagate them), so letting them leak into
+    later siblings / `content` in the single unit was a false-green class
+    — content leaning on a sibling's `open` validated green here and died
+    at the post-commit lake build. Declarations are unaffected by
+    `section`, so citations still resolve."""
+    all_imports: "list[tuple[str, int | None]]" = []  # (line, content origin)
+
+    def _add_import(line: str, origin: "int | None" = None) -> None:
+        for i, (ln, org) in enumerate(all_imports):
+            if ln == line:
+                if org is None and origin is not None:
+                    all_imports[i] = (ln, origin)
+                return
+        all_imports.append((line, origin))
 
     for imp in extra_imports:
         _add_import(imp)
 
-    # content: hoist its imports, keep the body with a back-map to the
-    # agent's original 1-indexed line numbers.
+    # content: hoist its imports (keeping their original line numbers),
+    # keep the body with a back-map to the agent's 1-indexed lines.
     content_body: list[tuple[str, int]] = []
     for idx, ln in enumerate(content.split("\n")):
         if ln.startswith("import "):
-            _add_import(ln)
+            _add_import(ln, idx + 1)
         else:
             content_body.append((ln, idx + 1))
 
     sib_body: list[str] = []
     for text in sibling_texts:
+        block: list[str] = []
         for ln in text.split("\n"):
             if ln.startswith("import "):
                 _add_import(ln)
             else:
-                sib_body.append(ln)
+                block.append(ln)
+        sib_body.append("section")
+        sib_body.extend(block)
+        sib_body.append("end")
         sib_body.append("")  # blank line between sibling blocks
 
     merged: list[str] = []
     line_map: list[int | None] = []
-    for imp in all_imports:
+    for imp, origin in all_imports:
         merged.append(imp)
-        line_map.append(None)
+        line_map.append(origin)
     merged.append("")
     line_map.append(None)
     # File-level `open`s (from Defs.lean) belong above any `namespace`, so
@@ -997,6 +1015,46 @@ def _build_compilation_unit(
                            list(extra_opens)),
     )
     return merged, line_map, [s for s, _ in siblings]
+
+
+def _commit_header_for(
+    content: str, problem: str, workspace: "Path", attempts_dir: "Path",
+    extra_opens: "list[str]" = (),
+) -> "dict":
+    """The exact header lines the framework itself will inject into THIS
+    content at commit — `assemble_for_commit`'s framework imports +
+    proved-sibling imports + Defs/carried opens, plus the mechanically
+    injected intra-batch import edges (task #84, same
+    `referenced_batch_slugs` scan the commit side runs). Surfaced in
+    validate_file's response so the agent SEES the wrapping (and knows
+    not to hand-write it); these lines are already part of the probe's
+    compilation unit. Best-effort — a failed sub-derivation just leaves
+    its lines out (validate must never break on this)."""
+    all_stub_slugs: "list[str]" = []
+    try:
+        for stub in sorted(attempts_dir.glob("new_*.lean")):
+            slug = stub.stem[len("new_"):]
+            if slug:
+                all_stub_slugs.append(slug)
+    except OSError:
+        pass
+    # batch edges: only slugs content does not itself declare (validating
+    # the stub itself must not predict a self-import)
+    candidates = [
+        s for s in all_stub_slugs
+        if not re.search(_DECL_SLUG_RE_TMPL.format(slug=re.escape(s)),
+                         content)]
+    batch_imports = [
+        f"import Problems.{problem}.proofs.L_{s}"
+        for s in assemble.referenced_batch_slugs(content, candidates)]
+    imports = (
+        _needed_imports(content, problem, workspace)
+        + batch_imports
+        + _proved_sibling_import_lines(
+            [content], problem, workspace, set(all_stub_slugs)))
+    opens = _merge_opens(content, manifest.defs_opens(workspace, problem),
+                         list(extra_opens))
+    return {"imports": imports, "opens": opens}
 
 
 def _merged_line_for(
@@ -1666,11 +1724,17 @@ def validate_file(content: str) -> str:
     lines (not just Defs.lean's), so a stub using `MeasureTheory` / scoped
     `Topology` / a `Library.*` namespace validates the way it will at commit.
 
+    The response's `commit_header` block lists the exact import/open lines
+    the framework itself will inject into this file at commit (framework
+    imports, Defs/patch opens, proved-sibling imports, intra-batch sub-goal
+    imports) — they are already part of this validation, so do NOT write
+    them yourself.
+
     Args:
       content: Full contents of the candidate file.
 
     Returns: { ok, diagnostics, diagnostic_count[, inlined_siblings],
-               submission }.
+               commit_header, submission }.
     """
     _recv_ts = _ts_now()
     meta = _current_session()
@@ -1753,6 +1817,12 @@ def validate_file(content: str) -> str:
         # citation could be resolved; diagnostics are already remapped to
         # this content's own line numbers.
         response["inlined_siblings"] = inlined_slugs
+    # The header the framework will inject into this file at commit
+    # (already part of this probe's compilation unit) — visibility for
+    # the agent, which writes none of these lines itself (task #84).
+    response["commit_header"] = _commit_header_for(
+        content, meta.problem, meta.workspace, meta.target_path.parent,
+        extra_opens=_harvest_open_lines(meta.file_content))
     # Submission mirror (#8 / P2): the commit-time citation + annotation gates,
     # surfaced here so a clean Lean elaboration that would still be bounced at
     # commit is flagged pre-commit. Separate from `diagnostics` (Lean) so the

@@ -153,23 +153,34 @@ def strip_comments(text: str) -> str:
     return _LINE_COMMENT_RE.sub(" ", _BLOCK_COMMENT_RE.sub(" ", text))
 
 
+def referenced_batch_slugs(
+    text: str, batch_slugs: "list[str] | dict[str, str]",
+    *, exclude: "str | None" = None,
+) -> "list[str]":
+    """The batch slugs `text` references — comment-stripped, whole-token
+    match against the KNOWN batch decl names (a finite exact list, not
+    open-ended name guessing). Single-text primitive under
+    `batch_reference_edges`; the gateway's commit-header mirror runs the
+    SAME scan so validate predicts exactly the imports commit injects."""
+    body = strip_comments(text)
+    return sorted(
+        b for b in batch_slugs
+        if b != exclude and re.search(rf"\b{re.escape(b)}\b", body))
+
+
 def batch_reference_edges(
     stub_texts: "dict[str, str]",
 ) -> "dict[str, list[str]]":
     """slug → sorted batch siblings its comment-stripped text references
-    (whole-token match against the KNOWN batch decl names — a finite
-    exact list, not open-ended name guessing). This is the intra-batch
-    import DAG the commit side injects mechanically (task #84): the
-    validate unit inlines all stubs so cross-references always resolve
-    there; at commit each stub is its own module and needs the edge as
-    an `import` line. A false positive only over-imports (harmless
-    unless it closes a cycle — see `batch_reference_cycles`)."""
+    (see `referenced_batch_slugs`). This is the intra-batch import DAG
+    the commit side injects mechanically (task #84): the validate unit
+    inlines all stubs so cross-references always resolve there; at
+    commit each stub is its own module and needs the edge as an `import`
+    line. A false positive only over-imports (harmless unless it closes
+    a cycle — see `batch_reference_cycles`)."""
     edges: "dict[str, list[str]]" = {}
     for a_slug, a_text in stub_texts.items():
-        body = strip_comments(a_text)
-        refs = sorted(
-            b for b in stub_texts
-            if b != a_slug and re.search(rf"\b{re.escape(b)}\b", body))
+        refs = referenced_batch_slugs(a_text, stub_texts, exclude=a_slug)
         if refs:
             edges[a_slug] = refs
     return edges

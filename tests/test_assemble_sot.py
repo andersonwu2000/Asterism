@@ -190,3 +190,14 @@ def test_batch_edges_ignore_comment_mentions() -> None:
                       "end P\n"),
     }
     assert assemble.batch_reference_edges(stubs) == {}
+
+
+def test_referenced_batch_slugs_single_text_primitive() -> None:
+    """The single-text scan under batch_reference_edges (shared with the
+    gateway's commit_header mirror): comment-stripped, whole-token,
+    `exclude` drops self."""
+    text = ("-- mentions ghost only here\n"
+            "theorem me : True := by have h := helper_two; trivial\n")
+    slugs = ["helper_two", "ghost", "helper", "me"]
+    assert assemble.referenced_batch_slugs(text, slugs, exclude="me") == [
+        "helper_two"]  # ghost=comment-only; helper≠whole token; me=self

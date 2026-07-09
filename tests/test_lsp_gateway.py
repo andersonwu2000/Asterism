@@ -323,7 +323,9 @@ def test_goal_present_distinguishes_live_vs_empty() -> None:
 def test_inline_sibling_stubs_hoists_imports_and_maps_lines() -> None:
     """T3: sibling decls precede content; all imports hoisted+deduped to
     the top; line_map sends content-body lines back to their original
-    1-indexed positions and import/sibling lines to None."""
+    1-indexed positions, AGENT-written import lines back to their own
+    origin (a bad import is the agent's diagnostic, not sibling noise),
+    and framework/sibling lines to None."""
     content = (
         "import Mathlib\n"            # line 1
         "import Problems.p.Defs\n"    # line 2
@@ -360,11 +362,23 @@ def test_inline_sibling_stubs_hoists_imports_and_maps_lines() -> None:
     have_idx = next(i for i, ln in enumerate(lines)
                     if "have h := helper" in ln)
     assert line_map[have_idx] == 6
-    # hoisted-import + sibling-region lines map to None
-    assert line_map[0] is None
+    # agent-written imports keep their origin (content lines 1-2); the
+    # sibling's own import is framework-region (None)
+    assert line_map[0] == 1 and line_map[1] == 2
+    extra_idx = next(i for i, ln in enumerate(lines)
+                     if ln == "import Problems.p.extra")
+    assert line_map[extra_idx] is None
     helper_idx = next(i for i, ln in enumerate(lines)
                       if ln.startswith("theorem helper"))
     assert line_map[helper_idx] is None
+    # sibling block is wrapped in an anonymous section (open/variable
+    # scoping mirror of its future module boundary)
+    sec_idx = next(i for i, ln in enumerate(lines) if ln == "section")
+    end_idx = next(i for i, ln in enumerate(lines) if ln == "end")
+    assert sec_idx < helper_idx < end_idx
+    s1_body = next(i for i, ln in enumerate(lines)
+                   if ln.startswith("theorem s1"))
+    assert end_idx < s1_body
 
 
 def test_collect_sibling_stubs_referenced_not_declared(
@@ -450,6 +464,72 @@ def test_inline_sibling_stubs_emits_opens() -> None:
     s1_idx = next(i for i, ln in enumerate(lines)
                   if ln.startswith("theorem s1"))
     assert line_map[s1_idx] == 3
+
+
+def test_inline_sibling_stubs_sections_fence_sibling_opens() -> None:
+    """A sibling stub's file-scope `open` stays inside its section fence:
+    at commit the stub is its own module and `import` does not propagate
+    opens, so letting them reach `content` in the single unit was a
+    false-green (content leaning on a sibling's `open` validated green,
+    then died at the post-commit lake build)."""
+    content = ("theorem s1 : True := by have h := helper; trivial\n")
+    sib_a = ("import Mathlib\n"
+             "open CategoryTheory\n"
+             "theorem helper : True := by sorry\n")
+    sib_b = ("theorem other : True := by sorry\n")
+    merged, line_map = lsp_gateway._inline_sibling_stubs(
+        content, [sib_a, sib_b], ["import Mathlib"])
+    lines = merged.split("\n")
+    open_idx = next(i for i, ln in enumerate(lines)
+                    if ln == "open CategoryTheory")
+    # the open sits strictly inside sib_a's section … end fence
+    sec_before = max(i for i in range(open_idx) if lines[i] == "section")
+    end_after = next(i for i in range(open_idx, len(lines))
+                     if lines[i] == "end")
+    assert sec_before < open_idx < end_after
+    # sib_b and the content body both start after that fence closes
+    other_idx = next(i for i, ln in enumerate(lines)
+                     if ln.startswith("theorem other"))
+    s1_idx = next(i for i, ln in enumerate(lines)
+                  if ln.startswith("theorem s1"))
+    assert end_after < other_idx < s1_idx
+    # every sibling-region line (sections included) maps to None
+    assert all(line_map[i] is None for i in range(sec_before, end_after + 1))
+    assert line_map[s1_idx] == 1
+
+
+def test_commit_header_for_mirrors_commit_injections(tmp_path: Path) -> None:
+    """`commit_header` = exactly what assemble_for_commit + the batch-edge
+    injection will add to THIS content at commit: missing framework
+    imports, intra-batch sub-goal imports (referenced, not self-declared,
+    comment-stripped), and Defs + carried opens not already in content."""
+    prob = "p"
+    pdir = db.problem_dir(tmp_path, prob)
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "Defs.lean").write_text(
+        "import Mathlib\nopen MeasureTheory\n", encoding="utf-8")
+    attempts = tmp_path / "att"
+    attempts.mkdir()
+    (attempts / "new_helper.lean").write_text(
+        "theorem helper : True := by sorry\n", encoding="utf-8")
+    (attempts / "new_ghost.lean").write_text(
+        "theorem ghost : True := by sorry\n", encoding="utf-8")
+    content = ("theorem s1 : True := by\n"
+               "  -- ghost only in this comment\n"
+               "  have h := helper\n"
+               "  trivial\n")
+    hdr = lsp_gateway._commit_header_for(
+        content, prob, tmp_path, attempts, extra_opens=["open Real"])
+    # framework imports (both missing) + the referenced batch edge only:
+    # `ghost` appears in a comment alone — commit's scan strips comments
+    assert hdr["imports"] == [
+        "import Mathlib", "import Problems.p.Defs",
+        "import Problems.p.proofs.L_helper"]
+    assert hdr["opens"] == ["open MeasureTheory", "open Real"]
+    # validating the stub ITSELF never predicts a self-import
+    hdr_self = lsp_gateway._commit_header_for(
+        "theorem helper : True := by sorry\n", prob, tmp_path, attempts)
+    assert "import Problems.p.proofs.L_helper" not in hdr_self["imports"]
 
 
 def test_toposort_siblings_orders_referenced_first() -> None:
