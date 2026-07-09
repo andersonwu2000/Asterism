@@ -1,0 +1,196 @@
+import { useEffect, useRef, useState } from 'react'
+
+/*
+ * The sky camera, shared. The problem sky (Constellation.tsx) set the
+ * behaviour: fit-to-container on mount, re-fit on resize only while
+ * the user hasn't touched the view, wheel zoom about the cursor, drag
+ * pan, and a −/+/fit control bar. The Library module map grew its own
+ * static shrink-and-scroll instead (owner, 2026-07-09: the two skies
+ * scaled differently) — this hook is the one camera every non-problem
+ * sky mounts. Constants mirror Constellation.tsx exactly (kMax 4,
+ * wheel 0.0012, buttons 0.7/1.45, floor at half the fit).
+ *
+ * Constellation itself still carries its embedded copy, interwoven
+ * with the glide animator and quantized render buckets — unifying it
+ * onto this hook is the standing follow-up when that file is next
+ * open on the bench.
+ */
+
+export interface CamView {
+  k: number
+  tx: number
+  ty: number
+}
+
+export function useSkyCamera(
+  contentW: number,
+  contentH: number,
+  opts?: { kMax?: number },
+) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [view, setView] = useState<CamView | null>(null)
+  const [fitK, setFitK] = useState(1)
+  const viewRef = useRef<CamView | null>(null)
+  const fitKRef = useRef<number | null>(null)
+  const userAdjusted = useRef(false)
+  const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
+  /** true while the pointer sequence that just ended was a pan — click
+   * handlers on content consult this to not fire after a drag */
+  const dragMovedRef = useRef(false)
+  const kMax = opts?.kMax ?? 2.0
+
+  // content changed → forget the user's camera and re-fit
+  useEffect(() => {
+    userAdjusted.current = false
+    setView(null)
+  }, [contentW, contentH])
+  useEffect(() => {
+    if (view !== null) return
+    const el = containerRef.current
+    if (!el || contentW <= 0 || contentH <= 0) return
+    const { width: cw, height: ch } = el.getBoundingClientRect()
+    const k = Math.min((cw - 48) / contentW, (ch - 48) / contentH, kMax)
+    const fit = { k, tx: (cw - contentW * k) / 2, ty: (ch - contentH * k) / 2 }
+    fitKRef.current = k
+    viewRef.current = fit
+    setFitK(k)
+    setView(fit)
+  }, [view, contentW, contentH, kMax])
+  // window/panel resize re-fits ONLY untouched views (fighting an
+  // explicit zoom is worse than letting it drift off-centre)
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    let initial = true // observe() always delivers one initial callback
+    const ro = new ResizeObserver(() => {
+      if (initial) {
+        initial = false
+        return
+      }
+      if (!userAdjusted.current) setView(null)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  // Wheel zoom must preventDefault (page would scroll); React's
+  // delegated wheel handlers are passive, so attach natively.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      const v = viewRef.current
+      if (v === null) return
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const mx = e.clientX - rect.left
+      const my = e.clientY - rect.top
+      const factor = Math.exp(-e.deltaY * 0.0012)
+      // the floor must sit BELOW the fit, or zooming in becomes a trap
+      const kLo = Math.min(0.25, (fitKRef.current ?? 1) * 0.5)
+      const nk = Math.min(4, Math.max(kLo, v.k * factor))
+      const next = {
+        k: nk,
+        tx: mx - ((mx - v.tx) / v.k) * nk,
+        ty: my - ((my - v.ty) / v.k) * nk,
+      }
+      userAdjusted.current = true
+      viewRef.current = next
+      setView(next)
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    const v = viewRef.current
+    if (v === null) return
+    drag.current = { x: e.clientX, y: e.clientY, tx: v.tx, ty: v.ty }
+    dragMovedRef.current = false
+    ;(e.target as Element).setPointerCapture(e.pointerId)
+  }
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = drag.current
+    const v = viewRef.current
+    if (!d || v === null) return
+    const dx = e.clientX - d.x
+    const dy = e.clientY - d.y
+    if (Math.abs(dx) + Math.abs(dy) > 3) dragMovedRef.current = true
+    if (dragMovedRef.current) {
+      userAdjusted.current = true
+      const next = { k: v.k, tx: d.tx + dx, ty: d.ty + dy }
+      viewRef.current = next
+      setView(next)
+    }
+  }
+  const onPointerUp = () => {
+    drag.current = null
+  }
+  const zoomBy = (factor: number) => {
+    const v = viewRef.current
+    const el = containerRef.current
+    if (!v || !el) return
+    const { width: cw, height: ch } = el.getBoundingClientRect()
+    const kLo = Math.min(0.25, (fitKRef.current ?? 1) * 0.5)
+    const nk = Math.min(4, Math.max(kLo, v.k * factor))
+    const next = {
+      k: nk,
+      tx: cw / 2 - ((cw / 2 - v.tx) / v.k) * nk,
+      ty: ch / 2 - ((ch / 2 - v.ty) / v.k) * nk,
+    }
+    userAdjusted.current = true
+    viewRef.current = next
+    setView(next)
+  }
+  const refit = () => {
+    userAdjusted.current = false
+    setView(null)
+  }
+
+  return {
+    containerRef,
+    view,
+    fitK,
+    dragMovedRef,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    zoomBy,
+    refit,
+  }
+}
+
+/** The −/+/fit bar, verbatim from the problem sky. */
+export function CameraControls({
+  zoomBy,
+  refit,
+}: {
+  zoomBy: (factor: number) => void
+  refit: () => void
+}) {
+  return (
+    <div className="absolute bottom-3 left-3 flex overflow-hidden rounded-md border border-edge bg-surface">
+      {(
+        [
+          ['−', 0.7],
+          ['+', 1.45],
+        ] as const
+      ).map(([label, factor]) => (
+        <button
+          key={label}
+          className="px-2.5 py-1 text-sm text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
+          title={label === '+' ? 'zoom in' : 'zoom out'}
+          onClick={() => zoomBy(factor)}
+        >
+          {label}
+        </button>
+      ))}
+      <button
+        className="border-l border-edge px-2.5 py-1 text-xs text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
+        title="fit to view"
+        onClick={refit}
+      >
+        fit
+      </button>
+    </div>
+  )
+}

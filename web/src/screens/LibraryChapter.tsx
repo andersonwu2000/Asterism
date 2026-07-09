@@ -5,6 +5,7 @@ import { Link } from '../lib/router'
 import { ErrorState } from '../components/ui'
 import { Lean } from '../lib/lean'
 import { LeanProbe } from '../components/LeanProbe'
+import { CameraControls, useSkyCamera } from '../lib/camera'
 import { layoutConstellation } from '../lib/layout'
 import type { Goal, LibraryChapter, LibraryChapterDecl, LibraryChapterFile } from '../lib/types'
 
@@ -362,47 +363,64 @@ function ModuleMap({
         .map((imp) => ({ from: idOf.get(imp)!, to: idOf.get(f.path)! })),
     )
     const v = layoutConstellation(goals, [], [], anchors, [])
-    // fit the page when possible; wide skies shrink, but never below
-    // ~95px slots (labels need the air), and never stretch
-    const sx = Math.max(95 / 110, Math.min(1, 950 / Math.max(v.width, 1)))
+    // native engine coordinates — the shared camera owns all scaling
+    // (the old static x-squish distorted the geometry the engine had
+    // just optimised, and scaled nothing else the way the problem sky
+    // does)
     const pos = new Map<string, { x: number; y: number }>()
     for (const n of v.nodes) {
       const path = pathOf.get(n.goal.id)
-      if (path) pos.set(path, { x: n.x * sx + 40, y: n.y + 55 })
+      if (path) pos.set(path, { x: n.x, y: n.y })
     }
+    return { pos, width: v.width, height: v.height }
+  }, [files])
+
+  // small maps magnify generously, like the problem sky (10 stars in
+  // a void read as a failed page load)
+  const cam = useSkyCamera(layout.width, layout.height, {
+    kMax: files.length <= 10 ? 2.6 : 2.0,
+  })
+  const k = cam.view?.k ?? 1
+  // label truncation + collision rows are sized at the FIT zoom and
+  // held there: labels render screen-constant, so what collides
+  // depends on k — computing at fit keeps rows stable under the
+  // user's wheel instead of reshuffling every frame
+  const labelPlan = useMemo(() => {
+    const fk = Math.max(cam.fitK, 0.05)
+    const cap = Math.max(12, Math.floor((110 * fk * 1.9) / 6.6))
+    const labelW = (p: string) => (Math.min(leafOf(p).length, cap) * 6.6) / fk
     // collision-driven label rows: walk each pixel row in x order and
     // drop a label to the lower row only when the upper row's last
     // label would actually touch it (parity alone missed near-misses
     // in narrow layers)
     const rows = new Map<number, string[]>()
-    for (const [p, q] of pos) rows.set(q.y, [...(rows.get(q.y) ?? []), p])
+    for (const [p, q] of layout.pos) rows.set(q.y, [...(rows.get(q.y) ?? []), p])
     const stagger = new Map<string, number>()
-    const cap = Math.max(12, Math.floor((110 * sx * 1.9) / 6.6))
-    const labelW = (p: string) => Math.min(leafOf(p).length, cap) * 6.6
     for (const l of rows.values()) {
-      l.sort((a, b) => pos.get(a)!.x - pos.get(b)!.x)
+      l.sort((a, b) => layout.pos.get(a)!.x - layout.pos.get(b)!.x)
       const rightEdge = [-Infinity, -Infinity]
       for (const p of l) {
-        const cx = pos.get(p)!.x
+        const cx = layout.pos.get(p)!.x
         const w = labelW(p)
-        const row = cx - w / 2 > rightEdge[0] + 26 ? 0 : 1
+        const row = cx - w / 2 > rightEdge[0] + 26 / fk ? 0 : 1
         stagger.set(p, row)
         rightEdge[row] = Math.max(rightEdge[row], cx + w / 2)
       }
     }
-    return {
-      pos,
-      width: v.width * sx + 80,
-      height: v.height + 110,
-      XG: 110 * sx,
-      stagger,
-    }
-  }, [files])
+    return { cap, stagger }
+  }, [layout, cam.fitK])
 
   const [hover, setHover] = useState<string | null>(null)
   return (
-    <div className="overflow-x-auto">
-      <svg width={layout.width} height={layout.height} className="mx-auto block">
+    <div
+      ref={cam.containerRef}
+      className="relative h-[calc(100vh-240px)] min-h-[420px] touch-none overflow-hidden"
+      onPointerDown={cam.onPointerDown}
+      onPointerMove={cam.onPointerMove}
+      onPointerUp={cam.onPointerUp}
+    >
+      <svg className="block h-full w-full cursor-grab active:cursor-grabbing">
+        <g transform={`translate(${cam.view?.tx ?? 0},${cam.view?.ty ?? 0}) scale(${k})`}>
         {files.flatMap((f) =>
           f.imports_within.map((imp, ei) => {
             const a = layout.pos.get(imp)
@@ -426,7 +444,7 @@ function ModuleMap({
                   d={`M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`}
                   fill="none"
                   stroke="var(--color-starlight)"
-                  strokeWidth={1}
+                  strokeWidth={1 / k}
                   strokeOpacity={opacity}
                 />
               )
@@ -439,7 +457,7 @@ function ModuleMap({
                 x2={b.x}
                 y2={b.y}
                 stroke="var(--color-starlight)"
-                strokeWidth={1}
+                strokeWidth={1 / k}
                 strokeOpacity={opacity}
               />
             )
@@ -450,7 +468,9 @@ function ModuleMap({
           if (!p) return null
           const r = 5 + Math.sqrt(f.decls.length) * 1.6
           const mains = f.decls.filter((d) => d.is_deliverable).length
-          const drop = (layout.stagger.get(f.path) ?? 0) * 15
+          // labels are screen-constant (the problem sky's rule): gaps
+          // and font divide by k so text neither balloons at fit nor
+          // vanishes zoomed out
           return (
             <g
               key={f.path}
@@ -458,7 +478,9 @@ function ModuleMap({
               className="cursor-pointer"
               onMouseEnter={() => setHover(f.path)}
               onMouseLeave={() => setHover(null)}
-              onClick={() => onOpen(f.path)}
+              onClick={() => {
+                if (!cam.dragMovedRef.current) onOpen(f.path)
+              }}
             >
               <circle
                 r={r}
@@ -478,37 +500,39 @@ function ModuleMap({
               )}
               <title>{`${moduleOf(f.path)} — ${f.decls.length} declarations${mains > 0 ? `, ${mains} main` : ''}`}</title>
               <text
-                y={r + 16 + drop}
+                y={r + (16 + (labelPlan.stagger.get(f.path) ?? 0) * 15) / k}
                 textAnchor="middle"
                 className="pointer-events-none select-none"
                 fill={hover === f.path ? 'var(--color-ink)' : 'var(--color-ink-dim)'}
-                fontSize={11}
+                fontSize={11 / k}
                 fontFamily="var(--font-mono)"
               >
                 {(() => {
                   const s = leafOf(f.path)
-                  const cap = Math.max(12, Math.floor((layout.XG * 1.9) / 6.6))
+                  const cap = labelPlan.cap
                   return s.length > cap
                     ? `${s.slice(0, Math.floor(cap / 2) - 1)}…${s.slice(-(Math.floor(cap / 2) - 1))}`
                     : s
                 })()}
               </text>
               <text
-                y={r + 29 + drop}
+                y={r + (29 + (labelPlan.stagger.get(f.path) ?? 0) * 15) / k}
                 textAnchor="middle"
                 className="tnum pointer-events-none select-none"
                 fill="var(--color-ink-faint)"
-                fontSize={9}
+                fontSize={9 / k}
               >
                 {f.decls.length}
               </text>
             </g>
           )
         })}
+        </g>
       </svg>
-      <p className="pb-2 text-center text-[11px] text-ink-faint">
+      <p className="pointer-events-none absolute inset-x-0 bottom-2 text-center text-[11px] text-ink-faint">
         modules and their imports — ringed stars hold main results; click one to read it
       </p>
+      <CameraControls zoomBy={cam.zoomBy} refit={cam.refit} />
     </div>
   )
 }
