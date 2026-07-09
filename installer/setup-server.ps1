@@ -140,6 +140,31 @@ try {
                 if ($state -eq 'running' -and -not (Orchestrator-Alive)) { $state = 'failed' }
                 Send-Text $stream '200 OK' 'application/json' (ConvertTo-Json -Compress @{ state = $state; log = $log })
             }
+            elseif ($req.method -eq 'POST' -and $path -eq '/cancel') {
+                # explicit intent, not inferred from a closed window: kill
+                # the orchestrator TREE, and take the droppings with us -
+                # a user who cancels and never returns must not find our
+                # leftovers years later (owner). TEMP installers re-download
+                # in seconds on resume; a half-pulled toolchain (no lake
+                # yet) is garbage; the partial math library stays INSIDE
+                # the Asterism folder, where deleting the folder removes it.
+                $pid3 = $script:OrchPid
+                if (-not $pid3 -and (Test-Path $OrchPidFile)) {
+                    try { $pid3 = [int](Get-Content $OrchPidFile -Raw).Trim() } catch { $pid3 = 0 }
+                }
+                if ($pid3) { try { & taskkill /PID $pid3 /T /F 2>$null | Out-Null } catch {} }
+                $script:OrchPid = 0
+                Remove-Item $OrchPidFile -Force -ErrorAction SilentlyContinue
+                Get-ChildItem (Join-Path $env:TEMP 'python-*-amd64.exe') -ErrorAction SilentlyContinue |
+                    Remove-Item -Force -ErrorAction SilentlyContinue
+                Remove-Item (Join-Path $env:TEMP 'elan-init.ps1') -Force -ErrorAction SilentlyContinue
+                $elan = Join-Path $env:USERPROFILE '.elan'
+                if ((Test-Path $elan) -and -not (Test-Path (Join-Path $elan 'bin\lake.exe'))) {
+                    Remove-Item $elan -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                Set-Content $DoneMarker 'cancelled' -Encoding ASCII
+                Send-Text $stream '200 OK' 'application/json' '{"cancelled":true}'
+            }
             elseif ($req.method -eq 'POST' -and $path -eq '/install') {
                 # body = JSON of decisions { lean_mode, elan_home, lake_path }
                 if (Orchestrator-Alive) {

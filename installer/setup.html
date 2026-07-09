@@ -96,6 +96,11 @@
         <button class="btn" id="retryBtn">Try the unfinished steps again</button>
         <span class="hint">finished parts are skipped</span>
       </div>
+      <!-- cancel is EXPLICIT intent (closing the page deliberately
+           does not stop the install); quiet text, two-step in place -->
+      <div id="stopRow" style="display:none; margin-top:1.2rem">
+        <span id="stopLink" class="hint" style="margin-left:0; cursor:pointer">stop the install</span>
+      </div>
     </div>
   </div>
   <script>
@@ -254,22 +259,54 @@
       document.getElementById('lede').innerHTML = "Installing everything now. Open any row for its log; closing this page won't stop it."
       document.getElementById('decide').style.display='none'
       document.getElementById('retry').style.display='none'
+      document.getElementById('retryBtn').textContent = 'Try the unfinished steps again'
+      var s = document.getElementById('stopLink')
+      s.textContent = 'stop the install'; s.style.color = ''
       document.getElementById('progress').style.display=''
       poll()
     }
     function poll(){
       fetch('/progress').then(function(r){return r.json()}).then(function(p){
         render(p.log||[])
+        var stop = document.getElementById('stopRow')
         if (p.state==='done'){
+          stop.style.display='none'
           // one readable beat before the handoff: the reopen story
           // (the Desktop shortcut) is told HERE or never
           document.getElementById('lede').innerHTML =
             'Everything is ready &mdash; opening the console. Next time, the <b>Asterism</b> shortcut on your Desktop brings you straight here.'
           setTimeout(gotoEngine, 3000); return
         }
-        if (p.state==='failed'){ document.getElementById('retry').style.display=''; return }
+        if (p.state==='failed'){
+          stop.style.display='none'
+          document.getElementById('retry').style.display=''
+          return
+        }
+        if (p.state==='cancelled'){
+          stop.style.display='none'
+          document.getElementById('lede').innerHTML =
+            'Install stopped. Anything already downloaded lives inside this folder &mdash; deleting the folder removes it all. Resume whenever you like.'
+          document.getElementById('retryBtn').textContent = 'Resume the install'
+          document.getElementById('retry').style.display=''
+          return
+        }
+        stop.style.display=''
         setTimeout(poll, 1000)
       }).catch(function(){ setTimeout(poll, 1500) })
+    }
+    var stopArmed = false
+    document.getElementById('stopLink').onclick = function(){
+      var el = document.getElementById('stopLink')
+      if (!stopArmed){
+        stopArmed = true
+        el.textContent = 'confirm — stop the install'
+        el.style.color = '#f2f3f6'
+        setTimeout(function(){ stopArmed = false; el.textContent = 'stop the install'; el.style.color = '' }, 5000)
+        return
+      }
+      stopArmed = false
+      el.textContent = 'stopping…'
+      fetch('/cancel', { method:'POST' })
     }
     document.getElementById('retryBtn').onclick = function(){
       openState = {}
