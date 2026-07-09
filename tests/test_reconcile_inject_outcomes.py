@@ -318,9 +318,15 @@ def test_idempotent_second_pass_is_noop(conn: sqlite3.Connection) -> None:
 def test_shelve_parks_parent_strategy_stalled(conn: sqlite3.Connection) -> None:
     """Soft-shelving the last alive sub-goal of a 'proposed' parent
     strategy parks it 'stalled' at shelve-time: the producing inject's
-    outcome fills 'failed:stalled' and NO Strategist is woken (the wake is
-    T4's call). This is the primary path; the reconcile is only a backstop.
-    """
+    outcome fills 'failed:stalled'. This is the primary path; the
+    reconcile is only a backstop.
+
+    2026-07-09 (putnam_2025_b6 mutual-deadlock fix B): if that parked
+    strategy was the goal's LAST live route, the goal escalates to
+    pending_strategist_review and a T2 Strategist IS enqueued — the old
+    "the wake is T4's call" stance left an `attempting` goal nobody
+    would ever touch (and cond-4 could suppress the very T4 it
+    deferred to)."""
     _goal(conn, slug="main", origin="root", status="attempting")
     g = _goal(conn, slug="target", status="attempting")
     s = _strategy(conn, goal_id=g, status="proposed")
@@ -336,7 +342,9 @@ def test_shelve_parks_parent_strategy_stalled(conn: sqlite3.Connection) -> None:
 
     assert _status(conn, "strategies", s) == "stalled"
     assert _outcome(conn, did) == "failed:stalled"
-    assert _n_strategist_queued(conn) == 0          # no unconditional wake
+    # Fix B: last-route park escalates the goal + enqueues the T2 review.
+    assert db.get_goal(conn, g)["status"] == "pending_strategist_review"
+    assert _n_strategist_queued(conn) == 1
 
 
 def test_shelve_with_alive_sibling_keeps_parent_proposed(

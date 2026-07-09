@@ -501,7 +501,12 @@ def test_propagate_shelve_does_not_kill_upward(
     resolves the producing inject's outcome) rather than left 'proposed'.
     'stalled' is still not 'dead': a sub-goal Reopen flips it back to
     'proposed'. (A parent that retains an alive sibling stays 'proposed' —
-    see test_shelve_with_alive_sibling_keeps_parent_proposed.)"""
+    see test_shelve_with_alive_sibling_keeps_parent_proposed.)
+
+    2026-07-09 (putnam_2025_b6 mutual-deadlock fix B): parking the parent
+    goal's LAST live route now escalates that goal to
+    pending_strategist_review (T2) instead of leaving it a silent
+    `attempting` nobody would ever touch again."""
     parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
     parent_s = _insert_strategy(conn, goal_id=parent_g, status="proposed")
     target = _insert_goal(conn, slug="target", status="shelved")
@@ -519,8 +524,9 @@ def test_propagate_shelve_does_not_kill_upward(
     assert conn.execute(
         "SELECT status FROM strategies WHERE id=?", (parent_s,)
     ).fetchone()["status"] == "stalled"
-    # Parent goal stays attempting (reopenable via the stalled strategy)
-    assert db.get_goal(conn, parent_g)["status"] == "attempting"
+    # Parent goal's last live route just parked → escalated to the T2
+    # review path (fix B); still fully reopenable via Reopen/Inject.
+    assert db.get_goal(conn, parent_g)["status"] == "pending_strategist_review"
 
 
 def test_propagate_disproved_kills_upward(

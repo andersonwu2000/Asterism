@@ -826,7 +826,7 @@ def _maybe_stall_parent_strategies(conn: sqlite3.Connection,
       - any alive sibling → genuinely in flight, stays 'proposed'.
     """
     parents = conn.execute(
-        "SELECT s.id FROM strategies s"
+        "SELECT s.id, s.goal_id FROM strategies s"
         " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
         " WHERE ss.subgoal_id = ? AND s.status = 'proposed'",
         (goal_id,),
@@ -847,6 +847,38 @@ def _maybe_stall_parent_strategies(conn: sqlite3.Connection,
                 and comp.get("dead", 0) == 0):
             apply_strategy_transition(
                 conn, sid, "stalled", event="parent_stall")
+            _maybe_review_goal_out_of_routes(conn, int(p["goal_id"]))
+
+
+def _maybe_review_goal_out_of_routes(conn: sqlite3.Connection,
+                                     goal_id: int) -> None:
+    """Escalate a goal whose LAST live route was just parked.
+
+    When `_maybe_stall_parent_strategies` stalls a strategy and its goal
+    is left `attempting` with zero 'proposed'/'succeeded' strategies,
+    nothing will ever touch that goal again: BFS dispatches only `open`
+    goals, and the park machinery's implicit contract ("the Strategist
+    will adjudicate") relied on a wake that the stall predicate's
+    condition 4 could suppress via this very goal's `attempting` status
+    (2026-07-09 putnam_2025_b6 mutual deadlock; fixed on the predicate
+    side by `db._subtree_has_live_frontier`). Hand the goal to the T2
+    review path — the same `_enqueue_strategist_review` used by the
+    shelve-threshold branch — so the Strategist decides Reopen /
+    ConfirmShelve / new Inject at the moment the last route parks,
+    level by level up the chain (each parent parks only after the
+    Strategist settles its child; `pending_strategist_review` counts as
+    alive in the sibling composition above)."""
+    g = db.get_goal(conn, goal_id)
+    if g is None or str(g["status"]) != "attempting":
+        return
+    live = conn.execute(
+        "SELECT 1 FROM strategies WHERE goal_id = ?"
+        " AND status IN ('proposed','succeeded') LIMIT 1",
+        (goal_id,),
+    ).fetchone()
+    if live is not None:
+        return
+    _enqueue_strategist_review(conn, goal_id)
 
 
 def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:

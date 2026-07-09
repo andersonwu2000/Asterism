@@ -182,7 +182,10 @@ _WATERMARKS = {
     # the transition chokepoint (arch-review task #2).
     # 1380→1400 (2026-07-04): v17 queue scope plumbing (_queue_problem_of)
     # rides the same file as the enqueue-adjacent cascade helpers.
-    "Tooling/state/transitions.py": 1400,
+    # 1400→1440 (2026-07-09): _maybe_review_goal_out_of_routes — park-last-
+    # route escalation to T2 review (putnam_2025_b6 mutual-deadlock fix B);
+    # belongs beside _maybe_stall_parent_strategies — conscious bump.
+    "Tooling/state/transitions.py": 1440,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.

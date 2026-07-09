@@ -1557,13 +1557,41 @@ def queue_has_decision(conn: sqlite3.Connection, decision_id: int) -> bool:
     return row is not None
 
 
+def _subtree_has_live_frontier(conn: sqlite3.Connection,
+                               goal_id: int) -> bool:
+    """True iff the subtree rooted at `goal_id` — walked downward through
+    'proposed'/'succeeded' strategies — contains a goal some existing
+    mechanism will still touch WITHOUT a Strategist wake: an `open` goal
+    (BFS dispatches it) or a `pending_strategist_review` goal (a T2
+    review is queued). An `attempting` node contributes nothing by
+    itself — its activity must bottom out in such a frontier. A chain of
+    attempting goals whose strategies are all dead/stalled has NO
+    frontier: nothing will ever touch it again (2026-07-09
+    putnam_2025_b6 wedge)."""
+    return conn.execute(
+        "WITH RECURSIVE sub(gid) AS ("
+        "  VALUES(?)"
+        "  UNION"
+        "  SELECT ss.subgoal_id FROM strategies s"
+        "   JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "   JOIN sub ON s.goal_id = sub.gid"
+        "   WHERE s.status IN ('proposed','succeeded'))"
+        " SELECT 1 FROM goals"
+        " WHERE id IN (SELECT gid FROM sub)"
+        "   AND status IN ('open','pending_strategist_review') LIMIT 1",
+        (goal_id,),
+    ).fetchone() is not None
+
+
 def has_active_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
     """True iff `problem` has a NULL-outcome Inject decision whose produced
     work is still genuinely ACTIVE:
 
-      * `produced_goal_id`     → goal status open / attempting, OR
-      * `produced_strategy_id` → strategy 'proposed' with >=1 alive subgoal
-        (open / attempting / pending_strategist_review).
+      * `produced_goal_id`     → goal `open`, or `attempting` WITH a live
+        dispatch frontier in its subtree (`_subtree_has_live_frontier`), OR
+      * `produced_strategy_id` → strategy 'proposed' with >=1 subgoal that
+        is open / pending_strategist_review, or attempting with a live
+        frontier.
 
     The precise notion of "an inject batch is still in flight", shared by the
     stall predicate (`is_problem_stalled` condition 4) and the T0 first_launch
@@ -1574,29 +1602,46 @@ def has_active_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
     forever, so the blanket test would suppress T0/T4 forever (a permanent
     wedge — the Phase 11 disease). Only ACTIVE produced work counts as
     in-flight; a freshly-committed inject is additionally covered by its
-    enqueued worker (queue row) in the stall predicate's condition 3."""
-    if conn.execute(
-        "SELECT 1 FROM strategist_decisions sd"
+    enqueued worker (queue row) in the stall predicate's condition 3.
+
+    2026-07-09 (putnam_2025_b6 silent idle): a bare `status='attempting'`
+    check was status-SHALLOW — a Forward-Inject's produced goal sat
+    `attempting` while its entire subtree was parked (strategies all
+    dead/'stalled', zero open, nothing queued), so cond-4 suppressed T4
+    forever while the park machinery waited for a Strategist that could
+    never wake (mutual deadlock; 12 such NULL rows corpus-wide). Both
+    branches now recurse: `attempting` counts only with a live frontier.
+    This only LOOSENS suppression — every previously-inactive state stays
+    inactive."""
+    for row in conn.execute(
+        "SELECT g.id AS gid, g.status AS st FROM strategist_decisions sd"
         " JOIN goals g ON g.id = sd.produced_goal_id"
         " WHERE sd.problem = ? AND sd.decision_kind = 'Inject'"
-        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
-        "   AND g.status IN ('open','attempting') LIMIT 1",
+        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL",
         (problem,),
-    ).fetchone() is not None:
-        return True
-    if conn.execute(
-        "SELECT 1 FROM strategist_decisions sd"
+    ).fetchall():
+        st = str(row["st"])
+        if st == "open":
+            return True
+        if st == "attempting" and _subtree_has_live_frontier(
+                conn, int(row["gid"])):
+            return True
+    for row in conn.execute(
+        "SELECT g.id AS gid, g.status AS st FROM strategist_decisions sd"
         " JOIN strategies s ON s.id = sd.produced_strategy_id"
         " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
         " JOIN goals g ON g.id = ss.subgoal_id"
         " WHERE sd.problem = ? AND sd.decision_kind = 'Inject'"
         "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
-        "   AND s.status = 'proposed'"
-        "   AND g.status IN ('open','attempting','pending_strategist_review')"
-        " LIMIT 1",
+        "   AND s.status = 'proposed'",
         (problem,),
-    ).fetchone() is not None:
-        return True
+    ).fetchall():
+        st = str(row["st"])
+        if st in ("open", "pending_strategist_review"):
+            return True
+        if st == "attempting" and _subtree_has_live_frontier(
+                conn, int(row["gid"])):
+            return True
     return False
 
 
