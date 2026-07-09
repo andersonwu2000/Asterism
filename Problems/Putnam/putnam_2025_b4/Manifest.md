@@ -1,0 +1,34 @@
+---
+problem: Putnam.putnam_2025_b4
+axioms_whitelist:
+  - propext
+  - Quot.sound
+  - Classical.choice
+forbidden_lemmas: []
+library: false
+---
+
+# Putnam.putnam_2025_b4 — imported from PutnamBench
+
+Original theorem: `putnam_2025_b4` (Putnam 2025 B4).
+
+## Statement
+
+For $n \geq 2$, let $A = [a_{i,j}]_{i,j=1}^n$ be an $n$-by-$n$ matrix of nonnegative integers such that:
+(a) $a_{i,j} = 0$ when $i + j \leq n$;
+(b) $a_{i+1,j} \in \{a_{i,j}, a_{i,j} + 1\}$ when $1 \leq i \leq n-1$ and $1 \leq j \leq n$; and
+(c) $a_{i,j+1} \in \{a_{i,j}, a_{i,j} + 1\}$ when $1 \leq i \leq n$ and $1 \leq j \leq n-1$.
+
+Let $S$ be the sum of the entries of $A$, and let $N$ be the number of nonzero entries of $A$.
+Prove that $S \leq \frac{(n+2)N}{3}$.
+
+The formal statement is pinned in `Root.lean` (`theorem main`).
+No solution abbrev — pure proof task.
+
+## Strategic notes
+
+Imported via `Benchmarks/putnambench/adapter.py` from
+trishullab/PutnamBench @ a23d8e6. No per-problem hints —
+benchmark integrity. The pinned statement is never edited;
+if you believe it is FALSE, that is what `AttemptDisproof` /
+`RequestUserAmend` are for.

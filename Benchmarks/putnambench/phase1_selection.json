@@ -1,0 +1,306 @@
+{
+  "upstream_commit": "a23d8e6",
+  "selected": [
+    {
+      "problem": "Putnam.putnam_1962_a1",
+      "stratum": "a1",
+      "year": 1962,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1977_a1",
+      "stratum": "a1",
+      "year": 1977,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_1994_a1",
+      "stratum": "a1",
+      "year": 1994,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_2011_a1",
+      "stratum": "a1",
+      "year": 2011,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2025_a1",
+      "stratum": "a1",
+      "year": 2025,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1962_a2",
+      "stratum": "a2",
+      "year": 1962,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_1980_a2",
+      "stratum": "a2",
+      "year": 1980,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2005_a2",
+      "stratum": "a2",
+      "year": 2005,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2025_a2",
+      "stratum": "a2",
+      "year": 2025,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_1962_a3",
+      "stratum": "a3",
+      "year": 1962,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1983_a3",
+      "stratum": "a3",
+      "year": 1983,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_2005_a3",
+      "stratum": "a3",
+      "year": 2005,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_2025_a3",
+      "stratum": "a3",
+      "year": 2025,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_1962_a4",
+      "stratum": "a4",
+      "year": 1962,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1982_a4",
+      "stratum": "a4",
+      "year": 1982,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_2005_a4",
+      "stratum": "a4",
+      "year": 2005,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_2025_a4",
+      "stratum": "a4",
+      "year": 2025,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_1962_a5",
+      "stratum": "a5",
+      "year": 1962,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_1986_a5",
+      "stratum": "a5",
+      "year": 1986,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_2005_a5",
+      "stratum": "a5",
+      "year": 2005,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2025_a5",
+      "stratum": "a5",
+      "year": 2025,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_1962_a6",
+      "stratum": "a6",
+      "year": 1962,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1983_a6",
+      "stratum": "a6",
+      "year": 1983,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2002_a6",
+      "stratum": "a6",
+      "year": 2002,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2025_a6",
+      "stratum": "a6",
+      "year": 2025,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1962_b1",
+      "stratum": "b1",
+      "year": 1962,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1976_b1",
+      "stratum": "b1",
+      "year": 1976,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_1994_b1",
+      "stratum": "b1",
+      "year": 1994,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2010_b1",
+      "stratum": "b1",
+      "year": 2010,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2025_b1",
+      "stratum": "b1",
+      "year": 2025,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1962_b2",
+      "stratum": "b2",
+      "year": 1962,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1982_b2",
+      "stratum": "b2",
+      "year": 1982,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2004_b2",
+      "stratum": "b2",
+      "year": 2004,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_2025_b2",
+      "stratum": "b2",
+      "year": 2025,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1962_b3",
+      "stratum": "b3",
+      "year": 1962,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1982_b3",
+      "stratum": "b3",
+      "year": 1982,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2005_b3",
+      "stratum": "b3",
+      "year": 2005,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2025_b3",
+      "stratum": "b3",
+      "year": 2025,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_1964_b4",
+      "stratum": "b4",
+      "year": 1964,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_1988_b4",
+      "stratum": "b4",
+      "year": 1988,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_2007_b4",
+      "stratum": "b4",
+      "year": 2007,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2025_b4",
+      "stratum": "b4",
+      "year": 2025,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1962_b5",
+      "stratum": "b5",
+      "year": 1962,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1983_b5",
+      "stratum": "b5",
+      "year": 1983,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2004_b5",
+      "stratum": "b5",
+      "year": 2004,
+      "has_solution_abbrev": true
+    },
+    {
+      "problem": "Putnam.putnam_2025_b5",
+      "stratum": "b5",
+      "year": 2025,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1962_b6",
+      "stratum": "b6",
+      "year": 1962,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_1983_b6",
+      "stratum": "b6",
+      "year": 1983,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_2005_b6",
+      "stratum": "b6",
+      "year": 2005,
+      "has_solution_abbrev": false
+    },
+    {
+      "problem": "Putnam.putnam_2025_b6",
+      "stratum": "b6",
+      "year": 2025,
+      "has_solution_abbrev": true
+    }
+  ],
+  "excluded": []
+}
