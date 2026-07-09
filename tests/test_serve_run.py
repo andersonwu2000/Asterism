@@ -161,6 +161,46 @@ def test_run_live_lanes_carry_statement_and_file_tail(
     assert body["burn_5h"] is not None
 
 
+def test_run_forward_lane_tails_the_scratch_draft(
+        workspace: Path, monkeypatch) -> None:
+    """A Forward worker has no goal row and no landed file — its lane
+    used to look forever idle while the LSP was hard at work. The lane
+    now tails the freshest draft in the workarea whose Context.md
+    title matches (kind, problem); probe helpers (_*.lean) and other
+    problems' workareas never leak in."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    db.enqueue(conn, kind="Forward", target_id="p",
+               target_kind="Problem", problem="p")
+    conn.execute("UPDATE queue SET owner_pid = 4321, leased_at = ?"
+                 " WHERE kind = 'Forward'", (db.now(),))
+    conn.commit()
+    conn.close()
+    wa = workspace / ".attempts" / "aaaa-bbbb"
+    wa.mkdir(parents=True)
+    (wa / "Context.md").write_text("# Forward context — p\n\nbrief\n",
+                                   encoding="utf-8")
+    (wa / "new_forward.lean").write_text(
+        "import Mathlib\n\ntheorem brick : True := trivial\n",
+        encoding="utf-8")
+    (wa / "_probe.lean").write_text("-- helper, never a draft\n",
+                                    encoding="utf-8")
+    other = workspace / ".attempts" / "cccc-dddd"
+    other.mkdir(parents=True)
+    (other / "Context.md").write_text("# Forward context — q\n",
+                                      encoding="utf-8")
+    (other / "new_forward.lean").write_text("-- wrong problem\n",
+                                            encoding="utf-8")
+
+    _fake_daemon(monkeypatch, scope="p")
+    body = _client(workspace).get("/api/run").json()
+    assert len(body["workers"]) == 1
+    lane = body["workers"][0]
+    assert lane["kind"] == "Forward"
+    assert lane["path"] == ".attempts/aaaa-bbbb/new_forward.lean"
+    assert "brick" in lane["file"]["tail"]
+
+
 def test_run_idle_keeps_telling_the_last_story(
         workspace: Path, monkeypatch) -> None:
     conn = _open_db(workspace)

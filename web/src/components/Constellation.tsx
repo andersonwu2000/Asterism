@@ -987,11 +987,14 @@ export default function Constellation({
           const working =
             engineWorking &&
             (n.goal.status === 'attempting' || n.goal.in_flight)
-          // Attempts heat ring: arc fraction of the shelve threshold,
-          // only meaningful while the goal is still being worked.
+          // Attempts heat gauge: lives burned out of threshold+1, only
+          // meaningful while the goal is still being worked. The +1
+          // keeps the gauge visibly open right up to the shelving
+          // attempt (at attempts/threshold, one-away-from-shelving
+          // drew 4/5 ≈ a closed ring; 4/6 = 2/3 breathes — owner).
           const heatFrac =
             live && n.goal.attempts > 0
-              ? Math.min(n.goal.attempts / shelveThreshold, 1)
+              ? Math.min(n.goal.attempts / (shelveThreshold + 1), 1)
               : 0
           const heatR = r + 3 * boost
           const heatC = 2 * Math.PI * heatR

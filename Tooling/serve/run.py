@@ -16,6 +16,7 @@ the shared aggregation file.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 import urllib.request
@@ -52,6 +53,38 @@ def _tail(path: Path) -> "dict | None":
         "size": int(st.st_size),
         "quiet_sec": int(quiet),
     }
+
+
+#: Context.md title — every agent workarea opens with
+#: '# <Kind> context — <problem>' (agent/context.py)
+_CTX_TITLE_RE = re.compile(r"#\s*(\w+) context — (.+?)\s*$")
+
+
+def _scratch_drafts(workspace: Path) -> "list[tuple[str, str, float, Path]]":
+    """(kind, problem, ctx_mtime, dir) for each live agent workarea
+    under `.attempts/`, identified by its Context.md title line. A
+    Forward worker's bricks live ONLY here until they land (no goal
+    row, no lean_path — its lane looked forever idle while the LSP was
+    hard at work; owner, 2026-07-09). Presentation only: a workarea
+    rmtree'd mid-scan just drops out."""
+    out: list[tuple[str, str, float, Path]] = []
+    try:
+        entries = list((workspace / ".attempts").iterdir())
+    except OSError:
+        return out
+    for d in entries:
+        if d.name.startswith("_") or not d.is_dir():
+            continue
+        ctx = d / "Context.md"
+        try:
+            with ctx.open(encoding="utf-8", errors="replace") as f:
+                m = _CTX_TITLE_RE.match(f.readline())
+            if m:
+                out.append((m.group(1), m.group(2), ctx.stat().st_mtime, d))
+        except OSError:
+            continue
+    out.sort(key=lambda t: t[2])
+    return out
 
 
 # ---------------------------------------------------------------------
@@ -185,9 +218,11 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
     # gate as the board: a dead owner's lease is residue, not work)
     live_pid = _data._live_daemon_pid(d)
     if live_pid is not None:
+        drafts: "list[tuple[str, str, float, Path]] | None" = None
         for r in conn.execute(
                 "SELECT q.kind AS kind, q.target_kind AS tk,"
                 " q.target_id AS tid, q.leased_at AS leased_at,"
+                " q.problem AS problem,"
                 " g.slug AS slug, g.statement AS statement,"
                 " g.lean_path AS lean_path"
                 " FROM queue q LEFT JOIN goals g ON q.target_kind = 'Goal'"
@@ -205,6 +240,35 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                 rel = str(r["lean_path"])
                 lane["path"] = rel
                 lane["file"] = _tail(workspace / rel)
+            if lane["file"] is None:
+                # no landed target file (Forward, or a goal whose file
+                # isn't on disk yet) → tail the lane's scratch draft.
+                # Workareas are matched by Context.md title and consumed
+                # per lane (leased_at order vs workarea age), so two
+                # same-kind lanes on one problem get distinct dirs.
+                if drafts is None:
+                    drafts = _scratch_drafts(workspace)
+                match = next(
+                    (t for t in drafts
+                     if t[0] == lane["kind"] and t[1] == str(r["problem"])),
+                    None)
+                if match is not None:
+                    drafts.remove(match)
+                    newest: "Path | None" = None
+                    newest_m = -1.0
+                    try:
+                        for f in match[3].glob("*.lean"):
+                            if f.name.startswith("_"):
+                                continue  # probe/audit helpers, not drafts
+                            mt = f.stat().st_mtime
+                            if mt > newest_m:
+                                newest_m = mt
+                                newest = f
+                    except OSError:
+                        newest = None
+                    if newest is not None:
+                        lane["path"] = newest.relative_to(workspace).as_posix()
+                        lane["file"] = _tail(newest)
             out["workers"].append(lane)
     return out
 
