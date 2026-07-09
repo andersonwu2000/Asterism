@@ -82,27 +82,45 @@ function Install-Python {
     # IWR stamps downloads with the Mark-of-the-Web; SmartScreen can
     # then kill the exe with no console and no story
     try { Unblock-File $exe -ErrorAction SilentlyContinue } catch {}
-    Note 'installing Python (core + pip, no extras)...'
     $ilog = Join-Path $env:TEMP 'asterism-python-setup.log'
-    Remove-Item $ilog -Force -ErrorAction SilentlyContinue
-    # InstallLauncherAllUsers=0: the DEFAULT all-users launcher needs
-    # elevation, so a hidden install died on a UAC prompt nobody saw
-    $proc = Start-Process -FilePath $exe -PassThru -ArgumentList @(
-        '/quiet', ('/log "' + $ilog + '"'),
+    # one bounded installer run; returns the exit code (or $null)
+    function Invoke-PyInstaller([string[]]$extraArgs, [string]$label) {
+        Remove-Item $ilog -Force -ErrorAction SilentlyContinue
+        $args2 = @('/quiet', ('/log "' + $ilog + '"')) + $extraArgs
+        $proc = Start-Process -FilePath $exe -PassThru -ArgumentList $args2
+        $started = Get-Date
+        while (-not $proc.HasExited) {
+            Start-Sleep -Seconds 5
+            $el = [int]((Get-Date) - $started).TotalSeconds
+            if ($el -ge 900) { Warn ($label + ' over 900s - checking what landed'); break }
+            Tick ($label + ' (' + $el + 's)')
+        }
+        if ($proc -and -not $proc.HasExited) { try { Stop-Process -Id $proc.Id -Force } catch {} }
+        return $proc.ExitCode
+    }
+    $installArgs = @(
+        # InstallLauncherAllUsers=0: the DEFAULT all-users launcher
+        # needs elevation - a hidden install died on a UAC prompt
+        # nobody saw
         'InstallAllUsers=0', 'InstallLauncherAllUsers=0', 'PrependPath=1',
         'Include_launcher=1', 'Include_pip=1', 'Include_tcltk=0',
         'Include_doc=0', 'Include_test=0', 'Include_dev=0')
-    $started = Get-Date
-    while (-not $proc.HasExited) {
-        Start-Sleep -Seconds 5
-        $el = [int]((Get-Date) - $started).TotalSeconds
-        if ($el -ge 900) { Warn 'Python installer over 900s - checking what landed'; break }
-        Tick ('installing Python (' + $el + 's)')
+    Note 'installing Python (core + pip, no extras)...'
+    $rc = Invoke-PyInstaller $installArgs 'installing Python'
+    # a PREVIOUS half-dead install leaves per-user MSI registrations
+    # whose cached packages are gone: the bundle then "configures"
+    # instead of installing and dies 0x80070003 path-not-found (seen
+    # live). The cure is its own /uninstall (carried by the bundle,
+    # works without the cache), then one fresh attempt.
+    if ($rc -ne 0 -and $rc -ne 3010 -and (Test-Path $ilog) -and
+        (Select-String -Path $ilog -Pattern 'Failed to configure per-user MSI|0x80070003' -Quiet)) {
+        Note 'a previous half-installed Python is in the way - removing it and retrying...'
+        [void](Invoke-PyInstaller @('/uninstall') 'removing the old Python')
+        Note 'reinstalling Python...'
+        $rc = Invoke-PyInstaller $installArgs 'reinstalling Python'
     }
-    if ($proc -and -not $proc.HasExited) { try { Stop-Process -Id $proc.Id -Force } catch {} }
     # the exit code has a story to tell - tell it (owner: "did not
     # install" alone left a failure undiagnosable)
-    $rc = $proc.ExitCode
     if ($rc -ne 0 -and $null -ne $rc) {
         $why = switch ($rc) {
             3010    { 'installed, but Windows wants a reboot to finish' }
@@ -110,7 +128,6 @@ function Install-Python {
             1618    { 'another installation is already running - finish or reboot, then retry' }
             1638    { 'a conflicting Python version is already present' }
             5       { 'access denied - antivirus or policy blocked it' }
-            1625    { 'blocked by system policy' }
             default { 'installer exit code ' + $rc }
         }
         Warn ('Python installer: ' + $why)
@@ -121,6 +138,9 @@ function Install-Python {
             if (-not $err) { $err = Get-Content $ilog -Tail 6 -ErrorAction SilentlyContinue }
             foreach ($l in $err) { Note ('  ' + $l) }
             Note ('  full installer log: ' + $ilog)
+        }
+        if ($rc -ne 3010) {
+            Note '  manual fix: Settings > Apps > remove every "Python 3.12" entry, then press the button again'
         }
     }
     $py = Get-PyVersion
