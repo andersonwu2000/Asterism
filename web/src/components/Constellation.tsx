@@ -56,6 +56,7 @@ function citePath(
   b: { x: number; y: number },
   from: number,
   to: number,
+  trimEnd = 0,
 ): { d: string; len: number } {
   const dx = b.x - a.x
   const dy = b.y - a.y
@@ -63,7 +64,20 @@ function citePath(
   const bow = Math.min(150, len * 0.18) * ((from + to) % 2 === 0 ? 1 : -1)
   const mx = (a.x + b.x) / 2 + (-dy / len) * bow
   const my = (a.y + b.y) / 2 + (dx / len) * bow
-  return { d: `M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`, len }
+  let bx = b.x
+  let by = b.y
+  if (trimEnd > 0) {
+    // pull the endpoint back along the arrival tangent so a marker's
+    // tip touches the star's RIM instead of drowning under the dot;
+    // cap so a short arc can never invert
+    const tx = b.x - mx
+    const ty = b.y - my
+    const tl = Math.hypot(tx, ty) || 1
+    const t = Math.min(trimEnd, len * 0.4)
+    bx = b.x - (tx / tl) * t
+    by = b.y - (ty / tl) * t
+  }
+  return { d: `M ${a.x} ${a.y} Q ${mx} ${my} ${bx} ${by}`, len }
 }
 
 function computeFit(el: HTMLElement, l: ConstellationLayout): View {
@@ -388,7 +402,7 @@ export default function Constellation({
   const nodeEls = useRef(new Map<number, SVGGElement>())
   const juncEls = useRef(new Map<number, SVGGElement>())
   const edgeEls = useRef(
-    new Map<SVGElement, { from: number; to: number; cite: boolean }>(),
+    new Map<SVGElement, { from: number; to: number; cite: boolean; rTo?: number }>(),
   )
   const stemEls = useRef(new Map<SVGLineElement, { parent: number; sid: number }>())
   const branchEls = useRef(
@@ -413,6 +427,12 @@ export default function Constellation({
     const step = Math.log(1.08)
     return Math.exp(Math.round(Math.log(Math.max(k, 0.05)) / step) * step)
   }, [k])
+  // the stars' shared size boost, mirrored into a ref so the edge
+  // layer and the rAF animator can trim arcs to the CURRENT rim
+  // without taking a zoom-bucket dependency (a hover refresh corrects
+  // any staleness within the same interaction)
+  const boostRef = useRef(1)
+  boostRef.current = Math.min(Math.max(1, 0.78 / kq), 4)
 
   useLayoutEffect(() => {
     const sameScene = sceneRef.current === sceneKey
@@ -486,7 +506,12 @@ export default function Constellation({
         const b = shown.get(m.to)
         if (!a || !b) continue
         if (m.cite) {
-          el.setAttribute('d', citePath(a, b, m.from, m.to).d)
+          // an arc carrying a direction marker keeps its rim trim
+          // through the glide (attribute presence IS the touched state)
+          const trim = el.hasAttribute('marker-end')
+            ? (m.rTo ?? 0) * boostRef.current + 2
+            : 0
+          el.setAttribute('d', citePath(a, b, m.from, m.to, trim).d)
         } else {
           el.setAttribute('x1', String(a.x))
           el.setAttribute('y1', String(a.y))
@@ -771,7 +796,12 @@ export default function Constellation({
           // endpoint attributes — the registry must know which
           const reg = (curved: boolean) => (el: SVGElement | null) => {
             if (!el) return
-            edgeEls.current.set(el, { from: e.from, to: e.to, cite: curved })
+            edgeEls.current.set(el, {
+              from: e.from,
+              to: e.to,
+              cite: curved,
+              rTo: radius(b.goal),
+            })
             return () => {
               edgeEls.current.delete(el)
             }
@@ -781,12 +811,15 @@ export default function Constellation({
             // straights merge into fog on cite-heavy skies (sphere:
             // 100+ edges); a bow separates neighbours, and opacity
             // steps down with density so the trees stay in front.
-            const { d, len } = citePath(a, b, e.from, e.to)
+            const touched =
+              citeFocusId !== null && (e.from === citeFocusId || e.to === citeFocusId)
+            // a marked arc stops at the star's rim so the chevron's
+            // tip touches the dot instead of vanishing under it
+            const trim = touched ? radius(b.goal) * boostRef.current + 2 : 0
+            const { d, len } = citePath(a, b, e.from, e.to, trim)
             // long hauls fade further: a cross-sky thread is context,
             // not content — nearby citations stay readable
             const fade = Math.min(1, Math.max(0.35, 320 / len))
-            const touched =
-              citeFocusId !== null && (e.from === citeFocusId || e.to === citeFocusId)
             return (
               <path
                 key={i}
