@@ -317,7 +317,7 @@ function DeleteProblem({ problem }: { problem: string }) {
               <button
                 className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                   match && !busy
-                    ? 'bg-danger text-bg cursor-pointer hover:opacity-90'
+                    ? 'bg-destruct cursor-pointer text-starlight hover:opacity-90'
                     : 'cursor-default border border-edge text-ink-faint'
                 }`}
                 disabled={!match || busy}
