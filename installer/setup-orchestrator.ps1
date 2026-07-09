@@ -79,10 +79,19 @@ function Install-Python {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         try { Invoke-WebRequest -Uri $url -OutFile $exe } catch { Warn ('download failed: ' + $_.Exception.Message); return $false }
     }
+    # IWR stamps downloads with the Mark-of-the-Web; SmartScreen can
+    # then kill the exe with no console and no story
+    try { Unblock-File $exe -ErrorAction SilentlyContinue } catch {}
     Note 'installing Python (core + pip, no extras)...'
+    $ilog = Join-Path $env:TEMP 'asterism-python-setup.log'
+    Remove-Item $ilog -Force -ErrorAction SilentlyContinue
+    # InstallLauncherAllUsers=0: the DEFAULT all-users launcher needs
+    # elevation, so a hidden install died on a UAC prompt nobody saw
     $proc = Start-Process -FilePath $exe -PassThru -ArgumentList @(
-        '/quiet', 'InstallAllUsers=0', 'PrependPath=1', 'Include_launcher=1',
-        'Include_pip=1', 'Include_tcltk=0', 'Include_doc=0', 'Include_test=0', 'Include_dev=0')
+        '/quiet', ('/log "' + $ilog + '"'),
+        'InstallAllUsers=0', 'InstallLauncherAllUsers=0', 'PrependPath=1',
+        'Include_launcher=1', 'Include_pip=1', 'Include_tcltk=0',
+        'Include_doc=0', 'Include_test=0', 'Include_dev=0')
     $started = Get-Date
     while (-not $proc.HasExited) {
         Start-Sleep -Seconds 5
@@ -91,6 +100,29 @@ function Install-Python {
         Tick ('installing Python (' + $el + 's)')
     }
     if ($proc -and -not $proc.HasExited) { try { Stop-Process -Id $proc.Id -Force } catch {} }
+    # the exit code has a story to tell - tell it (owner: "did not
+    # install" alone left a failure undiagnosable)
+    $rc = $proc.ExitCode
+    if ($rc -ne 0 -and $null -ne $rc) {
+        $why = switch ($rc) {
+            3010    { 'installed, but Windows wants a reboot to finish' }
+            1602    { 'cancelled - most likely a declined or unseen elevation prompt' }
+            1618    { 'another installation is already running - finish or reboot, then retry' }
+            1638    { 'a conflicting Python version is already present' }
+            5       { 'access denied - antivirus or policy blocked it' }
+            1625    { 'blocked by system policy' }
+            default { 'installer exit code ' + $rc }
+        }
+        Warn ('Python installer: ' + $why)
+        # pull the installer's own log tail into the progress view
+        if (Test-Path $ilog) {
+            $err = Get-Content $ilog -ErrorAction SilentlyContinue |
+                Where-Object { $_ -match 'error|failed' } | Select-Object -Last 6
+            if (-not $err) { $err = Get-Content $ilog -Tail 6 -ErrorAction SilentlyContinue }
+            foreach ($l in $err) { Note ('  ' + $l) }
+            Note ('  full installer log: ' + $ilog)
+        }
+    }
     $py = Get-PyVersion
     if (-not $py) { return $false }
     # complete pip if the installer left it out
