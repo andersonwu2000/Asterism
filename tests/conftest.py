@@ -85,17 +85,26 @@ def _side_effect_fence(request, monkeypatch: pytest.MonkeyPatch):
         # through to a real — failing — Popen).
         return _re.split(r"[\\/]", str(first))[-1].lower()
 
-    def _fenced_popen(args, *a, **kw):
-        name = _exe_name(args)
-        if name in _FENCED_EXES:
-            pytest.fail(
-                f"side-effect fence: this test tried to spawn {name!r} "
-                f"(argv[0]={args if isinstance(args, str) else args[0]!r}). "
-                "A toolchain/LLM stub was bypassed — stub `agent.spawn_llm` "
-                "/ `gateway_lifecycle.verify_file` (or the layer this call "
-                "escaped from), or mark the test `real_lake`.",
-                pytrace=True)
-        return _REAL_POPEN(args, *a, **kw)
+    # A CLASS, not a function: modules first-imported while the fence
+    # is up may evaluate `subprocess.Popen[bytes]` annotations at class
+    # definition time (mcp's win32 utilities do) — a plain function
+    # isn't subscriptable and the import exploded, but only in isolated
+    # runs where no earlier collection had cached the import
+    # (test_gateway_lifecycle.py alone, 2026-07-09).
+    class _FencedPopen(_REAL_POPEN):
+        def __init__(self, args, *a, **kw):
+            name = _exe_name(args)
+            if name in _FENCED_EXES:
+                pytest.fail(
+                    f"side-effect fence: this test tried to spawn {name!r} "
+                    f"(argv[0]="
+                    f"{args if isinstance(args, str) else args[0]!r}). "
+                    "A toolchain/LLM stub was bypassed — stub "
+                    "`agent.spawn_llm` / `gateway_lifecycle.verify_file` "
+                    "(or the layer this call escaped from), or mark the "
+                    "test `real_lake`.",
+                    pytrace=True)
+            super().__init__(args, *a, **kw)
 
     def _fenced_connect(self, address):
         host = address[0] if isinstance(address, tuple) else address
@@ -108,7 +117,7 @@ def _side_effect_fence(request, monkeypatch: pytest.MonkeyPatch):
                 pytrace=True)
         return _REAL_CONNECT(self, address)
 
-    monkeypatch.setattr(subprocess, "Popen", _fenced_popen)
+    monkeypatch.setattr(subprocess, "Popen", _FencedPopen)
     monkeypatch.setattr(socket.socket, "connect", _fenced_connect)
     yield
 
