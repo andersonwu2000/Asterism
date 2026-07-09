@@ -2072,6 +2072,23 @@ def cmd_regress(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_knowledge_stats(args: argparse.Namespace) -> int:
+    """Offline knowledge-layer telemetry (read-only; safe alongside a
+    running daemon). See Tooling/quality/knowledge_stats.py for metric
+    semantics — the presearch citation number is a drift canary, NOT
+    the value metric."""
+    import sqlite3 as _sq
+    from ..core import config as _config
+    from ..quality import knowledge_stats
+    workspace = _config.resolve_workspace(getattr(args, "workspace", None))
+    conn = _sq.connect(
+        f"file:{(workspace / 'asterism.db').as_posix()}?mode=ro", uri=True)
+    conn.row_factory = _sq.Row
+    print(knowledge_stats.render(conn, workspace,
+                                 problem_like=args.problem))
+    return 0
+
+
 def cmd_drift_check(args: argparse.Namespace) -> int:
     """Consistency gate, two layers (run with the daemon STOPPED — a
     mid-tick snapshot can transiently trip the tree predicates):
@@ -2501,6 +2518,15 @@ def main(argv: list[str] | None = None) -> int:
         "--scope", type=str, default=None, metavar="PROBLEM",
         help="limit to a problem (LIKE pattern), e.g. residue_thm")
     p_drift.set_defaults(func=cmd_drift_check)
+
+    p_kstats = sub.add_parser(
+        "knowledge-stats",
+        help="offline knowledge-layer telemetry (presearch citation "
+             "canary / hint-probe free wins / lesson counts; read-only)")
+    p_kstats.add_argument(
+        "--problem", type=str, default=None, metavar="LIKE",
+        help="SQL LIKE filter, e.g. 'Putnam.%%'")
+    p_kstats.set_defaults(func=cmd_knowledge_stats)
 
     p_libbackfill = sub.add_parser(
         "library-backfill-declinfo",
