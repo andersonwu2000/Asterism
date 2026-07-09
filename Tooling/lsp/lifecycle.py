@@ -159,6 +159,102 @@ def _desired_pool(workspace: Path) -> int | None:
         return None
 
 
+def _interactive_slots(workspace: Path) -> int:
+    """The serve UI's reserved slot count — warms alongside the pipeline
+    pool, so warm-time budgets must count it too."""
+    try:
+        from ..core import config
+        return config.get("gateway.interactive_slots", default=1,
+                          env_var="ASTERISM_INTERACTIVE_SLOTS",
+                          cast=int, workspace=workspace)
+    except Exception:  # noqa: BLE001 — config read is best-effort
+        return 1
+
+
+# Peak RSS of one warm worker holding the full Mathlib env, empirical
+# (dev workstation ~2.5-3 GB steady, higher during elaboration). Used
+# only to DOWNSIZE an unaffordable pool — never to grow it.
+_WORKER_RAM_GB = 3.5
+
+
+def physical_ram_gb() -> "tuple[float, float] | None":
+    """(available, total) physical memory in GB, or None when
+    unknowable (then no clamp applies — same as today's behaviour)."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            class _MemStatus(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong),
+                            ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_uint64),
+                            ("ullAvailPhys", ctypes.c_uint64),
+                            ("ullTotalPageFile", ctypes.c_uint64),
+                            ("ullAvailPageFile", ctypes.c_uint64),
+                            ("ullTotalVirtual", ctypes.c_uint64),
+                            ("ullAvailVirtual", ctypes.c_uint64),
+                            ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+
+            st = _MemStatus()
+            st.dwLength = ctypes.sizeof(_MemStatus)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(
+                    ctypes.byref(st)):
+                return None
+            return st.ullAvailPhys / 2**30, st.ullTotalPhys / 2**30
+        avail = total = None
+        with open("/proc/meminfo", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    avail = int(line.split()[1]) / 2**20  # kB → GB
+                elif line.startswith("MemTotal:"):
+                    total = int(line.split()[1]) / 2**20
+        if avail is None or total is None:
+            return None
+        return avail, total
+    except Exception:  # noqa: BLE001 — a RAM probe must never crash startup
+        return None
+
+
+def _ram_budget_gb() -> float | None:
+    """What the worker pool may plan to occupy. `max(available, 60% of
+    total)`: raw 'available' badly undersells a working machine (the
+    32 GB dev workstation reports ~6 GB available yet warms 4+1 workers
+    daily — Windows counts reclaimable standby cache as unavailable),
+    while total alone ignores genuinely small machines. 60% of total
+    leaves the OS and the user's apps their share on small boxes."""
+    mem = physical_ram_gb()
+    if mem is None:
+        return None
+    avail, total = mem
+    return max(avail, 0.6 * total)
+
+
+def ram_clamped_pool(configured: int, n_interactive: int,
+                     budget_gb: float | None = None
+                     ) -> tuple[int, str | None]:
+    """Downsize the pipeline pool to what physical memory can actually
+    hold (each worker keeps a multi-GB Mathlib env; an overcommitted
+    warm-up pages itself past every timeout — jtyy's 8 GB machine,
+    2026-07-09, slot 0 not done after 300s). Returns (effective_pool,
+    reason) where reason is None when no clamp applied. Interactive
+    slots are counted against the budget but never clamped (the
+    editor's slot is a product surface); the pool never drops below 1
+    and is never raised."""
+    if budget_gb is None:
+        budget_gb = _ram_budget_gb()
+    if budget_gb is None or configured <= 1:
+        return configured, None
+    affordable = int(budget_gb // _WORKER_RAM_GB)
+    effective = max(1, min(configured, affordable - n_interactive))
+    if effective >= configured:
+        return configured, None
+    return effective, (
+        f"RAM budget {budget_gb:.1f} GB affords ~{max(affordable, 0)} "
+        f"Mathlib workers at {_WORKER_RAM_GB} GB each — pool "
+        f"{configured} → {effective} (+{n_interactive} interactive); "
+        f"raise dispatch.pool only with more memory")
+
+
 def _kill_stale_gateway(pid) -> None:
     """Kill a reused gateway whose worker count no longer matches
     `dispatch.pool`, then wait for the port to free so a fresh gateway can
@@ -199,6 +295,45 @@ def kill_current_gateway() -> None:
         print(f"[gateway] kill after contract failure: {e}", flush=True)
 
 
+def _relay_gateway_log(path: Path, pos: int) -> int:
+    """Print gateway.log lines appended since `pos` into the daemon's
+    own log, returning the new offset. The warm wait is minutes long
+    and every silent wait reads as a hang — the gateway's slot-warm
+    progress is the heartbeat. Best-effort: relay failure never
+    disturbs the wait."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(pos)
+            chunk = f.read()
+    except OSError:
+        return pos
+    if not chunk:
+        return pos
+    # hold back a trailing partial line until its newline arrives
+    cut = chunk.rfind(b"\n") + 1
+    if cut == 0:
+        return pos
+    for line in chunk[:cut].decode("utf-8", "replace").splitlines():
+        if line.strip():
+            print(line, flush=True)
+    return pos + cut
+
+
+def _gateway_log_tail(path: Path, max_bytes: int = 2000) -> str:
+    """The last stretch of gateway.log, formatted for embedding in a
+    startup-failure message — the gateway's own words are the first
+    diagnostic, and nobody should need to go dig the file out by hand
+    (jtyy triage, 2026-07-09)."""
+    try:
+        data = path.read_bytes()[-max_bytes:]
+    except OSError:
+        return ""
+    txt = data.decode("utf-8", "replace").strip()
+    if not txt:
+        return ""
+    return f"\n--- {path} (tail) ---\n{txt}"
+
+
 def start_gateway(workspace: Path,
                   ready_timeout: float | None = None) -> subprocess.Popen:
     """Launch `python -m Tooling.lsp_gateway` as subprocess. Blocks
@@ -209,13 +344,14 @@ def start_gateway(workspace: Path,
     `ready_timeout` (seconds): outer wait budget. Default resolution:
       1. `ASTERISM_GATEWAY_READY_TIMEOUT` env var (operator escape hatch
          for under-spec workstations / cold mathlib caches)
-      2. 600.0 — must be ≥ the gateway subprocess's inner
-         `_ensure_backend_ready(timeout=600.0)` (gateway.py:1158),
-         otherwise the outer wait fires before the inner one even
-         had a chance to succeed. Pre-Phase 2 default was 300.0;
-         empirically tight on cold mathlib + low-RAM machines (PN
-         regression 2026-05-18 hit it with Civ VI / Chrome eating
-         ~25 GB).
+      2. scaled to the CONFIGURED slot count: 300s per slot + 600s —
+         the gateway tolerates up to 300s per slot serially
+         (`wait_for_file_done`) and its inner budget scales the same
+         way from its EFFECTIVE (RAM-clamped, ≤ configured) count, so
+         the outer wait is always the more generous one. A flat 600s
+         judged a legally-still-warming gateway dead on slow machines
+         (jtyy's 8 GB laptop, 2026-07-09) while the gateway itself was
+         allowed 5×300s.
     """
     if ready_timeout is None:
         env_val = os.environ.get("ASTERISM_GATEWAY_READY_TIMEOUT")
@@ -225,7 +361,9 @@ def start_gateway(workspace: Path,
             except ValueError:
                 pass
         if ready_timeout is None:
-            ready_timeout = 600.0
+            slots = (_desired_pool(workspace) or 4) \
+                + _interactive_slots(workspace)
+            ready_timeout = 300.0 * slots + 600.0
     # A healthy gateway already on our port is reused (warming Mathlib
     # costs minutes, so reuse across runs is a feature) — BUT only if its
     # worker count matches the current `dispatch.pool`. The gateway sizes
@@ -245,7 +383,14 @@ def start_gateway(workspace: Path,
     if pre is not None:
         if pre.get("backend_ready"):
             want = _desired_pool(workspace)
-            have = pre.get("workers_total")
+            # Compare yaml-to-yaml: the gateway may have RAM-clamped its
+            # EFFECTIVE pool below the configured one (`ram_clamped_pool`),
+            # and comparing dispatch.pool against the effective count
+            # would kill+relaunch a perfectly matched gateway on every
+            # daemon start. Old builds without the field fall back to
+            # the effective count (they predate the clamp, so the two
+            # were equal anyway).
+            have = pre.get("workers_configured", pre.get("workers_total"))
             gw_fp = pre.get("code_fingerprint")
             cur_fp = code_fingerprint()
             if gw_fp != cur_fp:
@@ -296,6 +441,9 @@ def start_gateway(workspace: Path,
     log_dir.mkdir(parents=True, exist_ok=True)
     gateway_log = log_dir / "gateway.log"
     gateway_log_fp = open(gateway_log, "ab", buffering=0)
+    # relay starts at the pre-launch end of file ('a'-mode tell() is
+    # not guaranteed to sit at EOF before the first write)
+    relay_pos = gateway_log.stat().st_size
     print(f"[gateway] launching subprocess (port {_gateway_port()}); "
           f"log={gateway_log}", flush=True)
     # The gateway is reused across daemon restarts (warming Mathlib costs
@@ -329,10 +477,12 @@ def start_gateway(workspace: Path,
     deadline = time.monotonic() + ready_timeout
     last_status = None
     while time.monotonic() < deadline:
+        relay_pos = _relay_gateway_log(gateway_log, relay_pos)
         if proc.poll() is not None:
             raise RuntimeError(
                 f"gateway subprocess exited rc={proc.returncode} "
-                f"during startup (see stderr above)")
+                f"during startup"
+                + _gateway_log_tail(gateway_log))
         status = _ping_health(timeout=2.0)
         if status is not None and status.get("backend_ready"):
             elapsed = ready_timeout - (deadline - time.monotonic())
@@ -342,7 +492,9 @@ def start_gateway(workspace: Path,
         time.sleep(2.0)
     proc.terminate()
     raise RuntimeError(
-        f"gateway not ready within {ready_timeout}s; last_status={last_status}")
+        f"gateway not ready within {ready_timeout}s; "
+        f"last_status={last_status}"
+        + _gateway_log_tail(gateway_log))
 
 
 _VERIFY_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)

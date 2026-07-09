@@ -295,6 +295,74 @@ def test_start_gateway_relaunches_on_worker_mismatch(
     assert isinstance(proc, _FakeProc)   # relaunched a fresh one
 
 
+def test_start_gateway_reuses_ram_clamped_gateway(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A gateway that RAM-clamped its effective pool below dispatch.pool
+    is a healthy match, not drift: the reuse gate compares yaml-to-yaml
+    (workers_configured), so it must NOT kill+relaunch — that would
+    re-pay the multi-minute warm on every daemon start on the very
+    machines the clamp exists for (8 GB, 2026-07-09)."""
+    monkeypatch.setattr(gateway_lifecycle, "code_fingerprint", lambda: "fp1")
+    monkeypatch.setattr(gateway_lifecycle, "_ping_health",
+        lambda timeout=1.0: {"backend_ready": True, "workers_total": 1,
+                             "workers_configured": 4,
+                             "pid": 999, "code_fingerprint": "fp1"})
+    monkeypatch.setattr(gateway_lifecycle, "_desired_pool", lambda ws: 4)
+    killed = {"n": 0}
+    monkeypatch.setattr(gateway_lifecycle, "_kill_stale_gateway",
+                        lambda pid: killed.__setitem__("n", killed["n"] + 1))
+
+    def _no_launch(*a, **k):
+        raise AssertionError("should reuse, not relaunch")
+    monkeypatch.setattr(gateway_lifecycle.subprocess, "Popen", _no_launch)
+
+    proc = gateway_lifecycle.start_gateway(tmp_path)
+    assert proc.poll() is None
+    assert killed["n"] == 0
+
+
+def test_ram_clamped_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The clamp only ever lowers, floors at 1, budgets the interactive
+    slot, and stands aside when RAM is unknowable or the pool is
+    already minimal."""
+    clamp = gateway_lifecycle.ram_clamped_pool
+    # RAM unknown → untouched (today's behaviour)
+    monkeypatch.setattr(gateway_lifecycle, "_ram_budget_gb", lambda: None)
+    assert clamp(4, 1) == (4, None)
+    # plenty of RAM → untouched, no message
+    assert clamp(4, 1, budget_gb=32.0) == (4, None)
+    # the jtyy case: 8 GB total → budget 4.8, affords 1 slot, the
+    # interactive slot takes it, pool floors at 1
+    eff, msg = clamp(4, 1, budget_gb=4.8)
+    assert eff == 1 and msg is not None
+    # desperate RAM still floors at 1, never 0 or negative
+    eff, msg = clamp(4, 1, budget_gb=2.0)
+    assert eff == 1 and msg is not None
+    # pool already 1 → nothing to downsize, no message even on tiny RAM
+    assert clamp(1, 1, budget_gb=2.0) == (1, None)
+    # mid case: 16 GB budget, 3.5/worker → 4 slots, 1 interactive → 3
+    eff, msg = clamp(4, 1, budget_gb=16.0)
+    assert eff == 3 and msg is not None
+    # never raises
+    assert clamp(2, 1, budget_gb=64.0) == (2, None)
+
+
+def test_ram_budget_undersold_available(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows 'available' badly undersells a working machine (32 GB
+    dev box reports ~6 GB while warming 4+1 daily) — the budget takes
+    max(available, 60% total) so that box is NOT clamped, while a
+    genuinely small 8 GB machine is."""
+    monkeypatch.setattr(gateway_lifecycle, "physical_ram_gb",
+                        lambda: (5.7, 32.0))
+    assert gateway_lifecycle.ram_clamped_pool(4, 1) == (4, None)
+    monkeypatch.setattr(gateway_lifecycle, "physical_ram_gb",
+                        lambda: (4.0, 8.0))
+    eff, msg = gateway_lifecycle.ram_clamped_pool(4, 1)
+    assert eff == 1 and msg is not None
+
+
 def test_start_gateway_relaunches_on_version_skew(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

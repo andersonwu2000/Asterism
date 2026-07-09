@@ -153,6 +153,10 @@ class GatewayState:
     n_cold_warmup: int = 0   # first tool call on this slot for this claim
     n_cold_noswap: int = 0   # swap_in=False (apply_edit / validate_file)
     n_busy_polls: int = 0    # times we slept 0.1s waiting for our slot's lock
+    # The dispatch.pool value this process launched under, BEFORE any
+    # RAM clamp — the daemon's reuse gate compares yaml-to-yaml against
+    # this, so a clamped pool doesn't read as a stale gateway.
+    workers_configured: int | None = None
 
 
 _state = GatewayState()
@@ -252,11 +256,19 @@ def _start_workers(workspace: Path, w_count: int,
             t_slot = time.perf_counter()
             try:
                 client.wait_for_file_done(slot.slot_uri, timeout=300)
+                print(f"[gateway] slot {slot.slot_id} warmed in "
+                      f"{time.perf_counter() - t_slot:.1f}s",
+                      file=sys.stderr, flush=True)
             except TimeoutError:
-                pass
-            print(f"[gateway] slot {slot.slot_id} warmed in "
-                  f"{time.perf_counter() - t_slot:.1f}s",
-                  file=sys.stderr, flush=True)
+                # NOT warm — say so (the old print reported the timeout
+                # as 'warmed in 300.0s', which read as success in jtyy's
+                # triage). The slot stays in the pool; its first tool
+                # call waits out the remaining elaboration.
+                print(f"[gateway] slot {slot.slot_id} warm TIMEOUT "
+                      f"after {time.perf_counter() - t_slot:.1f}s — "
+                      f"continuing; still elaborating in background "
+                      f"(machine under-spec for this pool size?)",
+                      file=sys.stderr, flush=True)
 
         _state.workers = slots
         elapsed = time.perf_counter() - t0
@@ -2489,6 +2501,12 @@ async def health(request: Request):
     return JSONResponse({
         "backend_ready": backend_ok,
         "workers_total": n_workers,
+        # The pre-RAM-clamp dispatch.pool this process launched under —
+        # the daemon's reuse gate compares its yaml against THIS (a
+        # clamped effective pool is a healthy state, not drift).
+        "workers_configured": (_state.workers_configured
+                               if _state.workers_configured is not None
+                               else n_workers),
         "workers_interactive": n_interactive,
         "workers_busy": n_busy,
         "sessions_active": n_sessions,
@@ -2570,6 +2588,18 @@ def main() -> None:
         workspace=workspace,
     )
 
+    # Downsize to what physical memory can hold — an overcommitted pool
+    # pages its own warm-up to death (5 workers × multi-GB Mathlib on an
+    # 8 GB machine: slot 0 not done after 300s). Yaml is intent; RAM is
+    # law. The configured value still goes to /health so the daemon's
+    # reuse gate compares yaml-to-yaml.
+    from .lifecycle import ram_clamped_pool
+    _state.workers_configured = w_count
+    w_count, clamp_msg = ram_clamped_pool(w_count, n_interactive)
+    if clamp_msg:
+        print(f"[gateway] RAM clamp: {clamp_msg}",
+              file=sys.stderr, flush=True)
+
     print(f"[gateway] starting; workspace={workspace} port={port} "
           f"workers={w_count}+{n_interactive} interactive",
           file=sys.stderr, flush=True)
@@ -2614,7 +2644,13 @@ def main() -> None:
     # pins a worker (2026-06-12 hang fix — see `_wedge_watchdog_loop`).
     threading.Thread(target=_wedge_watchdog_loop,
                      daemon=True, name="gateway-wedge-watchdog").start()
-    err = _ensure_backend_ready(timeout=600.0)
+    # Inner warm budget scales with the EFFECTIVE slot count: the warm
+    # loop legally tolerates 300s per slot serially, so a flat 600s
+    # contradicted our own tolerance at any pool ≥ 2. The daemon's
+    # outer wait scales from the CONFIGURED (≥ effective) count and
+    # stays the more generous of the two.
+    err = _ensure_backend_ready(
+        timeout=300.0 * (w_count + n_interactive) + 300.0)
     if err:
         print(f"[gateway] FATAL: {err}", file=sys.stderr, flush=True)
         sys.exit(3)
