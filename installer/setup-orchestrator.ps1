@@ -94,16 +94,19 @@ function Install-Python {
     $py = Get-PyVersion
     if (-not $py) { return $false }
     # complete pip if the installer left it out
-    if (-not (& (Resolve-Py) -3.12 -m pip --version 2>$null)) {
+    $tag = Get-PyTag
+    if ($tag -and -not (& (Resolve-Py) $tag -m pip --version 2>$null)) {
         Note 'adding pip (ensurepip)...'
-        & (Resolve-Py) -3.12 -m ensurepip --upgrade 2>$null | Out-Null
+        & (Resolve-Py) $tag -m ensurepip --upgrade 2>$null | Out-Null
     }
     return [bool](Get-PyVersion)
 }
 
 function Install-Engine($py) {
     Note 'installing the Asterism engine...'
-    Run-Stream $py @('-3.12', '-m', 'pip', 'install', '-e', $Root, '--quiet', '--disable-pip-version-check') $null | Out-Null
+    $tag = Get-PyTag
+    if (-not $tag) { return $false }
+    Run-Stream $py @($tag, '-m', 'pip', 'install', '-e', $Root, '--quiet', '--disable-pip-version-check') $null | Out-Null
     return (Test-Engine $py)
 }
 
@@ -200,7 +203,9 @@ function Start-Serve($py) {
     # Tooling.core.cli serve` is the codebase's own canonical invocation.
     # cwd = repo root - serve needs lakefile.lean, Problems/, Library/ and
     # Tooling/prompts/ at runtime.
-    Start-Process -FilePath $py -ArgumentList @('-3.12', '-m', 'Tooling.core.cli', 'serve') `
+    $tag = Get-PyTag
+    if (-not $tag) { return $false }
+    Start-Process -FilePath $py -ArgumentList @($tag, '-m', 'Tooling.core.cli', 'serve') `
         -WorkingDirectory $Root -WindowStyle Hidden
     # wait for the port to bind so "everything is ready" never fires while
     # the console is still unreachable (the page hands off on engine_up)
@@ -350,7 +355,14 @@ try {
     }
 
     if ($failed.Count -gt 0) { Set-Content $DoneMarker 'failed' -Encoding ASCII }
-    else { Set-Content $DoneMarker 'done' -Encoding ASCII }
+    else {
+        # success: the downloaded installers have served their purpose
+        # (owner: clean up the packages once everything is in) - a
+        # retry after failure keeps them for the resume instead
+        Remove-Item (Join-Path $env:TEMP ('python-' + $PyVer + '-amd64.exe')) -Force -ErrorAction SilentlyContinue
+        Remove-Item (Join-Path $env:TEMP 'elan-init.ps1') -Force -ErrorAction SilentlyContinue
+        Set-Content $DoneMarker 'done' -Encoding ASCII
+    }
 } catch {
     Human ('setup hit an error: ' + $_.Exception.Message)
     Set-Content $DoneMarker 'failed' -Encoding ASCII

@@ -23,7 +23,12 @@ if (-not $up) {
             if (Test-Path $p) { $py = $p; break }
         }
     }
-    Start-Process -FilePath $py -ArgumentList @('-3.12', '-m', 'Tooling.core.cli', 'serve') `
+    # engine needs >=3.12, not ==3.12 (a pre-installed 3.13 counts)
+    $tag = '-3.12'
+    foreach ($t in @('-3.12', '-3.13', '-3.14')) {
+        try { if (& $py $t -V 2>$null) { $tag = $t; break } } catch {}
+    }
+    Start-Process -FilePath $py -ArgumentList @($tag, '-m', 'Tooling.core.cli', 'serve') `
         -WorkingDirectory $Root -WindowStyle Hidden
     # wait for the port (fresh start takes a few seconds)
     for ($i = 0; $i -lt 60; $i++) {

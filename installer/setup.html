@@ -125,11 +125,13 @@
           '<label><input type="radio" name="lean" value="install" checked> install Lean for me</label>'+
           '<label><input type="radio" name="lean" value="existing"> I already have Lean</label>'
         card.appendChild(ch)
+        // no location question: the toolchain lives at elan's standard
+        // home (owner, 2026-07-09 - a custom home failed live, the big
+        // disk cost is Mathlib anyway, and a wandering toolchain is a
+        // maintenance debt). The only Lean question left is install vs
+        // point-at-existing.
         var sub = el('div',null,''); sub.style.margin='.2rem 0'
         sub.innerHTML =
-          '<span id="leanInstall"><span style="color:#67696f;font-size:12px">Lean toolchain (~1 GB) goes to </span>'+
-          '<input id="elan" type="text" value="'+esc(s.elan_home).replace(/"/g,'&quot;')+'">'+
-          '<span style="color:#67696f;font-size:12px;margin-left:.5rem">any folder on any drive</span></span>'+
           '<span id="leanExisting" style="display:none"><input id="lake" type="text" placeholder="path to lake.exe or its folder"></span>'
         card.appendChild(sub)
       } else {
@@ -144,7 +146,6 @@
       if (needLean){
         d.addEventListener('change', function(){
           var mode = (d.querySelector('input[name=lean]:checked')||{}).value
-          document.getElementById('leanInstall').style.display = mode==='existing'?'none':''
           document.getElementById('leanExisting').style.display = mode==='existing'?'':'none'
         })
       }
@@ -153,7 +154,6 @@
         var body = { lean_mode:'install' }
         if (needLean){
           body.lean_mode = (d.querySelector('input[name=lean]:checked')||{}).value
-          var elan = document.getElementById('elan'); if (elan) body.elan_home = elan.value
           var lake = document.getElementById('lake'); if (lake) body.lake_path = lake.value
         }
         decisions = body

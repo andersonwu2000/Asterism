@@ -58,11 +58,26 @@ function Resolve-Py {
     return $null
 }
 
-function Get-PyVersion {
+function Get-PyTag {
+    # the engine needs >=3.12 (pyproject), not ==3.12: a user who
+    # pre-installed 3.13 was told "no Python" and the wizard installed
+    # a second one next to it (seen live in a sandbox). Prefer 3.12
+    # (the tested floor), accept newer.
     Refresh-Path
     $p = Resolve-Py
     if (-not $p) { return $null }
-    try { $v = & $p -3.12 -V 2>$null; if ($v) { return "$v".Trim() } } catch {}
+    foreach ($tag in @('-3.12', '-3.13', '-3.14')) {
+        try { $v = & $p $tag -V 2>$null; if ($v) { return $tag } } catch {}
+    }
+    return $null
+}
+
+function Get-PyVersion {
+    $p = Resolve-Py
+    if (-not $p) { return $null }
+    $tag = Get-PyTag
+    if (-not $tag) { return $null }
+    try { $v = & $p $tag -V 2>$null; if ($v) { return "$v".Trim() } } catch {}
     return $null
 }
 
@@ -74,8 +89,10 @@ function Test-Engine($py) {
     # Tooling` was true from the very first second (before pip ran),
     # which made the engine step self-skip and serve start with no deps.
     if (-not $py) { return $false }
+    $tag = Get-PyTag
+    if (-not $tag) { return $false }
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try { $null = & $py -3.12 -P -c 'import Tooling, fastapi, uvicorn' 2>$null; return ($LASTEXITCODE -eq 0) }
+    try { $null = & $py $tag -P -c 'import Tooling, fastapi, uvicorn' 2>$null; return ($LASTEXITCODE -eq 0) }
     catch { return $false } finally { $ErrorActionPreference = $prev }
 }
 
