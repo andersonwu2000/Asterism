@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Asterism installer (macOS / Linux). Run:  bash installer/install.sh
 # Idempotent — re-running skips finished steps. The Windows story
-# ("Setup Asterism.exe", next to this file) is a separate, no-terminal
+# ("Asterism.exe", repo root) is a separate, no-terminal
 # flow.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

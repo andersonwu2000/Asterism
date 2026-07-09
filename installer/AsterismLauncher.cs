@@ -1,12 +1,13 @@
-// Asterism - the everyday front door (owner: a new user's first
-// reflex in the folder is to look for "Asterism.exe", and launch.vbs
-// reads as plumbing, not as a door). ~25 lines, compiled by the
-// csc.exe every Windows ships (see build-stub.ps1); the built exe
-// lives at the repo ROOT next to "Setup Asterism.exe" and carries the
-// asterism icon - the Desktop shortcut points here and inherits it.
+// Asterism - THE front door (owner: one exe, no "which do I click";
+// a new user's first reflex in the folder is to look for
+// "Asterism.exe"). Compiled by the csc.exe every Windows ships (see
+// build-stub.ps1); the built exe lives at the repo ROOT and carries
+// the asterism icon - the Desktop shortcut points here and inherits
+// it.
 //
 // It does one thing and exits: run installer\launch.ps1 hidden, which
-// reuses a running console or starts it, then opens the browser.
+// routes - console up? open it; engine healthy? start the console;
+// anything missing? open the setup page instead.
 using System;
 using System.Diagnostics;
 using System.IO;

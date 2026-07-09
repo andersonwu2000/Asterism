@@ -94,7 +94,7 @@ function ClaudeBanner({ meta }: { meta: Meta | null }) {
       <span className="text-ink">
         {installed
           ? 'Claude Code is not logged in — runs will fail until you log in.'
-          : 'Claude Code is not installed — re-run Setup Asterism.exe to install it.'}
+          : 'Claude Code is not installed — double-click Asterism.exe to install it.'}
       </span>
       {installed && (
         <button
@@ -123,8 +123,8 @@ function LeanBanner({ meta }: { meta: Meta | null }) {
       <span className="bg-warn h-1.5 w-1.5 shrink-0 rounded-full" />
       <span className="text-ink">
         {meta.lean_ready.lake
-          ? 'The math library is missing or incomplete — runs will fail. Re-run Setup Asterism.exe; finished parts are skipped.'
-          : 'The Lean prover is missing or broken — runs will fail. Re-run Setup Asterism.exe; finished parts are skipped.'}
+          ? 'The math library is missing or incomplete — runs will fail. Double-click Asterism.exe to repair; finished parts are skipped.'
+          : 'The Lean prover is missing or broken — runs will fail. Double-click Asterism.exe to repair; finished parts are skipped.'}
       </span>
     </div>
   )

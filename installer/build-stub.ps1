@@ -16,7 +16,6 @@ if (-not (Test-Path $csc)) { throw 'csc.exe not found (.NET Framework 4.x missin
 $icon = Join-Path $here 'asterism.ico'
 $iconArg = if (Test-Path $icon) { "/win32icon:$icon" } else { '/nologo' }
 foreach ($stub in @(
-    @{ src = 'SetupAsterism.cs';   out = 'Setup Asterism.exe' },
     @{ src = 'AsterismLauncher.cs'; out = 'Asterism.exe' }
 )) {
     $out = Join-Path $root $stub.out

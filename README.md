@@ -7,25 +7,26 @@
 **Windows — no terminal, ever:**
 
 1. Get this folder (download & unzip, or clone).
-2. Double-click **`Setup Asterism.exe`**. Your browser opens a setup
-   page that detects what's already on the machine and installs the
-   rest with one button — Python, the engine, Git, the Lean prover
-   (or adopts one you already have), the multi-GB math library, and
-   Claude Code. Each target shows live progress in a checklist; the
-   only step that needs you is the one-time Claude login (a browser
-   tab opens — click Authorize). When it's all green the page hands
-   off to the Asterism console by itself. Then: create a problem,
-   press Run.
+2. Double-click **`Asterism.exe`** — the one door. On a fresh machine
+   your browser opens a setup page that detects what's already there
+   and installs the rest with one button — Python, the engine, Git,
+   the Lean prover (or adopts one you already have), the multi-GB
+   math library, and Claude Code. Each target shows live progress in
+   a checklist; the only step that needs you is the one-time Claude
+   login (a browser tab opens — click Authorize). When it's all green
+   the page hands off to the Asterism console by itself. Every day
+   after, the same exe (or the Desktop shortcut it creates) opens the
+   console directly. Then: create a problem, press Run.
 
    (If Windows SmartScreen objects to a downloaded copy: More info →
    Run anyway. AV blocking the exe entirely? Right-click
    `installer\setup-server.ps1` → Run with PowerShell, then open
    http://127.0.0.1:8641/ in your browser.)
 
-Re-running setup — the exe, or pressing the button again — is always
-safe; finished parts are skipped. (`Setup Asterism.exe` is a ~5 KB stub
-compiled from `installer/SetupAsterism.cs` by `installer/build-stub.ps1`,
-using the C# compiler every Windows ships.)
+Re-running the exe is always safe; if anything is missing or broken it
+reopens the setup page, and finished parts are skipped. (`Asterism.exe`
+is a ~5 KB stub compiled from `installer/AsterismLauncher.cs` by
+`installer/build-stub.ps1`, using the C# compiler every Windows ships.)
 
 **macOS / Linux:** `bash installer/install.sh`, then `asterism serve`
 and open http://127.0.0.1:8642.

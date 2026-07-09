@@ -1,5 +1,5 @@
 # Build the release zip - the MINIMAL CLOSURE someone needs to run
-# Asterism: unzip, double-click "Setup Asterism.exe", done. Everything
+# Asterism: unzip, double-click "Asterism.exe", done. Everything
 # heavy (Python, Git, Lean, Mathlib, Claude Code) is fetched by the
 # bootstrap + browser wizard, so this zip stays a few MB.
 #
@@ -66,4 +66,4 @@ Remove-Item -Recurse -Force $stage
 $mb = [math]::Round((Get-Item $out).Length / 1MB, 2)
 Write-Host ''
 Write-Host ('built: ' + $out + '  (' + $mb + ' MB, @' + $sha + ')') -ForegroundColor Green
-Write-Host 'send this one file; the receiver unzips and double-clicks "Setup Asterism.exe"'
+Write-Host 'send this one file; the receiver unzips and double-clicks "Asterism.exe"'
