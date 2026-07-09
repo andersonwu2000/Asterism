@@ -123,3 +123,4 @@ installer/bootstrap.log
 installer/setup-progress.log
 installer/setup-done.marker
 installer/setup-decisions.json
+installer/setup-orchestrator.pid

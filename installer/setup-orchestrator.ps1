@@ -371,6 +371,11 @@ if ($Lane -eq 'B') { try { Lane-B } catch { Warn ('lane error: ' + $_.Exception.
 
 # ---- main: clear, plan, run BOTH lanes concurrently, join on console -
 try {
+    # PID on disk, not just in the server's memory: the setup server
+    # exits after 2h idle (page closed), and a LATER server must still
+    # recognize this run as alive - or it reports "failed", offers
+    # retry, and a second orchestrator lands on top of this one
+    Set-Content (Join-Path $PSScriptRoot 'setup-orchestrator.pid') $PID -Encoding ASCII
     if (Test-Path $ProgressLog) { Clear-Content $ProgressLog -ErrorAction SilentlyContinue }
     if (Test-Path $DoneMarker) { Remove-Item $DoneMarker -Force -ErrorAction SilentlyContinue }
 

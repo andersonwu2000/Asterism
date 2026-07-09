@@ -19,10 +19,20 @@ $ProgressLog = Join-Path $PSScriptRoot 'setup-progress.log'
 $DoneMarker  = Join-Path $PSScriptRoot 'setup-done.marker'
 $HtmlPath    = Join-Path $PSScriptRoot 'setup.html'
 $script:OrchPid = 0
+$OrchPidFile = Join-Path $PSScriptRoot 'setup-orchestrator.pid'
 
 function Orchestrator-Alive {
-    if (-not $script:OrchPid) { return $false }
-    return [bool](Get-Process -Id $script:OrchPid -ErrorAction SilentlyContinue)
+    # in-memory pid first; else the pid FILE the orchestrator writes -
+    # this server may have restarted (2h idle exit with the page
+    # closed) while the install is still running, and forgetting that
+    # meant a false "failed" + a second orchestrator on retry
+    $pid2 = $script:OrchPid
+    if (-not $pid2 -and (Test-Path $OrchPidFile)) {
+        try { $pid2 = [int](Get-Content $OrchPidFile -Raw).Trim() } catch { $pid2 = 0 }
+    }
+    if (-not $pid2) { return $false }
+    $p = Get-Process -Id $pid2 -ErrorAction SilentlyContinue
+    return [bool]($p -and $p.ProcessName -match 'powershell')
 }
 
 function Engine-Up {
