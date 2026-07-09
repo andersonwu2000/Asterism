@@ -4,9 +4,15 @@ Answers "does the money spent producing knowledge come back?" from
 artifacts that already exist (no daemon-path hooks, retroactive over
 past runs):
 
-  * presearch hit-rate — a goal's cached `.presearch/g<gid>.md`
-    candidates vs the landed proof text: how many injected candidate
-    lemmas actually appear in the proof that closed the goal.
+  * presearch DIRECT-CITATION floor — a goal's cached
+    `.presearch/g<gid>.md` candidates vs the landed proof text.
+    ⚠️ NOT presearch's value metric (phase12_kb_design.md 量度修正:
+    the shipped win was moving the search burden/failure spirals OUT
+    of the prover — prover search% 45%→4.4-14%, zero loogle — and
+    hit-rate was "medium ~30%" at ship time and explicitly not the
+    point). Use this counter as a DRIFT CANARY: a collapse far below
+    the historical ~30% any-candidate-used level means presearch
+    quality regressed; a middling number means nothing.
   * hint-probe win rate — Builder `proved` pipelines with NO
     spawn_usage row spent zero LLM quota (the free Mathlib `hint`
     probe closed the goal before any spawn; usage rows exist since
@@ -156,8 +162,10 @@ def render(conn: sqlite3.Connection, workspace: Path, *,
     hs = hint_stats(conn, problem_like=problem_like)
     ls = lesson_stats(conn, problem_like=problem_like)
     lines = ["# knowledge-layer ROI (offline, read-only)", ""]
-    lines.append(f"presearch: {ps['goals_with_presearch']} goals carry a "
-                 f"cached section; {ps['proved_with_candidates']} proved "
+    lines.append(f"presearch (direct-citation floor — drift canary vs "
+                 f"historical ~30%, NOT the value metric; see phase12):")
+    lines.append(f"  {ps['goals_with_presearch']} goals carry a cached "
+                 f"section; {ps['proved_with_candidates']} proved "
                  f"with >=1 candidate")
     if ps["proved_with_candidates"]:
         lines.append(
