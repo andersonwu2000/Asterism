@@ -156,6 +156,8 @@ def test_run_live_lanes_carry_statement_and_file_tail(
     assert lane["statement"] == "a = a"
     assert lane["file"] is not None
     assert "rfl" in lane["file"]["tail"]
+    # the card shows the mathematics: prelude stripped
+    assert "import" not in lane["file"]["tail"]
     assert lane["file"]["quiet_sec"] >= 0
     assert body["burn_run"] is not None
     assert body["burn_5h"] is not None

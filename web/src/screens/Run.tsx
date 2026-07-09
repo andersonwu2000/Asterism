@@ -99,7 +99,7 @@ function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
               </span>
             )}
           </summary>
-          <pre className="mt-1.5 max-h-44 overflow-y-auto rounded-md border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
+          <pre className="mt-1.5 max-h-96 overflow-y-auto rounded-md border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
             <Lean code={w.file.tail} />
           </pre>
         </details>

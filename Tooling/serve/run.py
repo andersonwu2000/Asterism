@@ -26,16 +26,25 @@ from pathlib import Path
 from ..state import db
 from . import data as _data
 
-#: worker-lane file tails stay small — this is a heartbeat, not a
-#: file viewer (the Files tab reads whole files)
-_TAIL_BYTES = 2400
-_TAIL_LINES = 12
+#: sanity clip for a runaway file — proof files are a few KB, and the
+#: card scrolls, so this is a guard, not a window
+_TAIL_BYTES = 32768
+
+#: the file header: imports, opens, namespace/section machinery. The
+#: card shows the MATHEMATICS (owner: 12 lines was too little — strip
+#: the prelude and the trailing `end` closers, show everything else;
+#: the Files tab still reads the raw file)
+_PRELUDE_RE = re.compile(
+    r"^\s*(?:import\s|open[\s(]|namespace\s|set_option\s"
+    r"|section\b|noncomputable section\b)|^\s*$")
+_CLOSER_RE = re.compile(r"^\s*end\b|^\s*$")
 
 
 def _tail(path: Path) -> "dict | None":
-    """Last lines + activity of a file being written. None = no file
-    yet (a worker that has not touched disk is still warming up its
-    prompt — that is itself information)."""
+    """The live body of a file being written — whole text minus the
+    prelude and the closing `end`s. None = no file yet (a worker that
+    has not touched disk is still warming up its prompt — that is
+    itself information)."""
     try:
         st = path.stat()
         with open(path, "rb") as f:
@@ -47,9 +56,13 @@ def _tail(path: Path) -> "dict | None":
     lines = raw.decode("utf-8", errors="replace").splitlines()
     if st.st_size > _TAIL_BYTES and len(lines) > 1:
         lines = lines[1:]  # first line is almost surely cut mid-way
+    while lines and _PRELUDE_RE.match(lines[0]):
+        lines.pop(0)
+    while lines and _CLOSER_RE.match(lines[-1]):
+        lines.pop()
     quiet = max(0.0, datetime.now(timezone.utc).timestamp() - st.st_mtime)
     return {
-        "tail": "\n".join(lines[-_TAIL_LINES:]),
+        "tail": "\n".join(lines),
         "size": int(st.st_size),
         "quiet_sec": int(quiet),
     }
