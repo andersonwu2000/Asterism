@@ -102,6 +102,18 @@ Problems/**/BRIEF.md
 Problems/**/LESSONS.md
 Problems/**/.drafts/
 Problems/**/.presearch/
+# generated classes swept into ea3dd4d/5da3c12 by broad pathspecs
+# (2026-07-10): strategist plan, in-flight patch scratch, proposed-Defs
+# draft, awaiting-human marker — all runtime state, same rule as above.
+Problems/**/_plan.md
+Problems/**/patch.lean
+Problems/**/.proposed_Defs.lean
+Problems/**/_OPERATOR_ATTENTION.md
+# one-off strays untracked in the same sweep (left on disk, exact paths)
+Problems/Geometry/stokes_theorem/stokes_theorem_reference.lean
+Problems/Geometry/stokes_theorem/stokes_theorem_witnesses.lean
+Problems/Topology/mayer_vietoris/Root (1).lean
+Problems/residue_thm/Residue.lean
 
 # Undecided subproject — may be deleted; do not track for now (user
 # call 2026-07-05).
