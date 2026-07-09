@@ -506,6 +506,7 @@ def verify_file(target_path: Path,
                 axioms_for: str | None = None,
                 constants_for: str | None = None,
                 decl_info: bool = False,
+                decl_info_constants: bool = False,
                 timeout: float = 120.0,
                 workspace: Path | None = None,
                 _retry_delays: tuple[float, ...] | None = None,
@@ -565,6 +566,11 @@ def verify_file(target_path: Path,
         # response) from the `Asterism.declInfo` RPC — the syntactic oracle
         # consumers use instead of regex extraction over source text.
         body["decl_info"] = True
+        if decl_info_constants:
+            # Per-decl direct used constants with kernel module
+            # provenance — the input to mechanical import derivation
+            # (task #84). Meaningful only alongside decl_info.
+            body["decl_info_constants"] = True
     # Propagate caller's timeout budget into the inner writeOlean /
     # printAxioms RPCs. Reserve a slice for HTTP + slot-acquire +
     # elaborate before the RPC even runs; what remains is the RPC's

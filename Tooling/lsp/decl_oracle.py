@@ -65,6 +65,11 @@ class OracleDecl:
     cmd_idx: int              # index into DeclOracle.commands
     range: "tuple[int, int, int, int]"       # startLine, startCol, endLine, endCol
     selection: "tuple[int, int, int, int]"
+    # Direct used constants (type + body) with kernel module provenance:
+    # (name, module) — module None = local to the probed file (an
+    # intra-batch sibling). Populated only when the declInfo call asked
+    # for `includeUsedConstants` (task #84 import derivation); () else.
+    used_constants: "tuple[tuple[str, str | None], ...]" = ()
 
 
 def _rng(d: dict) -> "tuple[int, int, int, int]":
@@ -198,6 +203,9 @@ class DeclOracle:
             docstring=d.get("docstring"),
             cmd_idx=d["cmdIdx"],
             range=_rng(d["range"]), selection=_rng(d["selection"]),
+            used_constants=tuple(
+                (str(u.get("name")), u.get("module"))
+                for u in (d.get("usedConstants") or [])),
         ) for d in decls]
         # 0-based offsets of each 1-based line start, computed on the SAME
         # text slices are taken from.

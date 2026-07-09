@@ -388,6 +388,11 @@ structure DeclInfoParams where
   /-- Pretty-printing signatures costs a `MetaM` pp per decl; callers
   that only need names/ranges/flags can skip it. -/
   includeSignatures : Bool := true
+  /-- Per-decl direct used constants with kernel module provenance —
+  the input to mechanical import derivation (task #84). Off by
+  default: the payload grows with proof size and most declInfo
+  consumers (statement mint, skeleton rebuild) don't need it. -/
+  includeUsedConstants : Bool := false
   deriving FromJson, ToJson
 
 instance : RpcEncodable DeclInfoParams := inferInstance
@@ -414,6 +419,15 @@ structure CmdEntry where
   declNames : Array String := #[]
   deriving FromJson, ToJson
 
+structure UsedConstEntry where
+  /-- Private-normalized constant name. -/
+  name : String
+  /-- Declaring module; `none` = local to the probed file (an
+  intra-batch sibling in the fracture use-case). Kernel truth via
+  `getModuleIdxFor?` — never a name-shape guess. -/
+  module : Option String := none
+  deriving FromJson, ToJson
+
 structure DeclEntry where
   /-- Kernel name as it lives in the env (private decls keep their
   `_private…` mangled form here). -/
@@ -434,6 +448,12 @@ structure DeclEntry where
   cmdIdx : Nat
   range : SrcRange
   selection : SrcRange
+  /-- Direct used constants of type + body (deduped, internal details
+  dropped) with module provenance. Empty unless
+  `includeUsedConstants`. Unlike `constDepsM` (anchor semantics:
+  theorem bodies skipped), a theorem's PROOF deps are included —
+  import derivation needs the modules the proof cites. -/
+  usedConstants : Array UsedConstEntry := #[]
   deriving FromJson, ToJson
 
 structure DeclInfoResp where
@@ -536,6 +556,21 @@ private def findCmdIdx (commands : Array CmdEntry) (sel : SrcRange) : Nat := Id.
       return i
   return commands.size
 
+/-- Direct dependencies for IMPORT derivation: type + body + ctors.
+Deliberately broader than `constDepsM` (anchor semantics skips
+theorem bodies / Prop-def bodies): a module must be imported for the
+constants the PROOF cites too, not just the statement's. -/
+private def directDepsForImports (info : ConstantInfo) : Array Name :=
+  let tyDeps := info.type.getUsedConstants
+  let bodyDeps := match info with
+    | .defnInfo v => v.value.getUsedConstants
+    | .thmInfo v  => v.value.getUsedConstants
+    | _ => #[]
+  let extra := match info with
+    | .inductInfo v => v.ctors.toArray
+    | _             => #[]
+  tyDeps ++ bodyDeps ++ extra
+
 /-- Assemble `DeclEntry`s for every non-internal local constant.
 `MetaM` for `isProp` / `ppSignature`; per-decl failures degrade that
 field rather than failing the whole response (a decl whose pp throws
@@ -568,6 +603,21 @@ private def declEntriesM (p : DeclInfoParams) (commands : Array CmdEntry) :
     let doc ← findDocString? env n
     let range := declRangeToSrc rs.range
     let selection := declRangeToSrc rs.selectionRange
+    let usedConstants : Array UsedConstEntry :=
+      if p.includeUsedConstants then Id.run do
+        let mut seen : NameSet := {}
+        let mut acc : Array UsedConstEntry := #[]
+        for c in directDepsForImports info do
+          if seen.contains c then
+            continue
+          seen := seen.insert c
+          let cu := (privateToUserName? c).getD c
+          if cu.isInternalDetail then
+            continue
+          acc := acc.push { name := cu.toString,
+                            module := (moduleNameFor env c).map (·.toString) }
+        pure acc
+      else #[]
     out := out.push {
       fqName := n.toString,
       userName := userName.toString,
@@ -581,6 +631,7 @@ private def declEntriesM (p : DeclInfoParams) (commands : Array CmdEntry) :
       docstring := doc,
       cmdIdx := findCmdIdx commands selection,
       range, selection,
+      usedConstants,
     }
   return out.qsort fun a b =>
     posLE a.range.startLine a.range.startCol b.range.startLine b.range.startCol

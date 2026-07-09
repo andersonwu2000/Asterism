@@ -1989,6 +1989,7 @@ def _olean_dest_for(workspace: Path, target_path: Path) -> Path | None:
 def _verify_sync(target: Path, content: str, *, write_olean: bool,
                   axioms_for: str | None, constants_for: str | None = None,
                   decl_info: bool = False,
+                  decl_info_constants: bool = False,
                   rpc_timeout: int) -> dict:
     """Sync core of /verify. MUST run off the asyncio event loop —
     `_acquire_slot` does blocking polling on a per-slot lock, which
@@ -2144,7 +2145,8 @@ def _verify_sync(target: Path, content: str, *, write_olean: bool,
                         r = backend.rpc_call(
                             slot.slot_uri,
                             "Asterism.declInfo",
-                            {"includeSignatures": True},
+                            {"includeSignatures": True,
+                             "includeUsedConstants": decl_info_constants},
                             timeout=rpc_timeout,
                         )
                         if r.get("ok"):
@@ -2263,6 +2265,7 @@ async def verify(request: Request):
     axioms_for: str | None = data.get("axioms_for")
     constants_for: str | None = data.get("constants_for")
     decl_info: bool = bool(data.get("decl_info", False))
+    decl_info_constants: bool = bool(data.get("decl_info_constants", False))
     try:
         rpc_timeout = int(data.get("rpc_timeout", 30))
         if rpc_timeout <= 0:
@@ -2286,6 +2289,7 @@ async def verify(request: Request):
         _verify_sync, target, content,
         write_olean=write_olean, axioms_for=axioms_for,
         constants_for=constants_for, decl_info=decl_info,
+        decl_info_constants=decl_info_constants,
         rpc_timeout=rpc_timeout,
     )
     status = result.pop("_status", 200)
@@ -2295,7 +2299,8 @@ async def verify(request: Request):
 def _verify_session_sync(token: str, content: str, *, write_olean: bool,
                          axioms_for: str | None, rpc_timeout: int,
                          wait_timeout: int,
-                         decl_info: bool = False) -> dict:
+                         decl_info: bool = False,
+                         decl_info_constants: bool = False) -> dict:
     """Sync core of /verify_session: verify `content` on the slot CLAIMED by the
     registered session `token` (claimed mode — NOT a borrow), so the session's
     OWN warm slot serves the check.
@@ -2354,7 +2359,9 @@ def _verify_session_sync(token: str, content: str, *, write_olean: bool,
                 try:
                     r = backend.rpc_call(
                         slot.slot_uri, "Asterism.declInfo",
-                        {"includeSignatures": True}, timeout=rpc_timeout)
+                        {"includeSignatures": True,
+                         "includeUsedConstants": decl_info_constants},
+                        timeout=rpc_timeout)
                     if r.get("ok"):
                         decl_info_result = {
                             "commands": list(r.get("commands") or []),
@@ -2446,6 +2453,7 @@ async def verify_session(request: Request):
     write_olean = bool(data.get("write_olean", False))
     axioms_for = data.get("axioms_for")
     decl_info = bool(data.get("decl_info", False))
+    decl_info_constants = bool(data.get("decl_info_constants", False))
     try:
         rpc_timeout = int(data.get("rpc_timeout", 30))
         if rpc_timeout <= 0:
@@ -2466,7 +2474,7 @@ async def verify_session(request: Request):
         _verify_session_sync, str(token), str(content),
         write_olean=write_olean, axioms_for=axioms_for,
         rpc_timeout=rpc_timeout, wait_timeout=wait_timeout,
-        decl_info=decl_info)
+        decl_info=decl_info, decl_info_constants=decl_info_constants)
     status = result.pop("_status", 200)
     return JSONResponse(result, status_code=status)
 
