@@ -260,7 +260,13 @@
     function poll(){
       fetch('/progress').then(function(r){return r.json()}).then(function(p){
         render(p.log||[])
-        if (p.state==='done'){ setTimeout(gotoEngine, 800); return }
+        if (p.state==='done'){
+          // one readable beat before the handoff: the reopen story
+          // (the Desktop shortcut) is told HERE or never
+          document.getElementById('lede').innerHTML =
+            'Everything is ready &mdash; opening the console. Next time, the <b>Asterism</b> shortcut on your Desktop brings you straight here.'
+          setTimeout(gotoEngine, 3000); return
+        }
         if (p.state==='failed'){ document.getElementById('retry').style.display=''; return }
         setTimeout(poll, 1000)
       }).catch(function(){ setTimeout(poll, 1500) })

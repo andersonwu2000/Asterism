@@ -334,7 +334,10 @@ try {
     if ($py -and (Test-Engine $py)) {
         Step 'Asterism console'
         Install-Shortcut
-        if (Start-Serve $py) { $engineUp = $true; Ok 'the console is up' }
+        if (Start-Serve $py) {
+            $engineUp = $true
+            Ok 'up - from now on, the "Asterism" shortcut on your Desktop opens it'
+        }
         else { Warn 'the console did not come up on port 8642 - see the lines above' }
     }
 
