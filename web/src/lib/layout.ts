@@ -1543,10 +1543,41 @@ export function layoutConstellation(
     // exists for: hiding the problem outside the frame)
     const plateLo = PAD - 1e-6
     const plateHi = width - PAD + 1e-6
+    // occupancy law: same-row stars keep half a slot of air. The
+    // pass-level disjointness tests see only the mover's own family —
+    // a leaf hugged inside a branch's span or a foreign tree's node
+    // on the same row is invisible to them, and the objective doesn't
+    // punish overlap, so a crossing-improving block permutation
+    // stacked residue stars pairwise at gap 0 (invisible goals,
+    // 2026-07-09). Same cheat class as the plate flight: a law in
+    // tryMove, not a term in the metric.
+    const OCC_GAP = X_GAP / 2
+    const rowMates = new Map<number, number[]>()
+    for (const id of px.keys()) {
+      const y = pyOf.get(id)
+      if (y === undefined) continue
+      rowMates.set(y, [...(rowMates.get(y) ?? []), id])
+    }
+    const occupancyOk = (moves: [number, number][]): boolean => {
+      const newX = new Map(moves)
+      for (const [id, x] of moves) {
+        const cur = px.get(id)
+        if (cur !== undefined && Math.abs(cur - x) < 1e-9) continue
+        const y = pyOf.get(id)
+        if (y === undefined) continue
+        for (const o of rowMates.get(y) ?? []) {
+          if (o === id) continue
+          const ox = newX.get(o) ?? px.get(o)
+          if (ox !== undefined && Math.abs(ox - x) < OCC_GAP) return false
+        }
+      }
+      return true
+    }
     const tryMove = (moves: [number, number][]): boolean => {
       for (const [, x] of moves) {
         if (x < plateLo || x > plateHi) return false
       }
+      if (!occupancyOk(moves)) return false
       const ids = moves.map(([id]) => id)
       const aff = affectedOf(ids)
       const before = localW(aff)
