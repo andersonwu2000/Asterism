@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
-import { usePoll } from '../lib/api'
-import { Link } from '../lib/router'
+import { apiPost, usePoll } from '../lib/api'
+import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { goalStatusLabel } from '../lib/vocab'
-import { ErrorState, StatusBadge } from '../components/ui'
+import { Button, ErrorState, StatusBadge } from '../components/ui'
 import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
 import StrategyPanel from '../components/StrategyPanel'
@@ -254,6 +254,85 @@ function plainDirective(s: string): string {
     .trim()
 }
 
+/** Destruction tier (owner, 2026-07-09): deleting a problem erases
+ * its folder, proofs and history — heavier ceremony than the in-place
+ * two-step: a floating confirm whose red button (the achromatic law's
+ * one owner-sanctioned exception for irreversible loss) unlocks only
+ * when the problem's name is typed back. The REAL guards — bridged
+ * problems refuse, engine-busy refuses — live in the chokepoint. */
+function DeleteProblem({ problem }: { problem: string }) {
+  const [open, setOpen] = useState(false)
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const match = typed === problem
+  const doDelete = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await apiPost(`/api/problems/${encodeURIComponent(problem)}/delete`, {})
+      navigate('/')
+    } catch (e) {
+      setError(String((e as Error).message))
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="mx-auto max-w-3xl px-4 pt-1 pb-8">
+      <button
+        className="cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink-dim"
+        onClick={() => {
+          setTyped('')
+          setError(null)
+          setOpen(true)
+        }}
+      >
+        delete this problem…
+      </button>
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="w-[26rem] rounded-lg border border-edge bg-surface p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-sm font-medium text-ink">Delete {problem}?</div>
+            <p className="mt-2 text-xs leading-relaxed text-ink-dim">
+              Erases this problem's folder, proofs and history. It cannot be undone.
+            </p>
+            <input
+              className="mt-3 w-full rounded border border-edge bg-bg px-2 py-1.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+              placeholder={`type ${problem} to confirm`}
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              autoFocus
+            />
+            {error && <div className="text-danger mt-2 text-xs">{error}</div>}
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <Button variant="outline" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <button
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                  match && !busy
+                    ? 'bg-danger text-bg cursor-pointer hover:opacity-90'
+                    : 'cursor-default border border-edge text-ink-faint'
+                }`}
+                disabled={!match || busy}
+                onClick={() => void doDelete()}
+              >
+                {busy ? 'Deleting…' : 'Delete forever'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Problem({ name }: { name: string }) {
   const { data, error, loading } = usePoll<ProblemDetail>(
     `/api/problems/${encodeURIComponent(name)}`,
@@ -500,6 +579,7 @@ export default function Problem({ name }: { name: string }) {
               onDirtyChange={setManifestDirty}
               bridged={data.status === 'bridged'}
             />
+            <DeleteProblem problem={data.name} />
           </div>
           {tab === 'goals' && (
             <GoalsList

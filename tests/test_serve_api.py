@@ -560,6 +560,39 @@ def test_approve_ingest_carries_the_library_decision(
     conn.close()
 
 
+def test_delete_problem_guards_and_deletes(workspace: Path,
+                                           monkeypatch) -> None:
+    """Deletion is chokepoint-guarded: bridged problems 409 (their
+    chapter imports the proofs), and a clean delete removes the DB
+    row AND the directory in one act (rule 10)."""
+    from Tooling.state import db as _db
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    _add_problem(conn, "q")
+    _db.mark_library_bridged(conn, "q")
+    conn.commit()
+    conn.close()
+    pdir = workspace / "Problems" / "p"
+    (pdir / "proofs").mkdir(parents=True)
+    (pdir / "Manifest.md").write_text("x", encoding="utf-8")
+    monkeypatch.chdir(workspace)
+    c = _client(workspace)
+    # bridged refuses
+    r = c.post("/api/problems/q/delete")
+    assert r.status_code == 409
+    assert "Library" in r.json()["detail"]
+    # unknown 404s
+    assert c.post("/api/problems/nope/delete").status_code == 404
+    # clean delete: row gone, dir gone
+    r = c.post("/api/problems/p/delete")
+    assert r.status_code == 200
+    assert not pdir.exists()
+    conn = _db.connect(workspace / "asterism.db")
+    assert conn.execute(
+        "SELECT 1 FROM problems WHERE name='p'").fetchone() is None
+    conn.close()
+
+
 def test_approve_harvest_starts_the_run(workspace: Path,
                                         monkeypatch) -> None:
     """'Harvest to Library' harvests NOW (owner call: the click IS the

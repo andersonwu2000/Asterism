@@ -192,6 +192,60 @@ def cmd_init(args: argparse.Namespace) -> int:
     return rc
 
 
+def delete_problem(workspace: Path, problem: str) -> tuple[int, str]:
+    """Delete a problem ENTIRELY — every DB row AND the whole
+    Problems/<p>/ directory, in one chokepoint (rule 10: files and DB
+    move together; shared by the CLI and the serve API).
+
+    Guards, enforced HERE and not just in a UI:
+      - a Library-bridged problem refuses: its chapter files import
+        Problems.<p>.proofs.* and deleting them breaks the Library
+        build — un-harvest first (rc 2).
+      - a daemon currently working this problem refuses (rc 3).
+    """
+    import shutil
+    import time
+    pdir = db.problem_dir(workspace, problem)
+    conn = db.connect(workspace / "asterism.db")
+    try:
+        db.init_schema(conn)
+        conn.execute("PRAGMA foreign_keys = ON")
+        row = conn.execute(
+            "SELECT library_bridged_at FROM problems WHERE name = ?",
+            (problem,)).fetchone()
+        in_db = row is not None
+        if not in_db and not pdir.exists():
+            return 1, f"unknown problem {problem!r}"
+        if row and row["library_bridged_at"]:
+            return 2, (f"{problem} is in the Library — its chapter imports"
+                       " these proofs; un-harvest it first")
+        st = daemon_status(workspace)
+        if st.get("running") and st.get("scope") == problem:
+            return 3, "the engine is working this problem — stop the run first"
+        if in_db:
+            wipe_problem_rows(conn, problem)
+            conn.commit()
+    finally:
+        conn.close()
+    if pdir.exists():
+        # Windows file locks (a just-exited lean/claude tree) clear in
+        # seconds — retry, then report honestly instead of half-deleting
+        last: "Exception | None" = None
+        for attempt in range(4):
+            try:
+                shutil.rmtree(pdir)
+                last = None
+                break
+            except OSError as e:
+                last = e
+                time.sleep(0.5 * (attempt + 1))
+        if last is not None:
+            return 4, (f"DB rows removed, but Problems/{problem}/ is locked"
+                       f" ({last}) — close whatever holds it and delete the"
+                       " folder by hand")
+    return 0, f"deleted {problem}"
+
+
 def init_problem(workspace: Path, problem: str, *,
                  force: bool = False) -> tuple[int, str]:
     """Validate + register a problem (chokepoint shared by CLI + serve).
@@ -687,18 +741,29 @@ def cmd_reset(args: argparse.Namespace) -> int:
     conn = db.connect()
     db.init_schema(conn)
     conn.execute("PRAGMA foreign_keys = ON")
+    n_goals, n_strats = wipe_problem_rows(conn, problem)
+    conn.commit()
+    return _reset_problem_files(workspace, pdir, problem, n_goals, n_strats)
 
-    # Problem-keyed FK children, cleared FIRST (unconditional). Every table with
-    # a `problem → problems(name)` FK blocks the `DELETE FROM problems` below if
-    # it still has rows; `library_decls` also has a `source_goal_id → goals.id`
-    # FK that blocks the goals DELETE. The FK children of `problems(name)` are:
-    # goals + strategist_decisions (handled below by gid/problem) and these two:
-    #   - `library_decls`: a (partially) library-ized problem's classified decls.
-    #   - `kb_entries`: lessons/antipatterns (KB-as-SoT — the old flat LESSONS.md
-    #     sweep's successor; reflection writes a row per global lesson).
-    # Both observed 2026-06-28: derham_dd_zero reset crashed `FOREIGN KEY
-    # constraint failed` at DELETE FROM problems — first on library_decls (2
-    # classified), then on a kb_entries global lesson the run wrote.
+
+def wipe_problem_rows(conn, problem: str) -> "tuple[int, int]":
+    """Delete EVERY DB row keyed to one problem, in FK-safe order — the
+    shared row-wipe under both `asterism reset` and problem deletion
+    (rule 10: files and DB move together, so both callers pair this
+    with their own filesystem action). Caller commits.
+
+    Problem-keyed FK children, cleared FIRST (unconditional). Every table with
+    a `problem → problems(name)` FK blocks the `DELETE FROM problems` below if
+    it still has rows; `library_decls` also has a `source_goal_id → goals.id`
+    FK that blocks the goals DELETE. The FK children of `problems(name)` are:
+    goals + strategist_decisions (handled below by gid/problem) and these two:
+      - `library_decls`: a (partially) library-ized problem's classified decls.
+      - `kb_entries`: lessons/antipatterns (KB-as-SoT — the old flat LESSONS.md
+        sweep's successor; reflection writes a row per global lesson).
+    Both observed 2026-06-28: derham_dd_zero reset crashed `FOREIGN KEY
+    constraint failed` at DELETE FROM problems — first on library_decls (2
+    classified), then on a kb_entries global lesson the run wrote.
+    """
     conn.execute("DELETE FROM library_decls WHERE problem = ?", (problem,))
     conn.execute("DELETE FROM kb_entries WHERE problem = ?", (problem,))
     # v18: the bridge done-marker lives on the problems row — clear it with
@@ -800,8 +865,11 @@ def cmd_reset(args: argparse.Namespace) -> int:
     conn.execute("DELETE FROM problem_papers WHERE problem = ?",
                  (problem,))
     conn.execute("DELETE FROM problems WHERE name = ?", (problem,))
-    conn.commit()
+    return len(gids), len(sids)
 
+
+def _reset_problem_files(workspace: Path, pdir: Path, problem: str,
+                         n_goals: int, n_strats: int) -> int:
     # Filesystem cleanup. Robust against Windows file locks (orphan
     # claude/lean process tree from a previously-killed daemon may
     # still hold handles for a few seconds). Two failure modes from the
@@ -948,7 +1016,7 @@ def cmd_reset(args: argparse.Namespace) -> int:
         return 2
 
     print(f"OK: reset {problem}")
-    print(f"  DB rows: {len(gids)} goals, {len(sids)} strategies cleared")
+    print(f"  DB rows: {n_goals} goals, {n_strats} strategies cleared")
     print(f"  Files: {len(deleted_files)} file(s) removed from proofs/; "
           f"Root.lean preserved (rewrite to sorry-stub manually before re-init)")
     attempts_dir = workspace / ".attempts"

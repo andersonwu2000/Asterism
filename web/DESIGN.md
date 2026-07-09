@@ -52,7 +52,11 @@ ink.
   Prefer dimming over popups.
 - Actions with consequences confirm **in place, two-step** — the
   second click names what happens ("Confirm — engine runs now"). No
-  modal dialogs.
+  modal dialogs — with ONE exception: **irreversible destruction**
+  (deleting a problem) earns a floating confirm whose action button
+  unlocks only when the thing's name is typed back, and that button
+  is the achromatic law's single owner-sanctioned use of red
+  (2026-07-09). Friction proportional to consequence.
 - Engine states speak inside the panel they affect, in plain words.
   The audience is mathematicians: human words in the UI, engine
   vocabulary in tooltips (`web/src/lib/vocab.ts` is the enum→word

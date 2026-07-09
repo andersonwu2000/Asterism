@@ -969,6 +969,21 @@ def create_app(workspace: Path) -> FastAPI:
         from ..core.cli import daemon_status
         return daemon_status(workspace)
 
+    @app.post("/api/problems/{problem}/delete")
+    def delete_problem_ep(problem: str) -> dict:
+        """Destruction tier (owner): the UI gates this behind a
+        type-the-name confirm; the REAL guards (bridged refuses,
+        engine-busy refuses) live in the chokepoint."""
+        from ..core.cli import delete_problem
+        rc, msg = delete_problem(workspace, problem)
+        if rc == 1:
+            raise HTTPException(status_code=404, detail=msg)
+        if rc in (2, 3):
+            raise HTTPException(status_code=409, detail=msg)
+        if rc != 0:
+            raise HTTPException(status_code=500, detail=msg)
+        return {"deleted": problem}
+
     @app.post("/api/daemon/start")
     def daemon_start_ep(body: DaemonStartBody) -> dict:
         """Start the engine on ONE problem. Scope is required and must
