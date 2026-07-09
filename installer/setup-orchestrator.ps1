@@ -45,24 +45,77 @@ function Tick($msg) { Emit ("[TICK|" + $script:CurStep + "] " + $msg) }
 function Human($msg){ Emit ("[HUMAN] " + $msg) }   # a move only the user can make
 
 function Run-Stream($file, $arguments, $cwd, [switch]$AsTick) {
-    # run a command, feeding each output line to the progress log. stderr
-    # merged in (native, no OEM mojibake as Python had). ErrorAction
-    # Continue so a non-zero exit / stderr line never throws past us.
-    # -AsTick: emit each line as a single UPDATING tick instead of piling
-    # up thousands of rows (mathlib cache-get, the Lean toolchain pull).
+    # stream a child's output into the progress log, WITH A HEARTBEAT:
+    # lake's decompression phase rewrites one line with \r for many
+    # minutes, so the old newline pipeline emitted nothing and the page
+    # sat at "100%" looking dead (owner's tester). Async line reads +
+    # a 30s "still working" tick keep the row honestly alive.
+    # -AsTick: emit lines as one UPDATING tick instead of piling rows.
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    $oldloc = Get-Location
     try {
-        if ($cwd) { Set-Location $cwd }
-        & $file @arguments 2>&1 | ForEach-Object {
-            $line = "$_".TrimEnd()
-            if ($line -ne '') { if ($AsTick) { Tick $line } else { Note ("  " + $line) } }
+        # resolve through PATH; .cmd/.bat shims cannot be spawned
+        # directly by CreateProcess and must ride cmd.exe
+        $exe = $file
+        $ci = Get-Command $file -ErrorAction SilentlyContinue
+        if ($ci -and $ci.Source) { $exe = $ci.Source }
+        $argList = @($arguments)
+        if ($exe -match '\.(cmd|bat)$') {
+            $argList = @('/c', ('"' + $exe + '"')) + $argList
+            $exe = Join-Path $env:WINDIR 'System32\cmd.exe'
         }
-        return $LASTEXITCODE
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        $psi.Arguments = (@($argList) | ForEach-Object {
+            if ("$_" -match '[\s"]') { '"' + ("$_" -replace '"', '\"') + '"' } else { "$_" }
+        }) -join ' '
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+        $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+        if ($cwd) { $psi.WorkingDirectory = $cwd }
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $emit = {
+            param($line)
+            $t = "$line".TrimEnd()
+            if ($t -ne '') { if ($AsTick) { Tick $t } else { Note ('  ' + $t) } }
+        }
+        $tOut = $p.StandardOutput.ReadLineAsync()
+        $tErr = $p.StandardError.ReadLineAsync()
+        $lastOut = Get-Date
+        $quiet = 0
+        while ($true) {
+            $moved = $false
+            if ($null -ne $tOut -and $tOut.IsCompleted) {
+                $line = $tOut.Result
+                if ($null -ne $line) { & $emit $line; $tOut = $p.StandardOutput.ReadLineAsync() }
+                else { $tOut = $null }
+                $moved = $true; $lastOut = Get-Date; $quiet = 0
+            }
+            if ($null -ne $tErr -and $tErr.IsCompleted) {
+                $line = $tErr.Result
+                if ($null -ne $line) { & $emit $line; $tErr = $p.StandardError.ReadLineAsync() }
+                else { $tErr = $null }
+                $moved = $true; $lastOut = Get-Date; $quiet = 0
+            }
+            if ($null -eq $tOut -and $null -eq $tErr) { break }
+            if (-not $moved) {
+                Start-Sleep -Milliseconds 200
+                $s = [int]((Get-Date) - $lastOut).TotalSeconds
+                if ($s -ge 30) {
+                    $quiet += $s
+                    Tick ('still working - quiet for ' + $quiet + 's (some phases print nothing)')
+                    $lastOut = Get-Date
+                }
+            }
+        }
+        $p.WaitForExit()
+        return $p.ExitCode
     } catch {
         Note ("  " + $_.Exception.Message); return 1
     } finally {
-        Set-Location $oldloc; $ErrorActionPreference = $prev
+        $ErrorActionPreference = $prev
     }
 }
 
