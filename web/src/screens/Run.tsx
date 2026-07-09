@@ -93,11 +93,13 @@ function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
             {quiet !== null && quiet <= 12
               ? 'writing now'
               : `last write ${duration(quiet ?? 0)} ago`}
-            {' · '}
-            {compactNumber(w.file.size)} bytes
-            {w.path && <span className="ml-1 font-mono">· {w.path.split('/').pop()}</span>}
+            {w.path && (
+              <span className="min-w-0 truncate font-mono" title={w.path}>
+                · {w.path.split('/').pop()}
+              </span>
+            )}
           </summary>
-          <pre className="mt-1.5 max-h-44 overflow-hidden rounded-md border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
+          <pre className="mt-1.5 max-h-44 overflow-y-auto rounded-md border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
             <Lean code={w.file.tail} />
           </pre>
         </details>

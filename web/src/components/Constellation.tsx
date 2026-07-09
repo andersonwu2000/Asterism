@@ -1108,15 +1108,23 @@ export default function Constellation({
                 </circle>
               )}
               {heatFrac > 0 && (
+                // The dash pattern IS the data (arc fraction = attempts
+                // burned), so it must live in USER space: with
+                // non-scaling-stroke the dashes were measured in screen
+                // units and a zoomed-out sky wrapped the first dash all
+                // the way around — a 4/5 gauge read as a CLOSED ring and
+                // masqueraded as the root/claim identity mark (owner,
+                // putnam sky). Stroke width compensates via the zoom
+                // bucket instead; round caps keep the endpoints legible.
                 <circle
                   r={heatR}
                   fill="none"
                   stroke="var(--color-starlight)"
-                  strokeWidth={1.2}
+                  strokeWidth={1.8 / kq}
+                  strokeLinecap="round"
                   strokeOpacity={0.4 + heatFrac * 0.5}
                   strokeDasharray={`${heatC * heatFrac} ${heatC}`}
                   transform="rotate(-90)"
-                  vectorEffect="non-scaling-stroke"
                 />
               )}
               {birthsRef.current.born.has(n.goal.id) && (
@@ -1453,8 +1461,9 @@ export default function Constellation({
               r="4.4"
               fill="none"
               stroke="var(--color-warn)"
-              strokeWidth="1.2"
-              strokeDasharray="14 28"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              strokeDasharray="20 28"
               transform="rotate(-90)"
             />
           </svg>
