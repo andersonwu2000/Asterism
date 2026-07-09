@@ -4,9 +4,11 @@ import { Lean } from './lean'
 /*
  * Markdown display colouring for Manifest prose — the same achromatic
  * axes as the rest of the chrome (brightness carries structure), and
- * the one licensed exception carries over: code inside fences runs
- * through the shared Lean tokenizer, inline `refs` take the amber ink
- * docstring cross-references already use. Display only.
+ * the one licensed exception carries over: ALL code — fenced blocks
+ * and inline `spans` alike — runs through the shared Lean tokenizer
+ * (DESIGN.md: every Lean fragment on every screen goes through it; a
+ * flat amber for inline spans read as one undifferentiated wash on a
+ * ref-dense Manifest, owner 2026-07-09). Display only.
  */
 
 const CODE_SPAN_RE = /(`[^`\n]+`)/
@@ -16,8 +18,10 @@ function inline(text: string, key: number): ReactNode {
   return text.split(CODE_SPAN_RE).map((seg, i) => {
     if (seg.startsWith('`') && seg.endsWith('`') && seg.length > 2) {
       return (
-        <span key={`${key}-c${i}`} className="text-syn-num/90">
-          {seg}
+        <span key={`${key}-c${i}`}>
+          <span className="text-ink-faint">`</span>
+          <Lean code={seg.slice(1, -1)} />
+          <span className="text-ink-faint">`</span>
         </span>
       )
     }
