@@ -793,6 +793,11 @@ export default function Constellation({
                 ref={reg(true)}
                 d={d}
                 fill="none"
+                // direction reads only under focus: the arrow points at
+                // the path END (node b = e.to = the citer). Gated on the
+                // same `touched` that brightens, so the settled sky and
+                // every non-citation hover carry no marker at all.
+                markerEnd={touched ? 'url(#cite-arrow)' : undefined}
                 stroke={edgeStroke(e.strategyStatus, e.kind)}
                 strokeWidth={touched ? 1.4 : 1}
                 strokeOpacity={
@@ -1264,6 +1269,31 @@ export default function Constellation({
             <stop offset="0%" stopColor="#ffffff" stopOpacity="0.02" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
           </radialGradient>
+          {/* Citation direction, drawn ONLY on focused arcs (see the
+              edge layer's `touched` gate): a slender chevron at the
+              path's END — the citer, where knowledge flows in. Achromatic
+              starlight, the exact ink focused citation arcs already carry
+              (edgeStroke → starlight); markerUnits="strokeWidth" keeps it
+              proportional to the thread. The settled sky attaches no
+              marker, so it stays clean (ink is for exceptions). */}
+          <marker
+            id="cite-arrow"
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="5"
+            markerHeight="5"
+            markerUnits="strokeWidth"
+            orient="auto"
+          >
+            <path
+              d="M 2 2 L 9 5 L 2 8"
+              fill="none"
+              stroke="var(--color-starlight)"
+              strokeOpacity="0.6"
+              strokeWidth="1.4"
+            />
+          </marker>
         </defs>
         <rect width="100%" height="100%" fill="url(#nebula-a)" />
         <rect width="100%" height="100%" fill="url(#nebula-b)" />
