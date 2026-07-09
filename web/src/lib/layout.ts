@@ -1201,6 +1201,29 @@ export function layoutConstellation(
       for (const c of ks) sum += localSlot.get(c)! + off(id, c)
       return { d: sum / ks.length, w: 1 }
     }
+    // the band composition (justify, sun-band centring, vertical
+    // adjacency) is a COMPOSITION decision the sweeps must not
+    // re-litigate: a root sitting off-centre would otherwise drag its
+    // whole cascade sideways and beach the sky against one edge
+    // (jordan lost its right half to exactly this — the metric can't
+    // see spatial balance, only the eye caught it). Snapshot each
+    // band's span centre, sweep, then translate every band rigidly
+    // back onto its own centre.
+    const bandCenter = (): Map<number, number> => {
+      const lo = new Map<number, number>()
+      const hi = new Map<number, number>()
+      for (const g of goals) {
+        const b = bandOfNode.get(g.id) ?? 0
+        const x = localSlot.get(g.id)
+        if (x === undefined) continue
+        lo.set(b, Math.min(lo.get(b) ?? Infinity, x))
+        hi.set(b, Math.max(hi.get(b) ?? -Infinity, x))
+      }
+      const c = new Map<number, number>()
+      for (const [b, l] of lo) c.set(b, (l + hi.get(b)!) / 2)
+      return c
+    }
+    const preCenters = bandCenter()
     for (const dir of ['down', 'up', 'down'] as const) {
       const seq = dir === 'down' ? rowsOrdered : [...rowsOrdered].reverse()
       const desire = dir === 'down' ? downDesire : upDesire
@@ -1211,6 +1234,15 @@ export function layoutConstellation(
           (id) => desire(id).w,
         )
       }
+    }
+    const postCenters = bandCenter()
+    for (const g of goals) {
+      const b = bandOfNode.get(g.id) ?? 0
+      const pre = preCenters.get(b)
+      const post = postCenters.get(b)
+      const x = localSlot.get(g.id)
+      if (pre === undefined || post === undefined || x === undefined) continue
+      localSlot.set(g.id, x + pre - post)
     }
   }
   // centering may push a row's left edge past zero — renormalise so the
@@ -1503,7 +1535,18 @@ export function layoutConstellation(
     // count, owner), and without the guard the optimiser learns to
     // hide its problems in the faint layer.
     let modern = true
+    // plate bounds: the band-composition layer projects every tree
+    // into [0, targetW], but the engine had NO such law — a tree
+    // FLUNG off the plate meets fewer segments, crossings drop, and
+    // the move is "an improvement" (jordan lost a tree to x=-3208
+    // exactly this way; same cheat class the brightness ratchet
+    // exists for: hiding the problem outside the frame)
+    const plateLo = PAD - 1e-6
+    const plateHi = width - PAD + 1e-6
     const tryMove = (moves: [number, number][]): boolean => {
+      for (const [, x] of moves) {
+        if (x < plateLo || x > plateHi) return false
+      }
       const ids = moves.map(([id]) => id)
       const aff = affectedOf(ids)
       const before = localW(aff)
@@ -2162,20 +2205,37 @@ export function layoutConstellation(
       // two sweeps: the third buys ~2 crossings on residue for +65%
       // engine time — the layout runs on every data refresh, so the
       // main thread wins that trade
+      const tap = (name: string): void => {
+        const dbg = (globalThis as { __skyDbg?: Record<string, number> }).__skyDbg
+        if (!dbg) return
+        let lo = Infinity
+        for (const v of px.values()) lo = Math.min(lo, v)
+        const key = `min:${name}`
+        if (dbg[key] === undefined || lo < dbg[key]) dbg[key] = Math.round(lo)
+      }
       for (let sweep = 0; sweep < 2; sweep++) {
         if (coarse) {
           treePass()
+          tap('tree')
           siblingPass()
+          tap('sibling')
         } else {
           siblingPass()
+          tap('sibling')
           treePass()
+          tap('tree')
         }
         rowPass()
+        tap('row')
         if (modernMode) {
           rowOrderPass()
+          tap('rowOrder')
           chainStraighten()
+          tap('chain')
           rescuePass()
+          tap('rescue')
           fanUntangle()
+          tap('fan')
         }
       }
       const w = totalW()
