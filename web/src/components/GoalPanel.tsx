@@ -110,7 +110,10 @@ export default function GoalPanel({
               {data.detached && <span className="text-ink-faint">detached</span>}
             </div>
             <SectionLabel>{data.proof_text ? 'source' : 'statement'}</SectionLabel>
-            <pre className="mb-3 max-h-[55vh] overflow-y-auto font-mono text-xs leading-snug break-words whitespace-pre-wrap text-ink">
+            {/* no inner scroll: the panel body is the ONE scroll
+                context — a nested max-h pane read as double
+                scrollbars (owner) */}
+            <pre className="mb-3 font-mono text-xs leading-snug break-words whitespace-pre-wrap text-ink">
               <Lean code={data.proof_text ?? data.statement} />
             </pre>
             <div className="mb-4 text-[11px] break-all text-ink-faint">
