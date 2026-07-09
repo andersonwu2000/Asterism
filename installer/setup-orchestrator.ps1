@@ -68,20 +68,28 @@ function Run-Stream($file, $arguments, $cwd, [switch]$AsTick) {
 
 # ---- Python (minimal, direct: core + pip only; python.org's full MSI
 #      bundle drags in tcl/tk/docs/tests and its servicing is slow) -----
-function Install-Python {
-    Get-Process ('python-' + $PyVer + '-amd64') -ErrorAction SilentlyContinue |
+function Get-PyBundle([string]$ver) {
+    # download (or reuse) the python.org bundle for one version;
+    # returns the exe path or $null
+    Get-Process ('python-' + $ver + '-amd64') -ErrorAction SilentlyContinue |
         ForEach-Object { try { Stop-Process -Id $_.Id -Force } catch {} }
-    $url = 'https://www.python.org/ftp/python/' + $PyVer + '/python-' + $PyVer + '-amd64.exe'
-    $exe = Join-Path $env:TEMP ('python-' + $PyVer + '-amd64.exe')
+    $url = 'https://www.python.org/ftp/python/' + $ver + '/python-' + $ver + '-amd64.exe'
+    $exe = Join-Path $env:TEMP ('python-' + $ver + '-amd64.exe')
     if (-not (Test-Path $exe) -or (Get-Item $exe).Length -lt 20MB) {
-        Note 'downloading Python...'
+        Note ('downloading Python ' + $ver + '...')
         $ProgressPreference = 'SilentlyContinue'
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        try { Invoke-WebRequest -Uri $url -OutFile $exe } catch { Warn ('download failed: ' + $_.Exception.Message); return $false }
+        try { Invoke-WebRequest -Uri $url -OutFile $exe } catch { Warn ('download failed: ' + $_.Exception.Message); return $null }
     }
     # IWR stamps downloads with the Mark-of-the-Web; SmartScreen can
     # then kill the exe with no console and no story
     try { Unblock-File $exe -ErrorAction SilentlyContinue } catch {}
+    return $exe
+}
+
+function Install-Python {
+    $exe = Get-PyBundle $PyVer
+    if (-not $exe) { return $false }
     $ilog = Join-Path $env:TEMP 'asterism-python-setup.log'
     # one bounded installer run; returns the exit code (or $null)
     function Invoke-PyInstaller([string[]]$extraArgs, [string]$label) {
@@ -141,6 +149,23 @@ function Install-Python {
         }
         if ($rc -ne 3010) {
             Note '  manual fix: Settings > Apps > remove every "Python 3.12" entry, then press the button again'
+        }
+    }
+    # 3.12 refused even after the self-heal (an orphaned per-user MSI
+    # registration can survive the bundle's own /uninstall - its cached
+    # .msi is gone, so even uninstalling hits path-not-found; seen
+    # live). Don't fight the corpse: a DIFFERENT minor registers under
+    # different product codes and lands clean, and the whole pipeline
+    # accepts >=3.12 via Get-PyTag.
+    if (-not (Get-PyVersion)) {
+        Note 'Python 3.12 will not land on this machine - trying Python 3.13 instead...'
+        $exe = Get-PyBundle '3.13.1'
+        if ($exe) {
+            $rc = Invoke-PyInstaller $installArgs 'installing Python 3.13'
+            if ($rc -ne 0 -and $rc -ne 3010 -and $null -ne $rc) {
+                Warn ('Python 3.13 installer exit code ' + $rc)
+                Note '  both versions failing the same way usually means antivirus or policy is blocking installer payloads in TEMP'
+            }
         }
     }
     $py = Get-PyVersion
@@ -427,7 +452,8 @@ try {
         # success: the downloaded installers have served their purpose
         # (owner: clean up the packages once everything is in) - a
         # retry after failure keeps them for the resume instead
-        Remove-Item (Join-Path $env:TEMP ('python-' + $PyVer + '-amd64.exe')) -Force -ErrorAction SilentlyContinue
+        Get-ChildItem (Join-Path $env:TEMP 'python-*-amd64.exe') -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
         Remove-Item (Join-Path $env:TEMP 'elan-init.ps1') -Force -ErrorAction SilentlyContinue
         Set-Content $DoneMarker 'done' -Encoding ASCII
     }
