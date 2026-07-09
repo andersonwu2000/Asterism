@@ -31,6 +31,18 @@ is a ~5 KB stub compiled from `installer/AsterismLauncher.cs` by
 **macOS / Linux:** `bash installer/install.sh`, then `asterism serve`
 and open http://127.0.0.1:8642.
 
+## Uninstall
+
+Delete the Asterism folder (everything heavy — the math library, the
+database, your problems and proofs — lives inside it) and the Desktop
+shortcut. That's it.
+
+The setup may also have installed shared developer tools — Python,
+Git, the Lean toolchain (`%USERPROFILE%\.elan`), Claude Code — which
+other software on your machine may now use; remove them the standard
+way (Settings → Apps, or delete `.elan`) only if you're sure nothing
+else needs them.
+
 <details>
 <summary>Manual install (developers)</summary>
 
