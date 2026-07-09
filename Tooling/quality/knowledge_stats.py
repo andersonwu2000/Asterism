@@ -17,9 +17,18 @@ past runs):
     spawn_usage row spent zero LLM quota (the free Mathlib `hint`
     probe closed the goal before any spawn; usage rows exist since
     schema v21).
-  * lesson mention rate — KB lesson `[id-N]` cues / title substrings
-    appearing in strategy proposal_md. WEAK PROXY (advice shapes
-    thinking without being quoted); reported with that caveat.
+  * lessons — DESCRIPTIVE ONLY (counts, edit activity). There is NO
+    cheap general ROI instrument for lessons (2026-07-10
+    investigation): tactic-trap lessons are absorbed IN-SESSION
+    (below the dead_attempts threshold — the sphere data-eliminator
+    trap has ZERO death recurrence ever), textual mentions conflate
+    warning-echo with trap-fall (a b6 post-lesson '1/(2p)' mention
+    turned out to be the lesson's knowledge IN USE), and
+    single-problem timelines confound before/after. Qualitative
+    case-study is the honest method — e.g. b6 lessons id-5305→5306→
+    5315 building the constant-management chain the winning route
+    then used. A real instrument would count error signatures in
+    session transcripts at parse time (optional future work).
 
 Usage:  python -m Tooling.quality.knowledge_stats [--problem LIKE]
         asterism knowledge-stats [--problem LIKE]
@@ -135,25 +144,18 @@ def hint_stats(conn: sqlite3.Connection, *,
 
 def lesson_stats(conn: sqlite3.Connection, *,
                  problem_like: str | None = None) -> dict:
-    """WEAK PROXY: lesson `[id-N]` cue / title-substring mentions in
-    strategy proposal_md of the same problem."""
+    """DESCRIPTIVE only — see the module docstring for why no cheap
+    ROI proxy exists (in-session absorption; mention != trap-fall)."""
     like = problem_like or "%"
-    lessons = conn.execute(
-        "SELECT id, problem, title FROM kb_entries WHERE type='lesson'"
-        " AND problem LIKE ?", (like,)).fetchall()
-    mentioned = 0
-    for les in lessons:
-        cue = f"[id-{int(les['id'])}]"
-        title = str(les["title"] or "").strip()
-        hit = conn.execute(
-            "SELECT 1 FROM strategies s JOIN goals g ON g.id = s.goal_id"
-            " WHERE g.problem = ? AND (instr(s.proposal_md, ?) > 0"
-            "   OR (length(?) > 11 AND instr(s.proposal_md, ?) > 0))"
-            " LIMIT 1",
-            (str(les["problem"]), cue, title, title)).fetchone()
-        if hit is not None:
-            mentioned += 1
-    return {"lessons": len(lessons), "mentioned_in_proposals": mentioned}
+    n = conn.execute(
+        "SELECT COUNT(*) FROM kb_entries WHERE type='lesson'"
+        " AND problem LIKE ?", (like,)).fetchone()[0]
+    probs = conn.execute(
+        "SELECT COUNT(DISTINCT problem) FROM kb_entries"
+        " WHERE type='lesson' AND problem LIKE ?", (like,)).fetchone()[0]
+    # NOTE: edits are NOT countable — edit_global_lesson updates
+    # title/body in place without marking provenance.
+    return {"lessons": int(n), "problems": int(probs)}
 
 
 def render(conn: sqlite3.Connection, workspace: Path, *,
@@ -185,8 +187,9 @@ def render(conn: sqlite3.Connection, workspace: Path, *,
         + (f" ({hs['hint_probe_wins']/max(1, hs['builder_proved']):.0%} free)"
            if hs["builder_proved"] else ""))
     lines.append(
-        f"lessons (weak textual proxy): {ls['mentioned_in_proposals']}/"
-        f"{ls['lessons']} ever mentioned in a strategy proposal")
+        f"lessons: {ls['lessons']} across {ls['problems']} problems. "
+        f"ROI is qualitative — no cheap instrument (in-session "
+        f"absorption; see module doc).")
     return "\n".join(lines)
 
 
