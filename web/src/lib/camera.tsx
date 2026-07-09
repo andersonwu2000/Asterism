@@ -10,10 +10,13 @@ import { useEffect, useRef, useState } from 'react'
  * sky mounts. Constants mirror Constellation.tsx exactly (kMax 4,
  * wheel 0.0012, buttons 0.7/1.45, floor at half the fit).
  *
- * Constellation itself still carries its embedded copy, interwoven
- * with the glide animator and quantized render buckets — unifying it
- * onto this hook is the standing follow-up when that file is next
- * open on the bench.
+ * The problem sky's glide animator drives the camera BETWEEN React
+ * renders (per-frame viewRef writes, a committed fresh fit at the
+ * end) — the hook exposes its refs (viewRef / fitKRef /
+ * userAdjustedRef) and commitView/computeFitNow for exactly that
+ * handshake, plus a custom `fit` (label-overhang budgeting) and a
+ * `resetKey` (refit per PROBLEM, never per poll — the layout shifts
+ * on every poll and refitting would fight the user's camera).
  */
 
 export interface CamView {
@@ -22,10 +25,20 @@ export interface CamView {
   ty: number
 }
 
+export interface SkyCameraOpts {
+  kMax?: number
+  /** custom fit — receives the container element, returns the fitted
+   * camera (null: nothing to fit yet) */
+  fit?: (el: HTMLElement) => CamView | null
+  /** refit trigger. Default: content dimensions (right for static
+   * maps); pass a problem key when the content re-layouts per poll. */
+  resetKey?: unknown
+}
+
 export function useSkyCamera(
   contentW: number,
   contentH: number,
-  opts?: { kMax?: number },
+  opts?: SkyCameraOpts,
 ) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [view, setView] = useState<CamView | null>(null)
@@ -37,25 +50,50 @@ export function useSkyCamera(
   /** true while the pointer sequence that just ended was a pan — click
    * handlers on content consult this to not fire after a drag */
   const dragMovedRef = useRef(false)
-  const kMax = opts?.kMax ?? 2.0
+  // effects read options through a ref so the wheel listener and fit
+  // logic always see the caller's LATEST fit closure (it captures the
+  // current layout) without re-subscribing
+  const optsRef = useRef(opts)
+  optsRef.current = opts
 
-  // content changed → forget the user's camera and re-fit
+  const computeFitNow = (): CamView | null => {
+    const el = containerRef.current
+    if (!el) return null
+    const custom = optsRef.current?.fit
+    if (custom) return custom(el)
+    if (contentW <= 0 || contentH <= 0) return null
+    const kMax = optsRef.current?.kMax ?? 2.0
+    const { width: cw, height: ch } = el.getBoundingClientRect()
+    const k = Math.min((cw - 48) / contentW, (ch - 48) / contentH, kMax)
+    return { k, tx: (cw - contentW * k) / 2, ty: (ch - contentH * k) / 2 }
+  }
+  const computeFitRef = useRef(computeFitNow)
+  computeFitRef.current = computeFitNow
+  /** write a camera through BOTH channels (ref for the next gesture,
+   * state for React) — the glide animator commits its final fit here */
+  const commitView = (v: CamView) => {
+    viewRef.current = v
+    setView(v)
+  }
+
+  // reset → forget the user's camera and re-fit
+  const resetKey =
+    opts?.resetKey !== undefined ? opts.resetKey : `${contentW}x${contentH}`
   useEffect(() => {
     userAdjusted.current = false
     setView(null)
-  }, [contentW, contentH])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetKey])
   useEffect(() => {
     if (view !== null) return
-    const el = containerRef.current
-    if (!el || contentW <= 0 || contentH <= 0) return
-    const { width: cw, height: ch } = el.getBoundingClientRect()
-    const k = Math.min((cw - 48) / contentW, (ch - 48) / contentH, kMax)
-    const fit = { k, tx: (cw - contentW * k) / 2, ty: (ch - contentH * k) / 2 }
-    fitKRef.current = k
+    if (contentW <= 0 || contentH <= 0) return
+    const fit = computeFitRef.current()
+    if (!fit) return
+    fitKRef.current = fit.k
     viewRef.current = fit
-    setFitK(k)
+    setFitK(fit.k)
     setView(fit)
-  }, [view, contentW, contentH, kMax])
+  }, [view, contentW, contentH])
   // window/panel resize re-fits ONLY untouched views (fighting an
   // explicit zoom is worse than letting it drift off-centre)
   useEffect(() => {
@@ -143,6 +181,7 @@ export function useSkyCamera(
   }
   const refit = () => {
     userAdjusted.current = false
+    viewRef.current = null // gestures no-op until the fresh fit lands
     setView(null)
   }
 
@@ -150,7 +189,12 @@ export function useSkyCamera(
     containerRef,
     view,
     fitK,
+    viewRef,
+    fitKRef,
+    userAdjustedRef: userAdjusted,
     dragMovedRef,
+    computeFitNow,
+    commitView,
     onPointerDown,
     onPointerMove,
     onPointerUp,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Goal, Strategy, StrategyEdge } from '../lib/types'
+import { CameraControls, useSkyCamera } from '../lib/camera'
 import { layoutConstellation } from '../lib/layout'
 import { Lean } from '../lib/lean'
 import { goalStatusLabel } from '../lib/vocab'
@@ -337,48 +338,21 @@ export default function Constellation({
     for (const [id, t] of b.born) if (now - t > 12000) b.born.delete(id)
   }, [goals])
 
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [view, setView] = useState<{ k: number; tx: number; ty: number } | null>(null)
+  // The shared sky camera (lib/camera.tsx). Fit per PROBLEM and on
+  // frontier-focus toggles, never per poll (resetKey: the layout
+  // shifts on every poll and refitting would fight the user's zoom);
+  // the custom fit budgets label overhang. The glide animator below
+  // drives the camera BETWEEN renders through the exposed refs.
+  const cam = useSkyCamera(
+    layout.nodes.length === 0 ? 0 : layout.width,
+    layout.height,
+    {
+      resetKey: problemKey,
+      fit: (el) => computeFit(el, layout),
+    },
+  )
+  const containerRef = cam.containerRef
   const [hovered, setHovered] = useState<LayoutNode | null>(null)
-  const drag = useRef<{ x: number; y: number; tx: number; ty: number; moved: boolean } | null>(null)
-
-  // Initial fit — once per problem and on frontier-focus toggles (not
-  // per poll: the layout is stable, and refitting under the user's
-  // zoom would fight them). `userAdjusted` records a manual zoom/pan:
-  // a window resize re-fits ONLY untouched views (fighting an explicit
-  // zoom is worse than letting it drift off-center).
-  const userAdjusted = useRef(false)
-  useEffect(() => {
-    userAdjusted.current = false
-    setView(null)
-  }, [problemKey])
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    // observe() always delivers one INITIAL callback (spec) — it is
-    // not a resize, and letting it setView(null) batches against the
-    // mount fit's setView(fitted): the queue collapses to null→null,
-    // the [view] dep sees no change, and the fit effect starves until
-    // the next poll (~2s of unfitted sky). Skip delivery #1.
-    let initial = true
-    const ro = new ResizeObserver(() => {
-      if (initial) {
-        initial = false
-        return
-      }
-      if (!userAdjusted.current) setView(null)
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-  useEffect(() => {
-    if (view !== null) return
-    const el = containerRef.current
-    if (!el || layout.nodes.length === 0) return
-    const fit = computeFit(el, layout)
-    fitKRef.current = fit.k
-    setView(fit)
-  }, [view, layout])
 
   // ---- poll-to-poll transition (imperative) --------------------------
   // A structure change re-layouts the whole sky (readability outranks
@@ -389,12 +363,6 @@ export default function Constellation({
   // (measured on stokes), an attribute sweep doesn't. Unrelated
   // re-renders (hover, selection) diff target-vs-target and so never
   // disturb a glide in flight.
-  const viewRef = useRef<View | null>(view) // the DISPLAYED camera
-  const camDriven = useRef(false) // animator owns the camera right now
-  /** the current fit-to-view scale — big skies fit far below the old
-   * hard 0.25 wheel floor (stokes fits at 0.17), which trapped anyone
-   * who zoomed in: the wheel could never get back out to the fit */
-  const fitKRef = useRef<number | null>(null)
   const shownPosRef = useRef(new Map<number, { x: number; y: number }>())
   const shownJuncRef = useRef(new Map<number, { x: number; y: number }>())
   const sceneRef = useRef<string | null>(null)
@@ -410,14 +378,9 @@ export default function Constellation({
   )
   const animRef = useRef({ raf: 0, timer: 0 })
 
-  const k = view?.k ?? 1
-  const tx = view?.tx ?? 0
-  const ty = view?.ty ?? 0
-  // wheel/buttons/drag compound from the DISPLAYED camera, so grabbing
-  // the controls mid-glide continues from what the eye sees
-  if (!camDriven.current) {
-    viewRef.current = view === null ? null : { k, tx, ty }
-  }
+  const k = cam.view?.k ?? 1
+  const tx = cam.view?.tx ?? 0
+  const ty = cam.view?.ty ?? 0
   const showLabels = k >= 1.05
   // Quantized zoom for the memoized layers: panning is k-free, and a
   // wheel burst re-renders content only when it crosses an ~8% bucket —
@@ -434,6 +397,12 @@ export default function Constellation({
   const boostRef = useRef(1)
   boostRef.current = Math.min(Math.max(1, 0.78 / kq), 4)
 
+  // the animator must fire on [layout, sceneKey] ONLY — it reaches the
+  // camera through this ref so the hook's per-render identity doesn't
+  // join the dependency list
+  const camRef = useRef(cam)
+  camRef.current = cam
+
   useLayoutEffect(() => {
     const sameScene = sceneRef.current === sceneKey
     sceneRef.current = sceneKey
@@ -443,14 +412,13 @@ export default function Constellation({
       if (anim.timer) window.clearTimeout(anim.timer)
       anim.raf = 0
       anim.timer = 0
-      camDriven.current = false
     }
     const targets = new Map(layout.nodes.map((n) => [n.goal.id, { x: n.x, y: n.y }]))
     const juncTargets = new Map(
       layout.bundles.map((b) => [b.strategyId, { x: b.junction.x, y: b.junction.y }]),
     )
-    if (containerRef.current) {
-      fitKRef.current = computeFit(containerRef.current, layout).k
+    if (camRef.current.containerRef.current) {
+      camRef.current.fitKRef.current = computeFit(camRef.current.containerRef.current, layout).k
     }
     let moved = false
     if (sameScene && shownPosRef.current.size > 0 && layout.nodes.length <= ANIM_MAX) {
@@ -472,15 +440,16 @@ export default function Constellation({
     }
     stop()
     const glide =
-      !userAdjusted.current && containerRef.current !== null && viewRef.current !== null
+      !camRef.current.userAdjustedRef.current &&
+      camRef.current.containerRef.current !== null &&
+      camRef.current.viewRef.current !== null
     const tween: Tween = {
       t0: performance.now(),
       fromPos: new Map(shownPosRef.current),
       fromJunc: new Map(shownJuncRef.current),
-      fromView: glide ? { ...viewRef.current! } : null,
-      toView: glide ? computeFit(containerRef.current!, layout) : null,
+      fromView: glide ? { ...camRef.current.viewRef.current! } : null,
+      toView: glide ? computeFit(camRef.current.containerRef.current!, layout) : null,
     }
-    camDriven.current = tween.toView !== null
 
     const apply = (alpha: number) => {
       const shown = new Map<number, { x: number; y: number }>()
@@ -541,7 +510,7 @@ export default function Constellation({
           el.setAttribute('y2', String(c.y))
         }
       }
-      if (tween.fromView && tween.toView && !userAdjusted.current) {
+      if (tween.fromView && tween.toView && !camRef.current.userAdjustedRef.current) {
         const f = tween.fromView
         const g = tween.toView
         const cam = {
@@ -549,7 +518,7 @@ export default function Constellation({
           tx: f.tx + (g.tx - f.tx) * alpha,
           ty: f.ty + (g.ty - f.ty) * alpha,
         }
-        viewRef.current = cam
+        camRef.current.viewRef.current = cam
         outerGRef.current?.setAttribute(
           'transform',
           `translate(${cam.tx},${cam.ty}) scale(${cam.k})`,
@@ -564,8 +533,8 @@ export default function Constellation({
       stop()
       // commit the camera through React with a FRESH fit — the derive-
       // time toView goes stale if the container resized mid-glide
-      if (tween.toView && !userAdjusted.current && containerRef.current) {
-        setView(computeFit(containerRef.current, layout))
+      if (tween.toView && !camRef.current.userAdjustedRef.current && camRef.current.containerRef.current) {
+        camRef.current.commitView(computeFit(camRef.current.containerRef.current, layout))
       }
     }
     const step = () => {
@@ -589,60 +558,13 @@ export default function Constellation({
     }
   }, [layout, sceneKey])
 
-  // Wheel zoom must preventDefault (page would scroll); React's
-  // delegated wheel handlers are passive, so attach natively.
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const onWheel = (e: WheelEvent) => {
-      const v = viewRef.current
-      if (v === null) return
-      e.preventDefault()
-      const rect = el.getBoundingClientRect()
-      const mx = e.clientX - rect.left
-      const my = e.clientY - rect.top
-      const factor = Math.exp(-e.deltaY * 0.0012)
-      // the floor must sit BELOW the fit, or zooming in becomes a trap
-      const kLo = Math.min(0.25, (fitKRef.current ?? 1) * 0.5)
-      const nk = Math.min(4, Math.max(kLo, v.k * factor))
-      // zoom about the cursor; update the ref immediately so rapid
-      // wheel bursts compound instead of re-reading a stale view
-      const next = {
-        k: nk,
-        tx: mx - ((mx - v.tx) / v.k) * nk,
-        ty: my - ((my - v.ty) / v.k) * nk,
-      }
-      userAdjusted.current = true
-      viewRef.current = next
-      setView(next)
-    }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [])
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    const v = viewRef.current
-    if (v === null) return
-    // base the drag on the DISPLAYED camera (a glide may be driving it)
-    drag.current = { x: e.clientX, y: e.clientY, tx: v.tx, ty: v.ty, moved: false }
-    ;(e.target as Element).setPointerCapture(e.pointerId)
-  }
-  const onPointerMove = (e: React.PointerEvent) => {
-    const d = drag.current
-    const v = viewRef.current
-    if (!d || v === null) return
-    const dx = e.clientX - d.x
-    const dy = e.clientY - d.y
-    if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true
-    if (d.moved) {
-      userAdjusted.current = true
-      setView({ k: v.k, tx: d.tx + dx, ty: d.ty + dy })
-    }
-  }
+  // wheel zoom + drag pan live in the shared camera; the sky adds one
+  // behaviour on top — a plain click on empty sky clears the selection
   const onPointerUp = (e: React.PointerEvent) => {
-    const d = drag.current
-    drag.current = null
-    if (d && !d.moved && (e.target as Element).tagName === 'svg') onSelect(null)
+    cam.onPointerUp()
+    if (!cam.dragMovedRef.current && (e.target as Element).tagName === 'svg') {
+      onSelect(null)
+    }
   }
 
   // the incoming callbacks may be fresh lambdas every parent render —
@@ -1280,8 +1202,8 @@ export default function Constellation({
     >
       <svg
         className="constellation h-full w-full"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
+        onPointerDown={cam.onPointerDown}
+        onPointerMove={cam.onPointerMove}
         onPointerUp={onPointerUp}
       >
         <defs>
@@ -1393,7 +1315,7 @@ export default function Constellation({
       </svg>
 
       {/* the selected node's facts live in the side panel — no echo */}
-      {hovered && hovered.goal.id !== selectedId && view !== null && (
+      {hovered && hovered.goal.id !== selectedId && cam.view !== null && (
         <div
           className="pointer-events-none absolute z-10 max-w-sm rounded-md border border-edge-strong bg-surface-3 px-3 py-2"
           style={{
@@ -1606,48 +1528,7 @@ export default function Constellation({
         )}
         </div>
       </div>
-      <div className="absolute bottom-3 left-3 flex overflow-hidden rounded-md border border-edge bg-surface">
-        {(
-          [
-            ['−', 0.7],
-            ['+', 1.45],
-          ] as const
-        ).map(([label, factor]) => (
-          <button
-            key={label}
-            className="px-2.5 py-1 text-sm text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
-            title={label === '+' ? 'zoom in' : 'zoom out'}
-            onClick={() => {
-              const v = viewRef.current
-              const el = containerRef.current
-              if (!v || !el) return
-              const { width: cw, height: ch } = el.getBoundingClientRect()
-              const kLo = Math.min(0.25, (fitKRef.current ?? 1) * 0.5)
-              const nk = Math.min(4, Math.max(kLo, v.k * factor))
-              const next = {
-                k: nk,
-                tx: cw / 2 - ((cw / 2 - v.tx) / v.k) * nk,
-                ty: ch / 2 - ((ch / 2 - v.ty) / v.k) * nk,
-              }
-              userAdjusted.current = true
-              viewRef.current = next
-              setView(next)
-            }}
-          >
-            {label}
-          </button>
-        ))}
-        <button
-          className="border-l border-edge px-2.5 py-1 text-xs text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
-          title="fit to view"
-          onClick={() => {
-            userAdjusted.current = false
-            setView(null)
-          }}
-        >
-          fit
-        </button>
-      </div>
+      <CameraControls zoomBy={cam.zoomBy} refit={cam.refit} />
     </div>
   )
 }
