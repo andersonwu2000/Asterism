@@ -185,6 +185,16 @@ input[type='radio'] {
     opacity 0.9s ease,
     stroke-opacity 0.9s ease;
 }
+/* A WORKING star blinks via SMIL on the same opacity this transition
+   smooths — chasing the 1.4s wave with a 0.9s ease flattened it to a
+   ±0.03 flicker nobody ever saw (the legend blinked, the sky didn't).
+   The blink owns its opacity outright. */
+.constellation circle.working,
+.constellation rect.working {
+  transition:
+    fill 0.9s ease,
+    stroke 0.9s ease;
+}
 
 @media (prefers-reduced-motion: reduce) {
   *,

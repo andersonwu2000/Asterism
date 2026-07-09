@@ -980,6 +980,13 @@ export default function Constellation({
           const lod = kq < 0.8
           const fill = lod && live ? s.stroke : s.fill
           const selected = n.goal.id === selectedId
+          // the star's own SMIL blink — the class exempts it from the
+          // status-flip opacity transition, which otherwise low-pass
+          // filters the 1.4s wave to a ±0.03 flicker nobody can see
+          // (the legend blinked, the sky didn't — owner, 2026-07-09)
+          const working =
+            engineWorking &&
+            (n.goal.status === 'attempting' || n.goal.in_flight)
           // Attempts heat ring: arc fraction of the shelve threshold,
           // only meaningful while the goal is still being worked.
           const heatFrac =
@@ -1055,6 +1062,7 @@ export default function Constellation({
                   clear margin from the corners. Props stay round. */}
               {DEF_KINDS.has(n.goal.kind) ? (
                 <rect
+                  className={working ? 'working' : undefined}
                   x={-r * 0.85}
                   y={-r * 0.85}
                   width={r * 1.7}
@@ -1068,18 +1076,18 @@ export default function Constellation({
                 >
                   {/* working = the star itself BLINKS (owner: no ring
                       for activity) — gated on daemon liveness */}
-                  {engineWorking &&
-                    (n.goal.status === 'attempting' || n.goal.in_flight) && (
-                      <animate
-                        attributeName="opacity"
-                        values="1;0.35;1"
-                        dur="1.4s"
-                        repeatCount="indefinite"
-                      />
-                    )}
+                  {working && (
+                    <animate
+                      attributeName="opacity"
+                      values="1;0.35;1"
+                      dur="1.4s"
+                      repeatCount="indefinite"
+                    />
+                  )}
                 </rect>
               ) : (
                 <circle
+                  className={working ? 'working' : undefined}
                   r={r}
                   fill={fill}
                   stroke={s.stroke}
@@ -1089,15 +1097,14 @@ export default function Constellation({
                 >
                   {/* working = the star itself BLINKS (owner: no ring
                       for activity) — gated on daemon liveness */}
-                  {engineWorking &&
-                    (n.goal.status === 'attempting' || n.goal.in_flight) && (
-                      <animate
-                        attributeName="opacity"
-                        values="1;0.35;1"
-                        dur="1.4s"
-                        repeatCount="indefinite"
-                      />
-                    )}
+                  {working && (
+                    <animate
+                      attributeName="opacity"
+                      values="1;0.35;1"
+                      dur="1.4s"
+                      repeatCount="indefinite"
+                    />
+                  )}
                 </circle>
               )}
               {heatFrac > 0 && (
