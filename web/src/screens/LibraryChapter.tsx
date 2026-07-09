@@ -5,7 +5,8 @@ import { Link } from '../lib/router'
 import { ErrorState } from '../components/ui'
 import { Lean } from '../lib/lean'
 import { LeanProbe } from '../components/LeanProbe'
-import type { LibraryChapter, LibraryChapterDecl, LibraryChapterFile } from '../lib/types'
+import { layoutConstellation } from '../lib/layout'
+import type { Goal, LibraryChapter, LibraryChapterDecl, LibraryChapterFile } from '../lib/types'
 
 /*
  * Library chapter — one harvested problem, read for humans. Nobody
@@ -324,118 +325,78 @@ function ModuleMap({
   onOpen: (path: string) => void
 }) {
   const layout = useMemo(() => {
-    // Layered drawing done properly (the naive version — alphabetical
-    // order, uniform spread — ignored the edges entirely and BT read
-    // as spaghetti): longest-path layering, then barycenter sweeps to
-    // untangle crossings, then x relaxes toward the mean of each
-    // node's neighbours with per-layer collision resolution.
-    const byPath = new Map(files.map((f) => [f.path, f]))
-    const parentsOf = new Map<string, string[]>()
-    const childrenOf = new Map<string, string[]>()
-    for (const f of files) {
-      parentsOf.set(f.path, f.imports_within.filter((p) => byPath.has(p)))
-      for (const imp of f.imports_within) {
-        if (!byPath.has(imp)) continue
-        childrenOf.set(imp, [...(childrenOf.get(imp) ?? []), f.path])
-      }
-    }
-    const depth = new Map<string, number>()
-    const layerOf = (path: string, guard: number): number => {
-      const memo = depth.get(path)
-      if (memo !== undefined) return memo
-      if (guard > files.length + 1) return 0
-      const ps = parentsOf.get(path) ?? []
-      const d = ps.length === 0 ? 0 : Math.max(...ps.map((i) => layerOf(i, guard + 1))) + 1
-      depth.set(path, d)
-      return d
-    }
-    for (const f of files) layerOf(f.path, 0)
-    const layers: string[][] = []
-    for (const f of files) {
-      const l = depth.get(f.path) ?? 0
-      ;(layers[l] ??= []).push(f.path)
-    }
-    for (const l of layers) l.sort()
-
-    const orderIdx = new Map<string, number>()
-    const reindex = () => layers.forEach((l) => l.forEach((p, i) => orderIdx.set(p, i)))
-    reindex()
-    const bary = (p: string, nbrs: string[]): number => {
-      const xs = nbrs
-        .map((n) => orderIdx.get(n))
-        .filter((v): v is number => v !== undefined)
-      return xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : orderIdx.get(p)!
-    }
-    for (let it = 0; it < 4; it++) {
-      for (let l = 1; l < layers.length; l++) {
-        layers[l].sort(
-          (a, b) =>
-            bary(a, parentsOf.get(a) ?? []) - bary(b, parentsOf.get(b) ?? []) ||
-            a.localeCompare(b),
-        )
-        reindex()
-      }
-      for (let l = layers.length - 2; l >= 0; l--) {
-        layers[l].sort(
-          (a, b) =>
-            bary(a, childrenOf.get(a) ?? []) - bary(b, childrenOf.get(b) ?? []) ||
-            a.localeCompare(b),
-        )
-        reindex()
-      }
-    }
-
-    // continuous x: pull toward neighbour mean, keep ≥1 slot apart
-    const x = new Map<string, number>()
-    layers.forEach((l) => l.forEach((p, i) => x.set(p, i - (l.length - 1) / 2)))
-    for (let it = 0; it < 12; it++) {
-      for (const f of files) {
-        const nbrs = [...(parentsOf.get(f.path) ?? []), ...(childrenOf.get(f.path) ?? [])]
-        if (nbrs.length === 0) continue
-        const m = nbrs.reduce((a, n) => a + (x.get(n) ?? 0), 0) / nbrs.length
-        x.set(f.path, (x.get(f.path)! + m) / 2)
-      }
-      for (const l of layers) {
-        l.sort((a, b) => x.get(a)! - x.get(b)!)
-        for (let i = 1; i < l.length; i++) {
-          x.set(l[i], Math.max(x.get(l[i])!, x.get(l[i - 1])! + 1))
-        }
-      }
-    }
-
-    const xs = [...x.values()]
-    const minX = Math.min(...xs)
-    const spread = Math.max(Math.max(...xs) - minX, 1)
-    // fit the page when possible; wide skies shrink toward 95px slots
-    const XG = Math.max(95, Math.min(155, 880 / spread))
-    const YG = 108
-    const width = spread * XG + 170
+    // The problem sky's engine, borrowed whole (its barycenter-lite
+    // predecessor read visibly weaker — owner, 2026-07-09): modules
+    // pose as goals, imports as anchor edges, and layoutConstellation
+    // brings the full treatment — tidy trees, the crossing/length
+    // objective, plate + occupancy laws. Orientation follows the
+    // problem sky's convention: the importer (the result) sits on
+    // top, what it imports (its vocabulary) supports from below.
+    const idOf = new Map(files.map((f, i) => [f.path, i + 1]))
+    const pathOf = new Map(files.map((f, i) => [i + 1, f.path]))
+    const goals = files.map(
+      (f, i) =>
+        ({
+          id: i + 1,
+          slug: f.path,
+          status: 'proved',
+          kind: '',
+          origin: 'forward',
+          depth: 0,
+          detached: false,
+          alias_target_id: null,
+          is_deliverable: f.decls.some((d) => d.is_deliverable),
+          statement: '',
+          lean_path: f.path,
+          created_at: '',
+          attempts: 0,
+          dead_attempts: 0,
+          in_flight: false,
+        }) as Goal,
+    )
+    // anchor edge = {from: dependency, to: claim}; the engine flips it
+    // so the claim is the parent — importer above, imported beneath
+    const anchors = files.flatMap((f) =>
+      f.imports_within
+        .filter((p) => idOf.has(p))
+        .map((imp) => ({ from: idOf.get(imp)!, to: idOf.get(f.path)! })),
+    )
+    const v = layoutConstellation(goals, [], [], anchors, [])
+    // fit the page when possible; wide skies shrink, but never below
+    // ~95px slots (labels need the air), and never stretch
+    const sx = Math.max(95 / 110, Math.min(1, 950 / Math.max(v.width, 1)))
     const pos = new Map<string, { x: number; y: number }>()
-    // collision-driven label rows: walk each layer in x order and
+    for (const n of v.nodes) {
+      const path = pathOf.get(n.goal.id)
+      if (path) pos.set(path, { x: n.x * sx + 40, y: n.y + 55 })
+    }
+    // collision-driven label rows: walk each pixel row in x order and
     // drop a label to the lower row only when the upper row's last
     // label would actually touch it (parity alone missed near-misses
     // in narrow layers)
+    const rows = new Map<number, string[]>()
+    for (const [p, q] of pos) rows.set(q.y, [...(rows.get(q.y) ?? []), p])
     const stagger = new Map<string, number>()
-    const cap = Math.max(12, Math.floor((XG * 1.9) / 6.6))
+    const cap = Math.max(12, Math.floor((110 * sx * 1.9) / 6.6))
     const labelW = (p: string) => Math.min(leafOf(p).length, cap) * 6.6
-    for (const l of layers) {
-      l.sort((a, b) => x.get(a)! - x.get(b)!)
+    for (const l of rows.values()) {
+      l.sort((a, b) => pos.get(a)!.x - pos.get(b)!.x)
       const rightEdge = [-Infinity, -Infinity]
       for (const p of l) {
-        const cx = (x.get(p)! - minX) * XG
+        const cx = pos.get(p)!.x
         const w = labelW(p)
         const row = cx - w / 2 > rightEdge[0] + 26 ? 0 : 1
         stagger.set(p, row)
         rightEdge[row] = Math.max(rightEdge[row], cx + w / 2)
       }
     }
-    for (const f of files) {
-      pos.set(f.path, {
-        x: 85 + (x.get(f.path)! - minX) * XG,
-        y: 55 + (depth.get(f.path) ?? 0) * YG,
-      })
+    return {
+      pos,
+      width: v.width * sx + 80,
+      height: v.height + 110,
+      XG: 110 * sx,
+      stagger,
     }
-    return { pos, width, height: 70 + layers.length * YG, XG, stagger }
   }, [files])
 
   const [hover, setHover] = useState<string | null>(null)
