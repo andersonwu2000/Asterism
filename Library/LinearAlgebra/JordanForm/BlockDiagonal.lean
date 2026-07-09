@@ -2,19 +2,28 @@ import Library.LinearAlgebra.JordanForm.BlockEnum
 import Library.LinearAlgebra.JordanForm.Defs
 import Mathlib
 
+/-!
+# Block-diagonal structure of T in the collected eigenbasis
+
+This file establishes that the matrix of a linear endomorphism `T` in the basis collected from
+per-eigenspace bases is block-diagonal, with diagonal blocks equal to the restrictions of `T` to
+the generalized eigenspaces. It then reindexes this block-diagonal structure to produce a global
+`Fin (finrank K V)`-indexed basis in Jordan normal form, given that each restriction block is
+already in Jordan form.
+-/
+
 open Library.LinearAlgebra.JordanForm.BlockEnum
 open Library.LinearAlgebra.JordanForm.Defs
 
 namespace Library.LinearAlgebra.JordanForm.BlockDiagonal
 
--- Entrywise (μ,μ)-diagonal block of the collected-basis matrix.
--- Unfold both `toMatrix` entries; the basis vector `collectedBasis ⟨μ,j⟩` is `↑(bμ μ j)`
--- and `T ↑(bμ μ j) = ↑((T.restrict).._)` by `restrict_apply`; the coordinate of a single-
--- summand element under the collected basis equals its `bμ μ`-coordinate (bridge `hbridge`).
+variable {K : Type*} [Field K] [DecidableEq K]
+variable {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]
+variable (T : V →ₗ[K] V)
+
+/-- The `(μ, i), (μ, j)` entry of the matrix of `T` in the collected basis equals the `(i, j)`
+entry of the matrix of the restriction `T.restrict (hinv μ)` in the basis `bμ μ`. -/
 theorem diag_block
-    {K : Type*} [Field K] [DecidableEq K]
-    {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]
-    (T : V →ₗ[K] V)
     (hdec : DirectSum.IsInternal
       (fun μ : K => (Module.End.maxGenEigenspace T μ : Submodule K V)))
     (hinv : ∀ μ : K, ∀ x ∈ (Module.End.maxGenEigenspace T μ : Submodule K V),
@@ -56,10 +65,9 @@ theorem diag_block
   rw [hTcoe]
   exact hbridge ((T.restrict (hinv μ)) (bμ μ j)) i
 
+/-- The `(μ₁, i)`-coordinate of the collected-basis representation of any vector in the
+`μ₂`-generalized eigenspace is zero when `μ₁ ≠ μ₂`, reflecting direct-sum independence. -/
 theorem collected_repr_off_block_zero
-    {K : Type*} [Field K] [DecidableEq K]
-    {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]
-    (T : V →ₗ[K] V)
     (hdec : DirectSum.IsInternal
       (fun μ : K => (Module.End.maxGenEigenspace T μ : Submodule K V)))
     (hinv : ∀ μ : K, ∀ x ∈ (Module.End.maxGenEigenspace T μ : Submodule K V),
@@ -89,13 +97,9 @@ theorem collected_repr_off_block_zero
   have hy0 := congrArg (fun f => f ⟨y, hy⟩) hL
   simpa [L] using hy0
 
--- entry_kind: Builder
 -- block_membership: T maps each collectedBasis vector of the μ₂-eigenspace into that eigenspace.
 -- Uses collectedBasis_coe to reduce to a subtype element, then applies invariance via hinv.
 theorem block_membership
-    {K : Type*} [Field K] [DecidableEq K]
-    {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]
-    (T : V →ₗ[K] V)
     (hdec : DirectSum.IsInternal
       (fun μ : K => (Module.End.maxGenEigenspace T μ : Submodule K V)))
     (hinv : ∀ μ : K, ∀ x ∈ (Module.End.maxGenEigenspace T μ : Submodule K V),
@@ -106,21 +110,11 @@ theorem block_membership
     (μ₂ : K)
     (j : Fin (Module.finrank K (Module.End.maxGenEigenspace T μ₂ : Submodule K V))) :
     T ((hdec.collectedBasis bμ) ⟨μ₂, j⟩) ∈
-      (Module.End.maxGenEigenspace T μ₂ : Submodule K V) := by
-  apply hinv
-  rw [hdec.collectedBasis_coe]
-  exact (bμ μ₂ j).2
+      (Module.End.maxGenEigenspace T μ₂ : Submodule K V) := hinv μ₂ _ (hdec.collectedBasis_mem bμ ⟨μ₂, j⟩)
 
--- Off-diagonal block of `T` in the collected eigenbasis vanishes (μ₁ ≠ μ₂).
--- `block_membership`: `T (collectedBasis ⟨μ₂,j⟩)` stays in the μ₂ generalized eigenspace.
--- `collected_repr_off_block_zero`: the collected-basis coordinate of any vector of the
---   μ₂ summand at a μ₁-index (μ₁ ≠ μ₂) is `0` (direct-sum independence).
--- Combine: unfold the matrix entry via `LinearMap.toMatrix_apply`, then the repr lemma
---   applied to the membership fact closes it.
+/-- The `(μ₁, i), (μ₂, j)` entry of the matrix of `T` in the collected basis is zero when
+`μ₁ ≠ μ₂`, because `T` preserves each generalized eigenspace and the summands are independent. -/
 theorem off_diag
-    {K : Type*} [Field K] [DecidableEq K]
-    {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]
-    (T : V →ₗ[K] V)
     (hdec : DirectSum.IsInternal
       (fun μ : K => (Module.End.maxGenEigenspace T μ : Submodule K V)))
     (hinv : ∀ μ : K, ∀ x ∈ (Module.End.maxGenEigenspace T μ : Submodule K V),
@@ -140,14 +134,9 @@ theorem off_diag
   exact collected_repr_off_block_zero T hdec hinv bμ μ₁ μ₂ h i
     (T ((hdec.collectedBasis bμ) ⟨μ₂, j⟩)) hmem
 
--- Entrywise: matrix of `T` in the collected basis is block-diagonal.
--- `diag_block`: the (μ,μ)-diagonal entry equals the restriction matrix entry.
--- `off_diag`: a (μ₁,μ₂)-entry with μ₁ ≠ μ₂ vanishes (T preserves each summand).
--- Combine via `Matrix.ext` + `by_cases μ₁ = μ₂` and `blockDiagonal'_apply_{eq,ne}`.
+/-- The matrix of `T` in the collected basis of the internal direct sum `hdec` equals the block-diagonal
+matrix whose `μ`-th block is the matrix of the restriction `T.restrict (hinv μ)` in the basis `bμ μ`. -/
 theorem collected_matrix_blockdiagonal
-    {K : Type*} [Field K] [DecidableEq K]
-    {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]
-    (T : V →ₗ[K] V)
     (hdec : DirectSum.IsInternal
       (fun μ : K => (Module.End.maxGenEigenspace T μ : Submodule K V)))
     (hinv : ∀ μ : K, ∀ x ∈ (Module.End.maxGenEigenspace T μ : Submodule K V),
@@ -168,18 +157,16 @@ theorem collected_matrix_blockdiagonal
   · rw [Matrix.blockDiagonal'_apply_ne _ _ _ h]
     exact off_diag T hdec hinv bμ μ₁ μ₂ h i j
 
--- Entrywise check that the reindexed block-diagonal matrix is Jordan.
--- Off-block entries vanish (`blockDiagonal'_apply_ne`); on-block entries equal the block's
--- entries (`blockDiagonal'_apply_eq`), and `he` transfers the `+1`-adjacency so each block's
--- `IsJordanForm` (`hjor`) closes the per-entry condition.
+section BlockReindex
+
+variable {n : K → ℕ} [Fintype ((μ : K) × Fin (n μ))]
+variable (b : Module.Basis ((μ : K) × Fin (n μ)) K V)
+variable (Mμ : (μ : K) → Matrix (Fin (n μ)) (Fin (n μ)) K)
+
+/-- If `b`'s matrix is block-diagonal with per-block Jordan form, and `e` is an order-compatible
+enumeration of the sigma type, then the submatrix `(blockDiagonal' Mμ).submatrix e e` is in Jordan
+form. -/
 theorem blockdiag_submatrix_isjordan
-    {K : Type*} [Field K] [DecidableEq K]
-    {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]
-    (T : V →ₗ[K] V)
-    {n : K → ℕ}
-    [Fintype ((μ : K) × Fin (n μ))]
-    (b : Module.Basis ((μ : K) × Fin (n μ)) K V)
-    (Mμ : (μ : K) → Matrix (Fin (n μ)) (Fin (n μ)) K)
     (hb : LinearMap.toMatrix b b T = Matrix.blockDiagonal' Mμ)
     (hjor : ∀ μ : K, IsJordanForm (Mμ μ))
     (e : Fin (Module.finrank K V) ≃ ((μ : K) × Fin (n μ)))
@@ -212,17 +199,9 @@ theorem blockdiag_submatrix_isjordan
     · rw [Matrix.blockDiagonal'_apply_ne Mμ ki kj hμ]
       split_ifs <;> simp
 
--- reindex_tomatrix_eq_blockdiag_submatrix: reindexing a block-diagonal basis by e gives
--- (blockDiagonal' Mμ).submatrix e e, via Basis.reindex repr/apply bookkeeping.
--- entry_kind: Builder
+/-- The matrix of `T` in the reindexed basis `b.reindex e.symm` equals the submatrix
+`(blockDiagonal' Mμ).submatrix e e`, via `Basis.reindex` representation bookkeeping. -/
 theorem reindex_tomatrix_eq_blockdiag_submatrix
-    {K : Type*} [Field K] [DecidableEq K]
-    {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]
-    (T : V →ₗ[K] V)
-    {n : K → ℕ}
-    [Fintype ((μ : K) × Fin (n μ))]
-    (b : Module.Basis ((μ : K) × Fin (n μ)) K V)
-    (Mμ : (μ : K) → Matrix (Fin (n μ)) (Fin (n μ)) K)
     (hb : LinearMap.toMatrix b b T = Matrix.blockDiagonal' Mμ)
     (hjor : ∀ μ : K, IsJordanForm (Mμ μ))
     (e : Fin (Module.finrank K V) ≃ ((μ : K) × Fin (n μ)))
@@ -238,20 +217,9 @@ theorem reindex_tomatrix_eq_blockdiag_submatrix
     simp [Module.Basis.reindex, Finsupp.domLCongr_apply]
   rw [hrepr, Equiv.symm_symm]
 
--- Reindex the block-diagonal basis `b` by the order-iso `e` to a `Fin (finrank V)` basis.
--- `reindex_tomatrix_eq_blockdiag_submatrix`: the reindexed basis' matrix equals
---   `(blockDiagonal' Mμ).submatrix e e` (pure `toMatrix`/`reindex` bookkeeping).
--- `blockdiag_submatrix_isjordan`: that submatrix is Jordan form — block-wise from `hjor` and the
---   consecutive-index order property `he` (pure matrix combinatorics, no `T`/basis).
--- Combine: rewrite the goal matrix to the submatrix, then apply the Jordan-form fact.
+/-- Given an order-compatible enumeration `e`, the reindexed basis `b.reindex e.symm` is a
+`Fin (finrank K V)`-indexed basis for `V` whose matrix is in Jordan normal form. -/
 theorem reindex_blockdiag_to_jordan
-    {K : Type*} [Field K] [DecidableEq K]
-    {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]
-    (T : V →ₗ[K] V)
-    {n : K → ℕ}
-    [Fintype ((μ : K) × Fin (n μ))]
-    (b : Module.Basis ((μ : K) × Fin (n μ)) K V)
-    (Mμ : (μ : K) → Matrix (Fin (n μ)) (Fin (n μ)) K)
     (hb : LinearMap.toMatrix b b T = Matrix.blockDiagonal' Mμ)
     (hjor : ∀ μ : K, IsJordanForm (Mμ μ))
     (e : Fin (Module.finrank K V) ≃ ((μ : K) × Fin (n μ)))
@@ -264,22 +232,10 @@ theorem reindex_blockdiag_to_jordan
   rw [h1]
   exact blockdiag_submatrix_isjordan T b Mμ hb hjor e he
 
--- Reindex a block-diagonal (per-block Jordan) basis to a `Fin (finrank V)` global Jordan basis.
--- `jordan_block_enumeration`: there is an enumeration `e : Fin (finrank V) ≃ Σ μ, Fin (n μ)` laying
---   the blocks out contiguously and in-order — i.e. within a block, `Fin`-positions are consecutive
---   iff the within-block indices are (the order-isomorphism property `he`).
--- `reindex_blockdiag_to_jordan`: given such an `e`, the reindexed basis `b.reindex e.symm` has matrix
---   `blockDiagonal' Mμ ∘ e`, whose Jordan form follows from `hjor` block-wise plus `he`.
--- First sub-goal is pure index combinatorics on the sigma fintype (no T / matrices in its content);
--- second is matrix bookkeeping (`toMatrix_reindex` + `blockDiagonal'_apply` + case split).
+/-- If the matrix of `T` in `b` is block-diagonal with each block in Jordan form, there exists a
+`Fin (finrank K V)`-indexed global Jordan-form basis, obtained by enumerating the block structure
+contiguously via `jordan_block_enumeration`. -/
 theorem block_diagonal_reindex_jordan
-    {K : Type*} [Field K] [DecidableEq K]
-    {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]
-    (T : V →ₗ[K] V)
-    {n : K → ℕ}
-    [Fintype ((μ : K) × Fin (n μ))]
-    (b : Module.Basis ((μ : K) × Fin (n μ)) K V)
-    (Mμ : (μ : K) → Matrix (Fin (n μ)) (Fin (n μ)) K)
     (hb : LinearMap.toMatrix b b T = Matrix.blockDiagonal' Mμ)
     (hjor : ∀ μ : K, IsJordanForm (Mμ μ)) :
     ∃ b' : Module.Basis (Fin (Module.finrank K V)) K V,
@@ -287,19 +243,11 @@ theorem block_diagonal_reindex_jordan
   obtain ⟨e, he⟩ := jordan_block_enumeration T b Mμ hb hjor
   exact reindex_blockdiag_to_jordan T b Mμ hb hjor e he
 
--- Glue the per-eigenspace Jordan bases into a global Jordan-form basis (Brick C step 4).
--- `collected_matrix_blockdiagonal`: over the collected basis of the internal direct sum
---   `hdec`, the matrix of `T` is block-diagonal with diagonal blocks the per-eigenspace
---   restriction matrices `toMatrix (bμ μ) (bμ μ) (T.restrict (hinv μ))`.
--- `block_diagonal_reindex_jordan`: any basis whose matrix is block-diagonal with each diagonal
---   block already in Jordan form reindexes (blocks laid out contiguously) to a
---   `Fin (finrank V)` basis in global Jordan form.
--- Each sub-goal drops a layer: the first is direct-sum / restriction bookkeeping, the second
--- is pure matrix combinatorics (no eigenspaces, no invariance).
+end BlockReindex
+
+/-- Given an internal direct-sum decomposition into generalized eigenspaces and per-eigenspace
+Jordan bases, there exists a global `Fin (finrank K V)`-indexed basis for `V` in Jordan normal form. -/
 theorem glue_maxgen_jordan_blocks
-    {K : Type*} [Field K] [DecidableEq K]
-    {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]
-    (T : V →ₗ[K] V)
     (hdec : DirectSum.IsInternal
       (fun μ : K => (Module.End.maxGenEigenspace T μ : Submodule K V)))
     (hinv : ∀ μ : K, ∀ x ∈ (Module.End.maxGenEigenspace T μ : Submodule K V),

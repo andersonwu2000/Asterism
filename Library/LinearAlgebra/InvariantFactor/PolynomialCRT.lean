@@ -1,24 +1,22 @@
 import Mathlib
 
+/-!
+# Chinese Remainder Theorem for polynomial quotients
+
+This file establishes linear equivalences arising from the Chinese Remainder Theorem in the
+polynomial ring `K[X]` over a field `K`. The key results decompose the quotient of `K[X]` by a
+product of pairwise-coprime polynomials into a direct sum of individual quotients, as needed for
+the invariant factor decomposition of a module over a PID.
+-/
+
 namespace Library.LinearAlgebra.InvariantFactor.PolynomialCRT
 
--- Direct leaf: pairwise-coprime principal ideals over the PID K[X] have
--- intersection = principal ideal of their product. Exactly mathlib's
--- `Ideal.iInf_span_singleton` (Submodule.span ≡ Ideal.span over a comm ring).
-theorem inf_span_eq_span_prod
-    {K : Type*} [Field K] {ι : Type*} [Fintype ι] [DecidableEq ι]
-    (g : ι → Polynomial K) (hg : ∀ i j, i ≠ j → IsCoprime (g i) (g j)) :
-    (⨅ i, Submodule.span (Polynomial K) {g i})
-      = Submodule.span (Polynomial K) {∏ i, g i}  :=
-  Ideal.iInf_span_singleton hg
+variable {K : Type*} [Field K] {ι : Type*} [Fintype ι] [DecidableEq ι]
 
--- K[X]-linear Chinese Remainder iso, proved directly (leaf, no sub-goals).
--- Cite mathlib's ring-level CRT `Ideal.quotientInfRingEquivPiQuotient` (coprimality of
--- the principal ideals from `Ideal.isCoprime_span_singleton_iff` on `hg`), then upgrade
--- that `≃+*` to `≃ₗ[K[X]]` by supplying `map_smul'`: on a representative `mk a` both
--- sides reduce to `fun i => mk (r * a)`, so `rfl` after `ext i`.
+/-- Chinese Remainder Theorem for pairwise-coprime polynomials: the quotient of `K[X]` by the
+intersection of the principal ideals `(g i)` is linearly equivalent, as a `K[X]`-module, to the
+product of the individual quotients `K[X] / (g i)`, provided the `g i` are pairwise coprime. -/
 theorem crt_quot_inf_pi
-    {K : Type*} [Field K] {ι : Type*} [Fintype ι] [DecidableEq ι]
     (g : ι → Polynomial K) (hg : ∀ i j, i ≠ j → IsCoprime (g i) (g j)) :
     Nonempty (
       (Polynomial K ⧸ ⨅ i, Submodule.span (Polynomial K) {g i})
@@ -34,45 +32,25 @@ theorem crt_quot_inf_pi
   ext i
   rfl
 
--- assoc_quot_lequiv: Associated elements yield equal principal ideals, hence a quotient equiv.
--- Extracts unit witness from `Associated`, proves span equality, applies `Submodule.quotEquivOfEq`.
--- entry_kind: Builder
+/-- Associated elements of a commutative ring generate isomorphic quotient modules: if `a` and `b`
+are associated in `R`, then `R ⧸ (a) ≃ₗ[R] R ⧸ (b)`. -/
 theorem assoc_quot_lequiv {R : Type*} [CommRing R] {a b : R} (h : Associated a b) :
     Nonempty ((R ⧸ Submodule.span R {a}) ≃ₗ[R] (R ⧸ Submodule.span R {b})) := by
-  obtain ⟨u, hu⟩ := h
-  have hspan : Submodule.span R {a} = Submodule.span R {b} := by
-    apply le_antisymm
-    · rw [Submodule.span_singleton_le_iff_mem]
-      refine Submodule.mem_span_singleton.mpr ⟨↑u⁻¹, ?_⟩
-      simp only [smul_eq_mul]
-      rw [← hu]
-      have hinv : (↑u⁻¹ : R) * ↑u = 1 := u.inv_mul
-      calc (↑u⁻¹ : R) * (a * ↑u) = a * (↑u⁻¹ * ↑u) := by ring
-        _ = a := by rw [hinv, mul_one]
-    · rw [Submodule.span_singleton_le_iff_mem]
-      refine Submodule.mem_span_singleton.mpr ⟨↑u, ?_⟩
-      simp only [smul_eq_mul]
-      rw [mul_comm, hu]
-  exact ⟨Submodule.quotEquivOfEq _ _ hspan⟩
+  exact ⟨Submodule.quotEquivOfEq _ _ (le_antisymm
+    (Ideal.span_singleton_le_span_singleton.mpr h.dvd')
+    (Ideal.span_singleton_le_span_singleton.mpr h.dvd))⟩
 
--- CRT for K[X]-modules: ⨁ᵢ K[X]/(gᵢ) ≅ K[X]/(∏ᵢ gᵢ) for pairwise-coprime g.
--- Decomposition into two strictly-simpler sub-goals + a mathlib-cited closer:
---   • inf_span_eq_span_prod (h_inf): collapses span{∏ gᵢ} to ⨅ᵢ span{gᵢ} — pure
---     ideal arithmetic from pairwise coprimality.
---   • crt_quot_inf_pi (h_crt): the genuine K[X]-linear Chinese Remainder iso
---     K[X]/(⨅ span{gᵢ}) ≃ₗ ∏ᵢ K[X]/(gᵢ) — the crux (linear upgrade of mathlib's
---     ring-equiv CRT).
--- Closer: chain DirectSum.linearEquivFunOnFintype (⨁ ≃ ∏) with crt.symm and
--- Submodule.quotEquivOfEq h_inf — both cited from mathlib.
+/-- The direct sum of the quotients `K[X] / (g i)` over pairwise-coprime polynomials `g i` is
+linearly equivalent to the single quotient `K[X] / (∏ i, g i)`. This is the module-theoretic form
+of the Chinese Remainder Theorem used in the invariant factor decomposition. -/
 theorem crt_directsum_prod_quot
-    {K : Type*} [Field K] {ι : Type*} [Fintype ι] [DecidableEq ι]
     (g : ι → Polynomial K) (hg : ∀ i j, i ≠ j → IsCoprime (g i) (g j)) :
     Nonempty (
       (DirectSum ι (fun i => Polynomial K ⧸ Submodule.span (Polynomial K) {g i}))
         ≃ₗ[Polynomial K]
       (Polynomial K ⧸ Submodule.span (Polynomial K) {∏ i, g i}))  := by
   have h_inf : (⨅ i, Submodule.span (Polynomial K) {g i})
-      = Submodule.span (Polynomial K) {∏ i, g i} := inf_span_eq_span_prod g hg
+      = Submodule.span (Polynomial K) {∏ i, g i} := (Ideal.iInf_span_singleton hg)
 
   have h_crt : Nonempty (
       (Polynomial K ⧸ ⨅ i, Submodule.span (Polynomial K) {g i})
@@ -82,11 +60,5 @@ theorem crt_directsum_prod_quot
   exact ⟨(DirectSum.linearEquivFunOnFintype (Polynomial K) ι
       (fun i => Polynomial K ⧸ Submodule.span (Polynomial K) {g i})).trans
     (crt.symm.trans (Submodule.quotEquivOfEq _ _ h_inf))⟩
-
--- entry_kind: Backward
-theorem crt_row_collapse {K : Type*} [Field K] {ι : Type*} [Fintype ι] [DecidableEq ι]
-    (g : ι → Polynomial K) (hg : ∀ i j, i ≠ j → IsCoprime (g i) (g j)) :
-    Nonempty ((DirectSum ι (fun i => Polynomial K ⧸ Submodule.span (Polynomial K) {g i}))
-      ≃ₗ[Polynomial K] (Polynomial K ⧸ Submodule.span (Polynomial K) {∏ i, g i})) := by apply crt_directsum_prod_quot <;> assumption
 
 end Library.LinearAlgebra.InvariantFactor.PolynomialCRT

@@ -1,14 +1,26 @@
 import Mathlib
 
+/-!
+# Jordan normal form — coefficient vanishing lemmas
+
+This file establishes that every scalar coefficient in a hypothetical linear dependence among the
+assembled Jordan-chain basis vectors must vanish. The argument proceeds in three layers: first
+pushing `N` through the relation to extract a vanishing combination of range-basis elements
+(`pushforward_d_relation`), then reading off the above-bottom coefficients by linear independence
+(`above_bottom_vanish`), and finally killing the chain-bottom and complement coefficients by a
+disjointness–linear-independence argument (`chain_bottom_coeffs`, `complement_coeffs`,
+`bottom_complement_coeffs`).
+-/
+
 namespace Library.LinearAlgebra.JordanForm.FamilyCoeffs
 
--- Direct leaf: the d-relation `hrel` is a vanishing combo over distinct basis vectors.
--- `ti ↦ ⟨ti.1.1, ti.2⟩` injects the positive-length-chain index into `d`'s index, so the
--- coerced subfamily `↑(d ⟨ti.1.1, ti.2⟩)` is LI (d.linearIndependent.comp, then .map' through
--- the range-subtype with trivial kernel). `Fintype.linearIndependent_iff` reads off `hrel` to
--- force every coefficient `g ⟨Sum.inl ti.1, ti.2.succ⟩ = 0`. Sorry-free; no sub-goals.
+variable {K W : Type*} [Field K] [AddCommGroup W] [Module K W]
+
+/-- Given a vanishing linear combination `hrel` of coerced range-basis elements
+`↑(d ⟨ti.1.1, ti.2⟩)`, forces every coefficient `g ⟨Sum.inl ti.1, ti.2.succ⟩` to zero
+by linear independence of the injective subfamily of `d`. -/
 theorem d_coeff_vanish
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -52,14 +64,10 @@ theorem d_coeff_vanish
     exact hsub.map' (LinearMap.range N).subtype (Submodule.ker_subtype _)
   exact Fintype.linearIndependent_iff.mp h_li (fun ti => g ⟨Sum.inl ti.1, ti.2.succ⟩) hrel
 
--- Extract above-bottom coeff vanishing from the d-relation `hrel`, then index-translate.
--- `d_coeff_vanish`: LI of the injective subfamily `ti ↦ ↑(d ⟨ti.1.1, ti.2⟩)` of basis `d`
---   forces every coefficient `g ⟨inl ti.1, ti.2.succ⟩` in `hrel = 0` to vanish (succ-form).
--- Combinator: for `j : Fin (l t.1 + 1)` with `0 < j`, write `j = (j.pred).succ` and apply.
---   The sub-goal drops the `0 < j` hypothesis and the `Fin (l+1)` index gymnastics, stating
---   the result in the natural succ-indexed form matching `hrel`'s summands — strictly simpler.
+/-- For `j : Fin (l t.1 + 1)` with `0 < j`, the coefficient `g ⟨Sum.inl t, j⟩` vanishes:
+translate the succ-form result of `d_coeff_vanish` via `j = (j.pred).succ`. -/
 theorem li_extract_above
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -95,22 +103,20 @@ theorem li_extract_above
     ⟨j.pred (by rintro rfl; simp at hj), Fin.succ_pred j (by rintro rfl; simp at hj)⟩
   exact hcoeff ⟨t, k⟩
 
--- entry_kind: Builder
 theorem n_distrib_smul_sum
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W]
     (N : W →ₗ[K] W)
     (p : ℕ) (l : Fin p → ℕ) (m : ℕ)
     (v : (Σ s : ({t : Fin p // 0 < l t} ⊕ Fin m),
           Fin (Sum.elim (fun t : {t : Fin p // 0 < l t} => l t.1 + 1) (fun _ : Fin m => 1) s)) → W)
     (g : (Σ s : ({t : Fin p // 0 < l t} ⊕ Fin m),
           Fin (Sum.elim (fun t : {t : Fin p // 0 < l t} => l t.1 + 1) (fun _ : Fin m => 1) s)) → K) :
-    N (∑ i, g i • v i) = ∑ i, g i • N (v i) := by norm_num
+    N (∑ i, g i • v i) = ∑ i, g i • N (v i) := by simp [map_sum, map_smul]
 
--- n_sum_collapse_to_inl_succ: collapses ∑ over all v-indices to inl-succ terms only;
--- inl-bottom terms vanish (chain-bottom maps to 0 via hd), inr terms vanish (C ≤ ker N).
--- entry_kind: Builder
+/-- Collapses `∑ g i • N (v i)` over all Jordan-family indices to the succ-indexed inl terms only:
+inl-bottom terms vanish because the chain bottom maps to zero under `N` (by `hd`), and inr terms
+vanish because `C ≤ ker N`. -/
 theorem n_sum_collapse_to_inl_succ
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -126,7 +132,8 @@ theorem n_sum_collapse_to_inl_succ
     (hC3 : C ⊔ (LinearMap.range N ⊓ LinearMap.ker N) = LinearMap.ker N)
     (m : ℕ) (cb : Module.Basis (Fin m) K C)
     (v : (Σ s : ({t : Fin p // 0 < l t} ⊕ Fin m),
-          Fin (Sum.elim (fun t : {t : Fin p // 0 < l t} => l t.1 + 1) (fun _ : Fin m => 1) s)) → W)
+          Fin (Sum.elim (fun t : {t : Fin p // 0 < l t} => l t.1 + 1)
+               (fun _ : Fin m => 1) s)) → W)
     (hv_chain : ∀ (t : {t : Fin p // 0 < l t}) (i : Fin (l t.1)),
         v ⟨Sum.inl t, i.castSucc⟩ = (↑(d ⟨t.1, i⟩) : W))
     (hv_top : ∀ (t : {t : Fin p // 0 < l t}),
@@ -173,10 +180,10 @@ theorem n_sum_collapse_to_inl_succ
   simp_rw [h_inl_split]
   rw [Fintype.sum_sigma]
 
--- n_v_inl_succ_eq_d: per-element chain shift using hv_chain/hv_top and hx/hd
--- entry_kind: Builder
+/-- For each positive-length chain index `(t, j)`, applying `N` to the succ-step `v ⟨Sum.inl t, j.succ⟩`
+yields the coerced `d`-basis element `↑(d ⟨t.1, j⟩)`, using the chain recurrence in `hd` and the
+preimage relation `hx`. -/
 theorem n_v_inl_succ_eq_d
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W]
     (N : W →ₗ[K] W)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -227,14 +234,10 @@ theorem n_v_inl_succ_eq_d
       rw [← hcoe]
       exact congr_arg Subtype.val hi_eq
 
--- Mirror the abstract 3-step decomposition pattern: linearity → reindex/drop-zero → per-element shift.
--- (1) `n_distrib_smul_sum`: N distributes through `∑ g i • v i` into `∑ g i • N (v i)`.
--- (2) `n_sum_collapse_to_inl_succ`: drop vanishing inl-bottom and inr-bottom terms; reindex
---     surviving inl-succ terms to `Σ t, Fin (l t.1)`.
--- (3) `n_v_inl_succ_eq_d`: per-element chain shift `N (v ⟨inl t, j.succ⟩) = d ⟨t.1, j⟩`.
--- Combiner: rewrite by (1) and (2), then `Finset.sum_congr` applies (3) pointwise inside `g • _`.
+/-- Computes `N (∑ g i • v i)` as the weighted sum `∑ g⟨inl ti.1, ti.2.succ⟩ • ↑(d ⟨ti.1.1, ti.2⟩)`
+by combining linearity of `N`, collapse of vanishing terms, and the per-element chain shift. -/
 theorem pushforward_d_eq_alias
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -268,11 +271,10 @@ theorem pushforward_d_eq_alias
   rw [h_lin, h_reindex]
   exact Finset.sum_congr rfl (fun ti _ => by rw [h_chain ti.1 ti.2])
 
--- Use the already-abstract `pushforward_d_eq` identity:
---   N (∑ gᵢ • vᵢ) = ∑_{ti} g⟨inl ti.1, ti.2.succ⟩ • d⟨ti.1.1, ti.2⟩
--- Then `hg : ∑ gᵢ • vᵢ = 0` collapses the LHS via `map_zero`, giving the goal.
+/-- Derives the vanishing relation `∑ g⟨inl ti.1, ti.2.succ⟩ • ↑(d ⟨ti.1.1, ti.2⟩) = 0` from
+`hg : ∑ g i • v i = 0` by applying `N` and using `pushforward_d_eq_alias`. -/
 theorem pushforward_d_relation
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -303,15 +305,11 @@ theorem pushforward_d_relation
     hv_chain hv_top hv_C g
   rw [← heq, hg, map_zero]
 
--- Above-bottom coeffs vanish: push `N` through the relation `hg : ∑ gᵢ • vᵢ = 0`.
--- `pushforward_d_relation` collapses `N (∑ gᵢ • vᵢ) = 0` to a combination of the range-basis
---   `d`: complement vectors and chain bottoms (j = 0) die under `N`, while each interior/top
---   shifts down to `d⟨t, j-1⟩`, leaving `∑_{t,i} g⟨inl t, i.succ⟩ • d⟨t,i⟩ = 0`.
--- `li_extract_above` then runs `d`'s linear independence on that relation to force every
---   above-bottom coefficient `g⟨inl t, j⟩` (j ≥ 1) to 0. Each phase drops the other's work
---   (phase 1 needs no LI; phase 2 needs no `N`-pushforward), so both are strictly simpler.
+/-- All above-bottom coefficients `g ⟨Sum.inl t, j⟩` with `0 < j` vanish: push `N` through
+`hg` via `pushforward_d_relation` to obtain a vanishing combination in the range basis, then
+apply `li_extract_above` to read off the coefficients by linear independence. -/
 theorem above_bottom_vanish
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -343,13 +341,11 @@ theorem above_bottom_vanish
   exact li_extract_above N hN h_inv p l d hd x hx C hC1 hC2 hC3 m cb v
     hv_chain hv_top hv_C g hg h_rel
 
--- Direct leaf (no sub-goals): the chain bottoms `↑(d ⟨t.1, ⟨0, t.2⟩⟩)` are an injective
--- subfamily of the Jordan basis `d`, so they are LI in `range N` (d.linearIndependent.comp
--- on the injection `t ↦ ⟨t.1, ⟨0, t.2⟩⟩`), then LI in W after lifting through the range
--- subtype (.map' with trivial kernel). `Fintype.linearIndependent_iff` reads `hzero` off to
--- force every bottom coeff `g ⟨Sum.inl t, 0⟩ = 0`. Sorry-free; ships alone for leaf-bypass.
+/-- Given a vanishing weighted sum `hzero` of chain-bottom basis elements `↑(d ⟨t.1, 0⟩)`,
+forces every chain-bottom coefficient `g ⟨Sum.inl t, 0⟩` to zero by linear independence of
+the injective subfamily `t ↦ d ⟨t.1, ⟨0, t.2⟩⟩` of the range basis `d`. -/
 theorem chain_bottom_coeffs_of_sum_zero
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -392,8 +388,11 @@ theorem chain_bottom_coeffs_of_sum_zero
   exact Fintype.linearIndependent_iff.mp h_li
     (fun t => g ⟨Sum.inl t, (0 : Fin (l t.1 + 1))⟩) hzero
 
+/-- Given `hres` expressing that the chain-bottom sum plus the complement sum equals zero,
+the chain-bottom sum alone is zero because it lies in `range N` while the complement sum
+lies in `C`, and `hC2`-disjointness forces `C ∩ range N = ⊥`. -/
 theorem chain_bottom_range_part_zero
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -438,14 +437,11 @@ theorem chain_bottom_range_part_zero
     rw [hAB]; exact Submodule.neg_mem C hB
   exact Submodule.disjoint_def.mp hC2 A hAC hA
 
--- Direct leaf: the residual is exactly the `hg` dependence after the `habove` collapse.
--- Split `∑ i` over the Σ/⊕ index (`Finset.sum_sigma` + `Fintype.sum_sum_type`) into the
--- `Sum.inl` chain block and `Sum.inr` complement block. On each `inl` fiber `Fin.sum_univ_succ`
--- isolates `j=0`; `habove` zeroes every `j≥1` term and `hv_chain` (at `i=⟨0,t.2⟩`, whose
--- `castSucc` is `0`) rewrites the survivor to `g⟨inl t,0⟩ • d⟨t.1,0⟩`. Each `inr` fiber is
--- `Fin 1`, so `Fin.sum_univ_one` + `hv_C` give `g⟨inr c,0⟩ • cb c`. Sorry-free; no sub-goals.
+/-- After zeroing above-bottom coefficients via `habove`, the vanishing sum `hg` reduces to
+`(∑_t g⟨inl t,0⟩ • ↑(d ⟨t.1,0⟩)) + (∑_c g⟨inr c,0⟩ • ↑(cb c)) = 0` by splitting over
+the Σ/⊕ index and using `habove` to kill all `j ≥ 1` terms. -/
 theorem chain_bottom_residual
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -504,17 +500,11 @@ theorem chain_bottom_residual
   rw [← hinl, ← hinr, ← hsplit]
   exact hg
 
--- Bottom-coeff vanishing for the chain part of the assembled Jordan family.
--- After `habove` kills every above-bottom coeff, the dependence `hg` collapses to a pure
--- bottom relation `(∑_t g⟨inl t,0⟩ • d⟨t.1,0⟩) + (∑_c g⟨inr c,0⟩ • cb c) = 0` (`chain_bottom_residual`).
--- The first sum lies in `range N`, the second in `C`; `hC2`-disjointness forces the
--- `range N` part to vanish (`chain_bottom_range_part_zero`). Linear independence of the chain
--- bottoms (`chain_bottoms_li`, lifted along `range N ↪ W`) then forces each chain-bottom coeff
--- to 0 (`chain_bottom_coeffs_of_sum_zero`). Combinator threads h_res → h_zero → conclusion.
--- Each sub-goal is strictly simpler: #1 is the sum reduction alone, #2 assumes that relation and
--- only runs disjointness, #3 assumes the range part is 0 and only runs the LI argument.
+/-- All chain-bottom coefficients `g ⟨Sum.inl t, 0⟩` vanish, given `habove`: thread the
+residual sum through `chain_bottom_range_part_zero` to isolate the chain-bottom part in
+`range N`, then apply `chain_bottom_coeffs_of_sum_zero` via linear independence. -/
 theorem chain_bottom_coeffs
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -556,13 +546,11 @@ theorem chain_bottom_coeffs
   exact chain_bottom_coeffs_of_sum_zero N hN h_inv p l d hd x hx C hC1 hC2 hC3 m cb v
     hv_chain hv_top hv_C g hg habove h_zero
 
--- sum_bookkeeping_abstract: pure sum identity — from hg=0 and habove (g=0 on j≥1 chain entries),
--- the inr complement sum equals the negative of the inl chain-bottom sum.
--- Uses Fintype.sum_sigma + Fintype.sum_sum_type to split the sigma index, then
--- inr_simp (Fin 1 fiber) and inl_simp (habove kills j≥1, hv_chain supplies j=0).
--- entry_kind: Builder
+/-- Pure sum identity, abstract in `D` and `CB`: given `hg = 0` and `habove`, the complement
+sum `∑ c, g⟨inr c,0⟩ • CB c` equals the negation of the chain-bottom sum
+`∑ t, g⟨inl t,0⟩ • D ⟨t.1,0⟩`, using only the sigma-sum splitting and `habove` to kill
+above-bottom terms without any module-structure hypotheses. -/
 theorem sum_bookkeeping_abstract
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W]
     (p m : ℕ) (l : Fin p → ℕ)
     (D : (Σ t : Fin p, Fin (l t)) → W)
     (CB : Fin m → W)
@@ -604,11 +592,11 @@ theorem sum_bookkeeping_abstract
   simp_rw [inl_simp] at hg
   exact hg
 
--- entry_kind: Builder
--- chain_bottoms_mem_range_2: Submodule.coe_mem on basis elements closes the goal
--- d ⟨t,0⟩ : ↥N.range, so ↑(d ⟨t,0⟩) ∈ N.range; closed under smul + finite sum.
+/-- The weighted sum of chain-bottom coerced basis elements lies in `range N`, since each
+`↑(d ⟨t, 0⟩)` belongs to `range N` and the submodule is closed under scalar multiplication
+and finite sums. -/
 theorem chain_bottoms_mem_range_2
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -643,11 +631,10 @@ theorem chain_bottoms_mem_range_2
   apply Submodule.smul_mem
   exact (d ⟨↑t, ⟨0, t.2⟩⟩).2
 
--- Decompose into one strictly-more-abstract sub-goal: the pure sum-bookkeeping
--- identity, generic in `D`/`CB` (no `N`, no `LinearMap.range`, no `hd`).
--- Instantiate with `D := ↑(d ·)`, `CB := ↑(cb ·)` to recover the parent shape.
+/-- The complement block equals the negation of the chain-bottom sum, obtained by instantiating
+`sum_bookkeeping_abstract` with `D := ↑(d ·)` and `CB := ↑(cb ·)`. -/
 theorem comp_block_eq_neg_chain_bottoms_2
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -676,16 +663,13 @@ theorem comp_block_eq_neg_chain_bottoms_2
       g ⟨Sum.inl t, j⟩ = 0) :
     (∑ c : Fin m, g ⟨Sum.inr c, (0 : Fin 1)⟩ • (cb c : W))
       = -(∑ t : {t : Fin p // 0 < l t},
-            g ⟨Sum.inl t, (0 : Fin (l t.1 + 1))⟩ • (↑(d ⟨t.1, ⟨0, t.2⟩⟩) : W))  := by
-  exact sum_bookkeeping_abstract p m l (fun s => (↑(d s) : W)) (fun c => (↑(cb c) : W))
-    v hv_chain hv_C g hg habove
+            g ⟨Sum.inl t, (0 : Fin (l t.1 + 1))⟩ • (↑(d ⟨t.1, ⟨0, t.2⟩⟩) : W))  := Library.LinearAlgebra.JordanForm.FamilyCoeffs.sum_bookkeeping_abstract p m l (fun s => (↑(d s) : W)) (fun c => (↑(cb c) : W)) v hv_chain hv_C g hg habove
 
--- Direct leaf proof: complement coeffs vanish from `hmem` + disjointness + cb's LI.
--- The block `∑ c, g⟨inr c,0⟩ • cb c` lies in C (each cb c ∈ C); `hmem` puts it in `range N`;
--- `hC2`-disjointness collapses C ⊓ range N to ⊥, so the block = 0; then `cb.linearIndependent`
--- (pushed along the injective subtype) + `Fintype.linearIndependent_iff` kills every coeff.
+/-- Given that the complement block `∑ c, g⟨inr c,0⟩ • cb c` lies in `range N`, all complement
+coefficients vanish: the block also lies in `C`, so `hC2`-disjointness forces it to zero, and
+linear independence of `cb` (pushed along the injective subtype `C ↪ W`) finishes the argument. -/
 theorem comp_coeffs_of_mem_range
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -729,16 +713,11 @@ theorem comp_coeffs_of_mem_range
   exact (Fintype.linearIndependent_iff.mp hli
     (fun c => g ⟨Sum.inr c, (0 : Fin 1)⟩) hblock) c
 
--- The complement block `∑ c, g⟨inr c,0⟩ • cb c` lies in `range N`, via two sub-goals.
---   * `comp_block_eq_neg_chain_bottoms_2` : pure sum bookkeeping using `hg`, `habove`,
---     `hv_chain`, `hv_C` to rewrite the block as `-(∑ t, g⟨inl t,0⟩ • d⟨t.1,0⟩)`.
---     Strictly simpler: no `range N` reasoning, no linear independence.
---   * `chain_bottoms_mem_range_2` : the chain-bottom sum lies in `range N` since each
---     `↑(d ·) ∈ range N` and `range N` is closed under scalar mul + finite sum.
---     Strictly simpler: pure submodule closure facts, no full sum identity.
--- Combinator: rewrite via the equality, then `neg_mem` on the membership.
+/-- The complement block `∑ c, g⟨inr c,0⟩ • cb c` lies in `range N`: it equals the negation of
+the chain-bottom sum (by `comp_block_eq_neg_chain_bottoms_2`), which itself lies in `range N`
+(by `chain_bottoms_mem_range_2`), and `range N` is closed under negation. -/
 theorem comp_combo_mem_range
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -781,17 +760,10 @@ theorem comp_combo_mem_range
   rw [h_eq]
   exact neg_mem h_mem
 
--- Complement coeffs `g ⟨inr c, 0⟩` vanish, given `habove` (above-bottom chain coeffs are 0).
--- Two simpler phases; the combinator just threads phase 1 into phase 2.
---   * `comp_combo_mem_range` : the complement block `∑ c, g⟨inr c,0⟩ • cb c` lies in `range N`.
---     From `hg`, `habove` kills the above-bottom terms, leaving chain bottoms
---     (`v⟨inl t,0⟩ = d⟨t.1,0⟩ ∈ range N`) plus this block, so the block = minus that sum.
---     Strictly simpler: pure sum bookkeeping, no linear independence.
---   * `comp_coeffs_of_mem_range` : given that membership, the block is also in `C`
---     (each `cb c ∈ C`), so `hC2`-disjointness makes it 0 and `cb`-LI kills every coeff.
---     Strictly simpler: takes the membership as a hypothesis; only disjointness + LI remain.
+/-- All complement coefficients `g ⟨Sum.inr c, 0⟩` vanish given `habove`: show the complement
+block lies in `range N` via `comp_combo_mem_range`, then apply `comp_coeffs_of_mem_range`. -/
 theorem complement_coeffs
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -824,15 +796,11 @@ theorem complement_coeffs
   exact comp_coeffs_of_mem_range N hN h_inv p l d hd x hx C hC1 hC2 hC3 m cb v
     hv_chain hv_top hv_C g hg habove hmem
 
--- Given `habove` (all above-bottom coeffs vanish), every coeff vanishes by casing on `idx`.
---   * `chain_bottom_coeffs` : chain-bottom coeffs `g ⟨inl t, 0⟩` vanish (residual ∈ range N,
---     hC2-disjoint from C, then `chain_bottoms_li`). Strictly simpler: only the `j = 0` chain part.
---   * `complement_coeffs` : complement coeffs `g ⟨inr c, 0⟩` vanish (residual ∈ C, hC2-disjoint
---     from range N, then `cb`-LI). Strictly simpler: only the complement part.
--- Combinator is pure structural casing: above-bottom → `habove`, chain bottom → h_bottom,
--- complement (Fin 1, forced 0) → h_comp.
+/-- Every coefficient `g idx` vanishes given `habove` (all above-bottom chain coefficients are zero):
+cases on `idx` to dispatch chain-bottom indices to `chain_bottom_coeffs` and complement indices
+to `complement_coeffs`. -/
 theorem bottom_complement_coeffs
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+    [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)

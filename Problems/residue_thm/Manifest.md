@@ -1,5 +1,6 @@
 ---
 problem: residue_thm
+library: true
 axioms_whitelist:
   - propext
   - Quot.sound

@@ -2,14 +2,29 @@ import Library.LinearAlgebra.JordanForm.ChainPartition
 import Library.LinearAlgebra.JordanForm.FamilyConstruction
 import Mathlib
 
+/-!
+# Range block structure for nilpotent operators
+
+This file constructs a strongly-structured block Jordan chain basis for the range of a
+nilpotent linear map `N : W →ₗ[K] W`, then lifts it to a full Jordan chain basis of `W`.
+The key steps are: (1) reindex a flat consecutive-chain basis of `range N` into proper
+chain-blocks via a combinatorial partition, and (2) use rank-nullity to bound
+`finrank (range N)`, enabling the inductive assembly in `FamilyConstruction`.
+-/
+
 open Library.LinearAlgebra.JordanForm.ChainPartition
 open Library.LinearAlgebra.JordanForm.FamilyConstruction
 
 namespace Library.LinearAlgebra.JordanForm.RangeBlock
 
+variable {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+variable (N : W →ₗ[K] W)
+
+/-- Given a flat consecutive-chain basis `bU` of `range N` and a combinatorial block partition
+`(p, l, e, o)` of its index type, the reindexed basis `bU.reindex e` satisfies the strong
+Jordan chain property: each block element either starts the chain (index `j = 0` and maps to
+zero) or maps to its immediate predecessor within the same block. -/
 theorem chain_block_assemble
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
-    (N : W →ₗ[K] W)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (bU : Module.Basis (Fin (Module.finrank K (LinearMap.range N))) K (LinearMap.range N))
     (hbU : ∀ j : Fin (Module.finrank K (LinearMap.range N)),
@@ -61,10 +76,9 @@ theorem chain_block_assemble
         omega
       rw [hreq, hi2, bU.reindex_apply, hidx]
 
--- entry_kind: Builder
+/-- In any flat consecutive-chain basis `bU` of `range N`, the element at index `0` maps to
+zero under `N.restrict h_inv`, since no index `i` can satisfy `i + 1 = 0`. -/
 theorem zero_index_maps_to_zero
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
-    (N : W →ₗ[K] W)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (bU : Module.Basis (Fin (Module.finrank K (LinearMap.range N))) K (LinearMap.range N))
     (hbU : ∀ j : Fin (Module.finrank K (LinearMap.range N)),
@@ -87,9 +101,12 @@ theorem zero_index_maps_to_zero
 --     read off the STRONG chain property index-by-index (alignment gives the `j=0` start
 --     and rules out interior starts; `hbU` + the offset formula match interiors to
 --     predecessors). Simpler: the combinatorial construction is already done.
+/-- Given a flat consecutive-chain basis `bU` of `range N` (where each basis vector either
+maps to zero or to its flat predecessor), produces a reindexed block basis `d` satisfying
+the strong Jordan chain property: each block starts at index `0` (mapping to zero) and
+each interior element maps to the preceding element of the same block. -/
 theorem range_block_strong
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
-    (N : W →ₗ[K] W) (hN : IsNilpotent N)
+    (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (bU : Module.Basis (Fin (Module.finrank K (LinearMap.range N))) K (LinearMap.range N))
     (hbU : ∀ j : Fin (Module.finrank K (LinearMap.range N)),
@@ -111,10 +128,11 @@ theorem range_block_strong
 -- If N were injective (ker = ⊥), finite-dim gives surjective, so N^k surjective;
 -- but N^k = 0 maps everything to 0, forcing W trivial → N = 0, contradicting hN0.
 -- Hence ker N ≠ ⊥, so finrank(ker N) ≥ 1, and rank-nullity gives the bound.
--- entry_kind: Builder
+/-- A nilpotent non-zero operator on a space of dimension at most `m + 1` has range of
+dimension at most `m`; the kernel is non-trivial by injectivity-surjectivity collapse, and
+rank-nullity yields the bound. -/
 theorem range_finrank_le
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
-    (N : W →ₗ[K] W) (hN : IsNilpotent N) (hN0 : N ≠ 0) {m : ℕ}
+    (hN : IsNilpotent N) (hN0 : N ≠ 0) {m : ℕ}
     (hdim : Module.finrank K W ≤ m + 1) :
     Module.finrank K (LinearMap.range N) ≤ m := by
   have hiter_eq_pow : ∀ k : ℕ, (N : W → W) ^[k] = ⇑(N ^ k) := fun k => by
@@ -141,12 +159,11 @@ theorem range_finrank_le
     exact fun h => hker_ne_bot (Submodule.finrank_eq_zero.mp h)
   omega
 
--- entry_kind: Builder
+/-- The restriction of a nilpotent endomorphism to its own range is again nilpotent. -/
 theorem range_restrict_nilpotent
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
-    (N : W →ₗ[K] W) (hN : IsNilpotent N)
+    (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N) :
-    IsNilpotent (N.restrict h_inv) := by exact Module.End.isNilpotent.restrict h_inv hN
+    IsNilpotent (N.restrict h_inv) := Module.End.isNilpotent.restrict h_inv hN
 
 -- Glue `bU` (consecutive Jordan basis of `range N`) up to a block Jordan basis of `W`.
 -- Fix over dead s10925: its block reindex exposed only the WEAK chain interface (the `= 0`
@@ -158,9 +175,12 @@ theorem range_restrict_nilpotent
 --   * `assemble_block_jordan_strong`: the LA chain-glue — lift chain tops through `N`, extend
 --     `ker N`, assemble. Simpler: the chains arrive explicit and STRONG, so the count closes.
 -- Combine: obtain the strong block basis of `range N`, feed it to the strong glue.
+/-- Given a nilpotent non-zero operator `N` and a flat consecutive-chain basis `bU` of
+`range N`, produces a Jordan chain basis of all of `W`: the chains in `range N` are first
+reorganised into proper blocks via `range_block_strong`, then lifted to `W` by
+`assemble_block_jordan_strong`. -/
 theorem block_jordan_basis_exists
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
-    (N : W →ₗ[K] W) (hN : IsNilpotent N) (hN0 : N ≠ 0)
+    (hN : IsNilpotent N) (hN0 : N ≠ 0)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (bU : Module.Basis (Fin (Module.finrank K (LinearMap.range N))) K (LinearMap.range N))
     (hbU : ∀ j : Fin (Module.finrank K (LinearMap.range N)),

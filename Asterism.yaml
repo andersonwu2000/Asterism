@@ -97,7 +97,7 @@ backward:
 
 strategist:
   provider: claude
-  model: claude-fable-5        # Planning is the highest-leverage spawn: one
+  model: claude-opus-4-8        # Planning is the highest-leverage spawn: one
                                # decomposition shapes the whole proof tree, so
                                # it gets the strongest available model. Fable 5
                                # (Mythos, ~2x Opus) was the intended planner;
@@ -165,3 +165,6 @@ librarian:
 # default on); death-cause writes are independent.
 feedback:
   enabled: true                # set true in dev to collect framework feedback
+
+scholar:
+  model: claude-opus-4-8

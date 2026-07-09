@@ -5,10 +5,21 @@ import Mathlib
 open Library.LinearAlgebra.LeadingPrincipalMinor
 open Library.LinearAlgebra.LeadingPrincipalMinorBlock
 
+/-!
+# Schur complement and positive semidefiniteness
+
+This file proves that the `1 × 1` Schur complement of a real Hermitian matrix with all positive
+leading principal minors is itself positive semidefinite, establishing the inductive step used in
+Sylvester's criterion.  The key ingredients are a block-determinant factorization
+(`schur_det_factor_2`) and the observation that a `Fin 1` matrix with positive determinant is
+positive semidefinite (`possemidef_of_det_pos_fin_one`).
+-/
+
 namespace Library.LinearAlgebra.SchurComplementPosDef
 
--- possemidef_of_det_pos_fin_one: 1×1 real matrix with positive det is PosSemidef
--- via diagonal rewrite: every 1×1 matrix is diagonal, then use posSemidef_diagonal_iff
+/-- A `1 × 1` real matrix with positive determinant is positive semidefinite.
+Every such matrix is diagonal, so the result follows from `Matrix.posSemidef_diagonal_iff`
+applied to the unique entry. -/
 theorem possemidef_of_det_pos_fin_one (S : Matrix (Fin 1) (Fin 1) ℝ)
     (h : 0 < S.det) : S.PosSemidef := by
   have hS0 : 0 < S 0 0 := Matrix.det_fin_one S ▸ h
@@ -17,18 +28,17 @@ theorem possemidef_of_det_pos_fin_one (S : Matrix (Fin 1) (Fin 1) ℝ)
   rw [hS_diag, Matrix.posSemidef_diagonal_iff]
   intro i; fin_cases i; exact le_of_lt hS0
 
--- mdet_pos_2: det M > 0 follows because leadingPrincipalMinor M (Fin.last n) is
--- definitionally equal to M.det (castLE at Fin.last n is the identity on Fin (n+1)).
+/-- If every leading principal minor of `M` is positive, then `M.det > 0`.
+This follows because `leadingPrincipalMinor M (Fin.last n)` is definitionally equal to `M.det`. -/
 theorem mdet_pos_2 {n : ℕ}
     (M : Matrix (Fin (n + 1)) (Fin (n + 1)) ℝ)
     (hMinors : ∀ (k : Fin (n + 1)), 0 < leadingPrincipalMinor M k) :
     0 < M.det := by exact hMinors (Fin.last n)
 
--- Schur block-determinant factorization: rewrite M.det as the det of the
--- finSumFinEquiv-reindexed matrix (det_submatrix_equiv_self), expand via
--- fromBlocks_toBlocks + det_fromBlocks₁₁ (Invertible toBlocks₁₁ from hApd),
--- then replace toBlocks₂₁ with toBlocks₁₂ᴴ via the sole sub-goal
--- block_conjtranspose_factor (needs hHerm); ⅟ → ⁻¹ closes the gap.
+/-- Block-determinant factorization: `M.det` equals the determinant of the top-left block times
+the determinant of its Schur complement, provided the top-left block is positive definite.
+The proof rewrites via `finSumFinEquiv`, expands with `det_fromBlocks₁₁`, and uses Hermitianity
+to replace `toBlocks₂₁` with `toBlocks₁₂ᴴ`. -/
 theorem schur_det_factor_2 {n : ℕ}
     (M : Matrix (Fin (n + 1)) (Fin (n + 1)) ℝ)
     (hHerm : M.IsHermitian)
@@ -50,17 +60,16 @@ theorem schur_det_factor_2 {n : ℕ}
       (finSumFinEquiv (m := n) (n := 1))).toBlocks₂₁
       = (M.submatrix (finSumFinEquiv (m := n) (n := 1))
         (finSumFinEquiv (m := n) (n := 1))).toBlocks₁₂.conjTranspose :=
-    block_conjtranspose_factor M hHerm
+    Library.LinearAlgebra.LeadingPrincipalMinorBlock.block_conjtranspose M hHerm
   rw [← Matrix.det_submatrix_equiv_self (finSumFinEquiv (m := n) (n := 1)) M]
   conv_lhs => rw [← Matrix.fromBlocks_toBlocks (M.submatrix
     (finSumFinEquiv (m := n) (n := 1)) (finSumFinEquiv (m := n) (n := 1)))]
   rw [Matrix.det_fromBlocks₁₁, hconj, Matrix.invOf_eq_nonsing_inv]
 
--- Schur complement (1×1) has positive determinant via the block-determinant factorization.
--- det M = det(toBlocks₁₁) · det(Schur) (schur_det_factor_2, using hHerm to rewrite toBlocks₂₁ =
--- toBlocks₁₂ᴴ); det M > 0 (mdet_pos_2, the last leading minor) and det(toBlocks₁₁) > 0 (hApd.det_pos)
--- force det(Schur) > 0. Each piece is strictly simpler: a scalar positivity (mdet_pos_2) and a
--- determinant identity (schur_det_factor_2); the final step is one scalar division (nlinarith).
+/-- The `1 × 1` Schur complement has positive determinant when all leading principal minors of `M`
+are positive and the top-left block is positive definite.  The block-determinant factorization
+`schur_det_factor_2` gives `det M = det A · det S`; since both `det M` and `det A` are positive,
+strict positivity of `det S` follows by scalar arithmetic. -/
 theorem schur_det_pos {n : ℕ}
     (M : Matrix (Fin (n + 1)) (Fin (n + 1)) ℝ)
     (hHerm : M.IsHermitian)
@@ -92,12 +101,10 @@ theorem schur_det_pos {n : ℕ}
   rw [hfactor] at hMpos
   nlinarith [hdetA, hMpos]
 
--- Schur complement (1×1) is PosSemidef via its determinant.
--- The 1-dim Schur complement S = D - Bᴴ A⁻¹ B has 0 < S.det (schur_det_pos:
--- det of the reindexed M factors as det A · det S, both numerator and det A > 0),
--- and for a Fin 1 matrix positive determinant gives PosSemidef
--- (possemidef_of_det_pos_fin_one). Each piece is strictly simpler: the det bound
--- is a scalar inequality, the Fin 1 upgrade is dimension-free.
+/-- The `1 × 1` Schur complement `D - Bᴴ A⁻¹ B` of a real Hermitian matrix with positive leading
+principal minors is positive semidefinite.  Positivity of its determinant follows from
+`schur_det_pos`, and `possemidef_of_det_pos_fin_one` upgrades that scalar bound to
+`PosSemidef` in the one-dimensional case. -/
 theorem schur_complement_possemidef {n : ℕ}
 
     (M : Matrix (Fin (n + 1)) (Fin (n + 1)) ℝ)

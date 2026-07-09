@@ -1,11 +1,22 @@
 import Mathlib
 
+/-!
+# Normal diagonalization: matrix norm lemmas
+
+This file establishes that an upper-triangular normal matrix over `ℂ` is diagonal.
+The argument proceeds in three steps: collapse each column's squared-norm sum to its
+diagonal entry (using triangularity and an inductive hypothesis on earlier rows), apply
+an abstract fact that a nonneg sum equalling one of its terms forces all others to zero,
+and extract the column-vs-row norm identity from the normality condition `Commute Mᴴ M`.
+-/
+
 namespace Library.LinearAlgebra.NormalDiagonalization.MatrixNorm
 
--- entry_kind: Builder
--- sum_norm_sq_eq_single_imp_zero: if a sum of squared norms equals its i-th term,
--- all other terms vanish (nonneg sum collapsed to one summand via erase decomposition)
-theorem sum_norm_sq_eq_single_imp_zero {n : ℕ} (f : Fin n → ℂ) (i : Fin n)
+variable {n : ℕ}
+
+/-- If the sum of squared norms `∑ ‖f k‖²` equals its `i`-th term `‖f i‖²`, then every
+other term `f k` (with `k ≠ i`) is zero. -/
+theorem sum_norm_sq_eq_single_imp_zero (f : Fin n → ℂ) (i : Fin n)
     (h : ∑ k, ‖f k‖ ^ 2 = ‖f i‖ ^ 2) :
     ∀ k, k ≠ i → f k = 0 := by
   intro k hk
@@ -24,9 +35,11 @@ theorem sum_norm_sq_eq_single_imp_zero {n : ℕ} (f : Fin n → ℂ) (i : Fin n)
       (hnn k)
   exact norm_eq_zero.mp (by nlinarith [norm_nonneg (f k)])
 
--- col_sum_collapse: column i's squared-norm sum collapses to ‖M i i‖²
--- because htri kills entries above row i and ih kills entries below row i in column i.
-theorem col_sum_collapse {n : ℕ} (M : Matrix (Fin n) (Fin n) ℂ)
+/-- For an upper-triangular matrix `M` (with `htri : M.BlockTriangular id`) whose rows
+`j < i` are already diagonal (`ih`), the squared-norm sum `∑ k, ‖M k i‖²` collapses to
+`‖M i i‖²`: triangularity kills entries above row `i` and the inductive hypothesis kills
+entries below row `i` in column `i`. -/
+theorem col_sum_collapse (M : Matrix (Fin n) (Fin n) ℂ)
     (htri : M.BlockTriangular id) (i : Fin n)
     (ih : ∀ j : Fin n, j < i → ∀ k : Fin n, j ≠ k → M j k = 0) :
     ∑ k, ‖M k i‖ ^ 2 = ‖M i i‖ ^ 2 := by
@@ -40,12 +53,12 @@ theorem col_sum_collapse {n : ℕ} (M : Matrix (Fin n) (Fin n) ℂ)
   · intro hi
     exact absurd (Finset.mem_univ i) hi
 
--- entry_kind: Builder
--- row_col_norm_eq: diagonal of Mᴴ*M and M*Mᴴ agree by normality, giving equal column/row 2-norms
-theorem row_col_norm_eq {n : ℕ} (M : Matrix (Fin n) (Fin n) ℂ)
-    (hcomm : Commute (Matrix.conjTranspose M) M) :
-    ∀ i, ∑ k, ‖M k i‖ ^ 2 = ∑ k, ‖M i k‖ ^ 2 := by
-  intro i
+/-- For a normal matrix `M` (given as `Commute Mᴴ M`), the column and row squared-norm sums
+agree: `∑ k, ‖M k i‖² = ∑ k, ‖M i k‖²`. This follows by equating the `(i, i)` diagonal
+entries of `MᴴM` and `MMᴴ`. -/
+theorem row_col_norm_eq (M : Matrix (Fin n) (Fin n) ℂ)
+    (hcomm : Commute (Matrix.conjTranspose M) M) (i : Fin n) :
+    ∑ k, ‖M k i‖ ^ 2 = ∑ k, ‖M i k‖ ^ 2 := by
   have hdiag : (Matrix.conjTranspose M * M) i i = (M * Matrix.conjTranspose M) i i :=
     congr_fun (congr_fun hcomm i) i
   have star_mul_re : ∀ z : ℂ, (star z * z).re = ‖z‖ ^ 2 := fun z => by
@@ -65,18 +78,12 @@ theorem row_col_norm_eq {n : ℕ} (M : Matrix (Fin n) (Fin n) ℂ)
     exact (mul_star_re (M i k)).symm
   rw [lhs_eq, rhs_eq, hdiag]
 
--- Upper-triangular + the column/row squared-norm identity ⇒ diagonal, by strong
--- induction on the row value with two abstract, strictly-smaller sub-lemmas.
---   * Combinator: strong induction on `i.val` (`Nat.strong_induction_on`) supplies, at
---     row `i`, that every earlier row is already diagonal (`ihrows`).
---   * `col_sum_collapse` — column `i`'s squared-norm sum collapses to `‖M i i‖²`
---     (earlier rows + triangularity kill every off-diagonal entry). A plain ℝ-sum
---     identity, not `IsDiag`.
---   * `sum_norm_sq_eq_single_imp_zero` — an abstract vector fact: if `∑ ‖f k‖²` equals
---     its `i`-th term, every other `f k` vanishes. No matrix in sight.
---   Glue: feed `hcol` through `hsum i` to get the row sum `= ‖M i i‖²`, then the vector
---   lemma forces row `i`'s off-diagonal entries to zero.
-theorem triangular_rowcol_eq_imp_diag {n : ℕ} (M : Matrix (Fin n) (Fin n) ℂ)
+/-- An upper-triangular matrix `M` satisfying the column-vs-row squared-norm identity
+`∑ ‖M k i‖² = ∑ ‖M i k‖²` for every `i` is diagonal. The proof is by strong induction on
+the row index: the inductive hypothesis and triangularity collapse each column sum to the
+diagonal entry, and `sum_norm_sq_eq_single_imp_zero` then forces all off-diagonal row
+entries to zero. -/
+theorem triangular_rowcol_eq_imp_diag (M : Matrix (Fin n) (Fin n) ℂ)
     (htri : M.BlockTriangular id)
     (hsum : ∀ i, ∑ k, ‖M k i‖ ^ 2 = ∑ k, ‖M i k‖ ^ 2) :
     M.IsDiag  := by
@@ -93,14 +100,10 @@ theorem triangular_rowcol_eq_imp_diag {n : ℕ} (M : Matrix (Fin n) (Fin n) ℂ)
   intro i j hij
   exact aux i.val i rfl j hij
 
--- Upper-triangular + normal ⇒ diagonal, split into a normality-extraction
--- and the triangular induction crux.
---   * `row_col_norm_eq` — from `Commute Mᴴ M`, equate diagonal entries of MᴴM and
---     MMᴴ to get the column-vs-row squared-norm identity `∑‖M k i‖² = ∑‖M i k‖²`.
---   * `triangular_rowcol_eq_imp_diag` — pure crux: triangular + that norm identity
---     forces off-diagonal entries to zero (strong induction on the row).
--- They combine directly: feed `htri` and the norm identity into the matrix lemma.
-theorem matrix_core {n : ℕ} (M : Matrix (Fin n) (Fin n) ℂ)
+/-- An upper-triangular normal matrix over `ℂ` is diagonal. Normality (`Commute Mᴴ M`)
+provides the column-vs-row squared-norm identity via `row_col_norm_eq`, and
+`triangular_rowcol_eq_imp_diag` then completes the argument by strong induction. -/
+theorem matrix_core (M : Matrix (Fin n) (Fin n) ℂ)
     (htri : M.BlockTriangular id) (hcomm : Commute (Matrix.conjTranspose M) M) :
     M.IsDiag := by
   have h_rc : ∀ i, ∑ k, ‖M k i‖ ^ 2 = ∑ k, ‖M i k‖ ^ 2 := row_col_norm_eq M hcomm

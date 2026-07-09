@@ -1,7 +1,19 @@
 import Mathlib
 
+/-!
+# Kernel of a Jordan-chain map equals the span of chain bottoms
+
+Given a basis `d` indexed by Jordan chains `(t, j)` on which `M` acts as a backward shift
+(sending `d⟨t,j⟩` to `d⟨t,j-1⟩` for `j ≥ 1` and killing every `d⟨t,0⟩`), this file proves
+that `LinearMap.ker M` equals the `K`-span of the chain-bottom vectors `{d⟨t,0⟩ : 0 < l t}`,
+and deduces that the finrank of the kernel equals the number of Jordan chains.
+-/
+
 namespace Library.LinearAlgebra.JordanForm.ChainKernel
 
+/-- For a Jordan-chain basis where `M` kills bottoms and shifts upper vectors down, the basis
+coordinate `d.repr (M (d idx)) ⟨t, i⟩` equals `d.repr (d idx) ⟨t, j⟩` for every basis index,
+where `i + 1 = j` is the predecessor relation in the chain. -/
 theorem coord_m_eq_coord
     {K R : Type*} [Field K] [AddCommGroup R] [Module K R] [FiniteDimensional K R]
     (M : R →ₗ[K] R) {p : ℕ} {l : Fin p → ℕ}
@@ -35,9 +47,9 @@ theorem coord_m_eq_coord
         fun heq => ht (congrArg Sigma.fst heq)
       rw [if_neg hne1, if_neg hne2]
 
--- repr_comp_linear: lifts basis-vector identity (d.repr ∘ M ∘ d)_a = (d.repr ∘ d)_b to all w
--- Both coord functionals are K-linear; Basis.ext equates them from the basis-vector hypothesis.
--- entry_kind: Builder
+/-- If `d.repr (M (d idx)) a = d.repr (d idx) b` holds for every basis vector `d idx`, then
+it holds for every `w : R`; both sides are `K`-linear and `Basis.ext` reduces equality to
+basis vectors. -/
 theorem repr_comp_linear
     {K R ι : Type*} [Field K] [AddCommGroup R] [Module K R]
     (M : R →ₗ[K] R) (d : Module.Basis ι K R) (a b : ι)
@@ -51,11 +63,8 @@ theorem repr_comp_linear
   intro idx
   simp [h idx]
 
--- ker M coords above the chain bottoms vanish: M is a down-shift on the basis d, so
--- coord of w at ⟨t,j⟩ (j≥1) = coord of M w at predecessor ⟨t,i⟩, = 0 since M w = 0.
-
--- (1) coord_m_eq_coord: per-basis-vector identity d.repr(M(d idx))⟨t,i⟩ = d.repr(d idx)⟨t,j⟩;
--- (2) repr_comp_linear: abstract lift of that identity from basis vectors to all w via Basis.ext.
+/-- For any `w` in the kernel of `M`, every basis coordinate `d.repr w ⟨t, j⟩` with `j ≥ 1`
+vanishes: the shift hypothesis identifies that coordinate with `d.repr (M w) ⟨t, i⟩ = 0`. -/
 theorem kernel_coeffs_above_zero
     {K R : Type*} [Field K] [AddCommGroup R] [Module K R] [FiniteDimensional K R]
     (M : R →ₗ[K] R) {p : ℕ} {l : Fin p → ℕ}
@@ -72,9 +81,9 @@ theorem kernel_coeffs_above_zero
   rw [hw, map_zero, Finsupp.zero_apply] at htransfer
   exact htransfer.symm
 
--- Direct: rewrite w = ∑ i, (d.repr w i) • d i (Basis.sum_repr), then Submodule.sum_mem.
--- Per term ⟨t,j⟩: if j = 0 it is a bottom generator (smul_mem + subset_span); if j > 0
--- the coefficient d.repr w ⟨t,j⟩ vanishes by hzero, so the term is 0.
+/-- If every basis coordinate of `w` at a non-bottom position `j ≥ 1` is zero, then `w` lies
+in the span of the chain bottoms `{d⟨t,0⟩ : 0 < l t}`.  The proof expands `w = ∑ (d.repr w i) • d i`
+and observes that only bottom-index terms can be non-zero. -/
 theorem repr_supported_bottoms_mem_span
     {K R : Type*} [Field K] [AddCommGroup R] [Module K R] [FiniteDimensional K R]
     (M : R →ₗ[K] R) {p : ℕ} {l : Fin p → ℕ}
@@ -102,11 +111,9 @@ theorem repr_supported_bottoms_mem_span
   rw [show w = ∑ i, d.repr w i • d i from (d.sum_repr w).symm]
   exact Submodule.sum_mem _ fun i _ => key i
 
--- ker M ≤ span of chain bottoms: a kernel element's basis coords vanish above the bottoms.
--- kernel_coeffs_above_zero: for w with M w = 0, every coord d.repr w ⟨t,j⟩ with j ≥ 1 is 0
---   (M lowers d⟨t,j⟩ to the distinct basis vector d⟨t,j-1⟩, so M w = 0 forces those coords to 0).
--- repr_supported_bottoms_mem_span: a w whose coords vanish above j=0 equals Σ over bottoms,
---   hence lies in span {d⟨t,0⟩ : 0 < l t}. Each piece drops the parent's ≤/dynamics coupling.
+/-- The kernel of `M` is contained in the span of the chain bottoms `{d⟨t,0⟩ : 0 < l t}`:
+any kernel element has zero coordinates at every non-bottom index (by `kernel_coeffs_above_zero`),
+so it is a linear combination of chain-bottom vectors (by `repr_supported_bottoms_mem_span`). -/
 theorem ker_le_span_bottoms
     {K R : Type*} [Field K] [AddCommGroup R] [Module K R] [FiniteDimensional K R]
     (M : R →ₗ[K] R) {p : ℕ} {l : Fin p → ℕ}
@@ -121,7 +128,8 @@ theorem ker_le_span_bottoms
   have h_coeffs := kernel_coeffs_above_zero M d hbot hshift w hw
   exact repr_supported_bottoms_mem_span M d hbot hshift w h_coeffs
 
--- span_bottoms_le_ker: each chain-bottom d⟨t,0⟩ maps to 0 under M (hbot), so the span lies in ker M
+/-- The span of the chain bottoms `{d⟨t,0⟩ : 0 < l t}` is contained in the kernel of `M`,
+since each generator `d⟨t,0⟩` maps to zero under `M` by the hypothesis `hbot`. -/
 theorem span_bottoms_le_ker
     {K R : Type*} [Field K] [AddCommGroup R] [Module K R] [FiniteDimensional K R]
     (M : R →ₗ[K] R) {p : ℕ} {l : Fin p → ℕ}
@@ -135,10 +143,8 @@ theorem span_bottoms_le_ker
   rintro x ⟨t, rfl⟩
   exact LinearMap.mem_ker.mpr (hbot t.1 ⟨0, t.2⟩ rfl)
 
--- ker M = span of the chain bottoms {d⟨t,0⟩ : 0 < l t}, proved by mutual inclusion.
--- h_ker_le_span: a kernel element has zero coefficients on every j ≥ 1 (those map under
---   M to distinct lower basis vectors d⟨t,j-1⟩ by hshift), so it lies in the bottom span.
--- h_span_le_ker: each generator d⟨t,0⟩ is in ker M directly by hbot. le_antisymm combines.
+/-- The kernel of `M` equals the `K`-span of the chain-bottom vectors `{d⟨t,0⟩ : 0 < l t}`.
+This is the mutual inclusion of `ker_le_span_bottoms` and `span_bottoms_le_ker`. -/
 theorem ker_eq_span_chain_bottoms
     {K R : Type*} [Field K] [AddCommGroup R] [Module K R] [FiniteDimensional K R]
     (M : R →ₗ[K] R) {p : ℕ} {l : Fin p → ℕ}
@@ -147,14 +153,10 @@ theorem ker_eq_span_chain_bottoms
     (hshift : ∀ (t : Fin p) (j : Fin (l t)), 0 < (j : ℕ) →
       ∃ i : Fin (l t), (i : ℕ) + 1 = (j : ℕ) ∧ M (d ⟨t, j⟩) = d ⟨t, i⟩) :
     LinearMap.ker M
-      = Submodule.span K (Set.range (fun t : {t : Fin p // 0 < l t} => d ⟨t.1, ⟨0, t.2⟩⟩))  := by
-  have h_ker_le_span := ker_le_span_bottoms M d hbot hshift
-  have h_span_le_ker := span_bottoms_le_ker M d hbot hshift
-  exact le_antisymm h_ker_le_span h_span_le_ker
+      = Submodule.span K (Set.range (fun t : {t : Fin p // 0 < l t} => d ⟨t.1, ⟨0, t.2⟩⟩))  := le_antisymm (ker_le_span_bottoms M d hbot hshift) (span_bottoms_le_ker M d hbot hshift)
 
--- chain_bottoms_li: LinearIndependent.comp on basis d — chain bottoms are an injective
--- subfamily of the Jordan basis, hence LI directly from d.linearIndependent.
--- entry_kind: Builder
+/-- The chain-bottom vectors `{d⟨t,0⟩ : 0 < l t}` are linearly independent over `K`, as they
+form an injective subfamily of the Jordan basis `d`. -/
 theorem chain_bottoms_li
     {K R : Type*} [Field K] [AddCommGroup R] [Module K R] [FiniteDimensional K R]
     (M : R →ₗ[K] R) {p : ℕ} {l : Fin p → ℕ}
@@ -169,8 +171,9 @@ theorem chain_bottoms_li
   simp only [Sigma.mk.inj_iff] at hab
   exact Subtype.ext hab.1
 
--- ker M is spanned by the chain bottoms {d⟨t,0⟩ : 0 < l t}, an LI sub-family of basis d.
--- finrank(span) = card of the bottom index = #{t // 0 < l t} = filter card.
+/-- The finrank of `ker M` equals the number of non-empty Jordan chains, i.e., the cardinality of
+`{t : Fin p | 0 < l t}`.  The proof identifies `ker M` with the span of the linearly independent
+chain-bottom family and applies `finrank_span_eq_card`. -/
 theorem jordan_chain_ker_finrank
     {K R : Type*} [Field K] [AddCommGroup R] [Module K R] [FiniteDimensional K R]
     (M : R →ₗ[K] R) {p : ℕ} {l : Fin p → ℕ}
@@ -181,9 +184,8 @@ theorem jordan_chain_ker_finrank
     Module.finrank K ↥(LinearMap.ker M)
       = (Finset.univ.filter (fun t : Fin p => 0 < l t)).card  := by
   classical
-  have hLI := chain_bottoms_li M d hbot hshift
-  have hspan := ker_eq_span_chain_bottoms M d hbot hshift
-  rw [hspan, finrank_span_eq_card hLI]
+  rw [ker_eq_span_chain_bottoms M d hbot hshift,
+      finrank_span_eq_card (chain_bottoms_li M d hbot hshift)]
   exact Fintype.card_subtype (fun t : Fin p => 0 < l t)
 
 end Library.LinearAlgebra.JordanForm.ChainKernel

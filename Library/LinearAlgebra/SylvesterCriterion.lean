@@ -3,15 +3,24 @@ import Library.LinearAlgebra.LeadingPrincipalMinorBlock
 import Library.LinearAlgebra.SchurComplementPosDef
 import Mathlib
 
+/-!
+# Sylvester's Criterion
+
+This file proves Sylvester's criterion: a real symmetric matrix is positive definite if and only if
+all of its leading principal minors are strictly positive. The reverse direction proceeds by
+induction on dimension using a Schur-complement argument, and the forward direction follows from the
+fact that each leading block of a positive definite matrix is itself positive definite.
+-/
+
 open Library.LinearAlgebra.LeadingPrincipalMinor
 open Library.LinearAlgebra.LeadingPrincipalMinorBlock
 open Library.LinearAlgebra.SchurComplementPosDef
 
 namespace Library.LinearAlgebra.SylvesterCriterion
 
--- A PosSemidef matrix with nonzero determinant is PosDef, via the eigenvalue criterion.
--- PosDef ↔ all eigenvalues > 0; each eigenvalue is ≥ 0 (PosSemidef), and none is 0 since
--- det = ∏ eigenvalues ≠ 0 (a zero eigenvalue would force the product to vanish).
+/-- A positive semidefinite matrix with nonzero determinant is positive definite.
+All eigenvalues are nonneg by semidefiniteness, and a zero eigenvalue would force the product of
+eigenvalues (i.e., the determinant) to vanish, contradicting `hd`. -/
 theorem posdef_of_possemidef_det_ne_zero {n : Type*} [Fintype n] [DecidableEq n]
     {M : Matrix n n ℝ} (hM : M.PosSemidef) (hd : M.det ≠ 0) : M.PosDef := by
   rw [hM.isHermitian.posDef_iff_eigenvalues_pos]
@@ -22,16 +31,14 @@ theorem posdef_of_possemidef_det_ne_zero {n : Type*} [Fintype n] [DecidableEq n]
   rw [hM.isHermitian.det_eq_prod_eigenvalues]
   exact Finset.prod_eq_zero (Finset.mem_univ i) (by simp [← h0])
 
-theorem posdef_of_possemidef_det_ne_zero_2 {n : Type*} [Fintype n] [DecidableEq n]
-    {M : Matrix n n ℝ} (hM : M.PosSemidef) (hd : M.det ≠ 0) : M.PosDef := by apply posdef_of_possemidef_det_ne_zero <;> assumption
-
--- posdef_empty: 0×0 matrix is vacuously PosDef (no non-zero vectors in Fin 0 → ℝ)
+/-- Every `0 × 0` real matrix is positive definite, since there are no nonzero vectors to test. -/
 theorem posdef_empty (M : Matrix (Fin 0) (Fin 0) ℝ) (hHerm : M.IsHermitian) :
     M.PosDef := by
   refine ⟨hHerm, fun x hx => ?_⟩
   exact absurd (Finsupp.ext (fun (i : Fin 0) => Fin.elim0 i)) hx
 
--- posdef_succ_det_ne_zero: last leading principal minor equals M.det, so positivity implies det ≠ 0
+/-- The last leading principal minor of an `(n+1) × (n+1)` matrix equals its full determinant, so
+positivity of all leading minors implies the determinant is nonzero. -/
 theorem posdef_succ_det_ne_zero {n : ℕ}
     (M : Matrix (Fin (n + 1)) (Fin (n + 1)) ℝ)
     (hMinors : ∀ (k : Fin (n + 1)), 0 < leadingPrincipalMinor M k) :
@@ -41,10 +48,8 @@ theorem posdef_succ_det_ne_zero {n : ℕ}
     simp [leadingPrincipalMinor, Fin.last]
   linarith [heq ▸ hlast]
 
--- Apply `ih` to the leading n×n block A = (reindexed M).toBlocks₁₁.
--- ih needs (1) A Hermitian and (2) all leading principal minors of A positive.
---   • block_hermitian   — A is Hermitian (submatrix of a Hermitian matrix);
---   • block_minors_pos  — each leading minor of A equals a leading minor of M (> 0).
+/-- Given the inductive hypothesis `ih` for `n × n` matrices, the leading `n × n` block of an
+`(n+1) × (n+1)` Hermitian matrix with positive leading minors is positive definite. -/
 theorem leading_block_posdef {n : ℕ}
     (ih : ∀ (M : Matrix (Fin n) (Fin n) ℝ), M.IsHermitian →
       (∀ (k : Fin n), 0 < leadingPrincipalMinor M k) → M.PosDef)
@@ -57,12 +62,9 @@ theorem leading_block_posdef {n : ℕ}
   have h_minors := block_minors_pos M hMinors
   exact ih _ h_herm h_minors
 
--- Schur-complement induction step: M (size n+1) is PosSemidef. Reindex via
--- `finSumFinEquiv` into 2×2 blocks, then `PosDef.fromBlocks₁₁` reduces PosSemidef
--- of the whole to PosSemidef of the Schur complement. Three strictly-simpler pieces:
---   • leading_block_posdef     — the top-left n×n block is PosDef (uses `ih`);
---   • block_conjtranspose      — Hermitian symmetry of the off-diagonal blocks;
---   • schur_complement_possemidef — the 1-dim Schur complement is PosSemidef.
+/-- An `(n+1) × (n+1)` Hermitian matrix with all leading minors positive is positive semidefinite.
+The proof reindexes via `finSumFinEquiv`, uses `leading_block_posdef` for a positive definite
+top-left block, and then applies `Matrix.PosDef.fromBlocks₁₁` with the Schur complement. -/
 theorem posdef_succ_possemidef {n : ℕ}
     (ih : ∀ (M : Matrix (Fin n) (Fin n) ℝ), M.IsHermitian →
       (∀ (k : Fin n), 0 < leadingPrincipalMinor M k) → M.PosDef)
@@ -83,12 +85,9 @@ theorem posdef_succ_possemidef {n : ℕ}
       Matrix.PosDef.fromBlocks₁₁ _ _ hApd]
   exact schur_complement_possemidef M hHerm hMinors hApd
 
--- Schur-complement upgrade, factored into: M PosSemidef, M.det ≠ 0, and the
--- generic upgrade lemma (PosSemidef + det ≠ 0 ⇒ PosDef). The upgrade is
--- re-declared as our own sub-goal (a proven sibling exists but lives in another
--- strategy module and is not auto-imported; Tier-1 dedup aliases this to it).
--- PosSemidef carries the (n×n block PosDef ⇒ Schur ≥ 0) argument; det ≠ 0 is the
--- top leading minor being positive. Both strictly weaker than the parent PosDef goal.
+/-- Inductive step of Sylvester's criterion: an `(n+1) × (n+1)` Hermitian matrix with all leading
+minors positive is positive definite, combining `posdef_succ_possemidef` (which gives `PosSemidef`)
+with `posdef_succ_det_ne_zero` (which gives `det ≠ 0`) via `posdef_of_possemidef_det_ne_zero`. -/
 theorem posdef_succ_step {n : ℕ}
     (ih : ∀ (M : Matrix (Fin n) (Fin n) ℝ), M.IsHermitian →
       (∀ (k : Fin n), 0 < leadingPrincipalMinor M k) → M.PosDef)
@@ -98,11 +97,11 @@ theorem posdef_succ_step {n : ℕ}
     M.PosDef  := by
   have hPSD : M.PosSemidef := posdef_succ_possemidef ih M hHerm hMinors
   have hdet : M.det ≠ 0 := posdef_succ_det_ne_zero M hMinors
-  exact posdef_of_possemidef_det_ne_zero_2 hPSD hdet
+  exact Library.LinearAlgebra.SylvesterCriterion.posdef_of_possemidef_det_ne_zero hPSD hdet
 
--- minors_pos_of_posdef: PosDef.submatrix + PosDef.det_pos closes each leading minor directly.
--- Each leading k-block is a submatrix via Fin.castLE (injective), so PosDef.submatrix applies;
--- PosDef.det_pos then gives the positive determinant = leadingPrincipalMinor.
+/-- Each leading principal minor of a positive definite matrix is strictly positive.
+The `k`-th leading block is a submatrix via the injective map `Fin.castLE`, so `PosDef.submatrix`
+applies, and `PosDef.det_pos` gives the positive determinant equal to the leading minor. -/
 theorem minors_pos_of_posdef {n : ℕ} (M : Matrix (Fin n) (Fin n) ℝ) :
     M.PosDef → ∀ k : Fin n, 0 < leadingPrincipalMinor M k := by
   intro hM k
@@ -112,13 +111,9 @@ theorem minors_pos_of_posdef {n : ℕ} (M : Matrix (Fin n) (Fin n) ℝ) :
   have hinj : Function.Injective (Fin.castLE hk) := Fin.castLE_injective hk
   exact (hM.submatrix hinj).det_pos
 
--- Sylvester reverse direction: induction on the dimension n (revert M first so the
--- inductive hypothesis quantifies over every n×n matrix).
---  • base `posdef_empty`: the 0×0 matrix is PosDef vacuously.
---  • step `posdef_succ_step`: given ih (the criterion for n) plus the (n+1) leading
---    minors, the Schur-complement argument upgrades to PosDef.
--- `induction` is the combinator; each branch is strictly simpler (base trivial; step
--- has ih in hand, so it no longer carries the induction setup).
+/-- Reverse direction of Sylvester's criterion: if all leading principal minors of a Hermitian
+matrix are positive then the matrix is positive definite. The proof proceeds by induction on `n`,
+with `posdef_empty` as the base case and `posdef_succ_step` as the inductive step. -/
 theorem posdef_of_minors_pos {n : ℕ} (M : Matrix (Fin n) (Fin n) ℝ) :
     M.IsHermitian → (∀ k : Fin n, 0 < leadingPrincipalMinor M k) → M.PosDef  := by
   revert M
@@ -130,11 +125,8 @@ theorem posdef_of_minors_pos {n : ℕ} (M : Matrix (Fin n) (Fin n) ℝ) :
     intro M hHerm hMinors
     exact posdef_succ_step ih M hHerm hMinors
 
--- Sylvester's criterion: split the iff into its two implications.
--- Forward (`minors_pos_of_posdef`): each leading block is a PosDef submatrix, so its
--- determinant (= the leading minor) is positive — short, no induction.
--- Reverse (`posdef_of_minors_pos`): induction on n via Schur complement, upgrading
--- PosSemidef to PosDef using the proved sibling. Iff.intro recombines them.
+/-- **Sylvester's criterion**: a real Hermitian matrix is positive definite if and only if all of
+its leading principal minors are strictly positive. -/
 theorem main : ∀ {n : ℕ} (M : Matrix (Fin n) (Fin n) ℝ),
     M.IsHermitian →
     (M.PosDef ↔ ∀ k : Fin n, 0 < leadingPrincipalMinor M k)  := by

@@ -5,12 +5,23 @@ import Mathlib
 open Library.LinearAlgebra.JordanForm.ChainKernel
 open Library.LinearAlgebra.JordanForm.FamilyCoeffs
 
+/-!
+# Jordan Normal Form — Family Construction
+
+This file assembles a Jordan basis for a nilpotent endomorphism `N` on a finite-dimensional
+`K`-module `W`.  Starting from a chain basis `d` of `range N` (with strong chain data `hd`)
+and a complementary submodule `C ≤ ker N`, it constructs an extended chain family `v`
+(one `Fin.snoc`-augmented chain per nonempty block, one length-1 chain per complement vector),
+proves it is linearly independent and spanning, and packages the result as a `Module.Basis`
+satisfying the Jordan chain relation.  The key cardinality count — `finrank K W = ∑ l t + #{t // 0 < l t} + m` — requires the **strong** form of `hd` (the `j = 0` constraint on the zero
+branch), which forces `ker (N.restrict) = span` of the chain bottoms.
+-/
+
 namespace Library.LinearAlgebra.JordanForm.FamilyConstruction
 
--- entry_kind: Builder
--- inf_ker_restrict_bridge: p ⊓ ker f and ker (f.restrict hf) have the same finrank
--- via map_comap_subtype (the map of the comap under p.subtype equals p ⊓ ker f)
--- and finrank_map_subtype_eq (injective subtype preserves finrank).
+/-- The finrank of `p ⊓ ker f` in `M` equals the finrank of the kernel of the restriction
+`f.restrict hf`, via the identification `Submodule.map_comap_subtype` and the fact that the
+injective subtype embedding preserves finrank. -/
 theorem inf_ker_restrict_bridge
     {K M : Type*} [Field K] [AddCommGroup M] [Module K M] [FiniteDimensional K M]
     (f : M →ₗ[K] M) (p : Submodule K M) (hf : ∀ x ∈ p, f x ∈ p) :
@@ -20,10 +31,10 @@ theorem inf_ker_restrict_bridge
   rw [← Submodule.map_comap_subtype p (LinearMap.ker f)]
   rw [Submodule.finrank_map_subtype_eq]
 
--- entry_kind: Builder
--- Split the combined `hd` disjunction into separate `hbot`/`hshift` premises
--- and apply `jordan_chain_ker_finrank`. The Finset.filter card from that
--- sibling lemma equals `Fintype.card {t // 0 < l t}` via `Fintype.card_subtype`.
+/-- Given a Jordan chain basis `d` for `R` whose chain data `hd` combines the zero and shift
+branches in one disjunction, the finrank of `ker M` equals the number of nonempty chains
+`Fintype.card {t : Fin p // 0 < l t}`.  The proof splits `hd` into separate `hbot`/`hshift`
+hypotheses and applies `jordan_chain_ker_finrank`. -/
 theorem restrict_ker_finrank_count
     {K R : Type*} [Field K] [AddCommGroup R] [Module K R] [FiniteDimensional K R]
     (M : R →ₗ[K] R) {p : ℕ} {l : Fin p → ℕ}
@@ -47,17 +58,13 @@ theorem restrict_ker_finrank_count
   have hcount := jordan_chain_ker_finrank M d hbot hshift
   rw [hcount, ← Fintype.card_subtype]
 
--- finrank(range N ⊓ ker N) = #{0 < l t} via a two-step transitive equality.
--- h_bridge: the W-side intersection range N ⊓ ker N is the image under the subtype
---   embedding of ker (N.restrict h_inv) (the kernel of N's restriction to range N),
---   so the two finranks agree — an abstract restriction↔intersection fact, no Jordan
---   structure needed.
--- h_count: ker (N.restrict h_inv) is spanned by the chain bottoms {d⟨t,0⟩ : 0 < l t},
---   an LI subfamily of the Jordan basis d, so its finrank is the bottom-count
---   #{0 < l t} (strong-hd: the j=0 constraint forces proper chains).
--- Eq.trans chains the two. Each sub-goal is local and abstract over (f,p) / (M,d).
+variable {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+
+/-- The finrank of `range N ⊓ ker N` equals `Fintype.card {t : Fin p // 0 < l t}`.
+The proof chains `inf_ker_restrict_bridge` (which identifies the `W`-side intersection with
+the kernel of the restricted map) and `restrict_ker_finrank_count` (which counts the kernel
+of the restricted map against the chain bottoms using the strong chain data `hd`). -/
 theorem inf_ker_card
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -72,11 +79,11 @@ theorem inf_ker_card
   have h_count := restrict_ker_finrank_count (N.restrict h_inv) d hd
   exact h_bridge.trans h_count
 
--- Direct combinatorial count (leaf): card_sigma + card_fin reduce the LHS to a sum over the
--- sum-index, sum_sum_type splits it into the two summands `∑ (l t.1 + 1)` and `∑ 1 = m`.
--- sum_add_distrib peels the chain-length sum from the per-block `+1`; the `+1`s count the
--- nonzero-l blocks (= card subtype), and `sum_subtype`+`sum_subset` extend the subtype sum
--- of `l` to all of `Fin p` (the dropped `l t = 0` terms vanish), matching the RHS normal form.
+/-- A pure combinatorial identity: the cardinality of the extended index type
+`Σ s : ({t : Fin p // 0 < l t} ⊕ Fin m), Fin (Sum.elim (fun t => l t.1 + 1) (fun _ => 1) s)`
+equals `(∑ t : Fin p, l t) + Fintype.card {t : Fin p // 0 < l t} + m`.
+Proved by `card_sigma`, `sum_sum_type`, and extending the nonempty-block sum of `l` to all
+of `Fin p` (the zero-length terms vanish). -/
 theorem index_card_eq (p : ℕ) (l : Fin p → ℕ) (m : ℕ) :
     Fintype.card (Σ s : ({t : Fin p // 0 < l t} ⊕ Fin m),
           Fin (Sum.elim (fun t : {t : Fin p // 0 < l t} => l t.1 + 1) (fun _ : Fin m => 1) s))
@@ -97,13 +104,12 @@ theorem index_card_eq (p : ℕ) (l : Fin p → ℕ) (m : ℕ) :
     exact hx
   rw [h1, h2]
 
--- finrank W via rank-nullity over N: split finrank W = finrank(range N) + finrank(ker N),
--- then count each piece. h_rn (mathlib rank-nullity), h_range = ∑ l (basis d card, inline),
--- h_ker = finrank(range⊓ker) + m (disjoint-sup count on hC2/hC3, inline). Only genuine
--- sub-goal: inf_ker_card = #{0<l t} (strong-hd count, the j=0 constraint forces proper
--- chains so ker(N↾range) = span of chain bottoms). omega assembles the four ℕ equalities.
+/-- The finrank of `W` equals `(∑ t : Fin p, l t) + Fintype.card {t : Fin p // 0 < l t} + m`.
+The proof applies rank-nullity to split `finrank W = finrank (range N) + finrank (ker N)`,
+counts `finrank (range N) = ∑ l t` from the basis `d`, decomposes `ker N = C ⊕ (range N ⊓ ker N)`
+using the disjointness hypotheses to get `finrank (ker N) = #{0 < l t} + m`, and assembles
+by `omega`. -/
 theorem finrank_eq
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -139,15 +145,11 @@ theorem finrank_eq
       = Fintype.card {t : Fin p // 0 < l t} := inf_ker_card N hN h_inv p l d hd
   omega
 
--- Count both sides against the common normal form `(∑ t, l t) + #{t // 0 < l t} + m`.
---   * `index_card_eq` : the index card reduces to it by pure Fin/Finset combinatorics
---     (card_sigma + card_sum + the zero-l terms drop out of the subtype sum).
---   * `finrank_eq` : `finrank W` reduces to it via rank-nullity over `range N` / `ker N`
---     (range-basis `d` gives `∑ l t`; the strong-`hd` count gives `#{0<l t}`; `C` gives `m`).
--- Both equal the same ℕ, so `h_card.trans h_finrank.symm` closes; finrank_eq carries the
--- strong `hd` (the `j=0` constraint), the weak-`hd` count having been disproved.
+/-- The cardinality of the extended index type equals `Module.finrank K W`.
+This is the dimension-count bridge used to promote linear independence to a basis: it combines
+`index_card_eq` (a pure combinatorial reduction) with `finrank_eq` (rank-nullity over `N`)
+via transitivity, requiring the strong form of `hd`. -/
 theorem family_card_strong
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -176,11 +178,12 @@ theorem family_card_strong
   have h_finrank := finrank_eq N hN h_inv p l d hd C hC1 hC2 hC3 m cb
   exact h_card.trans h_finrank.symm
 
--- family_chain_strong: Jordan chain relation for each block with strong hd (j=0 on zero branch)
--- Identical structure to family_chain; the strong hd's extra conjunct is destructured and discarded.
--- entry_kind: Builder
+/-- The extended chain family `v` satisfies the Jordan chain relation: for each block index `s`
+and position `j`, either `N (v ⟨s, j⟩) = 0` or there exists an immediate predecessor `i` with
+`N (v ⟨s, j⟩) = v ⟨s, i⟩`.  For `Sum.inl` blocks the proof uses `Fin.lastCases` on `j`,
+delegating the top element to `hx` and inner elements to the strong chain data `hd`; for
+`Sum.inr` complement elements the result follows from `hC1`. -/
 theorem family_chain_strong
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -240,17 +243,13 @@ theorem family_chain_strong
     rw [hv_C c]
     exact LinearMap.mem_ker.mp (hC1 (Submodule.coe_mem (cb c)))
 
--- LinearIndependent v via `Fintype.linearIndependent_iff`: split a vanishing combination
--- `∑ g i • v i = 0` into two phases (combinator is trivial; both phases subsume all parent hyps).
---   * `above_bottom_vanish` : applying N to the relation sends chain tops/interiors to the
---     range-basis `d` (bottoms/complement to 0), so `d`-LI forces every above-bottom coeff
---     `g ⟨inl t, j⟩` (j ≥ 1) to vanish. Strictly simpler: only a partial coeff result.
---   * `bottom_complement_coeffs` : given the above-bottom coeffs are 0, the residual relation
---     lives among chain bottoms `d⟨t,0⟩ ∈ range N ⊓ ker N` and complement `cb c ∈ C`; `hC2`
---     disjointness + `chain_bottoms_li` + `cb`-LI kill the rest. Strictly simpler: extra `habove`.
+/-- The extended chain family `v` is linearly independent over `K`.
+The proof uses `Fintype.linearIndependent_iff`: given a vanishing linear combination `∑ g i • v i = 0`,
+`above_bottom_vanish` (applying `N` once) forces all above-bottom coefficients to zero, and
+then `bottom_complement_coeffs` kills the remaining bottom-chain and complement coefficients
+using disjointness of `C` and `range N`. -/
 theorem family_li_strong
 
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -281,17 +280,11 @@ theorem family_li_strong
   exact bottom_complement_coeffs N hN h_inv p l d hd x hx C hC1 hC2 hC3 m cb v
     hv_chain hv_top hv_C g hg habove
 
--- Decompose `LinearIndependent v ∧ ⊤ ≤ span v` via the count-bridge: prove the LI
--- conjunct directly plus the dimension count `card index = finrank W`, then derive the
--- span conjunct from mathlib's `LinearIndependent.span_eq_top_of_card_eq_finrank'`.
---   * `family_li_strong` : `LinearIndependent K v` — chain/complement family is LI (apply N
---     once: chain tops/interiors land on the range-basis `d`, bottoms/complement on ker).
---   * `family_card_strong` : `card index = finrank K W` — the crux that STRONG `hd` (the
---     `j = 0` constraint on the `= 0` branch) unlocks: it forces `ker N.restrict = span of
---     chain bottoms`, so rank-nullity closes the count (the weak-`hd` count was disproved).
--- Both subsume the parent's hypotheses; the combinator needs only `[FiniteDimensional K W]`.
+/-- The extended chain family `v` is linearly independent and its span is all of `W`.
+Linear independence comes from `family_li_strong`; the spanning property is deduced from
+`family_card_strong` (which requires the strong form of `hd`) via
+`LinearIndependent.span_eq_top_of_card_eq_finrank'`. -/
 theorem family_li_span_strong
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -323,19 +316,13 @@ theorem family_li_span_strong
     family_card_strong N hN h_inv p l d hd x hx C hC1 hC2 hC3 m cb v hv_chain hv_top hv_C
   exact ⟨h_li, (h_li.span_eq_top_of_card_eq_finrank' h_card).ge⟩
 
--- Build the extended chain family `v` over the index `P ⊕ Fin m` (`P := {t // 0 < l t}`,
--- `m := finrank K C`, `cb := finBasis K C`): each nonempty range-`N` chain `t` is `Fin.snoc`-
--- extended by its top preimage `x ⟨t, l t - 1⟩`, each complement vector `cb c` is a length-1
--- chain. The three defining equations hold by `Fin.snoc_castSucc`/`Fin.snoc_last`/`rfl`.
--- Two sub-goals consume them, then a pure `Fintype.equivFin` relabel discharges the existential:
---   * `family_li_span_strong` (Backward): `LinearIndependent ∧ ⊤ ≤ span` — STRONG `hd` (the
---     `j = 0` constraint on the `= 0` branch) is what makes the dimension count close; this is
---     the crux the weak-`hd` `family_li_span` could not prove (it was disproved).
---   * `family_chain_strong` (Builder): the within-block Jordan chain relation; weak `hd` suffices,
---     so it aliases the proved `family_chain` after dropping the `j = 0` conjunct.
--- Both are re-declared as own sub-goals (cross-strategy citations are not auto-imported).
+/-- Given a strong Jordan chain basis `d` of `range N` with strong data `hd`, preimages `x`
+under `N`, and a complement `C` of `range N ⊓ ker N` in `ker N`, this constructs an explicit
+extended chain family `v` over `{t // 0 < l t} ⊕ Fin m` (each nonempty block extended by its
+top preimage via `Fin.snoc`, each complement vector a length-1 block), proves `LinearIndependent K v`,
+`⊤ ≤ span K (range v)`, and the Jordan chain relation, then relabels the index by `Fintype.equivFin`
+to produce the existential in standard form. -/
 theorem extended_jordan_family_strong
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -388,11 +375,11 @@ theorem extended_jordan_family_strong
   · intro s j
     exact hchain (e.symm s) j
 
--- Package the LI + spanning chain family `v` from `h` into a `Module.Basis` via
--- `Module.Basis.mk hLI hsp`, then transport the chain property: `Module.Basis.mk_apply`
--- rewrites every `c ⟨s,_⟩` back to `v ⟨s,_⟩`, so the goal is literally `hchain s j`.
+/-- Given a linearly independent, spanning chain family `v` (as produced by
+`extended_jordan_family_strong`), constructs a `Module.Basis` `c` with the same index type
+and verifies that `c` satisfies the Jordan chain relation.  The basis is built by `Module.Basis.mk`,
+and the chain property is transferred using `Module.Basis.mk_apply`. -/
 theorem family_to_basis
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
     (N : W →ₗ[K] W)
     (h : ∃ (r : ℕ) (k : Fin r → ℕ) (v : (Σ s : Fin r, Fin (k s)) → W),
       LinearIndependent K v ∧
@@ -411,11 +398,12 @@ theorem family_to_basis
   simp only [Module.Basis.mk_apply]
   exact hchain s j
 
--- ker_range_complement_2: Submodule.exists_isCompl (field → complementedLattice) finds C ≤ ker N
--- disjoint from range N, supplementing range N ⊓ ker N to all of ker N.
--- entry_kind: Builder
+/-- Over a field `K`, the intersection `range N ⊓ ker N` has a complement `C` inside `ker N`
+with `C ≤ ker N`, `Disjoint C (range N)`, and `C ⊔ (range N ⊓ ker N) = ker N`.
+The complement is obtained by applying `Submodule.exists_isCompl` to the coimage of
+`range N ⊓ ker N` under the inclusion of `ker N`, using that submodules over a field form
+a complemented lattice. -/
 theorem ker_range_complement_2
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -463,11 +451,10 @@ theorem ker_range_complement_2
         simpa using h
       exact ⟨c.1, ⟨c, hc, rfl⟩, s.1, hs_inf, (add_comm (c : W) (s : W)).trans heq⟩
 
--- entry_kind: Builder
--- block_top_preimages_2: each range-basis element has a preimage under N;
--- pick via LinearMap.mem_range on the subtype membership (d tj).2
+/-- For each basis element `d ⟨t, j⟩` of `range N`, produces a preimage `x ⟨t, j⟩` in `W`
+satisfying `N (x ⟨t, j⟩) = ↑(d ⟨t, j⟩)`, using the fact that every element of `range N`
+has a preimage under `N`. -/
 theorem block_top_preimages_2
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)
@@ -482,18 +469,13 @@ theorem block_top_preimages_2
   intro t j
   exact (LinearMap.mem_range.mp (d ⟨t, j⟩).2).choose_spec
 
--- Assemble the strong block Jordan basis of `W` from the strong chain basis `d` of `range N`.
--- Discharge the two existential constructions via PROVED siblings, then run the LA glue:
---   * `block_top_preimages_2` (proved): lift each chain element through `N` → `x`, `hx`.
---   * `ker_range_complement_2` (proved): split `ker N` as `C ⊕ (range N ⊓ ker N)` → `C`, `hC*`.
---   * `extended_jordan_family_strong`: build the extended chain family `v` and prove
---     `LinearIndependent ∧ ⊤ ≤ span` (STRONG `hd` makes the dimension count close) + chain.
---   * `family_to_basis`: package an LI/spanning chain family into a `Module.Basis`,
---     transporting the chain property (generic, reusable; no `N`-structure reasoning).
--- The two preimage/complement siblings need only the WEAK `hd`, derived by dropping the
--- `j = 0` constraint from the strong left branch.
+/-- The main assembly theorem: given a nilpotent endomorphism `N` on `W` with a strong Jordan
+chain basis `d` of `range N`, produces a `Module.Basis` `c` of `W` indexed by `Σ s : Fin r, Fin (k s)`
+such that `c` satisfies the Jordan chain relation at every position.  The proof derives the weak
+form of `hd` to run `block_top_preimages_2` and `ker_range_complement_2`, then applies
+`extended_jordan_family_strong` with the strong `hd` to close the dimension count, and finally
+packages the result via `family_to_basis`. -/
 theorem assemble_block_jordan_strong
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
     (N : W →ₗ[K] W) (hN : IsNilpotent N)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (p : ℕ) (l : Fin p → ℕ)

@@ -30,7 +30,6 @@ theorem exists_eigenvalue_witness_on_quotient :
       simp [F, Submodule.mapQ_apply]
     rw [← hmapq, hv]; exact hw.apply_eq_smul
 
--- entry_kind: Builder
 -- near_eigenvector_of_quotient_eigenvector: quotient algebra translates a quotient eigenvector
 -- witness back to v ∉ U and T v - μ • v ∈ U via mk_eq_zero and linearity of mkQ.
 theorem near_eigenvector_of_quotient_eigenvector :

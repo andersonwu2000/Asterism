@@ -1,21 +1,46 @@
 import Library.LinearAlgebra.SVD.SingularValues
-import Mathlib
+import Mathlib.Algebra.BigOperators.Group.Finset.Basic
+import Mathlib.Analysis.InnerProductSpace.Adjoint
+import Mathlib.Analysis.InnerProductSpace.SingularValues
+import Mathlib.Data.Fin.Basic
+import Mathlib.Data.Set.Function
 
 open Library.LinearAlgebra.SVD.SingularValues
 
+/-!
+# Basis Construction for the SVD
+
+This file constructs an orthonormal basis `b_F` of the codomain `F` from a given orthonormal
+basis `b_E` of the domain `E`, compatible with the singular value decomposition of a linear map
+`T : E →ₗ[𝕜] F` between finite-dimensional inner product spaces over an `RCLike` field `𝕜`.
+
+## Main statements
+
+- `normalized_t_orthonormal_on_supp`: the family of normalised images `σ_i⁻¹ • T(b_E i)`,
+  restricted to indices where the singular value `σ_i` is nonzero, is orthonormal in `F`.
+- `inner_t_eigenbasis_sq_diag`: the Gram matrix of `T(b_E i)` is diagonal with entries `σ_i²`.
+- `exists_b_f_apply_eq`: existence of an orthonormal basis `b_F` of `F` such that every column
+  of `T` in the `b_E`/`b_F` bases has the indicator-weighted form
+  `T(b_E i) = ∑ j, (if j = i then σ_i else 0) • b_F j`.
+
+## Implementation notes
+
+All theorems are stated in universally-quantified (`∀`) form so that the file needs no
+file-level `variable` block.  Proofs introduce all arguments with `intro` immediately.
+-/
+
 namespace Library.LinearAlgebra.SVD.BasisConstruction
 
--- normalized_t_orthonormal_on_supp: orthonormal_iff_ite + inner_smul factoring closes the goal;
--- diagonal inner products equal 1 via field_simp with RCLike.ofReal_ne_zero; off-diagonal are 0.
--- entry_kind: Builder
+/-- The family of normalised images `σ_j⁻¹ • T(b_E j)`, restricted to indices `j` with
+`j < finrank 𝕜 E` and nonzero singular value `σ_j`, is orthonormal in `F`. -/
 theorem normalized_t_orthonormal_on_supp : ∀ {𝕜 : Type*} [RCLike 𝕜]
   {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
   [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
   (T : E →ₗ[𝕜] F)
   (b_E : OrthonormalBasis (Fin (Module.finrank 𝕜 E)) 𝕜 E)
-  (h_inner : ∀ i j, @inner 𝕜 _ _ (T (b_E i)) (T (b_E j)) =
+  (_h_inner : ∀ i j, @inner 𝕜 _ _ (T (b_E i)) (T (b_E j)) =
     if i = j then (((T.singularValues i : ℝ)^2 : 𝕜)) else 0)
-  (h_zero : ∀ (i : Fin (Module.finrank 𝕜 E)),
+  (_h_zero : ∀ (i : Fin (Module.finrank 𝕜 E)),
     ¬((i : ℕ) < Module.finrank 𝕜 F) → T (b_E i) = 0),
   Orthonormal 𝕜
     (Set.restrict
@@ -25,14 +50,14 @@ theorem normalized_t_orthonormal_on_supp : ∀ {𝕜 : Type*} [RCLike 𝕜]
         if h : (j : ℕ) < Module.finrank 𝕜 E then
           ((T.singularValues (j : ℕ) : ℝ) : 𝕜)⁻¹ • T (b_E ⟨(j : ℕ), h⟩)
         else (0 : F))) := by
-  intro 𝕜 _ E F _ _ _ _ _ _ T b_E h_inner h_zero
+  intro 𝕜 _ E F _ _ _ _ _ _ T b_E _h_inner _h_zero
   rw [orthonormal_iff_ite]
   rintro ⟨j, hj⟩ ⟨k, hk⟩
   obtain ⟨hj_lt, hj_nz⟩ := hj
   obtain ⟨hk_lt, hk_nz⟩ := hk
   simp only [Set.restrict_apply, dif_pos hj_lt, dif_pos hk_lt]
   rw [inner_smul_left, inner_smul_right]
-  have hij := h_inner ⟨j.val, hj_lt⟩ ⟨k.val, hk_lt⟩
+  have hij := _h_inner ⟨j.val, hj_lt⟩ ⟨k.val, hk_lt⟩
   rw [hij]
   have hjeqk : (⟨j.val, hj_lt⟩ : Fin _) = ⟨k.val, hk_lt⟩ ↔ j = k := by
     simp [Fin.ext_iff]
@@ -44,49 +69,38 @@ theorem normalized_t_orthonormal_on_supp : ∀ {𝕜 : Type*} [RCLike 𝕜]
     field_simp [RCLike.ofReal_ne_zero.mpr hj_nz]
   · simp [hjk]
 
--- entry_kind: Builder
--- inner_t_eigenbasis_sq_diag: ⟨T(b_E i), T(b_E j)⟩ = σ_i² δ_ij via adjoint rewrite + orthonormality
+/-- The Gram matrix of `T(b_E i)` is diagonal: `⟪T(b_E i), T(b_E j)⟫ = if i = j then σ_i² else 0`.
+This follows from `T†∘T` being diagonal on `b_E` with eigenvalues `σ_i²`. -/
 theorem inner_t_eigenbasis_sq_diag : ∀ {𝕜 : Type*} [RCLike 𝕜]
   {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
   [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
   (T : E →ₗ[𝕜] F)
   (b_E : OrthonormalBasis (Fin (Module.finrank 𝕜 E)) 𝕜 E)
-  (h_eig : ∀ i, (T.adjoint ∘ₗ T) (b_E i) =
+  (_h_eig : ∀ i, (T.adjoint ∘ₗ T) (b_E i) =
       (((T.singularValues i : ℝ)^2 : 𝕜)) • b_E i),
   ∀ i j, @inner 𝕜 _ _ (T (b_E i)) (T (b_E j)) =
     if i = j then (((T.singularValues i : ℝ)^2 : 𝕜)) else 0 := by
-  intro 𝕜 _ E F _ _ _ _ _ _ T b_E h_eig i j
-  simp only [LinearMap.comp_apply] at h_eig
-  rw [← LinearMap.adjoint_inner_left, h_eig i, inner_smul_left]
-  have hconj : starRingEnd 𝕜 (((T.singularValues i : ℝ)^2 : 𝕜)) =
-      (((T.singularValues i : ℝ)^2 : 𝕜)) := by
-    simp [RCLike.conj_ofReal]
-  rw [hconj]
-  have horth := orthonormal_iff_ite.mp b_E.orthonormal i j
-  split_ifs with h
-  · subst h
-    simp
-  · simp [horth, if_neg h]
+  intro 𝕜 _ E F _ _ _ _ _ _ T b_E _h_eig i j
+  simp only [LinearMap.comp_apply] at _h_eig
+  rw [← LinearMap.adjoint_inner_left, _h_eig i, inner_smul_left]
+  simp [RCLike.conj_ofReal, orthonormal_iff_ite.mp b_E.orthonormal i j]
 
--- Decompose into one orthonormality sub-goal: the family `j ↦ σ_{j.val}⁻¹ • T(b_E ⟨j.val,_⟩)`
--- (or junk on indices ≥ finrank E), restricted to indices where j.val < finrank E ∧ σ ≠ 0,
--- is orthonormal in F. Patch applies `Orthonormal.exists_orthonormalBasis_extension_of_card_eq`
--- to extend this orthonormal partial family to an `OrthonormalBasis (Fin (finrank F)) 𝕜 F`,
--- then identifies `b_F ⟨i,h⟩ = σ_i⁻¹ • T(b_E i)` for σ_i ≠ 0 and rearranges to the goal shape.
+/-- There exists an orthonormal basis `b_F` of `F` such that `T(b_E i) = σ_i • b_F ⟨i, h⟩`
+for all `i` with `(i : ℕ) < finrank 𝕜 F` and `σ_i ≠ 0`. -/
 theorem exists_b_f_apply_eq_nonzero : ∀ {𝕜 : Type*} [RCLike 𝕜]
   {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
   [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
   (T : E →ₗ[𝕜] F)
   (b_E : OrthonormalBasis (Fin (Module.finrank 𝕜 E)) 𝕜 E)
-  (h_inner : ∀ i j, @inner 𝕜 _ _ (T (b_E i)) (T (b_E j)) =
+  (_h_inner : ∀ i j, @inner 𝕜 _ _ (T (b_E i)) (T (b_E j)) =
     if i = j then (((T.singularValues i : ℝ)^2 : 𝕜)) else 0)
-  (h_zero : ∀ (i : Fin (Module.finrank 𝕜 E)),
+  (_h_zero : ∀ (i : Fin (Module.finrank 𝕜 E)),
     ¬((i : ℕ) < Module.finrank 𝕜 F) → T (b_E i) = 0),
   ∃ (b_F : OrthonormalBasis (Fin (Module.finrank 𝕜 F)) 𝕜 F),
     ∀ (i : Fin (Module.finrank 𝕜 E)) (h : (i : ℕ) < Module.finrank 𝕜 F),
       (T.singularValues i : ℝ) ≠ 0 →
         T (b_E i) = ((T.singularValues i : ℝ) : 𝕜) • b_F ⟨(i : ℕ), h⟩  := by
-  intro 𝕜 _ E F _ _ _ _ _ _ T b_E h_inner h_zero
+  intro 𝕜 _ E F _ _ _ _ _ _ T b_E _h_inner _h_zero
   set v : Fin (Module.finrank 𝕜 F) → F := fun j =>
     if h : (j : ℕ) < Module.finrank 𝕜 E then
       ((T.singularValues (j : ℕ) : ℝ) : 𝕜)⁻¹ • T (b_E ⟨(j : ℕ), h⟩)
@@ -94,7 +108,7 @@ theorem exists_b_f_apply_eq_nonzero : ∀ {𝕜 : Type*} [RCLike 𝕜]
   set s : Set (Fin (Module.finrank 𝕜 F)) :=
     {j | ((j : ℕ) < Module.finrank 𝕜 E) ∧ (T.singularValues (j : ℕ) : ℝ) ≠ 0} with hs_def
   have h_ortho : Orthonormal 𝕜 (Set.restrict s v) :=
-    normalized_t_orthonormal_on_supp T b_E h_inner h_zero
+    normalized_t_orthonormal_on_supp T b_E _h_inner _h_zero
   obtain ⟨b_F, hb_F⟩ := h_ortho.exists_orthonormalBasis_extension_of_card_eq
     (Fintype.card_fin _).symm
   refine ⟨b_F, fun i h hσ => ?_⟩
@@ -106,29 +120,26 @@ theorem exists_b_f_apply_eq_nonzero : ∀ {𝕜 : Type*} [RCLike 𝕜]
     exact_mod_cast hσ
   rw [hbf_eq, smul_smul, mul_inv_cancel₀ hσ_k, one_smul]
 
--- Split into two siblings:
---   (A) `t_b_e_zero_of_sigma_zero` (Builder): σ_i = 0 ⇒ T(b_E i) = 0, from h_inner with j=i.
---   (B) `exists_b_f_apply_eq_nonzero` (Backward): orthonormal-extension construction,
---       restricted to the apply equation when σ_i ≠ 0.
--- Closer fuses (A)+(B): low-index branch splits on σ_i; σ_i=0 makes both sides 0 via (A),
--- σ_i≠0 uses (B); high-index branch uses h_zero via `dif_neg`.
+/-- There exists an orthonormal basis `b_F` of `F` such that `T(b_E i)` equals
+`σ_i • b_F ⟨i, h⟩` when `(i : ℕ) < finrank 𝕜 F`, and `0` otherwise.
+This variant takes `h_zero` (vanishing outside the codomain rank) as a hypothesis. -/
 theorem exists_b_f_apply_eq_dite_with_zero : ∀ {𝕜 : Type*} [RCLike 𝕜]
   {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
   [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
   (T : E →ₗ[𝕜] F)
   (b_E : OrthonormalBasis (Fin (Module.finrank 𝕜 E)) 𝕜 E)
-  (h_inner : ∀ i j, @inner 𝕜 _ _ (T (b_E i)) (T (b_E j)) =
+  (_h_inner : ∀ i j, @inner 𝕜 _ _ (T (b_E i)) (T (b_E j)) =
     if i = j then (((T.singularValues i : ℝ)^2 : 𝕜)) else 0)
-  (h_zero : ∀ (i : Fin (Module.finrank 𝕜 E)),
+  (_h_zero : ∀ (i : Fin (Module.finrank 𝕜 E)),
     ¬((i : ℕ) < Module.finrank 𝕜 F) → T (b_E i) = 0),
   ∃ (b_F : OrthonormalBasis (Fin (Module.finrank 𝕜 F)) 𝕜 F),
     ∀ i, T (b_E i) =
       if h : (i : ℕ) < (Module.finrank 𝕜 F)
       then ((T.singularValues i : ℝ) : 𝕜) • b_F ⟨(i : ℕ), h⟩
       else 0  := by
-  intro 𝕜 _ E F _ _ _ _ _ _ T b_E h_inner h_zero
-  have h_sigma_zero := t_b_e_zero_of_sigma_zero T b_E h_inner h_zero
-  have h_main := exists_b_f_apply_eq_nonzero T b_E h_inner h_zero
+  intro 𝕜 _ E F _ _ _ _ _ _ T b_E _h_inner _h_zero
+  have h_sigma_zero := apply_basis_eq_zero_of_singularValues_zero T b_E _h_inner _h_zero
+  have h_main := exists_b_f_apply_eq_nonzero T b_E _h_inner _h_zero
   obtain ⟨b_F, h_low⟩ := h_main
   refine ⟨b_F, fun i => ?_⟩
   by_cases h : (i : ℕ) < Module.finrank 𝕜 F
@@ -136,16 +147,17 @@ theorem exists_b_f_apply_eq_dite_with_zero : ∀ {𝕜 : Type*} [RCLike 𝕜]
     by_cases hσ : (T.singularValues i : ℝ) = 0
     · rw [h_sigma_zero i hσ, hσ]; simp
     · exact h_low i h hσ
-  · rw [dif_neg h]; exact h_zero i h
+  · rw [dif_neg h]; exact _h_zero i h
 
--- entry_kind: Builder
--- sum_ite_smul_eq_dite: collapse indicator-shaped Finset.sum to dite by Finset.sum_eq_single
+/-- The indicator-weighted sum `∑ j, (if j = i then σ_i else 0) • b_F j` equals
+`σ_i • b_F ⟨i, h⟩` when `(i : ℕ) < finrank 𝕜 F`, and `0` otherwise.
+This is a purely algebraic identity used to rewrite the column-sum form of `T`. -/
 theorem sum_ite_smul_eq_dite : ∀ {𝕜 : Type*} [RCLike 𝕜]
   {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
   [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
   (T : E →ₗ[𝕜] F)
   (b_E : OrthonormalBasis (Fin (Module.finrank 𝕜 E)) 𝕜 E)
-  (h_inner : ∀ i j, @inner 𝕜 _ _ (T (b_E i)) (T (b_E j)) =
+  (_h_inner : ∀ i j, @inner 𝕜 _ _ (T (b_E i)) (T (b_E j)) =
     if i = j then (((T.singularValues i : ℝ)^2 : 𝕜)) else 0)
   (b_F : OrthonormalBasis (Fin (Module.finrank 𝕜 F)) 𝕜 F)
   (i : Fin (Module.finrank 𝕜 E)),
@@ -154,7 +166,7 @@ theorem sum_ite_smul_eq_dite : ∀ {𝕜 : Type*} [RCLike 𝕜]
     if h : (i : ℕ) < (Module.finrank 𝕜 F)
     then ((T.singularValues i : ℝ) : 𝕜) • b_F ⟨(i : ℕ), h⟩
     else 0 := by
-  intro 𝕜 _ E F _ _ _ _ _ _ T b_E h_inner b_F i
+  intro 𝕜 _ E F _ _ _ _ _ _ T b_E _h_inner b_F i
   split_ifs with h
   · rw [Finset.sum_eq_single ⟨(i : ℕ), h⟩]
     · simp
@@ -169,49 +181,42 @@ theorem sum_ite_smul_eq_dite : ∀ {𝕜 : Type*} [RCLike 𝕜]
       Nat.ne_of_lt (j.isLt.trans_le (Nat.le_of_not_lt h))
     simp [hne]
 
--- Split into (A) `t_apply_eigenbasis_zero_high`: T(b_E i) = 0 for indices
--- i with (i:ℕ) ≥ finrank F, derived from h_inner (giving ‖T(b_E i)‖² = σ_i²)
--- combined with the rank ≤ codimension bound forcing σ_i = 0 there, and
--- (B) `exists_b_f_apply_eq_dite_with_zero`: the main b_F existence assuming
--- that zero fact as a hypothesis. (A) is a single-equation kernel fact;
--- (B) absorbs all orthonormal-extension construction work and merely uses
--- the zero hypothesis to close the dite "else" branch directly.
+/-- There exists an orthonormal basis `b_F` of `F` such that `T(b_E i)` equals
+`σ_i • b_F ⟨i, h⟩` when `(i : ℕ) < finrank 𝕜 F`, and `0` otherwise. -/
 theorem b_f_apply_eq_dite : ∀ {𝕜 : Type*} [RCLike 𝕜]
   {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
   [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
   (T : E →ₗ[𝕜] F)
   (b_E : OrthonormalBasis (Fin (Module.finrank 𝕜 E)) 𝕜 E)
-  (h_inner : ∀ i j, @inner 𝕜 _ _ (T (b_E i)) (T (b_E j)) =
+  (_h_inner : ∀ i j, @inner 𝕜 _ _ (T (b_E i)) (T (b_E j)) =
     if i = j then (((T.singularValues i : ℝ)^2 : 𝕜)) else 0),
   ∃ (b_F : OrthonormalBasis (Fin (Module.finrank 𝕜 F)) 𝕜 F),
     ∀ i, T (b_E i) =
       if h : (i : ℕ) < (Module.finrank 𝕜 F)
       then ((T.singularValues i : ℝ) : 𝕜) • b_F ⟨(i : ℕ), h⟩
       else 0  := by
-  intro 𝕜 _ E F _ _ _ _ _ _ T b_E h_inner
-  have h_zero := t_apply_eigenbasis_zero_high T b_E h_inner
-  exact exists_b_f_apply_eq_dite_with_zero T b_E h_inner h_zero
+  intro 𝕜 _ E F _ _ _ _ _ _ T b_E _h_inner
+  have h_zero := apply_basis_eq_zero_of_not_lt_finrank T b_E _h_inner
+  exact exists_b_f_apply_eq_dite_with_zero T b_E _h_inner h_zero
 
--- Decompose into (A) constructing b_F : OrthonormalBasis of F packaging the
--- orthonormal-extension construction, with per-index dite-form column property
--- (T(b_E i) = σ_i • b_F⟨i,_⟩ when (i:ℕ) < finrank F, else 0), and (B) a purely
--- algebraic identity collapsing the indicator-shaped sum to that dite. (A) absorbs
--- all geometric/construction work; (B) is T,b_E,h_inner-independent Finset.sum
--- manipulation. Combinator rewrites the parent sum via (B), then closes by (A).
+/-- There exists an orthonormal basis `b_F` of `F` such that for every `i`,
+`T(b_E i) = ∑ j, (if j = i then σ_i else 0) • b_F j`.
+This is the column-sum form of the SVD column property, obtained by combining
+`b_f_apply_eq_dite` with the algebraic identity `sum_ite_smul_eq_dite`. -/
 theorem exists_b_f_apply_eq : ∀ {𝕜 : Type*} [RCLike 𝕜]
   {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
   [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
   (T : E →ₗ[𝕜] F)
   (b_E : OrthonormalBasis (Fin (Module.finrank 𝕜 E)) 𝕜 E)
-  (h_inner : ∀ i j, @inner 𝕜 _ _ (T (b_E i)) (T (b_E j)) =
+  (_h_inner : ∀ i j, @inner 𝕜 _ _ (T (b_E i)) (T (b_E j)) =
     if i = j then (((T.singularValues i : ℝ)^2 : 𝕜)) else 0),
   ∃ (b_F : OrthonormalBasis (Fin (Module.finrank 𝕜 F)) 𝕜 F),
     ∀ i, T (b_E i) = ∑ j : Fin (Module.finrank 𝕜 F),
       (if (j : ℕ) = (i : ℕ) then ((T.singularValues i : ℝ) : 𝕜) else 0) • b_F j := by
-  intro 𝕜 _ E F _ _ _ _ _ _ T b_E h_inner
-  obtain ⟨b_F, h_col⟩ := b_f_apply_eq_dite T b_E h_inner
+  intro 𝕜 _ E F _ _ _ _ _ _ T b_E _h_inner
+  obtain ⟨b_F, h_col⟩ := b_f_apply_eq_dite T b_E _h_inner
   refine ⟨b_F, fun i => ?_⟩
-  rw [sum_ite_smul_eq_dite T b_E h_inner b_F i]
+  rw [sum_ite_smul_eq_dite T b_E _h_inner b_F i]
   exact h_col i
 
 end Library.LinearAlgebra.SVD.BasisConstruction

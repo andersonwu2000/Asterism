@@ -1,5 +1,5 @@
 ---
-problem: LinearAlgebra.sl2z_monodromy
+problem: Test.sl2z_monodromy
 axioms_whitelist:
   - propext
   - Quot.sound
@@ -9,7 +9,7 @@ library: false
 paper: 1d60ef74ee5d
 ---
 
-# LinearAlgebra.sl2z_monodromy
+# Test.sl2z_monodromy
 
 ## Statement
 

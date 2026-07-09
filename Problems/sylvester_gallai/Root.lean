@@ -1,13 +1,14 @@
--- Kelly's proof: pick (p,q,r) ∈ P³ with p≠q, ¬Collinear p q r, minimising the
--- squared perpendicular distance from r to line pq; then (p,q) is an ordinary pair.
--- Sub-goal 1: existence of such a minimum (finite-image min over P×P×P).
--- Sub-goal 2: the geometric core — at the minimum, no third P-point lies on line pq.
+-- Kelly's minimal-perpendicular-distance decomposition of Sylvester–Gallai.
+-- by_contra ⇒ hAll (every pair of P has a 3rd collinear point); the flag finset
+-- F = non-collinear triples (p,q,r) in P³ is nonempty (`flag_set_nonempty`);
+-- minimise the algebraic perpendicular distance pd over F (`Finset.exists_min_image`);
+-- the minimal flag contradicts hAll (`kelly_min_flag_false`), closing `False`.
 import Mathlib
 import Problems.sylvester_gallai.Defs
-import Problems.sylvester_gallai.proofs._strategy_s10205
+import Problems.sylvester_gallai.proofs._strategy_s17697
 
 namespace Problems.sylvester_gallai
 
-def main := @Problems.sylvester_gallai.s10205
+def main := @Problems.sylvester_gallai.s17697
 
 end Problems.sylvester_gallai

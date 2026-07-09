@@ -1,9 +1,24 @@
 import Mathlib
 
+/-!
+# Grid construction for invariant factor decomposition
+
+This file builds a monotone grid of exponent values used in the invariant factor decomposition.
+Starting from a finite type `J` with weights `w : J → ℕ`, it constructs a two-dimensional
+array `c : Fin r → Fin s → ℕ` together with an injective index `idx` such that: rows are
+monotone column-wise, entries at indexed positions recover the original weights, and all
+other entries are zero.
+-/
+
 namespace Library.LinearAlgebra.InvariantFactor.GridConstruction
 
--- sorted_enum: enumerate J in w-monotone order via lex-sort of Fin n by (w ∘ e₀, index)
-theorem sorted_enum {J : Type*} [Fintype J] (w : J → ℕ) :
+section GridJ
+
+variable {J : Type*} [Fintype J] (w : J → ℕ)
+
+/-- Any finite type `J` with a weight function `w : J → ℕ` admits an enumeration
+`e : Fin (Fintype.card J) ≃ J` such that `w ∘ e` is monotone. -/
+theorem sorted_enum :
     ∃ (e : Fin (Fintype.card J) ≃ J), Monotone (w ∘ e) := by
   classical
   set n := Fintype.card J
@@ -63,14 +78,11 @@ theorem sorted_enum {J : Type*} [Fintype J] (w : J → ℕ) :
   · exact Nat.le_of_lt h
   · exact Nat.le_of_eq h
 
--- Direct construction (was: circular `pad_and_place`). Only the sorting is delegated.
---   `sorted_enum` (sub-goal): enumerate J in weight-monotone order, `e : Fin #J ≃ J`
---     with `w ∘ e` monotone — strictly smaller (no Fin-r / placement structure).
--- patch builds the witnesses explicitly: place j at `r - #J + e.symm j` (bottom block),
--- pad positions below `r - #J` with 0.  Monotone: padding 0 ≤ sorted tail, tail monotone
--- via `he`.  The five conjuncts are then Fin/Nat bookkeeping (omega + e.apply_symm_apply).
-theorem column_block {J : Type*} [Fintype J] (w : J → ℕ) (r : ℕ)
-    (hr : Fintype.card J ≤ r) :
+/-- Given a weight function `w : J → ℕ` and a row count `r ≥ |J|`, there exist a monotone
+vector `cvec : Fin r → ℕ` and an injective placement `pos : J → Fin r` such that `cvec`
+agrees with `w` at every placed position, is zero at unoccupied positions, and every row
+index in the top `|J|` slots is occupied. -/
+theorem column_block (r : ℕ) (hr : Fintype.card J ≤ r) :
     ∃ (cvec : Fin r → ℕ) (pos : J → Fin r),
       Monotone cvec ∧
       Function.Injective pos ∧
@@ -119,18 +131,13 @@ theorem column_block {J : Type*} [Fintype J] (w : J → ℕ) (r : ℕ)
     simp only [Equiv.symm_apply_apply]
     omega
 
--- Direct assembly of the per-column sorting data into the global grid; no
--- sub-goals, the sorting is already supplied as hypotheses so only plumbing
--- remains.  Witness: r' := r, c i t := cvec t i, idx i := (pos (key i) ⟨i,rfl⟩, key i).
---   • monotonicity ← hmono;  key-match ← rfl;  value-match ← hval.
---   • no-empty-row ← hcover places an element in each row, hval+hw make it > 0.
---   • injectivity: the dependent `{j // key j = t}`-subtype transport is sidestepped
---     by factoring `idx` through the sigma column `Σ t, {j // key j = t}` — the map
---     `(pos p.1 p.2, p.1)` is injective (snd pins the column, then subst + hinj), and
---     `idx = · ∘ (i ↦ ⟨key i, ⟨i,rfl⟩⟩)` with the latter trivially injective.
---   • zero-padding: same column-transport handled by `subst hjv` before invoking hpad.
 
-theorem assemble_grid {J : Type*} [Fintype J] (w : J → ℕ) (hw : ∀ j, 0 < w j)
+/-- Given per-column data indexed by `key : J → Fin s` — monotone value vectors `cvec`,
+injective placements `pos`, and compatibility conditions — this assembles a global grid
+`c : Fin r → Fin s → ℕ` with an injective index `idx : J → Fin r × Fin s` such that rows
+are monotone column-wise, indices recover key and weight values, every row has a positive
+entry, and unindexed cells are zero. -/
+theorem assemble_grid (hw : ∀ j, 0 < w j)
     (s r : ℕ) (key : J → Fin s)
     (cvec : Fin s → Fin r → ℕ)
     (pos : ∀ t : Fin s, {j : J // key j = t} → Fin r)
@@ -180,22 +187,14 @@ theorem assemble_grid {J : Type*} [Fintype J] (w : J → ℕ) (hw : ∀ j, 0 < w
     intro hcon
     exact hk jv (by change (pos (key jv) ⟨jv, rfl⟩, key jv) = (k, key jv); rw [hcon])
 
--- Decompose the keyed-exponent grid into a per-column sorting lemma and a
--- column-assembly lemma, both abstract over the index type.
---   `column_block` (sub-goal): for any `Fintype J` with weight `w` and a height
---     `r ≥ #J`, sort one column's weights into a monotone, bottom-aligned vector
---     `cvec : Fin r → ℕ` with an injective placement `pos : J → Fin r`, zero
---     padding above the image, and the bottom block `[r - #J, r)` fully filled.
---   `assemble_grid` (sub-goal): given each column's solved `cvec`/`pos` plus a
---     row-coverage hypothesis, glue them into the global grid and discharge all
---     six conjuncts (monotonicity, injectivity, key/value match, no-empty-row,
---     zero-padding) — the sorting is now hypotheses, so only plumbing remains.
--- The combinator picks `r := ⨆ₜ #(column t)`, applies `column_block` fibrewise
--- via `choose`, derives row-coverage `hcover` from the height-achieving column
--- (`Finset.exists_mem_eq_sup` + the bottom-fill guarantee), then hands the
--- per-column data to `assemble_grid`.  Each sub-goal is strictly simpler: the
--- construction (sorting) lives in `column_block`, the bookkeeping in
--- `assemble_grid`, and both drop the parent's `e`-subtype coupling.
+end GridJ
+
+/-- Given a finite type `ι` with exponents `e : ι → ℕ` and a key function
+`key : {i : ι // 0 < e i} → Fin s` on the nonzero-exponent elements, there exist
+a row count `r`, a grid `c : Fin r → Fin s → ℕ`, and an injective index
+`idx : {i : ι // 0 < e i} → Fin r × Fin s` such that rows are monotone column-wise,
+indexed cells recover the exponent values, every row has a positive entry, and all
+unindexed cells are zero. -/
 theorem monotone_grid_of_keyed_exponents
     {ι : Type*} [Fintype ι] (e : ι → ℕ) (s : ℕ)
     (key : {i : ι // 0 < e i} → Fin s) :

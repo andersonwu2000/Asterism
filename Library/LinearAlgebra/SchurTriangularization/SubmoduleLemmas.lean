@@ -16,7 +16,6 @@ theorem sup_span_singleton_finrank :
 
 -- sup_span_singleton_invariant: T-invariance of U ⊔ span{v} via Submodule.mem_sup decomposition
 -- Decompose w = u + c•v; T w = (Tu + c•(Tv−μ•v)) + (c*μ)•v, first part in U, second in span{v}.
--- entry_kind: Builder
 theorem sup_span_singleton_invariant :
     ∀ {K : Type*} [Field K]
       {V : Type*} [AddCommGroup V] [Module K V]
@@ -36,7 +35,6 @@ theorem sup_span_singleton_invariant :
 
 -- quotient_nontrivial_of_finrank_lt: finrank gap implies nontrivial quotient via
 -- Submodule.finrank_quotient_add_finrank + Module.nontrivial_of_finrank_pos
--- entry_kind: Builder
 theorem quotient_nontrivial_of_finrank_lt :
     ∀ {K : Type*} [Field K]
       {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]

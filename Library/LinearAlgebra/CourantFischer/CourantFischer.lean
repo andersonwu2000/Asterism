@@ -7,14 +7,29 @@ open Library.LinearAlgebra.CourantFischer.RayleighBounds
 open Library.LinearAlgebra.CourantFischer.SubmoduleLemmas
 open Library.LinearAlgebra.CourantFischer.TestSubspaces
 
+/-!
+# Courant–Fischer min-max theorem
+
+This file establishes the Courant–Fischer min-max characterisation of eigenvalues of a
+symmetric linear operator on a finite-dimensional real inner product space: the `k`-th
+eigenvalue equals the supremum over all `(k+1)`-dimensional subspaces `S` of the
+infimum of the Rayleigh quotient `⟨Tx, x⟩ / ‖x‖²` over nonzero `x ∈ S`.
+
+The proof splits into two inequalities assembled by `le_antisymm`:
+- **Upper bound** (`sup_inf_rayleigh_le_eigenvalue`): for every `(k+1)`-dim `S`, a
+  dimension count forces a nonzero intersection with the bottom `(n−k)`-eigenvector
+  subspace, whose Rayleigh quotient is bounded above by `λ_k`.
+- **Lower bound** (`eigenvalue_le_sup_inf_rayleigh`): the top `(k+1)`-eigenvector span
+  is a witness subspace achieving Rayleigh infimum ≥ `λ_k`.
+-/
+
 namespace Library.LinearAlgebra.CourantFischer.CourantFischer
 
--- Courant–Fischer upper bound: a nonzero x ∈ S with Rayleigh ≤ λ_k exists.
--- h_bottom (sub-goal): the bottom (n−k)-eigenvector subspace W has finrank n−k and
---   every nonzero vector in it has Rayleigh ≤ λ_k (the spectral content; drops S).
--- subspace_inter_nonzero (sub-goal, dedupes to the proved dimension-count brick):
---   finrank S + finrank W = (k+1)+(n−k) = n+1 > n forces a nonzero x ∈ S ⊓ W.
--- Combining, that x lies in W so hWbound bounds its Rayleigh by λ_k.
+/-- For any `(k+1)`-dimensional subspace `S` there exists a nonzero vector `x ∈ S`
+whose Rayleigh quotient `⟨Tx, x⟩ / ‖x‖²` is at most the `k`-th eigenvalue of `T`.
+The proof intersects `S` with the bottom `(n−k)`-eigenvector subspace `W`; the rank
+inequality `(k+1) + (n−k) = n+1 > n` forces `S ⊓ W ≠ ⊥`, and every nonzero element
+of `W` has Rayleigh quotient bounded by `λ_k`. -/
 theorem exists_vector_rayleigh_le_eigenvalue
     {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
     [FiniteDimensional ℝ E] {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric)
@@ -25,13 +40,13 @@ theorem exists_vector_rayleigh_le_eigenvalue
   have hk := k.isLt
   obtain ⟨W, hWdim, hWbound⟩ := bottom_eigenspace_exists hT hn k
   obtain ⟨x, hxS, hxW, hx0⟩ :=
-    subspace_inter_nonzero S W hn (by omega)
+    Library.LinearAlgebra.CourantFischer.SubmoduleLemmas.subspace_inter_nonzero_of_finrank S W hn (by omega)
   exact ⟨x, hxS, hx0, hWbound x hxW hx0⟩
 
--- Courant–Fischer upper bound (per fixed (k+1)-dim S): the inner Rayleigh sInf ≤ λ_k.
--- A dimension count yields a nonzero x ∈ S landing in the bottom eigenspace with
--- Rayleigh ≤ λ_k (h_exists); since that Rayleigh value lies in the bounded-below set
--- (h_bdd), csInf_le + transitivity closes the goal. Both sub-goals drop the sInf layer.
+/-- For any `(k+1)`-dimensional subspace `S`, the infimum of the Rayleigh quotient
+`⟨Tx, x⟩ / ‖x‖²` over nonzero vectors in `S` is at most the `k`-th eigenvalue of `T`.
+This follows from `exists_vector_rayleigh_le_eigenvalue` together with `csInf_le` applied
+to the boundedness of the Rayleigh set. -/
 theorem inf_rayleigh_le_eigenvalue
     {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
     [FiniteDimensional ℝ E] {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric)
@@ -44,11 +59,11 @@ theorem inf_rayleigh_le_eigenvalue
   obtain ⟨x, hxS, hx0, hxle⟩ := h_exists
   exact le_trans (csInf_le h_bdd ⟨x, hxS, hx0, rfl⟩) hxle
 
--- Lower bound λ_k ≤ sSup via `le_csSup` with the top-(k+1)-eigenvector test subspace.
--- h_bdd (rayleigh_sup_set_bdd_above): the sSup set is bounded above (each member sInf
---   ≤ ‖T‖ by Cauchy–Schwarz), giving the `BddAbove` premise of `le_csSup`.
--- h_exists (exists_test_subspace_inf_ge_eigenvalue): a witness subspace S of finrank k+1
---   whose Rayleigh sInf is ≥ λ_k; it is a member of the sSup set, so λ_k ≤ sInf S ≤ sSup.
+/-- The `k`-th eigenvalue of `T` is a lower bound for the supremum over all
+`(k+1)`-dimensional subspaces of the infimum of the Rayleigh quotient.
+The top `(k+1)`-eigenvector span serves as a witness subspace whose Rayleigh infimum
+is at least `λ_k`; the conclusion then follows from `le_csSup` using the bounded-above
+Rayleigh sup-set. -/
 theorem eigenvalue_le_sup_inf_rayleigh
     {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
     [FiniteDimensional ℝ E] {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric)
@@ -63,14 +78,10 @@ theorem eigenvalue_le_sup_inf_rayleigh
   obtain ⟨S, hS, hge⟩ := h_exists
   exact le_trans hge (le_csSup h_bdd ⟨S, hS, rfl⟩)
 
--- Courant–Fischer upper bound: sSup over (k+1)-dim subspaces of the inner sInf
--- Rayleigh quotient is ≤ eigenvalue k. Closed by `csSup_le`:
---   • h_exists (exists_subspace_finrank): the index set is nonempty — some (k+1)-dim
---     subspace exists, so the sSup has a witness `r`.
---   • h_inf (inf_rayleigh_le_eigenvalue): for EVERY (k+1)-dim S, the inner sInf of the
---     Rayleigh set is ≤ eigenvalue k (dimension count yields a nonzero vector in
---     S meeting the bottom-(n−k) eigenspace, whose Rayleigh quotient is ≤ λ_k).
--- Both sub-goals drop the outer sSup layer, hence are strictly simpler.
+/-- The supremum over all `(k+1)`-dimensional subspaces of the infimum of the Rayleigh
+quotient is at most the `k`-th eigenvalue of `T`.
+Applied via `csSup_le`: the index set is nonempty by `exists_subspace_finrank`, and
+`inf_rayleigh_le_eigenvalue` provides the pointwise bound for every member. -/
 theorem sup_inf_rayleigh_le_eigenvalue
     {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
     [FiniteDimensional ℝ E] {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric)
@@ -88,33 +99,18 @@ theorem sup_inf_rayleigh_le_eigenvalue
   · rintro r ⟨S, hScard, rfl⟩
     exact h_inf S hScard
 
--- Courant–Fischer max-min equality, proved by `le_antisymm` over two bounds.
--- h_lower (sub-goal A): eigenvalue k ≤ sSup, via the top-(k+1)-eigenvector test
---   subspace S₀ where every Rayleigh quotient ≥ eigenvalue k.
--- h_upper (sub-goal B): sSup ≤ eigenvalue k, via any (k+1)-dim S meeting the
---   bottom-(n−k)-eigenvector subspace in a nonzero x with Rayleigh ≤ eigenvalue k.
--- Each bound is a standalone theorem re-declaring all binders; both rely on the
--- proved bricks rayleigh_numerator_eigenbasis / subspace_inter_nonzero_of_finrank.
-theorem main : ∀ {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
+/-- The Courant–Fischer min-max theorem: the `k`-th eigenvalue of a symmetric operator `T`
+on an `n`-dimensional real inner product space equals the supremum over all
+`(k+1)`-dimensional subspaces `S` of the infimum of the Rayleigh quotient
+`⟨Tx, x⟩ / ‖x‖²` over nonzero `x ∈ S`. -/
+theorem main {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
     [FiniteDimensional ℝ E] {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric)
-    {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n),
+    {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n) :
     hT.eigenvalues hn k =
       sSup (setOf fun r : ℝ => ∃ S : Submodule ℝ E,
         Module.finrank ℝ S = (k : ℕ) + 1 ∧
         r = sInf (setOf fun q : ℝ => ∃ x : E, x ∈ S ∧ x ≠ 0 ∧
-          q = @inner ℝ E _ (T x) x / ‖x‖ ^ 2))  := by
-  intro E _ _ _ T hT n hn k
-  have h_lower : hT.eigenvalues hn k ≤
-      sSup (setOf fun r : ℝ => ∃ S : Submodule ℝ E,
-        Module.finrank ℝ S = (k : ℕ) + 1 ∧
-        r = sInf (setOf fun q : ℝ => ∃ x : E, x ∈ S ∧ x ≠ 0 ∧
-          q = @inner ℝ E _ (T x) x / ‖x‖ ^ 2)) :=
-    eigenvalue_le_sup_inf_rayleigh hT hn k
-  have h_upper : sSup (setOf fun r : ℝ => ∃ S : Submodule ℝ E,
-        Module.finrank ℝ S = (k : ℕ) + 1 ∧
-        r = sInf (setOf fun q : ℝ => ∃ x : E, x ∈ S ∧ x ≠ 0 ∧
-          q = @inner ℝ E _ (T x) x / ‖x‖ ^ 2)) ≤ hT.eigenvalues hn k :=
-    sup_inf_rayleigh_le_eigenvalue hT hn k
-  exact le_antisymm h_lower h_upper
+          q = @inner ℝ E _ (T x) x / ‖x‖ ^ 2)) := by
+  exact le_antisymm (eigenvalue_le_sup_inf_rayleigh hT hn k) (sup_inf_rayleigh_le_eigenvalue hT hn k)
 
 end Library.LinearAlgebra.CourantFischer.CourantFischer

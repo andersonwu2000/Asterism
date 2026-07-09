@@ -1,11 +1,21 @@
 import Mathlib
 
+/-!
+# Primary decomposition over a polynomial ring
+
+This file establishes the primary decomposition of a finitely generated torsion module over the
+polynomial ring `K[X]`, where `K` is a field. The central result `monic_directsum_of_torsion`
+upgrades Mathlib's `Module.equiv_directSum_of_isTorsion` so that every cyclic summand
+`K[X]/(p_i ^ e_i)` carries a **monic** irreducible generator. The specialisation `primary_form`
+applies this to a finite-dimensional `K`-vector space equipped with a linear operator, yielding
+the primary decomposition underlying the rational canonical / Jordan normal form theory.
+-/
+
 namespace Library.LinearAlgebra.InvariantFactor.PrimaryDecomposition
 
--- Take q := normalize a, the monic associate of the irreducible a.
--- It is irreducible (associated to a) and monic; since a^n and q^n are associated,
--- their generated spans coincide, so the quotients are equal — Submodule.quotEquivOfEq
--- supplies the K[X]-linear iso. Direct leaf proof, no sub-goals.
+/-- Given an irreducible polynomial `a` over a field `K` and a natural number `n`, there exists a
+monic irreducible polynomial `q` — a normalized associate of `a` — such that `K[X] ⧸ (a ^ n)` and
+`K[X] ⧸ (q ^ n)` are isomorphic as `K[X]`-modules. -/
 theorem exists_monic_quot_equiv {K : Type*} [Field K] (a : Polynomial K)
     (ha : Irreducible a) (n : ℕ) :
     ∃ q : Polynomial K, Irreducible q ∧ q.Monic ∧
@@ -20,13 +30,15 @@ theorem exists_monic_quot_equiv {K : Type*} [Field K] (a : Polynomial K)
     Ideal.span_singleton_eq_span_singleton.mpr hassoc
   exact ⟨Submodule.quotEquivOfEq _ _ hspan⟩
 
--- Upgrade mathlib's prime-power torsion decomposition to *monic* irreducible generators.
--- `Module.equiv_directSum_of_isTorsion` gives the decomposition with irreducible (not nec.
--- monic) generators `p i`; for each, `exists_monic_quot_equiv` produces a monic irreducible
--- associate `q i` together with a quotient linear-equiv (spans of `a^e` and `q^e` agree).
--- `choose` extracts the family `q`, and `DirectSum.congrLinearEquiv` transports the direct
--- sum component-wise.
-theorem monic_directsum_of_torsion {K : Type u} [Field K] {M : Type*}
+section PrimaryDecomp
+
+variable {K : Type u} [Field K]
+
+/-- Every finitely generated torsion module over `K[X]` decomposes as a direct sum of cyclic
+modules `K[X] ⧸ (p_i ^ e_i)` with each `p_i` a monic irreducible polynomial. This sharpens
+`Module.equiv_directSum_of_isTorsion`, which produces irreducible but not necessarily monic
+generators. -/
+theorem monic_directsum_of_torsion {M : Type*}
     [AddCommGroup M] [Module (Polynomial K) M] [Module.Finite (Polynomial K) M]
     (hM : Module.IsTorsion (Polynomial K) M) :
     ∃ (ι : Type u) (_ : Fintype ι) (p : ι → Polynomial K) (_ : ∀ i, Irreducible (p i))
@@ -40,14 +52,11 @@ theorem monic_directsum_of_torsion {K : Type u} [Field K] {M : Type*}
   refine ⟨ι, hfin, q, hq_irr, hq_monic, e, ?_⟩
   exact ⟨equiv.trans (DirectSum.congrLinearEquiv (fun i => (hq_equiv i).some))⟩
 
--- Reduce to the abstract monic structure theorem for finite torsion K[X]-modules.
--- `Module.AEval' T` is a finitely-generated torsion K[X]-module: torsion comes from
--- `Module.AEval.isTorsion_of_finiteDimensional`, finiteness is the standard AEval instance.
--- The whole remaining content (mathlib's `equiv_directSum_of_isTorsion` upgraded so the prime
--- generators are *monic* irreducibles) lives in the single abstract sub-goal
--- `monic_directsum_of_torsion`. Instances are supplied explicitly to dodge the `AEval'`
--- AddCommGroup/Module/Finite synthesis diamond.
-theorem primary_form {K : Type u} [Field K] {V : Type*}
+/-- For any linear operator `T` on a finite-dimensional `K`-vector space `V`, the associated
+`K[X]`-module `Module.AEval' T` decomposes as a direct sum of cyclic modules
+`K[X] ⧸ (p_i ^ e_i)` with monic irreducible `p_i`. This is the primary decomposition of the
+operator `T`. -/
+theorem primary_form {V : Type*}
     [AddCommGroup V] [Module K V] [FiniteDimensional K V] (T : V →ₗ[K] V) :
     ∃ (ι : Type u) (_ : Fintype ι) (p : ι → Polynomial K) (_ : ∀ i, Irreducible (p i))
       (_ : ∀ i, (p i).Monic) (e : ι → ℕ),
@@ -58,5 +67,7 @@ theorem primary_form {K : Type u} [Field K] {V : Type*}
     (inferInstanceAs (Module (Polynomial K) (Module.AEval' T)))
     (inferInstanceAs (Module.Finite (Polynomial K) (Module.AEval K V T)))
     (Module.AEval.isTorsion_of_finiteDimensional K V T)
+
+end PrimaryDecomp
 
 end Library.LinearAlgebra.InvariantFactor.PrimaryDecomposition

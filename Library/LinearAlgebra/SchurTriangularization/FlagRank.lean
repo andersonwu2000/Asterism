@@ -32,7 +32,6 @@ theorem extension_iteration_sequence :
   · intro i
     exact (Classical.choose_spec (h_ext (WP i).1 (WP i).2)).2.2
 
--- entry_kind: Builder
 -- rank_chain_min_eq: pure ℕ-induction converting step-rank equation to closed form
 theorem rank_chain_min_eq :
     ∀ {K : Type*} [Field K]
@@ -54,7 +53,6 @@ theorem rank_chain_min_eq :
     rw [hWstep, ih]
     omega
 
--- entry_kind: Builder
 -- saturated_one_step_extension: wraps one-step extension hypothesis to saturate at finrank V
 theorem saturated_one_step_extension :
     ∀ {K : Type*} [Field K]

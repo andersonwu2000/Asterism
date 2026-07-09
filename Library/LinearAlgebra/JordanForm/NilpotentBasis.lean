@@ -7,13 +7,26 @@ open Library.LinearAlgebra.JordanForm.BlockEnum
 open Library.LinearAlgebra.JordanForm.Defs
 open Library.LinearAlgebra.JordanForm.RangeBlock
 
+/-!
+# Nilpotent Jordan basis
+
+This file proves that every nilpotent linear operator on a finite-dimensional vector space admits
+a Jordan chain basis: a basis in which each basis vector is either killed by the operator or is
+mapped to the immediately preceding basis vector. It then translates this structural property into
+the matrix statement that `LinearMap.toMatrix b b N` is in Jordan normal form with zero diagonal.
+-/
+
 namespace Library.LinearAlgebra.JordanForm.NilpotentBasis
 
+variable {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
+variable (N : W →ₗ[K] W)
+
+/-- Given a basis `b` in which each `N (b j)` is either zero or `b i` with `i + 1 = j`,
+the matrix of `N` in this basis is in Jordan normal form with zero diagonal. -/
 -- jordan_chain_basis_matrix_form: chain-basis structure for nilpotent N implies IsJordanForm
 -- and zero diagonal, by reading column structure via LinearMap.toMatrix_apply.
 theorem jordan_chain_basis_matrix_form
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
-    (N : W →ₗ[K] W) (hN : IsNilpotent N)
+    (hN : IsNilpotent N)
     (b : Module.Basis (Fin (Module.finrank K W)) K W)
     (hb : ∀ j : Fin (Module.finrank K W),
         N (b j) = 0 ∨
@@ -61,13 +74,14 @@ theorem jordan_chain_basis_matrix_form
       simp only [if_neg hki]
       split_ifs <;> simp
 
+/-- Converts a block-indexed Jordan chain basis (indexed by `Σ s : Fin r, Fin (k s)`) to a
+consecutively-indexed one (indexed by `Fin (finrank K W)`) by composing with the equivalence
+provided by `block_enum_consecutive`. -/
 -- Reindex via block_enum_consecutive + cardinality bridge.
 -- block_enum_consecutive (proved brick s10915) gives e : Fin (∑ k s) ≃ Σ s, Fin (k s).
 -- finrank K W = ∑ k s from basis c; finCongr then closes Fin (finrank W) ≃ Fin (∑ k s).
 -- Compose: φ := finCongr.trans e gives Fin (finrank W) ≃ Σ s, Fin (k s); reindex c via φ.
 theorem block_basis_to_consecutive
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
-    (N : W →ₗ[K] W)
     (r : ℕ) (k : Fin r → ℕ)
     (c : Module.Basis (Σ s : Fin r, Fin (k s)) K W)
     (hc : ∀ (s : Fin r) (j : Fin (k s)),
@@ -118,6 +132,8 @@ theorem block_basis_to_consecutive
       rw [heq] at hi_N
       exact hi_N
 
+/-- Given a Jordan chain basis `bU` of `range N`, extends it to a Jordan chain basis of `W`
+by lifting chain tops through `N`, extending `ker N`, and reindexing to consecutive form. -/
 -- Glue `bU` (Jordan basis of `range N`) up to a Jordan basis of `W` in two stages,
 -- separating the linear-algebra content from the index layout that sank prior attempts.
 --   * `block_jordan_basis_exists` (LA chain-glue): lift chain tops through `N`, extend
@@ -132,8 +148,7 @@ theorem block_basis_to_consecutive
 --     brick. Simpler than the parent: pure index bookkeeping over a basis already given.
 -- Combine: `obtain` the block basis, then `exact` the reindexed consecutive basis.
 theorem succ_glue
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
-    (N : W →ₗ[K] W) (hN : IsNilpotent N) (hN0 : N ≠ 0)
+    (hN : IsNilpotent N) (hN0 : N ≠ 0)
     (h_inv : ∀ x ∈ LinearMap.range N, N x ∈ LinearMap.range N)
     (bU : Module.Basis (Fin (Module.finrank K (LinearMap.range N))) K (LinearMap.range N))
     (hbU : ∀ j : Fin (Module.finrank K (LinearMap.range N)),
@@ -148,6 +163,10 @@ theorem succ_glue
   obtain ⟨r, k, c, hc⟩ := block_jordan_basis_exists N hN hN0 h_inv bU hbU
   exact block_basis_to_consecutive N r k c hc
 
+/-- Strong induction on a dimension bound `n`: every nilpotent operator on a space of dimension
+at most `n` admits a Jordan chain basis. The base case `n = 0` is vacuous; the inductive step
+either dispatches `N = 0` directly or descends to `range N` (whose rank is strictly smaller) and
+applies `succ_glue`. -/
 -- Strong induction on the dimension bound `n`, kept INLINE (lesson: extracting the
 -- succ-step with a `∀ {W'} ih` hypothesis binds a fresh universe `u_3 ≠ u_2`, making `ih`
 -- unusable on `↥(range N)`; here the inline `ih` lives in `W`'s universe and applies).
@@ -156,8 +175,7 @@ theorem succ_glue
 -- gives `finrank U ≤ m`, `range_restrict_nilpotent` its nilpotency, so `ih` yields a Jordan
 -- chain basis of `U`, and `succ_glue` extends/glues it to a basis of `W`.
 theorem jordan_chain_basis_dim_induction
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
-    (N : W →ₗ[K] W) (hN : IsNilpotent N) (n : ℕ) (hdim : Module.finrank K W ≤ n) :
+    (hN : IsNilpotent N) (n : ℕ) (hdim : Module.finrank K W ≤ n) :
     ∃ b : Module.Basis (Fin (Module.finrank K W)) K W,
       ∀ j : Fin (Module.finrank K W),
         N (b j) = 0 ∨
@@ -176,22 +194,24 @@ theorem jordan_chain_basis_dim_induction
         obtain ⟨bU, hbU⟩ := ih (N.restrict h_inv) hN' hle
         exact succ_glue N hN hN0 h_inv bU hbU
 
+/-- Every nilpotent operator on a finite-dimensional space admits a Jordan chain basis: a basis
+`b` such that each `N (b j)` is either zero or equals `b i` for the unique predecessor
+`i` with `(i : ℕ) + 1 = (j : ℕ)`. -/
 -- Reduce to a strong-induction-ready generalized lemma: the same statement for an
 -- arbitrary nilpotent operator on a space of dimension ≤ n (the bound `n` is the
 -- well-founded measure for induction on `Module.finrank`, which cannot be run with the
 -- ambient `W` fixed). The parent is the `n := finrank K W` instance.
 -- The generalized lemma carries the textbook recursion (N = 0 base; `range N` descent).
 theorem jordan_chain_basis_exists
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
-    (N : W →ₗ[K] W) (hN : IsNilpotent N) :
+    (hN : IsNilpotent N) :
     ∃ b : Module.Basis (Fin (Module.finrank K W)) K W,
       ∀ j : Fin (Module.finrank K W),
         N (b j) = 0 ∨
           ∃ i : Fin (Module.finrank K W),
-            (i : ℕ) + 1 = (j : ℕ) ∧ N (b j) = b i  := by
-  have h_chain := jordan_chain_basis_dim_induction N hN
-  exact h_chain (Module.finrank K W) le_rfl
+            (i : ℕ) + 1 = (j : ℕ) ∧ N (b j) = b i  := jordan_chain_basis_dim_induction N hN (Module.finrank K W) le_rfl
 
+/-- Every nilpotent linear operator on a finite-dimensional vector space has a Jordan basis:
+a basis in which the matrix of `N` is in Jordan normal form with zero diagonal. -/
 -- Split into (1) existence of a "Jordan-chain" basis structure for the nilpotent N,
 -- and (2) a matrix-translation lemma converting that structure to IsJordanForm + diag=0.
 -- Sub-goal 1 is the hard linear-algebra existence (kernel-filtration / chain construction)
@@ -200,8 +220,7 @@ theorem jordan_chain_basis_exists
 -- column of toMatrix b b N is either zero or a standard basis vector e_{j-1}, which
 -- immediately yields the IsJordanForm shape and zero diagonal.
 theorem nilpotent_has_jordan_basis
-    {K W : Type*} [Field K] [AddCommGroup W] [Module K W] [FiniteDimensional K W]
-    (N : W →ₗ[K] W) (hN : IsNilpotent N) :
+    (hN : IsNilpotent N) :
     ∃ b : Module.Basis (Fin (Module.finrank K W)) K W,
       IsJordanForm (LinearMap.toMatrix b b N) ∧
     ∀ i : Fin (Module.finrank K W), (LinearMap.toMatrix b b N) i i = 0  := by

@@ -7,17 +7,30 @@ open Library.LinearAlgebra.CourantFischer.EigenbasisExpansion
 open Library.LinearAlgebra.CourantFischer.RayleighBounds
 open Library.LinearAlgebra.CourantFischer.SubmoduleLemmas
 
+/-!
+# Test subspaces for the Courant–Fischer theorem
+
+This file constructs the two families of witness subspaces used in the Courant–Fischer minimax
+characterisation of eigenvalues of a symmetric linear operator `T` on a finite-dimensional real
+inner-product space. The *bottom* subspace `W` (spanned by the high-index eigenvectors) certifies
+the upper bound `λ_k ≥ sup_S inf_S Rayleigh`, while the *top* subspace `S` (spanned by the
+low-index eigenvectors) certifies the lower bound, together establishing the minimax equality.
+-/
+
 namespace Library.LinearAlgebra.CourantFischer.TestSubspaces
+
+variable {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
+  [FiniteDimensional ℝ E] {T : E →ₗ[ℝ] E}
 
 -- Construct W as the span of the bottom eigenvectors {bᵢ : k ≤ i}, abstracting
 -- the eigenvector basis to a generic orthonormal basis `b`.
 -- finrank_span_image_high: |{i : k ≤ i}| = n−k gives the dimension count.
 -- inner_eq_zero_of_mem_span_high: orthonormality kills ⟪bᵢ, x⟫ for i<k (x ∈ bottom modes).
 
+/-- The span of the eigenvectors indexed by `{i : Fin n | k ≤ i}` is an `(n − k)`-dimensional
+subspace whose elements are orthogonal to every eigenvector `b_i` with `i < k`. -/
 theorem bottom_eigenspace_with_support
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
-    [FiniteDimensional ℝ E] {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric)
-    {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n) :
+    (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n) :
     ∃ W : Submodule ℝ E, Module.finrank ℝ W = n - (k : ℕ) ∧
       ∀ x : E, x ∈ W → ∀ i : Fin n, (i : ℕ) < (k : ℕ) →
         @inner ℝ E _ ((hT.eigenvectorBasis hn) i) x = 0  := by
@@ -32,10 +45,11 @@ theorem bottom_eigenspace_with_support
 -- rayleigh_le_of_low_modes_zero: any x with those modes zero has Rayleigh ≤ λ_k via
 --   the eigenbasis expansion + eigenvalue antitonicity — the spectral half, W-free.
 -- Combine: pull W from the first, feed its support property into the second pointwise.
+
+/-- There exists an `(n − k)`-dimensional subspace `W` on which every nonzero vector has
+Rayleigh quotient at most `λ_k`, namely the span of the eigenvectors with index `≥ k`. -/
 theorem bottom_eigenspace_exists
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
-    [FiniteDimensional ℝ E] {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric)
-    {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n) :
+    (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n) :
     ∃ W : Submodule ℝ E, Module.finrank ℝ W = n - (k : ℕ) ∧
       ∀ x : E, x ∈ W → x ≠ 0 →
         @inner ℝ E _ (T x) x / ‖x‖ ^ 2 ≤ hT.eigenvalues hn k  := by
@@ -46,10 +60,11 @@ theorem bottom_eigenspace_exists
 -- Direct leaf: the Rayleigh set is nonempty because e_k = eigenvectorBasis k
 -- is a nonzero element of S (k ≤ k puts it in the spanning image set), so its
 -- Rayleigh quotient is a member. No sub-goals needed.
+
+/-- The set of Rayleigh quotients of nonzero vectors in the top eigenvector subspace `S =
+span{e_i : i ≤ k}` is nonempty, witnessed by the eigenvector `e_k` itself. -/
 theorem topeig_set_nonempty
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
-    [FiniteDimensional ℝ E] {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric)
-    {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n)
+    (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n)
     (S : Submodule ℝ E)
     (hS : S = Submodule.span ℝ ((hT.eigenvectorBasis hn) ''
       {i : Fin n | (i : ℕ) ≤ (k : ℕ)})) :
@@ -66,10 +81,11 @@ theorem topeig_set_nonempty
 --     (so the span's dimension equals the number of generators);
 -- hB: that index set has exactly k+1 elements.
 -- Combine: rewrite the image as a range, apply finrank_span_eq_card hA, close with hB.
+
+/-- The subspace `S = span{e_i : i ≤ k}` spanned by the first `k + 1` eigenvectors has
+`finrank ℝ S = k + 1`. -/
 theorem topeig_subspace_finrank
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
-    [FiniteDimensional ℝ E] {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric)
-    {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n)
+    (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n)
     (S : Submodule ℝ E)
     (hS : S = Submodule.span ℝ ((hT.eigenvectorBasis hn) ''
       {i : Fin n | (i : ℕ) ≤ (k : ℕ)})) :
@@ -87,10 +103,12 @@ theorem topeig_subspace_finrank
 -- (3) every nonzero x ∈ S has Rayleigh ≥ λ_k (heart: λ_i ≥ λ_k for i ≤ k by
 -- antitone, expand numerator in the eigenbasis).  Then le_csInf glues (2)+(3)
 -- into λ_k ≤ sInf, and S, (1) discharge the existential.
+
+/-- There exists a `(k + 1)`-dimensional subspace `S` such that `λ_k` is a lower bound for
+the infimum of Rayleigh quotients over nonzero vectors in `S`, providing the lower-bound half
+of the Courant–Fischer minimax theorem. -/
 theorem exists_test_subspace_inf_ge_eigenvalue
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
-    [FiniteDimensional ℝ E] {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric)
-    {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n) :
+    (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n) :
     ∃ S : Submodule ℝ E,
       Module.finrank ℝ S = (k : ℕ) + 1 ∧
       hT.eigenvalues hn k ≤ sInf (setOf fun q : ℝ => ∃ x : E, x ∈ S ∧ x ≠ 0 ∧
@@ -108,10 +126,11 @@ theorem exists_test_subspace_inf_ge_eigenvalue
 -- For each S: exists_nonzero_mem_of_finrank_pos gives a nonzero x ∈ S (finrank = k+1 > 0);
 -- rayleigh_le_bound bounds its Rayleigh quotient ≤ C; rayleigh_bddbelow_for_subspace gives
 -- BddBelow, so csInf_le_of_le pushes sInf(Rayleigh S) ≤ (that quotient) ≤ C.
+
+/-- The set of subspace-wise infima of Rayleigh quotients, ranging over all `(k + 1)`-dimensional
+subspaces, is bounded above by the operator norm of `T`. -/
 theorem rayleigh_sup_set_bdd_above
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
-    [FiniteDimensional ℝ E] {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric)
-    {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n) :
+    (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n) :
     BddAbove (setOf fun r : ℝ => ∃ S : Submodule ℝ E,
       Module.finrank ℝ S = (k : ℕ) + 1 ∧
       r = sInf (setOf fun q : ℝ => ∃ x : E, x ∈ S ∧ x ≠ 0 ∧
@@ -121,7 +140,7 @@ theorem rayleigh_sup_set_bdd_above
   refine ⟨C, ?_⟩
   rintro r ⟨S, hScard, rfl⟩
   obtain ⟨x, hxS, hx0⟩ := exists_nonzero_mem_of_finrank_pos S (k : ℕ) hScard
-  exact csInf_le_of_le (rayleigh_bddbelow_for_subspace hT S)
+  exact csInf_le_of_le (Library.LinearAlgebra.CourantFischer.RayleighBounds.rayleigh_set_bddbelow hT S)
     ⟨x, hxS, hx0, rfl⟩ (rayleigh_le_bound T C hC x hx0)
 
 end Library.LinearAlgebra.CourantFischer.TestSubspaces

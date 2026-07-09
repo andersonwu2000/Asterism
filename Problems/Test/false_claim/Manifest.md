@@ -12,14 +12,16 @@ library: false
 
 ## Statement
 
-I computed several examples (3→5, 5→7, 11→13) and believe every prime
-stays prime after adding two. Formalize and prove it for `n : ℕ`:
-if `n` is prime then `n + 2` is prime.
+The original conjecture — every prime `n : ℕ` stays prime after adding
+two — is FALSE: `n = 7` is prime but `7 + 2 = 9 = 3 * 3` is not. The
+computed examples (3→5, 5→7, 11→13) were twin-prime coincidences. The
+deliverable is the kernel-checked disproof:
+`¬ ∀ n : ℕ, Nat.Prime n → Nat.Prime (n + 2)`.
 
 ### Deliverables
 
-`MarkDeliverable` the claim; then `Ingest`:
+`MarkDeliverable` the disproof; then `Ingest`:
 
-- `prime_plus_two_prime`
+- `not_forall_prime_plus_two_prime`
 
 Do NOT introduce axioms or `sorry`-bearing shortcuts.

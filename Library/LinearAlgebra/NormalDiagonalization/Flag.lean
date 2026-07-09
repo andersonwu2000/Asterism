@@ -1,19 +1,27 @@
 import Mathlib
 
+/-!
+# Flag subspaces for normal diagonalization
+
+This file establishes two supporting lemmas about the initial-segment spans
+`Submodule.span ℂ (b '' Set.Iic j)` formed by an ordered basis `b`.  Together
+they show that these spans form a T-invariant flag and that replacing `b` by the
+associated Gram–Schmidt orthonormal basis leaves each flag subspace unchanged.
+-/
+
 namespace Library.LinearAlgebra.NormalDiagonalization.Flag
 
--- Direct leaf proof: the flag subspace `span (b '' Iic j)` is T-invariant.
--- Reduce `span ≤ comap T span` to its generators (`Submodule.span_le`); each
--- generator `b k` (k ≤ j) satisfies `T (b k) ∈ span (b '' Iic k) ⊆ span (b '' Iic j)`
--- via the adapted hypothesis `hb` + span/image/Iic monotonicity. No sub-goals.
-theorem flag_invariant {V : Type*} [NormedAddCommGroup V] [InnerProductSpace ℂ V]
-    [FiniteDimensional ℂ V] (T : V →ₗ[ℂ] V)
+variable {V : Type*} [NormedAddCommGroup V] [InnerProductSpace ℂ V] [FiniteDimensional ℂ V]
+
+/-- The initial-segment span `Submodule.span ℂ (b '' Set.Iic j)` is invariant under `T`,
+provided each basis vector `b k` maps into `Submodule.span ℂ (b '' Set.Iic k)`. -/
+theorem flag_invariant (T : V →ₗ[ℂ] V)
     (b : Module.Basis (Fin (Module.finrank ℂ V)) ℂ V)
     (hb : ∀ j : Fin (Module.finrank ℂ V),
         T (b j) ∈ Submodule.span ℂ (b '' Set.Iic j))
     (j : Fin (Module.finrank ℂ V)) (v : V)
     (hv : v ∈ Submodule.span ℂ (b '' Set.Iic j)) :
-    T v ∈ Submodule.span ℂ (b '' Set.Iic j)  := by
+    T v ∈ Submodule.span ℂ (b '' Set.Iic j) := by
   have key : Submodule.span ℂ (b '' Set.Iic j) ≤
       (Submodule.span ℂ (b '' Set.Iic j)).comap T := by
     rw [Submodule.span_le]
@@ -22,18 +30,15 @@ theorem flag_invariant {V : Type*} [NormedAddCommGroup V] [InnerProductSpace ℂ
     exact Submodule.span_mono (Set.image_mono (Set.Iic_subset_Iic.mpr hk)) (hb k)
   exact key hv
 
--- Direct: Gram-Schmidt preserves each initial-segment span. Rewrite the orthonormal
--- basis vectors to `gramSchmidtNormed b` (they agree since `b` is linearly independent,
--- so `gramSchmidtNormed` is never zero), then chain mathlib's `span_gramSchmidtNormed`
--- (normed ↦ unnormalized) and `span_gramSchmidt_Iic` (Gram-Schmidt ↦ original) on `Iic j`.
-theorem flag_span_eq {V : Type*} [NormedAddCommGroup V] [InnerProductSpace ℂ V]
-    [FiniteDimensional ℂ V]
+/-- The initial-segment span of the Gram–Schmidt orthonormal basis vectors equals the
+initial-segment span of the original basis: `span (gramSchmidtOrthonormalBasis '' Iic j) = span (b '' Iic j)`. -/
+theorem flag_span_eq
     (b : Module.Basis (Fin (Module.finrank ℂ V)) ℂ V)
     (hcard : Module.finrank ℂ V = Fintype.card (Fin (Module.finrank ℂ V)))
     (j : Fin (Module.finrank ℂ V)) :
     Submodule.span ℂ
         ((InnerProductSpace.gramSchmidtOrthonormalBasis hcard b).toBasis '' Set.Iic j)
-      = Submodule.span ℂ (b '' Set.Iic j)  := by
+      = Submodule.span ℂ (b '' Set.Iic j) := by
   have hne : ∀ i, InnerProductSpace.gramSchmidtNormed ℂ b i ≠ 0 := by
     intro i
     have : ‖InnerProductSpace.gramSchmidtNormed ℂ b i‖ = 1 :=

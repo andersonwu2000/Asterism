@@ -1,21 +1,29 @@
 import Mathlib
 
+/-!
+# Prime factor data for the invariant factor decomposition
+
+This file provides lemmas for packaging the prime factors appearing in an
+invariant factor decomposition over a field.  The main result, `distinct_primes`,
+converts an arbitrary indexed family of monic irreducible polynomials into a
+deduplicated enumeration whose members are pairwise coprime.
+-/
+
 namespace Library.LinearAlgebra.InvariantFactor.PrimeFactorData
 
--- entry_kind: Builder
--- coprime_distinct_monic_irred: distinct monic irreducibles over a field are coprime
--- Uses Irreducible.coprime_iff_not_dvd (PID) + associated_of_dvd + eq_of_monic_of_associated.
-theorem coprime_distinct_monic_irred {K : Type*} [Field K] (a b : Polynomial K)
+variable {K : Type*} [Field K]
+
+/-- Two distinct monic irreducible polynomials over a field are coprime. -/
+theorem coprime_distinct_monic_irred (a b : Polynomial K)
     (ha : a.Monic) (hb : b.Monic) (hai : Irreducible a) (hbi : Irreducible b)
     (hne : a ≠ b) : IsCoprime a b := by
   rw [hai.coprime_iff_not_dvd]
   intro hab
   exact hne (Polynomial.eq_of_monic_of_associated ha hb (hai.associated_of_dvd hbi hab))
 
--- Direct finiteness plumbing: enumerate the image `Finset.univ.image f` via its
--- `Finset.equivFin : ↥S ≃ Fin S.card`. q = the symm-image coercion (injective by
--- subtype/equiv injectivity), key a = equivFin ⟨f a, _⟩ (f a = q (key a) by symm_apply_apply),
--- surjectivity from each enumerated value lying in the image Finset.
+/-- Given a function `f : α → β` from a finite type, there exist a natural number `s`, an
+injective enumeration `q : Fin s → β` of the image of `f`, and a mapping `key : α → Fin s`
+satisfying `f a = q (key a)` for all `a` and surjectivity of `q` onto the image. -/
 theorem enum_finite_image {α : Type*} [Finite α] {β : Type*} (f : α → β) :
     ∃ (s : ℕ) (q : Fin s → β) (key : α → Fin s),
       Function.Injective q ∧ (∀ a, f a = q (key a)) ∧ (∀ t, ∃ a, f a = q t)  := by
@@ -34,13 +42,11 @@ theorem enum_finite_image {α : Type*} [Finite α] {β : Type*} (f : α → β) 
     obtain ⟨a, ha⟩ := ht
     exact ⟨a, ha⟩
 
--- Deduplicate the finite family {p i.val : 0 < e i} into distinct monic irreducible primes.
--- `enum_finite_image`: enumerate the finite image of any f : α → β as an injective q : Fin s → β
---   plus a key α → Fin s and surjectivity-onto-image — pure finiteness plumbing, no field theory.
--- `coprime_distinct_monic_irred`: two distinct monic irreducibles are coprime — leaf UFD fact.
--- Closer: q from the enumeration is monic/irreducible (each value is some p a.val) and pairwise
---   coprime (distinct ⇒ q t ≠ q t' by injectivity ⇒ leaf); p i.val = q (key i) is the key eq.
-theorem distinct_primes {K : Type*} [Field K] {ι : Type*} [Fintype ι]
+/-- Given a finite family of monic irreducible polynomials `p : ι → Polynomial K` with
+exponents `e : ι → ℕ`, there exists a deduplicated enumeration `q : Fin s → Polynomial K`
+of the prime factors with positive exponent, such that each `q t` is monic and irreducible,
+distinct members `q t` and `q t'` are coprime, and `p i = q (key i)` for every active index `i`. -/
+theorem distinct_primes {ι : Type*} [Fintype ι]
     (p : ι → Polynomial K) (e : ι → ℕ) (hirr : ∀ i, Irreducible (p i))
     (hmon : ∀ i, (p i).Monic) :
     ∃ (s : ℕ) (q : Fin s → Polynomial K) (key : {i : ι // 0 < e i} → Fin s),

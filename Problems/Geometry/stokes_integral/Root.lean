@@ -1,23 +1,15 @@
--- The integral of the zero top-form is zero: a basic sanity lemma that pins down the
--- `∫_N` vocabulary (`OrientedManifold`, `topCoeff`, `localCoeff`, `DiffForm.integral`).
--- `localCoeff 0 = topCoeff (formInCoord 0) = topCoeff 0 = 0`, so every PoU term is 0
--- and the finsum vanishes.
+-- Pointwise-zero route: every partition-of-unity summand of `DiffForm.integral 0`
+-- carries the factor `localCoeff 0 (B.c i) y`, which vanishes identically.
+-- `localcoeff_zero` proves the pointwise vanishing (section coe_zero + CLM map_zero
+-- + alternating-map coe_zero); `integral_zero_of_localcoeff_zero` kills the
+-- partition-of-unity sum (mul_zero/zero_mul + integral_zero + finsum_zero) for ANY
+-- form with vanishing localCoeff — each piece strictly simpler than the parent.
 import Mathlib
 import Problems.Geometry.stokes_integral.Defs
-
-open scoped Manifold Bundle ContDiff
-open Bundle
-open MeasureTheory
-open Library.Geometry.Manifold.DiffFormBundle
-open Library.Geometry.Manifold.MExtDerivCoord
+import Problems.Geometry.stokes_integral.proofs._strategy_s11711
 
 namespace Problems.Geometry.stokes_integral
 
-theorem main : ∀ {d : ℕ} {EH : Type*} [TopologicalSpace EH]
-    {I : ModelWithCorners ℝ (EuclideanSpace ℝ (Fin d)) EH}
-    {N : Type*} [TopologicalSpace N] [T2Space N] [ChartedSpace EH N]
-    [IsManifold I ∞ N] [CompactSpace N] [OrientedManifold I N],
-    DiffForm.integral (0 : DiffForm I N d) = 0 := by
-  sorry
+def main := @Problems.Geometry.stokes_integral.s11711
 
 end Problems.Geometry.stokes_integral

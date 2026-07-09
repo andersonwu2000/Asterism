@@ -1,31 +1,41 @@
 import Mathlib
 
+/-!
+# Chain block partition for Jordan normal form
+
+This file proves that any subset `S ⊆ Fin n` closed under the condition `0 ∈ S` can be
+realized as the set of block-start positions of a contiguous partition of `Fin n`.
+The main result `chain_block_partition` produces block sizes `l`, a canonical bijection
+`e : Fin n ≃ Σ t, Fin (l t)`, and prefix-sum offsets `o` such that `(q : ℕ) = o (e q).1 +
+(e q).2` and `S q ↔ (e q).2 = 0`.  The construction passes through `finSigmaFinEquiv` to
+convert between flat indices and block-plus-offset pairs.
+-/
+
 namespace Library.LinearAlgebra.JordanForm.ChainPartition
+
+variable {n : ℕ}
 
 -- fin_sigma_offset_decomp: q = prefix_sum(block) + within_block offset via finSigmaFinEquiv
 -- Rounds through finSigmaFinEquiv_apply: simp closes the roundtrip, linarith extracts arithmetic.
-theorem fin_sigma_offset_decomp {p : ℕ} (l : Fin p → ℕ) :
-    ∀ q : Fin (∑ t, l t), (q : ℕ) =
+/-- Every flat index `q : Fin (∑ t, l t)` equals the prefix sum of block sizes up to its block
+index plus its within-block offset, as extracted by `finSigmaFinEquiv.symm`. -/
+theorem fin_sigma_offset_decomp {p : ℕ} (l : Fin p → ℕ) (q : Fin (∑ t, l t)) :
+    (q : ℕ) =
       (∑ j : Fin ↑(finSigmaFinEquiv.symm q).1,
         l (Fin.castLE (finSigmaFinEquiv.symm q).1.isLt.le j))
       + ((finSigmaFinEquiv.symm q).2 : ℕ) := by
-  intro q
-  have h := q.isLt
-  have key : (finSigmaFinEquiv (finSigmaFinEquiv.symm q) : ℕ) = (q : ℕ) := by
-    simp
-  simp only [finSigmaFinEquiv_apply] at key
-  linarith [key]
+  have key := finSigmaFinEquiv_apply (finSigmaFinEquiv.symm q); simp only [Equiv.apply_symm_apply] at key; linarith
 
--- entry_kind: Builder
 -- start_offset_zero_fin_sigma: block-start iff offset=0 via finSigmaFinEquiv.symm uniqueness
+/-- A position `q` satisfies the start predicate `S` (characterised as landing on a block
+boundary) if and only if its within-block offset under `finSigmaFinEquiv.symm` is zero. -/
 theorem start_offset_zero_fin_sigma {p : ℕ} (l : Fin p → ℕ)
     (hpos : ∀ t : Fin p, 0 < l t)
     (S : Fin (∑ t, l t) → Prop)
     (hstart : ∀ q : Fin (∑ t, l t), (S q ↔ ∃ t : Fin p,
-        (∑ j : Fin ↑t, l (Fin.castLE t.isLt.le j)) = (q : ℕ))) :
-    ∀ q : Fin (∑ t, l t),
-      (S q ↔ ((finSigmaFinEquiv.symm q).2 : ℕ) = 0) := by
-  intro q
+        (∑ j : Fin ↑t, l (Fin.castLE t.isLt.le j)) = (q : ℕ)))
+    (q : Fin (∑ t, l t)) :
+    (S q ↔ ((finSigmaFinEquiv.symm q).2 : ℕ) = 0) := by
   rw [hstart]
   set σ := finSigmaFinEquiv.symm q with hσ_def
   have hq_val : (q : ℕ) = ∑ i : Fin σ.1, l (Fin.castLE σ.1.2.le i) + σ.2 := by
@@ -52,7 +62,11 @@ theorem start_offset_zero_fin_sigma {p : ℕ} (l : Fin p → ℕ)
 --   `fin_sigma_offset_decomp` — pure `finSigmaFinEquiv_apply` rewrite (no S, no hstart).
 --   `start_offset_zero_fin_sigma` — start-iff-offset-zero at the concrete equiv (re-uses the
 --     prefix-sum uniqueness lemma proved at sibling level).
-theorem block_equiv_from_gaps {n p : ℕ} (S : Fin n → Prop) (l : Fin p → ℕ)
+/-- Given positive block sizes `l` summing to `n` and a start predicate `S` aligned with block
+boundaries, produces the canonical bijection `e : Fin n ≃ Σ t, Fin (l t)` together with
+prefix-sum offsets `o` satisfying both the offset decomposition and the `S q ↔ (e q).2 = 0`
+alignment. -/
+theorem block_equiv_from_gaps {p : ℕ} (S : Fin n → Prop) (l : Fin p → ℕ)
     (hpos : ∀ t : Fin p, 0 < l t) (hsum : ∑ t, l t = n)
     (hstart : ∀ q : Fin n, (S q ↔ ∃ t : Fin p,
         (∑ j : Fin ↑t, l (Fin.castLE t.isLt.le j)) = (q : ℕ))) :
@@ -71,19 +85,25 @@ theorem block_equiv_from_gaps {n p : ℕ} (S : Fin n → Prop) (l : Fin p → �
     fun t => ∑ j : Fin ↑t, l (Fin.castLE t.isLt.le j),
     h_offset_decomp, h_start_iff⟩
 
-theorem start_iff_g_val {n : ℕ} (S : Fin n → Prop)
+/-- Translates the range-membership characterization of a start set `S` into the equivalent
+numeric form: `S q` holds if and only if some `g t` has the same value as `q`. -/
+theorem start_iff_g_val (S : Fin n → Prop)
     (h0 : ∀ q : Fin n, (q : ℕ) = 0 → S q)
     (p : ℕ) (g : Fin p → Fin n) (hmono : StrictMono g)
-    (hrange : ∀ q : Fin n, S q ↔ q ∈ Set.range g) :
-    ∀ q : Fin n, (S q ↔ ∃ t : Fin p, (g t : ℕ) = (q : ℕ)) := by grind
+    (hrange : ∀ q : Fin n, S q ↔ q ∈ Set.range g)
+    (q : Fin n) :
+    (S q ↔ ∃ t : Fin p, (g t : ℕ) = (q : ℕ)) := by grind
 
--- entry_kind: Builder
 -- Witness: l t = B(t+1) - B(t) where B i = if i < p then b ⟨i,_⟩ else n.
 -- Positivity: B strictly increases (StrictMono b / hlt).
 -- Sum = n: Finset.sum_range_tsub telescopes B p - B 0 = n - 0.
 -- Prefix = b t: same telescoping to B t - B 0 = b t.
 -- Self-contained (no sibling imports) to avoid triggering rebuild of broken _strategy_s10936.
-theorem gaps_from_boundary {n p : ℕ} (b : Fin p → ℕ)
+/-- Given a strictly monotone boundary function `b : Fin p → ℕ` with `b 0 = 0` and `b t < n`,
+produces positive block sizes `l` summing to `n` whose `t`-th prefix sum equals `b t`.
+The gaps are defined as consecutive differences of the extended boundary `B i = if i < p then
+b i else n`, and the total-sum identity follows from a telescoping argument. -/
+theorem gaps_from_boundary {p : ℕ} (b : Fin p → ℕ)
     (hmono : StrictMono b) (hlt : ∀ t : Fin p, b t < n)
     (hzero : ∀ t : Fin p, (t : ℕ) = 0 → b t = 0)
     (hp : 0 < n → 0 < p) :
@@ -131,27 +151,27 @@ theorem gaps_from_boundary {n p : ℕ} (b : Fin p → ℕ)
     rw [Fin.sum_univ_eq_sum_range (fun i => B (i + 1) - B i) t.val,
         Finset.sum_range_tsub hBmono, hB_val t, hB0, Nat.sub_zero]
 
--- entry_kind: Builder
 -- pos_p_when_pos_n: 0 < n implies 0 < p by finding element 0 in range g via h0 + hrange
-theorem pos_p_when_pos_n {n : ℕ} (S : Fin n → Prop)
+/-- If `S` is the range of a strictly monotone `g : Fin p → Fin n` and `S` contains the
+zeroth element of `Fin n`, then `n > 0` implies `p > 0`. -/
+theorem pos_p_when_pos_n (S : Fin n → Prop)
     (h0 : ∀ q : Fin n, (q : ℕ) = 0 → S q)
     (p : ℕ) (g : Fin p → Fin n) (hmono : StrictMono g)
-    (hrange : ∀ q : Fin n, S q ↔ q ∈ Set.range g) :
-    0 < n → 0 < p := by
-  intro hn
+    (hrange : ∀ q : Fin n, S q ↔ q ∈ Set.range g)
+    (hn : 0 < n) : 0 < p := by
   have hq : (⟨0, hn⟩ : Fin n) ∈ Set.range g := (hrange ⟨0, hn⟩).mp (h0 ⟨0, hn⟩ rfl)
   obtain ⟨i, _⟩ := hq
   exact Nat.pos_of_ne_zero (Fin.pos i).ne'
 
--- entry_kind: Builder
 -- start_enum_at_zero: if g is StrictMono with range = S, and S contains the
 -- zeroth element, then g 0 = 0
-theorem start_enum_at_zero {n : ℕ} (S : Fin n → Prop)
+/-- If `g : Fin p → Fin n` strictly monotonically enumerates the start set `S` and `S` contains
+the zeroth position, then `g 0 = 0`. -/
+theorem start_enum_at_zero (S : Fin n → Prop)
     (h0 : ∀ q : Fin n, (q : ℕ) = 0 → S q)
     (p : ℕ) (g : Fin p → Fin n) (hmono : StrictMono g)
-    (hrange : ∀ q : Fin n, S q ↔ q ∈ Set.range g) :
-    ∀ t : Fin p, (t : ℕ) = 0 → (g t : ℕ) = 0 := by
-  intro t ht
+    (hrange : ∀ q : Fin n, S q ↔ q ∈ Set.range g)
+    (t : Fin p) (ht : (t : ℕ) = 0) : (g t : ℕ) = 0 := by
   have hn : 0 < n := Nat.lt_of_le_of_lt (Nat.zero_le _) (g t).isLt
   have hS0 : S ⟨0, hn⟩ := h0 ⟨0, hn⟩ rfl
   obtain ⟨t', ht'⟩ := (hrange ⟨0, hn⟩).mp hS0
@@ -173,7 +193,10 @@ theorem start_enum_at_zero {n : ℕ} (S : Fin n → Prop)
 --  * b t < n ← `Fin.isLt`
 --  * t = 0 → b t = 0 ← sub-goal `start_enum_at_zero`
 --  * 0 < n → 0 < p ← sub-goal `pos_p_when_pos_n`
-theorem gaps_for_starts {n : ℕ} (S : Fin n → Prop)
+/-- Given a strictly monotone enumeration `g : Fin p → Fin n` of the start set `S`, produces
+positive block sizes `l` summing to `n` whose `t`-th prefix sum equals `(g t : ℕ)`, by
+instantiating `gaps_from_boundary` at the boundary function `b t := (g t : ℕ)`. -/
+theorem gaps_for_starts (S : Fin n → Prop)
     (h0 : ∀ q : Fin n, (q : ℕ) = 0 → S q)
     (p : ℕ) (g : Fin p → Fin n) (hmono : StrictMono g)
     (hrange : ∀ q : Fin n, S q ↔ q ∈ Set.range g) :
@@ -193,7 +216,11 @@ theorem gaps_for_starts {n : ℕ} (S : Fin n → Prop)
 --   `start_iff_g_val` — `S q` iff `q` is one of the enumerated start values `(g t : ℕ)`.
 -- Both are strictly simpler: the first drops the `S`-characterisation to a per-index identity,
 -- the second is a pure `hrange` + `Fin.val`-injectivity rewrite.
-theorem gaps_of_starts {n : ℕ} (S : Fin n → Prop)
+/-- Given a strictly monotone enumeration `g` of `S`, produces block sizes `l` (positive,
+summing to `n`) such that `S q ↔ ∃ t, (∑_{j < t} l j) = q`, by combining `gaps_for_starts`
+(which gives prefix sums matching `g`) with `start_iff_g_val` (which rewrites `S` in terms of
+`g`-values). -/
+theorem gaps_of_starts (S : Fin n → Prop)
     (h0 : ∀ q : Fin n, (q : ℕ) = 0 → S q)
     (p : ℕ) (g : Fin p → Fin n) (hmono : StrictMono g)
     (hrange : ∀ q : Fin n, S q ↔ q ∈ Set.range g) :
@@ -208,7 +235,10 @@ theorem gaps_of_starts {n : ℕ} (S : Fin n → Prop)
   rw [h_iff q]
   exact exists_congr fun t => by rw [hprefix t]
 
-theorem start_enumeration {n : ℕ} (S : Fin n → Prop)
+/-- Any start set `S ⊆ Fin n` containing the zeroth position admits a strictly monotone
+enumeration `g : Fin p → Fin n` whose range is exactly `S`, obtained by ordering `S` with
+`Finset.orderEmbOfFin`. -/
+theorem start_enumeration (S : Fin n → Prop)
     (h0 : ∀ q : Fin n, (q : ℕ) = 0 → S q) :
     ∃ (p : ℕ) (g : Fin p → Fin n), StrictMono g ∧ ∀ q : Fin n, S q ↔ q ∈ Set.range g  := by
   classical
@@ -218,7 +248,10 @@ theorem start_enumeration {n : ℕ} (S : Fin n → Prop)
   rw [Finset.range_orderEmbOfFin]
   simp [T]
 
-theorem partition_from_enumeration {n : ℕ} (S : Fin n → Prop)
+/-- Given an ordered enumeration `g` of the start set `S`, assembles the full block-partition
+data `(p', l, e, o)` by first extracting gap sizes via `gaps_of_starts` and then constructing
+the block bijection via `block_equiv_from_gaps`. -/
+theorem partition_from_enumeration (S : Fin n → Prop)
     (h0 : ∀ q : Fin n, (q : ℕ) = 0 → S q)
     (p : ℕ) (g : Fin p → Fin n) (hmono : StrictMono g)
     (hrange : ∀ q : Fin n, S q ↔ q ∈ Set.range g) :
@@ -243,7 +276,11 @@ theorem partition_from_enumeration {n : ℕ} (S : Fin n → Prop)
 --   offset decomposition + the `S q ↔ position 0` alignment. The first sub-goal is pure Finset
 --   enumeration (`orderEmbOfFin`); the second is monotone arithmetic with the start order
 --   already discovered — neither re-states the parent.
-theorem chain_block_partition {n : ℕ} (S : Fin n → Prop)
+/-- Main theorem: any start set `S ⊆ Fin n` containing the zeroth position admits a contiguous
+block partition of `Fin n`, yielding block count `p`, sizes `l`, a canonical bijection
+`e : Fin n ≃ Σ t, Fin (l t)`, and prefix-sum offsets `o` such that every position decomposes as
+`q = o (e q).1 + (e q).2` and `S q ↔ (e q).2 = 0`. -/
+theorem chain_block_partition (S : Fin n → Prop)
     (h0 : ∀ q : Fin n, (q : ℕ) = 0 → S q) :
     ∃ (p : ℕ) (l : Fin p → ℕ) (e : Fin n ≃ Σ t : Fin p, Fin (l t)) (o : Fin p → ℕ),
       (∀ q : Fin n, (q : ℕ) = o (e q).1 + ((e q).2 : ℕ)) ∧

@@ -1,11 +1,23 @@
 import Mathlib
 
+/-!
+# Eigenbasis expansion lemmas for the Courant–Fischer theorem
+
+This file develops the key algebraic identities needed to bound the Rayleigh quotient
+via the symmetric operator's eigenbasis: the expansion of `⟪Tx, x⟫` as a weighted sum
+of squared eigenbasis coordinates, the Parseval identity for the eigenbasis norm, vanishing
+of inner products across orthogonal span complements, and the term-wise eigenvalue-weighted
+inequalities that yield the Courant–Fischer min-max bounds.
+-/
+
 namespace Library.LinearAlgebra.CourantFischer.EigenbasisExpansion
 
--- inner_tx_eigenvector: ⟪T x, eᵢ⟫ = λᵢ · (repr x i) via symmetry +
--- apply_eigenvectorBasis + inner_smul_right + repr_apply_apply + real_inner_comm
+variable {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
+
+/-- For a symmetric operator `T`, the inner product `⟪Tx, eᵢ⟫` equals `λᵢ · (repr x i)`,
+where `eᵢ` is the `i`-th eigenvector and `repr x i` is the corresponding coordinate of `x`. -/
 theorem inner_tx_eigenvector
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E] [FiniteDimensional ℝ E]
+    [FiniteDimensional ℝ E]
     {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n)
     (x : E) (i : Fin n) :
     inner ℝ (T x) ((hT.eigenvectorBasis hn) i)
@@ -14,11 +26,10 @@ theorem inner_tx_eigenvector
       OrthonormalBasis.repr_apply_apply, real_inner_comm]
   simp
 
--- Rayleigh numerator in the eigenbasis: expand ⟪Tx,x⟫ over the orthonormal
--- eigenbasis via `sum_inner_mul_inner`; each cross term ⟪Tx,bᵢ⟫·⟪bᵢ,x⟫ reduces
--- (sub-goal `inner_Tx_eigenvector`) to λᵢ·(repr x i), giving λᵢ·(repr x i)².
+/-- The Rayleigh numerator `⟪Tx, x⟫` equals `∑ i, λᵢ · (repr x i)²` when expanded in
+the orthonormal eigenbasis, via `OrthonormalBasis.sum_inner_mul_inner` and `inner_tx_eigenvector`. -/
 theorem rayleigh_numerator_eigenbasis
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E] [FiniteDimensional ℝ E]
+    [FiniteDimensional ℝ E]
     {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n) (x : E) :
     inner ℝ (T x) x =
       ∑ i, hT.eigenvalues hn i * (hT.eigenvectorBasis hn).repr x i ^ 2  := by
@@ -29,10 +40,10 @@ theorem rayleigh_numerator_eigenbasis
   rw [hA i, OrthonormalBasis.repr_apply_apply]
   ring
 
--- norm_sq_eq_sum_repr_sq: Parseval identity — ‖x‖² equals sum of squared eigenbasis
--- repr coefficients, via the isometry OrthonormalBasis.repr and PiLp.norm_sq_eq_of_L2.
+/-- Parseval identity for the eigenbasis: `‖x‖² = ∑ i, (repr x i)²`, obtained from the
+isometric embedding `OrthonormalBasis.repr` and `PiLp.norm_sq_eq_of_L2`. -/
 theorem norm_sq_eq_sum_repr_sq
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E] [FiniteDimensional ℝ E]
+    [FiniteDimensional ℝ E]
     {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n) (x : E) :
     ‖x‖ ^ 2 = ∑ i, (hT.eigenvectorBasis hn).repr x i ^ 2 := by
   have hnorm : ‖(hT.eigenvectorBasis hn).repr x‖ = ‖x‖ :=
@@ -42,33 +53,9 @@ theorem norm_sq_eq_sum_repr_sq
   congr 1; ext i
   exact Real.norm_eq_abs _ ▸ sq_abs _
 
--- norm_sq_eq_sum_repr_sq_2: Parseval identity — ‖x‖² equals sum of squared
--- orthonormal-basis representation coefficients, via repr_apply_apply + sum_sq_inner_right.
-theorem norm_sq_eq_sum_repr_sq_2
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E] [FiniteDimensional ℝ E]
-    {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n) (x : E) :
-    ‖x‖ ^ 2 = ∑ i, (hT.eigenvectorBasis hn).repr x i ^ 2 := by
-  simp only [OrthonormalBasis.repr_apply_apply]
-  exact ((hT.eigenvectorBasis hn).sum_sq_inner_right x).symm
-
-theorem rayleigh_numerator_in_eigenbasis
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E] [FiniteDimensional ℝ E]
-    {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n) (x : E) :
-    @inner ℝ E _ (T x) x =
-      ∑ i, hT.eigenvalues hn i * (hT.eigenvectorBasis hn).repr x i ^ 2 := by apply rayleigh_numerator_eigenbasis <;> assumption
-
-theorem numerator_eigenbasis_expand
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E] [FiniteDimensional ℝ E]
-    {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n) (x : E) :
-    (inner ℝ (T x) x : ℝ) =
-      ∑ i, hT.eigenvalues hn i * (hT.eigenvectorBasis hn).repr x i ^ 2 := by apply rayleigh_numerator_eigenbasis <;> assumption
-
--- Orthonormality: x in span of bottom modes {b_j : m ≤ j} is ⟂ to b_i for i < m.
--- span_induction on the membership; the linear functional ⟪b i, ·⟫ vanishes on each
--- generator b_j (i ≠ j since i < m ≤ j by orthonormality) and is closed under +/•.
--- Direct leaf — no sub-goals.
+/-- If `x` lies in the span of the high-index eigenvectors `{bⱼ : m ≤ j}`, then `x` is
+orthogonal to every low-index eigenvector `bᵢ` with `i < m`, by orthonormality and span induction. -/
 theorem inner_eq_zero_of_mem_span_high
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
     {n : ℕ} (b : OrthonormalBasis (Fin n) ℝ E) (m : ℕ) :
     ∀ x : E, x ∈ Submodule.span ℝ (b '' {i : Fin n | m ≤ (i : ℕ)}) →
       ∀ i : Fin n, (i : ℕ) < m → @inner ℝ E _ (b i) x = 0  := by
@@ -87,11 +74,9 @@ theorem inner_eq_zero_of_mem_span_high
   | smul a y _ ih =>
       rw [inner_smul_right, ih, mul_zero]
 
--- orthobasis_repr_vanish_outside_span: repr coefficient vanishes at index i
--- when x lies in the span of the sub-family indexed by P and ¬P i holds,
--- because b i is orthogonal to every generator and hence to the whole span.
+/-- The eigenbasis coordinate `repr x i` vanishes when `x` lies in the span of the
+sub-family `{bⱼ : P j}` and `¬ P i`, because `bᵢ` is orthogonal to every generator of that span. -/
 theorem orthobasis_repr_vanish_outside_span
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]
     {n : ℕ} (b : OrthonormalBasis (Fin n) ℝ E)
     (P : Fin n → Prop)
     (x : E) (hx : x ∈ Submodule.span ℝ (b '' {j : Fin n | P j}))
@@ -110,12 +95,10 @@ theorem orthobasis_repr_vanish_outside_span
   · intro r v _ hv
     rw [inner_smul_right, hv, mul_zero]
 
--- Term-wise bound: ∑ λᵢ·(repr x i)² ≤ λ_k·∑ (repr x i)², via `Finset.sum_le_sum`.
--- For i < k the coefficient `repr x i = ⟪eᵢ, x⟫ = 0` (hzero) kills both sides;
--- for k ≤ i, `eigenvalues_antitone` gives λᵢ ≤ λ_k and `(repr x i)² ≥ 0` lifts it.
--- Direct leaf — no sub-goals.
+/-- Upper bound: if `x` has zero projection onto eigenvectors `eᵢ` with `i < k`, then
+`∑ λᵢ · (repr x i)² ≤ λ_k · ∑ (repr x i)²`, using `eigenvalues_antitone` term-wise. -/
 theorem weighted_eigenvalue_sum_le
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E] [FiniteDimensional ℝ E]
+    [FiniteDimensional ℝ E]
     {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n) (x : E)
     (hzero : ∀ i : Fin n, (i : ℕ) < (k : ℕ) →
       @inner ℝ E _ ((hT.eigenvectorBasis hn) i) x = 0) :
@@ -133,12 +116,10 @@ theorem weighted_eigenvalue_sum_le
       hT.eigenvalues_antitone hn hik
     exact mul_le_mul_of_nonneg_right hle (sq_nonneg _)
 
--- Termwise weighted-sum bound: distribute λ_k over the sum, then compare term by term.
--- Each term λ_k·rᵢ² ≤ λᵢ·rᵢ²: for i ≤ k the antitone (decreasing) spectrum gives λ_k ≤ λᵢ
--- and rᵢ² ≥ 0; for k < i the high mode vanishes (hv), making both sides 0.
--- Direct (sorry-free) leaf proof: Finset.mul_sum + Finset.sum_le_sum, no sub-goals.
+/-- Lower bound: if `x` has zero projection onto eigenvectors `eᵢ` with `i > k`, then
+`λ_k · ∑ (repr x i)² ≤ ∑ λᵢ · (repr x i)²`, using `eigenvalues_antitone` term-wise. -/
 theorem weighted_eigenvalue_sum_ge
-    {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E] [FiniteDimensional ℝ E]
+    [FiniteDimensional ℝ E]
     {T : E →ₗ[ℝ] E} (hT : T.IsSymmetric) {n : ℕ} (hn : Module.finrank ℝ E = n) (k : Fin n) (x : E)
     (hv : ∀ i : Fin n, (k : ℕ) < (i : ℕ) →
       (hT.eigenvectorBasis hn).repr x i = 0) :

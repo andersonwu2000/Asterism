@@ -1,9 +1,38 @@
-import Mathlib
+import Mathlib.Analysis.InnerProductSpace.Orthogonal
+import Mathlib.Analysis.InnerProductSpace.SingularValues
+
+/-!
+# Singular value–eigenvalue relations for linear maps
+
+This file establishes termwise inequalities between the singular values $\sigma_k$ of a
+linear map `T : E →ₗ[𝕜] F` and the eigenvalues of the self-adjoint operator `T† ∘ T`,
+as needed in the proof of the Eckart–Young theorem.
+
+## Main statements
+
+* `sq_singular_k_le_eigenvalue` — $\sigma_k^2 \leq \lambda_i$ for $i \leq k$, using the
+  antitone ordering of singular values and `LinearMap.sq_singularValues_fin`.
+* `inner_eigenvector_high_eq_zero` — for $x$ in the span of the first $k+1$ eigenvectors,
+  $\langle b_i, x\rangle = 0$ whenever $i > k$.
+* `termwise_eigenvalue_bound` — per-coordinate bound
+  $\sigma_k^2 \|\langle b_i, x\rangle\|^2 \leq \lambda_i \|\langle b_i, x\rangle\|^2$
+  for $x$ in the span of the first $k+1$ eigenvectors.
+* `eigenvalues_le_sq_singularValues` — $\lambda_i \leq \sigma_k^2$ for $i \geq k$.
+* `inner_eigenvectorBasis_eq_zero_of_mem_orthogonal` — for $y$ in the orthogonal complement
+  of the span of the first $k$ eigenvectors, $\langle b_i, y\rangle = 0$ when $i < k$.
+* `termwise_le_singular_k` — reverse per-coordinate bound on the orthogonal complement.
+
+## Implementation notes
+
+All results work over any `RCLike` scalar field `𝕜` and finite-dimensional inner product
+spaces `E` and `F`.
+-/
 
 namespace Library.LinearAlgebra.EckartYoung.SingularEigenRelations
 
--- sq_singular_k_le_eigenvalue: σ_k² ≤ λ_i for i ≤ k,
--- via antitone singular values + sq_singularValues_fin
+/-- For $i \leq k$, the square of the $k$-th singular value of `T` is at most the $i$-th
+eigenvalue of `T† ∘ T`. This follows from the antitone ordering of singular values
+together with `LinearMap.sq_singularValues_fin`. -/
 theorem sq_singular_k_le_eigenvalue {𝕜 : Type*} [RCLike 𝕜]
     {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
     [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
@@ -17,35 +46,13 @@ theorem sq_singular_k_le_eigenvalue {𝕜 : Type*} [RCLike 𝕜]
         exact T.singularValues_antitone hik
     _ = T.isSymmetric_adjoint_comp_self.eigenvalues rfl i := T.sq_singularValues_fin rfl i
 
--- eigen_ge_low: σ_k² ≤ λ_i for i ≤ k, using sq_singularValues_fin + eigenvalues_antitone
-theorem eigen_ge_low {𝕜 : Type*} [RCLike 𝕜]
-    {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
-    [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
-    (T : E →ₗ[𝕜] F) (k : ℕ) (hk : k < Module.finrank 𝕜 E)
-    (i : Fin (Module.finrank 𝕜 E)) (hi : (i : ℕ) ≤ k) :
-    (T.singularValues k)^2 ≤ T.isSymmetric_adjoint_comp_self.eigenvalues
-      (rfl : Module.finrank 𝕜 E = Module.finrank 𝕜 E) i := by
-  rw [T.sq_singularValues_fin rfl ⟨k, hk⟩]
-  exact T.isSymmetric_adjoint_comp_self.eigenvalues_antitone rfl hi
+/-- The $i$-th eigenvector `b i` (with $i > k$) is orthogonal to the span of the first
+$k+1$ eigenvectors. Precisely: for `x` in
+`span {b (castLE j) | j : Fin (k + 1)}` and `k < i`, we have $\langle b_i, x\rangle = 0$.
 
--- eig_le_sigma_sq: k-th eigenvalue of T†T is ≤ (σ_k)² using sq_singularValues_fin + antitone
-theorem eig_le_sigma_sq {𝕜 : Type*} [RCLike 𝕜]
-    {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
-    [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
-    (T : E →ₗ[𝕜] F) (k : ℕ) (hk : k < Module.finrank 𝕜 E)
-    (i : Fin (Module.finrank 𝕜 E)) (h : k ≤ (i : ℕ)) :
-    T.isSymmetric_adjoint_comp_self.eigenvalues
-        (rfl : Module.finrank 𝕜 E = Module.finrank 𝕜 E) i ≤ (T.singularValues k) ^ 2 := by
-  calc T.isSymmetric_adjoint_comp_self.eigenvalues
-          (rfl : Module.finrank 𝕜 E = Module.finrank 𝕜 E) i
-      = T.singularValues ↑i ^ 2 := (T.sq_singularValues_fin rfl i).symm
-    _ ≤ (T.singularValues k) ^ 2 :=
-        pow_le_pow_left₀ (T.singularValues_nonneg ↑i) (T.singularValues_antitone h) 2
-
--- Direct leaf: `b i` (high eigenvector, `i > k`) is orthogonal to the top-(k+1) span.
--- Show `b i ∈ (span {b (castLE j)})ᗮ` by span-induction: on generators it is the
--- orthonormality of the eigenbasis (`b.orthonormal.2`, indices distinct since `castLE j ≤ k < i`),
--- closed under `+`/`•` via `inner_add_right`/`inner_smul_right`; then `inner_left_of_mem_orthogonal hx`.
+The proof proceeds by `Submodule.span_induction`: orthogonality on generators follows from
+`b.orthonormal.2` (indices are distinct since `castLE j ≤ k < i`), and is preserved under
+addition and scalar multiplication via `inner_add_right`/`inner_smul_right`. -/
 theorem inner_eigenvector_high_eq_zero {𝕜 : Type*} [RCLike 𝕜]
     {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
     [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
@@ -75,36 +82,50 @@ theorem inner_eigenvector_high_eq_zero {𝕜 : Type*} [RCLike 𝕜]
     | smul c y _ hy => rw [inner_smul_right, hy, mul_zero]
   exact Submodule.inner_left_of_mem_orthogonal hx horth
 
--- Direct leaf: x is a finite combination of the first k+1 eigenvectors b(castLE j),
--- and b i (with i > k) is orthogonal to each of them, so ⟨b i, x⟩ vanishes termwise.
--- Expand x via mem_span_range_iff_exists_fun, push inner through the sum/scalar,
--- and kill each ⟨b i, b (castLE j)⟩ by orthonormality since i ≠ castLE j (val j ≤ k < i).
-theorem inner_zero_high {𝕜 : Type*} [RCLike 𝕜]
+/-- Per-coordinate spectral bound: for `x` in the span of the first $k+1$ eigenvectors
+and any index `i`, we have
+$\sigma_k^2 \|\langle b_i, x\rangle\|^2 \leq \lambda_i \|\langle b_i, x\rangle\|^2$.
+
+* If $i \leq k$: apply `sq_singular_k_le_eigenvalue` and scale by
+  $\|\langle b_i, x\rangle\|^2 \geq 0$.
+* If $i > k$: $\langle b_i, x\rangle = 0$ by `inner_eigenvector_high_eq_zero`,
+  so both sides vanish. -/
+theorem termwise_eigenvalue_bound {𝕜 : Type*} [RCLike 𝕜]
     {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
     [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
     (T : E →ₗ[𝕜] F) (k : ℕ) (hk : k < Module.finrank 𝕜 E)
     (x : E) (hx : x ∈ Submodule.span 𝕜 (Set.range (fun i : Fin (k + 1) =>
       (T.isSymmetric_adjoint_comp_self.eigenvectorBasis
         (rfl : Module.finrank 𝕜 E = Module.finrank 𝕜 E)) (Fin.castLE hk i))))
-    (i : Fin (Module.finrank 𝕜 E)) (hi : k < (i : ℕ)) :
-    (inner 𝕜 ((T.isSymmetric_adjoint_comp_self.eigenvectorBasis
-      (rfl : Module.finrank 𝕜 E = Module.finrank 𝕜 E)) i) x : 𝕜) = 0  := by
-  set b := T.isSymmetric_adjoint_comp_self.eigenvectorBasis
-    (rfl : Module.finrank 𝕜 E = Module.finrank 𝕜 E) with hb
-  obtain ⟨c, rfl⟩ := (Submodule.mem_span_range_iff_exists_fun 𝕜).mp hx
-  rw [inner_sum]
-  apply Finset.sum_eq_zero
-  intro j _
-  rw [inner_smul_right]
-  have hij : i ≠ Fin.castLE hk j := by
-    apply Fin.ne_of_val_ne
-    simp only [Fin.val_castLE]
-    omega
-  rw [b.orthonormal.2 hij, mul_zero]
+    (i : Fin (Module.finrank 𝕜 E)) :
+    (T.singularValues k) ^ 2
+        * ‖inner 𝕜 (T.isSymmetric_adjoint_comp_self.eigenvectorBasis rfl i) x‖ ^ 2
+      ≤ T.isSymmetric_adjoint_comp_self.eigenvalues rfl i
+        * ‖inner 𝕜 (T.isSymmetric_adjoint_comp_self.eigenvectorBasis rfl i) x‖ ^ 2 := by
+  by_cases hik : (i : ℕ) ≤ k
+  · have h_eig := sq_singular_k_le_eigenvalue T k hk i hik
+    exact mul_le_mul_of_nonneg_right h_eig (sq_nonneg _)
+  · have h_orth := inner_eigenvector_high_eq_zero T k hk x hx i (not_le.mp hik)
+    rw [h_orth]; simp
 
--- inner_eigvec_orthogonal: eigenvector bᵢ (i < k) is orthogonal to Kᗮ via Submodule.mem_orthogonal
--- bᵢ lies in the span K of the first k eigenvectors; y ∈ Kᗮ implies ⟪bᵢ, y⟫ = 0.
-theorem inner_eigvec_orthogonal {𝕜 : Type*} [RCLike 𝕜]
+/-- For $i \geq k$, the $i$-th eigenvalue of `T† ∘ T` is at most $\sigma_k^2$, using
+`LinearMap.sq_singularValues_fin` and the antitone ordering of singular values. -/
+theorem eigenvalues_le_sq_singularValues {𝕜 : Type*} [RCLike 𝕜]
+    {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
+    [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
+    (T : E →ₗ[𝕜] F) (k : ℕ) (_hk : k < Module.finrank 𝕜 E)
+    (i : Fin (Module.finrank 𝕜 E)) (h : k ≤ (i : ℕ)) :
+    T.isSymmetric_adjoint_comp_self.eigenvalues
+        (rfl : Module.finrank 𝕜 E = Module.finrank 𝕜 E) i ≤ (T.singularValues k) ^ 2 := by
+  calc T.isSymmetric_adjoint_comp_self.eigenvalues
+          (rfl : Module.finrank 𝕜 E = Module.finrank 𝕜 E) i
+      = T.singularValues ↑i ^ 2 := (T.sq_singularValues_fin rfl i).symm
+    _ ≤ (T.singularValues k) ^ 2 :=
+        pow_le_pow_left₀ (T.singularValues_nonneg ↑i) (T.singularValues_antitone h) 2
+
+/-- The $i$-th eigenvector `b i` lies in the span $K$ of the first $k$ eigenvectors, so
+for any $y \in K^\perp$ with $i < k$ we have $\langle b_i, y\rangle = 0$. -/
+theorem inner_eigenvectorBasis_eq_zero_of_mem_orthogonal {𝕜 : Type*} [RCLike 𝕜]
     {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
     [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
     (T : E →ₗ[𝕜] F) (k : ℕ) (hk : k < Module.finrank 𝕜 E)
@@ -120,5 +141,35 @@ theorem inner_eigvec_orthogonal {𝕜 : Type*} [RCLike 𝕜]
     apply Submodule.subset_span
     exact ⟨⟨(i : ℕ), h⟩, by congr 1⟩
   exact (Submodule.mem_orthogonal _ _).mp hy _ hb
+
+/-- Reverse per-coordinate bound on the orthogonal complement: for `y ∈ Kᗮ` (the orthogonal
+complement of the span $K$ of the first $k$ eigenvectors) and any index `i`,
+$\lambda_i \|\langle b_i, y\rangle\|^2 \leq \sigma_k^2 \|\langle b_i, y\rangle\|^2$.
+
+* If $i \geq k$: apply `eigenvalues_le_sq_singularValues` and scale by
+  $\|\langle b_i, y\rangle\|^2 \geq 0$.
+* If $i < k$: `b i` lies in $K$, so $\langle b_i, y\rangle = 0$ by
+  `inner_eigenvectorBasis_eq_zero_of_mem_orthogonal`; both sides vanish. -/
+theorem termwise_le_singular_k {𝕜 : Type*} [RCLike 𝕜]
+    {E F : Type*} [NormedAddCommGroup E] [InnerProductSpace 𝕜 E] [FiniteDimensional 𝕜 E]
+    [NormedAddCommGroup F] [InnerProductSpace 𝕜 F] [FiniteDimensional 𝕜 F]
+    (T : E →ₗ[𝕜] F) (k : ℕ) (hk : k < Module.finrank 𝕜 E)
+    (y : E) (hy : y ∈ (Submodule.span 𝕜 (Set.range (fun i : Fin k =>
+      (T.isSymmetric_adjoint_comp_self.eigenvectorBasis
+        (rfl : Module.finrank 𝕜 E = Module.finrank 𝕜 E)) (Fin.castLE hk.le i))))ᗮ)
+    (i : Fin (Module.finrank 𝕜 E)) :
+    T.isSymmetric_adjoint_comp_self.eigenvalues
+        (rfl : Module.finrank 𝕜 E = Module.finrank 𝕜 E) i
+        * ‖inner 𝕜 ((T.isSymmetric_adjoint_comp_self.eigenvectorBasis
+            (rfl : Module.finrank 𝕜 E = Module.finrank 𝕜 E)) i) y‖ ^ 2
+      ≤ (T.singularValues k) ^ 2
+        * ‖inner 𝕜 ((T.isSymmetric_adjoint_comp_self.eigenvectorBasis
+            (rfl : Module.finrank 𝕜 E = Module.finrank 𝕜 E)) i) y‖ ^ 2 := by
+  by_cases h : k ≤ (i : ℕ)
+  · have h_eig := eigenvalues_le_sq_singularValues T k hk i h
+    exact mul_le_mul_of_nonneg_right h_eig (sq_nonneg _)
+  · have h_orth := inner_eigenvectorBasis_eq_zero_of_mem_orthogonal T k hk y hy i (not_le.mp h)
+    rw [h_orth]
+    simp
 
 end Library.LinearAlgebra.EckartYoung.SingularEigenRelations

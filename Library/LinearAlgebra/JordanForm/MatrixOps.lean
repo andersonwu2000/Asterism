@@ -3,14 +3,21 @@ import Mathlib
 
 open Library.LinearAlgebra.JordanForm.Defs
 
+/-!
+# Matrix operations preserving Jordan form under scalar shifts
+
+This file proves that adding a scalar multiple of the identity to a zero-diagonal Jordan matrix
+preserves the Jordan form property, both at the matrix level and lifted through `LinearMap.toMatrix`.
+-/
+
 namespace Library.LinearAlgebra.JordanForm.MatrixOps
 
--- jordan_add_const_diag_2: shifting a zero-diagonal Jordan matrix by c•1 preserves Jordan form
--- Off-diagonal entries are unchanged (identity is 0 there); diagonal entries both shift by c,
--- so the equal-diagonal condition M i i = M j j is preserved as c = c.
--- entry_kind: Builder
+variable {n : ℕ} {K : Type*} [Field K]
+
+/-- Shifting a zero-diagonal Jordan matrix `M` by `c • 1` preserves the Jordan form.
+Off-diagonal entries are unchanged (the identity contributes 0 there), and the equal-diagonal
+condition is maintained since both `M i i` and `M j j` shift by the same constant `c`. -/
 theorem jordan_add_const_diag_2
-    {n : ℕ} {K : Type*} [Field K]
     (M : Matrix (Fin n) (Fin n) K) (c : K)
     (hJF : IsJordanForm M) (hdiag : ∀ i, M i i = 0) :
     IsJordanForm (M + c • 1) := by
@@ -35,26 +42,28 @@ theorem jordan_add_const_diag_2
       simp only [if_neg hsup] at hJFij
       exact hJFij
 
--- entry_kind: Builder
+section
+
+variable {W : Type*} [AddCommGroup W] [Module K W]
+
+/-- `LinearMap.toMatrix` distributes over the sum `N + μ • 1`, converting the scalar-identity
+shift on the linear map side to a scalar-identity shift on the matrix side. -/
 theorem to_matrix_add_smul_one_2
-    {n : ℕ} {K : Type*} [Field K]
-    {W : Type*} [AddCommGroup W] [Module K W]
     (b : Module.Basis (Fin n) K W) (N : W →ₗ[K] W) (μ : K) :
     LinearMap.toMatrix b b (N + μ • 1) = LinearMap.toMatrix b b N + μ • 1 := by norm_num
 
--- Adding μ•1 to a zero-diagonal Jordan matrix preserves Jordan form, via toMatrix linearity.
--- Sub-goals: (1) `to_matrix_add_smul_one_2` — toMatrix distributes the μ•1 shift;
--- (2) `jordan_add_const_diag_2` — adding c•1 to a zero-diagonal Jordan matrix stays Jordan.
--- Closer rewrites the toMatrix expression and applies the matrix-level shift fact.
+/-- If `N` has a zero-diagonal Jordan-form matrix with respect to basis `b`, then `N + μ • 1`
+also has a Jordan-form matrix. The proof applies `to_matrix_add_smul_one_2` to rewrite the
+`toMatrix` expression, then uses `jordan_add_const_diag_2` for the matrix-level shift. -/
 theorem jordan_form_add_smul_one
-    {n : ℕ} {K : Type*} [Field K]
-    {W : Type*} [AddCommGroup W] [Module K W]
     (b : Module.Basis (Fin n) K W) (N : W →ₗ[K] W) (μ : K)
     (hJF : IsJordanForm (LinearMap.toMatrix b b N))
     (hdiag : ∀ i, (LinearMap.toMatrix b b N) i i = 0) :
-    IsJordanForm (LinearMap.toMatrix b b (N + μ • 1))  := by
+    IsJordanForm (LinearMap.toMatrix b b (N + μ • 1)) := by
   have h_to_matrix := to_matrix_add_smul_one_2 b N μ
   have h_jordan_shift := jordan_add_const_diag_2 (LinearMap.toMatrix b b N) μ hJF hdiag
   rw [h_to_matrix]; exact h_jordan_shift
+
+end
 
 end Library.LinearAlgebra.JordanForm.MatrixOps

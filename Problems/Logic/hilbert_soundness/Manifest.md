@@ -1,5 +1,6 @@
 ---
 problem: Logic.hilbert_soundness
+library: true
 axioms_whitelist:
   - propext
   - Quot.sound

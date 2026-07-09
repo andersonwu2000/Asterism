@@ -5,17 +5,26 @@ import Mathlib
 open Library.LinearAlgebra.InvariantFactor.GridReindex
 open Library.LinearAlgebra.InvariantFactor.PrimaryDecomposition
 
+/-!
+# Invariant factor decomposition
+
+This file assembles the invariant factor decomposition for finitely generated torsion
+`K[X]`-modules. Starting from a primary (prime-power cyclic) decomposition, it applies
+the Chinese Remainder Theorem column-wise to merge the prime-power summands into a
+divisibility chain `f 0 ∣ f 1 ∣ ⋯`, yielding the classical invariant factor form.
+The main result (`main`) specialises this to the `K[X]`-module `AEval' T` associated
+with a finite-dimensional linear operator `T`.
+-/
+
 namespace Library.LinearAlgebra.InvariantFactor.InvariantFactorDecomposition
 
--- Recombine prime-power cyclic summands into an invariant-factor (divisibility) chain.
--- `recombine_unified` (Backward, the crux): produces the column grid — distinct monic
---   primes `q`, an exponent grid `c` non-decreasing along columns — and the K[X]-linear
---   iso onto `⨁ K[X]/(∏ₜ q t ^ c k t)`; this is the witness-bearing existence kept unified.
--- `divchain_column_products` (Builder, witness-independent): column products with
---   per-prime non-decreasing exponents form a divisibility chain.
--- Closer: take f k := ∏ₜ q t ^ c k t; monic from `monic_prod_of_monic`/`Monic.pow`,
---   non-unit from the grid, divisibility from `divchain_column_products`, iso direct.
-theorem recombine_invariant_factors {K : Type*} [Field K] {ι : Type*} [Fintype ι]
+variable {K : Type*} [Field K]
+
+/-- Given a family of monic irreducible polynomials `p i` with exponents `e i`,
+any direct sum `⨁ K[X]/(p i ^ e i)` is linearly isomorphic over `K[X]` to a direct
+sum `⨁ K[X]/(f k)` whose generators are monic, non-unit, and satisfy `f i ∣ f j` for
+`i ≤ j` — i.e., they are invariant factors. -/
+theorem recombine_invariant_factors {ι : Type*} [Fintype ι]
     (p : ι → Polynomial K) (e : ι → ℕ) (hirr : ∀ i, Irreducible (p i))
     (hmon : ∀ i, (p i).Monic) :
     ∃ (r : ℕ) (f : Fin r → Polynomial K),
@@ -37,24 +46,20 @@ theorem recombine_invariant_factors {K : Type*} [Field K] {ι : Type*} [Fintype 
     exact Polynomial.monic_prod_of_monic _ _ (fun t _ => (hqmon t).pow _)
   · exact divchain_column_products q c hcmono
 
--- Invariant factor decomposition = primary (prime-power) decomposition, then
--- recombination of the prime-power cyclic summands into a divisibility chain.
--- `primary_form` (SG1): the K[X]-module `AEval' T` splits as `⨁ K[X]/(p i ^ e i)`
---   with `p i` monic irreducible (mathlib structure theorem for f.g. torsion PID modules).
--- `recombine_invariant_factors` (SG2, abstract over T): regroup any such prime-power
---   direct sum into invariant factors `f 0 ∣ f 1 ∣ ... ` (monic, non-unit) via CRT.
--- Combinator: transport `AEval' T` across `equiv1.trans equiv2`; side conditions from SG2.
-theorem main : ∀ {K : Type*} [Field K]
-  {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]
-  (T : V →ₗ[K] V),
-  ∃ (r : ℕ) (f : Fin r → Polynomial K),
-    (∀ i, (f i).Monic) ∧
-    (∀ i, ¬ IsUnit (f i)) ∧
-    (∀ i j, i ≤ j → f i ∣ f j) ∧
-    Nonempty (Module.AEval' T ≃ₗ[Polynomial K]
-      DirectSum (Fin r)
-        (fun i => Polynomial K ⧸ Submodule.span (Polynomial K) {f i}))  := by
-  intro K _ V _ _ _ T
+/-- Invariant factor decomposition of a finite-dimensional linear operator.
+For any linear endomorphism `T` of a finite-dimensional `K`-vector space `V`, the
+`K[X]`-module `AEval' T` is isomorphic to a direct sum `⨁ K[X]/(f i)` where each
+`f i` is monic and non-unit and the generators satisfy the divisibility chain
+`f 0 ∣ f 1 ∣ ⋯`. -/
+theorem main {V : Type*} [AddCommGroup V] [Module K V] [FiniteDimensional K V]
+    (T : V →ₗ[K] V) :
+    ∃ (r : ℕ) (f : Fin r → Polynomial K),
+      (∀ i, (f i).Monic) ∧
+      (∀ i, ¬ IsUnit (f i)) ∧
+      (∀ i j, i ≤ j → f i ∣ f j) ∧
+      Nonempty (Module.AEval' T ≃ₗ[Polynomial K]
+        DirectSum (Fin r)
+          (fun i => Polynomial K ⧸ Submodule.span (Polynomial K) {f i}))  := by
   obtain ⟨ι, _, p, hirr, hmon, e, ⟨equiv1⟩⟩ := primary_form T
   obtain ⟨r, f, hfmon, hfunit, hfdvd, ⟨equiv2⟩⟩ := recombine_invariant_factors p e hirr hmon
   exact ⟨r, f, hfmon, hfunit, hfdvd, ⟨equiv1.trans equiv2⟩⟩

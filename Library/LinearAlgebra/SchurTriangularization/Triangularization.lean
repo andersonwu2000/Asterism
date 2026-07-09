@@ -7,7 +7,6 @@ open Library.LinearAlgebra.SchurTriangularization.InvariantFlag
 
 namespace Library.LinearAlgebra.SchurTriangularization.Triangularization
 
--- entry_kind: Builder
 -- block_triangular_of_adapted: if T(b j) ∈ span(b '' Set.Iic j) for all j, then the matrix
 -- representation of T in basis b is upper-triangular (BlockTriangular id), using repr support.
 theorem block_triangular_of_adapted : ∀ {K : Type*} [Field K]
