@@ -69,6 +69,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-08
+- Rebuilt the one-click installer and setup wizard to run unattended with live progress, a reliable minimal Python and pinned Lean toolchain, and browser-based login.
+- Added the ability to settle a requested claim as false by proving its negation, while keeping such a disproof clearly distinct from an ordinary success.
+- Made the proof-graph viewer show each goal's real Lean source and proof, and overhauled its layout to minimize edge crossings and center the diagram cleanly.
+- Wired the "harvest to Library" action to launch its run immediately.
+
 ### 2026-07-07
 - Added the ability for readers to run Lean code directly in the browser, including a live display of the proof goal at the cursor while editing.
 - Built agent-driven fetching of cited papers from academic databases (arXiv, OpenAlex, Crossref), with an in-app shelf for viewing the PDFs alongside problems.
@@ -201,11 +207,6 @@ live serve.
 - Refined the step that removes redundant lemmas and definitions from the generated proof library, including dropping thin wrappers that merely re-alias existing Mathlib results.
 - Polished the cleaned-up Lean code by simplifying proofs, improving docstrings, removing unused arguments, and stripping internal framework comments and jargon.
 - Reorganized declarations into sections with shared variables hoisted out, and ensured compiled files were rebuilt before verification checks were re-run.
-
-### 2026-06-08
-- Built a pipeline that scans its library of already-proven results and removes duplicate and definitionally-equal lemmas, processing declarations in dependency order with isolated type-checking.
-- Fixed a parser that mishandled theorem statements whose conclusions carry quantifiers, and repaired a regression that had been crashing the deduplication pass.
-- Sped that pass up sharply by reading the shared problem corpus only once, cutting one classification step from about 240 to 21 seconds.
 
 <!-- ASTERISM-PROGRESS:END -->
 
