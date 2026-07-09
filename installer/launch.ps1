@@ -37,6 +37,17 @@ if (-not $up) {
         if ($up) { break }
     }
 }
+if (-not $up) {
+    # the console cannot come up (setup never ran, or something broke)
+    # - Asterism.exe is the universal door, so open the SETUP page
+    # instead of a dead tab; it detects what is missing and offers the
+    # one button
+    Start-Process -FilePath 'powershell' -WindowStyle Hidden -ArgumentList `
+        ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' +
+         (Join-Path $PSScriptRoot 'setup-server.ps1') + '" 8641')
+    if (-not $NoBrowser) { Start-Process 'http://127.0.0.1:8641/' }
+    return
+}
 if (-not $NoBrowser) {
     Start-Process 'http://127.0.0.1:8642'
 }

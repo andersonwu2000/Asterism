@@ -227,8 +227,16 @@ function Install-Shortcut {
         $sh = New-Object -ComObject WScript.Shell
         $desktop = $sh.SpecialFolders.Item('Desktop')
         $lnk = $sh.CreateShortcut((Join-Path $desktop 'Asterism.lnk'))
-        $lnk.TargetPath = 'wscript.exe'
-        $lnk.Arguments = '"' + (Join-Path $Root 'installer\launch.vbs') + '"'
+        # point straight at the launcher exe: the shortcut inherits its
+        # asterism icon (the wscript.exe target wore a script icon that
+        # looked nothing like the product - owner)
+        $exe = Join-Path $Root 'Asterism.exe'
+        if (Test-Path $exe) {
+            $lnk.TargetPath = $exe
+        } else {
+            $lnk.TargetPath = 'wscript.exe'
+            $lnk.Arguments = '"' + (Join-Path $Root 'installer\launch.vbs') + '"'
+        }
         $lnk.WorkingDirectory = $Root
         $lnk.Description = 'Asterism - open the proving console'
         $lnk.Save()
