@@ -153,45 +153,91 @@ def strip_comments(text: str) -> str:
     return _LINE_COMMENT_RE.sub(" ", _BLOCK_COMMENT_RE.sub(" ", text))
 
 
+def batch_reference_edges(
+    stub_texts: "dict[str, str]",
+) -> "dict[str, list[str]]":
+    """slug → sorted batch siblings its comment-stripped text references
+    (whole-token match against the KNOWN batch decl names — a finite
+    exact list, not open-ended name guessing). This is the intra-batch
+    import DAG the commit side injects mechanically (task #84): the
+    validate unit inlines all stubs so cross-references always resolve
+    there; at commit each stub is its own module and needs the edge as
+    an `import` line. A false positive only over-imports (harmless
+    unless it closes a cycle — see `batch_reference_cycles`)."""
+    edges: "dict[str, list[str]]" = {}
+    for a_slug, a_text in stub_texts.items():
+        body = strip_comments(a_text)
+        refs = sorted(
+            b for b in stub_texts
+            if b != a_slug and re.search(rf"\b{re.escape(b)}\b", body))
+        if refs:
+            edges[a_slug] = refs
+    return edges
+
+
+def batch_reference_cycles(
+    edges: "dict[str, list[str]]",
+) -> "list[list[str]]":
+    """Cycles in the batch reference graph (iterative DFS, one witness
+    path per cycle found). A cycle admits NO import order — Lean modules
+    cannot mutually import — so it must be rejected/restructured, never
+    injected."""
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {n: WHITE for n in edges}
+    cycles: "list[list[str]]" = []
+    for root in sorted(edges):
+        if color.get(root, WHITE) != WHITE:
+            continue
+        stack: "list[tuple[str, int]]" = [(root, 0)]
+        path: "list[str]" = []
+        while stack:
+            node, idx = stack.pop()
+            if idx == 0:
+                color[node] = GRAY
+                path.append(node)
+            nbrs = edges.get(node, [])
+            advanced = False
+            for j in range(idx, len(nbrs)):
+                nxt = nbrs[j]
+                c = color.get(nxt, WHITE)
+                if c == GRAY:
+                    cycles.append(path[path.index(nxt):] + [nxt])
+                elif c == WHITE:
+                    stack.append((node, j + 1))
+                    stack.append((nxt, 0))
+                    advanced = True
+                    break
+            if not advanced:
+                color[node] = BLACK
+                path.pop()
+    return cycles
+
+
 def split_visibility_issues(
     stub_texts: "dict[str, str]", *, problem: str,
 ) -> "list[dict]":
     """Predict the post-commit SPLIT failures the single-unit probe cannot
-    see: in the compilation unit every batch stub is inlined into one file,
-    so stub A referencing stub B's name always resolves — but at commit each
-    stub lands as its own module, and the framework only auto-imports PROVED
-    siblings into stubs (never same-batch open stubs; those imports are
-    auto-appended into the STRATEGY file only). So `A references B, A has no
-    hand-written import for B` builds green here and dies `unknown
-    identifier` at lake build — the validate_file_inlines_def_siblings /
-    subgoal_stmt_needs_harvested_def_imports trap class. Pure text
-    prediction: the rule is deterministic, no elaboration needed. The fix
-    the hint prescribes (hand-writing the import) is honored by the
-    framework at commit."""
+    see. 2026-07-10 (task #84): the framework now INJECTS the acyclic
+    intra-batch import edges at commit (`assemble_for_commit
+    extra_imports` via `batch_reference_edges`), so a plain
+    cross-reference is no longer the agent's problem — the historical
+    "hand-write the import" hand-back (and its whole-spawn burns:
+    sphere `sphere_equator_equiv_forward_cont`, MV `mv_delta`) is gone.
+    What no injection can fix is a CYCLE: mutually-referencing stubs
+    admit no module import order. Only cycles are reported now."""
     issues: "list[dict]" = []
-    for a_slug, a_text in stub_texts.items():
-        body = strip_comments(a_text)
-        for b_slug in stub_texts:
-            if b_slug == a_slug:
-                continue
-            if not re.search(rf"\b{re.escape(b_slug)}\b", body):
-                continue
-            imp = rf"(?m)^\s*import\s+Problems\.{re.escape(problem)}" \
-                  rf"\.proofs\.L_{re.escape(b_slug)}\s*$"
-            if re.search(imp, a_text):
-                continue                      # agent already wrote the edge
-            issues.append({
-                "file": f"new_{a_slug}.lean",
-                "references": b_slug,
-                "severity": "error",
-                "hint": (f"resolves in this single-unit probe, but after the "
-                         f"commit split `L_{a_slug}.lean` will NOT import "
-                         f"`L_{b_slug}.lean` (the framework only auto-imports "
-                         f"PROVED siblings into stubs) — hand-write `import "
-                         f"Problems.{problem}.proofs.L_{b_slug}` in "
-                         f"new_{a_slug}.lean, or move the reference into the "
-                         f"strategy patch"),
-            })
+    for cyc in batch_reference_cycles(batch_reference_edges(stub_texts)):
+        chain = " → ".join(cyc)
+        issues.append({
+            "file": f"new_{cyc[0]}.lean",
+            "cycle": cyc,
+            "severity": "error",
+            "hint": (f"batch stubs reference each other in a cycle "
+                     f"({chain}) — Lean modules cannot mutually import, "
+                     f"so no placement order exists. Merge the statements "
+                     f"into one sub-goal, or restate one side so it does "
+                     f"not mention the other."),
+        })
     return issues
 
 
@@ -278,6 +324,7 @@ class AssembledFile:
     text: str
     injected_sibling_imports: "list[str]" = field(default_factory=list)
     injected_opens: "list[str]" = field(default_factory=list)
+    injected_extra_imports: "list[str]" = field(default_factory=list)
 
 
 def assemble_for_commit(
@@ -285,6 +332,7 @@ def assemble_for_commit(
     conn: "sqlite3.Connection | None" = None,
     declared_slugs: "set[str]" = frozenset(),
     carry_opens: "list[str] | tuple[str, ...]" = (),
+    extra_imports: "list[str] | tuple[str, ...]" = (),
 ) -> AssembledFile:
     """ONE normalization rule for every file the framework commits — the
     same transforms in the same order, regardless of which pipeline is
@@ -293,10 +341,13 @@ def assemble_for_commit(
     on already-normalized text is a no-op.
 
       1. framework imports  (`import Mathlib` / `Problems.<p>.Defs`)
-      2. Defs.lean file-scope opens (notation surface replay)
-      3. `carry_opens` — the parent working patch's own opens, for sub-goal
+      2. `extra_imports` — caller-derived import lines, verbatim (task #84:
+         the intra-batch reference edges from `batch_reference_edges`;
+         exact-line idempotent)
+      3. Defs.lean file-scope opens (notation surface replay)
+      4. `carry_opens` — the parent working patch's own opens, for sub-goal
          stubs (validate's unit always gave them these; commit now does too)
-      4. proved-sibling imports (when `conn` given) — referenced-but-not-
+      5. proved-sibling imports (when `conn` given) — referenced-but-not-
          imported proved siblings, `declared_slugs` excluded
 
     validate_file's compilation unit is derived from the same primitives,
@@ -304,6 +355,17 @@ def assemble_for_commit(
     from . import manifest
     text = ensure_framework_imports(content, problem=problem,
                                     workspace=workspace)
+    injected_extra: list[str] = []
+    if extra_imports:
+        missing = [imp for imp in extra_imports
+                   if not re.search(rf"(?m)^\s*{re.escape(imp)}\s*$", text)]
+        if missing:
+            lines = text.splitlines()
+            last_imp = max((i for i, ln in enumerate(lines)
+                            if ln.startswith("import ")), default=-1)
+            lines[last_imp + 1:last_imp + 1] = missing
+            text = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+            injected_extra = missing
     text = manifest.inject_defs_opens(text, problem=problem,
                                       workspace=workspace)
     injected_opens: list[str] = []
@@ -317,4 +379,5 @@ def assemble_for_commit(
         text, added = inject_sibling_imports(
             conn, text, problem=problem, declared_slugs=declared_slugs)
     return AssembledFile(text, injected_sibling_imports=added,
-                         injected_opens=injected_opens)
+                         injected_opens=injected_opens,
+                         injected_extra_imports=injected_extra)

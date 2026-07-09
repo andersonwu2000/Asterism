@@ -138,3 +138,55 @@ def test_assemble_for_commit_injects_proved_sibling_import(tmp_path) -> None:
 def test_harvest_open_lines_skips_scoped_in_form() -> None:
     text = "open Foo in\ntheorem t : True := trivial\nopen Bar\n"
     assert assemble.harvest_open_lines(text) == ["open Bar"]
+
+
+# ── task #84: intra-batch import derivation ───────────────────────────
+
+def test_batch_reference_edges_and_injection(tmp_path: Path) -> None:
+    """The forward_cont/equiv shape: B's statement references A →
+    edge B→A derived; assemble injects it as an import line."""
+    stubs = {
+        "sphere_equiv": ("namespace P\n"
+                         "def sphere_equiv : Nat := 0\n"
+                         "end P\n"),
+        "forward_cont": ("namespace P\n"
+                         "theorem forward_cont : sphere_equiv = 0 "
+                         ":= by sorry\n"
+                         "end P\n"),
+    }
+    edges = assemble.batch_reference_edges(stubs)
+    assert edges == {"forward_cont": ["sphere_equiv"]}
+    assert assemble.batch_reference_cycles(edges) == []
+
+    extra = tuple(f"import Problems.p.proofs.L_{b}"
+                  for b in edges["forward_cont"])
+    a = assemble.assemble_for_commit(
+        stubs["forward_cont"], problem="p", workspace=tmp_path,
+        extra_imports=extra)
+    assert "import Problems.p.proofs.L_sphere_equiv" in a.text
+    assert a.injected_extra_imports == list(extra)
+    # idempotent: re-running on the assembled text injects nothing
+    again = assemble.assemble_for_commit(
+        a.text, problem="p", workspace=tmp_path, extra_imports=extra)
+    assert again.injected_extra_imports == []
+    assert again.text.count("import Problems.p.proofs.L_sphere_equiv") == 1
+
+
+def test_batch_reference_cycles_three_node() -> None:
+    edges = {"a": ["b"], "b": ["c"], "c": ["a"]}
+    cycles = assemble.batch_reference_cycles(edges)
+    assert len(cycles) == 1
+    assert set(cycles[0][:-1]) == {"a", "b", "c"}
+    # DAG → no cycles
+    assert assemble.batch_reference_cycles({"a": ["b", "c"], "b": ["c"]}) == []
+
+
+def test_batch_edges_ignore_comment_mentions() -> None:
+    stubs = {
+        "base_case": "namespace P\ntheorem base_case : True := by sorry\nend P\n",
+        "step_case": ("namespace P\n"
+                      "-- builds on base_case conceptually\n"
+                      "theorem step_case : True := by sorry\n"
+                      "end P\n"),
+    }
+    assert assemble.batch_reference_edges(stubs) == {}

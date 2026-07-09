@@ -1380,13 +1380,43 @@ def _backward_parse_and_commit(
         _batch_slugs = {slug for slug, _ in sub_meta}
         _patch_opens = assemble.harvest_open_lines(main_patch_text)
 
-        def _novel_content(raw: str) -> str:
+        # Intra-batch import edges (task #84): stub A referencing batch
+        # sibling B gets `import …proofs.L_B` injected MECHANICALLY —
+        # the reference is a fact of the batch the framework can see,
+        # not something the agent must remember (the silent
+        # validate-green/lake-red class: validate inlines the batch
+        # into one unit where B always resolves; the split module
+        # didn't — sphere `sphere_equator_equiv_forward_cont`,
+        # MV `mv_delta`, each a whole-spawn burn). Cycles admit no
+        # import order — reject pre-placement (the submission mirror
+        # predicts them in-session via `split_visibility_issues`).
+        _stub_texts = {s: p.read_text(encoding="utf-8")
+                       for s, p in sub_meta}
+        _batch_edges = assemble.batch_reference_edges(_stub_texts)
+        _batch_cycles = assemble.batch_reference_cycles(_batch_edges)
+        if _batch_cycles:
+            chain = " → ".join(_batch_cycles[0])
+            return _abort(
+                "batch_reference_cycle",
+                f"batch sub-goals reference each other in a cycle "
+                f"({chain}) — Lean modules cannot mutually import, so no "
+                f"placement order exists. Merge the statements into one "
+                f"sub-goal, or restate one side so it does not mention "
+                f"the other.",
+                leading,
+            )
+
+        def _novel_content(raw: str, slug: str) -> str:
             """Sub-goal placed for normal dispatch — elaborates standalone
-            under the SAME imports/opens validate's unit gave it."""
+            under the SAME imports/opens validate's unit gave it, plus its
+            mechanically-derived intra-batch import edges."""
+            extra = tuple(
+                f"import Problems.{goal['problem']}.proofs.L_{b}"
+                for b in _batch_edges.get(slug, ()))
             return assemble.assemble_for_commit(
                 raw, problem=goal["problem"], workspace=workspace,
                 conn=conn, declared_slugs=_batch_slugs,
-                carry_opens=_patch_opens).text
+                carry_opens=_patch_opens, extra_imports=extra).text
 
         for idx, ((slug, src), (_, dest), match) in enumerate(zip(
             sub_meta, sub_dests, canonical_for,
@@ -1415,7 +1445,7 @@ def _backward_parse_and_commit(
                     # `Library/` decl (no in-DB goal). Delegate via the
                     # fully-qualified name (its namespace isn't open here).
                     alias_content = dedupe.build_alias_content(
-                        original_content=_novel_content(raw),
+                        original_content=_novel_content(raw, slug),
                         canonical_module=match.library_module,
                         canonical_slug=match.library_fqn,
                         apply_expr=f"@{match.library_fqn}",
@@ -1427,7 +1457,7 @@ def _backward_parse_and_commit(
                     canonical_module = _lean_path_to_module(
                         workspace, workspace / canonical["lean_path"])
                     alias_content = dedupe.build_alias_content(
-                        original_content=_novel_content(raw),
+                        original_content=_novel_content(raw, slug),
                         canonical_module=canonical_module,
                         canonical_slug=canonical["slug"],
                     )
@@ -1468,9 +1498,9 @@ def _backward_parse_and_commit(
                           f"novel sub-goal",
                           flush=True)
                     canonical_for[idx] = None
-                    _place_unowned(conn, workspace, dest, _novel_content(raw))
+                    _place_unowned(conn, workspace, dest, _novel_content(raw, slug))
             else:
-                _place_unowned(conn, workspace, dest, _novel_content(raw))
+                _place_unowned(conn, workspace, dest, _novel_content(raw, slug))
             placed.append(dest)
         _place_unowned(
             conn, workspace, scratch_dest,

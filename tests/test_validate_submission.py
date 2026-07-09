@@ -275,7 +275,10 @@ def test_citation_untracked_typo_passes_through(ws: Path):
 # unit elaboration structurally cannot surface.
 # ---------------------------------------------------------------------
 
-def test_split_visibility_flags_stub_to_stub_reference(tmp_path):
+def test_split_visibility_only_flags_cycles(tmp_path):
+    """2026-07-10 (task #84): plain cross-references are no longer the
+    agent's problem — commit injects the intra-batch import edges
+    mechanically. Only CYCLES (no module import order exists) remain."""
     from Tooling.state import assemble
     stubs = {
         "iso_inf": "namespace P\ntheorem iso_inf : True := by sorry\nend P\n",
@@ -283,18 +286,23 @@ def test_split_visibility_flags_stub_to_stub_reference(tmp_path):
                       "theorem comm_left : True := iso_inf.elim\n"
                       "end P\n"),
     }
-    issues = assemble.split_visibility_issues(stubs, problem="p")
-    assert len(issues) == 1
-    assert issues[0]["file"] == "new_comm_left.lean"
-    assert issues[0]["references"] == "iso_inf"
-    # hand-written import silences it (the framework honors it at commit)
-    stubs["comm_left"] = ("import Problems.p.proofs.L_iso_inf\n"
-                          + stubs["comm_left"])
+    # acyclic reference → framework injects at commit, no issue
     assert assemble.split_visibility_issues(stubs, problem="p") == []
     # a mention in a comment is not a reference
     stubs["comm_left"] = ("namespace P\n-- see iso_inf for the idea\n"
                           "theorem comm_left : True := trivial\nend P\n")
     assert assemble.split_visibility_issues(stubs, problem="p") == []
+    # mutual reference = cycle → error with the restructure hint
+    stubs["comm_left"] = ("namespace P\n"
+                          "theorem comm_left : True := iso_inf.elim\n"
+                          "end P\n")
+    stubs["iso_inf"] = ("namespace P\n"
+                        "theorem iso_inf : True := comm_left.elim\n"
+                        "end P\n")
+    issues = assemble.split_visibility_issues(stubs, problem="p")
+    assert len(issues) == 1
+    assert "cycle" in issues[0]["hint"]
+    assert set(issues[0]["cycle"][:2]) <= {"iso_inf", "comm_left"}
 
 
 def test_locked_signature_submission(tmp_path):
