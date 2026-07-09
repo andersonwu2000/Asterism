@@ -513,15 +513,15 @@ export default function Constellation({
       if (tween.fromView && tween.toView && !camRef.current.userAdjustedRef.current) {
         const f = tween.fromView
         const g = tween.toView
-        const cam = {
+        const camNow = {
           k: f.k + (g.k - f.k) * alpha,
           tx: f.tx + (g.tx - f.tx) * alpha,
           ty: f.ty + (g.ty - f.ty) * alpha,
         }
-        camRef.current.viewRef.current = cam
+        camRef.current.viewRef.current = camNow
         outerGRef.current?.setAttribute(
           'transform',
-          `translate(${cam.tx},${cam.ty}) scale(${cam.k})`,
+          `translate(${camNow.tx},${camNow.ty}) scale(${camNow.k})`,
         )
       }
     }

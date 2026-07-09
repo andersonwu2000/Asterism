@@ -94,6 +94,14 @@ export function useSkyCamera(
     setFitK(fit.k)
     setView(fit)
   }, [view, contentW, contentH])
+  // The listener effects key on "a fit has landed": a component that
+  // mounts in its EMPTY state (the problem sky's "no goals yet") has
+  // no container div yet, and mount-only effects would never attach —
+  // the wheel stayed dead for the whole session once goals arrived
+  // (latent in the pre-hook copy; caught in review, 2026-07-09). The
+  // first fit proves the container exists, so re-running on that
+  // transition attaches exactly once per appearance.
+  const attached = view !== null
   // window/panel resize re-fits ONLY untouched views (fighting an
   // explicit zoom is worse than letting it drift off-centre)
   useEffect(() => {
@@ -109,7 +117,7 @@ export function useSkyCamera(
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [])
+  }, [attached])
   // Wheel zoom must preventDefault (page would scroll); React's
   // delegated wheel handlers are passive, so attach natively.
   useEffect(() => {
@@ -137,7 +145,7 @@ export function useSkyCamera(
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [])
+  }, [attached])
 
   const onPointerDown = (e: React.PointerEvent) => {
     const v = viewRef.current
