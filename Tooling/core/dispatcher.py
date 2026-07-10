@@ -113,6 +113,9 @@ def _exit_pool_fast(pool: ThreadPoolExecutor) -> None:
 FORWARD_RETRY_BUDGET = 3
 
 TICK_TIMEOUT = 30  # seconds
+#: how often the daemon re-fingerprints the source tree (drift handoff).
+#: ~300 stat() calls per check — cheap, but not per-tick cheap.
+_DRIFT_CHECK_SEC = 60.0
 
 
 # ---------------------------------------------------------------------
@@ -1374,6 +1377,39 @@ def stop_file_path(workspace: Path) -> Path:
     return workspace / ".asterism" / "daemon.stop"
 
 
+def _spawn_handoff_successor(workspace: Path, scope: "str | None") -> None:
+    """Spawn the drift-handoff waiter: a detached `daemon start
+    --wait-lock` that parks until THIS daemon's singleton lock frees,
+    then boots a fresh daemon (current code, same scope) through
+    daemon_start's usual relay. Must break away from our kill-on-close
+    Job Object or it dies with us; best-effort — a failed spawn just
+    means the operator restarts by hand (the drain already happened)."""
+    import subprocess
+    from . import process_group
+    argv = [sys.executable, "-m", "Tooling.core.cli", "daemon", "start",
+            "--wait-lock", "120"]
+    if scope:
+        argv += ["--scope", scope]
+    flags = 0
+    kwargs: dict = {}
+    if os.name == "nt":
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        flags = (DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+                 | process_group.breakaway_creationflags())
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(argv, cwd=str(workspace),
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL,
+                         stdin=subprocess.DEVNULL,
+                         creationflags=flags, **kwargs)
+    except OSError as e:
+        print(f"[dispatcher] handoff spawn failed ({e}) — restart the "
+              f"daemon by hand (`asterism daemon start`)", flush=True)
+
+
 def run(workspace: Path, *, once: bool = False,
         scope: str | None = None) -> int:
     pid_lock = _acquire_singleton_lock(workspace)
@@ -1391,11 +1427,18 @@ def run(workspace: Path, *, once: bool = False,
     # only the UI's daemon_start wrote it, a terminal-started run left
     # the UI reading the PREVIOUS run's scope — Stop on the wrong
     # problem page would have killed this run. "" = workspace-wide.
+    from ..lsp import lifecycle as _gwl
+    code_fp_at_boot = _gwl.code_fingerprint()
     try:
         _logs = workspace / ".asterism" / "logs"
         _logs.mkdir(parents=True, exist_ok=True)
         (_logs / "daemon-scope.txt").write_text(
             scope or "", encoding="utf-8")
+        # boot fingerprint — daemon_status compares it against the
+        # current tree so the UI can say "this daemon runs old code"
+        # during the (self-resolving) drift window
+        (_logs / "daemon-fp.txt").write_text(
+            code_fp_at_boot, encoding="utf-8")
     except OSError:
         pass
 
@@ -1600,6 +1643,21 @@ def run(workspace: Path, *, once: bool = False,
         tree_problems = list(manifests)
 
     stop_announced = False
+    # Code-drift handoff: the daemon no longer dies with the serve
+    # process (daemon_start's relay broke that chain), so "serve
+    # restart" no longer implicitly means "daemon runs new code". The
+    # MECHANISM replaces the discipline (owner): the daemon snapshots
+    # the tree's fingerprint at boot, re-checks it on a slow cadence,
+    # and on drift drains exactly like a graceful stop — then spawns a
+    # lock-waiting successor that boots on current code with the same
+    # scope. `--once` runs finish on their own and never hand off.
+    handoff_enabled = (not once) and (
+        str(config.get("dispatch.handoff_on_code_change", default="true",
+                       env_var="ASTERISM_HANDOFF_ON_CODE_CHANGE",
+                       workspace=workspace)).strip().lower()
+        in ("true", "1", "yes", "on"))
+    drifting = False
+    fp_checked_at = time.monotonic()
     while True:
         # Graceful stop (charter §5-3): stop file present → no new
         # spawns; drain in-flight workers via the normal cascade below;
@@ -1616,6 +1674,21 @@ def run(workspace: Path, *, once: bool = False,
                   f"{len(futures)} in-flight worker(s), no new spawns",
                   flush=True)
             stop_announced = True
+        if (handoff_enabled and not drifting and not stopping
+                and time.monotonic() - fp_checked_at >= _DRIFT_CHECK_SEC):
+            fp_checked_at = time.monotonic()
+            if _gwl.code_fingerprint() != code_fp_at_boot:
+                drifting = True
+                print(f"[dispatcher] code drift — the source tree changed "
+                      f"under this daemon; draining {len(futures)} "
+                      f"in-flight worker(s), then handing off to a fresh "
+                      f"daemon on current code", flush=True)
+        if drifting and not stopping and not futures:
+            _spawn_handoff_successor(workspace, scope)
+            print("[dispatcher] handoff successor spawned (waiting on the "
+                  "singleton lock) — exiting cleanly", flush=True)
+            _exit_pool_fast(pool)
+            return 0
 
         # Cascade for any completed pipelines
         if futures:
@@ -1951,7 +2024,7 @@ def run(workspace: Path, *, once: bool = False,
         # the same (target_id, kind) is already in flight in this
         # daemon — bfs_refill caps at 1 but daemon recovery + race
         # corners mean defense-in-depth here is cheap.
-        while not stopping and len(futures) < pool_size:
+        while not (stopping or drifting) and len(futures) < pool_size:
             row = db.pop_queue(conn, scope=scope)
             if row is None:
                 break

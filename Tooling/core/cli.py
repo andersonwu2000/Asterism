@@ -1642,11 +1642,26 @@ def daemon_status(workspace: Path) -> dict:
                 float(lines[1].strip()), timezone.utc).isoformat()
         except (OSError, ValueError, IndexError):
             started_at = None
+    code_stale = False
+    if pid is not None:
+        # the daemon writes its code fingerprint at boot; a mismatch
+        # against the CURRENT tree means it runs old code. Transient by
+        # design — the daemon's own drift watchdog drains and hands off
+        # — but the status must say so while it lasts.
+        try:
+            born_fp = (workspace / ".asterism" / "logs" /
+                       "daemon-fp.txt").read_text(encoding="utf-8").strip()
+            if born_fp:
+                from ..lsp.lifecycle import code_fingerprint
+                code_stale = born_fp != code_fingerprint()
+        except OSError:
+            code_stale = False
     return {
         "running": pid is not None,
         "pid": pid,
         "scope": scope,
         "started_at": started_at,
+        "code_stale": code_stale,
         # a stop-file left behind by a dead daemon is residue, not a
         # state — "stopping" is only meaningful while something runs
         "stopping": pid is not None
@@ -1672,40 +1687,57 @@ def _gateway_phase_safe(workspace: Path) -> "str | None":
 
 
 def daemon_start(workspace: Path, *, scope: "str | None" = None,
-                 once: bool = False) -> "tuple[int, str]":
+                 once: bool = False,
+                 wait_lock_sec: float = 0.0) -> "tuple[int, str]":
     """Detached daemon start. Returns (exit_code, message). Refuses (1)
     while a daemon holds the singleton lock; on success writes the
-    per-run log + the daemon-current.txt pointer the SSE tail follows."""
+    per-run log + the daemon-current.txt pointer the SSE tail follows.
+
+    `wait_lock_sec` > 0 retries the refusal for that long — the code-
+    drift HANDOFF relay uses it: the dying daemon spawns this waiter
+    BEFORE releasing its own lock, and the waiter's start lands the
+    moment the lock frees."""
     import subprocess
     import time as _time
     from . import dispatcher as _disp
-    with _daemon_start_lock:
-        pid = _daemon_live_pid(workspace)
-        if pid is not None:
-            return 1, (f"REFUSED: a daemon is already running (pid {pid}) "
-                       f"— one daemon per workspace (singleton lock)")
-        # Anti-double-spawn window: the child takes seconds to boot and
-        # claim the singleton lock; two near-simultaneous starts both
-        # passed the check above and both spawned (the loser died
-        # silently AFTER this call returned "started", and last-writer
-        # scope made the UI lie about what runs). The marker covers the
-        # boot gap; the child consumes it once the lock is settled.
-        marker = workspace / ".asterism" / "daemon-starting.txt"
-        try:
-            if _time.time() - marker.stat().st_mtime < 60:
-                return 1, ("REFUSED: a daemon is already starting (another "
-                           "Run landed moments ago) — give it a few "
-                           "seconds, then check status")
-        except OSError:
-            pass
-        _disp.stop_file_path(workspace).unlink(missing_ok=True)
-        logs = workspace / ".asterism" / "logs"
-        logs.mkdir(parents=True, exist_ok=True)
-        marker.write_text(db.now(), encoding="utf-8")
-        # last run's exit summary belongs to the last run — a force-
-        # killed run writes none, and a stale one must not be reported
-        # as this run's ending
-        (logs / "daemon-exit.txt").unlink(missing_ok=True)
+    deadline = _time.time() + wait_lock_sec
+    while True:
+        refusal: "str | None" = None
+        with _daemon_start_lock:
+            pid = _daemon_live_pid(workspace)
+            if pid is not None:
+                refusal = (f"REFUSED: a daemon is already running (pid {pid})"
+                           f" — one daemon per workspace (singleton lock)")
+            else:
+                # Anti-double-spawn window: the child takes seconds to boot
+                # and claim the singleton lock; two near-simultaneous starts
+                # both passed the check above and both spawned (the loser
+                # died silently AFTER this call returned "started", and
+                # last-writer scope made the UI lie about what runs). The
+                # marker covers the boot gap; the child consumes it once
+                # the lock is settled.
+                marker = workspace / ".asterism" / "daemon-starting.txt"
+                try:
+                    if _time.time() - marker.stat().st_mtime < 60:
+                        refusal = ("REFUSED: a daemon is already starting "
+                                   "(another Run landed moments ago) — give "
+                                   "it a few seconds, then check status")
+                except OSError:
+                    pass
+                if refusal is None:
+                    _disp.stop_file_path(workspace).unlink(missing_ok=True)
+                    logs = workspace / ".asterism" / "logs"
+                    logs.mkdir(parents=True, exist_ok=True)
+                    marker.write_text(db.now(), encoding="utf-8")
+                    # last run's exit summary belongs to the last run — a
+                    # force-killed run writes none, and a stale one must not
+                    # be reported as this run's ending
+                    (logs / "daemon-exit.txt").unlink(missing_ok=True)
+        if refusal is None:
+            break
+        if _time.time() >= deadline:
+            return 1, refusal
+        _time.sleep(1.0)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_path = logs / f"daemon_{stamp}.log"
     argv = [sys.executable, "-m", "Tooling.core.cli", "run"]
@@ -1715,21 +1747,56 @@ def daemon_start(workspace: Path, *, scope: "str | None" = None,
         argv += ["--scope", scope]
     else:
         argv.append("--all-problems")
-    creationflags = 0
-    popen_kwargs: dict = {}
+    env = dict(os.environ)
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    daemon_pid: "int | str" = "?"
     if os.name == "nt":
         DETACHED_PROCESS = 0x00000008
         CREATE_NEW_PROCESS_GROUP = 0x00000200
-        creationflags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        base_flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        # The daemon must NOT be the caller's child: taskkill /T on the
+        # serve process (or any UI host) walks the LIVE parent-child
+        # chain and would reap the daemon and every in-flight prover
+        # with it (2026-07-10 incident — a serve restart killed the
+        # putnam marathon). A relay spawns the daemon and exits at
+        # once, so the daemon is reparented and the chain is broken.
+        # The daemon still binds ITSELF to its own kill-on-close Job
+        # Object at boot (dispatcher.run) — orphan-prover protection is
+        # untouched. The relay also breaks away from the CALLER's job
+        # when that job permits it (a handoff relay spawned by a dying
+        # daemon must escape ITS kill-on-close job or die with it).
+        from . import process_group
+        relay_src = (
+            "import subprocess, sys\n"
+            "flags = 0x00000008 | 0x00000200\n"
+            "log = open(sys.argv[2], 'ab')\n"
+            "p = subprocess.Popen(sys.argv[3:], cwd=sys.argv[1],\n"
+            "                     stdout=log, stderr=subprocess.STDOUT,\n"
+            "                     stdin=subprocess.DEVNULL,\n"
+            "                     creationflags=flags)\n"
+            "print(p.pid, flush=True)\n"
+        )
+        relay = subprocess.Popen(
+            [sys.executable, "-c", relay_src, str(workspace),
+             str(log_path), *argv],
+            cwd=str(workspace), stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            creationflags=base_flags | process_group.breakaway_creationflags(),
+            env=env)
+        try:
+            out, _ = relay.communicate(timeout=30)
+            daemon_pid = int(out.strip())
+        except (ValueError, subprocess.TimeoutExpired):
+            daemon_pid = "?"  # relay hiccup — the singleton lock is truth
     else:
-        popen_kwargs["start_new_session"] = True
-    env = dict(os.environ)
-    env.setdefault("PYTHONIOENCODING", "utf-8")
-    with open(log_path, "ab") as logf:
-        proc = subprocess.Popen(
-            argv, cwd=str(workspace), stdout=logf,
-            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-            creationflags=creationflags, env=env, **popen_kwargs)
+        # POSIX has no tree-kill footgun (killing serve never reaps
+        # children) — the direct spawn stays.
+        with open(log_path, "ab") as logf:
+            proc = subprocess.Popen(
+                argv, cwd=str(workspace), stdout=logf,
+                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                start_new_session=True, env=env)
+        daemon_pid = proc.pid
     # SSE tail pointer (charter appendix): per-run log filenames need
     # a stable "latest log" resolution point.
     (logs / "daemon-current.txt").write_text(
@@ -1737,7 +1804,7 @@ def daemon_start(workspace: Path, *, scope: "str | None" = None,
     # scope pointer: lets status (and the UI's per-problem Run controls)
     # answer "what is the engine working on?"
     (logs / "daemon-scope.txt").write_text(scope or "", encoding="utf-8")
-    return 0, f"started daemon pid {proc.pid}; log: {log_path}"
+    return 0, f"started daemon pid {daemon_pid}; log: {log_path}"
 
 
 def daemon_stop(workspace: Path, *, force: bool = False) -> "tuple[int, str]":
@@ -1820,7 +1887,8 @@ def cmd_daemon(args) -> int:
     if action == "start":
         code, msg = daemon_start(
             workspace, scope=getattr(args, "scope", None),
-            once=getattr(args, "once", False))
+            once=getattr(args, "once", False),
+            wait_lock_sec=getattr(args, "wait_lock", 0.0))
         print(msg)
         return code
     if action == "stop":
@@ -2461,6 +2529,10 @@ def main(argv: list[str] | None = None) -> int:
                           help="start: restrict dispatch (SQL LIKE)")
     p_daemon.add_argument("--once", action="store_true",
                           help="start: exit when queue empties")
+    p_daemon.add_argument("--wait-lock", type=float, default=0.0,
+                          dest="wait_lock",
+                          help="start: retry a lock refusal for up to this "
+                               "many seconds (the code-drift handoff relay)")
     p_daemon.add_argument("--force", action="store_true",
                           help="stop: terminate immediately instead of "
                                "graceful drain")
