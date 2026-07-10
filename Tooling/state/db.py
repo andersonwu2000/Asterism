@@ -1557,30 +1557,61 @@ def queue_has_decision(conn: sqlite3.Connection, decision_id: int) -> bool:
     return row is not None
 
 
+_SUBTREE_CTE = (
+    "WITH RECURSIVE sub(gid) AS ("
+    "  VALUES(?)"
+    "  UNION"
+    "  SELECT ss.subgoal_id FROM strategies s"
+    "   JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+    "   JOIN sub ON s.goal_id = sub.gid"
+    "   WHERE s.status IN ('proposed','succeeded'))"
+)
+
+
 def _subtree_has_live_frontier(conn: sqlite3.Connection,
-                               goal_id: int) -> bool:
+                               goal_id: int, *,
+                               frontier: str = "stall") -> bool:
     """True iff the subtree rooted at `goal_id` — walked downward through
-    'proposed'/'succeeded' strategies — contains a goal some existing
-    mechanism will still touch WITHOUT a Strategist wake: an `open` goal
-    (BFS dispatches it) or a `pending_strategist_review` goal (a T2
-    review is queued). An `attempting` node contributes nothing by
-    itself — its activity must bottom out in such a frontier. A chain of
-    attempting goals whose strategies are all dead/stalled has NO
-    frontier: nothing will ever touch it again (2026-07-09
-    putnam_2025_b6 wedge)."""
-    return conn.execute(
-        "WITH RECURSIVE sub(gid) AS ("
-        "  VALUES(?)"
-        "  UNION"
-        "  SELECT ss.subgoal_id FROM strategies s"
-        "   JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
-        "   JOIN sub ON s.goal_id = sub.gid"
-        "   WHERE s.status IN ('proposed','succeeded'))"
-        " SELECT 1 FROM goals"
-        " WHERE id IN (SELECT gid FROM sub)"
-        "   AND status IN ('open','pending_strategist_review') LIMIT 1",
-        (goal_id,),
-    ).fetchone() is not None
+    'proposed'/'succeeded' strategies — contains a live frontier. TWO
+    semantics, picked by `frontier` (2026-07-11, the T2 wake-pump
+    livelock):
+
+    - "stall" (T4 suppression): an `open` goal (BFS dispatches it) OR a
+      `pending_strategist_review` goal (a T2 review is queued — T4 must
+      not race T2). An `attempting` node contributes nothing by itself —
+      its activity must bottom out in such a frontier (2026-07-09
+      putnam_2025_b6 wedge).
+
+    - "dispatch" (the Strategist anti-idle gate): only what moves
+      WITHOUT a Strategist — an `open` goal (BFS) or a queued/leased
+      worker on a subtree goal (queue row, target_kind='Goal'). Counting
+      `pending_strategist_review` HERE would be self-referential: the
+      queued handler that review is waiting for IS the strategist
+      standing at the gate, so a walled tree read as "live" and
+      EmitDirective-only batches passed forever (b6 2026-07-10,
+      301-spawn wake pump).
+    """
+    if frontier == "stall":
+        return conn.execute(
+            _SUBTREE_CTE +
+            " SELECT 1 FROM goals"
+            " WHERE id IN (SELECT gid FROM sub)"
+            "   AND status IN ('open','pending_strategist_review') LIMIT 1",
+            (goal_id,),
+        ).fetchone() is not None
+    if frontier == "dispatch":
+        return conn.execute(
+            _SUBTREE_CTE +
+            " SELECT 1 WHERE EXISTS ("
+            "   SELECT 1 FROM goals"
+            "   WHERE id IN (SELECT gid FROM sub) AND status = 'open')"
+            " OR EXISTS ("
+            "   SELECT 1 FROM queue q"
+            "   WHERE q.target_kind = 'Goal'"
+            "     AND CAST(q.target_id AS INTEGER) IN (SELECT gid FROM sub))",
+            (goal_id,),
+        ).fetchone() is not None
+    raise ValueError(f"unknown frontier semantics {frontier!r}")
 
 
 def has_active_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
@@ -1647,31 +1678,77 @@ def has_active_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
 
 def has_live_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
     """True iff `problem` has a NULL-outcome Inject decision that is still
-    LIVE — i.e. NOT parked. A NULL inject is parked iff its produced goal is
-    `shelved` (reopenable, but its outcome now stays NULL forever — see
-    `propagate_inject_outcome_from_goal`); every other NULL inject is live:
-    its worker is still producing (a Forward before lemma registration has
-    `produced_goal_id` NULL), or its produced goal / strategy is genuinely in
-    progress.
+    LIVE in the sense the Strategist anti-idle gate needs: something will
+    move WITHOUT a Strategist wake.
 
-    BROADER than `has_active_inflight_inject` on purpose. This is for
-    suppression sites with NO in-flight-WORKER visibility — T0
-    (`problems_needing_t0`) and the verify_decision Noop-guard on a blocked
-    root — which must treat a just-committed Forward inject whose worker has
-    not yet registered its lemma (produced_goal_id NULL) as in-flight, so the
-    Strategist waits instead of firing / being forced into redundant work.
-    The stall predicate (`is_problem_stalled`) instead uses the narrower
-    active-check, because its condition 3 separately covers the enqueued-
-    worker window — see that function and `has_active_inflight_inject`."""
-    return conn.execute(
-        "SELECT 1 FROM strategist_decisions sd"
+      * `produced_goal_id` AND `produced_strategy_id` both NULL → live.
+        The worker is still PRODUCING (a Forward before lemma
+        registration) — this is the original reason this predicate is
+        broader than the stall-side active-check, and it must survive
+        every narrowing (suppression sites calling this have no
+        in-flight-worker visibility).
+      * produced goal / proposed strategy's subgoals → live iff their
+        subtree has a "dispatch" frontier (`_subtree_has_live_frontier`):
+        an `open` goal (BFS dispatches) or a queued worker (queue row).
+
+    2026-07-11 (b6 wake-pump livelock): the old blanket "NULL and not
+    shelved-produced" test was SELF-REFERENTIAL at the gate — injects
+    whose produced goals sat `pending_strategist_review` (or `attempting`
+    over a fully-parked subtree) counted as live, so the very goals that
+    pump T2 review wakes also opened the gate's escape hatch, and
+    EmitDirective-only batches passed forever (301 spawns / 2.05M output
+    tokens in 5h). A goal waiting on the Strategist is NOT "something
+    that moves without you" when the reader IS the Strategist. The
+    third recurrence of the P13 "two predicates disagree on one state"
+    disease (4284 spin → cond-4 deadlock → this); the alignment is now
+    pinned by test_stall_false_active.py's invariant tests."""
+    for row in conn.execute(
+        "SELECT sd.produced_goal_id AS gid,"
+        "       sd.produced_strategy_id AS sid"
+        " FROM strategist_decisions sd"
         " WHERE sd.problem = ? AND sd.decision_kind = 'Inject'"
-        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
-        "   AND NOT EXISTS ("
-        "     SELECT 1 FROM goals g"
-        "     WHERE g.id = sd.produced_goal_id AND g.status = 'shelved'"
-        "   ) LIMIT 1",
+        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL",
         (problem,),
+    ).fetchall():
+        if row["gid"] is None and row["sid"] is None:
+            return True  # worker still producing — nothing to recurse on
+        if row["gid"] is not None and _subtree_has_live_frontier(
+                conn, int(row["gid"]), frontier="dispatch"):
+            return True
+        if row["sid"] is not None:
+            for sub in conn.execute(
+                "SELECT ss.subgoal_id AS gid FROM strategies s"
+                " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+                " WHERE s.id = ? AND s.status = 'proposed'",
+                (int(row["sid"]),),
+            ).fetchall():
+                if _subtree_has_live_frontier(
+                        conn, int(sub["gid"]), frontier="dispatch"):
+                    return True
+    return False
+
+
+def goal_reviewed_at_current_attempts(conn: sqlite3.Connection,
+                                      goal_id: int) -> bool:
+    """True iff a strategist decision already targeted `goal_id` since its
+    last recorded attempt — i.e. the over-budget T2 review for THIS
+    attempts value has been answered. The bfs over-threshold guard uses
+    this to send a goal to review ONCE per attempts value instead of
+    re-escalating every tick after the Strategist answered (e.g. with a
+    Reopen that keeps the goal alive but changes nothing bfs can see —
+    b6 2026-07-10 wake pump, fuel line #2). Derived entirely from
+    decision history + dead_attempts timestamps: zero new state, immune
+    to daemon restarts (an in-memory flag would re-escalate once per
+    restart). Fails toward SKIPPING the escalation (quiet hold), never
+    toward re-spamming."""
+    return conn.execute(
+        "SELECT 1 FROM strategist_decisions"
+        " WHERE target_id = ?"
+        "   AND created_at >= COALESCE("
+        "     (SELECT MAX(ts) FROM dead_attempts"
+        "       WHERE target_id = ? AND target_kind = 'Goal'), '')"
+        " LIMIT 1",
+        (int(goal_id), int(goal_id)),
     ).fetchone() is not None
 
 

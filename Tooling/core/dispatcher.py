@@ -463,6 +463,14 @@ def bfs_refill(conn: sqlite3.Connection,
         # review instead of dispatching: over-threshold means "the
         # Strategist decides", whichever door the goal came through.
         if int(g["attempts"]) >= thresholds.SHELVE_THRESHOLD:
+            # One review per attempts value: if the Strategist already
+            # answered a review for this goal since its last attempt
+            # (e.g. Reopen — keep alive, nothing bfs-visible changes),
+            # re-escalating every tick pumps a Strategist wake loop
+            # (b6 2026-07-10). The goal holds quietly until an Inject
+            # (which bypasses bfs) mints a new attempt.
+            if db.goal_reviewed_at_current_attempts(conn, int(g["id"])):
+                continue
             print(f"[bfs] g{gid} open with attempts={g['attempts']} >= "
                   f"shelve_threshold={thresholds.SHELVE_THRESHOLD} — "
                   f"routing to strategist review, not dispatch",

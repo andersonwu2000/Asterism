@@ -1814,7 +1814,11 @@ def test_verify_decisions_rejects_noop_alone_when_root_pending_review(
     residue_thm 2026-05-20 run 4: Backward on root declined shelve;
     cascade set root pending_review; T2 fired Strategist which emitted
     Noop #116 ('let s10404 run' — but s10404 was already dead from
-    Backward cleanup). Daemon idle-exited."""
+    Backward cleanup). Daemon idle-exited.
+
+    2026-07-11: the review-discharge rule (b6 wake pump) now catches
+    this BEFORE the root-blocked gate — same rejection, message names
+    the reviewed goal instead of the 'logical contradiction' framing."""
     root = _insert_root(conn)
     db.update_goal_status(conn, root, "pending_strategist_review")
     ds, _ = strategist.parse_decisions(json.dumps([
@@ -1823,7 +1827,7 @@ def test_verify_decisions_rejects_noop_alone_when_root_pending_review(
     err = strategist.verify_decisions(ds, conn, problem="p")
     assert "Inject" in err
     assert "pending_strategist_review" in err
-    assert "logical contradiction" in err.lower()
+    assert "review not discharged" in err and f"g{root}" in err
 
 
 def test_verify_decisions_rejects_noop_alone_when_root_frozen(

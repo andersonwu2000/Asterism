@@ -239,7 +239,11 @@ _WATERMARKS = {
     # migrations + user_version stepping split to db_migrations.py
     # (~1500 lines out). Next cut if growth resumes: helper-family split
     # (#11 opportunistic list).
-    "Tooling/state/db.py": 3000,
+    # 3000→3100 (2026-07-11): T2 wake-pump livelock fix — parameterized
+    # frontier semantics (stall vs dispatch) + has_live_inflight_inject
+    # narrowing + goal_reviewed_at_current_attempts (~90 lines) —
+    # conscious bump; the helper-family split (#11) is now overdue.
+    "Tooling/state/db.py": 3100,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,

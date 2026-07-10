@@ -665,6 +665,53 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                 "gate)."
             )
 
+    # Cross-decision: review-discharge (2026-07-11, b6 wake-pump). While
+    # ANY goal sits in `pending_strategist_review`, the batch must contain
+    # at least one decision TARGETING one of them (ConfirmShelve / Reopen /
+    # Inject / AttemptDisproof on that goal) — pending_review means "the
+    # framework cannot progress without your verdict on THIS goal", and
+    # `reconcile_stuck_states` re-wakes every tick until the set empties.
+    # A batch that leaves every reviewed goal untouched (the EmitDirective-
+    # only pattern) discharges nothing: the wake loop just paid an LLM
+    # spawn for a note (301 spawns / 2.05M output tokens, b6 2026-07-10).
+    # EmitDirective stays legal as an EXTRA sibling — what is rejected is
+    # the notes-only batch, not the note. Exempt: Ingest (terminal exit —
+    # queued Strategists are dropped after it) and RequestUserAmend (the
+    # awaiting_human gate pauses the wake pump itself).
+    pending_review_ids: set[int] = {
+        int(r["id"]) for r in conn.execute(
+            "SELECT id FROM goals WHERE problem = ?"
+            "  AND status = 'pending_strategist_review'",
+            (problem,),
+        )
+    }
+    if pending_review_ids:
+        exempt = any(d.kind in ("Ingest", "RequestUserAmend")
+                     for d in decisions)
+        addressed = any(
+            d.target_id is not None and int(d.target_id) in pending_review_ids
+            for d in decisions)
+        if not exempt and not addressed:
+            ids = ", ".join(f"g{i}" for i in sorted(pending_review_ids))
+            return (
+                f"review not discharged: goal(s) {ids} are in "
+                f"pending_strategist_review — they wait on YOUR verdict, "
+                f"and the framework re-wakes you every tick until you "
+                f"give one. This batch targets none of them, so it "
+                f"resolves nothing. Include at least one decision "
+                f"targeting a reviewed goal:\n"
+                f"  - ConfirmShelve(target_goal_id=...) — park it "
+                f"(pair with an Inject per the shelve rule: build the "
+                f"missing tool or redirect focus), OR\n"
+                f"  - Inject(Backward/Builder, target_goal_id=...) — "
+                f"re-attack it with a fresh brief, OR\n"
+                f"  - Reopen(target_goal_id=...) — honest 'keep it "
+                f"alive' when undecided (its attempts budget caps "
+                f"re-dispatch naturally).\n"
+                f"EmitDirective may accompany these, but cannot be the "
+                f"whole batch."
+            )
+
     # Cross-decision: if the root is in a state only Strategist can
     # unfreeze (`shelved` / `frozen` / `pending_strategist_review`),
     # AND this batch dispatches no fresh work (no Inject),
