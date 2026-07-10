@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-09
+Out-of-budget open goals now route to human review instead of looping fruitlessly, and parked work no longer masquerades as active proving.
+
+- The one-click Windows installer was consolidated into a single `Asterism.exe` with a web-based first-run setup, plus a more resilient Python bootstrap that self-heals broken 3.12 installs, accepts any Python ≥3.12, and runs Lean and Mathlib setup on parallel tracks.
+- The web interface gained a unified camera engine shared across the proof-search and library views, directional citation arcs, automatic layout-cleanup passes, richer run cards showing the full proof body, and problem deletion behind a confirmation guard.
+
 ### 2026-07-08
 - Rebuilt the one-click installer and setup wizard to run unattended with live progress, a reliable minimal Python and pinned Lean toolchain, and browser-based login.
 - Added the ability to settle a requested claim as false by proving its negation, while keeping such a disproof clearly distinct from an ordinary success.
@@ -215,11 +221,6 @@ live serve.
 - Streamlined the pass that rewrites a finished proof into mathlib's idiom — aligning lemma names, trimming unused imports, and removing redundant references — folding many small steps into a few and fixing several cases where leftover references or errors were silently dropped.
 - Made the task scheduler more robust to restarts and infrastructure failures, so stalled proof batches are retried rather than left stuck.
 - Added packaging and continuous integration, and switched the proof-planning component to a newer model.
-
-### 2026-06-09
-- Refined the step that removes redundant lemmas and definitions from the generated proof library, including dropping thin wrappers that merely re-alias existing Mathlib results.
-- Polished the cleaned-up Lean code by simplifying proofs, improving docstrings, removing unused arguments, and stripping internal framework comments and jargon.
-- Reorganized declarations into sections with shared variables hoisted out, and ensured compiled files were rebuilt before verification checks were re-run.
 
 <!-- ASTERISM-PROGRESS:END -->
 
