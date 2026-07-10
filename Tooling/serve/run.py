@@ -73,6 +73,42 @@ def _tail(path: Path) -> "dict | None":
 _CTX_TITLE_RE = re.compile(r"#\s*(\w+) context — (.+?)\s*$")
 
 
+def _goal_workarea_draft(workspace: Path, slug: str) -> "Path | None":
+    """Freshest .lean draft in the workarea serving goal `slug`
+    (matched by Context.md's '# Context for goal <slug>' heading —
+    only the owning agent's context carries it as a heading, so a
+    sibling merely CITING the slug never matches). Backward/Builder
+    agents draft `patch.lean` here and only land at commit."""
+    marker = f"# Context for goal {slug}"
+    best: "Path | None" = None
+    best_m = -1.0
+    try:
+        entries = list((workspace / ".attempts").iterdir())
+    except OSError:
+        return None
+    for d in entries:
+        if d.name.startswith("_") or not d.is_dir():
+            continue
+        try:
+            ctx = (d / "Context.md").read_text(
+                encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if marker not in ctx:
+            continue
+        try:
+            for f in d.glob("*.lean"):
+                if f.name.startswith("_"):
+                    continue
+                mt = f.stat().st_mtime
+                if mt > best_m:
+                    best_m = mt
+                    best = f
+        except OSError:
+            continue
+    return best
+
+
 def _scratch_drafts(workspace: Path) -> "list[tuple[str, str, float, Path]]":
     """(kind, problem, ctx_mtime, dir) for each live agent workarea
     under `.attempts/`, identified by its Context.md title line. A
@@ -253,6 +289,28 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                 rel = str(r["lean_path"])
                 lane["path"] = rel
                 lane["file"] = _tail(workspace / rel)
+                # A Backward/Builder ATTEMPT drafts patch.lean in its
+                # workarea and lands only at commit — the goal's own
+                # file is a static sorry stub the whole while (owner:
+                # "the card was sorry start to end, then subgoals
+                # appeared"). While the draft is the fresher text, the
+                # draft IS the live view.
+                if r["slug"]:
+                    draft = _goal_workarea_draft(workspace, str(r["slug"]))
+                    if draft is not None:
+                        try:
+                            landed_m = (workspace / rel).stat().st_mtime
+                        except OSError:
+                            landed_m = -1.0
+                        try:
+                            if draft.stat().st_mtime > landed_m:
+                                dtail = _tail(draft)
+                                if dtail is not None:
+                                    lane["path"] = draft.relative_to(
+                                        workspace).as_posix()
+                                    lane["file"] = dtail
+                        except OSError:
+                            pass
             if lane["file"] is None:
                 # no landed target file (Forward, or a goal whose file
                 # isn't on disk yet) → tail the lane's scratch draft.
