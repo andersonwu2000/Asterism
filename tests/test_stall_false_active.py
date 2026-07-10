@@ -408,8 +408,9 @@ def test_alignment_invariant_stalled_implies_gate_rejects(
 
 def test_bfs_review_dedup_once_per_attempts(tmp_path: Path) -> None:
     """Fuel line #2 of the pump: after the Strategist answers the
-    over-budget review (e.g. Reopen — goal open again, attempts
-    unchanged), bfs must NOT re-escalate; a NEW attempt re-arms it."""
+    over-budget review with a verdict that leaves the goal open at the
+    same attempts count, bfs must NOT re-escalate; a NEW attempt
+    re-arms it."""
     from Tooling.core.dispatcher import bfs_refill
     from Tooling.state import thresholds
     conn = _conn(tmp_path)
@@ -433,7 +434,7 @@ def test_bfs_review_dedup_once_per_attempts(tmp_path: Path) -> None:
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, target_id, payload, batch_id,"
         " outcome, created_at, updated_at)"
-        " VALUES (?, 0, 'pending_review', 'Reopen', ?, '{}', NULL,"
+        " VALUES (?, 0, 'pending_review', 'Inject', ?, '{}', NULL,"
         " 'success', '2026-01-02T00:00:00+00:00',"
         " '2026-01-02T00:00:00+00:00')", (P, g))
     conn.commit()
