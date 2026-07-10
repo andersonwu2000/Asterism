@@ -32,7 +32,7 @@ Before committing, `Grep` mathlib briefly for any concept the agent claims is mi
   - `Forward`: produces one new def/theorem into `proofs/L_<slug>.lean`; no `target_goal_id`. Search for an existing lemma first. Do not add defs via `Defs.lean`.
   - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
   - `Builder`: single file inline, one tactic block.
-- `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone.
+- `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. Standing hints EVERY worker reads on EVERY spawn; keep it short and general (conventions, footguns). Your plans/progress go in `_plan.md`; goal-specific hints in an Inject brief.
 - `AttemptDisproof` — `target_goal_id`, `reason` (falsity evidence). For a user-requested claim you believe false; a mere typo → `RequestUserAmend` instead. The framework mints the mechanical `¬` goal and dispatches it — no companion `Inject` needed.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md", "Root.lean"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong.
@@ -41,6 +41,9 @@ Before committing, `Grep` mathlib briefly for any concept the agent claims is mi
 
 ## Rules
 - Empty array rejected.
+- Dispose of the goal(s) under review: at least one decision must target a reviewed goal (ConfirmShelve / Inject / AttemptDisproof). A batch targeting none of them is rejected.
+- New lemmas enter the problem only through your Inject(Forward) — missing tools never land on their own.
+- The root's STATEMENT is immutable; the root goal itself is a legal Inject(Backward) target to re-engage its subtree.
 - Inject(Forward) carries no `target_goal_id`; Inject(Backward/Builder) requires one.
 - Same-batch Forward bricks must be independent (concurrent dispatch); a dependent brick goes in the next batch.
 - Don't dig into tactics or Lean syntax. Lemma names, invariant constructions, proof techniques fair game.

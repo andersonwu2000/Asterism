@@ -981,11 +981,14 @@ def test_strategist_prompts_share_decision_kind_vocabulary() -> None:
     # now handles all "reactivate + dispatch" cases (LU lu_step_assembly bug class).
     # The Reopen decision kind still exists in the framework schema for backward
     # compat with old DB rows + tests; just no longer emitted by the prompts.
+    # Noop removed from inject_batch_done.md 2026-07-11 (b6 wake pump): the
+    # batch-done wake carries the mandatory-advance rule, so a Noop there was
+    # never a legal answer — same retirement pattern as Reopen.
     expected_kinds = {
         "routine": {"Inject", "ConfirmShelve", "EmitDirective",
                     "RequestUserAmend", "Noop"},
         "pending_review": {"Inject", "ConfirmShelve"},
-        "inject_batch_done": {"Inject", "ConfirmShelve", "Noop"},
+        "inject_batch_done": {"Inject", "ConfirmShelve"},
     }
     prompt_dir = PROMPT_DIR / "strategist"
     for tk, kinds in expected_kinds.items():
