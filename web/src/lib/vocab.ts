@@ -35,3 +35,27 @@ export function originLabel(origin: string): string {
 export function strategyStatusLabel(status: string): string {
   return status.replace(/_/g, ' ')
 }
+
+/** Definition-bearing kinds — what draws as a DIAMOND (the anchor
+ * surface a human vouches for). ONE set for both dialects: goals
+ * speak Lean's ('inductive'), the librarian's decl_kind speaks its
+ * shorthand ('induct'). Three per-screen copies had drifted three
+ * ways (2026-07-10) — the atlas missed 'inductive', the sky missed
+ * 'induct'. */
+export const DEF_KINDS = new Set([
+  'def', 'abbrev', 'structure', 'class', 'instance', 'inductive', 'induct',
+])
+
+/** goal status → text class, shared by every status chip (GoalPanel
+ * and StrategyPanel each carried an identical private copy — the
+ * pre-drift stage of the same disease). */
+export const GOAL_STATUS_CLS: Record<string, string> = {
+  proved: 'text-starlight',
+  attempting: 'text-accent',
+  open: 'text-accent',
+  shelved: 'text-ink-faint',
+  pending_strategist_review: 'text-warn',
+  disproved: 'text-danger',
+  dead: 'text-ink-faint',
+  frozen: 'text-ink-faint',
+}

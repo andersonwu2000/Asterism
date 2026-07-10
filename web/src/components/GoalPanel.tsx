@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
-import { goalStatusLabel, originLabel, strategyStatusLabel } from '../lib/vocab'
+import { GOAL_STATUS_CLS, goalStatusLabel, originLabel, strategyStatusLabel } from '../lib/vocab'
 import { SectionLabel } from './ui'
 import type { DeadAttempt, GoalDetail } from '../lib/types'
 
@@ -10,17 +10,6 @@ import type { DeadAttempt, GoalDetail } from '../lib/types'
  * as written (`name : statement := proof`, import prelude stripped),
  * routes, and — while the goal is still unproved — dead-attempt
  * forensics. A proved star's past failures are history, not signal. */
-
-const GOAL_STATUS_CLS: Record<string, string> = {
-  proved: 'text-starlight',
-  attempting: 'text-accent',
-  open: 'text-accent',
-  shelved: 'text-ink-faint',
-  pending_strategist_review: 'text-warn',
-  disproved: 'text-danger',
-  dead: 'text-ink-faint',
-  frozen: 'text-ink-faint',
-}
 
 function Attempt({ a }: { a: DeadAttempt }) {
   const [open, setOpen] = useState(false)

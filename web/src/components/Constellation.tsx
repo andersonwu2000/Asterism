@@ -3,7 +3,8 @@ import type { Goal, Strategy, StrategyEdge } from '../lib/types'
 import { CameraControls, useSkyCamera } from '../lib/camera'
 import { layoutConstellation } from '../lib/layout'
 import { Lean } from '../lib/lean'
-import { goalStatusLabel } from '../lib/vocab'
+import { citePath } from '../lib/sky'
+import { DEF_KINDS, goalStatusLabel } from '../lib/vocab'
 import type { ConstellationLayout, LayoutNode } from '../lib/layout'
 
 /*
@@ -46,39 +47,6 @@ interface Tween {
   /** camera glide — only when the user hasn't zoomed or panned */
   fromView: View | null
   toView: View | null
-}
-
-/** Citation bow — single source for the initial render AND the
- * animator's per-frame rewrites. Bow grows with span (a fixed cap
- * flattened long horizontals back into wires); endpoint-id parity mixes
- * directions so parallel threads separate. */
-function citePath(
-  a: { x: number; y: number },
-  b: { x: number; y: number },
-  from: number,
-  to: number,
-  trimEnd = 0,
-): { d: string; len: number } {
-  const dx = b.x - a.x
-  const dy = b.y - a.y
-  const len = Math.hypot(dx, dy) || 1
-  const bow = Math.min(150, len * 0.18) * ((from + to) % 2 === 0 ? 1 : -1)
-  const mx = (a.x + b.x) / 2 + (-dy / len) * bow
-  const my = (a.y + b.y) / 2 + (dx / len) * bow
-  let bx = b.x
-  let by = b.y
-  if (trimEnd > 0) {
-    // pull the endpoint back along the arrival tangent so a marker's
-    // tip touches the star's RIM instead of drowning under the dot;
-    // cap so a short arc can never invert
-    const tx = b.x - mx
-    const ty = b.y - my
-    const tl = Math.hypot(tx, ty) || 1
-    const t = Math.min(trimEnd, len * 0.4)
-    bx = b.x - (tx / tl) * t
-    by = b.y - (ty / tl) * t
-  }
-  return { d: `M ${a.x} ${a.y} Q ${mx} ${my} ${bx} ${by}`, len }
 }
 
 function computeFit(el: HTMLElement, l: ConstellationLayout): View {
@@ -192,7 +160,6 @@ function radius(g: Goal): number {
 }
 
 /** def-like kinds — the vouchable meaning-bearers (anchor+claim §4) */
-const DEF_KINDS = new Set(['def', 'structure', 'class', 'instance', 'abbrev', 'inductive'])
 
 /* Root goals are just the brightest star: larger radius + a soft halo
  * ring. No glyph shapes (owner's call — spikes and sparks both out). */

@@ -1,6 +1,6 @@
 import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
-import { goalStatusLabel, strategyStatusLabel } from '../lib/vocab'
+import { GOAL_STATUS_CLS, goalStatusLabel, strategyStatusLabel } from '../lib/vocab'
 import { SectionLabel } from './ui'
 
 /** Strategy (decomposition) drill-down: the agent's proposal reasoning,
@@ -30,17 +30,6 @@ const STRAT_STATUS_CLS: Record<string, string> = {
   dead: 'text-danger',
   superseded: 'text-ink-faint',
   stalled: 'text-warn',
-}
-
-const GOAL_STATUS_CLS: Record<string, string> = {
-  proved: 'text-starlight',
-  attempting: 'text-accent',
-  open: 'text-accent',
-  shelved: 'text-ink-faint',
-  pending_strategist_review: 'text-warn',
-  disproved: 'text-danger',
-  dead: 'text-ink-faint',
-  frozen: 'text-ink-faint',
 }
 
 export default function StrategyPanel({

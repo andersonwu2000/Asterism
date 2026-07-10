@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react'
 import { usePoll } from '../lib/api'
+import { moduleOf } from '../lib/format'
 import { Link } from '../lib/router'
 import { EmptyState, ErrorState } from '../components/ui'
 import { Lean } from '../lib/lean'
+import { DEF_KINDS } from '../lib/vocab'
 import type { LibraryDecl, LibraryProblem } from '../lib/types'
 
 /*
@@ -33,7 +35,6 @@ function mulberry32(seed: number): () => number {
   }
 }
 
-const DEF_KINDS = new Set(['def', 'induct', 'structure', 'class', 'instance', 'abbrev'])
 
 interface StarPt {
   x: number
@@ -50,7 +51,7 @@ function clusterSize(n: number): { w: number; h: number } {
 }
 
 function citationImport(d: LibraryDecl): string {
-  return d.file ? `import ${d.file.replace(/\.lean$/, '').split('/').join('.')}` : ''
+  return d.file ? `import ${moduleOf(d.file)}` : ''
 }
 
 function Cluster({ p, query }: { p: LibraryProblem; query: string }) {

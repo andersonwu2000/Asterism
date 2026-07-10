@@ -1,11 +1,13 @@
 import { useMemo, useState } from 'react'
 import { usePoll } from '../lib/api'
-import { relTime } from '../lib/format'
+import { leafOf, moduleOf, relTime } from '../lib/format'
 import { Link } from '../lib/router'
 import { ErrorState } from '../components/ui'
 import { Lean } from '../lib/lean'
 import { LeanProbe } from '../components/LeanProbe'
 import { CameraControls, useSkyCamera } from '../lib/camera'
+import { citePath } from '../lib/sky'
+import { DEF_KINDS } from '../lib/vocab'
 import { layoutConstellation } from '../lib/layout'
 import type { Goal, LibraryChapter, LibraryChapterDecl, LibraryChapterFile } from '../lib/types'
 
@@ -21,15 +23,6 @@ import type { Goal, LibraryChapter, LibraryChapterDecl, LibraryChapterFile } fro
 
 type Tab = 'highlights' | 'map' | 'modules'
 
-const DEF_KINDS = new Set(['def', 'induct', 'inductive', 'structure', 'class', 'instance', 'abbrev'])
-
-function moduleOf(path: string): string {
-  return path.replace(/\.lean$/, '').split('/').join('.')
-}
-
-function leafOf(path: string): string {
-  return moduleOf(path).split('.').pop() ?? path
-}
 
 /** Docstring markdown-lite: paragraphs, `code` spans, # headings,
  * `- ` bullets, *emphasis*. Lean's unicode IS the math — no TeX pass. */
@@ -432,16 +425,12 @@ function ModuleMap({
             // an edge that skips layers bows around the rows between,
             // instead of drawing through their stars
             if (span > 130) {
-              const dx = b.x - a.x
-              const dy = b.y - a.y
-              const len = Math.hypot(dx, dy) || 1
-              const bow = Math.min(60, span * 0.16) * (ei % 2 === 0 ? 1 : -1)
-              const mx = (a.x + b.x) / 2 + (-dy / len) * bow
-              const my = (a.y + b.y) / 2 + (dx / len) * bow
+              // the problem sky's bow, verbatim (index parity
+              // separates parallel threads)
               return (
                 <path
                   key={`${f.path}<${imp}`}
-                  d={`M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`}
+                  d={citePath(a, b, ei, 0).d}
                   fill="none"
                   stroke="var(--color-starlight)"
                   strokeWidth={1 / k}
