@@ -798,7 +798,11 @@ def test_daemon_start_spawns_detached_and_writes_log_pointer(
     seen = {}
 
     class _P:
+        # both spawn shapes: POSIX direct child (pid) and the Windows
+        # tree-detach relay (communicate prints the daemon's pid)
         pid = 4242
+        def communicate(self, timeout=None):
+            return b"4242\n", b""
     def fake_popen(argv, **kw):
         seen["argv"] = argv
         seen["kw"] = kw
