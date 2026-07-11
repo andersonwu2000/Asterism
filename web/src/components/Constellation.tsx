@@ -593,6 +593,13 @@ export default function Constellation({
   const family = useMemo(() => {
     if (!hovered) return null
     const id = hovered.goal.id
+    // rings follow the hovered star's OWN vitality (owner, 2026-07-11):
+    // a living star's hover invites you to its living relatives — its
+    // failed decompositions keep the faint strokes (never hidden) but
+    // earn no ring; a dead/shelved star has only dead family, and
+    // "where did this hang" still deserves an answer, so its rings stay
+    const retired =
+      hovered.goal.status === 'dead' || hovered.goal.status === 'shelved'
     const segs: {
       key: string
       dead: boolean
@@ -602,8 +609,10 @@ export default function Constellation({
     // star id → dead-only? a neighbour reached by any live route
     // wears the live ring
     const stars = new Map<number, boolean>()
-    const mark = (sid: number, dead: boolean) =>
+    const mark = (sid: number, dead: boolean) => {
+      if (dead && !retired) return
       stars.set(sid, (stars.get(sid) ?? true) && dead)
+    }
     const pt = (a: { x: number; y: number }, b: { x: number; y: number }, fromId: number, toId: number, dead: boolean, key: string) => {
       // same geometry law as the base layers: past 480 a straight
       // stroke reads as a stray wire — bow it exactly where they do
