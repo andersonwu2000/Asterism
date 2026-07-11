@@ -95,6 +95,36 @@ def _normalize_slug(raw: str) -> "str | None":
     return s if _SLUG_RE.match(s) else None
 
 
+def _dead_twin_block_reason(conn, problem: str,
+                            dead_goal_id: int) -> "str | None":
+    """Dead-twin guard verdict for one dedupe kind='dead' hit
+    (agent_feedback 2026-07-09/10): None when the problem's proved base
+    has GROWN since the twin died — the world changed, a retry with new
+    tools is the designed revival path. Otherwise the decline fragment
+    carrying the twin's last failure forensics, so the retry / next
+    Strategist sees WHY the identical statement already died instead of
+    re-walking it blind."""
+    twin = db.get_goal(conn, dead_goal_id)
+    if twin is None:
+        return None
+    grown = conn.execute(
+        "SELECT 1 FROM goals WHERE problem = ? AND status = 'proved'"
+        "  AND updated_at > ? LIMIT 1",
+        (problem, str(twin["updated_at"])),
+    ).fetchone() is not None
+    if grown:
+        return None
+    prior = conn.execute(
+        "SELECT failure_reason, substr(COALESCE(failure_detail,''), 1, 300)"
+        "       AS detail FROM dead_attempts"
+        " WHERE target_id = ? AND target_kind = 'Goal'"
+        " ORDER BY id DESC LIMIT 1", (int(dead_goal_id),),
+    ).fetchone()
+    why = (f"last failure: {prior['failure_reason']} — {prior['detail']}"
+           if prior else "no recorded attempt detail")
+    return f"≡ dead goal {int(dead_goal_id)} ({twin['slug']}); {why}"
+
+
 def _strict_ancestor_slugs(conn, goal_id: int) -> "dict[str, str]":
     """`{slug: lean_path}` for every STRICT ancestor of `goal_id` on its
     live chain (walks up via `strategy_subgoals`; excludes `goal_id`
@@ -1306,6 +1336,38 @@ def _backward_parse_and_commit(
             f"on this goal); only PROVED matches auto-cite. Give each sub-goal "
             f"new content (proof composes ≥2 proved results, not the ancestor "
             f"re-applied), or prove the goal directly in patch.lean.",
+            leading,
+        )
+
+    # Dead-twin guard (agent_feedback 2026-07-09/10, ~35 entries): a
+    # sub-goal statement-equivalent to a DEAD goal is a blind repeat of an
+    # exhausted attempt — b6 burned 3-4 full Backward turns re-walking a
+    # same-day counterexampled decline. Decline WITH the twin's prior
+    # failure forensics so the retry / next Strategist sees WHY it died.
+    # World-changed release: if any goal PROVED after the twin died, the
+    # toolkit grew — the retry is legitimate (the designed revival path),
+    # so the match is neutralized and the sub-goal mints as novel.
+    dead_pairs = [
+        (idx, slug, m.goal_id)
+        for idx, ((slug, _), m) in enumerate(zip(sub_meta, canonical_for))
+        if m is not None and m.kind == "dead"
+    ]
+    blocking_dead: list[str] = []
+    for idx, slug, dgid in dead_pairs:
+        why = _dead_twin_block_reason(conn, goal["problem"], dgid)
+        if why is None:
+            canonical_for[idx] = None  # world changed — retry allowed
+            continue
+        blocking_dead.append(f"`{slug}` {why}")
+    if blocking_dead:
+        return _abort(
+            "same_as_dead_unchanged",
+            "sub-goal(s) restate a DEAD twin and nothing has been proved "
+            "in this problem since it died — a byte-identical retry in an "
+            "unchanged world repeats the same failure:\n  "
+            + "\n  ".join(blocking_dead)
+            + "\nEither change the statement (weaker/refactored), or "
+            "first land the missing tool the prior failure names.",
             leading,
         )
 

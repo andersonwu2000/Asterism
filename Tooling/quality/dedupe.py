@@ -987,6 +987,41 @@ def _eligible_disproved(conn: sqlite3.Connection, workspace: Path, *,
     return eligible
 
 
+def _eligible_dead(conn: sqlite3.Connection, workspace: Path, *,
+                   problem: str, parent_goal_id: int,
+                   candidate_count: int,
+                   ) -> list[tuple[sqlite3.Row, str]]:
+    """DEAD goals in the same Problem whose lean files are still on disk
+    (same shape as `_eligible_disproved`, status='dead'). Used to detect
+    that a candidate sub-goal restates a statement whose attempts were
+    already exhausted — the caller then declines it WITH the prior
+    failure forensics unless the problem's proved base has grown since
+    the twin died (agent_feedback 2026-07-09/10: the same shape was
+    re-briefed 3-4 full Backward turns after a same-day counterexampled
+    decline, each time blind)."""
+    rows = conn.execute(
+        "SELECT g.id, g.statement, g.lean_path, g.status, g.updated_at,"
+        "       g.slug FROM goals g "
+        "WHERE g.problem = ? AND g.status = 'dead' "
+        "  AND g.alias_target_id IS NULL "
+        "  AND g.id != ? "
+        "ORDER BY g.id ASC",
+        (problem, parent_goal_id),
+    ).fetchall()
+
+    eligible: list[tuple[sqlite3.Row, str]] = []
+    for r in rows:
+        try:
+            canon_text = (workspace / r["lean_path"]).read_text(
+                encoding="utf-8")
+        except OSError:
+            continue
+        if _signature_binder_count(canon_text) > candidate_count:
+            continue
+        eligible.append((r, canon_text))
+    return eligible
+
+
 class CanonicalMatch(NamedTuple):
     """Result of a dedupe hit on one candidate.
 
@@ -1017,9 +1052,15 @@ class CanonicalMatch(NamedTuple):
         Cannot be immediately aliased; the caller turns the candidate
         into a CITATION of `goal_id` and lets the cite-gate link-and-wait
         (revive if shelved) — the canonical proving later satisfies it.
+      - `"dead"`: canonical is a DEAD in-problem twin (attempts
+        exhausted / declined). Caller declines the candidate WITH the
+        twin's prior failure forensics UNLESS the problem's proved base
+        has grown since the twin died (a retry with new tools is
+        legitimate; a blind byte-identical retry in an unchanged world
+        is not — agent_feedback 2026-07-09/10).
     """
     goal_id: int
-    kind: str  # "alias" | "disproved" | "no_progress" | "library_alias"
+    kind: str  # "alias" | "disproved" | "no_progress" | "library_alias" | "reuse" | "dead"
     library_module: str | None = None  # set iff kind == "library_alias"
     library_fqn: str | None = None
 
@@ -1130,6 +1171,7 @@ def find_canonicals_batch(
     KIND_DISPROVED = "disproved"
     KIND_NO_PROGRESS = "no_progress"
     KIND_REUSE = "reuse"
+    KIND_DEAD = "dead"
     cand_pools: list[list[tuple[sqlite3.Row, str, str]]] = []
     # Reuse pool kept separate so it can be appended to `pairs` AFTER the
     # Library tier — lowest priority (a proved alias always beats linking
@@ -1167,10 +1209,15 @@ def find_canonicals_batch(
             conn, workspace, problem=problem,
             parent_goal_id=parent_goal_id, candidate_count=cand_count,
         )
+        dead = _eligible_dead(
+            conn, workspace, problem=problem,
+            parent_goal_id=parent_goal_id, candidate_count=cand_count,
+        )
         # Order = priority on first-hit: a PROVED canonical (alias) wins over
         # both a disproved precedent and a no-progress self/ancestor match —
         # if the candidate can be discharged by an existing proof, do that.
-        # disproved (statement known false) outranks no_progress (retryable).
+        # disproved (statement known false) outranks no_progress (retryable),
+        # which outranks dead (a spent twin — weakest verdict).
         pool: list[tuple[sqlite3.Row, str, str]] = []
         for r, t in anc + orph + cross:
             pool.append((r, t, KIND_ALIAS))
@@ -1178,6 +1225,8 @@ def find_canonicals_batch(
             pool.append((r, t, KIND_DISPROVED))
         for r, t in no_progress:
             pool.append((r, t, KIND_NO_PROGRESS))
+        for r, t in dead:
+            pool.append((r, t, KIND_DEAD))
         # Tier 1 slug hit seeds the FRONT of the pool (first-hit priority
         # preserved) — probe-confirmed, see the comment at tier1_rows.
         t1 = tier1_rows[ci]
@@ -1195,7 +1244,8 @@ def find_canonicals_batch(
         reuse_exclude = (seen_ids
                          | {int(r["id"]) for r, _ in cross}
                          | {int(r["id"]) for r, _ in disproved}
-                         | {int(r["id"]) for r, _ in no_progress})
+                         | {int(r["id"]) for r, _ in no_progress}
+                         | {int(r["id"]) for r, _ in dead})
         cand_reusable.append(_eligible_problem_reusable(
             conn, workspace, problem=problem,
             parent_goal_id=parent_goal_id, candidate_count=cand_count,
@@ -1326,9 +1376,11 @@ def find_canonicals_batch(
     n_noprog = sum(1 for m in result if m and m.kind == "no_progress")
     n_library = sum(1 for m in result if m and m.kind == "library_alias")
     n_reuse = sum(1 for m in result if m and m.kind == "reuse")
+    n_dead = sum(1 for m in result if m and m.kind == "dead")
     print(f"[dedupe] checked {n} candidate(s) against {len(pairs)} "
           f"pair(s); alias={n_alias} disproved={n_disproved} "
-          f"no_progress={n_noprog} library={n_library} reuse={n_reuse}",
+          f"no_progress={n_noprog} library={n_library} reuse={n_reuse} "
+          f"dead={n_dead}",
           flush=True)
     return result
 

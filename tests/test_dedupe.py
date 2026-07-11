@@ -586,6 +586,79 @@ def test_find_canonicals_batch_disproved_match_returns_disproved_kind(
     ]
 
 
+def test_find_canonicals_batch_dead_match_returns_dead_kind(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent_feedback 2026-07-09/10 — a candidate statement-equivalent to
+    a DEAD in-problem twin gets kind='dead' so the caller can decline it
+    with the twin's forensics (or release it if the proved base grew).
+    Pre-fix a dead twin matched NOTHING and the blind duplicate minted."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    dead_g = _seed_sub(conn, slug="spent_twin",
+                       statement="X", status="dead")
+    _link(conn, root, [dead_g])
+    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
+    _link(conn, root, [parent])
+    _write_lean(tmp_path, "p", "spent_twin",
+        "import Mathlib\ntheorem spent_twin (a : T) : X := by sorry\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : Q := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    def fake(ws: Path, p: str,
+             pairs: list[tuple[str, str, str]]) -> list[bool]:
+        return [thm == "Problems.p.spent_twin" for _sig, _mod, thm in pairs]
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
+
+    cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("c", cand)],
+    )
+    assert canonicals == [
+        dedupe.CanonicalMatch(goal_id=dead_g, kind="dead"),
+    ]
+
+
+def test_dead_twin_block_reason_blocks_and_releases(
+    conn: sqlite3.Connection,
+) -> None:
+    """Backward's dead-twin verdict: unchanged world → decline fragment
+    carrying the twin's last failure forensics; a goal PROVED after the
+    twin died → None (world changed, retry is the designed path)."""
+    from Tooling.pipeline.backward import _dead_twin_block_reason
+    _seed_problem(conn)
+    dead_g = _seed_sub(conn, slug="spent_twin", statement="X",
+                       status="dead")
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at, finished_at)"
+        " VALUES ('pp1', 'Backward', ?, 'Goal', 'failed', 'failed',"
+        " ?, ?)", (str(dead_g), db.now(), db.now()))
+    conn.execute(
+        "INSERT INTO dead_attempts (target_id, target_kind, pipeline_id,"
+        " failure_reason, failure_detail, ts)"
+        " VALUES (?, 'Goal', 'pp1', 'agent_declined',"
+        " 'T1 constant too large; needs K0 bound', ?)",
+        (dead_g, db.now()))
+    conn.commit()
+
+    why = _dead_twin_block_reason(conn, "p", dead_g)
+    assert why is not None
+    assert "T1 constant too large" in why and "spent_twin" in why
+
+    # A goal proved AFTER the twin died releases the guard.
+    fresh = _seed_sub(conn, slug="new_tool", statement="Y")
+    conn.execute(
+        "UPDATE goals SET status='proved',"
+        " updated_at='299-01-01T00:00:00+00:00' WHERE id=?", (fresh,))
+    conn.commit()
+    assert _dead_twin_block_reason(conn, "p", dead_g) is None
+
+
 def test_find_canonicals_batch_shelved_is_reused(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
