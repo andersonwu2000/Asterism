@@ -17,10 +17,11 @@ import type { BoardProblem, BoardResponse, Meta } from '../lib/types'
 function GoalCounts({ p }: { p: BoardProblem }) {
   if (p.goals.total === 0 || (p.goals.open === 0 && p.goals.proved === 0))
     return null // nothing started — silence, not a dash
-  // one nowrap line that truncates — a mid-word wrap inside a table
-  // cell is worse than losing the (tertiary) shelved count
+  // the NUMBERS never yield: shrink-0 here makes the decorative bar
+  // (the other flex sibling) compress instead — a tight column used to
+  // truncate the fraction itself ('173/…', audit 2026-07-11)
   return (
-    <span className="tnum truncate text-xs whitespace-nowrap">
+    <span className="tnum shrink-0 text-xs whitespace-nowrap">
       {p.goals.open > 0 && <span className="text-ink">{p.goals.open} open · </span>}
       <span className="text-ink-faint">
         {p.goals.proved}/{p.goals.total}
@@ -408,7 +409,9 @@ export default function Board() {
           <span className="tnum text-xs text-ink-faint">
             {problems.length}
             {attention > 0 && (
-              <span className="ml-2 font-medium text-warn">{attention} need input</span>
+              <span className="ml-2 font-medium text-warn">
+                {attention} need{attention === 1 ? 's' : ''} input
+              </span>
             )}
           </span>
         </div>
@@ -466,6 +469,15 @@ export default function Board() {
               {sorted.map((p) => (
                 <Row key={p.name} p={p} />
               ))}
+              {sorted.length === 0 && (
+                /* a typo must not read as an empty workspace — the
+                   Library's no-match line, same voice */
+                <tr>
+                  <td colSpan={4} className="py-14 text-center text-xs text-ink-faint">
+                    No problem matches “{query.trim()}”. Esc clears the filter.
+                  </td>
+                </tr>
+              )}
             </tbody>
           ) : (
             <tbody>

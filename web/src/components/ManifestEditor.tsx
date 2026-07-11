@@ -209,7 +209,17 @@ export default function ManifestEditor({
     }
   }, [problem])
 
-  if (error) return <div className="p-6 text-xs text-ink-dim">{error}</div>
+  if (error)
+    return (
+      <div className="p-6 text-xs text-ink-dim">
+        {/* raw "404: no Manifest.md" is machine voice — say what it
+            means and what to do (a problem row whose folder was moved
+            or reset; audit 2026-07-11) */}
+        {/404|no Manifest/i.test(error)
+          ? 'This problem has no Manifest.md on disk — its folder was likely moved or reset. Re-create the file, or delete the problem below.'
+          : error}
+      </div>
+    )
   if (!data || !settings)
     return <div className="late-fade p-6 text-xs text-ink-faint">Loading…</div>
 

@@ -2,8 +2,12 @@ import { useState } from 'react'
 import type { Decision } from '../lib/types'
 
 /* rows sit under day rules — a clock time reads better than thirty
- * copies of "37d ago" */
-const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' })
+ * copies of "37d ago". Locale is PINNED: `undefined` followed the
+ * browser and dropped 下午07:14 / 2026年7月11日 into an English-voiced
+ * page (audit, 2026-07-11); a 24h clock is also just denser. */
+const TIME_FMT = new Intl.DateTimeFormat('en-GB', {
+  hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+})
 
 /** Strategist decision timeline (charter §3.3): newest first, one row
  * per decision, batch siblings visually grouped by a shared left rail. */
@@ -113,7 +117,7 @@ function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
   )
 }
 
-const DAY_FMT = new Intl.DateTimeFormat(undefined, {
+const DAY_FMT = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
   year: 'numeric',
