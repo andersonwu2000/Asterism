@@ -1515,8 +1515,14 @@ export default function Constellation({
             ),
           }}
         >
-          <div className="mb-1 flex items-center gap-2">
-            <span className="font-mono text-xs text-ink">{hovered.goal.slug}</span>
+          {/* wrap, don't clip: a long slug was pushing the status
+              label straight through the card's right border (owner:
+              "proved 也超出框") — the name may break, every word stays
+              inside the card */}
+          <div className="mb-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span className="min-w-0 font-mono text-xs break-all text-ink">
+              {hovered.goal.slug}
+            </span>
             <span className="text-xs text-ink-faint">
               {goalStatusLabel(hovered.goal.status)}
             </span>
@@ -1524,7 +1530,11 @@ export default function Constellation({
               <span className="text-[11px] text-warn">disproof of {hovered.goal.disproof_of.slug}</span>
             )}
           </div>
-          <div className="line-clamp-4 font-mono text-[11px] leading-snug text-ink-dim">
+          {/* break-words: a fully-qualified name is one giant token —
+              without break permission it overflows sideways and the
+              clip SWALLOWS its middle ("…has_simple_l / f" read as the
+              whole statement; owner, 2026-07-12) */}
+          <div className="line-clamp-4 font-mono text-[11px] leading-snug break-words text-ink-dim">
             <Lean code={hovered.goal.statement} />
           </div>
           {(hovered.goal.attempts > 0 || hovered.goal.dead_attempts > 0) && (
