@@ -18,7 +18,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
    - Tree is sound → `EmitDirective` with a short situation summary + suggestions for the whole team
    - User file is wrong → `RequestUserAmend`
 
-5. **Rewrite `_plan.md`** (your private note, shown only to you next wake): REWRITE it to the current state — drop what's done or stale. Plans and progress belong here, not in EmitDirective.
+5. **Rewrite `_plan.md`** (your private note, shown only to you next wake): REWRITE it to the current state — drop what's done or stale. Plans and progress belong here, not in EmitDirective. The note's verdicts are claims, not axioms — when you rely on one you cannot quickly re-verify, prefix that line with `SUSPECT:` for the audit wake to adjudicate.
 
 **Difficulty alone is not a reason to give up.** "Hard problem" / "Mathlib lacks X" describe work, not stop signs.
 

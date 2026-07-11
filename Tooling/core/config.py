@@ -61,6 +61,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "gateway.port": "LSP gateway HTTP port (ASTERISM_GATEWAY_PORT; 8765)",
     "gateway.interactive_slots": "reserved gateway slots for the serve UI editor (ASTERISM_INTERACTIVE_SLOTS; 1)",
     "strategist.interval_min": "T1 routine wake cadence (ASTERISM_STRATEGIST_INTERVAL_MIN; 60.0)",
+    "strategist.audit_interval_min": "epistemic-auditor wake cadence, 0 disables (ASTERISM_AUDIT_INTERVAL_MIN; 180.0)",
     "strategist.verify_retry": "strategist in-pipeline verify retry toggle (True)",
     "verify.olean_warm": "background olean warmer kill switch #103 (ASTERISM_OLEAN_WARM; True)",
     "lessons.reflection_enabled": "reflection spawn kill switch (ASTERISM_LESSONS_REFLECTION_ENABLED; True)",

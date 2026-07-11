@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import sys
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, FIRST_COMPLETED, wait
+from datetime import datetime
 from pathlib import Path
 
 from .. import agent, pipeline
@@ -656,8 +657,38 @@ def strategist_triggers(conn: sqlite3.Connection,
 # Worker thread body
 # ---------------------------------------------------------------------
 
+def _audit_due(conn: sqlite3.Connection, problem: str,
+               interval_min: float) -> bool:
+    """True iff the epistemic-auditor wake is due: `interval_min` has
+    elapsed since the later of (last committed audit-trigger decision,
+    the problem's FIRST decision ever). A problem with no decision
+    history is never audited (the auditor exists for LONG runs — young
+    problems have no belief corpus to fossilize). Derived entirely from
+    decision history: zero new state, restart-immune."""
+    if not interval_min or interval_min <= 0:
+        return False
+    row = conn.execute(
+        "SELECT MAX(CASE WHEN trigger_kind = 'audit' THEN created_at END)"
+        "         AS last_audit,"
+        "       MIN(created_at) AS birth"
+        " FROM strategist_decisions WHERE problem = ?",
+        (problem,),
+    ).fetchone()
+    anchor = row["last_audit"] or row["birth"]
+    if not anchor:
+        return False
+    try:
+        anchor_dt = datetime.fromisoformat(str(anchor))
+        now_dt = datetime.fromisoformat(db.now())
+    except ValueError:
+        return False
+    return (now_dt - anchor_dt).total_seconds() >= interval_min * 60.0
+
+
 def _derive_strategist_trigger(conn: sqlite3.Connection,
-                                problem: str) -> tuple[str, int | None]:
+                                problem: str, *,
+                                audit_interval_min: float = 0.0,
+                                ) -> tuple[str, int | None]:
     """Pick `trigger_kind` for a Strategist run on `problem`. Returns
     `(trigger, pending_review_id)` where pending_review_id is non-None
     iff trigger is 'pending_review'.
@@ -671,6 +702,13 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
       2. `pending_review` — at least one goal in pending_strategist_
          review status. A goal explicitly waiting on a verdict is more
          focused than a generic status check.
+      2.5 `audit` — the epistemic auditor is due (`audit_interval_min`
+         since the last audit / the problem's first decision). ABOVE
+         the stall reclassification on purpose: a walled problem fires
+         stall wakes continuously, and the wall is exactly where the
+         belief corpus fossilizes (b6 2026-07-11: a mis-annotated lever
+         held the wall up) — below the stall branch the auditor would
+         never get a slot on the problems that need it most.
       3. `inject_batch_done` again, on a structural STALL — the "empty
          batch done" reading (Phase 6, first_launch's replacement): a
          fresh problem (nothing dispatchable yet) and a deadlocked one
@@ -694,6 +732,8 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
         return ("inject_batch_done", pending_id)
     if pending_id is not None:
         return ("pending_review", pending_id)
+    if _audit_due(conn, problem, audit_interval_min):
+        return ("audit", pending_id)
     # No running-set here (worker thread) — queue-only in-flight check;
     # a brief false-stall just classifies this wake as batch-done, which
     # is benign (same context, stricter advance rule).
@@ -873,7 +913,11 @@ def _run_pipeline(workspace: Path,
                             "failed", "problem_not_found")
                 mfst = manifests[problem]
                 trigger, pending_id = _derive_strategist_trigger(
-                    conn, problem)
+                    conn, problem,
+                    audit_interval_min=config.get(
+                        "strategist.audit_interval_min", default=180.0,
+                        env_var="ASTERISM_AUDIT_INTERVAL_MIN", cast=float,
+                        workspace=workspace))
 
                 from ..pipeline import strategist
                 r = strategist.run_strategist(

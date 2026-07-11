@@ -248,7 +248,9 @@ _WATERMARKS = {
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,
     # single-table rebuild) — conscious bump.
-    "Tooling/state/db_migrations.py": 1660,
+    # 1660→1720 (2026-07-11): v26 audit trigger_kind CHECK widen (same
+    # rebuild block shape) — conscious bump.
+    "Tooling/state/db_migrations.py": 1720,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

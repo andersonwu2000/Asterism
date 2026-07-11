@@ -1038,6 +1038,72 @@ def test_derive_trigger_inject_batch_done_beats_pending_review(
     assert trigger == "inject_batch_done"
 
 
+def _insert_decision(conn, problem: str, *, trigger: str = "routine",
+                     kind: str = "EmitDirective",
+                     created_at: str = "2026-01-01T00:00:00+00:00") -> None:
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, payload, outcome, created_at,"
+        " updated_at) VALUES (?, 0, ?, ?, '{}', 'success', ?, ?)",
+        (problem, trigger, kind, created_at, created_at))
+    conn.commit()
+
+
+def test_derive_trigger_audit_due_beats_stall(
+    conn: sqlite3.Connection,
+) -> None:
+    """v26 auditor: on a STALLED problem whose decision history is older
+    than the audit interval, the wake classifies as 'audit' — above the
+    stall reclassification on purpose (a walled problem fires stall
+    wakes continuously; the wall is where beliefs fossilize)."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    _insert_root(conn, "alpha", status="frozen")   # structurally stalled
+    _insert_decision(conn, "alpha")                # old history → due
+
+    trigger, pending = _derive_strategist_trigger(
+        conn, "alpha", audit_interval_min=180.0)
+    assert trigger == "audit"
+    assert pending is None
+    # Auditor disabled (default 0) → the stall reading is back.
+    trigger2, _ = _derive_strategist_trigger(conn, "alpha")
+    assert trigger2 == "inject_batch_done"
+
+
+def test_derive_trigger_audit_needs_history_and_interval(
+    conn: sqlite3.Connection,
+) -> None:
+    """No decision history → never audit (young problems have no belief
+    corpus); a RECENT audit-trigger decision re-anchors the clock."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    _insert_root(conn, "alpha", status="frozen")
+
+    trigger, _ = _derive_strategist_trigger(
+        conn, "alpha", audit_interval_min=180.0)
+    assert trigger == "inject_batch_done"   # no history → stall reading
+
+    _insert_decision(conn, "alpha")  # old birth → due
+    _insert_decision(conn, "alpha", trigger="audit", created_at=db.now())
+    trigger2, _ = _derive_strategist_trigger(
+        conn, "alpha", audit_interval_min=180.0)
+    assert trigger2 == "inject_batch_done"  # fresh audit → not due
+
+
+def test_derive_trigger_pending_review_beats_audit(
+    conn: sqlite3.Connection,
+) -> None:
+    """An explicit pending verdict outranks the wall-clock auditor."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    _insert_root(conn, "alpha", status="attempting")
+    sub = _insert_sub(conn, "alpha", "sub_a",
+                      status="pending_strategist_review")
+    _insert_decision(conn, "alpha")
+
+    trigger, pending = _derive_strategist_trigger(
+        conn, "alpha", audit_interval_min=180.0)
+    assert trigger == "pending_review"
+    assert pending == sub
+
+
 # ---------------------------------------------------------------------
 # reconcile_stuck_states — per-tick mid-run stuck-state safety net (#5)
 # ---------------------------------------------------------------------

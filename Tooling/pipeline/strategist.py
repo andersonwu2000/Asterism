@@ -63,6 +63,10 @@ TRIGGER_KINDS: frozenset[str] = frozenset({
     # inject_batch_done wake); the DB CHECK keeps the value for old rows.
     "pending_review", "routine",
     "inject_batch_done",
+    # v26: the wall-clock epistemic auditor (default 180 min) — full-
+    # budget sweep of the plan note / directive / lever annotations
+    # against sources, with direct note curation.
+    "audit",
 })
 
 # Files allowed in RequestUserAmend(file=...).
