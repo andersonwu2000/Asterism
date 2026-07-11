@@ -1104,6 +1104,48 @@ def test_derive_trigger_pending_review_beats_audit(
     assert pending == sub
 
 
+def test_consecutive_strategist_probe(
+    conn: sqlite3.Connection, capsys,
+) -> None:
+    """Log-only probe (user call 2026-07-11): a Strategist wake whose
+    problem's LAST pipeline was also a Strategist (nothing in flight)
+    prints [consecutive-strategist]; an in-flight worker (leased queue
+    row) or a non-Strategist last pipeline stays silent."""
+    from Tooling.core.dispatcher import _warn_consecutive_strategist
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    root = _insert_root(conn, "alpha", status="open")
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at, finished_at)"
+        " VALUES ('s-prev', 'Strategist', 'alpha', 'Problem',"
+        " 'succeeded', 'success', ?, ?)", (ts, ts))
+    conn.commit()
+
+    _warn_consecutive_strategist(conn, "alpha", "inject_batch_done")
+    out = capsys.readouterr().out
+    assert "[consecutive-strategist] alpha" in out
+    assert "trigger=inject_batch_done" in out
+
+    # An in-flight worker (queue row) suppresses the probe — the
+    # in-between pipeline just has no pipelines row yet.
+    db.enqueue(conn, kind="Backward", target_id=str(root),
+               target_kind="Goal", priority=5, problem="alpha")
+    _warn_consecutive_strategist(conn, "alpha", "inject_batch_done")
+    assert "[consecutive-strategist]" not in capsys.readouterr().out
+    conn.execute("DELETE FROM queue")
+
+    # A non-Strategist pipeline in between → silent.
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at, finished_at)"
+        " VALUES ('b-mid', 'Backward', ?, 'Goal', 'failed', 'failed',"
+        " ?, ?)", (str(root), db.now(), db.now()))
+    conn.commit()
+    _warn_consecutive_strategist(conn, "alpha", "routine")
+    assert "[consecutive-strategist]" not in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------
 # reconcile_stuck_states — per-tick mid-run stuck-state safety net (#5)
 # ---------------------------------------------------------------------

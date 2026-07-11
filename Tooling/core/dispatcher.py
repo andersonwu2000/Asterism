@@ -685,6 +685,44 @@ def _audit_due(conn: sqlite3.Connection, problem: str,
     return (now_dt - anchor_dt).total_seconds() >= interval_min * 60.0
 
 
+def _warn_consecutive_strategist(conn: sqlite3.Connection, problem: str,
+                                 trigger: str) -> None:
+    """Observability probe (user call 2026-07-11): back-to-back Strategist
+    pipelines on one problem are a design smell — the batch cycle exists
+    to force a Strategist commit to be FOLLOWED by other pipelines; the
+    only expected shape is a shelve-review wake followed by a stall wake.
+    Print-only, never blocks: grep '[consecutive-strategist]' to measure
+    the rate (same pattern as '[stall-wake]'). A problem with anything
+    still in flight (leased queue row — v17 leases persist while a worker
+    runs) is skipped: the in-between pipeline just has no row yet."""
+    try:
+        inflight = conn.execute(
+            "SELECT 1 FROM queue q"
+            " LEFT JOIN goals g ON q.target_kind = 'Goal'"
+            "   AND g.id = CAST(q.target_id AS INTEGER)"
+            " WHERE q.kind != 'Strategist'"
+            "   AND ((q.target_kind = 'Goal' AND g.problem = ?)"
+            "     OR (q.target_kind = 'Problem' AND q.target_id = ?))"
+            " LIMIT 1", (problem, problem)).fetchone()
+        if inflight is not None:
+            return
+        row = conn.execute(
+            "SELECT p.kind, p.id FROM pipelines p"
+            " LEFT JOIN goals g ON p.target_kind = 'Goal'"
+            "   AND g.id = CAST(p.target_id AS INTEGER)"
+            " WHERE (p.target_kind = 'Problem' AND p.target_id = ?)"
+            "    OR (p.target_kind = 'Goal' AND g.problem = ?)"
+            " ORDER BY p.started_at DESC LIMIT 1",
+            (problem, problem)).fetchone()
+        if row is not None and str(row["kind"]) == "Strategist":
+            print(f"[consecutive-strategist] {problem}: this wake "
+                  f"(trigger={trigger}) follows Strategist pipeline "
+                  f"{row['id']} with no other pipeline in between — "
+                  f"expected only for shelve-review → stall", flush=True)
+    except Exception:  # noqa: BLE001 — probe must never break dispatch
+        pass
+
+
 def _derive_strategist_trigger(conn: sqlite3.Connection,
                                 problem: str, *,
                                 audit_interval_min: float = 0.0,
@@ -918,6 +956,7 @@ def _run_pipeline(workspace: Path,
                         "strategist.audit_interval_min", default=180.0,
                         env_var="ASTERISM_AUDIT_INTERVAL_MIN", cast=float,
                         workspace=workspace))
+                _warn_consecutive_strategist(conn, problem, trigger)
 
                 from ..pipeline import strategist
                 r = strategist.run_strategist(

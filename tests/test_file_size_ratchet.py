@@ -173,7 +173,9 @@ _WATERMARKS = {
     # 1b2a6b5) that a prior push's ratchet missed — 2026-07-02 — conscious bump.
     # 2240→2270: BUG3 — sign-off pause checks in the 3 librarian dispatch paths
     # (selfstart / refill / harvest_outstanding) — 2026-07-03 — conscious bump.
-    "Tooling/core/dispatcher.py": 2270,
+    # 2270→2310: audit trigger derivation (_audit_due, v26) + consecutive-
+    # strategist observability probe — 2026-07-11 — conscious bump.
+    "Tooling/core/dispatcher.py": 2310,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
