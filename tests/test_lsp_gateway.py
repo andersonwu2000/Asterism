@@ -532,6 +532,70 @@ def test_commit_header_for_mirrors_commit_injections(tmp_path: Path) -> None:
     assert "import Problems.p.proofs.L_helper" not in hdr_self["imports"]
 
 
+def test_stub_fingerprint_and_resync_invalidation(tmp_path: Path) -> None:
+    """agent_feedback #4a (2026-07-11): a `new_*.lean` written after the
+    last elaboration must invalidate slot ownership — pre-fix errors_at /
+    goal_at kept the previous merged unit and reported phantom unknown
+    identifiers on citations that validate_file (which rebuilds the unit
+    each call) accepted."""
+    att = tmp_path / "att"
+    att.mkdir()
+    target = att / "patch.lean"
+    target.write_text("theorem t : True := trivial\n", encoding="utf-8")
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="pipe-1", target_path=target, problem="p",
+        workspace=tmp_path, file_content=target.read_text(encoding="utf-8"))
+
+    class _Slot:
+        claimed_by = "pipe-1"
+        content_pipeline_id = "pipe-1"
+    slot = _Slot()
+    old_workers = lsp_gateway._state.workers
+    lsp_gateway._state.workers = [slot]
+    try:
+        lsp_gateway._resync_buffer_from_disk(meta)  # seeds fingerprint
+        slot.content_pipeline_id = "pipe-1"
+        lsp_gateway._resync_buffer_from_disk(meta)  # no change → kept
+        assert slot.content_pipeline_id == "pipe-1"
+        (att / "new_helper.lean").write_text(
+            "theorem helper : True := by sorry\n", encoding="utf-8")
+        lsp_gateway._resync_buffer_from_disk(meta)  # new stub → invalidated
+        assert slot.content_pipeline_id is None
+        assert meta.stub_fingerprint and meta.stub_fingerprint[0][0] == (
+            "new_helper.lean")
+    finally:
+        lsp_gateway._state.workers = old_workers
+
+
+def test_slug_collision_submission_flags_existing_goal(
+        tmp_path: Path) -> None:
+    """agent_feedback #4b (2026-07-11): a batch stub whose slug already
+    names a goal gets a pre-commit warning (commit would auto-suffix
+    `_2` or reject as circular) instead of all-green LSP + a bounce."""
+    import sqlite3
+    conn = sqlite3.connect(str(tmp_path / "asterism.db"))
+    conn.row_factory = sqlite3.Row
+    db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES ('p', 'm', ?)", (db.now(),))
+    db.insert_goal(conn, problem="p", slug="taken",
+                   lean_path="Problems/p/proofs/L_taken.lean",
+                   statement="T", origin="backward")
+    conn.commit()
+    conn.close()
+
+    sc = lsp_gateway._slug_collision_submission(
+        {"taken", "fresh"}, "p", tmp_path)
+    assert sc is not None and sc["ok"] is False
+    assert [i["slug"] for i in sc["issues"]] == ["taken"]
+    assert "auto-suffixes" in sc["issues"][0]["hint"]
+    # no collisions → checked+ok; empty stub set → None (nothing to say)
+    ok = lsp_gateway._slug_collision_submission({"fresh"}, "p", tmp_path)
+    assert ok == {"checked": True, "ok": True}
+    assert lsp_gateway._slug_collision_submission(set(), "p", tmp_path) is None
+
+
 def test_toposort_siblings_orders_referenced_first() -> None:
     """A stub whose body references another stub's slug is emitted AFTER
     it (decl-before-use), regardless of input/glob order; a reference cycle

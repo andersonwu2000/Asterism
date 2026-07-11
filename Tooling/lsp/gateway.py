@@ -130,6 +130,14 @@ class SessionMetadata:
     # reject for Builder). Optional: an old client that doesn't send it
     # gets the kind-agnostic mirror, never an error.
     kind: str | None = None
+    # Fingerprint of the attempts dir's `new_*.lean` stub set (name,
+    # mtime_ns, size). A freshly WRITTEN stub changes the merged
+    # compilation unit, but slot ownership never noticed — errors_at /
+    # goal_at elaborated the PREVIOUS unit and reported phantom unknown
+    # identifiers on citations validate_file accepted (agent_feedback
+    # 2026-07-09/10, ~32 reports). `_resync_buffer_from_disk` compares
+    # and invalidates the slot on change.
+    stub_fingerprint: tuple = ()
 
 
 # ─── Gateway global state ─────────────────────────────────
@@ -1198,6 +1206,18 @@ def _offload_to_thread(fn):
     return wrapper
 
 
+def _stub_fingerprint(attempts_dir: "Path") -> tuple:
+    """(name, mtime_ns, size) per `new_*.lean` in the attempts dir,
+    sorted — the sibling-stub half of the compilation unit's identity.
+    OSError → () (best-effort; an unreadable dir just reads as empty)."""
+    try:
+        return tuple(sorted(
+            (f.name, f.stat().st_mtime_ns, f.stat().st_size)
+            for f in attempts_dir.glob("new_*.lean")))
+    except OSError:
+        return ()
+
+
 def _resync_buffer_from_disk(meta: "SessionMetadata") -> None:
     """Adopt the on-disk `target_path` as the source of truth for the
     in-memory `file_content` mirror before any tool reads it.
@@ -1213,6 +1233,18 @@ def _resync_buffer_from_disk(meta: "SessionMetadata") -> None:
     mirror writer, writes disk in the same breath at write-through), so
     unconditionally adopting disk on mismatch is safe and makes disk the
     single source of truth."""
+    # Sibling-stub freshness rides the same resync (agent_feedback #4a):
+    # a stub written AFTER the last elaboration changes the merged unit;
+    # invalidate slot ownership so the next acquire re-elaborates.
+    fp = _stub_fingerprint(meta.target_path.parent)
+    if fp != meta.stub_fingerprint:
+        meta.stub_fingerprint = fp
+        for _slot in _state.workers:
+            if _slot.claimed_by == meta.pipeline_id:
+                _slot.content_pipeline_id = None
+                break
+        _log_for(meta, {"event": "sibling_stub_resync", "stubs": len(fp)})
+
     try:
         disk = meta.target_path.read_text(encoding="utf-8")
     except OSError:
@@ -1665,6 +1697,59 @@ def _stale_olean_submission(content: str, problem: str,
     return {"ok": not issues, "issues": issues}
 
 
+def _slug_collision_submission(stub_slugs: "set[str]", problem: str,
+                               workspace: "Path") -> "dict | None":
+    """Predict the commit-only slug fate for BATCH STUBS (agent_feedback
+    #4b: LSP all-green, bounced at commit): a `new_<slug>.lean` whose
+    slug already exists as a goal in this problem either auto-suffixes
+    to `_2` at commit (breaking the decl-name match every citation in
+    the batch relies on) or — when the twin is a strict ancestor with an
+    identical head — dies as `circular_decomposition`. Surface the
+    collision + the twin's status pre-commit so the agent renames or
+    cites instead. Scoped to stubs only: a patch legitimately declares
+    its own goal's slug. Best-effort: DB failure → None."""
+    if not stub_slugs:
+        return None
+    try:
+        conn = db.connect(workspace / "asterism.db")
+    except Exception:
+        return None
+    try:
+        issues: "list[dict]" = []
+        for slug in sorted(stub_slugs):
+            row = conn.execute(
+                "SELECT id, status FROM goals WHERE problem = ?"
+                "  AND slug = ? AND alias_target_id IS NULL LIMIT 1",
+                (problem, slug),
+            ).fetchone()
+            if row is None:
+                continue
+            issues.append({
+                "slug": slug, "existing_goal": int(row["id"]),
+                "status": str(row["status"]),
+                "severity": "warn",
+                "hint": (f"a goal named `{slug}` already exists "
+                         f"(status={row['status']}). At commit this stub "
+                         f"auto-suffixes to `{slug}_2`, breaking every "
+                         f"decl-name reference to it in this batch; if the "
+                         f"twin is an ancestor on your chain with the same "
+                         f"statement, commit rejects the whole strategy as "
+                         f"circular_decomposition. Rename the sub-goal, or "
+                         f"cite the existing goal instead of re-declaring "
+                         f"it."),
+            })
+        if not issues:
+            return {"checked": True, "ok": True}
+        return {"checked": True, "ok": False, "issues": issues}
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _declhead_submission(content: str) -> "dict":
     """Mirror commit's slug gate: every top-level `<kind> <name>` declaration's
     name must be snake_case (`^[a-z][a-z0-9_]*$`). A camelCase def/theorem name
@@ -1729,6 +1814,11 @@ def validate_file(content: str) -> str:
     imports, Defs/patch opens, proved-sibling imports, intra-batch sub-goal
     imports) — they are already part of this validation, so do NOT write
     them yourself.
+
+    `submission.slug_collision` predicts the commit-only slug fate of
+    batch stubs: a `new_<slug>.lean` whose slug already names a goal in
+    this problem auto-suffixes (breaking decl-name references) or dies as
+    circular_decomposition when the twin is an identical ancestor.
 
     Args:
       content: Full contents of the candidate file.
@@ -1848,6 +1938,10 @@ def validate_file(content: str) -> str:
     if stub_map:
         sv = assemble.split_visibility_issues(stub_map, problem=meta.problem)
         submission["split_visibility"] = {"ok": not sv, "issues": sv}
+        sc = _slug_collision_submission(
+            set(stub_map), meta.problem, meta.workspace)
+        if sc is not None:
+            submission["slug_collision"] = sc
     ls = _locked_signature_submission(content, attempts_dir)
     if ls is not None:
         submission["locked_signature"] = ls
