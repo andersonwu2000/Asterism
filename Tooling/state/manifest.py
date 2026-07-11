@@ -77,6 +77,16 @@ def effective_axioms(mfst: "Manifest", *, problem: str = "") -> list[str]:
     fail-closed) — every new gate author had to pick the right one
     (2026-07-04 convention audit, finding 3)."""
     wl = list(mfst.axioms_whitelist or [])
+    # Unconditional sorryAx tripwire, whitelist edition (self-audit
+    # 2026-07-12 §3-1c): a whitelist CONTAINING sorryAx would neutralize
+    # every downstream rogue-axiom comparison — no configuration may
+    # authorize an unproven proof. Stripped here at THE derivation
+    # chokepoint so every gate inherits it; loud, never silent.
+    if "sorryAx" in wl:
+        wl = [a for a in wl if a != "sorryAx"]
+        print(f"[axioms] {problem or getattr(mfst, 'problem', '?')}: "
+              f"'sorryAx' in axioms_whitelist IGNORED — sorry can never "
+              f"be whitelisted", flush=True)
     if wl:
         return wl
     key = problem or getattr(mfst, "problem", "") or "?"
@@ -199,6 +209,41 @@ class ManifestCache:
         # problem -> (manifest_path_str, last_mtime, manifest)
         self._entries: dict[str, tuple[str, float, Manifest]] = {}
 
+    def _record_history(self, problem: str, full: Path) -> None:
+        """Append the Manifest's current content to `manifest_history`
+        when it differs from the last recorded sha (self-audit
+        2026-07-12 §3-1b). Called on first load (the baseline) and on
+        every mtime-change reparse — catches ANY write channel,
+        including a Bash bypass of the spawn write-deny. Best-effort:
+        history must never break manifest loading."""
+        try:
+            import hashlib
+            body = full.read_text(encoding="utf-8")
+            sha = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+            from . import db as _db
+            conn = _db.connect(self._workspace / "asterism.db")
+            try:
+                last = conn.execute(
+                    "SELECT sha FROM manifest_history WHERE problem = ?"
+                    " ORDER BY id DESC LIMIT 1", (problem,)).fetchone()
+                if last is not None and str(last["sha"]) == sha:
+                    return
+                is_baseline = last is None
+                conn.execute(
+                    "INSERT INTO manifest_history"
+                    " (problem, sha, body, seen_at) VALUES (?, ?, ?, ?)",
+                    (problem, sha, body, _db.now()))
+                conn.commit()
+                if not is_baseline:
+                    print(f"[manifest-history] {problem}: content changed "
+                          f"(sha {sha}) — recorded; Ingest review will "
+                          f"surface the diff", flush=True)
+            finally:
+                conn.close()
+        except Exception as e:  # noqa: BLE001 — never break loading
+            print(f"[manifest-history] {problem}: record failed "
+                  f"({type(e).__name__}: {e})", flush=True)
+
     def _overlay_db(self, problem: str, mfst: Manifest) -> Manifest:
         """Dual-read (frontmatter dissolve): stamp `problem_settings`
         rows over the freshly-parsed file — state/settings.py owns the
@@ -250,6 +295,7 @@ class ManifestCache:
                   f"{type(e).__name__}: {e}", flush=True)
             return None
         mfst = self._overlay_db(problem, mfst)
+        self._record_history(problem, full)
         self._entries[problem] = (manifest_path, mtime, mfst)
         return mfst
 
@@ -276,6 +322,7 @@ class ManifestCache:
             self._entries[problem] = (manifest_path, cur_mtime, mfst)
             return mfst
         new_mfst = self._overlay_db(problem, new_mfst)
+        self._record_history(problem, full)
         self._entries[problem] = (manifest_path, cur_mtime, new_mfst)
         print(f"[manifest-reload] {problem} (mtime changed)", flush=True)
         return new_mfst

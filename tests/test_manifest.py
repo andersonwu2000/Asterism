@@ -419,6 +419,36 @@ def test_effective_axioms_set_field_passes_through() -> None:
     assert manifest.effective_axioms(m) == ["propext", "Custom.ax"]
 
 
+def test_effective_axioms_strips_sorryAx() -> None:
+    """Whitelist-edition sorryAx tripwire (self-audit 2026-07-12 §3-1c):
+    no configuration may authorize an unproven proof — sorryAx is
+    stripped at THE derivation chokepoint, and a sorryAx-only whitelist
+    degrades to the framework defaults, never to an empty gate."""
+    manifest._default_axioms_warned.clear()
+    m = manifest.Manifest(problem="p_sry", statement="s",
+                          axioms_whitelist=["propext", "sorryAx"])
+    assert manifest.effective_axioms(m) == ["propext"]
+    m2 = manifest.Manifest(problem="p_sry2", statement="s",
+                           axioms_whitelist=["sorryAx"])
+    wl2 = manifest.effective_axioms(m2)
+    assert wl2 == list(manifest.FRAMEWORK_DEFAULT_AXIOMS)
+    assert "sorryAx" not in wl2
+
+
+def test_spawn_cmd_denies_user_file_writes() -> None:
+    """Self-audit 2026-07-12 §3-1a: every spawn carries the
+    --disallowedTools deny for Manifest.md / Defs.lean / Root.lean
+    (Write + Edit). Source pin — the flag lives in the one cmd builder
+    all agent kinds share."""
+    src = (Path(__file__).resolve().parents[1]
+           / "Tooling" / "llm" / "claude_cli.py").read_text(
+               encoding="utf-8")
+    assert '"--disallowedTools"' in src
+    for f in ("Manifest.md", "Defs.lean", "Root.lean"):
+        assert f'"Write(**/{f})"' in src, f
+        assert f'"Edit(**/{f})"' in src, f
+
+
 def test_effective_axioms_empty_falls_back_to_framework_default(
         capsys) -> None:
     """Absent field NEVER weakens a gate: framework default, warned once

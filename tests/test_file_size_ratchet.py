@@ -250,7 +250,9 @@ _WATERMARKS = {
     # frontier semantics (stall vs dispatch) + has_live_inflight_inject
     # narrowing + goal_reviewed_at_current_attempts (~90 lines) —
     # conscious bump; the helper-family split (#11) is now overdue.
-    "Tooling/state/db.py": 3100,
+    # 3100→3120: manifest_history table DDL (self-audit §3-1b) —
+    # 2026-07-12 — conscious bump.
+    "Tooling/state/db.py": 3120,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,

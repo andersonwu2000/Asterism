@@ -424,6 +424,21 @@ CREATE TABLE IF NOT EXISTS problem_settings (
     PRIMARY KEY (problem, key)
 );
 
+-- Manifest intent-text history (self-audit 2026-07-12 §3-1b): first-load
+-- baseline + every content change ManifestCache observes (any write
+-- channel, incl. a Bash bypass of the spawn write-deny), so the Ingest
+-- sign-off seal covers the intent text and a mid-run edit surfaces as a
+-- diff instead of silently rewriting the promise. Append-only; recorded
+-- by state/manifest.ManifestCache. No version bump needed
+-- (problem_settings precedent).
+CREATE TABLE IF NOT EXISTS manifest_history (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem TEXT NOT NULL REFERENCES problems(name),
+    sha     TEXT NOT NULL,
+    body    TEXT NOT NULL,
+    seen_at TEXT NOT NULL
+);
+
 -- Phase 2 — Strategist decision audit log + awaiting_human gate.
 -- One row per Strategist commit. `payload` JSON stores non-text-content
 -- structured params (pipeline name for Inject, scope/body for

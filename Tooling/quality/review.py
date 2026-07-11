@@ -35,8 +35,28 @@ def review_data(conn, workspace: Path, *,
     dels = db.deliverables(conn, problem=problem)
     out: "list[dict]" = []
     union: set[str] = set()
+    # Manifest intent text + change history (self-audit 2026-07-12
+    # §3-1b): the sign-off seal (snapshot_sha) must cover WHAT WAS
+    # ASKED, not just what was delivered — a mid-run rewrite of the
+    # Statement would otherwise let the reviewer sign against a
+    # doctored promise with zero diff surfaced. Body = current text;
+    # history = (sha, seen_at) per observed content change since the
+    # first-load baseline (full bodies live in `manifest_history`).
+    manifest_section: "dict" = {"body": "", "history": []}
+    try:
+        mpath = db.problem_dir(workspace, problem) / "Manifest.md"
+        manifest_section["body"] = mpath.read_text(encoding="utf-8")
+        manifest_section["history"] = [
+            {"sha": str(r["sha"]), "seen_at": str(r["seen_at"])}
+            for r in conn.execute(
+                "SELECT sha, seen_at FROM manifest_history"
+                " WHERE problem = ? ORDER BY id", (problem,))
+        ]
+    except Exception as e:  # noqa: BLE001 — visibility, never a blocker
+        manifest_section["error"] = f"{type(e).__name__}: {e}"
     if not dels:
-        return {"deliverables": out, "union_count": 0}
+        return {"deliverables": out, "union_count": 0,
+                "manifest": manifest_section}
     gateway_lifecycle.start_gateway(workspace)
     _papers: dict[str, str] = {}  # problem → paper id ('' = unbound)
     for g in dels:
@@ -68,7 +88,8 @@ def review_data(conn, workspace: Path, *,
             })
             union.update(c["name"] for c in r.pending)
         out.append(entry)
-    return {"deliverables": out, "union_count": len(union)}
+    return {"deliverables": out, "union_count": len(union),
+            "manifest": manifest_section}
 
 
 def store_review_snapshot(conn, workspace: Path, problem: str) -> bool:

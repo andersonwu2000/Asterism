@@ -114,6 +114,75 @@ def test_migrate_is_idempotent_and_never_clobbers_db(conn) -> None:
     assert settings.read(conn, "p")["axioms_whitelist"] == ["ui.ax"]
 
 
+def test_manifest_history_baseline_and_change(tmp_path: Path) -> None:
+    """Self-audit 2026-07-12 §3-1b: ManifestCache records a first-load
+    baseline row in `manifest_history` and one row per observed content
+    change (any write channel); unchanged re-access records nothing."""
+    import os
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    mpath = pdir / "Manifest.md"
+    mpath.write_text("---\nproblem: p\n---\n\n# p\noriginal ask\n",
+                     encoding="utf-8")
+    conn = db.connect(tmp_path / "asterism.db")
+    db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+    conn.commit()
+
+    cache = manifest.ManifestCache(tmp_path)
+    assert cache.load("p", "Problems/p/Manifest.md") is not None
+    rows = conn.execute(
+        "SELECT sha, body FROM manifest_history WHERE problem='p'"
+        " ORDER BY id").fetchall()
+    assert len(rows) == 1 and "original ask" in rows[0]["body"]
+
+    # Unchanged re-access: no new row.
+    _ = cache["p"]
+    assert conn.execute("SELECT COUNT(*) AS n FROM manifest_history"
+                        " WHERE problem='p'").fetchone()["n"] == 1
+
+    # Tampered content (mtime bumped) → second row, different sha.
+    mpath.write_text("---\nproblem: p\n---\n\n# p\nweakened ask\n",
+                     encoding="utf-8")
+    st = mpath.stat()
+    os.utime(mpath, (st.st_atime, st.st_mtime + 5))
+    _ = cache["p"]
+    rows = conn.execute(
+        "SELECT sha, body FROM manifest_history WHERE problem='p'"
+        " ORDER BY id").fetchall()
+    assert len(rows) == 2
+    assert rows[0]["sha"] != rows[1]["sha"]
+    assert "weakened ask" in rows[1]["body"]
+    conn.close()
+
+
+def test_review_data_carries_manifest_section(tmp_path: Path) -> None:
+    """The Ingest review snapshot covers the intent text: review_data
+    returns the current Manifest body + the change-history metadata
+    even for a problem with no deliverables."""
+    from Tooling.quality import review
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    (pdir / "Manifest.md").write_text(
+        "---\nproblem: p\n---\n\n# p\nthe ask\n", encoding="utf-8")
+    conn = db.connect(tmp_path / "asterism.db")
+    db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+    conn.commit()
+    cache = manifest.ManifestCache(tmp_path)
+    cache.load("p", "Problems/p/Manifest.md")   # baseline history row
+
+    data = review.review_data(conn, tmp_path, problem="p")
+    assert "the ask" in data["manifest"]["body"]
+    assert len(data["manifest"]["history"]) == 1
+    assert data["manifest"]["history"][0]["sha"]
+    conn.close()
+
+
 def test_manifest_cache_dual_read(tmp_path: Path) -> None:
     """The cache is THE overlay point: DB values win over the file,
     and a DB edit hot-reloads without any file-mtime signal."""

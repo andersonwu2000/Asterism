@@ -983,6 +983,18 @@ class ClaudeCliProvider:
             "--model", model,
             "-p", prompt,
             "--permission-mode", "acceptEdits",
+            # User-file write-deny (self-audit 2026-07-12 §3-1a):
+            # Manifest.md / Defs.lean / Root.lean are the user-intent
+            # SoT — no spawn has a legitimate write path to them (the
+            # sanctioned change channel is RequestUserAmend → operator;
+            # framework-side amend/promote writers are Python, not
+            # spawn tools). Bash writes remain physically possible —
+            # the Ingest snapshot's Manifest history (§3-1b) is the
+            # any-channel detection backstop.
+            "--disallowedTools",
+            "Write(**/Manifest.md)", "Edit(**/Manifest.md)",
+            "Write(**/Defs.lean)", "Edit(**/Defs.lean)",
+            "Write(**/Root.lean)", "Edit(**/Root.lean)",
             "--add-dir", str(req.problem_dir),
             "--add-dir", str(req.attempts_dir),
             *add_dir_packages,
