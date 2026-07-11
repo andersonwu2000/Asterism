@@ -175,7 +175,9 @@ _WATERMARKS = {
     # (selfstart / refill / harvest_outstanding) — 2026-07-03 — conscious bump.
     # 2270→2310: audit trigger derivation (_audit_due, v26) + consecutive-
     # strategist observability probe — 2026-07-11 — conscious bump.
-    "Tooling/core/dispatcher.py": 2310,
+    # 2310→2340: T1.5 audit seat-source enqueue (audit was derivation-only
+    # and starved on busy problems / --once runs) — 2026-07-12 — conscious bump.
+    "Tooling/core/dispatcher.py": 2340,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

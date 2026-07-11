@@ -583,10 +583,11 @@ def strategist_triggers(conn: sqlite3.Connection,
                         scope: str | None = None,
                         interval_min: float = 60.0,
                         daemon_start_iso: str | None = None,
+                        audit_interval_min: float = 0.0,
                         ) -> None:
-    """T1 (routine) + T4 (stall) enqueues for the Strategist pipeline.
-    T2 (pending_review) is handled by `_enqueue_strategist_review` at
-    cascade-time, not here.
+    """T1 (routine) + T1.5 (audit) + T4 (stall) enqueues for the
+    Strategist pipeline. T2 (pending_review) is handled by
+    `_enqueue_strategist_review` at cascade-time, not here.
 
     Phase 6 — T0 (first_launch) is RETIRED: a fresh problem has no
     dispatchable work and no committed Ingest, so it is structurally
@@ -620,6 +621,35 @@ def strategist_triggers(conn: sqlite3.Connection,
             continue
         db.enqueue(conn, kind="Strategist", target_id=prob,
                    target_kind="Problem", priority=10, problem=prob)
+
+    # T1.5 — epistemic audit: a SEAT SOURCE mirroring T1, not just a
+    # derivation flavor (user call 2026-07-11: derivation-only meant the
+    # audit rode seats other events happened to open, was preempted by
+    # batch-done / pending_review on busy problems, and never fired in
+    # --once runs where T1's running-time clock barely advances). Own
+    # wall-clock cadence anchored in decision history (`_audit_due`) —
+    # the same SoT the spawn-side derivation reads, so an enqueued seat
+    # classifies as 'audit' unless a higher-priority trigger appeared
+    # meanwhile (then the anchor doesn't move and this re-fires next
+    # tick — persistent pressure, deduped by the in-flight check).
+    if audit_interval_min and audit_interval_min > 0:
+        sql = "SELECT name FROM problems WHERE ingested_at IS NULL"
+        args: list = []
+        if scope is not None:
+            sql += " AND name LIKE ?"
+            args.append(scope)
+        for row in conn.execute(sql, tuple(args)):
+            prob = str(row["name"])
+            if not _audit_due(conn, prob, audit_interval_min):
+                continue
+            if db.problem_has_awaiting_human(conn, prob):
+                continue
+            if _strategist_inflight(conn, prob, running):
+                continue
+            print(f"[audit-wake] T1.5 enqueued Strategist for {prob} "
+                  f"(audit due)", flush=True)
+            db.enqueue(conn, kind="Strategist", target_id=prob,
+                       target_kind="Problem", priority=10, problem=prob)
 
     # T4 — structural stall trigger.
     # Fires when a problem has no open goals (BFS has nothing to
@@ -1574,6 +1604,13 @@ def run(workspace: Path, *, once: bool = False,
         env_var="ASTERISM_STRATEGIST_INTERVAL_MIN", cast=float,
         workspace=workspace,
     )
+    # T1.5 audit cadence — same key the spawn-side trigger derivation
+    # reads, so the seat source and the classifier never disagree.
+    audit_interval_min = config.get(
+        "strategist.audit_interval_min", default=180.0,
+        env_var="ASTERISM_AUDIT_INTERVAL_MIN", cast=float,
+        workspace=workspace,
+    )
     if thresholds.SHELVE_THRESHOLD <= thresholds.BUILDER_THRESHOLD:
         # An invalid combo would mean Backward never gets a chance —
         # fail loudly rather than silently degrade behavior.
@@ -2087,7 +2124,8 @@ def run(workspace: Path, *, once: bool = False,
         # Defaults to 60-min routine (`strategist.interval_min`).
         strategist_triggers(conn, running, scope=scope,
                             interval_min=strategist_interval_min,
-                            daemon_start_iso=daemon_start_iso)
+                            daemon_start_iso=daemon_start_iso,
+                            audit_interval_min=audit_interval_min)
 
         # Per-tick stuck-state reconciler: the safety net for the two
         # mid-run-reachable stuck states the cascade fast paths can drop —

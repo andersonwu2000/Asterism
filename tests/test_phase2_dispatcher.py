@@ -1104,6 +1104,81 @@ def test_derive_trigger_pending_review_beats_audit(
     assert pending == sub
 
 
+def test_t15_audit_enqueue_is_a_seat_source(
+    conn: sqlite3.Connection, capsys,
+) -> None:
+    """T1.5 (user call 2026-07-11): a due audit ENQUEUES its own
+    Strategist seat instead of riding seats other events open. Isolated
+    from T1/T4: dispatchable open root (no stall) + fresh routine clock."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_routine_at=db.now())
+    _insert_root(conn, "alpha")            # open → not stalled
+    _insert_decision(conn, "alpha")        # old history → audit due
+
+    strategist_triggers(conn, running=set(), audit_interval_min=180.0)
+
+    q = conn.execute(
+        "SELECT target_id, target_kind, priority FROM queue"
+        " WHERE kind='Strategist'").fetchall()
+    assert len(q) == 1
+    assert q[0]["target_id"] == "alpha" and q[0]["target_kind"] == "Problem"
+    assert "[audit-wake]" in capsys.readouterr().out
+    # Re-run: in-flight dedup (queued row) → no pileup.
+    strategist_triggers(conn, running=set(), audit_interval_min=180.0)
+    n = conn.execute("SELECT COUNT(*) AS n FROM queue"
+                     " WHERE kind='Strategist'").fetchone()
+    assert n["n"] == 1
+
+
+def test_t15_audit_enqueue_gates(conn: sqlite3.Connection) -> None:
+    """T1.5 stays quiet when: disabled (interval 0, the default), not due
+    (fresh audit re-anchors), or the problem is ingested."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_routine_at=db.now())
+    _insert_root(conn, "alpha")
+    _insert_decision(conn, "alpha")
+
+    strategist_triggers(conn, running=set())          # default: disabled
+    assert conn.execute("SELECT COUNT(*) AS n FROM queue"
+                        " WHERE kind='Strategist'").fetchone()["n"] == 0
+
+    _insert_decision(conn, "alpha", trigger="audit", created_at=db.now())
+    strategist_triggers(conn, running=set(), audit_interval_min=180.0)
+    assert conn.execute("SELECT COUNT(*) AS n FROM queue"
+                        " WHERE kind='Strategist'").fetchone()["n"] == 0
+
+    conn.execute("UPDATE strategist_decisions SET created_at ="
+                 " '2026-01-01T00:00:00+00:00', updated_at ="
+                 " '2026-01-01T00:00:00+00:00'")   # due again…
+    conn.execute("UPDATE problems SET ingested_at = ? WHERE name='alpha'",
+                 (db.now(),))                      # …but ingested
+    conn.commit()
+    strategist_triggers(conn, running=set(), audit_interval_min=180.0)
+    assert conn.execute("SELECT COUNT(*) AS n FROM queue"
+                        " WHERE kind='Strategist'").fetchone()["n"] == 0
+
+
+def test_t15_audit_enqueue_awaiting_human_gate(
+    conn: sqlite3.Connection,
+) -> None:
+    """An outstanding RequestUserAmend gates T1.5 like every other seat."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_routine_at=db.now())
+    _insert_root(conn, "alpha")
+    _insert_decision(conn, "alpha")
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, payload, outcome, created_at,"
+        " updated_at)"
+        " VALUES ('alpha', 1, 'routine', 'RequestUserAmend',"
+        " '{}', 'awaiting_human', ?, ?)", (db.now(), db.now()))
+    conn.commit()
+
+    strategist_triggers(conn, running=set(), audit_interval_min=180.0)
+    assert conn.execute("SELECT COUNT(*) AS n FROM queue"
+                        " WHERE kind='Strategist'").fetchone()["n"] == 0
+
+
 def test_consecutive_strategist_probe(
     conn: sqlite3.Connection, capsys,
 ) -> None:
