@@ -1340,9 +1340,9 @@ export default function Constellation({
           choice sticks. It opens RIGHTWARD on the toggle's own line
           (owner, 2026-07-11): the second line used to hang exactly
           over the root band at the sky's top-left */}
-      <div className="absolute top-3 left-3 flex flex-wrap items-center gap-x-2 gap-y-1">
+      <div className="absolute top-3 left-3 flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md bg-surface/90 px-2.5 py-1">
         <button
-          className="cursor-pointer rounded-md bg-surface/80 px-2 py-1 text-[11px] text-ink-faint transition-colors hover:text-ink-dim"
+          className="cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink-dim"
           onClick={() =>
             setLegendOpen((v) => {
               try {
@@ -1355,13 +1355,16 @@ export default function Constellation({
           }
           title={legendOpen ? 'hide the legend' : 'show the legend'}
         >
-          legend {legendOpen ? '▾' : '▸'}
+          {/* the triangle tells the truth about the direction: closed
+              opens RIGHTWARD (▸), open folds back left (◂) */}
+          legend {legendOpen ? '◂' : '▸'}
         </button>
+        {legendOpen && <span className="h-3 w-px bg-edge" aria-hidden />}
         {/* grouped: star status | landmark marks | line kinds — and the
             status icons must MATCH the sky (the old "open" swatch drew a
             hollow accent ring that exists nowhere) */}
         <div
-          className={`pointer-events-none ${legendOpen ? 'flex' : 'hidden'} flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-surface/90 px-2.5 py-1 text-[11px] text-ink-faint`}
+          className={`pointer-events-none ${legendOpen ? 'flex' : 'hidden'} flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-faint`}
         >
         {/* STATUS group — swatches carry the TRUE inking (brightness,
             blink); the shape is fixed so only the status axis varies */}
