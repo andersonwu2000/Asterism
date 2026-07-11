@@ -680,6 +680,188 @@ def _batch_provable_via_apply(
     return results
 
 
+def _sig_split_binders(sig: str) -> "tuple[str, str] | None":
+    """Split a full signature `<binders> : <conclusion>` at the TOP-LEVEL
+    colon (depth-aware over ()/{}/[]/⦃⦄ — binder types contain colons).
+    Returns (binders, conclusion) or None if no top-level colon."""
+    depth = 0
+    for i, ch in enumerate(sig):
+        if ch in "({[⦃":
+            depth += 1
+        elif ch in ")}]⦄":
+            depth = max(0, depth - 1)
+        elif ch == ":" and depth == 0:
+            if i + 1 < len(sig) and sig[i + 1] == "=":
+                return None  # `:=` — malformed for a signature
+            return sig[:i].strip(), sig[i + 1:].strip()
+    return None
+
+
+def _binder_bracket_seq(sig: str) -> "str | None":
+    """The TOP-LEVEL binder bracket sequence of a signature — one char
+    per binder group: '(' explicit, '{' implicit, '[' instance, '⦃'
+    strict-implicit. Binder NAMES and types are ignored (paraphrase-
+    free); nesting inside a binder's type is skipped depth-aware
+    ((h : (A → B) ∧ C) is ONE group). Interface metadata like
+    explicitness is invisible to kernel defeq, so P1's statement-link
+    checks it here textually.
+
+    KNOWN-CONSERVATIVE: `theorem A (x : ℕ) : P x` vs
+    `theorem B : ∀ x : ℕ, P x` have the same call interface but
+    different bracket sequences → judged different → the candidate
+    mints as novel. Deliberate: a conservative miss costs one duplicate,
+    a false link breaks the patch rewrite. Not a bug (do not re-report).
+    """
+    split = _sig_split_binders(sig)
+    if split is None:
+        return None
+    binders, _ = split
+    seq: list[str] = []
+    depth = 0
+    for ch in binders:
+        if ch in "({[⦃":
+            if depth == 0:
+                seq.append(ch)
+            depth += 1
+        elif ch in ")}]⦄":
+            depth = max(0, depth - 1)
+    return "".join(seq)
+
+
+def _forall_form(sig: str) -> "str | None":
+    """`<binders> : <conclusion>` → the Prop term `∀ <binders>, <concl>`
+    (or just the conclusion when there are no binders) — the shape the
+    statement-defeq probe compares."""
+    split = _sig_split_binders(sig)
+    if split is None:
+        return None
+    binders, concl = split
+    if not binders:
+        return concl
+    return f"∀ {binders}, {concl}"
+
+
+def _batch_statement_defeq(
+    workspace: Path,
+    problem: str,
+    pairs: list[tuple[str, str, str]],
+) -> list[bool]:
+    """For each (cand_forall, twin_forall, twin_module) pair, check the
+    two statement TYPES are definitionally equal via an `rfl` probe:
+
+        theorem _dceq_i : (<cand_forall>) = (<twin_forall>) := rfl
+
+    P1 (agent_feedback 2026-07-11, the b6 twin-minting churn): the reuse
+    tier's binder-verbatim shape gate missed paraphrased twins, and the
+    one-directional apply probe is too loose for a reference REWRITE
+    (hypothesis extension passes it — the two recorded `Function
+    expected` accidents). Defeq of the full ∀-types is symmetric and
+    binder-name/notation blind (alpha + unfolding live in the kernel);
+    the caller checks the call INTERFACE (bracket sequence) separately.
+
+    Failure direction: NOT-linking (candidate mints as novel) — an
+    rfl-shy elaborator hiccup costs a duplicate, never a broken rewrite.
+    The first raw probe error is logged so a future "why didn't this
+    merge" has forensics. Same cold `lake env lean` batch shape and
+    per-pair line attribution as `_batch_provable_via_apply`.
+    """
+    if not pairs:
+        return []
+    seen_modules: set[str] = set()
+    for _, _, mod in pairs:
+        if mod:
+            seen_modules.add(mod)
+    if seen_modules:
+        from ..pipeline._lake import lake_build_modules as _lake_build_modules
+        try:
+            _lake_build_modules(workspace, sorted(seen_modules))
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            print(f"[dedupe] defeq pre-flight lake build failed "
+                  f"(non-fatal): {exc}", flush=True)
+
+    lines: list[str] = ["import Mathlib"]
+    defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
+    if defs_path.exists():
+        lines.append(f"import Problems.{problem}.Defs")
+    for mod in sorted(seen_modules):
+        lines.append(f"import {mod}")
+    lines.append("")
+    lines.append("namespace dedupe_check")
+    lines.append("")
+
+    pair_start_lines: list[int] = []
+    for i, (cand_forall, twin_forall, _mod) in enumerate(pairs):
+        cand_flat = " ".join(cand_forall.split())
+        twin_flat = " ".join(twin_forall.split())
+        pair_start_lines.append(len(lines) + 1)
+        lines.append(f"-- defeq pair {i}")
+        lines.append(f"theorem _dceq_{i} : ({cand_flat}) = ({twin_flat})"
+                     f" := rfl")
+        lines.append("")
+    lines.append("end dedupe_check")
+    content = "\n".join(lines)
+
+    tmp_dir = workspace / ".attempts"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_file = tmp_dir / f"_dedupe_defeq_{uuid.uuid4().hex}.lean"
+    tmp_file.write_text(content, encoding="utf-8")
+    try:
+        r = subprocess.run(
+            ["lake", "env", "lean", str(tmp_file)],
+            cwd=str(workspace),
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=_BATCH_TIMEOUT_SEC,
+            creationflags=no_window_creationflags(),
+        )
+        output = r.stdout + r.stderr
+        rc = r.returncode
+    except subprocess.TimeoutExpired:
+        return [False] * len(pairs)
+    except OSError:
+        return [False] * len(pairs)
+    finally:
+        try:
+            tmp_file.unlink()
+        except OSError:
+            pass
+
+    error_lines: set[int] = set()
+    for m in _LAKE_ERR_RE.finditer(output):
+        error_lines.add(int(m.group(1)))
+    if not error_lines:
+        return ([True] * len(pairs)) if rc == 0 else [False] * len(pairs)
+
+    in_any_pair = set()
+    for el in error_lines:
+        for i, start in enumerate(pair_start_lines):
+            end = (pair_start_lines[i + 1] - 1
+                   if i + 1 < len(pair_start_lines) else len(lines))
+            if start <= el <= end:
+                in_any_pair.add(el)
+                break
+    if error_lines - in_any_pair:
+        print(f"[dedupe] defeq probe global error — all pairs refused; "
+              f"first output: {output[:200]!r}", flush=True)
+        return [False] * len(pairs)
+
+    results: list[bool] = []
+    for i, start in enumerate(pair_start_lines):
+        end = (pair_start_lines[i + 1] - 1
+               if i + 1 < len(pair_start_lines) else len(lines))
+        has_error = any(start <= el <= end for el in error_lines)
+        results.append(not has_error)
+    if not all(results):
+        # Forensics for the rfl-shy / genuine-mismatch cases (teammate
+        # review 2026-07-11): keep the first raw error so a future
+        # "why didn't this merge" is answerable from the log.
+        first = next((ln for ln in output.splitlines() if "error" in ln), "")
+        print(f"[dedupe] defeq probe: "
+              f"{sum(1 for x in results if not x)}/{len(pairs)} pair(s) "
+              f"not defeq; first error: {first[:200]}", flush=True)
+    return results
+
+
 def _eligible_ancestors(conn: sqlite3.Connection, workspace: Path, *,
                         problem: str, parent_goal_id: int,
                         candidate_count: int) -> list[sqlite3.Row]:
@@ -1330,18 +1512,9 @@ def find_canonicals_batch(
             pairs.append((cand_sig, reuse_module, reuse_fqn))
             pair_origin.append((ci, KIND_REUSE, reuse_row))
 
-    if not pairs:
-        # No kernel work to do (either every candidate was Tier 1-hit
-        # or had no eligible pool). Still report metric for forensic.
-        n_alias = sum(1 for m in result if m and m.kind == "alias")
-        n_disproved = sum(1 for m in result if m and m.kind == "disproved")
-        n_noprog = sum(1 for m in result if m and m.kind == "no_progress")
-        print(f"[dedupe] checked {n} candidate(s) against 0 pair(s); "
-              f"alias={n_alias} disproved={n_disproved} "
-              f"no_progress={n_noprog} library=0 (slug-tier only)",
-              flush=True)
-        return result
-
+    # NB: no early return on empty `pairs` — the P1 statement-defeq pass
+    # below can still have work (a shelved twin whose shape mismatches
+    # forms no apply pair). `_batch_provable_via_apply([])` returns [].
     flags = _batch_provable_via_apply(workspace, problem, pairs)
 
     # First-hit per candidate. pair_origin order is alive→disproved within
@@ -1365,6 +1538,62 @@ def find_canonicals_batch(
         else:
             result[ci] = CanonicalMatch(
                 goal_id=int(payload["id"]), kind=kind)  # type: ignore[index]
+    # P1 (2026-07-11, b6 twin-minting churn): statement-defeq reuse for
+    # SHELVED twins the binder-verbatim shape gate missed. The paraphrase
+    # dimension (binder renames, notation drift) is exactly what walled
+    # runs produce round after round — ~15 fresh-slug twins of one shelved
+    # crux, each costing a review wake + a 15-min agent. Two-layer match:
+    # bracket-sequence interface pre-filter (cheap, textual) + kernel rfl
+    # defeq of the full ∀-types (authority — the byte fast-path was
+    # demoted to a pre-filter on teammate review: no kernel bypass).
+    # Downstream is the ordinary reuse path: citation rewrite + cite-gate
+    # link-and-wait (a ConfirmShelve-parked twin links WITHOUT revival).
+    defeq_pairs: list[tuple[str, str, str]] = []
+    defeq_origin: list[tuple[int, sqlite3.Row]] = []
+    for ci, (slug, full_text) in enumerate(candidates):
+        if result[ci] is not None:
+            continue
+        cand_sig = _extract_full_signature(full_text)
+        if cand_sig is None:
+            continue
+        cand_seq = _binder_bracket_seq(cand_sig)
+        cand_forall = _forall_form(cand_sig)
+        if cand_seq is None or cand_forall is None:
+            continue
+        for reuse_row, reuse_text in cand_reusable[ci]:
+            if str(reuse_row["status"]) != "shelved":
+                continue
+            twin_sig = _extract_full_signature(reuse_text)
+            if twin_sig is None:
+                continue
+            if _sig_shape(cand_sig) == _sig_shape(twin_sig):
+                continue  # already probed via the strict reuse path above
+            if _binder_bracket_seq(twin_sig) != cand_seq:
+                continue  # call interface differs — rewrite would break
+            twin_forall = _forall_form(twin_sig)
+            if twin_forall is None:
+                continue
+            try:
+                twin_module = lean_path_to_module(
+                    workspace, workspace / reuse_row["lean_path"])
+            except (ValueError, OSError):
+                continue
+            defeq_pairs.append((cand_forall, twin_forall, twin_module))
+            defeq_origin.append((ci, reuse_row))
+    n_defeq = 0
+    if defeq_pairs:
+        for (ci, row), ok in zip(
+                defeq_origin,
+                _batch_statement_defeq(workspace, problem, defeq_pairs)):
+            if ok and result[ci] is None:
+                result[ci] = CanonicalMatch(
+                    goal_id=int(row["id"]), kind="reuse")
+                n_defeq += 1
+                print(f"[dedupe] statement-defeq: "
+                      f"{candidates[ci][0]} ≡ shelved twin "
+                      f"{int(row['id'])} — reuse-link, no new sub-goal",
+                      flush=True)
+
     # Lightweight metric — surfaces dedupe effectiveness in the daemon
     # log so Phase 2 design (Strategist/Forward/Librarian) has empirical
     # input on alias hit rate and disproved-collision frequency. `library`
@@ -1380,7 +1609,7 @@ def find_canonicals_batch(
     print(f"[dedupe] checked {n} candidate(s) against {len(pairs)} "
           f"pair(s); alias={n_alias} disproved={n_disproved} "
           f"no_progress={n_noprog} library={n_library} reuse={n_reuse} "
-          f"dead={n_dead}",
+          f"(defeq={n_defeq}) dead={n_dead}",
           flush=True)
     return result
 

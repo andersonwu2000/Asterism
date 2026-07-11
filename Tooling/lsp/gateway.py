@@ -1697,18 +1697,25 @@ def _stale_olean_submission(content: str, problem: str,
     return {"ok": not issues, "issues": issues}
 
 
-def _slug_collision_submission(stub_slugs: "set[str]", problem: str,
+def _slug_collision_submission(stub_map: "dict[str, str]", problem: str,
                                workspace: "Path") -> "dict | None":
     """Predict the commit-only slug fate for BATCH STUBS (agent_feedback
     #4b: LSP all-green, bounced at commit): a `new_<slug>.lean` whose
     slug already exists as a goal in this problem either auto-suffixes
     to `_2` at commit (breaking the decl-name match every citation in
     the batch relies on) or — when the twin is a strict ancestor with an
-    identical head — dies as `circular_decomposition`. Surface the
-    collision + the twin's status pre-commit so the agent renames or
-    cites instead. Scoped to stubs only: a patch legitimately declares
-    its own goal's slug. Best-effort: DB failure → None."""
-    if not stub_slugs:
+    identical head — dies as `circular_decomposition`.
+
+    FORK (agent_feedback 2026-07-11, 12 contradiction reports): when the
+    colliding twin is SHELVED and the stub's statement is byte-identical
+    (normalized signature match — display heuristic only; the commit
+    authority is the kernel defeq/reuse path), the SANCTIONED move is to
+    keep the name and let commit dedupe-link to the twin — so the entry
+    downgrades to `info` instead of scaring the agent into a rename that
+    mints yet another fresh-slug twin. Scoped to stubs only: a patch
+    legitimately declares its own goal's slug. Best-effort: DB failure →
+    None."""
+    if not stub_map:
         return None
     try:
         conn = db.connect(workspace / "asterism.db")
@@ -1716,14 +1723,43 @@ def _slug_collision_submission(stub_slugs: "set[str]", problem: str,
         return None
     try:
         issues: "list[dict]" = []
-        for slug in sorted(stub_slugs):
+        all_ok = True
+        for slug in sorted(stub_map):
             row = conn.execute(
-                "SELECT id, status FROM goals WHERE problem = ?"
+                "SELECT id, status, lean_path FROM goals WHERE problem = ?"
                 "  AND slug = ? AND alias_target_id IS NULL LIMIT 1",
                 (problem, slug),
             ).fetchone()
             if row is None:
                 continue
+            same_stmt = False
+            if str(row["status"]) == "shelved":
+                try:
+                    twin_text = (workspace / str(row["lean_path"])
+                                 ).read_text(encoding="utf-8")
+                    twin_sig = assemble.signature_prefix(twin_text, slug)
+                    cand_sig = assemble.signature_prefix(
+                        stub_map[slug], slug)
+                    same_stmt = (bool(twin_sig) and bool(cand_sig)
+                                 and assemble.normalize_signature(twin_sig)
+                                 == assemble.normalize_signature(cand_sig))
+                except OSError:
+                    same_stmt = False
+            if same_stmt:
+                issues.append({
+                    "slug": slug, "existing_goal": int(row["id"]),
+                    "status": str(row["status"]),
+                    "severity": "info",
+                    "hint": (f"`{slug}` is statement-identical to the "
+                             f"existing SHELVED goal {int(row['id'])} — "
+                             f"this is the sanctioned dedupe path: KEEP "
+                             f"this name; at commit the stub links to "
+                             f"that twin (link-and-wait, no new goal). "
+                             f"Do NOT rename — a fresh slug just mints "
+                             f"another twin."),
+                })
+                continue
+            all_ok = False
             issues.append({
                 "slug": slug, "existing_goal": int(row["id"]),
                 "status": str(row["status"]),
@@ -1740,7 +1776,7 @@ def _slug_collision_submission(stub_slugs: "set[str]", problem: str,
             })
         if not issues:
             return {"checked": True, "ok": True}
-        return {"checked": True, "ok": False, "issues": issues}
+        return {"checked": True, "ok": all_ok, "issues": issues}
     except Exception:
         return None
     finally:
@@ -1939,7 +1975,7 @@ def validate_file(content: str) -> str:
         sv = assemble.split_visibility_issues(stub_map, problem=meta.problem)
         submission["split_visibility"] = {"ok": not sv, "issues": sv}
         sc = _slug_collision_submission(
-            set(stub_map), meta.problem, meta.workspace)
+            stub_map, meta.problem, meta.workspace)
         if sc is not None:
             submission["slug_collision"] = sc
     ls = _locked_signature_submission(content, attempts_dir)

@@ -585,15 +585,58 @@ def test_slug_collision_submission_flags_existing_goal(
     conn.commit()
     conn.close()
 
+    stub = "theorem taken : True := by sorry\n"
     sc = lsp_gateway._slug_collision_submission(
-        {"taken", "fresh"}, "p", tmp_path)
+        {"taken": stub, "fresh": stub}, "p", tmp_path)
     assert sc is not None and sc["ok"] is False
     assert [i["slug"] for i in sc["issues"]] == ["taken"]
     assert "auto-suffixes" in sc["issues"][0]["hint"]
     # no collisions → checked+ok; empty stub set → None (nothing to say)
-    ok = lsp_gateway._slug_collision_submission({"fresh"}, "p", tmp_path)
+    ok = lsp_gateway._slug_collision_submission(
+        {"fresh": stub}, "p", tmp_path)
     assert ok == {"checked": True, "ok": True}
-    assert lsp_gateway._slug_collision_submission(set(), "p", tmp_path) is None
+    assert lsp_gateway._slug_collision_submission({}, "p", tmp_path) is None
+
+
+def test_slug_collision_info_fork_for_identical_shelved_twin(
+        tmp_path: Path) -> None:
+    """agent_feedback 2026-07-11 (12 contradiction reports): a stub
+    statement-identical to a SHELVED same-name twin is the sanctioned
+    dedupe path — the entry downgrades to info (keep the name) instead
+    of scaring the agent into a rename that mints another twin."""
+    import sqlite3
+    conn = sqlite3.connect(str(tmp_path / "asterism.db"))
+    conn.row_factory = sqlite3.Row
+    db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES ('p', 'm', ?)", (db.now(),))
+    gid = db.insert_goal(conn, problem="p", slug="crux",
+                         lean_path="Problems/p/proofs/L_crux.lean",
+                         statement="T", origin="backward")
+    conn.execute("UPDATE goals SET status='shelved' WHERE id=?", (gid,))
+    conn.commit()
+    conn.close()
+    twin_file = tmp_path / "Problems" / "p" / "proofs" / "L_crux.lean"
+    twin_file.parent.mkdir(parents=True)
+    twin_file.write_text(
+        "theorem crux (a : Nat) : a + 0 = a := by sorry\n",
+        encoding="utf-8")
+
+    # identical statement (whitespace drift tolerated) → info, ok True
+    sc = lsp_gateway._slug_collision_submission(
+        {"crux": "theorem crux (a : Nat) :  a + 0 = a := by sorry\n"},
+        "p", tmp_path)
+    assert sc["ok"] is True
+    assert sc["issues"][0]["severity"] == "info"
+    assert "KEEP" in sc["issues"][0]["hint"]
+
+    # different statement, same name → warn stays
+    sc2 = lsp_gateway._slug_collision_submission(
+        {"crux": "theorem crux (a : Nat) : a * 1 = a := by sorry\n"},
+        "p", tmp_path)
+    assert sc2["ok"] is False
+    assert sc2["issues"][0]["severity"] == "warn"
 
 
 def test_toposort_siblings_orders_referenced_first() -> None:

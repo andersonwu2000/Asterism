@@ -586,6 +586,112 @@ def test_find_canonicals_batch_disproved_match_returns_disproved_kind(
     ]
 
 
+def test_binder_bracket_seq_and_forall_form() -> None:
+    """P1 interface layer: top-level binder bracket sequence — names and
+    types free, nesting skipped depth-aware, explicitness visible."""
+    sig = "(g : ℕ → ℕ) {r : ℝ} [inst : Nonempty ℕ] (h : (A → B) ∧ C) : P g r"
+    assert dedupe._binder_bracket_seq(sig) == "({[("
+    assert dedupe._forall_form(sig) == (
+        "∀ (g : ℕ → ℕ) {r : ℝ} [inst : Nonempty ℕ] (h : (A → B) ∧ C), P g r")
+    # zero binders
+    assert dedupe._binder_bracket_seq(": True") == ""
+    assert dedupe._forall_form(": True") == "True"
+    # binder-name drift is invisible (same sequence)
+    assert dedupe._binder_bracket_seq("(a : T) : X") == \
+        dedupe._binder_bracket_seq("(b : T) : X")
+    # implicit/explicit flip IS visible (call interface differs)
+    assert dedupe._binder_bracket_seq("(a : T) : X") != \
+        dedupe._binder_bracket_seq("{a : T} : X")
+    # malformed (no top-level colon) → None
+    assert dedupe._binder_bracket_seq("(a : T)") is None
+
+
+def test_find_canonicals_batch_defeq_links_paraphrased_shelved_twin(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1 (b6 twin-minting churn): a candidate whose binder NAMES differ
+    from a shelved twin (strict shape gate misses) but whose statement
+    is kernel-defeq gets kind='reuse' via the statement-defeq pass —
+    linked, no fresh twin minted."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    twin = _seed_sub(conn, slug="crux_twin", statement="X",
+                     status="shelved")
+    _link(conn, root, [twin])
+    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
+    _link(conn, root, [parent])
+    _write_lean(tmp_path, "p", "crux_twin",
+        "import Mathlib\ntheorem crux_twin (a : T) : X := by sorry\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : Q := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    # apply probe finds nothing; defeq probe confirms the pair
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply",
+                        lambda ws, p, pairs: [False] * len(pairs))
+    seen: dict = {}
+
+    def fake_defeq(ws: Path, p: str,
+                   pairs: list[tuple[str, str, str]]) -> list[bool]:
+        seen["pairs"] = pairs
+        return [True] * len(pairs)
+    monkeypatch.setattr(dedupe, "_batch_statement_defeq", fake_defeq)
+
+    # binder name differs (b : T vs a : T) → strict shape gate misses
+    cand = "import Mathlib\ntheorem c (b : T) : X := by sorry\n"
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("c", cand)],
+    )
+    assert canonicals == [
+        dedupe.CanonicalMatch(goal_id=twin, kind="reuse"),
+    ]
+    # probe compared the ∀-forms
+    assert seen["pairs"][0][0].startswith("∀ (b : T)")
+    assert seen["pairs"][0][1].startswith("∀ (a : T)")
+
+
+def test_defeq_pass_skips_interface_mismatch(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit-vs-implicit binder flip never reaches the defeq probe —
+    defeq would pass (explicitness is elaboration metadata) but the
+    reference rewrite would break at every call site."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    twin = _seed_sub(conn, slug="crux_twin", statement="X",
+                     status="shelved")
+    _link(conn, root, [twin])
+    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
+    _link(conn, root, [parent])
+    _write_lean(tmp_path, "p", "crux_twin",
+        "import Mathlib\ntheorem crux_twin {a : T} : X := by sorry\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : Q := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply",
+                        lambda ws, p, pairs: [False] * len(pairs))
+    called: dict = {"n": 0}
+
+    def fake_defeq(ws, p, pairs):
+        called["n"] += len(pairs)
+        return [True] * len(pairs)
+    monkeypatch.setattr(dedupe, "_batch_statement_defeq", fake_defeq)
+
+    cand = "import Mathlib\ntheorem c (b : T) : X := by sorry\n"
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("c", cand)],
+    )
+    assert canonicals == [None]      # mints as novel — conservative
+    assert called["n"] == 0          # probe never consulted
+
+
 def test_find_canonicals_batch_dead_match_returns_dead_kind(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
