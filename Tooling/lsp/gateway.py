@@ -1533,7 +1533,8 @@ def _gw_leading_comments(text: str) -> str:
 
 def _citation_submission(content: str, problem: str, workspace: "Path",
                          declared: "set[str]",
-                         kind: "str | None" = None) -> "dict | None":
+                         kind: "str | None" = None,
+                         attempts_dir: "Path | None" = None) -> "dict | None":
     """Classify each `import Problems.<problem>.proofs.L_<slug>` in `content`
     via the shared `db.classify_cited_slug` SoT so validate_file predicts the
     commit citation gate. `declared` = sibling stubs inlined this call (legit
@@ -1545,11 +1546,27 @@ def _citation_submission(content: str, problem: str, workspace: "Path",
     auto-link — the citation dies at their axiom gate (transitive sorryAx),
     so for those pipelines the mirror reports it as the ERROR it is instead
     of the historical one-size warn (feedback family: agents trusted the
-    warn, burned the round trip)."""
+    warn, burned the round trip).
+
+    `attempts_dir` sharpens the BACKWARD verdict the same way: commit
+    routes a Backward with zero `new_*.lean` stubs down the leaf-bypass
+    path (`allow_auto_link=False`), so a sorry-free pure-cite patch is
+    rejected there with `cite_unproved_sibling` — yet the mirror's warn
+    read as "will pass" (b6 feedback family, 2026-07-11). When the probed
+    content is sorry-free and no stub exists yet, report that error;
+    declaring one stub flips it back to the auto-link warn."""
     try:
         conn = db.connect(workspace / "asterism.db")
     except Exception:
         return None
+    # Leaf-bypass predictor — mirrors backward.py's routing condition
+    # (`not _safe_glob(attempts_dir, "new_*.lean")`). A `sorry` anywhere
+    # means this content isn't a submittable leaf proof, so keep the warn.
+    leaf_bypass = (
+        (kind or "").lower() == "backward"
+        and attempts_dir is not None
+        and not re.search(r"\bsorry\b", content)
+        and not next(attempts_dir.glob("new_*.lean"), None))
     issues: "list[dict]" = []
     try:
         seen: "set[str]" = set()
@@ -1590,6 +1607,17 @@ def _citation_submission(content: str, problem: str, workspace: "Path",
                                 "and dies at the axiom gate; cite proved "
                                 "siblings only, or (forward) declare the "
                                 "fact as your own lemma"})
+                elif leaf_bypass:
+                    issues.append({
+                        "slug": slug, "status": status, "severity": "error",
+                        "hint": "non-proved: with no new_<slug>.lean stub "
+                                "declared, commit routes this down the "
+                                "leaf-bypass path and rejects it with "
+                                "cite_unproved_sibling; declare at least "
+                                "one sub-goal stub (a byte-identical "
+                                "re-statement of this sibling counts — it "
+                                "statement-dedups and auto-links) or cite "
+                                "proved siblings only"})
                 else:
                     issues.append({
                         "slug": slug, "status": status, "severity": "warn",
@@ -1956,7 +1984,8 @@ def validate_file(content: str) -> str:
     submission: "dict" = {"annotation": _annotation_submission(content),
                           "decl_head": _declhead_submission(content)}
     cite = _citation_submission(content, meta.problem, meta.workspace,
-                                set(inlined_slugs), kind=meta.kind)
+                                set(inlined_slugs), kind=meta.kind,
+                                attempts_dir=meta.target_path.parent)
     if cite is not None:
         submission["citation"] = cite
     # D-lite (task #5): predict the SPLIT — the deterministic commit-policy
