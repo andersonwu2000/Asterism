@@ -12,7 +12,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
    - Status claims ("X is the sole gate", "Y is in flight") → check the tree.
    - Lines tagged `SUSPECT:` by earlier wakes → adjudicate these first.
 
-3. **Curate `_plan.md` directly**: delete what is wrong, fix what is imprecise, prefix `SUSPECT:` on what you cannot settle within budget.
+3. **Curate `_plan.md` directly**: every `## Facts` line must re-derive from its cited source — demote what doesn't; narrow verdicts wider than the attempts they cite; delete the wrong, fix the imprecise, `SUSPECT:` what you cannot settle within budget.
 
 4. **Decide.** A refuted belief that unblocks a route → `Inject` that route in THIS batch, not a note for later. Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
    - A clean audit is a legitimate result: `EmitDirective` with a one-line audit summary (or `Noop` when work is genuinely in flight).
