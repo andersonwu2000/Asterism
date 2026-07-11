@@ -1936,7 +1936,7 @@ def cmd_serve(args) -> int:
     os.chdir(workspace)
     host = "127.0.0.1"
     port = int(getattr(args, "port", None) or 8642)
-    app = create_app(workspace)
+    app = create_app(workspace, prewarm=True)
     print(f"Asterism UI: http://{host}:{port}/  (workspace: {workspace})")
     uvicorn.run(app, host=host, port=port, log_level="warning")
     return 0

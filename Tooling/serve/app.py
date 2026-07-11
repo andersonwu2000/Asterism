@@ -193,9 +193,30 @@ def spawn_claude_login() -> None:
         raise OSError("no terminal spawner for this platform")
 
 
-def create_app(workspace: Path) -> FastAPI:
+def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     workspace = workspace.resolve()
     app = FastAPI(title="Asterism", docs_url=None, redoc_url=None)
+    if prewarm:
+        # Cold-cache prewarm (serve entrypoint only — tests build apps
+        # by the dozen): the first click into a big problem paid 2-3s
+        # of cold file scans (citation imports + goal docs read
+        # hundreds of L_ files; a cold Windows open costs ms each). One
+        # background pass per problem moves that cost to boot, off the
+        # user's first impression. Read-only throughout; failures are
+        # silence, not startup errors.
+        def _prewarm() -> None:
+            time.sleep(1.0)  # let uvicorn come up first
+            try:
+                with _ro(workspace) as conn:
+                    names = [str(r["name"]) for r in conn.execute(
+                        "SELECT name FROM problems ORDER BY name")]
+                for n in names:
+                    with _ro(workspace) as conn:
+                        _data.problem_detail(conn, workspace, n)
+            except Exception:  # noqa: BLE001 — a warmer must never wound
+                pass
+        threading.Thread(target=_prewarm, daemon=True,
+                         name="detail-prewarm").start()
 
     # mission control (GET /api/run) lives in its own module
     from .run import register as _register_run

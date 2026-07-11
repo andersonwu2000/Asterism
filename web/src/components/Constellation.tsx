@@ -24,6 +24,12 @@ import type { ConstellationLayout, LayoutNode } from '../lib/layout'
  * repaint pay for that.
  */
 
+/** finished layouts, content-keyed, shared across mounts — a revisited
+ * sky must not re-pay the engine (0.5s at 500 stars). Insertion order
+ * doubles as recency (Map iterates oldest-first). */
+const layoutLRU = new Map<string, ConstellationLayout>()
+const LAYOUT_LRU_MAX = 8
+
 /** poll-to-poll position tween: ~half a second, fast-out. Long enough
  * to read as motion, short enough to be over before the next poll. */
 const ANIM_MS = 550
@@ -237,11 +243,25 @@ export default function Constellation({
     for (const e of citationEdges) mix(`${e.from}>${e.to};`)
     return `${goals.length}|${strategies.length}|${strategyEdges.length}|${anchorEdges.length}|${citationEdges.length}#${a}`
   }, [goals, strategies, strategyEdges, anchorEdges, citationEdges])
-  const layoutCache = useRef<{ sig: string; value: ReturnType<typeof layoutConstellation> } | null>(null)
   const layout = useMemo(() => {
-    if (layoutCache.current?.sig === layoutSig) return layoutCache.current.value
+    // Module-level LRU, not a per-mount ref: navigating Board → Problem
+    // → Board → Problem re-paid the full engine run (0.5s at 500 stars,
+    // ON the main thread) for a sky that hadn't changed. The signature
+    // already guarantees ink freshness, so a cross-mount hit is exactly
+    // as safe as the old in-mount hit — revisiting a big sky is now
+    // instant (owner asked for faster entry, 2026-07-12).
+    const hit = layoutLRU.get(layoutSig)
+    if (hit) {
+      layoutLRU.delete(layoutSig)
+      layoutLRU.set(layoutSig, hit) // refresh recency
+      return hit
+    }
     const v = layoutConstellation(goals, strategies, strategyEdges, anchorEdges, citationEdges)
-    layoutCache.current = { sig: layoutSig, value: v }
+    layoutLRU.set(layoutSig, v)
+    if (layoutLRU.size > LAYOUT_LRU_MAX) {
+      const oldest = layoutLRU.keys().next().value
+      if (oldest !== undefined) layoutLRU.delete(oldest)
+    }
     return v
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sig IS the content key
   }, [layoutSig])
