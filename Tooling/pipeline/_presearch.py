@@ -86,7 +86,7 @@ def _clean(entry) -> tuple:
 
 
 def _verify(blocks, workspace: Path, problem_dir: Path,
-            conn=None, exclude_slug: str = "") -> list:
+            conn=None, exclude_slug: str = "", problem: str = "") -> list:
     """Verify a 3-block pre-search result `{in_problem, library, mathlib}`,
     each a list of `{name, why}`. Per source:
       - in_problem: keep names whose decl appears in the problem's `proofs/`
@@ -126,6 +126,23 @@ def _verify(blocks, workspace: Path, problem_dir: Path,
             hay = "\n".join(parts)
         except OSError:
             hay = ""
+        # Status layer (agent_feedback 2026-07-09/10, 91 entries): a bare
+        # name list let agents nearly cite a DISPROVED sibling as true and
+        # gave no way to tell proved from open. Attach the DB status + a
+        # one-line statement to every in-problem candidate the goals table
+        # knows. Best-effort: no conn / no problem name → names-only.
+        status_map: dict = {}
+        if conn is not None and problem:
+            try:
+                status_map = {
+                    str(r["slug"]): (str(r["status"]),
+                                     str(r["statement"] or ""))
+                    for r in conn.execute(
+                        "SELECT slug, status, statement FROM goals"
+                        " WHERE problem = ? AND alias_target_id IS NULL",
+                        (problem,))}
+            except Exception:  # noqa: BLE001 — enrichment is best-effort
+                status_map = {}
         for entry in ip:
             name, why = _clean(entry)
             if not name:
@@ -137,7 +154,16 @@ def _verify(blocks, workspace: Path, problem_dir: Path,
                 continue
             short = name.rsplit(".", 1)[-1]
             if (not hay) or (short and short in hay):
-                out.append({"name": name, "source": "in_problem", "why": why})
+                item = {"name": name, "source": "in_problem", "why": why}
+                if short in status_map:
+                    status, stmt = status_map[short]
+                    item["status"] = status
+                    one_line = " ".join(stmt.split())
+                    if one_line:
+                        item["statement"] = (one_line[:157] + "..."
+                                             if len(one_line) > 160
+                                             else one_line)
+                out.append(item)
 
     # library — keep names among the DB-indexed placed decls. Match on the
     # full FQN or its leaf (agents report `Library.<Domain>.<File>.<decl>`
@@ -192,16 +218,35 @@ def _render_section(candidates: list) -> str:
              "Likely-relevant lemmas found for this goal (Mathlib names "
              "`#check`-verified). Cite by full name; grep for more if needed.",
              ""]
+    if any(c.get("status") for c in candidates):
+        lines[2] += (" In-problem siblings carry their status: only "
+                     "`proved` ones are citable; `disproved` means the "
+                     "statement is FALSE — do not assume it.")
     for c in candidates:
         name = str(c.get("name") or "")
         tag = _SOURCE_TAG.get(str(c.get("source") or ""), str(c.get("source") or "?"))
+        status = str(c.get("status") or "").strip()
+        if status:
+            tag += f", {status if status == 'proved' else status.upper()}"
         why = str(c.get("why") or "").strip()
         sig = str(c.get("signature") or "").strip()
+        stmt = str(c.get("statement") or "").strip()
         head = f"- `{name}`  [{tag}]" + (f" — {why}" if why else "")
         lines.append(head)
         if sig:
             lines.append(f"    `{sig}`")
+        if stmt:
+            lines.append(f"    `{stmt}`")
     return "\n".join(lines) + "\n"
+
+
+_DRY_SECTION = (
+    "## Candidate lemmas (pre-search)\n"
+    "\n"
+    "Pre-search ran for this goal and verified NO candidates — in-problem "
+    "siblings, Library and Mathlib all came up dry. If you believe a "
+    "relevant lemma exists, search yourself (grep / loogle).\n"
+)
 
 
 def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
@@ -263,11 +308,18 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
         raw = json.loads(out_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             return None
+        _problem = ""
+        try:
+            _problem = str(goal["problem"] or "")
+        except Exception:  # noqa: BLE001 — enrichment key is optional
+            _problem = ""
         verified = _verify(raw, workspace, problem_dir, conn=conn,
-                           exclude_slug=str(goal["slug"]))
-        if not verified:
-            return None
-        section = _render_section(verified)
+                           exclude_slug=str(goal["slug"]), problem=_problem)
+        # Ran-but-dry is INFORMATION (agent_feedback: an absent section is
+        # indistinguishable from "presearch never ran", so provers re-search
+        # from scratch). Cache an explicit dry section; infra failures above
+        # still return None (unknown ≠ dry).
+        section = _render_section(verified) if verified else _DRY_SECTION
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(section, encoding="utf-8")
         return cache

@@ -117,6 +117,63 @@ def test_section_present_when_cache_exists(tmp_path):
     assert context._section_presearch_candidates(pdir, 999) == []
 
 
+def test_verify_attaches_sibling_status_and_statement(tmp_path):
+    """agent_feedback 2026-07-09/10 (91 entries): in-problem candidates
+    carry their DB status + a one-line statement, so a DISPROVED sibling
+    can never be mistaken for a citable fact."""
+    from Tooling.state import db as _dbm
+    conn = _dbm.connect(":memory:")
+    _dbm.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
+                 " VALUES ('p','m','t')")
+    for slug, status in (("sib_proved", "proved"),
+                         ("sib_false", "disproved")):
+        gid = _dbm.insert_goal(
+            conn, problem="p", slug=slug,
+            lean_path=f"Problems/p/proofs/L_{slug}.lean",
+            statement=f"∀ n : ℕ, {slug} n", origin="backward")
+        conn.execute("UPDATE goals SET status=? WHERE id=?", (status, gid))
+    conn.commit()
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / "proofs").mkdir(parents=True)
+    (pdir / "proofs" / "L_x.lean").write_text(
+        "theorem sib_proved : True := trivial\n"
+        "theorem sib_false : False := by sorry\n", encoding="utf-8")
+    blocks = {"in_problem": [{"name": "sib_proved"}, {"name": "sib_false"}]}
+    out = _presearch._verify(blocks, tmp_path, pdir, conn=conn, problem="p")
+    by_name = {e["name"]: e for e in out}
+    assert by_name["sib_proved"]["status"] == "proved"
+    assert by_name["sib_false"]["status"] == "disproved"
+    assert "sib_false n" in by_name["sib_false"]["statement"]
+    # render: proved stays lowercase, non-proved shouts; header carries
+    # the citability rule; statement rendered as an indented line
+    section = _presearch._render_section(out)
+    assert "[this problem, proved]" in section
+    assert "[this problem, DISPROVED]" in section
+    assert "statement is FALSE" in section
+    assert "∀ n : ℕ, sib_false n" in section
+
+
+def test_verify_without_conn_stays_names_only(tmp_path):
+    """No conn / no problem name → enrichment silently absent (old shape)."""
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / "proofs").mkdir(parents=True)
+    (pdir / "proofs" / "L_s.lean").write_text(
+        "theorem s : True := trivial\n", encoding="utf-8")
+    out = _presearch._verify({"in_problem": [{"name": "s"}]}, tmp_path, pdir)
+    assert out and "status" not in out[0]
+    section = _presearch._render_section(out)
+    assert "[this problem]" in section
+    assert "statement is FALSE" not in section  # no status → no rule line
+
+
+def test_dry_section_is_explicit():
+    """Ran-but-dry renders an explicit section (an absent section is
+    indistinguishable from 'presearch never ran')."""
+    assert "NO candidates" in _presearch._DRY_SECTION
+    assert _presearch._DRY_SECTION.startswith("## Candidate lemmas")
+
+
 def test_verify_excludes_goal_own_slug(tmp_path):
     """2026-07-05 audit: the goal's OWN sorry stub sits in proofs/, so the
     in_problem hay check 'verified' it and the candidate list invited
