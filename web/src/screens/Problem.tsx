@@ -243,17 +243,6 @@ function RunStrip({
   )
 }
 
-/** The strategist writes its standing directive in working markdown;
- * the header shows it to a human, so strip the notation (emphasis
- * marks, heading hashes, code ticks) and keep the words. */
-function plainDirective(s: string): string {
-  return s
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/\*\*/g, '')
-    .replace(/`/g, '')
-    .trim()
-}
-
 /** Destruction tier (owner, 2026-07-09): deleting a problem erases
  * its folder, proofs and history — heavier ceremony than the in-place
  * two-step: a floating confirm whose red button (the achromatic law's
@@ -340,7 +329,6 @@ export default function Problem({ name }: { name: string }) {
   const { data: daemon } = usePoll<DaemonStatus>('/api/daemon', 3000)
   const [tab, setTab] = useState<Tab>('stars')
   const [manifestDirty, setManifestDirty] = useState(false)
-  const [directiveOpen, setDirectiveOpen] = useState(false)
   const [selectedGoal, setSelectedGoal] = useState<number | null>(null)
   // stars lit by hovering a route in the goal panel (owner: the text
   // and the map must point at each other)
@@ -480,35 +468,11 @@ export default function Problem({ name }: { name: string }) {
             </div>
           )
         })()}
-        {/* the standing directive steers FUTURE pipelines — on a settled
-            problem there are none, and a June steering memo in the header
-            reads as current intent (owner circled stokes' FRONTIER v12).
-            History stays where history lives: the Timeline. */}
-        {data.strategist_directive &&
-          !['signoff_pending', 'ingested', 'bridged'].includes(data.status) && (
-          <button
-            className="mt-2 block w-full max-w-4xl text-left"
-            onClick={() => setDirectiveOpen((v) => !v)}
-            title={directiveOpen ? 'collapse' : 'show the full standing directive'}
-          >
-            <span
-              className={`text-xs leading-relaxed text-ink-faint transition-colors hover:text-ink-dim ${
-                directiveOpen ? 'whitespace-pre-wrap' : 'line-clamp-1'
-              }`}
-            >
-              <span className="mr-1.5 font-medium tracking-widest text-ink-faint/70 uppercase">
-                <span
-                  className={`mr-1 inline-block text-[9px] transition-transform duration-150 ${directiveOpen ? 'rotate-90' : ''}`}
-                  aria-hidden
-                >
-                  ▸
-                </span>
-                directive
-              </span>
-              {plainDirective(data.strategist_directive)}
-            </span>
-          </button>
-        )}
+        {/* NO standing-directive line: it is the strategist's memo to
+            its own agents — engine vocabulary a mathematician can
+            neither parse nor act on (owner, 2026-07-12). Its history
+            lives where history lives: the Timeline's EmitDirective
+            rows. */}
         <nav className="mt-3 flex gap-5">
           {tabs.map((t) => (
             <button
