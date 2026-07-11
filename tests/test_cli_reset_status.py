@@ -663,6 +663,35 @@ def test_daemon_status_no_daemon(tmp_path, monkeypatch, capsys):
     assert out["running"] is False and out["pid"] is None
 
 
+def test_daemon_status_starting_window(tmp_path):
+    """The boot window between daemon_start and the child's lock claim:
+    a fresh anti-double-spawn marker must read as starting (with the
+    scope visible and the previous run's exit suppressed) — reporting
+    'idle' here flashed the Run button back mid-start. A stale marker
+    (crashed boot) ages out at the marker's own 60s rule."""
+    import os
+    import time
+    from Tooling.core.cli import daemon_status
+    (tmp_path / ".asterism" / "logs").mkdir(parents=True)
+    (tmp_path / ".asterism" / "daemon-starting.txt").write_text(
+        "t", encoding="utf-8")
+    (tmp_path / ".asterism" / "logs" / "daemon-scope.txt").write_text(
+        "Test.p", encoding="utf-8")
+    (tmp_path / ".asterism" / "logs" / "daemon-exit.txt").write_text(
+        '{"at": "x", "rc": 0, "error": null, "scope": "Test.p"}',
+        encoding="utf-8")
+    st = daemon_status(tmp_path)
+    assert st["starting"] is True and st["running"] is False
+    assert st["scope"] == "Test.p"
+    assert st["last_exit"] is None
+    # stale marker (a boot that never claimed the lock) → idle again
+    old = time.time() - 120
+    os.utime(tmp_path / ".asterism" / "daemon-starting.txt", (old, old))
+    st = daemon_status(tmp_path)
+    assert st["starting"] is False
+    assert st["last_exit"] is not None
+
+
 def test_daemon_start_refuses_when_lock_held_by_self(tmp_path, monkeypatch,
                                                      capsys):
     """Pre-flight mechanized: a live daemon lock (pid+start-time identity,

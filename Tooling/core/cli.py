@@ -1622,17 +1622,34 @@ def _daemon_in_flight(workspace: Path) -> int:
 def daemon_status(workspace: Path) -> dict:
     """Daemon lifecycle status dict (shared by `asterism daemon status`
     and the serve API — one implementation, two surfaces)."""
+    import time as _time
     from . import dispatcher as _disp
     pid = _daemon_live_pid(workspace)
+    # Boot window: daemon_start has returned but the child hasn't claimed
+    # the singleton lock yet (heavy imports — seconds). The start side
+    # already covers this gap with the anti-double-spawn marker; the
+    # STATUS side must read the same marker or it reports "idle" and the
+    # UI's Run button flashes back mid-start (owner, 2026-07-12). The
+    # child consumes the marker right after claiming the lock, so
+    # starting → running is seamless; a crashed boot ages out at 60s
+    # (the marker's own staleness rule).
+    starting = False
+    if pid is None:
+        try:
+            marker = workspace / ".asterism" / "daemon-starting.txt"
+            starting = _time.time() - marker.stat().st_mtime < 60
+        except OSError:
+            starting = False
     scope: str | None = None
     started_at: str | None = None
-    if pid is not None:
+    if pid is not None or starting:
         # written by daemon_start; "" = workspace-wide (--all-problems)
         scope_file = workspace / ".asterism" / "logs" / "daemon-scope.txt"
         try:
             scope = scope_file.read_text(encoding="utf-8").strip() or None
         except OSError:
             scope = None
+    if pid is not None:
         # pid-file line 2 is the daemon's process start time (the same
         # identity the singleton lock checks) — that IS this run's start.
         try:
@@ -1658,6 +1675,8 @@ def daemon_status(workspace: Path) -> dict:
             code_stale = False
     return {
         "running": pid is not None,
+        # the boot window between daemon_start and the child's lock claim
+        "starting": starting,
         "pid": pid,
         "scope": scope,
         "started_at": started_at,
@@ -1672,8 +1691,9 @@ def daemon_status(workspace: Path) -> dict:
         # at dead air (Test.Test3 run, 2026-07-07)
         "gateway": _gateway_phase_safe(workspace),
         # how the LAST run ended ({at, rc, error, scope}) — only
-        # meaningful while idle; tells "finished" from "crashed"
-        "last_exit": None if pid is not None
+        # meaningful while idle; tells "finished" from "crashed", and a
+        # BOOTING run's page must not resurface the previous ending
+        "last_exit": None if (pid is not None or starting)
         else _read_exit_summary(workspace),
     }
 

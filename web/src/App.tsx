@@ -20,6 +20,20 @@ import type { Meta } from './lib/types'
 function DaemonChip({ meta }: { meta: Meta | null }) {
   if (!meta) return <span className="px-2.5 text-xs text-ink-faint">engine…</span>
   const d = meta.daemon
+  if (d.starting && !d.running) {
+    // boot window — pulsing already, so the strip never says "idle"
+    // seconds after the user pressed Run
+    return (
+      <Link
+        to="/run"
+        className="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap text-ink transition-colors hover:bg-surface-2"
+        title="the engine is booting — open the run console"
+      >
+        <span className="bg-ok h-1.5 w-1.5 shrink-0 animate-pulse rounded-full" />
+        <span className="truncate font-mono text-[12px]">starting</span>
+      </Link>
+    )
+  }
   if (d.running) {
     const leaf = d.scope ? (d.scope.split('.').pop() ?? d.scope) : 'running'
     const mins = d.started_at

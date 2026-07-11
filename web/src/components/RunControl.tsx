@@ -33,7 +33,12 @@ export default function RunControl({ problem }: { problem: string }) {
 
   if (!d) return null
   const mine = d.running && d.scope === problem
-  const busyElsewhere = d.running && d.scope !== problem
+  // boot window: the engine hasn't claimed its lock yet — without this
+  // state the button flashed Run again seconds after being pressed
+  // (owner, 2026-07-12). No Stop here: a stop request during boot is
+  // swept by the child's own startup hygiene.
+  const startingMine = !d.running && d.starting && d.scope === problem
+  const busyElsewhere = (d.running || d.starting) && !mine && !startingMine
 
   return (
     <span className="flex items-center gap-2">
@@ -42,7 +47,12 @@ export default function RunControl({ problem }: { problem: string }) {
           {err}
         </span>
       )}
-      {mine ? (
+      {startingMine ? (
+        <span className="flex items-center gap-1.5 text-[11px] text-accent">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+          engine starting — a few seconds
+        </span>
+      ) : mine ? (
         <>
           <span className="flex items-center gap-1.5 text-[11px] text-accent">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />

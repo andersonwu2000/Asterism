@@ -225,9 +225,14 @@ export default function Run() {
 
   const d = data.daemon
   const running = d.running
+  // boot window (Run pressed, lock not yet claimed): not running, but
+  // calling it Idle flashed the Run button back mid-start (owner)
+  const starting = !running && d.starting
   const workers = data.workers
   const phase = !running
-    ? 'Idle'
+    ? starting
+      ? 'Starting'
+      : 'Idle'
     : d.stopping
       ? 'Stopping'
       : d.gateway === 'warming'
@@ -239,6 +244,7 @@ export default function Run() {
             : 'Proving'
   const phaseHint: Record<string, string> = {
     Idle: lastExitLine(d.last_exit),
+    Starting: 'the engine is booting — a few seconds, then it claims the run',
     Stopping: 'finishing in-flight work, then a clean exit — Force stop skips the wait',
     'Warming up': 'first start heats the Lean toolchain — a few minutes, then proving begins',
     Planning: 'the Strategist is reading the state and deciding the next moves',
@@ -267,7 +273,7 @@ export default function Run() {
         <span className="flex items-center gap-3">
           <span
             className={`h-3 w-3 rounded-full ${
-              running
+              running || starting
                 ? d.stopping
                   ? 'bg-warn'
                   : 'bg-ok animate-pulse'
@@ -324,8 +330,10 @@ export default function Run() {
         )}
         {/* idle with a problem in focus: Run lives where Stop lives —
             the console can restart the last story without a detour
-            through the problem page (owner, 2026-07-11) */}
-        {!running && focusProblem && (
+            through the problem page (owner, 2026-07-11). Not during
+            the boot window: that Run would only bounce off the
+            anti-double-spawn guard */}
+        {!running && !starting && focusProblem && (
           <span className="ml-auto">
             <Button
               variant="ok"

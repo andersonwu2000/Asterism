@@ -340,6 +340,9 @@ export interface ProblemPaperBinding {
 
 export interface DaemonStatus {
   running: boolean
+  /** the boot window: Run was pressed but the engine hasn't claimed its
+   * lock yet (seconds) — running is still false, idle it is NOT */
+  starting: boolean
   pid: number | null
   /** exact problem name or LIKE pattern; null = workspace-wide */
   scope: string | null
