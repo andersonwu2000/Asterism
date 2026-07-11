@@ -504,7 +504,8 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
 
 def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                      *, problem: str,
-                     workspace: "Path | None" = None) -> str:
+                     workspace: "Path | None" = None,
+                     trigger_kind: str = "") -> str:
     """Validate a multi-decision batch. Runs `verify_decision` on each
     item in declared order, then applies cross-decision invariants that
     only matter when multiple decisions land in the same call.
@@ -682,13 +683,21 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # the notes-only batch, not the note. Exempt: Ingest (terminal exit —
     # queued Strategists are dropped after it) and RequestUserAmend (the
     # awaiting_human gate pauses the wake pump itself).
-    pending_review_ids: set[int] = {
-        int(r["id"]) for r in conn.execute(
-            "SELECT id FROM goals WHERE problem = ?"
-            "  AND status = 'pending_strategist_review'",
-            (problem,),
-        )
-    }
+    # Scope (2026-07-12, periodic wakes outrank events): a routine/audit
+    # wake may now legally fire WHILE goals await review — discharging
+    # them is the frontier wakes' job (the pending_review pressure keeps
+    # re-arming until the set empties), not the periodic survey's.
+    # Forcing the discharge here would bounce every periodic wake on a
+    # busy tree (the parse-fail pump shape, e1ecc5c).
+    pending_review_ids: set[int] = set()
+    if trigger_kind not in ("routine", "audit"):
+        pending_review_ids = {
+            int(r["id"]) for r in conn.execute(
+                "SELECT id FROM goals WHERE problem = ?"
+                "  AND status = 'pending_strategist_review'",
+                (problem,),
+            )
+        }
     if pending_review_ids:
         exempt = any(d.kind in ("Ingest", "RequestUserAmend")
                      for d in decisions)
@@ -1674,7 +1683,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
         )
 
     verify_err = verify_decisions(decisions, conn, problem=problem,
-                                  workspace=workspace)
+                                  workspace=workspace,
+                                  trigger_kind=trigger_kind)
     if verify_err and retry_enabled:
         # Single retry on the same session. The provider's `is_retry`
         # path resumes the session and inlines `retry_context` (the
@@ -1710,7 +1720,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 ),
             )
         verify_err2 = verify_decisions(decisions, conn, problem=problem,
-                                       workspace=workspace)
+                                       workspace=workspace,
+                                       trigger_kind=trigger_kind)
         if verify_err2:
             return PipelineResult(
                 outcome="failed",

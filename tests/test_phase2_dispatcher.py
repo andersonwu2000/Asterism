@@ -1088,10 +1088,15 @@ def test_derive_trigger_audit_needs_history_and_interval(
     assert trigger2 == "inject_batch_done"  # fresh audit → not due
 
 
-def test_derive_trigger_pending_review_beats_audit(
+def test_derive_trigger_audit_beats_pending_review(
     conn: sqlite3.Connection,
 ) -> None:
-    """An explicit pending verdict outranks the wall-clock auditor."""
+    """Periodic wakes outrank events (user ruling 2026-07-12): a due
+    audit fires even while a goal awaits review — the pending goal is
+    persistent state, its seat re-arms every tick, so it is delayed by
+    exactly one wake; the audit that fixes the belief corpus first
+    makes the verdict after it a better verdict. pending_id still rides
+    along for context."""
     _insert_problem(conn, name="alpha", bootstrap_done=1)
     _insert_root(conn, "alpha", status="attempting")
     sub = _insert_sub(conn, "alpha", "sub_a",
@@ -1100,8 +1105,47 @@ def test_derive_trigger_pending_review_beats_audit(
 
     trigger, pending = _derive_strategist_trigger(
         conn, "alpha", audit_interval_min=180.0)
-    assert trigger == "pending_review"
+    assert trigger == "audit"
     assert pending == sub
+    # Auditor disabled → the pending verdict is back in front.
+    trigger2, pending2 = _derive_strategist_trigger(conn, "alpha")
+    assert trigger2 == "pending_review"
+    assert pending2 == sub
+
+
+def test_derive_trigger_routine_due_beats_batch_done_and_audit(
+    conn: sqlite3.Connection,
+) -> None:
+    """Routine is the same periodic mechanism as audit up to period
+    (user ruling 2026-07-12) and sits on top: with the routine clock
+    overdue, the wake classifies routine even over an unacknowledged
+    batch or a due audit. since_iso (daemon start) excludes down-time:
+    a start newer than the stale clock re-arms it."""
+    ts = "2026-01-01T00:00:00+00:00"
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_strategist_at=ts, last_routine_at=ts)
+    _insert_root(conn, "alpha", status="attempting")
+    _insert_decision(conn, "alpha")   # old history → audit due too
+    # Unacknowledged resolved batch (would classify inject_batch_done).
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, brief, payload, batch_id,"
+        " outcome, created_at, updated_at)"
+        " VALUES ('alpha', 0, 'routine', 'Inject', '## b',"
+        " '{\"pipeline\":\"Forward\",\"step_index\":0,\"batch_size\":1}',"
+        " 'batch-x', 'success', ?, ?)", (db.now(), db.now()))
+    conn.commit()
+
+    trigger, _ = _derive_strategist_trigger(
+        conn, "alpha", audit_interval_min=180.0,
+        routine_interval_min=60.0)
+    assert trigger == "routine"
+    # Daemon started NOW → running time ≈ 0 → routine re-armed; audit
+    # (also since_iso-gated) re-armed too; the batch is back in front.
+    trigger2, _ = _derive_strategist_trigger(
+        conn, "alpha", audit_interval_min=180.0,
+        routine_interval_min=60.0, since_iso=db.now())
+    assert trigger2 == "inject_batch_done"
 
 
 def test_t15_audit_enqueue_is_a_seat_source(

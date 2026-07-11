@@ -308,7 +308,11 @@ def salvage_patch_fallback(*, attempts_dir: Path, problem_dir: Path,
         out.write_text(text, encoding="utf-8")
     except OSError:
         return None
-    print(f"[patch-salvage] timeout fallback (no postmortem note) → "
+    # Neutral label: this salvage runs for ANY worker that ended without
+    # a postmortem note (fast declines and gate aborts included) — the
+    # old "timeout fallback" text misread a 2m46s decline as a timeout
+    # (2026-07-12).
+    print(f"[patch-salvage] no postmortem note → kept "
           f"{out.name} (g{goal_id})", flush=True)
     return out
 

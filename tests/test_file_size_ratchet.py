@@ -177,7 +177,10 @@ _WATERMARKS = {
     # strategist observability probe — 2026-07-11 — conscious bump.
     # 2310→2340: T1.5 audit seat-source enqueue (audit was derivation-only
     # and starved on busy problems / --once runs) — 2026-07-12 — conscious bump.
-    "Tooling/core/dispatcher.py": 2340,
+    # 2340→2400: periodic wakes outrank events (user ruling): _routine_due
+    # derivation twin + since_iso clocks + reordered trigger ladder —
+    # 2026-07-12 — conscious bump.
+    "Tooling/core/dispatcher.py": 2400,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

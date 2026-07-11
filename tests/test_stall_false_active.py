@@ -359,6 +359,31 @@ def test_review_discharge_rejects_notes_only_batch(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_review_discharge_exempts_periodic_wakes(tmp_path: Path) -> None:
+    """Periodic wakes outrank events (2026-07-12): a routine/audit wake
+    may fire while goals await review, and its curation/notes batch must
+    NOT be bounced by the discharge rule — disposal belongs to the
+    frontier wakes, whose pressure re-arms every tick. Frontier trigger
+    kinds (and the kind-less legacy default) keep the rule."""
+    import json
+    from Tooling.pipeline import strategist
+    conn = _conn(tmp_path)
+    _ga, grev = _pending_review_wedge(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "EmitDirective", "scope": f"problem:{P}",
+         "body": "audit summary", "reason": "clean audit"},
+    ]))
+    for kind in ("routine", "audit"):
+        err = strategist.verify_decisions(ds, conn, problem=P,
+                                          trigger_kind=kind)
+        assert "review not discharged" not in err, kind
+    for kind in ("pending_review", "inject_batch_done", ""):
+        err = strategist.verify_decisions(ds, conn, problem=P,
+                                          trigger_kind=kind)
+        assert "review not discharged" in err and f"g{grev}" in err, kind
+    conn.close()
+
+
 def test_alignment_invariant_stalled_implies_gate_rejects(
         tmp_path: Path) -> None:
     """Rule-6 invariant for the P13 'two predicates disagree' disease
