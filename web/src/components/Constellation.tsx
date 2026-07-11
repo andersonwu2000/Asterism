@@ -1337,8 +1337,10 @@ export default function Constellation({
 
       {/* legend open by default (owner call — the encoding is for
           strangers, not the author); one click folds it away, and the
-          choice sticks */}
-      <div className="absolute top-3 left-3">
+          choice sticks. It opens RIGHTWARD on the toggle's own line
+          (owner, 2026-07-11): the second line used to hang exactly
+          over the root band at the sky's top-left */}
+      <div className="absolute top-3 left-3 flex flex-wrap items-center gap-x-2 gap-y-1">
         <button
           className="cursor-pointer rounded-md bg-surface/80 px-2 py-1 text-[11px] text-ink-faint transition-colors hover:text-ink-dim"
           onClick={() =>
@@ -1359,7 +1361,7 @@ export default function Constellation({
             status icons must MATCH the sky (the old "open" swatch drew a
             hollow accent ring that exists nowhere) */}
         <div
-          className={`pointer-events-none mt-1 ${legendOpen ? 'flex' : 'hidden'} flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-surface/90 px-2.5 py-1 text-[11px] text-ink-faint`}
+          className={`pointer-events-none ${legendOpen ? 'flex' : 'hidden'} flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-surface/90 px-2.5 py-1 text-[11px] text-ink-faint`}
         >
         {/* STATUS group — swatches carry the TRUE inking (brightness,
             blink); the shape is fixed so only the status axis varies */}

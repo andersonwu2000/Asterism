@@ -83,11 +83,17 @@ function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
           {pipeline && <span className="text-ink-faint"> · {pipeline}</span>}
         </span>
         <span className="truncate text-xs text-ink-dim">{summary}</span>
-        <span className="text-right text-[11px] whitespace-nowrap text-ink-faint">
+        <span className="flex items-baseline justify-end gap-2 text-right text-[11px] whitespace-nowrap text-ink-faint">
           {d.outcome &&
             (OK_OUTCOMES.has(d.outcome) ? null : (
-              <span className={`mr-2 ${OUTCOME_CLS[d.outcome] ?? 'text-ink-dim'}`}>
-                {OUTCOME_LABEL[d.outcome] ?? d.outcome}
+              /* a quiet TAG, not loose words — the raw engine compound
+                 ('failed:stalled') read as debris glued to the summary
+                 (owner, audit 2026-07-11) */
+              <span
+                className={`rounded border border-edge px-1.5 py-px text-[10px] ${OUTCOME_CLS[d.outcome] ?? 'text-ink-dim'}`}
+              >
+                {OUTCOME_LABEL[d.outcome] ??
+                  d.outcome.replace(':', ' · ').replace(/_/g, ' ')}
               </span>
             ))}
           {TIME_FMT.format(new Date(d.created_at))}
