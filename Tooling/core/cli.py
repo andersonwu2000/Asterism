@@ -2058,12 +2058,52 @@ def _rewake_strategist(conn, problem: str) -> None:
                    target_kind="Problem", priority=20, problem=problem)
 
 
+def _claude_login_email() -> "str | None":
+    """The Claude account logged in RIGHT NOW (~/.claude.json
+    oauthAccount) — captured as sign-off evidence, never typed. This is
+    the COMPUTE account, not the reviewer's identity (the operator
+    switches accounts for quota); it rides in the record's fine print
+    so an implausible signature is visibly implausible."""
+    import json as _json
+    try:
+        data = _json.loads((Path.home() / ".claude.json").read_text(
+            encoding="utf-8"))
+        email = (data.get("oauthAccount") or {}).get("emailAddress")
+        return str(email) if email else None
+    except (OSError, ValueError):
+        return None
+
+
+def _signoff_record(conn, problem: str,
+                    signer: "str | None") -> dict:
+    """The signature written at approve: the operator's claim (name),
+    the machine's observations (evidence + timestamp), and the seal
+    (sha256 of the exact review snapshot the human was shown)."""
+    import getpass
+    import hashlib
+    import socket
+    snap = db.get_review_snapshot(conn, problem)
+    return {
+        "name": (signer or "").strip() or None,
+        "at": db.now(),
+        "snapshot_sha": (hashlib.sha256(
+            snap[0].encode("utf-8")).hexdigest() if snap else None),
+        "evidence": {
+            "claude_email": _claude_login_email(),
+            "os_user": getpass.getuser(),
+            "host": socket.gethostname(),
+        },
+    }
+
+
 def cmd_approve_ingest(args: argparse.Namespace) -> int:
     """anchor+claim: approve a paused ingest → harvest to Library.
 
     The single resume action of the sign-off gate (not a per-anchor
-    checklist): clears the pause and enqueues the Librarian. Reject
-    specific anchors/claims BEFORE approving via `asterism reject`."""
+    checklist): clears the pause, RECORDS THE SIGNATURE (v27 — who
+    signed, when, sealing exactly what was reviewed), and enqueues the
+    Librarian. Reject specific anchors/claims BEFORE approving via
+    `asterism reject`."""
     conn = db.connect()
     db.init_schema(conn)
     problem = args.problem
@@ -2072,10 +2112,14 @@ def cmd_approve_ingest(args: argparse.Namespace) -> int:
               f"(nothing paused).")
         return 1
     db.set_ingest_signoff_pending(conn, problem, False)
+    record = _signoff_record(conn, problem,
+                             getattr(args, "signer", None))
+    db.set_ingest_signoff(conn, problem, record)
     db.enqueue(conn, kind="Librarian", target_id=problem,
                target_kind="Problem", priority=0, problem=problem)
-    print(f"approved ingest for {problem} — enqueued Librarian; harvest "
-          f"runs on the next dispatcher tick.")
+    signed = f" signed by {record['name']}" if record["name"] else ""
+    print(f"approved ingest for {problem}{signed} — enqueued Librarian; "
+          f"harvest runs on the next dispatcher tick.")
     conn.close()
     return 0
 
@@ -2099,6 +2143,9 @@ def cmd_reject_ingest(args: argparse.Namespace) -> int:
     # Phase 6 — rejecting the sign-off revokes the terminal judgment: the
     # problem returns to the live path (T1/T4/exit all key off the stamp).
     db.set_problem_ingested(conn, problem, ingested=False)
+    # a revoked judgment must not keep wearing its seal — the next
+    # approve signs the NEXT reviewed content afresh
+    db.set_ingest_signoff(conn, problem, None)
     row = conn.execute(
         "SELECT strategist_directive FROM problems WHERE name = ?",
         (problem,)).fetchone()
@@ -2567,6 +2614,10 @@ def main(argv: list[str] | None = None) -> int:
         "approve-ingest",
         help="approve a paused ingest → harvest deliverables to Library")
     p_approve.add_argument("problem", help="problem name")
+    p_approve.add_argument("--signer", default=None,
+                           help="who signs off (the record also captures "
+                                "the machine's own evidence: Claude login, "
+                                "OS user, host, content seal)")
     p_approve.set_defaults(func=cmd_approve_ingest)
 
     p_reject_ingest = sub.add_parser(

@@ -793,6 +793,25 @@ def review(conn: sqlite3.Connection, problem: str) -> dict | None:
     return {"stored_at": stored_at, **data}
 
 
+def signoff_with_seal(conn: sqlite3.Connection,
+                      problem: str) -> "dict | None":
+    """The sign-off signature record (v27) + `seal_ok`: sha256 of the
+    CURRENTLY stored review snapshot compared against the sha sealed at
+    signing. False = the snapshot changed after the human signed (a
+    refresh recomputed different content) — the reader must see that,
+    not a seal that silently stopped meaning anything. None = never
+    signed / revoked / predates signatures."""
+    import hashlib
+    rec = db.get_ingest_signoff(conn, problem)
+    if rec is None:
+        return None
+    snap = db.get_review_snapshot(conn, problem)
+    current_sha = (hashlib.sha256(snap[0].encode("utf-8")).hexdigest()
+                   if snap else None)
+    return {**rec, "seal_ok": (rec.get("snapshot_sha") is not None
+                               and rec.get("snapshot_sha") == current_sha)}
+
+
 def library(conn: sqlite3.Connection) -> dict:
     """Bridged Library decls, grouped per source problem."""
     out = []

@@ -288,10 +288,23 @@ export interface LibraryChapterFile {
   imports_within: string[]
 }
 
+/** The sign-off signature (v27): the operator's claim (name), the
+ * machine's observations (evidence, captured never typed), and the
+ * content seal. seal_ok=false ⇒ the reviewed snapshot changed AFTER
+ * signing — surfaces must say so, not display a stale vouch. */
+export interface SignoffRecord {
+  name: string | null
+  at: string
+  snapshot_sha: string | null
+  evidence: { claude_email: string | null; os_user: string; host: string }
+  seal_ok: boolean
+}
+
 export interface LibraryChapter {
   problem: string
   bridged_at: string | null
   files: LibraryChapterFile[]
+  signoff?: SignoffRecord | null
 }
 
 /** A problem citing a shelf paper, as reported by GET /api/papers. */

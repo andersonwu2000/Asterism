@@ -623,6 +623,28 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
           {declCount} declarations · {data.files.length} module
           {data.files.length === 1 ? '' : 's'}
           {data.bridged_at && <> · entered the Library {relTime(data.bridged_at)}</>}
+          {data.signoff?.name && (
+            <span
+              title={`signed ${data.signoff.at}${
+                data.signoff.evidence?.claude_email
+                  ? ` while logged in as ${data.signoff.evidence.claude_email}`
+                  : ''
+              } on ${data.signoff.evidence?.host ?? '?'} (${
+                data.signoff.evidence?.os_user ?? '?'
+              })${data.signoff.seal_ok ? ' — seal intact: the reviewed content is exactly what was signed' : ''}`}
+            >
+              {' · '}signed off by{' '}
+              <span className="text-ink-dim">{data.signoff.name}</span>
+            </span>
+          )}
+          {data.signoff && !data.signoff.seal_ok && (
+            <span
+              className="text-warn"
+              title="the stored review snapshot no longer matches the hash sealed at signing — the content changed after the human signed; re-review and re-sign"
+            >
+              {' · '}changed since sign-off
+            </span>
+          )}
         </span>
         <Link
           to={`/problems/${encodeURIComponent(problem)}`}

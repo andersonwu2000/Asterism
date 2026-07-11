@@ -493,6 +493,101 @@ def apply(conn: sqlite3.Connection) -> None:
         _migrate_to_v25(conn)
         conn.execute("PRAGMA user_version = 25")
         conn.commit()
+    if v < 26:
+        # v26 — strategist_decisions.trigger_kind widens to 'audit': the
+        # wall-clock epistemic-auditor wake (default 180 min) that
+        # re-derives plan-note claims against sources and curates the
+        # note (b6 2026-07-11: a mis-annotated lever fossilized in the
+        # note and walled the run; routine audits the TREE, nobody
+        # audited the BELIEFS).
+        _migrate_to_v26(conn)
+        conn.execute("PRAGMA user_version = 26")
+        conn.commit()
+    if v < 27:
+        # v27 — the ingest sign-off carries a signature: one JSON record
+        # {name, at, snapshot_sha, evidence:{claude_email, os_user,
+        # host}} written at approve. The name is the operator's claim;
+        # the evidence is the machine's observation (captured, never
+        # typed); snapshot_sha seals the exact reviewed content (v22
+        # snapshot) — a later mismatch means the content changed after
+        # it was signed. NULL = approved before signatures existed, or
+        # signature revoked (reject / un-harvest).
+        pcols = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
+        if "ingest_signoff" not in pcols:
+            conn.execute(
+                "ALTER TABLE problems ADD COLUMN ingest_signoff TEXT")
+        conn.execute("PRAGMA user_version = 27")
+        conn.commit()
+
+
+def _migrate_to_v26(conn: sqlite3.Connection) -> None:
+    """v26 — widen strategist_decisions.trigger_kind to also accept
+    'audit'. Same point-in-time rebuild-and-copy as v25 (columns
+    unchanged since v22; only the two CHECK clauses evolve)."""
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table'"
+        " AND name='strategist_decisions'").fetchone()
+    if chk and "'audit'" in (chk["sql"] or ""):
+        return  # fresh DB from SCHEMA, or re-run
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_strategist_decisions (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem             TEXT NOT NULL REFERENCES problems(name),
+                triggered_at_tick   INTEGER NOT NULL,
+                trigger_kind        TEXT NOT NULL
+                                        CHECK(trigger_kind IN
+                                              ('first_launch','pending_review',
+                                               'routine','inject_batch_done',
+                                               'audit')),
+                decision_kind       TEXT NOT NULL
+                                        CHECK(decision_kind IN
+                                              ('Inject','ConfirmShelve','Reopen',
+                                               'EmitDirective','InitializeDefs',
+                                               'RequestUserAmend','Noop',
+                                               'MarkDeliverable','Ingest',
+                                               'FetchPaper','AttemptDisproof')),
+                target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                brief               TEXT NULL DEFAULT NULL,
+                reason              TEXT NULL DEFAULT NULL,
+                payload             TEXT NOT NULL DEFAULT '{}',
+                batch_id            TEXT NULL DEFAULT NULL,
+                produced_goal_id    INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                                        ON DELETE SET NULL,
+                produced_strategy_id INTEGER NULL DEFAULT NULL
+                                        REFERENCES strategies(id) ON DELETE SET NULL,
+                outcome             TEXT NULL DEFAULT NULL,
+                outcome_detail      TEXT NULL DEFAULT NULL,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
+            );
+            INSERT INTO _new_strategist_decisions
+                (id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                 target_id, brief, reason, payload, batch_id, produced_goal_id,
+                 produced_strategy_id, outcome, outcome_detail,
+                 created_at, updated_at)
+            SELECT id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                   target_id, brief, reason, payload, batch_id, produced_goal_id,
+                   produced_strategy_id, outcome, outcome_detail,
+                   created_at, updated_at
+            FROM strategist_decisions;
+            DROP TABLE strategist_decisions;
+            ALTER TABLE _new_strategist_decisions RENAME TO strategist_decisions;
+            CREATE INDEX IF NOT EXISTS idx_sd_problem
+                ON strategist_decisions(problem);
+            CREATE INDEX IF NOT EXISTS idx_sd_outcome
+                ON strategist_decisions(outcome);
+            CREATE INDEX IF NOT EXISTS idx_sd_batch_id
+                ON strategist_decisions(batch_id);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"v26 migration left FK violations: {fk_violations[:5]}")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_to_v25(conn: sqlite3.Connection) -> None:

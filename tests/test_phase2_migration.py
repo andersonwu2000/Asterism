@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 25
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 27
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -366,7 +366,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 25
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 27
     conn.close()
 
 
@@ -506,7 +506,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 25
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 27
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -786,3 +786,24 @@ def test_cmd_review_snapshot_path_never_touches_gateway(tmp_path,
     monkeypatch.setattr(gl, "start_gateway", _boom)
     rc = cmd_review(argparse.Namespace(problem="p", fresh=False))
     assert rc == 0
+
+
+def test_v26_trigger_kind_accepts_audit(tmp_path, monkeypatch):
+    """v26 — strategist_decisions.trigger_kind CHECK includes 'audit'
+    (the wall-clock epistemic-auditor wake). Fresh SCHEMA and the
+    rebuild migration must both accept the value."""
+    monkeypatch.chdir(tmp_path)
+    conn = db.connect()
+    db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
+                 " VALUES ('p', 'm', ?)", (db.now(),))
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, payload, created_at, updated_at)"
+        " VALUES ('p', 0, 'audit', 'EmitDirective', '{}', ?, ?)",
+        (db.now(), db.now()))
+    conn.commit()
+    row = conn.execute("SELECT trigger_kind FROM strategist_decisions"
+                       " WHERE trigger_kind='audit'").fetchone()
+    assert row is not None
+    conn.close()

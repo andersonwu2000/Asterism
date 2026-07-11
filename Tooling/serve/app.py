@@ -76,8 +76,11 @@ class RejectIngestBody(BaseModel):
 class ApproveIngestBody(BaseModel):
     """The Library decision is made HERE, information in hand (owner:
     a human signs; nothing enters the Library automatically). None =
-    keep the standing flag."""
+    keep the standing flag. `signer` is the displayed name of the
+    signature record (v27) — the record's evidence half (Claude login,
+    OS user, host, content seal) is captured server-side, never typed."""
     library: bool | None = None
+    signer: str | None = None
 
 
 class RejectDeclBody(BaseModel):
@@ -567,6 +570,7 @@ def create_app(workspace: Path) -> FastAPI:
                                 conn, prob, str(rec.get("name", "")), cache)
                             norm.append(rec)
                         dv[key] = norm
+                d["signoff"] = _data.signoff_with_seal(conn, problem)
         if d is None:
             raise HTTPException(
                 status_code=404,
@@ -761,6 +765,10 @@ def create_app(workspace: Path) -> FastAPI:
         the reading surface (curated text), not the engine record."""
         with _ro(workspace) as conn:
             d = _data.library_chapter(conn, workspace, problem)
+            if d is not None:
+                # the chapter header names its signer - the trust
+                # record travels with the reading surface (v27)
+                d["signoff"] = _data.signoff_with_seal(conn, problem)
         if d is None:
             raise HTTPException(status_code=404,
                                 detail=f"{problem} has no bridged Library work")
@@ -817,7 +825,9 @@ def create_app(workspace: Path) -> FastAPI:
                                 bool(body.library))
             finally:
                 conn.close()
-        code = _cli.cmd_approve_ingest(argparse.Namespace(problem=problem))
+        code = _cli.cmd_approve_ingest(argparse.Namespace(
+            problem=problem,
+            signer=None if body is None else body.signer))
         if code != 0:
             raise HTTPException(
                 status_code=409,

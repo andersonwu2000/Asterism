@@ -146,8 +146,15 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
   const [rejecting, setRejecting] = useState(false)
   const [confirmingHarvest, setConfirmingHarvest] = useState(false)
   const [reason, setReason] = useState('')
+  // the signature's displayed name — the operator's claim, remembered
+  // per browser; the record's evidence half (Claude login, OS user,
+  // host, content seal) is captured server-side and never typed
+  const [signer, setSigner] = useState(
+    () => localStorage.getItem('asterism.signer') ?? '',
+  )
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const signed = signer.trim().length > 0
 
   // the Library decision is made HERE, statements in hand — approving
   // carries it (owner: a human signs; nothing is harvested by default)
@@ -160,8 +167,10 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
           reason: reason || undefined,
         })
       } else {
+        localStorage.setItem('asterism.signer', signer.trim())
         await apiPost(`/api/problems/${encodeURIComponent(s.problem)}/approve-ingest`, {
           library: action === 'harvest',
+          signer: signer.trim(),
         })
       }
       onDone()
@@ -189,17 +198,39 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
         <ReviewTree problem={s.problem} />
       </div>
       {error && <div className="mb-2 text-xs text-danger">{error}</div>}
+      {/* signing ceremony — the affirmative twin of delete's
+          type-the-name: approving puts YOUR name on the record */}
+      <div className="mb-2 flex items-center gap-2">
+        <span className="text-[11px] tracking-widest text-ink-faint uppercase">
+          signed off by
+        </span>
+        <input
+          className="w-56 rounded-md border border-edge bg-bg px-2 py-1 text-xs text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+          placeholder="your name — signs the approval"
+          value={signer}
+          onChange={(e) => setSigner(e.target.value)}
+          spellCheck={false}
+        />
+        <span
+          className="text-[11px] text-ink-faint"
+          title="recorded with the signature, captured by the machine (not typed): the Claude account logged in right now, OS user, host, and a hash sealing exactly what you reviewed"
+        >
+          + machine evidence
+        </span>
+      </div>
       <div className="flex items-center gap-2">
         <Button
           variant="star"
-          disabled={busy}
+          disabled={busy || !signed}
           onClick={() =>
             confirmingHarvest ? void act('harvest') : setConfirmingHarvest(true)
           }
           title={
-            confirmingHarvest
-              ? 'approves and starts the harvest run right away'
-              : undefined
+            !signed
+              ? 'type your name above — the approval is signed'
+              : confirmingHarvest
+                ? 'approves and starts the harvest run right away'
+                : undefined
           }
         >
           {confirmingHarvest ? 'Confirm — engine runs now' : 'Approve — harvest to Library'}
@@ -211,12 +242,16 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
         )}
         <Button
           variant="outline"
-          disabled={busy}
+          disabled={busy || !signed}
           onClick={() => {
             setConfirmingHarvest(false)
             void act('archive')
           }}
-          title="accept the results but keep them out of the Library — the proofs stay archived with the problem"
+          title={
+            !signed
+              ? 'type your name above — the approval is signed'
+              : 'accept the results but keep them out of the Library — the proofs stay archived with the problem'
+          }
         >
           Approve — archive only
         </Button>

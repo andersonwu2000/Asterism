@@ -551,6 +551,9 @@ def rollback_cascade_chain(
             and db.problem_ingested(conn, touched_problem)):
         db.set_problem_ingested(conn, touched_problem, ingested=False)
         db.set_ingest_signoff_pending(conn, touched_problem, False)
+        # the signature sealed content whose proof just un-proved — a
+        # revoked judgment must not keep wearing its seal (v27)
+        db.set_ingest_signoff(conn, touched_problem, None)
         print(f"[rollback] {touched_problem}: Ingest auto-revoked "
               f"(post-Ingest un-prove)", flush=True)
         from ..pipeline.librarian import un_harvest as _un_harvest

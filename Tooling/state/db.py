@@ -438,9 +438,11 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
     problem             TEXT NOT NULL REFERENCES problems(name),
     triggered_at_tick   INTEGER NOT NULL,
     trigger_kind        TEXT NOT NULL
+                            -- 'audit' (v26): the 180-min epistemic auditor wake
+                            -- (re-derive plan-note claims against sources).
                             CHECK(trigger_kind IN
                                   ('first_launch','pending_review','routine',
-                                   'inject_batch_done')),
+                                   'inject_batch_done','audit')),
     decision_kind       TEXT NOT NULL
                             -- 'Reopen'/'InitializeDefs': LEGACY, never emitted now
                             -- (see strategist.DECISION_KINDS); retained so pre-
@@ -621,7 +623,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 25
+_CURRENT_USER_VERSION = 27
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -676,6 +678,36 @@ def get_review_snapshot(conn: sqlite3.Connection,
     if row is None or row["review_snapshot"] is None:
         return None
     return str(row["review_snapshot"]), str(row["review_snapshot_at"] or "")
+
+
+def set_ingest_signoff(conn: sqlite3.Connection, problem: str,
+                       record: "dict | None") -> None:
+    """Write (or revoke, with None) the sign-off signature record —
+    {name, at, snapshot_sha, evidence} as JSON. Written at approve;
+    cleared by reject-ingest and un-harvest (a revoked judgment must
+    not keep wearing its seal)."""
+    import json as _json
+    conn.execute(
+        "UPDATE problems SET ingest_signoff = ? WHERE name = ?",
+        (None if record is None else _json.dumps(record), problem))
+    conn.commit()
+
+
+def get_ingest_signoff(conn: sqlite3.Connection,
+                       problem: str) -> "dict | None":
+    """The sign-off signature record, or None (never signed / revoked /
+    predates v27)."""
+    import json as _json
+    row = conn.execute(
+        "SELECT ingest_signoff FROM problems WHERE name = ?",
+        (problem,)).fetchone()
+    if row is None or row["ingest_signoff"] is None:
+        return None
+    try:
+        rec = _json.loads(row["ingest_signoff"])
+        return rec if isinstance(rec, dict) else None
+    except ValueError:
+        return None
 
 
 class SchemaBehind(RuntimeError):
