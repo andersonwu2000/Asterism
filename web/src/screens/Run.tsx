@@ -208,6 +208,18 @@ export default function Run() {
       refresh()
     }
   }
+  const start = async () => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      await apiPost('/api/daemon/start', { scope: focusProblem })
+    } catch (e) {
+      setMsg(String((e as Error).message))
+    } finally {
+      setBusy(false)
+      refresh()
+    }
+  }
 
   if (!data) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
 
@@ -308,6 +320,21 @@ export default function Run() {
                 {d.stopping ? 'Force stop…' : 'Stop'}
               </Button>
             )}
+          </span>
+        )}
+        {/* idle with a problem in focus: Run lives where Stop lives —
+            the console can restart the last story without a detour
+            through the problem page (owner, 2026-07-11) */}
+        {!running && focusProblem && (
+          <span className="ml-auto">
+            <Button
+              variant="ok"
+              disabled={busy}
+              onClick={() => void start()}
+              title={`run the engine on ${focusProblem} — one problem at a time`}
+            >
+              {busy ? 'Starting…' : 'Run'}
+            </Button>
           </span>
         )}
       </div>
@@ -519,9 +546,18 @@ export default function Run() {
         </details>
       </section>
 
-      {!running && (
+      {/* a fresh workspace has nothing to (re)run from here — point at
+          the Board instead of describing a button that isn't on screen */}
+      {!running && !focusProblem && (
         <p className="mt-8 text-xs text-ink-faint">
-          To run a problem, press Run on its page — the engine works one problem at a time.
+          Nothing has run yet — pick a problem on the{' '}
+          <Link
+            to="/"
+            className="underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"
+          >
+            Board
+          </Link>
+          ; its page has the Run button.
         </p>
       )}
     </div>

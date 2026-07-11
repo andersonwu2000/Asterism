@@ -583,6 +583,70 @@ export default function Constellation({
     [layout],
   )
 
+  // Hover family: the pointed-at star's OWN tree, one hop — parents
+  // above, subgoals below. Citations already carry the hover light;
+  // the hierarchy stayed at base ink and drowned next to them (owner,
+  // 2026-07-11). Rendered as an overlay like the route-hover echo:
+  // relit strokes + rings ON TOP of the memoized layers, so hovering
+  // never re-renders the edge/bundle layers. Hierarchy = strategy +
+  // anchor edges (from = parent); alias/citation are cross-links.
+  const family = useMemo(() => {
+    if (!hovered) return null
+    const id = hovered.goal.id
+    const segs: {
+      key: string
+      dead: boolean
+      d?: string
+      line?: [number, number, number, number]
+    }[] = []
+    // star id → dead-only? a neighbour reached by any live route
+    // wears the live ring
+    const stars = new Map<number, boolean>()
+    const mark = (sid: number, dead: boolean) =>
+      stars.set(sid, (stars.get(sid) ?? true) && dead)
+    const pt = (a: { x: number; y: number }, b: { x: number; y: number }, fromId: number, toId: number, dead: boolean, key: string) => {
+      // same geometry law as the base layers: past 480 a straight
+      // stroke reads as a stray wire — bow it exactly where they do
+      if ((Math.hypot(b.x - a.x, b.y - a.y) || 1) > 480)
+        segs.push({ key, dead, d: citePath(a, b, fromId, toId).d })
+      else segs.push({ key, dead, line: [a.x, a.y, b.x, b.y] })
+    }
+    for (const e of layout.edges) {
+      if (e.kind !== 'strategy' && e.kind !== 'anchor') continue
+      const other = e.from === id ? e.to : e.to === id ? e.from : null
+      if (other === null) continue
+      const a = byId.get(e.from)
+      const b = byId.get(e.to)
+      if (!a || !b) continue
+      const dead = isDead(e.strategyStatus)
+      pt(a, b, e.from, e.to, dead, `e${e.from}>${e.to}`)
+      mark(other, dead)
+    }
+    for (const b of layout.bundles) {
+      const parent = byId.get(b.parentId)
+      if (!parent) continue
+      const dead = isDead(b.status)
+      if (b.parentId === id) {
+        // my route: stem + EVERY branch — the fork needs all its subgoals
+        segs.push({ key: `s${b.strategyId}`, dead, line: [parent.x, parent.y, b.junction.x, b.junction.y] })
+        for (const cid of b.children) {
+          const c = byId.get(cid)
+          if (!c) continue
+          pt(b.junction, c, b.strategyId, cid, dead, `s${b.strategyId}>${cid}`)
+          mark(cid, dead)
+        }
+      } else if (b.children.includes(id)) {
+        // my parent's route: stem + only my branch — siblings stay quiet
+        const c = byId.get(id)
+        if (!c) continue
+        segs.push({ key: `s${b.strategyId}`, dead, line: [parent.x, parent.y, b.junction.x, b.junction.y] })
+        pt(b.junction, c, b.strategyId, id, dead, `s${b.strategyId}>${id}`)
+        mark(b.parentId, dead)
+      }
+    }
+    return segs.length > 0 ? { segs, stars: [...stars] } : null
+  }, [hovered, layout, byId])
+
   // The legend shows only what THIS sky contains (owner) — a swatch
   // for a mark that never appears is homework.
   const present = useMemo(() => {
@@ -1300,6 +1364,56 @@ export default function Constellation({
             </text>
           )}
           {nodesEl}
+          {/* hover family echo: the hovered star's parents and subgoals
+              relit over the base layers — dead routes at residue ink,
+              never as bright as the living */}
+          {family && (
+            <g className="pointer-events-none">
+              {family.segs.map((s) =>
+                s.d ? (
+                  <path
+                    key={s.key}
+                    d={s.d}
+                    fill="none"
+                    stroke="var(--color-starlight)"
+                    strokeWidth={1.6}
+                    strokeOpacity={s.dead ? 0.3 : 0.9}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ) : (
+                  <line
+                    key={s.key}
+                    x1={s.line![0]}
+                    y1={s.line![1]}
+                    x2={s.line![2]}
+                    y2={s.line![3]}
+                    stroke="var(--color-starlight)"
+                    strokeWidth={1.6}
+                    strokeOpacity={s.dead ? 0.3 : 0.9}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ),
+              )}
+              {family.stars.map(([sid, dead]) => {
+                const n = byId.get(sid)
+                if (!n) return null
+                const boost = Math.min(Math.max(1, 0.78 / kq), 4)
+                return (
+                  <circle
+                    key={sid}
+                    cx={n.x}
+                    cy={n.y}
+                    r={(radius(n.goal) + 9) * boost}
+                    fill="none"
+                    stroke="var(--color-starlight)"
+                    strokeWidth={1.4}
+                    strokeOpacity={dead ? 0.35 : 0.95}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )
+              })}
+            </g>
+          )}
           {/* route-hover echo (goal panel → sky): a transient bright
               ring OUTSIDE the memoized layers — hover must not pay a
               node-layer re-render. Solid, vs the selection's dashes. */}
