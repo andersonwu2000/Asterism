@@ -480,7 +480,12 @@ export default function Problem({ name }: { name: string }) {
             </div>
           )
         })()}
-        {data.strategist_directive && (
+        {/* the standing directive steers FUTURE pipelines — on a settled
+            problem there are none, and a June steering memo in the header
+            reads as current intent (owner circled stokes' FRONTIER v12).
+            History stays where history lives: the Timeline. */}
+        {data.strategist_directive &&
+          !['signoff_pending', 'ingested', 'bridged'].includes(data.status) && (
           <button
             className="mt-2 block w-full max-w-4xl text-left"
             onClick={() => setDirectiveOpen((v) => !v)}
