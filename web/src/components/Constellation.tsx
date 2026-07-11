@@ -598,20 +598,25 @@ export default function Constellation({
     // failed decompositions keep the faint strokes (never hidden) but
     // earn no ring; a dead/shelved star has only dead family, and
     // "where did this hang" still deserves an answer, so its rings stay
-    const retired =
-      hovered.goal.status === 'dead' || hovered.goal.status === 'shelved'
+    const retiredStatus = (s: string) => s === 'dead' || s === 'shelved'
+    const retired = retiredStatus(hovered.goal.status)
+    // dim ink = the route is dead OR the relative itself is parked —
+    // brightness is the state axis, and a shelved subgoal must not
+    // wear living ink just because its route survived (owner)
     const segs: {
       key: string
       dead: boolean
       d?: string
       line?: [number, number, number, number]
     }[] = []
-    // star id → dead-only? a neighbour reached by any live route
+    // star id → dim-only? a neighbour reached by any living route
     // wears the live ring
     const stars = new Map<number, boolean>()
-    const mark = (sid: number, dead: boolean) => {
-      if (dead && !retired) return
-      stars.set(sid, (stars.get(sid) ?? true) && dead)
+    const mark = (sid: number, routeDead: boolean) => {
+      if (routeDead && !retired) return
+      const n = byId.get(sid)
+      const dim = routeDead || (n !== undefined && retiredStatus(n.goal.status))
+      stars.set(sid, (stars.get(sid) ?? true) && dim)
     }
     const pt = (a: { x: number; y: number }, b: { x: number; y: number }, fromId: number, toId: number, dead: boolean, key: string) => {
       // same geometry law as the base layers: past 480 a straight
@@ -627,30 +632,35 @@ export default function Constellation({
       const a = byId.get(e.from)
       const b = byId.get(e.to)
       if (!a || !b) continue
-      const dead = isDead(e.strategyStatus)
-      pt(a, b, e.from, e.to, dead, `e${e.from}>${e.to}`)
-      mark(other, dead)
+      const routeDead = isDead(e.strategyStatus)
+      const otherNode = e.from === id ? b : a
+      pt(a, b, e.from, e.to, routeDead || retiredStatus(otherNode.goal.status), `e${e.from}>${e.to}`)
+      mark(other, routeDead)
     }
     for (const b of layout.bundles) {
       const parent = byId.get(b.parentId)
       if (!parent) continue
-      const dead = isDead(b.status)
+      const routeDead = isDead(b.status)
       if (b.parentId === id) {
-        // my route: stem + EVERY branch — the fork needs all its subgoals
-        segs.push({ key: `s${b.strategyId}`, dead, line: [parent.x, parent.y, b.junction.x, b.junction.y] })
+        // my route: stem + EVERY branch — the fork needs all its
+        // subgoals. A route is only as alive as its liveliest child:
+        // all children parked/dead → the stem dims with them
+        const kids = b.children.map((cid) => byId.get(cid)).filter((c) => c !== undefined)
+        const allParked = kids.length > 0 && kids.every((c) => retiredStatus(c!.goal.status))
+        segs.push({ key: `s${b.strategyId}`, dead: routeDead || allParked, line: [parent.x, parent.y, b.junction.x, b.junction.y] })
         for (const cid of b.children) {
           const c = byId.get(cid)
           if (!c) continue
-          pt(b.junction, c, b.strategyId, cid, dead, `s${b.strategyId}>${cid}`)
-          mark(cid, dead)
+          pt(b.junction, c, b.strategyId, cid, routeDead || retiredStatus(c.goal.status), `s${b.strategyId}>${cid}`)
+          mark(cid, routeDead)
         }
       } else if (b.children.includes(id)) {
         // my parent's route: stem + only my branch — siblings stay quiet
         const c = byId.get(id)
         if (!c) continue
-        segs.push({ key: `s${b.strategyId}`, dead, line: [parent.x, parent.y, b.junction.x, b.junction.y] })
-        pt(b.junction, c, b.strategyId, id, dead, `s${b.strategyId}>${id}`)
-        mark(b.parentId, dead)
+        segs.push({ key: `s${b.strategyId}`, dead: routeDead, line: [parent.x, parent.y, b.junction.x, b.junction.y] })
+        pt(b.junction, c, b.strategyId, id, routeDead || retired, `s${b.strategyId}>${id}`)
+        mark(b.parentId, routeDead)
       }
     }
     return segs.length > 0 ? { segs, stars: [...stars] } : null
