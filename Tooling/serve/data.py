@@ -645,11 +645,24 @@ def goal_detail(conn: sqlite3.Connection, problem: str,
             "proposal_md": r["proposal_md"],
             "ts": str(r["ts"]),
         })
+    # subgoal names per route (owner, 2026-07-11): seven rows of
+    # '1 subgoal' were indistinguishable — the panel names each route's
+    # children and lights their stars on hover
+    subgoals_of: dict[int, list[dict]] = {}
+    for r in conn.execute(
+            "SELECT ss.strategy_id AS sid, g2.id AS gid, g2.slug AS slug"
+            " FROM strategy_subgoals ss"
+            " JOIN strategies s ON s.id = ss.strategy_id"
+            " JOIN goals g2 ON g2.id = ss.subgoal_id"
+            " WHERE s.goal_id = ? ORDER BY g2.id", (goal_id,)):
+        subgoals_of.setdefault(int(r["sid"]), []).append(
+            {"id": int(r["gid"]), "slug": str(r["slug"])})
     strategies = [{
         "id": int(r["id"]),
         "status": str(r["status"]),
         "created_by": str(r["created_by"]),
         "subgoal_count": int(r["n"]),
+        "subgoals": subgoals_of.get(int(r["id"]), []),
     } for r in conn.execute(
         "SELECT s.id, s.status, s.created_by,"
         " (SELECT COUNT(*) FROM strategy_subgoals ss"

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
@@ -51,18 +51,28 @@ export default function GoalPanel({
   goalId,
   onClose,
   onSelectStrategy,
+  onSelectGoal,
+  onHoverGoals,
   onOpenFile,
 }: {
   problem: string
   goalId: number
   onClose: () => void
   onSelectStrategy?: (id: number) => void
+  /** jump the panel to a route's subgoal */
+  onSelectGoal?: (id: number) => void
+  /** light the hovered route's stars in the sky (null = release) */
+  onHoverGoals?: (ids: number[] | null) => void
   onOpenFile?: (relPath: string) => void
 }) {
   const { data, error, loading } = usePoll<GoalDetail>(
     `/api/problems/${encodeURIComponent(problem)}/goals/${goalId}`,
     5000,
   )
+  /** routes whose subgoal name-list is unfolded */
+  const [openRoutes, setOpenRoutes] = useState<Set<number>>(new Set())
+  // a lit star must not outlive the panel (or the hovered row)
+  useEffect(() => () => onHoverGoals?.(null), [onHoverGoals])
 
   return (
     <div className="rise-in flex h-full w-96 shrink-0 flex-col border-l border-edge bg-surface">
@@ -128,31 +138,97 @@ export default function GoalPanel({
                 <div className="mb-4 flex flex-col gap-0.5">
                   {data.strategies
                     .filter((s) => s.subgoal_count > 0)
-                    .map((s) => (
-                      <button
-                        key={s.id}
-                        className="flex items-baseline justify-between rounded px-2 py-1 text-left hover:bg-surface-2 disabled:cursor-default"
-                        disabled={!onSelectStrategy}
-                        onClick={() => onSelectStrategy?.(s.id)}
-                      >
-                        <span className="font-mono text-xs text-ink">
-                          {s.subgoal_count} subgoal{s.subgoal_count === 1 ? '' : 's'}
-                        </span>
-                        <span
-                          className={`text-[11px] ${
-                            s.status === 'succeeded'
-                              ? 'text-starlight'
-                              : s.status === 'proposed'
-                                ? 'text-accent'
-                                : s.status === 'dead'
-                                  ? 'text-danger'
-                                  : 'text-ink-faint'
-                          }`}
-                        >
-                          {strategyStatusLabel(s.status)}
-                        </span>
-                      </button>
-                    ))}
+                    .map((s) => {
+                      const subs = s.subgoals ?? []
+                      const multi = subs.length > 1
+                      const unfolded = openRoutes.has(s.id)
+                      const statusCls =
+                        s.status === 'succeeded'
+                          ? 'text-starlight'
+                          : s.status === 'proposed'
+                            ? 'text-accent'
+                            : s.status === 'dead'
+                              ? 'text-danger'
+                              : 'text-ink-faint'
+                      return (
+                        <div key={s.id}>
+                          {/* the route names its children (owner: seven
+                              rows of '1 subgoal' were indistinguishable);
+                              hover lights their stars, the s-number
+                              matches the plan notes' vocabulary */}
+                          <div
+                            className="flex items-baseline gap-1.5 rounded px-2 py-1 hover:bg-surface-2"
+                            onMouseEnter={() =>
+                              subs.length > 0 &&
+                              onHoverGoals?.(subs.map((x) => x.id))
+                            }
+                            onMouseLeave={() => onHoverGoals?.(null)}
+                          >
+                            {multi && (
+                              <button
+                                className="shrink-0 text-[9px] text-ink-faint hover:text-ink"
+                                title={unfolded ? 'fold the subgoal list' : 'name the subgoals'}
+                                onClick={() =>
+                                  setOpenRoutes((prev) => {
+                                    const next = new Set(prev)
+                                    if (next.has(s.id)) next.delete(s.id)
+                                    else next.add(s.id)
+                                    return next
+                                  })
+                                }
+                              >
+                                <span
+                                  className={`inline-block transition-transform duration-150 ${unfolded ? 'rotate-90' : ''}`}
+                                >
+                                  ▸
+                                </span>
+                              </button>
+                            )}
+                            <button
+                              className="min-w-0 flex-1 truncate text-left font-mono text-xs disabled:cursor-default"
+                              disabled={!onSelectStrategy}
+                              onClick={() => onSelectStrategy?.(s.id)}
+                              title="open the route's record"
+                            >
+                              <span className="text-ink-faint">s{s.id}</span>
+                              {subs.length === 1 && (
+                                <span className="text-ink"> · {subs[0].slug}</span>
+                              )}
+                              {multi && (
+                                <span className="text-ink-dim">
+                                  {' '}· {subs.length} subgoals
+                                </span>
+                              )}
+                              {subs.length === 0 && (
+                                <span className="text-ink-dim">
+                                  {' '}· {s.subgoal_count} subgoal
+                                  {s.subgoal_count === 1 ? '' : 's'}
+                                </span>
+                              )}
+                            </button>
+                            <span className={`shrink-0 text-[11px] ${statusCls}`}>
+                              {strategyStatusLabel(s.status)}
+                            </span>
+                          </div>
+                          {multi && unfolded && (
+                            <div className="mb-1 ml-6 flex flex-col gap-0.5">
+                              {subs.map((x) => (
+                                <button
+                                  key={x.id}
+                                  className="truncate rounded px-2 py-0.5 text-left font-mono text-[11px] text-ink-dim hover:bg-surface-2 hover:text-ink"
+                                  onMouseEnter={() => onHoverGoals?.([x.id])}
+                                  onMouseLeave={() => onHoverGoals?.(null)}
+                                  onClick={() => onSelectGoal?.(x.id)}
+                                  title="open this subgoal"
+                                >
+                                  {x.slug}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
                 </div>
               </>
             )}

@@ -132,6 +132,8 @@ export interface GoalDetail extends Omit<Goal, 'dead_attempts'> {
     status: string
     created_by: string
     subgoal_count: number
+    /** the route's children, named — absent on a pre-upgrade serve */
+    subgoals?: { id: number; slug: string }[]
   }[]
 }
 

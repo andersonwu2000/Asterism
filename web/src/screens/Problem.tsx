@@ -342,6 +342,9 @@ export default function Problem({ name }: { name: string }) {
   const [manifestDirty, setManifestDirty] = useState(false)
   const [directiveOpen, setDirectiveOpen] = useState(false)
   const [selectedGoal, setSelectedGoal] = useState<number | null>(null)
+  // stars lit by hovering a route in the goal panel (owner: the text
+  // and the map must point at each other)
+  const [routeHover, setRouteHover] = useState<number[] | null>(null)
   const [selectedStrategy, setSelectedStrategy] = useState<number | null>(null)
   const [fileToOpen, setFileToOpen] = useState<string | null>(null)
 
@@ -557,6 +560,7 @@ export default function Problem({ name }: { name: string }) {
                 strategyEdges={data.strategy_edges}
                 anchorEdges={data.anchor_edges}
                 citationEdges={data.citation_edges}
+                highlightIds={routeHover}
                 selectedId={selectedGoal}
                 onSelect={(id) => {
                   setSelectedGoal(id)
@@ -607,11 +611,16 @@ export default function Problem({ name }: { name: string }) {
           <GoalPanel
             problem={data.name}
             goalId={selectedGoal}
-            onClose={() => setSelectedGoal(null)}
+            onClose={() => {
+              setSelectedGoal(null)
+              setRouteHover(null)
+            }}
             onSelectStrategy={(id) => {
               setSelectedStrategy(id)
               setSelectedGoal(null)
             }}
+            onSelectGoal={setSelectedGoal}
+            onHoverGoals={setRouteHover}
             onOpenFile={(rel) => {
               setFileToOpen(rel)
               setTab('files')

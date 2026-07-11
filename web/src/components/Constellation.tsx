@@ -91,6 +91,9 @@ interface Props {
   /** liveness gate: pulses are claims that work is happening NOW —
    * without a live daemon on this problem they must not render */
   engineWorking?: boolean
+  /** stars to light up transiently (the goal panel's route hover) —
+   * a pointer echo, not a selection */
+  highlightIds?: number[] | null
 }
 
 /** Residual struggle heat: a proved star that burned failed attempts
@@ -186,6 +189,7 @@ export default function Constellation({
   onSelectStrategy,
   shelveThreshold = 8,
   engineWorking = false,
+  highlightIds = null,
 }: Props) {
   // The sky ALWAYS shows everything (owner: the stars that need you
   // are already the brightest). Frontier folding and the dead-paths
@@ -1296,6 +1300,31 @@ export default function Constellation({
             </text>
           )}
           {nodesEl}
+          {/* route-hover echo (goal panel → sky): a transient bright
+              ring OUTSIDE the memoized layers — hover must not pay a
+              node-layer re-render. Solid, vs the selection's dashes. */}
+          {highlightIds && highlightIds.length > 0 && (
+            <g className="pointer-events-none">
+              {highlightIds.map((id) => {
+                const n = layout.nodes.find((m) => m.goal.id === id)
+                if (!n) return null
+                const boost = Math.min(Math.max(1, 0.78 / kq), 4)
+                return (
+                  <circle
+                    key={id}
+                    cx={n.x}
+                    cy={n.y}
+                    r={(radius(n.goal) + 9) * boost}
+                    fill="none"
+                    stroke="var(--color-starlight)"
+                    strokeWidth={1.4}
+                    strokeOpacity={0.95}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )
+              })}
+            </g>
+          )}
         </g>
       </svg>
 
