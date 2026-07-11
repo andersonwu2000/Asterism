@@ -86,6 +86,7 @@ REGISTRY: "dict[str, FailureTraits]" = {
     "agent_bailed": _T(terminal_in_loop=True),
     "same_as_disproved": _T(terminal_in_loop=True),
     "same_as_dead_unchanged": _T(terminal_in_loop=True),
+    "duplicate_strategy": _T(terminal_in_loop=True),
 
     # --- race (parallel cascade settled the target mid-run) -------------
     "goal_no_longer_open": _T("race", terminal_in_loop=True,

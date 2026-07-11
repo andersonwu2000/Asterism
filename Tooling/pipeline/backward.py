@@ -125,6 +125,31 @@ def _dead_twin_block_reason(conn, problem: str,
     return f"≡ dead goal {int(dead_goal_id)} ({twin['slug']}); {why}"
 
 
+def _existing_duplicate_strategy(conn, goal_id: int,
+                                 linked_set: "set[int]") -> "int | None":
+    """The id of an existing 'proposed'/'stalled' strategy on `goal_id`
+    whose subgoal set equals `linked_set`, or None. P3 duplicate-strategy
+    guard: with the statement-defeq reuse link (P1) live, a walled
+    re-decomposition resolves to pure links — if an identical link set
+    already exists, committing another strategy row is pure pile-up.
+    Only live-ish statuses count: a dead/superseded twin does not block
+    a fresh assertion of the same structure."""
+    if not linked_set:
+        return None
+    by_sid: "dict[int, set[int]]" = {}
+    for r in conn.execute(
+        "SELECT s.id AS sid, ss.subgoal_id AS gid FROM strategies s"
+        " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        " WHERE s.goal_id = ? AND s.status IN ('proposed','stalled')",
+        (int(goal_id),),
+    ):
+        by_sid.setdefault(int(r["sid"]), set()).add(int(r["gid"]))
+    for sid in sorted(by_sid):
+        if by_sid[sid] == linked_set:
+            return sid
+    return None
+
+
 def _strict_ancestor_slugs(conn, goal_id: int) -> "dict[str, str]":
     """`{slug: lean_path}` for every STRICT ancestor of `goal_id` on its
     live chain (walks up via `strategy_subgoals`; excludes `goal_id`
@@ -1624,6 +1649,31 @@ def _backward_parse_and_commit(
         if cite_err:
             _discard_placed()
             return _abort("cite_unproved_sibling", cite_err, leading)
+
+        # P3 duplicate-strategy guard (agent_feedback 2026-07-11, the b6
+        # strategy pile: ~30 byte-identical reductions s22785–s22831): a
+        # decomposition with NO novel sub-goal whose linked-goal set
+        # equals an existing proposed/stalled strategy's subgoal set on
+        # this goal adds nothing — the existing strategy is already
+        # waiting on exactly the same gates. Decline with the twin
+        # strategy named so the Strategist stops re-asserting it.
+        # Novel stubs exempt: new content = a genuinely new strategy.
+        if not sub_meta and auto_link_ids:
+            dup_sid = _existing_duplicate_strategy(
+                conn, goal_id, set(auto_link_ids))
+            if dup_sid is not None:
+                _discard_placed()
+                return _abort(
+                    "duplicate_strategy",
+                    f"this decomposition declares no novel sub-goal and "
+                    f"links exactly the same goal set "
+                    f"{sorted(auto_link_ids)} as existing strategy "
+                    f"s{dup_sid} on this goal — it is a byte-identical "
+                    f"re-assertion; s{dup_sid} is already waiting on "
+                    f"those gates. Nothing new will happen that is not "
+                    f"already pending.",
+                    leading,
+                )
 
         # Assembly gate — strategy body must contain no `sorry` placeholder.
         # `verify_strategy` is mechanical (promote_to_alias only); without

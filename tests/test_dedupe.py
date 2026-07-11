@@ -692,6 +692,31 @@ def test_defeq_pass_skips_interface_mismatch(
     assert called["n"] == 0          # probe never consulted
 
 
+def test_existing_duplicate_strategy_guard(
+    conn: sqlite3.Connection,
+) -> None:
+    """P3: a fully-linked decomposition whose link set equals an existing
+    proposed/stalled strategy's subgoal set is a duplicate; different
+    sets or dead twins do not block."""
+    from Tooling.pipeline.backward import _existing_duplicate_strategy
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    crux = _seed_sub(conn, slug="crux", statement="X", status="shelved")
+    other = _seed_sub(conn, slug="other", statement="Y")
+    target = _seed_sub(conn, slug="target", statement="Q", depth=2)
+    _link(conn, root, [target])
+    sid = _link(conn, target, [crux], status="stalled")
+    conn.commit()
+
+    assert _existing_duplicate_strategy(conn, target, {crux}) == sid
+    assert _existing_duplicate_strategy(conn, target, {crux, other}) is None
+    assert _existing_duplicate_strategy(conn, target, set()) is None
+    # dead twin strategy does not block a fresh assertion
+    db.update_strategy_status(conn, sid, "dead")
+    conn.commit()
+    assert _existing_duplicate_strategy(conn, target, {crux}) is None
+
+
 def test_find_canonicals_batch_dead_match_returns_dead_kind(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -44,6 +44,7 @@ def test_terminal_decline_set_pinned():
         "agent_declined", "agent_infeasible", "parent_needs_fix",
         "agent_shelved", "agent_bailed", "goal_no_longer_open",
         "same_as_disproved", "same_as_dead_unchanged",
+        "duplicate_strategy",
     }
 
 
