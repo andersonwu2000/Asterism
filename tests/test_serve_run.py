@@ -203,6 +203,35 @@ def test_run_forward_lane_tails_the_scratch_draft(
     assert "brick" in lane["file"]["tail"]
 
 
+def test_run_strategist_lane_names_its_mode(
+        workspace: Path, monkeypatch) -> None:
+    """The Strategist lane says WHICH think this is: its Context.md
+    already names the wake reason (`## Trigger` → trigger_kind), and
+    the lane surfaces it as `mode` — 'reviewing results' reads very
+    differently from 'routine look' (owner, 2026-07-12)."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    db.enqueue(conn, kind="Strategist", target_id="p",
+               target_kind="Problem", problem="p")
+    conn.execute("UPDATE queue SET owner_pid = 4321, leased_at = ?"
+                 " WHERE kind = 'Strategist'", (db.now(),))
+    conn.commit()
+    conn.close()
+    wa = workspace / ".attempts" / "eeee-ffff"
+    wa.mkdir(parents=True)
+    (wa / "Context.md").write_text(
+        "# Strategist context — p\n\n## Trigger\n\n"
+        "`trigger_kind`: pending_review\n\nPending review on goal 7:\n",
+        encoding="utf-8")
+
+    _fake_daemon(monkeypatch, scope="p")
+    body = _client(workspace).get("/api/run").json()
+    assert len(body["workers"]) == 1
+    lane = body["workers"][0]
+    assert lane["kind"] == "Strategist"
+    assert lane["mode"] == "pending_review"
+
+
 def test_run_goal_lane_prefers_the_fresher_workarea_draft(
         workspace: Path, monkeypatch) -> None:
     """A Backward attempt drafts patch.lean in its workarea and lands

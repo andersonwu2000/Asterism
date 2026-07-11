@@ -222,6 +222,9 @@ export interface RunWorker {
   slug: string
   statement: string | null
   leased_at: string | null
+  /** Strategist only: why it woke (trigger_kind) — names the mode of
+   * this think: reviewing results, batch follow-up, audit, routine */
+  mode: string | null
   path: string | null
   /** tail of the file it is writing — spawn writes go through to the
    * real path, so this is the live view; null = nothing on disk yet */

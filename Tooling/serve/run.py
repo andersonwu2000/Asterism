@@ -71,6 +71,8 @@ def _tail(path: Path) -> "dict | None":
 #: Context.md title — every agent workarea opens with
 #: '# <Kind> context — <problem>' (agent/context.py)
 _CTX_TITLE_RE = re.compile(r"#\s*(\w+) context — (.+?)\s*$")
+#: the strategist Context.md's `## Trigger` line (phase2_context)
+_TRIGGER_RE = re.compile(r"`trigger_kind`:\s*(\w+)")
 
 
 def _goal_workarea_draft(workspace: Path, slug: str) -> "Path | None":
@@ -284,6 +286,9 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                 "leased_at": r["leased_at"],
                 "file": None,
                 "path": None,
+                # Strategist only: WHY it woke (trigger_kind from its
+                # Context.md) — 'reviewing results' vs 'routine look'
+                "mode": None,
             }
             if r["lean_path"]:
                 rel = str(r["lean_path"])
@@ -325,6 +330,19 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                     None)
                 if match is not None:
                     drafts.remove(match)
+                    # the Strategist's Context.md already names WHY it woke
+                    # (`## Trigger` → trigger_kind) — surface it so the lane
+                    # says which mode this think is, not just "thinking"
+                    # (owner, 2026-07-12). Read-side only, like the title.
+                    if lane["kind"] == "Strategist":
+                        try:
+                            head = (match[3] / "Context.md").read_text(
+                                encoding="utf-8", errors="replace")[:4000]
+                            mm = _TRIGGER_RE.search(head)
+                            if mm:
+                                lane["mode"] = mm.group(1)
+                        except OSError:
+                            pass
                     newest: "Path | None" = None
                     newest_m = -1.0
                     try:

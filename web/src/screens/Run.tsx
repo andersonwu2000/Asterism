@@ -52,6 +52,15 @@ function laneAge(iso: string | null): string | null {
   return duration(sec)
 }
 
+/** the Strategist's wake reason (trigger_kind) in human words — which
+ * MODE this think is, not just "thinking" (owner, 2026-07-12) */
+const STRATEGIST_MODE: Record<string, string> = {
+  pending_review: 'reviewing a finished attempt — accept, redirect, or shelve',
+  inject_batch_done: 'its last batch of moves has landed — planning the next ones',
+  audit: 'auditing its own beliefs against the sources',
+  routine: 'routine look at the whole problem — fresh eyes on the plan',
+}
+
 /** One agent, one lane: what it is, what it's on, what it's writing. */
 function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
   const quiet = w.file?.quiet_sec ?? null
@@ -106,7 +115,8 @@ function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
       ) : (
         <div className="mt-2 text-[11px] text-ink-faint">
           {w.kind === 'Strategist'
-            ? 'reading the state, deciding the next moves — nothing on disk yet'
+            ? (STRATEGIST_MODE[w.mode ?? ''] ??
+              'reading the state, deciding the next moves — nothing on disk yet')
             : w.kind === 'Forward'
               ? 'building new vocabulary and claims — each landed brick appears as a new star'
               : w.kind === 'Librarian'
