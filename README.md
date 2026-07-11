@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-10
+- Registered the first batch of 50 Putnam competition problems from the PutnamBench benchmark, along with the plumbing to run them.
+- Added offline, read-only telemetry to measure whether the system's accumulated proof knowledge actually pays off, and retired a citation-count metric that measured the wrong thing.
+- Made long-running prover processes more robust: they now survive the process that launched them, hand off cleanly when the code changes underneath them, and stale servers can no longer go undetected.
+- Improved the monitoring interface to show proofs as they are being drafted, fixed display glitches, and tightened tracking of exactly which lemmas each Lean proof depends on.
+
 ### 2026-07-09
 Out-of-budget open goals now route to human review instead of looping fruitlessly, and parked work no longer masquerades as active proving.
 
@@ -216,11 +222,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Improved how declarations are sorted into files, keeping each problem's definitions separate, redirecting shared ones, and capping how large any file can grow.
 - Made concurrent file rewrites safe against race conditions and sharpened detection of stalled or timed-out proof-search attempts.
 - Added framework support for theorems that discharge typeclass (instance) obligations.
-
-### 2026-06-10
-- Streamlined the pass that rewrites a finished proof into mathlib's idiom — aligning lemma names, trimming unused imports, and removing redundant references — folding many small steps into a few and fixing several cases where leftover references or errors were silently dropped.
-- Made the task scheduler more robust to restarts and infrastructure failures, so stalled proof batches are retried rather than left stuck.
-- Added packaging and continuous integration, and switched the proof-planning component to a newer model.
 
 <!-- ASTERISM-PROGRESS:END -->
 
