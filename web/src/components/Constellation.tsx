@@ -306,12 +306,19 @@ export default function Constellation({
   }, [layout, rowCounts])
 
   // newborn stars (ids that appear after the first load) get a brief
-  // halo so a live run reads as growth, not as a diff you must spot
+  // halo so a live run reads as growth, not as a diff you must spot.
+  // Expiry must DRIVE a re-render: the halo lives inside the memoized
+  // node layer, and a map sweep nothing depends on left rings pulsing
+  // until the next structural change — minutes on a quiet sky (owner:
+  // "new nodes grow rings by themselves", 2026-07-12). Each birth
+  // schedules its own curfew; birthTick invalidates the layer.
   const birthsRef = useRef<{ seen: Set<number>; born: Map<number, number>; primed: boolean }>({
     seen: new Set(),
     born: new Map(),
     primed: false,
   })
+  const [birthTick, setBirthTick] = useState(0)
+  const birthTimers = useRef<Set<number>>(new Set())
   useEffect(() => {
     const b = birthsRef.current
     const now = Date.now()
@@ -324,10 +331,21 @@ export default function Constellation({
       if (!b.seen.has(g.id)) {
         b.seen.add(g.id)
         b.born.set(g.id, now)
+        const timer = window.setTimeout(() => {
+          birthTimers.current.delete(timer)
+          b.born.delete(g.id)
+          setBirthTick((t) => t + 1)
+        }, 12000)
+        birthTimers.current.add(timer)
       }
     }
-    for (const [id, t] of b.born) if (now - t > 12000) b.born.delete(id)
   }, [goals])
+  useEffect(
+    () => () => {
+      for (const t of birthTimers.current) window.clearTimeout(t)
+    },
+    [],
+  )
 
   // The shared sky camera (lib/camera.tsx). Fit per PROBLEM and on
   // frontier-focus toggles, never per poll (resetKey: the layout
@@ -1277,6 +1295,7 @@ export default function Constellation({
       labelRoom,
       rowCounts,
       selectCb,
+      birthTick,
     ])
 
   if (layout.nodes.length === 0) {
