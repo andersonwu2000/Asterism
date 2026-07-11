@@ -754,6 +754,53 @@ def test_find_canonicals_batch_dead_match_returns_dead_kind(
     ]
 
 
+def test_shelved_reuse_outranks_dead_twin(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """b6 2026-07-12: on a wall, the crux statement exists BOTH as a dead
+    twin and as the shelved canonical. Dead ranked above reuse, so the
+    dead-block (same_as_dead_unchanged → inject aborts → strategist
+    re-injects) shadowed the link-and-wait collapse P1 shipped. Dead is
+    the weakest verdict: when a linkable shelved twin also matches, the
+    match must be kind='reuse' on the shelved goal; dead fires only when
+    nothing linkable matched (blind-retry guard, unchanged)."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    dead_g = _seed_sub(conn, slug="spent_twin",
+                       statement="X", status="dead")
+    shelved_g = _seed_sub(conn, slug="parked_twin",
+                          statement="X", status="shelved")
+    _link(conn, root, [dead_g, shelved_g])
+    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
+    _link(conn, root, [parent])
+    sig = "(a : T) : X"
+    _write_lean(tmp_path, "p", "spent_twin",
+        f"import Mathlib\ntheorem spent_twin {sig} := by sorry\n")
+    _write_lean(tmp_path, "p", "parked_twin",
+        f"import Mathlib\ntheorem parked_twin {sig} := by sorry\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : Q := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    def fake(ws: Path, p: str,
+             pairs: list[tuple[str, str, str]]) -> list[bool]:
+        # Both twins unify with the candidate (identical statement).
+        return [thm in ("Problems.p.spent_twin", "Problems.p.parked_twin")
+                for _sig, _mod, thm in pairs]
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
+
+    cand = f"import Mathlib\ntheorem c {sig} := by sorry\n"
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("c", cand)],
+    )
+    assert canonicals == [
+        dedupe.CanonicalMatch(goal_id=shelved_g, kind="reuse"),
+    ]
+
+
 def test_dead_twin_block_reason_blocks_and_releases(
     conn: sqlite3.Connection,
 ) -> None:
@@ -1265,6 +1312,65 @@ def test_batch_provable_via_apply_per_pair_attribution(
              (": B", "Mod.B", "Problems.p.thm_b")]
     result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
     assert result == [True, False]
+
+
+def test_batch_provable_via_apply_max_errors_cutoff_refuses_later_pairs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """b6 2026-07-12: a 184-pair wall batch hit Lean's maxErrors=100 —
+    the elaborator EXITED mid-file and every later pair emitted nothing,
+    which the attribution loop read as success; the first post-cutoff
+    pair became a fake alias that shadowed the true shelved twin. The
+    probe now passes -DmaxErrors=10000, and this backstop pins the
+    analysis side: a pair at/after the `maximum number of errors` marker
+    line is UNKNOWN → False, while pre-cutoff verdicts survive.
+
+    Layout (3 modules): imports 1-4, namespace 6, pair 0 at 8-11,
+    pair 1 at 12-15, pair 2 at 16-end. Pair 0 fails normally; the
+    marker sits inside pair 1's range (14); pair 2 is after the
+    cutoff — silent, but False."""
+    stdout = (
+        "/tmp/x.lean:10:2: error: Tactic apply failed\n"
+        "/tmp/x.lean:14:2: error: maximum number of errors (100; from "
+        "option `maxErrors`) reached, exiting\n"
+    )
+    _patch_subprocess(monkeypatch, stdout=stdout, stderr="", rc=1)
+    pairs = [(": A", "Mod.A", "Problems.p.thm_a"),
+             (": B", "Mod.B", "Problems.p.thm_b"),
+             (": C", "Mod.C", "Problems.p.thm_c")]
+    result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
+    assert result == [False, False, False]
+
+
+def test_probe_subprocess_raises_max_errors_via_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both batch probes must pass -DmaxErrors on the lean CLI so a
+    large mostly-failing batch cannot silently truncate error reporting.
+    (In-file `set_option maxErrors` is IGNORED — verified empirically
+    2026-07-12: the frontend reads the cap from initial options only.)"""
+    seen_cmds: list[list[str]] = []
+
+    class FakeResult:
+        stdout = ""
+        stderr = ""
+        returncode = 0
+
+    def fake_run(cmd, **kw):  # noqa: ANN001, ANN003
+        seen_cmds.append(list(cmd))
+        return FakeResult()
+    monkeypatch.setattr(
+        __import__("Tooling.quality.dedupe",
+                   fromlist=["subprocess"]).subprocess, "run", fake_run)
+
+    dedupe._batch_provable_via_apply(
+        tmp_path, "p", [(": A", "Mod.A", "Problems.p.thm_a")])
+    dedupe._batch_statement_defeq(
+        tmp_path, "p", [("∀ x, P x", "∀ y, P y", "Mod.A")])
+    lean_cmds = [c for c in seen_cmds if c[:3] == ["lake", "env", "lean"]]
+    assert len(lean_cmds) == 2
+    for cmd in lean_cmds:
+        assert "-DmaxErrors=10000" in cmd
 
 
 def test_batch_provable_via_apply_unknown_failure_pattern_rejects_all(

@@ -122,7 +122,22 @@ _SORRY_BODY_RE = re.compile(r":=\s*by\s+sorry")
 # the path part so a Windows drive-letter colon (`D:\...`) doesn't abort
 # the match; the `\d+:\d+` line-col anchor identifies the boundary.
 _LAKE_ERR_RE = re.compile(r"^.+?:(\d+):\d+:\s*error", re.MULTILINE)
+# Lean stops elaborating at `maxErrors` and exits mid-file; every pair
+# AFTER that point emits nothing, and the attribution loop would read
+# the silence as success (b6 2026-07-12: 184-pair batch, 98 failing
+# pairs hit the default cap of 100, the first post-cutoff pair became a
+# fake alias that shadowed the true twin). The probes raise the option
+# in-file; this marker is the backstop should the raised cap ever be
+# hit again — pairs at/after the marker line are UNKNOWN, not clean.
+_MAX_ERRORS_RE = re.compile(
+    r"^.+?:(\d+):\d+:\s*error: maximum number of errors", re.MULTILINE)
 _BATCH_TIMEOUT_SEC = 240
+
+
+def _max_errors_cutoff(output: str) -> "int | None":
+    """Line number of Lean's `maxErrors ... exiting` marker, or None."""
+    hits = [int(m.group(1)) for m in _MAX_ERRORS_RE.finditer(output)]
+    return min(hits) if hits else None
 
 
 def _strip_comments(text: str) -> str:
@@ -599,7 +614,12 @@ def _batch_provable_via_apply(
 
     try:
         r = subprocess.run(
-            ["lake", "env", "lean", str(tmp_file)],
+            # -DmaxErrors: a wall-state batch carries 180+ mostly-failing
+            # pairs; Lean's default cap of 100 exits mid-file and the
+            # post-cutoff silence reads as success (b6 2026-07-12, fake
+            # alias). In-file `set_option maxErrors` is IGNORED (frontend
+            # reads it from initial options) — must be the CLI flag.
+            ["lake", "env", "lean", "-DmaxErrors=10000", str(tmp_file)],
             cwd=str(workspace),
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",
@@ -670,13 +690,15 @@ def _batch_provable_via_apply(
         return [False] * len(pairs)
 
     # Per-pair attribution: pair fails iff at least one error line falls
-    # in its range.
+    # in its range. Backstop: everything at/after a maxErrors cutoff is
+    # UNKNOWN (Lean exited before elaborating it), never True.
+    cutoff = _max_errors_cutoff(output)
     results: list[bool] = []
     for i, start in enumerate(pair_start_lines):
         end = (pair_start_lines[i + 1] - 1
                if i + 1 < len(pair_start_lines) else len(lines))
         has_error = any(start <= el <= end for el in error_lines)
-        results.append(not has_error)
+        results.append(not has_error and (cutoff is None or end < cutoff))
     return results
 
 
@@ -807,7 +829,9 @@ def _batch_statement_defeq(
     tmp_file.write_text(content, encoding="utf-8")
     try:
         r = subprocess.run(
-            ["lake", "env", "lean", str(tmp_file)],
+            # Same -DmaxErrors guard as _batch_provable_via_apply
+            # (post-cutoff silence must not read as success).
+            ["lake", "env", "lean", "-DmaxErrors=10000", str(tmp_file)],
             cwd=str(workspace),
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",
@@ -845,12 +869,13 @@ def _batch_statement_defeq(
               f"first output: {output[:200]!r}", flush=True)
         return [False] * len(pairs)
 
+    cutoff = _max_errors_cutoff(output)
     results: list[bool] = []
     for i, start in enumerate(pair_start_lines):
         end = (pair_start_lines[i + 1] - 1
                if i + 1 < len(pair_start_lines) else len(lines))
         has_error = any(start <= el <= end for el in error_lines)
-        results.append(not has_error)
+        results.append(not has_error and (cutoff is None or end < cutoff))
     if not all(results):
         # Forensics for the rfl-shy / genuine-mismatch cases (teammate
         # review 2026-07-11): keep the first raw error so a future
@@ -1356,9 +1381,12 @@ def find_canonicals_batch(
     KIND_DEAD = "dead"
     cand_pools: list[list[tuple[sqlite3.Row, str, str]]] = []
     # Reuse pool kept separate so it can be appended to `pairs` AFTER the
-    # Library tier — lowest priority (a proved alias always beats linking
+    # Library tier — low priority (a proved alias always beats linking
     # an unproved twin). Aligned 1:1 with `candidates`.
     cand_reusable: list[list[tuple[sqlite3.Row, str]]] = []
+    # Dead pool: separate too, appended after even the reuse tier — the
+    # weakest verdict (see the priority comment below). Aligned 1:1.
+    cand_dead: list[list[tuple[sqlite3.Row, str]]] = []
     for ci, (slug, full_text) in enumerate(candidates):
         sig = _extract_full_signature(full_text)
         if sig is None or not sig.strip():
@@ -1367,6 +1395,7 @@ def find_canonicals_batch(
             # defs are never alias-safe — see tier1_rows comment).
             cand_pools.append([])
             cand_reusable.append([])
+            cand_dead.append([])
             continue
         cand_count = _signature_binder_count(full_text)
         anc = _eligible_ancestors(
@@ -1398,8 +1427,14 @@ def find_canonicals_batch(
         # Order = priority on first-hit: a PROVED canonical (alias) wins over
         # both a disproved precedent and a no-progress self/ancestor match —
         # if the candidate can be discharged by an existing proof, do that.
-        # disproved (statement known false) outranks no_progress (retryable),
-        # which outranks dead (a spent twin — weakest verdict).
+        # disproved (statement known false) outranks no_progress (retryable).
+        # dead (a spent twin — weakest verdict) ranks BELOW even the reuse
+        # tier, so it is emitted after it (see the pair loop): when the
+        # same statement has BOTH a linkable shelved/alive twin and a dead
+        # one, the link-and-wait is the designed cheap path — a dead-block
+        # there re-opens the inject→abort churn P1 collapses (b6
+        # 2026-07-12, goal 5484 shadowing shelved 5422). Dead fires only
+        # when nothing linkable matched (the blind-retry guard, #88).
         pool: list[tuple[sqlite3.Row, str, str]] = []
         for r, t in anc + orph + cross:
             pool.append((r, t, KIND_ALIAS))
@@ -1407,8 +1442,6 @@ def find_canonicals_batch(
             pool.append((r, t, KIND_DISPROVED))
         for r, t in no_progress:
             pool.append((r, t, KIND_NO_PROGRESS))
-        for r, t in dead:
-            pool.append((r, t, KIND_DEAD))
         # Tier 1 slug hit seeds the FRONT of the pool (first-hit priority
         # preserved) — probe-confirmed, see the comment at tier1_rows.
         t1 = tier1_rows[ci]
@@ -1433,6 +1466,7 @@ def find_canonicals_batch(
             parent_goal_id=parent_goal_id, candidate_count=cand_count,
             exclude_ids=reuse_exclude,
         ))
+        cand_dead.append(dead)
 
     # Build flat list of pairs to check; track origin (cand_idx, row, kind).
     # Each pair: (cand_signature, canonical_module, canonical_theorem_name).
@@ -1511,6 +1545,22 @@ def find_canonicals_batch(
                          if reuse_thm else "")
             pairs.append((cand_sig, reuse_module, reuse_fqn))
             pair_origin.append((ci, KIND_REUSE, reuse_row))
+        # Dead tier — appended LAST of all (weakest verdict): a dead-twin
+        # hit blocks the candidate (same_as_dead_unchanged), so it must
+        # not shadow a linkable shelved/alive twin of the same statement
+        # (b6 2026-07-12: dead 5484 outranked shelved 5422 and re-opened
+        # the inject→abort churn P1 exists to collapse).
+        for dead_row, dead_text in cand_dead[ci]:
+            dead_thm = _extract_theorem_name(dead_text) or ""
+            try:
+                dead_module = lean_path_to_module(
+                    workspace, workspace / dead_row["lean_path"])
+            except (ValueError, OSError):
+                continue
+            dead_fqn = (f"Problems.{problem}.{dead_thm}"
+                        if dead_thm else "")
+            pairs.append((cand_sig, dead_module, dead_fqn))
+            pair_origin.append((ci, KIND_DEAD, dead_row))
 
     # NB: no early return on empty `pairs` — the P1 statement-defeq pass
     # below can still have work (a shelved twin whose shape mismatches
