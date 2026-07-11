@@ -114,16 +114,19 @@ def test_migrate_is_idempotent_and_never_clobbers_db(conn) -> None:
     assert settings.read(conn, "p")["axioms_whitelist"] == ["ui.ax"]
 
 
-def test_manifest_history_baseline_and_change(tmp_path: Path) -> None:
-    """Self-audit 2026-07-12 §3-1b: ManifestCache records a first-load
-    baseline row in `manifest_history` and one row per observed content
-    change (any write channel); unchanged re-access records nothing."""
-    import os
+def test_user_file_history_baseline_and_change(tmp_path: Path) -> None:
+    """Self-audit 2026-07-12 §3-1b + §3-3: ManifestCache records a
+    first-load baseline row per user-intent file (Manifest.md +
+    Root.lean here) and one row per observed content change — via ANY
+    write channel, no mtime signal on the Manifest needed; unchanged
+    re-access records nothing."""
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
     mpath = pdir / "Manifest.md"
     mpath.write_text("---\nproblem: p\n---\n\n# p\noriginal ask\n",
                      encoding="utf-8")
+    (pdir / "Root.lean").write_text(
+        "theorem main : True := by sorry\n", encoding="utf-8")
     conn = db.connect(tmp_path / "asterism.db")
     db.init_schema(conn)
     conn.execute(
@@ -134,27 +137,36 @@ def test_manifest_history_baseline_and_change(tmp_path: Path) -> None:
     cache = manifest.ManifestCache(tmp_path)
     assert cache.load("p", "Problems/p/Manifest.md") is not None
     rows = conn.execute(
-        "SELECT sha, body FROM manifest_history WHERE problem='p'"
+        "SELECT file, sha, body FROM user_file_history WHERE problem='p'"
         " ORDER BY id").fetchall()
-    assert len(rows) == 1 and "original ask" in rows[0]["body"]
-
-    # Unchanged re-access: no new row.
-    _ = cache["p"]
-    assert conn.execute("SELECT COUNT(*) AS n FROM manifest_history"
-                        " WHERE problem='p'").fetchone()["n"] == 1
-
-    # Tampered content (mtime bumped) → second row, different sha.
-    mpath.write_text("---\nproblem: p\n---\n\n# p\nweakened ask\n",
-                     encoding="utf-8")
-    st = mpath.stat()
-    os.utime(mpath, (st.st_atime, st.st_mtime + 5))
-    _ = cache["p"]
-    rows = conn.execute(
-        "SELECT sha, body FROM manifest_history WHERE problem='p'"
-        " ORDER BY id").fetchall()
+    assert {str(r["file"]) for r in rows} == {"Manifest.md", "Root.lean"}
     assert len(rows) == 2
-    assert rows[0]["sha"] != rows[1]["sha"]
-    assert "weakened ask" in rows[1]["body"]
+
+    # Unchanged re-access: no new rows.
+    _ = cache["p"]
+    assert conn.execute("SELECT COUNT(*) AS n FROM user_file_history"
+                        " WHERE problem='p'").fetchone()["n"] == 2
+
+    # Root.lean tampered — Manifest mtime UNTOUCHED (the Bash-channel
+    # shape): per-access sweep still records it.
+    (pdir / "Root.lean").write_text(
+        "theorem main : False := by sorry\n", encoding="utf-8")
+    _ = cache["p"]
+    root_rows = conn.execute(
+        "SELECT sha FROM user_file_history WHERE problem='p'"
+        " AND file='Root.lean' ORDER BY id").fetchall()
+    assert len(root_rows) == 2
+    assert root_rows[0]["sha"] != root_rows[1]["sha"]
+    # Baseline helper: first row wins until an operator repin exists.
+    assert manifest.user_file_baseline(conn, "p", "Root.lean") == str(
+        root_rows[0]["sha"])
+    conn.execute(
+        "INSERT INTO user_file_history"
+        " (problem, file, sha, body, seen_at, source)"
+        " VALUES ('p', 'Root.lean', 'repinsha', 'x', ?, 'repin')",
+        (db.now(),))
+    conn.commit()
+    assert manifest.user_file_baseline(conn, "p", "Root.lean") == "repinsha"
     conn.close()
 
 

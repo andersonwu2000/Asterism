@@ -424,19 +424,24 @@ CREATE TABLE IF NOT EXISTS problem_settings (
     PRIMARY KEY (problem, key)
 );
 
--- Manifest intent-text history (self-audit 2026-07-12 §3-1b): first-load
--- baseline + every content change ManifestCache observes (any write
--- channel, incl. a Bash bypass of the spawn write-deny), so the Ingest
--- sign-off seal covers the intent text and a mid-run edit surfaces as a
--- diff instead of silently rewriting the promise. Append-only; recorded
--- by state/manifest.ManifestCache. No version bump needed
--- (problem_settings precedent).
-CREATE TABLE IF NOT EXISTS manifest_history (
+-- User-file content history (self-audit 2026-07-12 §3-1b + §3-3, v28):
+-- first-load baseline + every content change ManifestCache observes on
+-- the three user-intent files (Manifest.md / Root.lean / Defs.lean) —
+-- any write channel, incl. a Bash bypass of the spawn write-deny. The
+-- Ingest sign-off seal covers the Manifest text; root_integrity_gate
+-- requires Root.lean/Defs.lean to still match their baseline before a
+-- proved root verifies (benchmark comparability = adapter pins upstream
+-- == init, this pins init == proved). source='repin' rows are operator
+-- re-baselines (`asterism repin`) — the sanctioned change ack.
+CREATE TABLE IF NOT EXISTS user_file_history (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     problem TEXT NOT NULL REFERENCES problems(name),
+    file    TEXT NOT NULL,
     sha     TEXT NOT NULL,
     body    TEXT NOT NULL,
-    seen_at TEXT NOT NULL
+    seen_at TEXT NOT NULL,
+    source  TEXT NOT NULL DEFAULT 'observed'
+            CHECK (source IN ('observed', 'repin'))
 );
 
 -- Phase 2 — Strategist decision audit log + awaiting_human gate.
@@ -638,7 +643,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 27
+_CURRENT_USER_VERSION = 28
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:

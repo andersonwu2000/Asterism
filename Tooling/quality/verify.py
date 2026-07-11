@@ -632,6 +632,41 @@ def root_integrity_gate(
     ).fetchone()
     if row is None:
         return
+    # User-file baseline pin (self-audit 2026-07-12 §3-3): a proved root
+    # verifies only if Root.lean / Defs.lean still match their first-load
+    # baseline (or the latest operator `asterism repin`). This is the
+    # mechanical equality between "proved" and the ORIGINAL contract —
+    # the write-deny blocks the honest tool path, this catches every
+    # other channel (Bash, operator forgetting to re-init after an
+    # edit). Cheap sha compare, runs BEFORE the 15-min axiom probe, so a
+    # tampered root re-warns each tick at near-zero cost and never
+    # flips integrity_verified.
+    pdir = db.problem_dir(workspace, problem)
+    for fname in ("Root.lean", "Defs.lean"):
+        fpath = pdir / fname
+        if not fpath.is_file():
+            continue
+        pin = manifest.user_file_baseline(conn, problem, fname)
+        if pin is None:
+            print(f"[integrity] {problem}: no baseline recorded for "
+                  f"{fname} (pre-v28 run) — statement pin skipped",
+                  flush=True)
+            continue
+        try:
+            cur = manifest._content_sha(
+                fpath.read_text(encoding="utf-8"))
+        except OSError as e:
+            print(f"[integrity] {problem}: {fname} unreadable ({e}) — "
+                  f"root NOT verified", flush=True, file=sys.stderr)
+            return
+        if cur != pin:
+            print(f"[integrity] {problem}: {fname} content differs from "
+                  f"its baseline (pin {pin}, now {cur}) — the proved "
+                  f"root does not certify the original statement. Root "
+                  f"stays UNVERIFIED. If the change is yours: re-init, "
+                  f"or acknowledge with `asterism repin {problem}`.",
+                  flush=True, file=sys.stderr)
+            return
     whitelist = manifest.effective_axioms(mfst, problem=problem)
     try:
         # 900s (15min) budget. Root.lean's transitive import chain can

@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 27
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 28
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -366,7 +366,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 27
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 28
     conn.close()
 
 
@@ -506,13 +506,57 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 27
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 28
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
         " AND name='strategist_decisions'"
     ).fetchall()
     assert len(rows) == 1
+    conn.close()
+
+
+def test_v28_manifest_history_carryover(tmp_path: Path) -> None:
+    """v28: `manifest_history` (lived <1 day) generalizes to
+    `user_file_history` — existing rows carry over as Manifest.md
+    observations, the old table drops, version lands at 28."""
+    db_path = tmp_path / "v27.db"
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+    # Rewind to the v27 shape: old table with a row, new table absent.
+    conn.execute("DROP TABLE user_file_history")
+    conn.execute("""
+        CREATE TABLE manifest_history (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            problem TEXT NOT NULL,
+            sha     TEXT NOT NULL,
+            body    TEXT NOT NULL,
+            seen_at TEXT NOT NULL
+        )""")
+    conn.execute(
+        "INSERT INTO manifest_history (problem, sha, body, seen_at)"
+        " VALUES ('p', 'abc123', '# p ask', ?)", (db.now(),))
+    conn.execute("PRAGMA user_version = 27")
+    conn.commit()
+
+    from Tooling.state import db_migrations
+    db_migrations.apply(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 28
+    rows = conn.execute(
+        "SELECT problem, file, sha, body, source FROM user_file_history"
+    ).fetchall()
+    assert len(rows) == 1
+    r = rows[0]
+    assert (str(r["problem"]), str(r["file"]), str(r["sha"]),
+            str(r["source"])) == ("p", "Manifest.md", "abc123", "observed")
+    assert conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+        " AND name='manifest_history'").fetchone() is None
     conn.close()
 
 

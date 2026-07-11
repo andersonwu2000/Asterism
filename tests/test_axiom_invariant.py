@@ -413,6 +413,60 @@ def test_gate_no_librarian_on_rogue_axiom_even_if_optin(
     assert _queue_rows(conn) == []
 
 
+def test_gate_root_file_baseline_pin(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Self-audit 2026-07-12 §3-3: a proved root verifies ONLY if
+    Root.lean still matches its recorded baseline — the mechanical
+    equality between 'proved' and the original contract. Tampered
+    bytes → early return BEFORE the axiom probe, integrity_verified
+    stays 0; an operator `repin` row re-accepts the current bytes."""
+    gid = _seed_proved_root(conn)
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    root = pdir / "Root.lean"
+    root.write_text("theorem main : True := by sorry\n", encoding="utf-8")
+    baseline_sha = manifest._content_sha(
+        root.read_text(encoding="utf-8"))
+    conn.execute(
+        "INSERT INTO user_file_history"
+        " (problem, file, sha, body, seen_at, source)"
+        " VALUES ('p', 'Root.lean', ?, ?, ?, 'observed')",
+        (baseline_sha, root.read_text(encoding="utf-8"), db.now()))
+    conn.commit()
+
+    # Tamper the statement mid-run — probe must NOT even run.
+    root.write_text("theorem main : False := by sorry\n", encoding="utf-8")
+
+    def _probe_must_not_run(*a, **k):
+        raise AssertionError("axiom_probe ran on a tampered root")
+    monkeypatch.setattr("Tooling.pipeline._axiom.axiom_probe",
+                        _probe_must_not_run)
+    mfst = manifest.Manifest(problem="p", statement="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    row = conn.execute(
+        "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
+    ).fetchone()
+    assert row["integrity_verified"] == 0
+
+    # Operator acknowledges the change (repin) → gate passes again.
+    monkeypatch.setattr("Tooling.pipeline._axiom.axiom_probe",
+                        lambda *a, **k: (True, "(3 axioms ok)"))
+    cur_sha = manifest._content_sha(root.read_text(encoding="utf-8"))
+    conn.execute(
+        "INSERT INTO user_file_history"
+        " (problem, file, sha, body, seen_at, source)"
+        " VALUES ('p', 'Root.lean', ?, ?, ?, 'repin')",
+        (cur_sha, root.read_text(encoding="utf-8"), db.now()))
+    conn.commit()
+    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    row = conn.execute(
+        "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
+    ).fetchone()
+    assert row["integrity_verified"] == 1
+
+
 # ---------------------------------------------------------------------
 # Builder — rejects axiom-violation in both Phase 1 and Phase 2
 # ---------------------------------------------------------------------

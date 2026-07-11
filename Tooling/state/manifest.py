@@ -98,6 +98,38 @@ def effective_axioms(mfst: "Manifest", *, problem: str = "") -> list[str]:
     return list(FRAMEWORK_DEFAULT_AXIOMS)
 
 
+#: The user-intent files a problem owns; their content history lives in
+#: `user_file_history` (baseline at first load, change rows after; see
+#: ManifestCache._record_history). Root/Defs additionally gate the
+#: proved-root flip (quality/verify.root_integrity_gate).
+USER_INTENT_FILES: tuple[str, ...] = ("Manifest.md", "Root.lean",
+                                      "Defs.lean")
+
+
+def _content_sha(body: str) -> str:
+    import hashlib
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+
+
+def user_file_baseline(conn, problem: str, file: str) -> "str | None":
+    """The sha a user file must still match for the problem's proved
+    root to verify: the latest operator `repin` row if any (the
+    sanctioned change acknowledgment, `asterism repin`), else the
+    first-load baseline. None = never recorded (pre-v28 run) — gate
+    treats as no-pin, fail-open with a warning."""
+    row = conn.execute(
+        "SELECT sha FROM user_file_history"
+        " WHERE problem = ? AND file = ? AND source = 'repin'"
+        " ORDER BY id DESC LIMIT 1", (problem, file)).fetchone()
+    if row is not None:
+        return str(row["sha"])
+    row = conn.execute(
+        "SELECT sha FROM user_file_history"
+        " WHERE problem = ? AND file = ?"
+        " ORDER BY id ASC LIMIT 1", (problem, file)).fetchone()
+    return None if row is None else str(row["sha"])
+
+
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 
 
@@ -208,40 +240,53 @@ class ManifestCache:
         self._workspace = workspace
         # problem -> (manifest_path_str, last_mtime, manifest)
         self._entries: dict[str, tuple[str, float, Manifest]] = {}
+        # (problem, file) -> last recorded content sha (user_file_history
+        # write dedup — avoids a DB round-trip per access)
+        self._file_shas: dict[tuple[str, str], str] = {}
 
     def _record_history(self, problem: str, full: Path) -> None:
-        """Append the Manifest's current content to `manifest_history`
-        when it differs from the last recorded sha (self-audit
-        2026-07-12 §3-1b). Called on first load (the baseline) and on
-        every mtime-change reparse — catches ANY write channel,
+        """Append current content of the problem's USER-INTENT files
+        (Manifest.md + Root.lean + Defs.lean, whichever exist) to
+        `user_file_history` when it differs from the last recorded sha
+        (self-audit 2026-07-12 §3-1b + §3-3). Called on first load (the
+        baseline) and on every Manifest-mtime reparse, plus a cheap
+        in-memory sha check per access — catches ANY write channel,
         including a Bash bypass of the spawn write-deny. Best-effort:
         history must never break manifest loading."""
         try:
-            import hashlib
-            body = full.read_text(encoding="utf-8")
-            sha = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
             from . import db as _db
-            conn = _db.connect(self._workspace / "asterism.db")
-            try:
+            conn = None
+            for name in USER_INTENT_FILES:
+                path = full.parent / name
+                if not path.is_file():
+                    continue
+                body = path.read_text(encoding="utf-8")
+                sha = _content_sha(body)
+                if self._file_shas.get((problem, name)) == sha:
+                    continue
+                if conn is None:
+                    conn = _db.connect(self._workspace / "asterism.db")
                 last = conn.execute(
-                    "SELECT sha FROM manifest_history WHERE problem = ?"
-                    " ORDER BY id DESC LIMIT 1", (problem,)).fetchone()
-                if last is not None and str(last["sha"]) == sha:
-                    return
-                is_baseline = last is None
-                conn.execute(
-                    "INSERT INTO manifest_history"
-                    " (problem, sha, body, seen_at) VALUES (?, ?, ?, ?)",
-                    (problem, sha, body, _db.now()))
-                conn.commit()
-                if not is_baseline:
-                    print(f"[manifest-history] {problem}: content changed "
-                          f"(sha {sha}) — recorded; Ingest review will "
-                          f"surface the diff", flush=True)
-            finally:
+                    "SELECT sha FROM user_file_history"
+                    " WHERE problem = ? AND file = ?"
+                    " ORDER BY id DESC LIMIT 1", (problem, name)).fetchone()
+                if last is None or str(last["sha"]) != sha:
+                    conn.execute(
+                        "INSERT INTO user_file_history"
+                        " (problem, file, sha, body, seen_at, source)"
+                        " VALUES (?, ?, ?, ?, ?, 'observed')",
+                        (problem, name, sha, body, _db.now()))
+                    conn.commit()
+                    if last is not None:
+                        print(f"[user-file-history] {problem}/{name}: "
+                              f"content changed (sha {sha}) — recorded; "
+                              f"review/root gate will surface it",
+                              flush=True)
+                self._file_shas[(problem, name)] = sha
+            if conn is not None:
                 conn.close()
         except Exception as e:  # noqa: BLE001 — never break loading
-            print(f"[manifest-history] {problem}: record failed "
+            print(f"[user-file-history] {problem}: record failed "
                   f"({type(e).__name__}: {e})", flush=True)
 
     def _overlay_db(self, problem: str, mfst: Manifest) -> Manifest:
@@ -307,6 +352,10 @@ class ManifestCache:
         full = self._workspace / manifest_path
         cur_mtime = _stat_mtime(full)
         if cur_mtime == last_mtime:
+            # Root.lean/Defs.lean edits don't move the Manifest mtime —
+            # sweep the user files here too (in-memory sha dedup keeps
+            # this at 3 small file reads per access; spawn-cadence).
+            self._record_history(problem, full)
             # settings edits arrive via the DB with NO file-mtime
             # signal — re-overlay so a UI change hot-reloads exactly
             # like a body edit does (one read-only connect per access;

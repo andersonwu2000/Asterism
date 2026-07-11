@@ -49,8 +49,9 @@ def review_data(conn, workspace: Path, *,
         manifest_section["history"] = [
             {"sha": str(r["sha"]), "seen_at": str(r["seen_at"])}
             for r in conn.execute(
-                "SELECT sha, seen_at FROM manifest_history"
-                " WHERE problem = ? ORDER BY id", (problem,))
+                "SELECT sha, seen_at FROM user_file_history"
+                " WHERE problem = ? AND file = 'Manifest.md'"
+                " ORDER BY id", (problem,))
         ]
     except Exception as e:  # noqa: BLE001 — visibility, never a blocker
         manifest_section["error"] = f"{type(e).__name__}: {e}"

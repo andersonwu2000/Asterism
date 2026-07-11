@@ -518,6 +518,38 @@ def apply(conn: sqlite3.Connection) -> None:
                 "ALTER TABLE problems ADD COLUMN ingest_signoff TEXT")
         conn.execute("PRAGMA user_version = 27")
         conn.commit()
+    if v < 28:
+        # v28 — `manifest_history` (shipped 12d6f6c, hours earlier)
+        # generalizes to `user_file_history` (+file, +source columns):
+        # the same first-load-baseline/change-record mechanism now
+        # covers Root.lean and Defs.lean, and root_integrity_gate pins
+        # a proved root to its baseline (self-audit §3-3). Existing
+        # rows carry over as Manifest.md observations; the old table is
+        # dropped (it lived <1 day, only baselines were recorded).
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "user_file_history" not in tables:
+            conn.execute("""
+                CREATE TABLE user_file_history (
+                    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    problem TEXT NOT NULL REFERENCES problems(name),
+                    file    TEXT NOT NULL,
+                    sha     TEXT NOT NULL,
+                    body    TEXT NOT NULL,
+                    seen_at TEXT NOT NULL,
+                    source  TEXT NOT NULL DEFAULT 'observed'
+                            CHECK (source IN ('observed', 'repin'))
+                )""")
+        if "manifest_history" in tables:
+            conn.execute(
+                "INSERT INTO user_file_history"
+                " (problem, file, sha, body, seen_at, source)"
+                " SELECT problem, 'Manifest.md', sha, body, seen_at,"
+                "        'observed'"
+                " FROM manifest_history ORDER BY id")
+            conn.execute("DROP TABLE manifest_history")
+        conn.execute("PRAGMA user_version = 28")
+        conn.commit()
 
 
 def _migrate_to_v26(conn: sqlite3.Connection) -> None:

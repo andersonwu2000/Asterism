@@ -2224,6 +2224,47 @@ def cmd_knowledge_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_repin(args: argparse.Namespace) -> int:
+    """Operator acknowledgment of a deliberate user-file edit
+    (self-audit 2026-07-12 §3-3): record the CURRENT content of the
+    problem's user-intent files as 'repin' baselines in
+    `user_file_history`, so `root_integrity_gate` accepts the current
+    bytes again. NOTE: repin acknowledges BYTES only — if the root
+    STATEMENT's meaning changed, `goals.statement` is stale and the
+    honest path is re-init (or sync), not repin."""
+    from ..state import manifest as _mfst
+    workspace = Path.cwd()
+    problem = str(args.problem)
+    files = ([args.file] if getattr(args, "file", None)
+             else list(_mfst.USER_INTENT_FILES))
+    conn = db.connect()
+    try:
+        if conn.execute("SELECT 1 FROM problems WHERE name = ?",
+                        (problem,)).fetchone() is None:
+            print(f"[repin] unknown problem {problem!r}")
+            return 1
+        pdir = db.problem_dir(workspace, problem)
+        n = 0
+        for name in files:
+            path = pdir / name
+            if not path.is_file():
+                continue
+            body = path.read_text(encoding="utf-8")
+            sha = _mfst._content_sha(body)
+            conn.execute(
+                "INSERT INTO user_file_history"
+                " (problem, file, sha, body, seen_at, source)"
+                " VALUES (?, ?, ?, ?, ?, 'repin')",
+                (problem, name, sha, body, db.now()))
+            n += 1
+            print(f"  repinned {name} (sha {sha})")
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"[repin] {problem}: {n} file(s) re-baselined")
+    return 0
+
+
 def cmd_drift_check(args: argparse.Namespace) -> int:
     """Consistency gate, two layers (run with the daemon STOPPED — a
     mid-tick snapshot can transiently trip the tree predicates):
@@ -2661,6 +2702,20 @@ def main(argv: list[str] | None = None) -> int:
         "--scope", type=str, default=None, metavar="PROBLEM",
         help="limit to a problem (LIKE pattern), e.g. residue_thm")
     p_drift.set_defaults(func=cmd_drift_check)
+
+    p_repin = sub.add_parser(
+        "repin",
+        help="acknowledge a deliberate user-file edit: re-baseline "
+             "Manifest.md/Root.lean/Defs.lean so root_integrity_gate "
+             "accepts the current content (bytes only — a changed "
+             "statement meaning needs re-init/sync)")
+    p_repin.add_argument("problem", type=str,
+                         help="problem name, e.g. Putnam.putnam_2025_b6")
+    p_repin.add_argument(
+        "--file", type=str, default=None,
+        choices=["Manifest.md", "Root.lean", "Defs.lean"],
+        help="re-baseline only this file (default: all present)")
+    p_repin.set_defaults(func=cmd_repin)
 
     p_kstats = sub.add_parser(
         "knowledge-stats",
