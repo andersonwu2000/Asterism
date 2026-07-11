@@ -902,8 +902,13 @@ def test_paper_section_page_anchor(workspace: Path) -> None:
 
 def test_problem_detail_citation_edges(workspace: Path) -> None:
     """Proof-file `import Problems.<p>.proofs.L_<slug>` lines surface
-    as citation_edges (visualization truth: what the tree views under-
-    report — a forward lemma cited by a node has real structure)."""
+    as citation_edges when the cited NAME is used in the citing body
+    (visualization truth: what the tree views under-report — a forward
+    lemma cited by a node has real structure). An import alone is NOT
+    a citation: Backward inherits ancestor preambles, so dead imports
+    ride down whole subtrees (slc drew a 28-edge super-hub of
+    nothing). Instance bricks stay import-evidenced — typeclass
+    resolution uses them namelessly."""
     conn = _open_db(workspace)
     _add_problem(conn, "p")
     a = db.insert_goal(conn, problem="p", slug="lemma_a",
@@ -912,18 +917,38 @@ def test_problem_detail_citation_edges(workspace: Path) -> None:
     b = db.insert_goal(conn, problem="p", slug="main_thm",
                        lean_path="Problems/p/proofs/L_main_thm.lean",
                        statement="True", origin="backward")
+    stmt = db.insert_goal(conn, problem="p", slug="stmt_def",
+                          lean_path="Problems/p/proofs/L_stmt_def.lean",
+                          statement="Prop", origin="forward", kind="def")
+    inst = db.insert_goal(conn, problem="p", slug="inst_brick",
+                          lean_path="Problems/p/proofs/L_inst_brick.lean",
+                          statement="True", origin="forward",
+                          kind="instance")
     conn.commit()
     conn.close()
     pdir = workspace / "Problems" / "p" / "proofs"
     pdir.mkdir(parents=True)
-    (pdir / "L_lemma_a.lean").write_text(
-        "import Mathlib\ntheorem lemma_a : True := trivial\n",
-        encoding="utf-8")
+    for slug in ("lemma_a", "stmt_def", "inst_brick"):
+        (pdir / f"L_{slug}.lean").write_text(
+            f"import Mathlib\ntheorem {slug} : True := trivial\n",
+            encoding="utf-8")
     (pdir / "L_main_thm.lean").write_text(
-        "import Mathlib\nimport Problems.p.proofs.L_lemma_a\n"
-        "theorem main_thm : True := trivial\n", encoding="utf-8")
+        "import Mathlib\n"
+        "import Problems.p.proofs.L_lemma_a\n"
+        "import Problems.p.proofs.L_stmt_def\n"   # inherited, never used
+        "import Problems.p.proofs.L_inst_brick\n"  # instance: nameless use
+        "namespace Problems.p.stmt_def\n"
+        "-- rationale prose naming stmt_def must not count as a use\n"
+        "theorem main_thm : True := lemma_a\n"
+        "-- a qualified path THROUGH the name is a prefix, not a use:\n"
+        "example : True := Problems.p.stmt_def.other\n"
+        "end Problems.p.stmt_def\n", encoding="utf-8")
     d = _client(workspace).get("/api/problems/p").json()
     assert {"from": a, "to": b} in d["citation_edges"]
+    # the unused inherited import draws nothing — no super-hub
+    assert {"from": stmt, "to": b} not in d["citation_edges"]
+    # the instance brick keeps its import-evidenced edge
+    assert {"from": inst, "to": b} in d["citation_edges"]
     # self-imports / unknown slugs never edge
     assert all(e["from"] != e["to"] for e in d["citation_edges"])
 
@@ -999,7 +1024,7 @@ def test_citation_edges_from_strategy_scratch(workspace: Path) -> None:
     patch = ("import Mathlib\n"
              "import Problems.p.proofs.L_child_lemma\n"
              "import Problems.p.proofs.L_forward_brick\n"
-             "theorem parent_thm : True := trivial\n")
+             "theorem parent_thm : True := forward_brick child_lemma\n")
     (pdir / "_strategy_s1.lean").write_text(patch, encoding="utf-8")
     # the dead attempt cites a different brick — must never surface
     (pdir / "_strategy_s2.lean").write_text(

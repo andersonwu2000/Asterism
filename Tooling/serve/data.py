@@ -188,30 +188,50 @@ def board(conn: sqlite3.Connection, *, daemon: "dict | None" = None) -> dict:
 _CITE_RE = re.compile(
     r"^import\s+Problems\.([\w.]+)\.proofs\.L_([A-Za-z0-9_']+)",
     re.MULTILINE)
+# what a USE scan must not read: comments (rationale prose names
+# siblings freely) and the structural lines whose own tokens collide
+# with decl names (`namespace Problems.<p>` ends in the problem leaf —
+# the slc def was named exactly that, and every file "used" it)
+_USE_BLOCK_COMMENT_RE = re.compile(r"/-.*?-/", re.S)
+_USE_NOISE_RE = re.compile(
+    r"^\s*(?:import|namespace|end|open)\b[^\n]*|--[^\n]*", re.MULTILINE)
 
-#: path str -> (mtime_ns, [(problem, slug), ...])
-_cite_file_cache: "dict[str, tuple[int, list[tuple[str, str]]]]" = {}
+#: path str -> (mtime_ns, [(problem, slug), ...], use-scan body)
+_cite_file_cache: "dict[str, tuple[int, list[tuple[str, str]], str]]" = {}
 
 
-def _scan_imports(fp: Path) -> "list[tuple[str, str]]":
-    """Cached `import Problems.<p>.proofs.L_<slug>` scan of one file.
-    Missing files / read errors yield [] — presentation never fails."""
+def _scan_proof_file(fp: Path) -> "tuple[list[tuple[str, str]], str]":
+    """Cached per-file scan: the `import Problems.<p>.proofs.L_<slug>`
+    lines plus the comment/structure-stripped body for use checks.
+    Missing files / read errors yield empty — presentation never
+    fails."""
     key = str(fp)
     try:
         mtime = fp.stat().st_mtime_ns
     except OSError:
         _cite_file_cache.pop(key, None)
-        return []
+        return [], ""
     cached = _cite_file_cache.get(key)
     if cached is None or cached[0] != mtime:
         try:
             text = fp.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            return []
+            return [], ""
         cites = [(m.group(1), m.group(2))
                  for m in _CITE_RE.finditer(text)]
-        _cite_file_cache[key] = (mtime, cites)
-    return _cite_file_cache[key][1]
+        body = _USE_NOISE_RE.sub(
+            " ", _USE_BLOCK_COMMENT_RE.sub(" ", text))
+        _cite_file_cache[key] = (mtime, cites, body)
+    return _cite_file_cache[key][1], _cite_file_cache[key][2]
+
+
+def _uses_name(body: str, slug: str) -> bool:
+    """Does the stripped body reference `slug` as a NAME — bare or as
+    the final segment of a qualified path? An occurrence that continues
+    with `.` or a word char is a namespace prefix / longer identifier,
+    not a use (`Problems.Topology.slc.foo` names foo, not slc)."""
+    return re.search(
+        rf"(?<![\w']){re.escape(slug)}(?![\w'.])", body) is not None
 
 
 def _citation_edges(workspace: Path, problem: str,
@@ -230,26 +250,39 @@ def _citation_edges(workspace: Path, problem: str,
     its child imports are the hierarchy already drawn as bundle arms.
     Without the scratch scan every Forward brick consumed by an
     assembly floated unlinked and the sky shattered (bt: 10 edges
-    where 79 exist)."""
+    where 79 exist).
+
+    An import line alone is NOT a citation: Backward inherits its
+    ancestor's preamble, so dead imports ride down the whole subtree
+    (slc: 28 of 30 edges into the statement def were inherited weight —
+    a super-hub of nothing). The edge needs the cited NAME used in the
+    citing body. Exception: an `instance` brick is consumed namelessly
+    by typeclass resolution — there the import is the only evidence,
+    and it stays sufficient."""
     slug_to_id = {g["slug"]: g["id"] for g in goals}
+    nameless = {g["slug"] for g in goals
+                if str(g.get("kind")) == "instance"}
     out: list[dict] = []
     seen: set[tuple[int, int]] = set()
 
     def emit(prob: str, slug: str, citer_id: int,
-             exclude: "set[int]") -> None:
+             exclude: "set[int]", body: str) -> None:
         if prob != problem:
             return  # cross-problem import — not this sky's edge
         tid = slug_to_id.get(slug)
         if tid is None or int(tid) == citer_id or int(tid) in exclude:
             return
+        if slug not in nameless and not _uses_name(body, slug):
+            return  # inherited/vestigial import — dead weight, not story
         pair = (int(tid), citer_id)
         if pair not in seen:
             seen.add(pair)
             out.append({"from": pair[0], "to": pair[1]})
 
     for g in goals:
-        for prob, slug in _scan_imports(workspace / str(g["lean_path"])):
-            emit(prob, slug, int(g["id"]), set())
+        cites, body = _scan_proof_file(workspace / str(g["lean_path"]))
+        for prob, slug in cites:
+            emit(prob, slug, int(g["id"]), set(), body)
 
     strat_kids: "dict[int, set[int]]" = {}
     for e in strategy_edges or []:
@@ -259,9 +292,10 @@ def _citation_edges(workspace: Path, problem: str,
         sp = str(s.get("scratch_path") or "")
         if str(s.get("status")) != "succeeded" or not sp:
             continue
-        for prob, slug in _scan_imports(workspace / sp):
+        cites, body = _scan_proof_file(workspace / sp)
+        for prob, slug in cites:
             emit(prob, slug, int(s["goal_id"]),
-                 strat_kids.get(int(s["id"]), set()))
+                 strat_kids.get(int(s["id"]), set()), body)
     return out
 
 
