@@ -1903,7 +1903,30 @@ def is_problem_stalled(conn: sqlite3.Connection, problem: str, *,
         (problem, problem, problem),
     ).fetchone() is not None:
         return False
-    # 3. any in-flight Backward / Builder / Forward worker (queue + running).
+    # 3. any in-flight Backward / Builder / Forward worker (queue + running)
+    #    — the QUIET guard, named + extracted (FSM P3): stalled ⇒ quiet,
+    #    quiet alone is NOT stalled (dispatchable work may exist).
+    if not problem_quiet(conn, problem, running=running):
+        return False
+    # 4. a NULL-outcome Inject whose produced work is genuinely ACTIVE keeps
+    #    the problem in-flight (the batch is still resolving; inject_batch_done
+    #    will wake Strategist). REPLACES the old blanket batch-suppression
+    #    pre-filter — a NULL inject whose produced goal got SHELVED is parked,
+    #    not in flight, and must NOT suppress T4 (else permanent wedge).
+    if has_active_inflight_inject(conn, problem):
+        return False
+    return True
+
+
+def problem_quiet(conn: sqlite3.Connection, problem: str, *,
+                  running: "set[tuple] | None" = None) -> bool:
+    """Derived guard #2 of the problem FSM (design §4, formalized in
+    P3 by operator ruling): True iff NO Backward / Builder / Forward
+    worker is in flight for `problem` (queue rows + the dispatcher's
+    optional in-memory `running` set). This is `is_problem_stalled`'s
+    condition 3, extracted verbatim so the wake-legality machinery and
+    future readers name the same predicate instead of re-inlining the
+    four-part in-flight scan."""
     if conn.execute(
         "SELECT 1 FROM queue q"
         " JOIN goals g ON g.id = CAST(q.target_id AS INTEGER)"
@@ -1929,13 +1952,6 @@ def is_problem_stalled(conn: sqlite3.Connection, problem: str, *,
             (problem, *bw_bu_ids),
         ).fetchone() is not None:
             return False
-    # 4. a NULL-outcome Inject whose produced work is genuinely ACTIVE keeps
-    #    the problem in-flight (the batch is still resolving; inject_batch_done
-    #    will wake Strategist). REPLACES the old blanket batch-suppression
-    #    pre-filter — a NULL inject whose produced goal got SHELVED is parked,
-    #    not in flight, and must NOT suppress T4 (else permanent wedge).
-    if has_active_inflight_inject(conn, problem):
-        return False
     return True
 
 

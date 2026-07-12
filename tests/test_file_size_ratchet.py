@@ -180,7 +180,9 @@ _WATERMARKS = {
     # 2340→2400: periodic wakes outrank events (user ruling): _routine_due
     # derivation twin + since_iso clocks + reordered trigger ladder —
     # 2026-07-12 — conscious bump.
-    "Tooling/core/dispatcher.py": 2400,
+    # 2400→2420 (2026-07-12): FSM P3 wake-legality guards at the four
+    # seat sources — conscious bump.
+    "Tooling/core/dispatcher.py": 2420,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
@@ -196,7 +198,9 @@ _WATERMARKS = {
     # stall-advance currency) — conscious bump.
     # 1470→1530 (2026-07-12): problem FSM P2 — PROBLEM_STATES/EDGES +
     # apply_problem_transition — conscious bump.
-    "Tooling/state/transitions.py": 1530,
+    # 1530→1580 (2026-07-12): FSM P3 — WAKE_LEGALITY matrix +
+    # problem_accepts_wake — conscious bump.
+    "Tooling/state/transitions.py": 1580,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.
@@ -256,7 +260,9 @@ _WATERMARKS = {
     # conscious bump; the helper-family split (#11) is now overdue.
     # 3100→3120: manifest_history table DDL (self-audit §3-1b) —
     # 2026-07-12 — conscious bump.
-    "Tooling/state/db.py": 3120,
+    # 3120→3150 (2026-07-12): problem_quiet extraction (FSM P3, the
+    # named quiet guard) — conscious bump.
+    "Tooling/state/db.py": 3150,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,

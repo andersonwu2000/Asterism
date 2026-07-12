@@ -154,6 +154,80 @@ def test_revive_cli_reenters_revoked(tmp_path: Path,
     c.close()
 
 
+def test_wake_legality_matrix_covers_all_states():
+    """FSM P3: every problem state has a matrix row; only 'active'
+    accepts wakes, and its row is exactly the trigger vocabulary."""
+    assert set(transitions.WAKE_LEGALITY) == set(transitions.PROBLEM_STATES)
+    assert transitions.WAKE_LEGALITY["active"] == frozenset(
+        {"routine", "audit", "inject_batch_done", "pending_review"})
+    for st, allowed in transitions.WAKE_LEGALITY.items():
+        if st != "active":
+            assert allowed == frozenset(), st
+
+
+def test_problem_accepts_wake_reads_state(conn: sqlite3.Connection):
+    assert transitions.problem_accepts_wake(conn, "p") is True
+    assert transitions.problem_accepts_wake(conn, "p", "audit") is True
+    conn.execute("UPDATE problems SET state='revoked' WHERE name='p'")
+    conn.commit()
+    assert transitions.problem_accepts_wake(conn, "p") is False
+    assert transitions.problem_accepts_wake(
+        conn, "p", "inject_batch_done") is False
+    assert transitions.problem_accepts_wake(conn, "nope") is False
+
+
+def test_seat_sources_respect_state_over_carriers(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The matrix is the PRIMARY gate: a problem whose state says
+    non-active takes no T1/T4 seats even when every legacy carrier
+    looks live (drifted carriers must fail toward silence)."""
+    from Tooling.core.dispatcher import strategist_triggers
+    monkeypatch.chdir(tmp_path)
+    c = db.connect()
+    db.init_schema(c)
+    # Stalled-looking problem (frozen root, ancient routine clock) BUT
+    # state=revoked and NO legacy carrier backing it up.
+    c.execute(
+        "INSERT INTO problems (name, manifest_path, created_at, state)"
+        " VALUES ('p', 'Problems/p/Manifest.md', ?, 'revoked')",
+        (db.now(),))
+    c.execute(
+        "INSERT INTO goals (problem, slug, lean_path, statement, kind,"
+        " origin, status, depth, attempts, entry_kind,"
+        " integrity_verified, detached, created_at, updated_at)"
+        " VALUES ('p', 'main', 'Problems/p/Root.lean', 'T', 'theorem',"
+        " 'root', 'frozen', 0, 0, 'Backward', 0, 0, ?, ?)",
+        (db.now(), db.now()))
+    c.commit()
+    strategist_triggers(c, running=set(), audit_interval_min=180.0)
+    n = c.execute("SELECT COUNT(*) AS n FROM queue"
+                  " WHERE kind='Strategist'").fetchone()["n"]
+    assert n == 0
+    # Revive → seats flow again.
+    c.execute("UPDATE problems SET state='active' WHERE name='p'")
+    c.commit()
+    strategist_triggers(c, running=set(), audit_interval_min=180.0)
+    n2 = c.execute("SELECT COUNT(*) AS n FROM queue"
+                   " WHERE kind='Strategist'").fetchone()["n"]
+    assert n2 == 1
+    c.close()
+
+
+def test_problem_quiet_named_guard(conn: sqlite3.Connection):
+    """FSM P3: `quiet` = no in-flight worker, extracted from the stall
+    predicate's condition 3. stalled ⇒ quiet; a queued worker breaks
+    both."""
+    assert db.problem_quiet(conn, "p") is True
+    g = _insert_goal(conn, status="open", slug="q1")
+    conn.execute(
+        "INSERT INTO queue (kind, target_id, target_kind, priority,"
+        " created_at) VALUES ('Builder', ?, 'Goal', 5, ?)",
+        (str(g), db.now()))
+    conn.commit()
+    assert db.problem_quiet(conn, "p") is False
+    assert db.is_problem_stalled(conn, "p") is False
+
+
 # --------------------------------------------------------------------------- #
 # Registry well-formedness
 # --------------------------------------------------------------------------- #

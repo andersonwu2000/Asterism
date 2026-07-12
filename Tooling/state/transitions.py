@@ -449,6 +449,37 @@ def apply_strategy_transition(conn: sqlite3.Connection, strategy_id: int,
     db.update_strategy_status(conn, strategy_id, to_state)
 
 
+# Wake legality matrix (FSM P3, problem_fsm_design.md §4): which
+# Strategist trigger kinds may fire in which problem state. The enqueue
+# sources (T1/T1.5/T4/T2/reconcile) consult this ONE table, so a wake
+# arriving in a state with no legal work is a design-time contradiction
+# visible here — not a runtime pump. Only 'active' accepts wakes: every
+# other state is human-owned (awaiting_human / ingest_signoff /
+# revoked) or terminal (ingested).
+WAKE_LEGALITY: "dict[str, frozenset[str]]" = {
+    "active": frozenset({"routine", "audit", "inject_batch_done",
+                         "pending_review"}),
+    "awaiting_human": frozenset(),
+    "ingest_signoff": frozenset(),
+    "ingested": frozenset(),
+    "revoked": frozenset(),
+}
+
+
+def problem_accepts_wake(conn: sqlite3.Connection, problem: str,
+                         trigger: "str | None" = None) -> bool:
+    """Enqueue-side WAKE_LEGALITY lookup. `trigger=None` asks "any wake
+    at all?" (what the seat sources need); a specific trigger narrows
+    to that row. Unknown problem → False (nothing to wake)."""
+    row = conn.execute(
+        "SELECT state FROM problems WHERE name = ?", (problem,),
+    ).fetchone()
+    if row is None:
+        return False
+    allowed = WAKE_LEGALITY.get(str(row["state"] or "active"), frozenset())
+    return bool(allowed) if trigger is None else (trigger in allowed)
+
+
 def apply_problem_transition(conn: sqlite3.Connection, problem: str,
                              to_state: str, *, event: str = "") -> None:
     """The single sanctioned mutator of `problems.state` (v29,
@@ -776,6 +807,12 @@ def _enqueue_strategist_review(conn: sqlite3.Connection,
     # `running` set covers active dispatches; this DB check covers
     # queue-pending entries.
     if db.is_in_queue(conn, target_id=problem, kind="Strategist"):
+        return
+    # Wake legality (FSM P3): a non-active problem takes no seats. The
+    # goal's pending_review status above stands regardless — when the
+    # problem re-enters 'active', reconcile_stuck_states re-arms the
+    # review seat on the next tick.
+    if not problem_accepts_wake(conn, problem, "pending_review"):
         return
     # Priority 20 — above T1/T4 (=10) per pipelines.md §2.1 "T2 > T1".
     # T2 is event-driven (an agent shelved, review needed); T1/T4 are

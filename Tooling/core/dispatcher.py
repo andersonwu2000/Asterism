@@ -543,7 +543,11 @@ def reconcile_stuck_states(conn: sqlite3.Connection,
     is the only thing this adds over the startup-recovery logic it shares
     (`db.null_inject_redispatch_specs`), which runs against a clean slate."""
     # 1 — pending_review: enqueue Strategist (spawn derives the trigger).
+    from ..state import transitions as _transitions
     for prob in db.problems_with_pending_review(conn, scope=scope):
+        if not _transitions.problem_accepts_wake(
+                conn, prob, "pending_review"):
+            continue
         if db.problem_has_awaiting_human(conn, prob):
             continue
         if _strategist_inflight(conn, prob, running):
@@ -610,11 +614,20 @@ def strategist_triggers(conn: sqlite3.Connection,
     """
     max_age_sec = interval_min * 60.0
 
+    # Wake legality (FSM P3): every seat source consults the ONE matrix
+    # — a non-'active' problem (awaiting_human / ingest_signoff /
+    # ingested / revoked) takes no seats. The legacy per-carrier guards
+    # (awaiting check, ingested exclusion) stay as belt during the
+    # dual-write window.
+    from ..state import transitions as _transitions
+
     # T1 — routine audit (own running-time cadence; see problems_needing_t1)
     for prob in db.problems_needing_t1(
         conn, scope=scope, max_age_sec=max_age_sec,
         since_iso=daemon_start_iso,
     ):
+        if not _transitions.problem_accepts_wake(conn, prob, "routine"):
+            continue
         if db.problem_has_awaiting_human(conn, prob):
             continue
         if _strategist_inflight(conn, prob, running):
@@ -640,6 +653,8 @@ def strategist_triggers(conn: sqlite3.Connection,
             args.append(scope)
         for row in conn.execute(sql, tuple(args)):
             prob = str(row["name"])
+            if not _transitions.problem_accepts_wake(conn, prob, "audit"):
+                continue
             if not _audit_due(conn, prob, audit_interval_min,
                               since_iso=daemon_start_iso):
                 continue
@@ -668,6 +683,9 @@ def strategist_triggers(conn: sqlite3.Connection,
     # has the corresponding rule: don't Noop when stall section is
     # present.
     for prob in db.problems_stalled(conn, scope=scope, running=running):
+        if not _transitions.problem_accepts_wake(
+                conn, prob, "inject_batch_done"):
+            continue
         if db.problem_has_awaiting_human(conn, prob):
             continue
         if _strategist_inflight(conn, prob, running):
