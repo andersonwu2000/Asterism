@@ -1847,6 +1847,34 @@ def test_claude_spawn_sets_thinking_budget_env(
     assert env.get("MAX_THINKING_TOKENS") == "10000"
 
 
+def test_claude_spawn_isolates_operator_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-07-13 memory-isolation fence, functional side: the spawn env
+    kills auto-memory (root cause: memory dir is keyed by git repo root,
+    so spawns resolved to the OPERATOR's memory and read/wrote it as
+    their own), and the cmd carries ~/.claude/projects/** deny rules
+    (re-entry via absolute paths learned from old notes)."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    calls = _capture_call(monkeypatch, module_name="claude_cli")
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/Problems/myproblem"),
+        attempts_dir=Path("/x/.attempts/abc"),
+        timeout_sec=600,
+    ))
+    env = calls[0]["kwargs"]["env"]
+    assert env.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1"
+    cmd = calls[0]["cmd"]
+    deny = [a for a in cmd if ".claude/projects/**" in a]
+    assert sorted(a.split("(")[0] for a in deny) == ["Edit", "Read", "Write"]
+
+
 def test_claude_spawn_thinking_budget_floors_at_api_minimum(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

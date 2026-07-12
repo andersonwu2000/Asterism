@@ -449,6 +449,27 @@ def test_spawn_cmd_denies_user_file_writes() -> None:
         assert f'"Edit(**/{f})"' in src, f
 
 
+def test_spawn_isolates_operator_memory() -> None:
+    """2026-07-13: Claude Code auto-memory is keyed by git repo root,
+    so spawns cwd'd in Problems/<p>/ shared the OPERATOR's memory dir
+    (bidirectional: solution leaks in, context injection out). Source
+    pin for both layers — the env kill switch and the ~/.claude
+    projects-subtree deny rules."""
+    src = (Path(__file__).resolve().parents[1]
+           / "Tooling" / "llm" / "claude_cli.py").read_text(
+               encoding="utf-8")
+    # env layer present at BOTH claude call sites (spawn + complete_text)
+    assert src.count('["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"') == 2
+    # deny-rule layer wired into the spawn cmd
+    assert "*_operator_state_deny_rules()," in src
+    from Tooling.llm.claude_cli import _operator_state_deny_rules
+    rules = _operator_state_deny_rules()
+    assert len(rules) == 3
+    for rule, kind in zip(rules, ("Read", "Write", "Edit")):
+        assert rule.startswith(f"{kind}(//")
+        assert rule.endswith("/.claude/projects/**)")
+
+
 def test_effective_axioms_empty_falls_back_to_framework_default(
         capsys) -> None:
     """Absent field NEVER weakens a gate: framework default, warned once

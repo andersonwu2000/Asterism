@@ -789,6 +789,36 @@ def _trim_flags(req: LLMRequest | None = None) -> list[str]:
     return flags
 
 
+def _operator_state_deny_rules() -> list[str]:
+    """Deny rules pinning spawns out of the operator's Claude state
+    (~/.claude/projects/**: auto-memory dir + all session transcripts).
+
+    Claude Code auto-memory is keyed by GIT REPO ROOT (docs
+    memory.md#storage-location), so a spawn cwd'd inside Problems/<p>/
+    resolves to the OPERATOR's memory dir and is told it is its own —
+    spawns read AND wrote it routinely from 2026-06-12 (stokes) to
+    2026-07-13 (audit: 300+ reads / 400+ writes across 12 problems).
+    That is an unsanctioned bidirectional channel: operator memory can
+    carry soundness-sensitive material (e.g. official benchmark
+    solutions), and spawn writes land in every future operator session
+    context. Two layers close it: CLAUDE_CODE_DISABLE_AUTO_MEMORY
+    strips the memory section from the spawn system prompt (root
+    cause); these deny rules block re-entry via absolute paths learned
+    from month-old notes. Bash cat/echo stays physically possible —
+    same accepted porosity as the Manifest deny in the spawn cmd.
+    Sanctioned cross-wake stores remain the plan note, LESSONS.md,
+    directives and Library.
+
+    Permission rules match paths in POSIX form; on Windows C:\\Users\\x
+    is addressed as //c/Users/x (docs permissions.md#read-and-edit).
+    """
+    home = Path.home().as_posix()          # 'C:/Users/x' or '/home/x'
+    if len(home) > 1 and home[1] == ":":
+        home = "/" + home[0].lower() + home[2:]
+    subtree = f"/{home}/.claude/projects/**"
+    return [f"{kind}({subtree})" for kind in ("Read", "Write", "Edit")]
+
+
 class ClaudeCliProvider:
     def spawn(self, req: LLMRequest) -> int:
         # Dispatcher abort already fired — skip the CLI invocation so
@@ -995,6 +1025,7 @@ class ClaudeCliProvider:
             "Write(**/Manifest.md)", "Edit(**/Manifest.md)",
             "Write(**/Defs.lean)", "Edit(**/Defs.lean)",
             "Write(**/Root.lean)", "Edit(**/Root.lean)",
+            *_operator_state_deny_rules(),
             "--add-dir", str(req.problem_dir),
             "--add-dir", str(req.attempts_dir),
             *add_dir_packages,
@@ -1025,6 +1056,11 @@ class ClaudeCliProvider:
         # short-timeout feedback turn before this floor (#33).
         env["CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"] = "1"
         env["MAX_THINKING_TOKENS"] = str(_thinking_budget(req.timeout_sec))
+        # Spawn memory isolation (2026-07-13): see
+        # _operator_state_deny_rules for the whole story. This env var
+        # is the root-cause layer — no memory section in the spawn
+        # system prompt, so the spawn never learns the shared dir.
+        env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
         proc = subprocess.Popen(
             cmd, env=env, cwd=str(req.problem_dir),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -1224,9 +1260,14 @@ class ClaudeCliProvider:
             "--output-format", "text",
             *_trim_flags(),
         ]
+        # Same memory isolation as spawn(): auxiliary calls run with
+        # the daemon's cwd (= repo root) and would otherwise load the
+        # operator's auto-memory into their context.
+        env = dict(os.environ)
+        env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
         try:
             r = subprocess.run(
-                cmd, timeout=timeout_sec,
+                cmd, timeout=timeout_sec, env=env,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
                 creationflags=no_window_creationflags(),
