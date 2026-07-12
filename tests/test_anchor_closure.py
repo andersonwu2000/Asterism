@@ -374,14 +374,20 @@ def test_ingest_commit_library_gate_and_signoff(conn, tmp_path):
         assert n_librarian() == 0
 
         # library:true + default require_signoff (True) → PAUSE, no enqueue
+        # (re-committing Ingest on one problem is a test rig — reset the
+        # v29 FSM state to 'active' like the carriers are reset below)
         write_manifest("true")
         config._reset_cache()
+        conn.execute("UPDATE problems SET state='active' WHERE name='P.a'")
+        conn.commit()
         _commit_ingest(conn, problem="P.a", workspace=tmp_path)
         assert _db.problem_ingest_signoff_pending(conn, "P.a")
         assert n_librarian() == 0
 
         # direct mode (yaml require_signoff:false) → enqueue, no pause
         _db.set_ingest_signoff_pending(conn, "P.a", False)
+        conn.execute("UPDATE problems SET state='active' WHERE name='P.a'")
+        conn.commit()
         (tmp_path / "Asterism.yaml").write_text(
             "library:\n  require_signoff: false\n", encoding="utf-8")
         config._reset_cache()

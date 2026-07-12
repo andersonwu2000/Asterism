@@ -163,7 +163,17 @@ CREATE TABLE IF NOT EXISTS problems (
     -- auto-revoke when a post-Ingest un-prove invalidates the terminal
     -- judgment. Backfilled once for legacy root-proved problems (v16
     -- migration) so they are not re-triggered as stalled.
-    ingested_at    TEXT NULL DEFAULT NULL
+    ingested_at    TEXT NULL DEFAULT NULL,
+    -- Problem FSM (v29, problem_fsm_design.md §2): the explicit
+    -- lifecycle state; single sanctioned mutator =
+    -- transitions.apply_problem_transition. 'revoked' = post-Ingest
+    -- un-prove quarantine (seal torn automatically; re-entry is the
+    -- operator's `asterism revive`). 'stalled' is a derived guard on
+    -- 'active', never a state.
+    state          TEXT NOT NULL DEFAULT 'active'
+                    CHECK(state IN ('active', 'awaiting_human',
+                                    'ingest_signoff', 'ingested',
+                                    'revoked'))
 );
 
 CREATE TABLE IF NOT EXISTS goals (
@@ -643,7 +653,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 28
+_CURRENT_USER_VERSION = 29
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:

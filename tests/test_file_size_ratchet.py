@@ -194,7 +194,9 @@ _WATERMARKS = {
     # belongs beside _maybe_stall_parent_strategies — conscious bump.
     # 1440→1470 (2026-07-12): predicted_batch_delta (FSM §2.3, the
     # stall-advance currency) — conscious bump.
-    "Tooling/state/transitions.py": 1470,
+    # 1470→1530 (2026-07-12): problem FSM P2 — PROBLEM_STATES/EDGES +
+    # apply_problem_transition — conscious bump.
+    "Tooling/state/transitions.py": 1530,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.
@@ -263,7 +265,8 @@ _WATERMARKS = {
     # rebuild block shape) — conscious bump.
     # 1720→1750 (2026-07-12): v28 user_file_history carryover — conscious
     # bump.
-    "Tooling/state/db_migrations.py": 1750,
+    # 1750→1780 (2026-07-12): v29 problem-state backfill — conscious bump.
+    "Tooling/state/db_migrations.py": 1780,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

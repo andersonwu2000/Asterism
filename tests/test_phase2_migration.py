@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 28
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 29
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -366,7 +366,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 28
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 29
     conn.close()
 
 
@@ -506,7 +506,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 28
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 29
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -546,7 +546,7 @@ def test_v28_manifest_history_carryover(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 28
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 29
     rows = conn.execute(
         "SELECT problem, file, sha, body, source FROM user_file_history"
     ).fetchall()
@@ -557,6 +557,48 @@ def test_v28_manifest_history_carryover(tmp_path: Path) -> None:
     assert conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
         " AND name='manifest_history'").fetchone() is None
+    conn.close()
+
+
+def test_v29_problem_state_backfill(tmp_path: Path) -> None:
+    """v29 (problem FSM): `problems.state` backfills from the legacy
+    carriers — signoff-pending ingest → 'ingest_signoff', bare
+    ingested_at → 'ingested', unresolved RequestUserAmend →
+    'awaiting_human', else 'active'. (The ALTER branch is exercised on
+    real pre-v29 DBs; SQLite can't DROP a CHECKed column to rewind it
+    here, so this pins the backfill + version step.)"""
+    db_path = tmp_path / "v28.db"
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    db.init_schema(conn)
+    ts = db.now()
+    for name in ("p_active", "p_await", "p_signoff", "p_ingested"):
+        conn.execute(
+            "INSERT INTO problems (name, manifest_path, created_at)"
+            " VALUES (?, ?, ?)", (name, f"Problems/{name}/Manifest.md", ts))
+    conn.execute(
+        "UPDATE problems SET ingested_at = ?, ingest_signoff_pending = 1"
+        " WHERE name = 'p_signoff'", (ts,))
+    conn.execute(
+        "UPDATE problems SET ingested_at = ? WHERE name = 'p_ingested'",
+        (ts,))
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, payload, outcome, created_at,"
+        " updated_at) VALUES ('p_await', 0, 'routine',"
+        " 'RequestUserAmend', '{}', 'awaiting_human', ?, ?)", (ts, ts))
+    conn.execute("PRAGMA user_version = 28")
+    conn.commit()
+
+    from Tooling.state import db_migrations
+    db_migrations.apply(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 29
+    states = {str(r["name"]): str(r["state"]) for r in conn.execute(
+        "SELECT name, state FROM problems")}
+    assert states == {"p_active": "active", "p_await": "awaiting_human",
+                      "p_signoff": "ingest_signoff",
+                      "p_ingested": "ingested"}
     conn.close()
 
 

@@ -1354,8 +1354,14 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     # Manifest opts out of harvest the Strategist's terminal judgment
     # stands; only the harvest side-effects vary.
     db.set_problem_ingested(conn, problem)
+    from ..state import transitions as _transitions
     if require_signoff:
         db.set_ingest_signoff_pending(conn, problem, True)
+        _transitions.apply_problem_transition(
+            conn, problem, "ingest_signoff", event="ingest_committed")
+    else:
+        _transitions.apply_problem_transition(
+            conn, problem, "ingested", event="ingest_direct")
     conn.commit()
 
     # Slow best-effort work AFTER the gate is closed.
@@ -1607,6 +1613,9 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         # audit row is rolled back via the outer transaction.
         os.rename(decision.payload["__tmp_path__"],
                   decision.payload["__final_path__"])
+        from ..state import transitions as _transitions
+        _transitions.apply_problem_transition(
+            conn, problem, "awaiting_human", event="amend_requested")
 
     # Touch last_strategist_at. (Phase 6: bootstrap_done is vestigial —
     # T0/first_launch retired; the column stays, nothing reads it.) The

@@ -2135,6 +2135,9 @@ def cmd_approve_ingest(args: argparse.Namespace) -> int:
     record = _signoff_record(conn, problem,
                              getattr(args, "signer", None))
     db.set_ingest_signoff(conn, problem, record)
+    from ..state import transitions as _transitions
+    _transitions.apply_problem_transition(
+        conn, problem, "ingested", event="signoff_approved")
     db.enqueue(conn, kind="Librarian", target_id=problem,
                target_kind="Problem", priority=0, problem=problem)
     signed = f" signed by {record['name']}" if record["name"] else ""
@@ -2166,6 +2169,9 @@ def cmd_reject_ingest(args: argparse.Namespace) -> int:
     # a revoked judgment must not keep wearing its seal — the next
     # approve signs the NEXT reviewed content afresh
     db.set_ingest_signoff(conn, problem, None)
+    from ..state import transitions as _transitions
+    _transitions.apply_problem_transition(
+        conn, problem, "active", event="signoff_rejected")
     row = conn.execute(
         "SELECT strategist_directive FROM problems WHERE name = ?",
         (problem,)).fetchone()
@@ -2262,6 +2268,34 @@ def cmd_repin(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     print(f"[repin] {problem}: {n} file(s) re-baselined")
+    return 0
+
+
+def cmd_revive(args: argparse.Namespace) -> int:
+    """Problem FSM §2.1: re-enter a REVOKED problem (post-Ingest
+    un-prove quarantine) into the live path. The incident announcement
+    (seal torn, Library un-harvested) already happened automatically;
+    this is the operator's re-grind decision. Clears `ingested_at` so
+    the liveness machinery resumes wakes/dispatch."""
+    from ..state import transitions as _transitions
+    conn = db.connect()
+    db.init_schema(conn)
+    problem = str(args.problem)
+    row = conn.execute("SELECT state FROM problems WHERE name = ?",
+                       (problem,)).fetchone()
+    if row is None:
+        print(f"[revive] unknown problem {problem!r}")
+        return 1
+    if str(row["state"]) != "revoked":
+        print(f"[revive] {problem!r} is {row['state']!r}, not 'revoked' — "
+              f"nothing to revive.")
+        return 1
+    db.set_problem_ingested(conn, problem, ingested=False)
+    _transitions.apply_problem_transition(
+        conn, problem, "active", event="operator_revived")
+    print(f"[revive] {problem}: back on the live path — wakes and "
+          f"dispatch resume on the next daemon tick.")
+    conn.close()
     return 0
 
 
@@ -2716,6 +2750,15 @@ def main(argv: list[str] | None = None) -> int:
         choices=["Manifest.md", "Root.lean", "Defs.lean"],
         help="re-baseline only this file (default: all present)")
     p_repin.set_defaults(func=cmd_repin)
+
+    p_revive = sub.add_parser(
+        "revive",
+        help="re-enter a REVOKED problem (post-Ingest un-prove "
+             "quarantine) into the live path — the operator's re-grind "
+             "decision; the seal-tear/un-harvest already ran automatically")
+    p_revive.add_argument("problem", type=str,
+                          help="problem name in state 'revoked'")
+    p_revive.set_defaults(func=cmd_revive)
 
     p_kstats = sub.add_parser(
         "knowledge-stats",

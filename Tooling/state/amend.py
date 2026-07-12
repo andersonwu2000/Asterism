@@ -164,6 +164,9 @@ def resolve_amend(conn: sqlite3.Connection, workspace: Path,
         " SET outcome = ?, outcome_detail = ?, updated_at = ?"
         " WHERE id = ?",
         (outcome, detail, db.now(), decision_id))
+    from . import transitions as _transitions
+    _transitions.apply_problem_transition(
+        conn, problem, "active", event="amend_resolved")
 
     # Resume the problem promptly (mirrors cli._rewake_strategist; the
     # awaiting_human gate is already lifted by the UPDATE above).

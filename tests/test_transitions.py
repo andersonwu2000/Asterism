@@ -74,6 +74,86 @@ def _sstatus(conn: sqlite3.Connection, sid: int) -> str:
         "SELECT status FROM strategies WHERE id = ?", (sid,)).fetchone()["status"])
 
 
+def _pstate(conn: sqlite3.Connection, problem: str = "p") -> str:
+    return str(conn.execute(
+        "SELECT state FROM problems WHERE name = ?",
+        (problem,)).fetchone()["state"])
+
+
+# --------------------------------------------------------------------------- #
+# Problem FSM (v29, problem_fsm_design.md §2)
+# --------------------------------------------------------------------------- #
+
+def test_problem_edges_endpoints_are_canonical_states():
+    for frm, to in transitions.PROBLEM_EDGES:
+        assert frm in transitions.PROBLEM_STATES
+        assert to in transitions.PROBLEM_STATES
+    # no declared self-edges (idempotence is implicit)
+    assert all(f != t for f, t in transitions.PROBLEM_EDGES)
+
+
+def test_apply_problem_transition_legal_walk(conn: sqlite3.Connection):
+    """The full lifecycle walks: active ⇄ awaiting_human;
+    active → ingest_signoff → ingested → revoked → active."""
+    apply = transitions.apply_problem_transition
+    assert _pstate(conn) == "active"
+    apply(conn, "p", "awaiting_human", event="amend_requested")
+    assert _pstate(conn) == "awaiting_human"
+    apply(conn, "p", "active", event="amend_resolved")
+    apply(conn, "p", "ingest_signoff", event="ingest_committed")
+    apply(conn, "p", "ingested", event="signoff_approved")
+    apply(conn, "p", "revoked", event="unprove_revoked")
+    assert _pstate(conn) == "revoked"
+    apply(conn, "p", "active", event="operator_revived")
+    assert _pstate(conn) == "active"
+    # idempotent self-edge allowed
+    apply(conn, "p", "active", event="amend_resolved")
+    assert _pstate(conn) == "active"
+
+
+def test_apply_problem_transition_illegal_edge_strict_raises(
+        conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch):
+    """active → revoked is not an edge (revocation only exits an
+    ingest-side state): strict mode raises, state unchanged."""
+    monkeypatch.setenv("ASTERISM_STRICT_TRANSITIONS", "1")
+    with pytest.raises(transitions.IllegalTransition):
+        transitions.apply_problem_transition(
+            conn, "p", "revoked", event="unprove_revoked")
+    assert _pstate(conn) == "active"
+
+
+def test_revive_cli_reenters_revoked(tmp_path: Path,
+                                     monkeypatch: pytest.MonkeyPatch):
+    """`asterism revive`: only a 'revoked' problem re-enters the live
+    path (state → active, ingested_at cleared); anything else is a
+    no-op error. And a revoked problem is quiet by construction —
+    ingested_at stays set, so the stall predicate never fires."""
+    import argparse
+    from Tooling.core.cli import cmd_revive
+    monkeypatch.chdir(tmp_path)
+    c = db.connect()
+    db.init_schema(c)
+    c.execute(
+        "INSERT INTO problems (name, manifest_path, created_at,"
+        " ingested_at, state)"
+        " VALUES ('p', 'Problems/p/Manifest.md', ?, ?, 'revoked')",
+        (db.now(), db.now()))
+    c.commit()
+    assert db.is_problem_stalled(c, "p") is False   # quarantine is quiet
+    c.close()
+
+    assert cmd_revive(argparse.Namespace(problem="nope")) == 1
+    assert cmd_revive(argparse.Namespace(problem="p")) == 0
+    c = db.connect()
+    row = c.execute(
+        "SELECT state, ingested_at FROM problems WHERE name='p'"
+    ).fetchone()
+    assert str(row["state"]) == "active" and row["ingested_at"] is None
+    # second revive: nothing to do
+    assert cmd_revive(argparse.Namespace(problem="p")) == 1
+    c.close()
+
+
 # --------------------------------------------------------------------------- #
 # Registry well-formedness
 # --------------------------------------------------------------------------- #
@@ -380,7 +460,7 @@ from pathlib import Path as _Path  # noqa: E402
 # (e.g. int(target_id)); every apply_* call passes event=, so non-greedy pairs
 # each call with its own (nearest-following) event= label.
 _APPLY_EVENT_RE = re.compile(
-    r"apply_(?:goal|strategy)_transition\(.*?event=[\"']([^\"']+)[\"']",
+    r"apply_(?:goal|strategy|problem)_transition\(.*?event=[\"']([^\"']+)[\"']",
     re.DOTALL,
 )
 

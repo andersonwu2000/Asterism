@@ -550,6 +550,31 @@ def apply(conn: sqlite3.Connection) -> None:
             conn.execute("DROP TABLE manifest_history")
         conn.execute("PRAGMA user_version = 28")
         conn.commit()
+    if v < 29:
+        # v29 — problem FSM (problem_fsm_design.md §2): explicit
+        # `problems.state`, backfilled from the legacy carriers
+        # (ingested_at / ingest_signoff_pending / awaiting_human rows).
+        # transitions.apply_problem_transition is the sole mutator.
+        pcols = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
+        if "state" not in pcols:
+            conn.execute(
+                "ALTER TABLE problems ADD COLUMN state TEXT NOT NULL"
+                " DEFAULT 'active' CHECK(state IN ('active',"
+                " 'awaiting_human', 'ingest_signoff', 'ingested',"
+                " 'revoked'))")
+        conn.execute(
+            "UPDATE problems SET state = CASE"
+            " WHEN ingested_at IS NOT NULL AND ingest_signoff_pending = 1"
+            "   THEN 'ingest_signoff'"
+            " WHEN ingested_at IS NOT NULL THEN 'ingested'"
+            " ELSE 'active' END")
+        conn.execute(
+            "UPDATE problems SET state = 'awaiting_human'"
+            " WHERE state = 'active' AND name IN"
+            " (SELECT DISTINCT problem FROM strategist_decisions"
+            "  WHERE outcome = 'awaiting_human')")
+        conn.execute("PRAGMA user_version = 29")
+        conn.commit()
 
 
 def _migrate_to_v26(conn: sqlite3.Connection) -> None:

@@ -540,22 +540,27 @@ def rollback_cascade_chain(
         cursor_strategy_id = int(parent_row["strategy_id"])
         is_culprit = False
     conn.commit()
-    # Phase 6 — post-Ingest un-prove invalidates the Strategist's terminal
-    # judgment: auto-revoke the Ingest stamp (+ any pending sign-off) so
-    # the problem re-enters the live path (stall wakes the Strategist,
-    # the exit gate stops seeing it as done). Without this, a rollback
-    # after Ingest would leave `ingested_at` set and the daemon could
-    # exit on an unproved root. Library un-harvest (decision ①: full
-    # auto) is triggered alongside when a harvest already landed.
+    # Problem FSM §2.1 `revoked` (2026-07-12, splits the old auto edge):
+    # post-Ingest un-prove ANNOUNCES the incident automatically — tear
+    # the seal, un-harvest, quarantine — but re-entering the grind is
+    # the OPERATOR's call (`asterism revive`), not the machine's:
+    # `ingested_at` stays SET so every liveness reader (stall/T4/exit/
+    # stale-row drop) keeps the problem quiet, and the machine never
+    # silently resumes burning quota over a torn human signature.
     if (touched_problem is not None
             and db.problem_ingested(conn, touched_problem)):
-        db.set_problem_ingested(conn, touched_problem, ingested=False)
         db.set_ingest_signoff_pending(conn, touched_problem, False)
         # the signature sealed content whose proof just un-proved — a
         # revoked judgment must not keep wearing its seal (v27)
         db.set_ingest_signoff(conn, touched_problem, None)
-        print(f"[rollback] {touched_problem}: Ingest auto-revoked "
-              f"(post-Ingest un-prove)", flush=True)
+        from ..state import transitions as _transitions
+        _transitions.apply_problem_transition(
+            conn, touched_problem, "revoked", event="unprove_revoked")
+        print(f"[rollback] {touched_problem}: Ingest REVOKED "
+              f"(post-Ingest un-prove) — seal torn, Library un-harvested, "
+              f"problem QUARANTINED. Re-enter with "
+              f"`asterism revive {touched_problem}` after adjudicating.",
+              flush=True)
         from ..pipeline.librarian import un_harvest as _un_harvest
         _un_harvest(conn, workspace, touched_problem)
     # TREE refresh — rollback walked one parent chain (all in the same

@@ -45,7 +45,13 @@ def test_approve_signs_and_reject_revokes(tmp_path: Path, monkeypatch) -> None:
     conn = _open(tmp_path)
     _add_problem(conn)
     db.set_ingest_signoff_pending(conn, "p", True)
+    # v29 problem FSM: a signoff-pending problem is in 'ingest_signoff'
+    # (production sets both at the Ingest commit; this fixture stamps
+    # the carrier directly, so stamp the state alongside).
+    conn.execute("UPDATE problems SET state='ingest_signoff'"
+                 " WHERE name='p'")
     db.set_review_snapshot(conn, "p", '{"deliverables": []}')
+    conn.commit()
     conn.close()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(_cli, "_claude_login_email", lambda: "acct@x.y")
@@ -65,6 +71,9 @@ def test_approve_signs_and_reject_revokes(tmp_path: Path, monkeypatch) -> None:
 
     # reject revokes: back to proving, no lingering seal
     db.set_ingest_signoff_pending(conn, "p", True)
+    conn.execute("UPDATE problems SET state='ingest_signoff'"
+                 " WHERE name='p'")
+    conn.commit()
     conn.close()
     rc = _cli.cmd_reject_ingest(
         argparse.Namespace(problem="p", reason="not done"))

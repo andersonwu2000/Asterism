@@ -78,6 +78,38 @@ GOAL_TERMINALS: frozenset[str] = GOAL_HARD_TERMINALS | {"shelved"}
 STRATEGY_TERMINALS: frozenset[str] = frozenset({"succeeded", "dead", "superseded"})
 
 # ---------------------------------------------------------------------------
+# Problem FSM (v29, problem_fsm_design.md §2) — the explicit lifecycle
+# the wake machinery / gates previously derived from scattered carriers
+# (awaiting_human rows, ingested_at, ingest_signoff_pending). 'stalled'
+# is deliberately NOT a state: it is a derived guard on 'active' — the
+# forced-advance philosophy keeps grinding active problems; the only
+# sanctioned pauses are human-owned (awaiting_human / ingest_signoff /
+# revoked) or terminal (ingested).
+# ---------------------------------------------------------------------------
+
+PROBLEM_STATES: frozenset[str] = frozenset({
+    "active",
+    "awaiting_human",
+    "ingest_signoff",
+    "ingested",
+    "revoked",
+})
+
+PROBLEM_EDGES: frozenset[tuple[str, str]] = frozenset({
+    ("active", "awaiting_human"),      # amend_requested
+    ("awaiting_human", "active"),      # amend_resolved (accept or reject)
+    ("active", "ingest_signoff"),      # ingest_committed (signoff on)
+    ("active", "ingested"),            # ingest_direct (signoff off)
+    ("ingest_signoff", "ingested"),    # signoff_approved
+    ("ingest_signoff", "active"),      # signoff_rejected
+    # Post-Ingest un-prove: "announce the incident" automatically (seal
+    # torn, quarantined), "what next" waits for the operator.
+    ("ingested", "revoked"),           # unprove_revoked
+    ("ingest_signoff", "revoked"),     # unprove_revoked (during the pause)
+    ("revoked", "active"),             # operator_revived (asterism revive)
+})
+
+# ---------------------------------------------------------------------------
 # Legal (from -> to) edge registry.
 #
 # Idempotent self-edges (from == to) are ALWAYS allowed and are not listed.
@@ -171,6 +203,11 @@ EVENTS: frozenset[str] = frozenset({
     # consistency.repair_unambiguous finishes the sibling sweep a crashed
     # cascade owed its live `proposed` strategies)
     "startup_terminal_parent_reconcile",
+    # problem FSM (v29) — apply_problem_transition call sites
+    "amend_requested", "amend_resolved",
+    "ingest_committed", "ingest_direct",
+    "signoff_approved", "signoff_rejected",
+    "unprove_revoked", "operator_revived",
 })
 
 
@@ -359,7 +396,7 @@ def _check(entity: str, frm: str | None, to: str,
     if (frm, to) not in edges:
         msg = (f"[transition-violation] {entity} {frm!r} -> {to!r} "
                f"(event={event or '?'}) is not a declared edge in "
-               f"transitions.{'GOAL' if entity == 'goal' else 'STRATEGY'}_EDGES")
+               f"transitions.{entity.upper()}_EDGES")
         if _strict():
             raise IllegalTransition(msg)
         print(msg, flush=True)
@@ -410,6 +447,27 @@ def apply_strategy_transition(conn: sqlite3.Connection, strategy_id: int,
     frm = str(row["status"]) if row is not None else None
     _check("strategy", frm, to_state, STRATEGY_EDGES, event)
     db.update_strategy_status(conn, strategy_id, to_state)
+
+
+def apply_problem_transition(conn: sqlite3.Connection, problem: str,
+                             to_state: str, *, event: str = "") -> None:
+    """The single sanctioned mutator of `problems.state` (v29,
+    problem_fsm_design.md §2.2). Reads the current state, validates the
+    edge against `PROBLEM_EDGES` (strict/lenient split identical to the
+    goal machine), writes the column. The legacy carriers
+    (ingested_at / ingest_signoff_pending / awaiting rows) stay owned
+    by their existing setters at the same call sites — this chokepoint
+    is the FSM's SoT, the carriers remain the liveness predicates'
+    physical inputs until P3 swaps the readers."""
+    assert to_state in PROBLEM_STATES, f"unknown problem state {to_state!r}"
+    row = conn.execute(
+        "SELECT state FROM problems WHERE name = ?", (problem,),
+    ).fetchone()
+    frm = str(row["state"] or "active") if row is not None else None
+    _check("problem", frm, to_state, PROBLEM_EDGES, event)
+    conn.execute("UPDATE problems SET state = ? WHERE name = ?",
+                 (to_state, problem))
+    conn.commit()
 
 
 def _shelve_threshold() -> int:
