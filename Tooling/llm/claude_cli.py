@@ -41,6 +41,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -819,6 +820,43 @@ def _operator_state_deny_rules() -> list[str]:
     return [f"{kind}({subtree})" for kind in ("Read", "Write", "Edit")]
 
 
+def _spawn_guard_settings_path() -> Path:
+    """Generated settings file wiring the spawn_guard PreToolUse hook
+    into every spawn (whitelist fence — see spawn_guard.py docstring).
+
+    Injected via `--settings <path>`, which the docs confirm still
+    applies under `--setting-sources ""` (cli-reference: with empty
+    setting-sources only --settings values apply). Content embeds this
+    interpreter's absolute path (bare `python` resolves to the wrong
+    venv on this machine), so the file is machine-generated under
+    .asterism/, never committed, and rewritten whenever stale."""
+    guard = Path(__file__).resolve().parent / "spawn_guard.py"
+    settings = {
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": ("Read|Grep|Glob|Edit|Write|MultiEdit"
+                            "|NotebookEdit|Bash"),
+                "hooks": [{
+                    "type": "command",
+                    "command": f'"{sys.executable}" "{guard}"',
+                    "timeout": 30,
+                }],
+            }],
+        },
+    }
+    path = guard.parents[2] / ".asterism" / "spawn_guard.settings.json"
+    body = json.dumps(settings, indent=2)
+    try:
+        if not path.exists() or path.read_text(encoding="utf-8") != body:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+    except OSError as exc:
+        # Fence degraded, not fatal: the permission deny rules remain.
+        print(f"[llm:claude] spawn_guard settings write failed: {exc}",
+              flush=True)
+    return path
+
+
 class ClaudeCliProvider:
     def spawn(self, req: LLMRequest) -> int:
         # Dispatcher abort already fired — skip the CLI invocation so
@@ -1026,6 +1064,10 @@ class ClaudeCliProvider:
             "Write(**/Defs.lean)", "Edit(**/Defs.lean)",
             "Write(**/Root.lean)", "Edit(**/Root.lean)",
             *_operator_state_deny_rules(),
+            # Whitelist fence (spawn_guard.py): PreToolUse hook denies
+            # file tools outside {repo, scratchpad, ~/.elan} and Bash
+            # touching home outside {scratchpad, ~/.elan}.
+            "--settings", str(_spawn_guard_settings_path()),
             "--add-dir", str(req.problem_dir),
             "--add-dir", str(req.attempts_dir),
             *add_dir_packages,
