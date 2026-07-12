@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-11
+- Improved the web dashboard's proof-tree view with richer hover interactions — hovering a proof step now highlights its subgoals and their status — plus a redesigned legend and assorted polish from a usability audit.
+- Added several safeguards against wasted work, so the system now declines to re-attempt a proof plan identical to one already tried and reuses results for goals whose statements are equivalent.
+- Extended the pre-submission checks so more doomed proof steps are rejected by prediction before they are formally committed, including placeholder proofs and naming collisions.
+- Upgraded the planning agent to periodically audit its own recorded beliefs rather than only the proof tree, to sign off on results with named evidence, and fixed a bug where its review loop mistook its own queued reminders for progress.
+
 ### 2026-07-10
 - Registered the first batch of 50 Putnam competition problems from the PutnamBench benchmark, along with the plumbing to run them.
 - Added offline, read-only telemetry to measure whether the system's accumulated proof knowledge actually pays off, and retired a citation-count metric that measured the wrong thing.
@@ -216,12 +222,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Built out a tower of definitions and 15 new problems leading up to Stokes' theorem, covering manifold boundaries and differential-form bundles.
 - Improved how the system reuses existing library lemmas and definitions, fixing a series of edge cases around qualified names, local variable bindings, and citations.
 - Made the prover more resilient to runaway or stalled Lean elaborations, cutting off stuck jobs instead of leaving them to hang.
-
-### 2026-06-11
-- Hardened the machinery that gathers generated definitions into a reusable Lean library, preserving docstrings, section variables, imports, and notation so relocated code still compiles.
-- Improved how declarations are sorted into files, keeping each problem's definitions separate, redirecting shared ones, and capping how large any file can grow.
-- Made concurrent file rewrites safe against race conditions and sharpened detection of stalled or timed-out proof-search attempts.
-- Added framework support for theorems that discharge typeclass (instance) obligations.
 
 <!-- ASTERISM-PROGRESS:END -->
 
