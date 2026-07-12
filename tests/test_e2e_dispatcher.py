@@ -163,16 +163,17 @@ def test_e2e_root_proved_through_dispatcher(
             (attempts / "PROPOSAL.md").write_text(
                 "trivial fact, direct proof", encoding="utf-8")
         elif kind == "strategist":
-            # Phase 2 — Strategist agent drops decision.json. For the
-            # e2e happy path we have a trivial Problem that Builder
-            # closes on its own; Strategist's T0 firing just needs to
-            # commit *something* so bootstrap_done flips and T0 stops
-            # re-enqueueing. A Noop decision is the cheapest valid
-            # commit (commit_decision still touches last_strategist_at
-            # + bootstrap_done for any decision kind).
+            # Phase 2 — Strategist agent drops decision.json. The wake
+            # fires AFTER Builder proves the root (stall-when-idle =
+            # the Ingest driver), and since the stall-advance gate
+            # (FSM §3.1, 2026-07-12) a stalled wake must move state —
+            # a Noop no longer passes. `Ingest` IS the genuine happy
+            # path (Phase 6: the Strategist's terminal judgment), so
+            # the stub now models the real protocol end-to-end.
             import json as _json
             (attempts / "decision.json").write_text(
-                _json.dumps({"kind": "Noop", "reason": "let BFS run"}),
+                _json.dumps({"kind": "Ingest",
+                             "reason": "root proved; manifest satisfied"}),
                 encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)

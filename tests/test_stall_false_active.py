@@ -359,6 +359,144 @@ def test_review_discharge_rejects_notes_only_batch(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_predicted_batch_delta_counts_transitions_not_kinds(
+        tmp_path: Path) -> None:
+    """FSM §2.3: the stall-advance currency. Self-edges (re-confirm a
+    shelved goal, shelve a hard terminal, re-mark) count ZERO; real
+    edges and new dispatches count."""
+    from Tooling.pipeline.strategist import Decision
+    conn = _conn(tmp_path)
+    g_open = _goal(conn, "d_open", status="open")
+    g_shelved = _goal(conn, "d_shelved", status="shelved")
+    g_proved = _goal(conn, "d_proved", status="proved")
+    conn.execute("UPDATE goals SET is_deliverable = 1 WHERE id = ?",
+                 (g_proved,))
+    g_proved2 = _goal(conn, "d_proved2", status="proved")
+    conn.commit()
+
+    def delta(*ds) -> int:
+        return _tr.predicted_batch_delta(conn, list(ds))
+
+    assert delta(Decision(kind="Inject")) == 1
+    assert delta(Decision(kind="AttemptDisproof", target_id=g_open)) == 1
+    assert delta(Decision(kind="Ingest")) == 1
+    assert delta(Decision(kind="RequestUserAmend")) == 1
+    assert delta(Decision(kind="Noop")) == 0
+    assert delta(Decision(kind="EmitDirective")) == 0
+    # ConfirmShelve: live target = edge; shelved/proved target = no-op.
+    assert delta(Decision(kind="ConfirmShelve", target_id=g_open)) == 1
+    assert delta(Decision(kind="ConfirmShelve", target_id=g_shelved)) == 0
+    assert delta(Decision(kind="ConfirmShelve", target_id=g_proved)) == 0
+    # MarkDeliverable: proved+unmarked = edge; marked / unproved = no-op.
+    assert delta(Decision(kind="MarkDeliverable", target_id=g_proved2)) == 1
+    assert delta(Decision(kind="MarkDeliverable", target_id=g_proved)) == 0
+    assert delta(Decision(kind="MarkDeliverable", target_id=g_open)) == 0
+    # Batch sums; one real action carries a zero-delta companion.
+    assert delta(Decision(kind="ConfirmShelve", target_id=g_shelved),
+                 Decision(kind="Inject")) == 1
+    conn.close()
+
+
+def test_stall_advance_gate_rejects_zero_delta(tmp_path: Path) -> None:
+    """FSM §3.1 — the pure-NL re-confirm pump (simple_loop_conjecture
+    2026-07-12, 9+ consecutive strategist wakes): a stalled rootless
+    problem must move ≥1 state or dispatch new work per wake. Zero-delta
+    batches (re-confirm / Noop) bounce with the researcher-charge
+    message; a real Inject passes; periodic triggers and non-stalled
+    problems are untouched."""
+    import json
+    from Tooling.pipeline import strategist
+    conn = _conn(tmp_path)
+    _goal(conn, "done", status="proved")
+    g_sh = _goal(conn, "parked", status="shelved")
+    conn.commit()
+    assert _db.is_problem_stalled(conn, P) is True
+
+    reconfirm = [{"kind": "ConfirmShelve", "target_goal_id": g_sh,
+                  "reason": "still parked"}]
+    ds, _ = strategist.parse_decisions(json.dumps(reconfirm))
+    err = strategist.verify_decisions(
+        ds, conn, problem=P, trigger_kind="inject_batch_done")
+    assert "changes nothing" in err and "researcher" in err
+
+    noop = [{"kind": "Noop", "reason": "honest idle"}]
+    ds2, _ = strategist.parse_decisions(json.dumps(noop))
+    err2 = strategist.verify_decisions(
+        ds2, conn, problem=P, trigger_kind="inject_batch_done")
+    assert "changes nothing" in err2
+
+    with_inject = reconfirm + [{
+        "kind": "Inject", "pipeline": "Forward",
+        "brief": "## Need\na genuinely new brick"}]
+    ds3, _ = strategist.parse_decisions(json.dumps(with_inject))
+    err3 = strategist.verify_decisions(
+        ds3, conn, problem=P, trigger_kind="inject_batch_done")
+    assert "changes nothing" not in err3
+
+    # Periodic wakes keep their curation-legal exemption.
+    err4 = strategist.verify_decisions(
+        ds, conn, problem=P, trigger_kind="audit")
+    assert "changes nothing" not in err4
+
+    # A live in-flight inject → not stalled → rule inert.
+    g_live = _goal(conn, "inflight", status="open")
+    _inject(conn, produced_goal=g_live)
+    assert _db.is_problem_stalled(conn, P) is False
+    err5 = strategist.verify_decisions(
+        ds, conn, problem=P, trigger_kind="inject_batch_done")
+    assert "changes nothing" not in err5
+    conn.close()
+
+
+def test_markdeliverable_requires_proved_unmarked(tmp_path: Path) -> None:
+    """FSM §3.2: marking is a real edge only for a PROVED, unmarked
+    forward node — unproved marks and re-marks are per-item errors."""
+    import json
+    from Tooling.pipeline import strategist
+    conn = _conn(tmp_path)
+    g_open = _goal(conn, "m_open", status="open")
+    g_marked = _goal(conn, "m_marked", status="proved")
+    conn.execute("UPDATE goals SET is_deliverable = 1 WHERE id = ?",
+                 (g_marked,))
+    conn.commit()
+    ds, _ = strategist.parse_decisions(json.dumps(
+        [{"kind": "MarkDeliverable", "target_goal_id": g_open}]))
+    assert "PROVED" in strategist.verify_decisions(ds, conn, problem=P)
+    ds2, _ = strategist.parse_decisions(json.dumps(
+        [{"kind": "MarkDeliverable", "target_goal_id": g_marked}]))
+    assert "already marked" in strategist.verify_decisions(
+        ds2, conn, problem=P)
+    conn.close()
+
+
+def test_amend_identical_rerequest_rejected(tmp_path: Path) -> None:
+    """FSM §3.3 human-attention guard: a RequestUserAmend byte-identical
+    to an already-adjudicated one is mechanically rejected; a changed
+    proposal is a new ask."""
+    import json
+    from Tooling.pipeline import strategist
+    conn = _conn(tmp_path)
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, payload, outcome, created_at,"
+        " updated_at) VALUES (?, 0, 'routine', 'RequestUserAmend', ?,"
+        " 'rejected', ?, ?)",
+        (P, json.dumps({"file": "Manifest.md", "proposed_body": "OLD ASK",
+                        "question": "q?"}), _db.now(), _db.now()))
+    conn.commit()
+    req = {"kind": "RequestUserAmend", "reason": "statement wrong",
+           "file": "Manifest.md", "question": "q?",
+           "proposed_body": "OLD ASK"}
+    ds, _ = strategist.parse_decisions(json.dumps([req]))
+    assert "already adjudicated" in strategist.verify_decisions(
+        ds, conn, problem=P)
+    req2 = dict(req, proposed_body="NEW ASK")
+    ds2, _ = strategist.parse_decisions(json.dumps([req2]))
+    assert "already adjudicated" not in strategist.verify_decisions(
+        ds2, conn, problem=P)
+    conn.close()
+
+
 def test_review_discharge_exempts_periodic_wakes(tmp_path: Path) -> None:
     """Periodic wakes outrank events (2026-07-12): a routine/audit wake
     may fire while goals await review, and its curation/notes batch must

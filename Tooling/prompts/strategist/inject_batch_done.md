@@ -17,7 +17,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
    - Brick didn't land / proof direction was wrong → `ConfirmShelve` this goal + `Inject` a reframed angle on its upper goal
    - Permanently superseded → standalone `ConfirmShelve` (no paired Inject)
 
-4. **Edge case**: if Context.md also has `## Framework stalled` (tree has nothing dispatchable and no in-flight worker) → emit at least one `Inject`, else framework idles until the next routine tick.
+4. **Edge case**: if Context.md also has `## Framework stalled` (tree has nothing dispatchable and no in-flight worker) → emit at least one `Inject`, else framework idles until the next routine tick. A stall is a research moment, not a dead end: think deeply, explore genuinely different angles — the dead attempts' shared assumption is the dimension to vary; a missing tool is a Forward brick to build.
 
 5. **Mark deliverables**: if a Forward node in this batch landed and its statement satisfies what the Manifest asked for, `MarkDeliverable` it — the human then reviews it. You don't manage its dependencies; the framework computes those. Once every deliverable the Manifest asked for has landed and been marked, `Ingest` to close the problem.
 

@@ -349,6 +349,17 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
             return (f"MarkDeliverable target must be a Forward-produced node "
                     f"(origin='forward'); goal {decision.target_id} is "
                     f"origin={g['origin']!r}")
+        # FSM §3.2 (2026-07-12): marking is a real edge only for a PROVED,
+        # not-yet-marked node — an unproved mark is a promise the review
+        # cannot vouch, and a re-mark is a no-op that must not read as
+        # progress.
+        if str(g["status"]) != "proved":
+            return (f"MarkDeliverable target g{decision.target_id} is "
+                    f"{g['status']!r} — only a PROVED node can be marked")
+        if int(g["is_deliverable"] or 0):
+            return (f"goal g{decision.target_id} is already marked — "
+                    f"re-marking changes nothing (a rollback clears the "
+                    f"mark; re-marking after that is legal)")
         return ""
 
     if k == "FetchPaper":
@@ -497,6 +508,28 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                 f"has an outstanding awaiting_human strategist_decisions "
                 f"row; resolve it before issuing another."
             )
+        # FSM §3.3 (2026-07-12, human-attention guard): a request byte-
+        # identical to one the user already adjudicated re-asks the same
+        # question — mechanical reject; a changed proposal is a new ask.
+        prior = conn.execute(
+            "SELECT payload FROM strategist_decisions"
+            " WHERE problem = ? AND decision_kind = 'RequestUserAmend'"
+            "   AND outcome IS NOT NULL AND outcome != 'awaiting_human'",
+            (problem,)).fetchall()
+        for r in prior:
+            try:
+                prev_body = json.loads(r["payload"] or "{}").get(
+                    "proposed_body")
+            except ValueError:
+                continue
+            if prev_body == proposed_body:
+                return (
+                    "RequestUserAmend rejected: this proposed_body is "
+                    "byte-identical to a request the user already "
+                    "adjudicated — re-asking the same question costs "
+                    "human attention and changes nothing. Amend the "
+                    "proposal or keep working the problem."
+                )
         return ""
 
     return f"verify_decision: unhandled kind {k!r}"
@@ -725,6 +758,45 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                 f"EmitDirective may accompany these, but cannot be the "
                 f"whole batch."
             )
+
+    # Cross-decision: stall-advance (problem FSM design §3.1,
+    # 2026-07-12 — the pure-NL re-confirm pump). Forced advance is THE
+    # design philosophy; its old mechanical anchor was the root status,
+    # so a rootless (pure-NL) problem had no enforcement and the gate
+    # counted decision KINDS, not state deltas — a zero-delta batch
+    # (re-confirm shelve / Noop / re-mark) passed as action. New
+    # currency: `predicted_batch_delta` (transitions §2.3) — a stalled
+    # wake with nothing live in flight must move ≥1 state or dispatch
+    # ≥1 new piece of work, root or no root.
+    if trigger_kind == "inject_batch_done":
+        try:
+            _stalled = db.is_problem_stalled(conn, problem)
+        except Exception:  # noqa: BLE001 — predicate must not break verify
+            _stalled = False
+        if _stalled and not db.has_live_inflight_inject(conn, problem):
+            from ..state import transitions as _transitions
+            if _transitions.predicted_batch_delta(conn, decisions) < 1:
+                return (
+                    "framework stalled and this batch changes nothing "
+                    "(re-confirmed shelves, re-marks, Noop — all no-ops).\n"
+                    "You are the researcher here, and this wall is yours "
+                    "to break. Think deeply, be inventive, and explore "
+                    "genuinely different possibilities — the breakthrough "
+                    "comes from work only you can do: study the dead "
+                    "attempts and name the assumption they share (that is "
+                    "the dimension to vary); build the missing vocabulary "
+                    "as Forward bricks; question your own DO-NOTs (a "
+                    "verdict covers only the instantiation it cites); "
+                    "test a false-looking statement.\n"
+                    "Commit the work as: `Inject` (a genuinely new angle) "
+                    "/ `ConfirmShelve` (a live goal) paired with an "
+                    "`Inject` / `AttemptDisproof` / `MarkDeliverable` (a "
+                    "PROVED forward node) then `Ingest`. "
+                    "`RequestUserAmend` ONLY if a user file is factually "
+                    "WRONG — difficulty or a missing API is work, not "
+                    "wrongness. EmitDirective / Noop may accompany, "
+                    "never alone."
+                )
 
     # Cross-decision: if the root is in a state only Strategist can
     # unfreeze (`shelved` / `frozen` / `pending_strategist_review`),

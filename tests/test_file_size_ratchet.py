@@ -192,7 +192,9 @@ _WATERMARKS = {
     # 1400→1440 (2026-07-09): _maybe_review_goal_out_of_routes — park-last-
     # route escalation to T2 review (putnam_2025_b6 mutual-deadlock fix B);
     # belongs beside _maybe_stall_parent_strategies — conscious bump.
-    "Tooling/state/transitions.py": 1440,
+    # 1440→1470 (2026-07-12): predicted_batch_delta (FSM §2.3, the
+    # stall-advance currency) — conscious bump.
+    "Tooling/state/transitions.py": 1470,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.

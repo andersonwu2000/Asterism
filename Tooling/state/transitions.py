@@ -174,6 +174,52 @@ EVENTS: frozenset[str] = frozenset({
 })
 
 
+def predicted_batch_delta(conn: sqlite3.Connection, decisions) -> int:
+    """How many state transitions / new dispatches a Strategist decision
+    batch would commit (problem FSM design §2.3, 2026-07-12). This is
+    the mechanical currency of the stall-advance gate: a self-edge
+    (re-confirming a shelved goal, shelving a hard-terminal goal,
+    re-marking a marked deliverable) is legal but moves nothing, so it
+    counts ZERO — the pump generations (EmitDirective-only, junk
+    Inject, re-confirm ConfirmShelve, Noop) all shared the property
+    'commit succeeds, no state moves', and enumerating decision KINDS
+    kept missing the next token. Counting transitions closes the class.
+
+    `decisions` are duck-typed (`.kind`, `.target_id`) so the pipeline
+    layer's Decision objects work without importing them here (this
+    module stays a `db`-only leaf)."""
+    n = 0
+    for d in decisions:
+        k = getattr(d, "kind", None)
+        if k in ("Inject", "FetchPaper", "AttemptDisproof", "Ingest",
+                 "RequestUserAmend"):
+            # New dispatch (Inject/FetchPaper), a minted ¬P goal, or a
+            # problem-level edge (active→ingest_signoff / awaiting_human).
+            n += 1
+            continue
+        gid = getattr(d, "target_id", None)
+        if gid is None or not isinstance(gid, int):
+            continue
+        if k == "ConfirmShelve":
+            row = conn.execute(
+                "SELECT status FROM goals WHERE id = ?", (gid,)).fetchone()
+            # Real edge only from a LIVE status; shelved→shelved is a
+            # self-edge and proved/disproved/dead are silently no-op'd
+            # at commit (BT 2026-05-29 guard) — zero delta either way.
+            if row is not None and str(row["status"]) in (
+                    "open", "attempting", "pending_strategist_review",
+                    "frozen"):
+                n += 1
+        elif k == "MarkDeliverable":
+            row = conn.execute(
+                "SELECT status, is_deliverable FROM goals WHERE id = ?",
+                (gid,)).fetchone()
+            if (row is not None and str(row["status"]) == "proved"
+                    and not int(row["is_deliverable"] or 0)):
+                n += 1
+    return n
+
+
 def has_live_sibling(conn: sqlite3.Connection, goal_id: int, *,
                      statuses: "tuple[str, ...]" = ("proposed",)) -> bool:
     """True iff `goal_id` has any strategy whose status is in `statuses`
