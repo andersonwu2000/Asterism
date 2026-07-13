@@ -12,6 +12,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
    - Status claims ("X is the sole gate", "Y is in flight") → check the tree.
    - Lines tagged `SUSPECT:` by earlier wakes → adjudicate these first.
    - Framework-behavior claims (daemon / gate behavior, what is "healthy") → legitimate only when they quote a prompt rule, a gate message, or a directive; unsourced → DELETE, and never use as evidence.
+   - Directive content duplicated by a machine surface (the catalog index / `CATALOG.md`) → re-emit the directive without it; conventions and footguns only.
 
 3. **Curate `_plan.md` directly**: every `## Facts` line must re-derive from its cited source — demote what doesn't; narrow verdicts wider than the attempts they cite; delete the wrong, fix the imprecise, `SUSPECT:` what you cannot settle within budget.
 
