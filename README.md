@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-12
+- Gave each problem an explicit lifecycle state machine with checked transitions, so the system can only act on a problem when its state legally allows it.
+- Hardened soundness guarantees: proofs are now pinned to a verified snapshot of the user's files, spawned provers cannot write outside their sandbox, and unauthorized axioms are stripped before a proof is accepted.
+- Fixed several scheduling and bookkeeping bugs, including one where truncated error output made a failed proof attempt look like a success.
+- Polished the web dashboard with layout fixes and a performance improvement when opening large problem sets.
+
 ### 2026-07-11
 - Improved the web dashboard's proof-tree view with richer hover interactions — hovering a proof step now highlights its subgoals and their status — plus a redesigned legend and assorted polish from a usability audit.
 - Added several safeguards against wasted work, so the system now declines to re-attempt a proof plan identical to one already tried and reuses results for goals whose statements are equivalent.
@@ -217,11 +223,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Unified how the system detects when a sub-problem has stalled, and extended automatic cleanup to cover sub-problems that had already collapsed into dead ends.
 - A lemma that was shelved but never disproved is now revived whenever another step still cites it, with its statement reinserted so that step can be checked.
 - Tightened how a goal is split into sub-goals: normalizing and de-duplicating their names, rejecting circular decompositions, and seeding each one with the right namespace context.
-
-### 2026-06-12
-- Built out a tower of definitions and 15 new problems leading up to Stokes' theorem, covering manifold boundaries and differential-form bundles.
-- Improved how the system reuses existing library lemmas and definitions, fixing a series of edge cases around qualified names, local variable bindings, and citations.
-- Made the prover more resilient to runaway or stalled Lean elaborations, cutting off stuck jobs instead of leaving them to hang.
 
 <!-- ASTERISM-PROGRESS:END -->
 
