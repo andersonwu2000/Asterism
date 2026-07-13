@@ -150,3 +150,31 @@ def test_sidecar_absent_is_silent_noop(conn, tmp_path, capsys):
     _apply_kb_curation(conn, problem="P", attempts_dir=tmp_path)
     assert _titles(conn) == ["a"]
     assert "[kb-curation]" not in capsys.readouterr().out
+
+
+# ---------- audit context surface ----------
+
+def test_audit_context_gets_curation_surface(conn, tmp_path):
+    """The lesson index + LESSONS.md companion appear on audit wakes
+    ONLY — the curation power is structurally audit-only, so no other
+    trigger should even advertise the surface."""
+    from Tooling.agent.phase2_context import _section_kb_lessons_audit
+    a = _lesson(conn, "some recipe")
+    lines = _section_kb_lessons_audit(conn, "P", tmp_path)
+    text = "\n".join(lines)
+    assert "curation surface" in text and f"[id-{a}]" in text
+    companion = (tmp_path / "LESSONS.md").read_text(encoding="utf-8")
+    assert "body some recipe" in companion
+    # empty KB → no section at all
+    kb.delete_global_lesson(conn, entry_id=a, problem="P")
+    assert _section_kb_lessons_audit(conn, "P", tmp_path) == []
+    # wiring pin: compile gates the section on the audit trigger, and
+    # the runner applies the sidecar from both commit branches
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    ctx_src = (root / "Tooling" / "agent" / "phase2_context.py").read_text(
+        encoding="utf-8")
+    assert 'if trigger_kind == "audit":' in ctx_src
+    strat_src = (root / "Tooling" / "pipeline" / "strategist.py").read_text(
+        encoding="utf-8")
+    assert strat_src.count("_apply_kb_curation(conn, problem=problem,") == 2

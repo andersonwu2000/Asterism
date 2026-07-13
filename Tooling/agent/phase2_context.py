@@ -873,6 +873,12 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_manifest_meta(mfst, workspace, problem),
         _section_paper_index_strategist(mfst, workspace, conn),
     ]
+    if trigger_kind == "audit":
+        # Curation surface for the kb_curation.json sidecar — only the
+        # auditor gets it (the power is structurally audit-only).
+        section_names.append("kb_lessons")
+        sections.append(
+            _section_kb_lessons_audit(conn, problem, attempts_dir))
     parts: list[str] = [f"# Strategist context — {problem}", ""]
     for sect in sections:
         parts.extend(sect)
@@ -881,6 +887,42 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     context.write_context_stats(
         attempts_dir, label=f"strategist {problem}",
         names=section_names, sections=sections)
+    return out
+
+
+def _section_kb_lessons_audit(conn: sqlite3.Connection, problem: str,
+                              attempts_dir: Path) -> list[str]:
+    """Audit-wake curation surface (2026-07-13): the problem's GLOBAL
+    lesson index — the same `[id-N] title` cue lines every worker sees
+    — with full bodies in the `LESSONS.md` companion so the auditor
+    can adjudicate broken / superseded / duplicate entries and emit
+    `kb_curation.json`. Lessons only: antipatterns are node-scoped and
+    mechanically captured, outside the curation mandate."""
+    from ..state import kb
+    rows = kb.global_lessons(conn, problem)
+    if not rows:
+        return []
+    out = [
+        "## Lesson KB (curation surface)",
+        "_Every worker sees these titles on every spawn; bodies are in"
+        " the `LESSONS.md` companion. This index is curatable on this"
+        " wake via `kb_curation.json`._",
+        "",
+    ]
+    body_lines = [f"# Lessons — full recipes ({problem})", ""]
+    for r in rows:
+        title = (r["title"] or "").strip()
+        out.append(f"- [id-{r['id']}] {title}")
+        body_lines += [f"## [id-{r['id']}] {title}", ""]
+        body = (r["body"] or "").strip()
+        if body:
+            body_lines += [body, ""]
+    out.append("")
+    try:
+        (attempts_dir / "LESSONS.md").write_text(
+            "\n".join(body_lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass  # index alone still lets title-level curation proceed
     return out
 
 
