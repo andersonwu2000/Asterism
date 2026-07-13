@@ -47,8 +47,64 @@ def test_companion_carries_full_statements(conn, tmp_path):
     body = (tmp_path / ctx.CATALOG_COMPANION).read_text(encoding="utf-8")
     assert "## brick_a  (theorem)" in body
     assert "theorem brick_a : 1 + 1 = 2" in body
-    assert "L_brick_a.lean" in body
     assert "still_open" not in body
+    # path convention stated once in the header, not per entry (the
+    # seeded lean_path P/proofs/L_brick_a.lean matches the convention)
+    assert "proofs/L_<slug>.lean" in body
+    assert "proof: `P/proofs/L_brick_a.lean`" not in body
+
+
+def test_companion_extracts_full_signature_and_resolves_alias(tmp_path):
+    """2026-07-13 (user call): goals.statement on Backward sub-goals is
+    the bare conclusion — no binders/hypotheses. The companion now reads
+    the proof file, resolving alias defs to their _strategy file, and
+    shows the declaration up to `:= by`."""
+    import sqlite3 as _s
+    ws = tmp_path / "ws"
+    attempts = ws / ".attempts" / "pid"
+    proofs = ws / "Problems" / "P" / "proofs"
+    for d in (attempts, proofs):
+        d.mkdir(parents=True)
+    conn = _s.connect(":memory:")
+    conn.row_factory = _s.Row
+    db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) VALUES (?,?,?)",
+        ("P", "P/Manifest.md", db.now()))
+    # forward brick: full theorem in its own L_ file
+    conn.execute(
+        "INSERT INTO goals (problem, slug, lean_path, statement, kind,"
+        " origin, status, depth, created_at, updated_at) VALUES "
+        "('P','fwd_brick','Problems/P/proofs/L_fwd_brick.lean',"
+        "'(f.comp g).Nullhomotopic','theorem','forward','proved',0,?,?)",
+        (db.now(), db.now()))
+    (proofs / "L_fwd_brick.lean").write_text(
+        "import Mathlib\n\ntheorem fwd_brick (f : Nat) (hf : f = 1) :\n"
+        "    f + 1 = 2  := by\n  simp [hf]\n", encoding="utf-8")
+    # backward brick: alias def pointing at the strategy file
+    conn.execute(
+        "INSERT INTO goals (problem, slug, lean_path, statement, kind,"
+        " origin, status, depth, created_at, updated_at) VALUES "
+        "('P','bwd_brick','Problems/P/proofs/L_bwd_brick.lean',"
+        "'a * b = b * a','theorem','backward','proved',0,?,?)",
+        (db.now(), db.now()))
+    (proofs / "L_bwd_brick.lean").write_text(
+        "namespace X\n\ndef bwd_brick := @X.s42\n\nend X\n",
+        encoding="utf-8")
+    (proofs / "_strategy_s42.lean").write_text(
+        "namespace X\n\ntheorem s42 (G : Type) [Mul G] :\n"
+        "    ∀ a b : G, a * b = b * a  := by\n  sorry\n\nend X\n",
+        encoding="utf-8")
+    conn.commit()
+
+    ctx.write_catalog_companion(conn, "P", attempts)
+    body = (attempts / ctx.CATALOG_COMPANION).read_text(encoding="utf-8")
+    # forward: binders + hypotheses present, proof body absent
+    assert "theorem fwd_brick (f : Nat) (hf : f = 1)" in body
+    assert "simp [hf]" not in body
+    # backward: alias resolved, strategy signature with binders shown
+    assert "theorem s42 (G : Type) [Mul G]" in body
+    assert "sorry" not in body
 
 
 def test_companion_empty_kb_writes_nothing(conn, tmp_path):

@@ -316,6 +316,55 @@ def _section_brief_inline(problem_dir: Path) -> list[str]:
 
 CATALOG_COMPANION = "CATALOG.md"
 
+# Display-grade signature extraction for the catalog (2026-07-13, user
+# call: `goals.statement` on a Backward sub-goal is the bare conclusion
+# — binders and hypotheses live only in the proof file, so the catalog
+# showed `(f.comp γ).Nullhomotopic` with no premises). NOT a soundness
+# surface: parsing is best-effort, fallback = the bare statement.
+_CATALOG_SIG_CAP = 1_500
+_ALIAS_TARGET_RE_TMPL = r"def\s+{slug}\b[^\n]*:=\s*@[\w.]*?\.(s\d+)"
+
+
+def _decl_signature(text: str, name: str) -> "str | None":
+    """The declaration block for `name` from `:  = by` (exclusive) —
+    attributes/noncomputable prefixes included, proof body excluded.
+    A body-only decl (data def, no tactic block) keeps its body up to
+    the cap: for those the body IS the information."""
+    m = re.search(
+        r"^(?:@\[[^\]]*\]\s*)?(?:noncomputable\s+)?(?:private\s+)?"
+        r"(?:theorem|lemma|def|abbrev|instance|structure|class|inductive)\s+"
+        + re.escape(name) + r"\b", text, re.M)
+    if m is None:
+        return None
+    block = text[m.start():]
+    cut = re.search(r":=\s*by\b", block)
+    if cut is not None:
+        block = block[:cut.start()]
+    else:
+        end = re.search(r"^end\b", block, re.M)
+        if end is not None:
+            block = block[:end.start()]
+    return block.strip()[:_CATALOG_SIG_CAP]
+
+
+def _catalog_signature(workspace: Path, lean_path: str,
+                       slug: str) -> "str | None":
+    try:
+        text = (workspace / lean_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    alias = re.search(_ALIAS_TARGET_RE_TMPL.format(slug=re.escape(slug)),
+                      text)
+    if alias is not None:
+        sid = alias.group(1)
+        try:
+            text = ((workspace / lean_path).parent
+                    / f"_strategy_{sid}.lean").read_text(encoding="utf-8")
+        except OSError:
+            return None
+        return _decl_signature(text, sid)
+    return _decl_signature(text, slug)
+
 
 def write_catalog_companion(conn: sqlite3.Connection, problem: str,
                             attempts_dir: Path) -> list[sqlite3.Row]:
@@ -339,21 +388,30 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
         (problem,)))
     if not rows:
         return []
+    workspace = attempts_dir.parent.parent
     lines = [
         f"# Proved catalog — {problem} ({len(rows)} entries)",
         "_Machine-generated from the framework's goal records on every"
-        " spawn; always matches what actually landed._",
+        " spawn; always matches what actually landed. Proof of `<slug>`"
+        " lives in `proofs/L_<slug>.lean` (an alias def there points at"
+        " its `_strategy_s<N>.lean`); entries note the path only when it"
+        " deviates._",
         "",
     ]
     for r in rows:
+        slug = str(r["slug"])
+        sig = (_catalog_signature(workspace, str(r["lean_path"]), slug)
+               or str(r["statement"]).strip())
         lines += [
-            f"## {r['slug']}  ({r['kind']})",
+            f"## {slug}  ({r['kind']})",
             "```lean",
-            str(r["statement"]).strip(),
+            sig,
             "```",
-            f"proof: `{r['lean_path']}`",
-            "",
         ]
+        if not str(r["lean_path"]).replace("\\", "/").endswith(
+                f"proofs/L_{slug}.lean"):
+            lines.append(f"proof: `{r['lean_path']}`")
+        lines.append("")
     try:
         (attempts_dir / CATALOG_COMPANION).write_text(
             "\n".join(lines) + "\n", encoding="utf-8")
