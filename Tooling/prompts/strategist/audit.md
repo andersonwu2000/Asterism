@@ -15,7 +15,11 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
 
 3. **Curate `_plan.md` directly**: every `## Facts` line must re-derive from its cited source — demote what doesn't; narrow verdicts wider than the attempts they cite; delete the wrong, fix the imprecise, `SUSPECT:` what you cannot settle within budget.
 
-4. **Decide.** A refuted belief that unblocks a route → `Inject` that route in THIS batch, not a note for later. Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
+4. **Curate the lesson KB** (`## Lesson KB (curation surface)` titles; bodies in `LESSONS.md`). Broken (nothing actionable) / superseded (arc dead per tree) / same-topic duplicate entries → write `kb_curation.json` beside decision.json, a JSON array of
+   `{"op": "delete", "id": N, "reason": "..."}` / `{"op": "merge", "keep_id": N, "absorb_ids": [...], "title": "...", "body": "...", "reason": "..."}`.
+   Reason cites the re-checked source; prefer merge over delete; never delete for age alone. One invalid op voids the whole file (max 10 ops).
+
+5. **Decide.** A refuted belief that unblocks a route → `Inject` that route in THIS batch, not a note for later. Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
    - A clean audit is a legitimate result: `EmitDirective` with a one-line audit summary (or `Noop` when work is genuinely in flight).
 
 ## Decision kinds
