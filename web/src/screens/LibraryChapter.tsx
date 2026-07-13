@@ -639,29 +639,43 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
           {declCount} declarations · {data.files.length} module
           {data.files.length === 1 ? '' : 's'}
           {data.bridged_at && <> · entered the Library {relTime(data.bridged_at)}</>}
-          {data.signoff?.name && (
-            <span
-              title={`signed ${data.signoff.at}${
-                data.signoff.evidence?.claude_email
-                  ? ` while logged in as ${data.signoff.evidence.claude_email}`
-                  : ''
-              } on ${data.signoff.evidence?.host ?? '?'} (${
-                data.signoff.evidence?.os_user ?? '?'
-              })${data.signoff.seal_ok ? ' — seal intact: the reviewed content is exactly what was signed' : ''}`}
-            >
-              {' · '}signed off by{' '}
-              <span className="text-ink-dim">{data.signoff.name}</span>
-            </span>
-          )}
-          {data.signoff && !data.signoff.seal_ok && (
-            <span
-              className="text-warn"
-              title="the stored review snapshot no longer matches the hash sealed at signing — the content changed after the human signed; re-review and re-sign"
-            >
-              {' · '}changed since sign-off
-            </span>
-          )}
         </span>
+        {/* THE signature — the one human act in a machine-built
+            chapter deserves the ink of a visible seal, not a clause
+            buried in the counts line (owner, 2026-07-14) */}
+        {data.signoff?.name && (
+          <span
+            className={`ml-auto rounded-md border px-3 py-1 text-right ${
+              data.signoff.seal_ok ? 'border-edge' : 'border-warn/50'
+            }`}
+            title={`signed ${data.signoff.at}${
+              data.signoff.evidence?.claude_email
+                ? ` while logged in as ${data.signoff.evidence.claude_email}`
+                : ''
+            } on ${data.signoff.evidence?.host ?? '?'} (${
+              data.signoff.evidence?.os_user ?? '?'
+            })${
+              data.signoff.seal_ok
+                ? ' — seal intact: the reviewed content is exactly what was signed'
+                : ' — the content changed AFTER the human signed; re-review and re-sign'
+            }`}
+          >
+            <span className="block text-[9px] tracking-[0.18em] text-ink-faint uppercase">
+              signed
+            </span>
+            <span className="font-display block text-sm leading-tight text-ink">
+              {data.signoff.name}
+            </span>
+            <span className="tnum block text-[10px] text-ink-faint">
+              {String(data.signoff.at).slice(0, 10)}
+              {data.signoff.seal_ok ? (
+                ' · seal intact'
+              ) : (
+                <span className="text-warn"> · changed since signing</span>
+              )}
+            </span>
+          </span>
+        )}
         {/* trust colophon (design round): what a mathematician asks a
             machine-built chapter first — which axioms, any sorry —
             answered from the gates' recorded guarantees. Per-decl
@@ -702,6 +716,40 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
 
       {tab === 'highlights' && (
         <div>
+          {/* the chapter's arc in one line — you can't open with the
+              main theorem (its statement needs the definitions), but
+              you can promise where the reading leads (owner,
+              2026-07-14) */}
+          {lead.length > 0 && (
+            <p className="mt-4 text-xs text-ink-faint">
+              {vocabTotal > 0
+                ? `${vocabTotal} definition${vocabTotal === 1 ? '' : 's'} build toward `
+                : 'this chapter builds toward '}
+              {lead.slice(0, 3).map((d, i) => (
+                <span key={d.slug}>
+                  {i > 0 && ', '}
+                  <button
+                    className="cursor-pointer font-mono text-ink-dim underline decoration-edge-strong decoration-dotted underline-offset-2 hover:text-ink"
+                    onClick={() => openModule(d.file)}
+                  >
+                    {d.slug}
+                  </button>
+                </span>
+              ))}
+              {lead.length > 3 && ` and ${lead.length - 3} more`}
+              {' — definitions first, then what they carry.'}
+            </p>
+          )}
+          <HighlightSection
+            title="vocabulary"
+            hint={
+              vocabTotal > vocab.length
+                ? `the definitions everything speaks in — ${vocabTotal - vocab.length} quieter ones stay in their modules`
+                : 'the definitions everything speaks in'
+            }
+            decls={vocab}
+            onOpenModule={openModule}
+          />
           <HighlightSection
             title={leadIsVouched ? 'main results' : 'keystones'}
             hint={
@@ -715,16 +763,6 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
                 : 'engine terms: no claim flags survived this harvest (older harvests never recorded them), so the most-cited keystones stand in'
             }
             decls={lead}
-            onOpenModule={openModule}
-          />
-          <HighlightSection
-            title="vocabulary"
-            hint={
-              vocabTotal > vocab.length
-                ? `the definitions everything speaks in — ${vocabTotal - vocab.length} quieter ones stay in their modules`
-                : 'the definitions everything speaks in'
-            }
-            decls={vocab}
             onOpenModule={openModule}
           />
           {leadIsVouched && (
@@ -752,6 +790,15 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
       {tab === 'modules' && (
         <div className="mt-5 flex gap-6">
           <div className="w-56 shrink-0">
+            {/* the rail IS the table of contents: server order is the
+                import order (Kahn), so definitions come before what
+                uses them — readable front to back (owner: 先讀定義) */}
+            <div
+              className="px-2 pb-1.5 text-[10px] text-ink-faint"
+              title="a module comes after the modules it imports — reading top to bottom never meets a name before its definition"
+            >
+              in reading order
+            </div>
             <div className="flex flex-col gap-0.5">
               {data.files.map((f) => (
                 <button
@@ -764,7 +811,14 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
                   onClick={() => setActiveFile(f.path)}
                   title={f.path}
                 >
-                  <span className="truncate">{leafOf(f.path)}</span>
+                  <span className="truncate">
+                    {leafOf(f.path)}
+                    {f.decls.some((d) => d.is_deliverable) && (
+                      <span className="ml-1 text-star" title="holds a signed-off result">
+                        ◈
+                      </span>
+                    )}
+                  </span>
                   <span className="tnum ml-2 text-[10px] text-ink-faint">{f.decls.length}</span>
                 </button>
               ))}

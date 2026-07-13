@@ -663,6 +663,25 @@ export default function Constellation({
     [layout],
   )
 
+  // Anchor = a def in the KERNEL-DERIVED closure of a claim's
+  // statement (anchor_claim_design §4) — membership comes from the
+  // anchor edges the review snapshot recorded. "Every def wears the
+  // ring" over-marked the sign-off surface (owner, 2026-07-14): a
+  // scratch def nobody's claim depends on is vocabulary, not a
+  // vouching obligation.
+  const anchorIds = useMemo(() => {
+    const s = new Set<number>()
+    for (const e of anchorEdges) {
+      s.add(e.from)
+      s.add(e.to)
+    }
+    return s
+  }, [anchorEdges])
+  const isAnchor = useCallback(
+    (g: Goal) => DEF_KINDS.has(g.kind) && anchorIds.has(g.id),
+    [anchorIds],
+  )
+
   // Hover family: the pointed-at star's OWN tree, one hop — parents
   // above, subgoals below. Citations already carry the hover light;
   // the hierarchy stayed at base ink and drowned next to them (owner,
@@ -771,7 +790,7 @@ export default function Constellation({
       if (live && g.attempts > 0) attempts = true
       if (g.origin === 'root') root = true
       if (g.is_deliverable) claim = true
-      if (DEF_KINDS.has(g.kind)) anchor = true
+      if (isAnchor(g)) anchor = true
     }
     return {
       open,
@@ -787,7 +806,7 @@ export default function Constellation({
       cites: layout.edges.some((e) => e.kind === 'citation'),
       alias: layout.edges.some((e) => e.kind === 'alias'),
     }
-  }, [goals, layout, engineWorking])
+  }, [goals, layout, engineWorking, isAnchor])
   const legendStatus =
     present.open ||
     present.working ||
@@ -1188,9 +1207,13 @@ export default function Constellation({
                   borrows a ring. Activity marks keep disjoint slots:
                   heat arc r+3, signed ring r+5.5, selection r+9,
                   birth halo r+12. */}
+              {/* the ring is the SIGN-OFF surface: root, claims, and
+                  anchors — defs in the kernel closure of a claim, NOT
+                  every def (a scratch def nobody's claim depends on
+                  carries no vouching obligation; owner, 2026-07-14) */}
               {(n.goal.origin === 'root' ||
                 n.goal.is_deliverable ||
-                DEF_KINDS.has(n.goal.kind)) && (
+                isAnchor(n.goal)) && (
                 <circle
                   r={r + 5.5 * boost}
                   fill="none"
@@ -1358,6 +1381,7 @@ export default function Constellation({
       selectCb,
       birthTick,
       glowTick,
+      isAnchor,
     ])
 
   if (layout.nodes.length === 0) {

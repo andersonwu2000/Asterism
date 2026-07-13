@@ -343,21 +343,40 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                                 lane["mode"] = mm.group(1)
                         except OSError:
                             pass
-                    newest: "Path | None" = None
-                    newest_m = -1.0
-                    try:
-                        for f in match[3].glob("*.lean"):
-                            if f.name.startswith("_"):
-                                continue  # probe/audit helpers, not drafts
-                            mt = f.stat().st_mtime
-                            if mt > newest_m:
-                                newest_m = mt
-                                newest = f
-                    except OSError:
-                        newest = None
-                    if newest is not None:
-                        lane["path"] = newest.relative_to(workspace).as_posix()
-                        lane["file"] = _tail(newest)
+                        # what it's THINKING: the agent drafts its plan
+                        # note (_plan.md) incrementally in the workarea —
+                        # tail it live; before the first write, the
+                        # problem's standing plan (being revised) stands
+                        # in. The page went dead at its most alive
+                        # moment (owner-approved design round K).
+                        for cand in (
+                                match[3] / "_plan.md",
+                                db.problem_dir(workspace, str(r["problem"]))
+                                / ".drafts" / "strategist_plan.md"):
+                            if cand.is_file():
+                                ptail = _tail(cand)
+                                if ptail is not None:
+                                    lane["path"] = cand.relative_to(
+                                        workspace).as_posix()
+                                    lane["file"] = ptail
+                                    break
+                    if lane["file"] is None:
+                        newest: "Path | None" = None
+                        newest_m = -1.0
+                        try:
+                            for f in match[3].glob("*.lean"):
+                                if f.name.startswith("_"):
+                                    continue  # probe/audit helpers, not drafts
+                                mt = f.stat().st_mtime
+                                if mt > newest_m:
+                                    newest_m = mt
+                                    newest = f
+                        except OSError:
+                            newest = None
+                        if newest is not None:
+                            lane["path"] = newest.relative_to(
+                                workspace).as_posix()
+                            lane["file"] = _tail(newest)
             out["workers"].append(lane)
     return out
 

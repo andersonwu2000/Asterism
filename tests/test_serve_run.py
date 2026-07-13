@@ -224,12 +224,21 @@ def test_run_strategist_lane_names_its_mode(
         "`trigger_kind`: pending_review\n\nPending review on goal 7:\n",
         encoding="utf-8")
 
+    # the agent drafts its plan note incrementally — the lane tails it
+    # (design round K: the page went dead while the machine thought)
+    (wa / "_plan.md").write_text(
+        "## Plan\n\nweighing candidates for the torus route\n",
+        encoding="utf-8")
+
     _fake_daemon(monkeypatch, scope="p")
     body = _client(workspace).get("/api/run").json()
     assert len(body["workers"]) == 1
     lane = body["workers"][0]
     assert lane["kind"] == "Strategist"
     assert lane["mode"] == "pending_review"
+    assert lane["file"] is not None
+    assert "weighing candidates" in lane["file"]["tail"]
+    assert lane["path"].endswith("_plan.md")
 
 
 def test_run_goal_lane_prefers_the_fresher_workarea_draft(

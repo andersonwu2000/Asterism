@@ -527,9 +527,14 @@ export default function Run() {
                         </div>
                       )
                     })}
+                    {/* receipts occupy the slots they just vacated —
+                        never MORE cells than dispatch.pool (owner:
+                        slot=4 means the grid tops out at 4) */}
                     {(ghostsRef.current = ghostsRef.current.filter(
                       (g) => g.until > Date.now(),
-                    )).map((g) => {
+                    ))
+                      .slice(0, Math.max(0, slotCount - workers.length))
+                      .map((g) => {
                       const goal = detail?.goals.find((x) => x.slug === g.slug)
                       const held = g.leased_at
                         ? duration(
@@ -563,19 +568,26 @@ export default function Run() {
                         </div>
                       )
                     })}
-                    {/* ONE quiet card for all vacancies — three identical
-                        "free" cards at working-lane weight competed with
-                        the lane that matters (design round; subtraction) */}
-                    {slotCount - workers.length > 0 && (
-                      <div
-                        className="flex min-h-24 items-center justify-center rounded-lg border border-dashed border-edge/60 text-[11px] text-ink-faint/70"
-                        title="open slots for more agents (engine setting: dispatch.pool)"
-                      >
-                        {slotCount - workers.length === 1
-                          ? freeHint
-                          : `${slotCount - workers.length} slots ${freeHint}`}
-                      </div>
-                    )}
+                    {/* ONE quiet card for the vacancies receipts didn't
+                        borrow — three identical "free" cards at
+                        working-lane weight competed with the lane that
+                        matters (design round; subtraction) */}
+                    {(() => {
+                      const ghostsShown = Math.min(
+                        ghostsRef.current.length,
+                        Math.max(0, slotCount - workers.length),
+                      )
+                      const free = slotCount - workers.length - ghostsShown
+                      if (free <= 0) return null
+                      return (
+                        <div
+                          className="flex min-h-24 items-center justify-center rounded-lg border border-dashed border-edge/60 text-[11px] text-ink-faint/70"
+                          title="open slots for more agents (engine setting: dispatch.pool)"
+                        >
+                          {free === 1 ? freeHint : `${free} slots ${freeHint}`}
+                        </div>
+                      )
+                    })()}
                   </div>
                 )}
               </>
