@@ -312,6 +312,73 @@ def _section_brief_inline(problem_dir: Path) -> list[str]:
     return [content, ""]
 
 
+CATALOG_COMPANION = "CATALOG.md"
+
+
+def write_catalog_companion(conn: sqlite3.Connection, problem: str,
+                            attempts_dir: Path) -> list[sqlite3.Row]:
+    """`CATALOG.md` — the problem's proved-brick catalog, machine-
+    generated from goal records (2026-07-13, user call): slug + exact
+    statement + kind + proof file for every proved goal.
+
+    This is the citation SoT the Strategist previously hand-maintained
+    inside the standing directive (26KB on simple_loop, re-sent to
+    every worker on every spawn, and burned by pipeline renames four
+    times because it was a hand-copy). Generated from the same rows the
+    pipelines landed, it can never drift. Inline surfaces carry only
+    slugs / curated subsets; exact statements are read here on demand —
+    the same lazy pattern as `LESSONS.md` / `PAST_*.md`.
+
+    Returns the proved rows (empty when nothing proved or the write
+    failed — callers render no section in that case)."""
+    rows = list(conn.execute(
+        "SELECT slug, statement, kind, lean_path FROM goals"
+        " WHERE problem = ? AND status = 'proved' ORDER BY id",
+        (problem,)))
+    if not rows:
+        return []
+    lines = [
+        f"# Proved catalog — {problem} ({len(rows)} entries)",
+        "_Machine-generated from the framework's goal records on every"
+        " spawn; always matches what actually landed._",
+        "",
+    ]
+    for r in rows:
+        lines += [
+            f"## {r['slug']}  ({r['kind']})",
+            "```lean",
+            str(r["statement"]).strip(),
+            "```",
+            f"proof: `{r['lean_path']}`",
+            "",
+        ]
+    try:
+        (attempts_dir / CATALOG_COMPANION).write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return rows
+
+
+def _section_catalog_pointer(conn: sqlite3.Connection, problem: str,
+                             attempts_dir: Path) -> list[str]:
+    """Backward/Builder surface: two-line pointer only. These workers
+    already get a per-goal curated citation surface (pre-search); the
+    companion is their exact-statement lookup, not another list."""
+    rows = write_catalog_companion(conn, problem, attempts_dir)
+    if not rows:
+        return []
+    return [
+        "## Proved catalog",
+        f"_All {len(rows)} proved bricks of this problem are citable;"
+        f" exact statements live in `{CATALOG_COMPANION}` (read-only"
+        " companion). Read an entry there BEFORE citing it — never"
+        " re-derive a landed brick. Pre-search candidates (when"
+        " present) are the curated subset for THIS goal._",
+        "",
+    ]
+
+
 def _kb_entry_lines(r: sqlite3.Row) -> list[str]:
     """One KB entry as a bullet (title) plus any body lines indented beneath."""
     lines = [f"- {(r['title'] or '').strip()}"]
@@ -1043,8 +1110,8 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     section_names = [
         "brief", "kb_lessons", "paper_index", "directive", "inject_brief",
         "goal", "library_available", "strategy_naming", "parent_strategy",
-        "mathlib_lemmas", "presearch", "proved_goals", "prior_partial",
-        "prior_patch", "goal_history",
+        "mathlib_lemmas", "presearch", "proved_goals", "catalog",
+        "prior_partial", "prior_patch", "goal_history",
     ]
     sections: list[list[str]] = [
         _section_brief_inline(problem_dir),
@@ -1071,6 +1138,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         presearch_lines,
         ([] if presearch_lines
          else _section_proved_goals(conn, goal, workspace)),
+        _section_catalog_pointer(conn, str(goal["problem"]), attempts_dir),
         _section_prior_partial(kind, problem_dir, int(goal["id"])),
         _section_prior_patch(kind, problem_dir, int(goal["id"])),
         _section_goal_history(

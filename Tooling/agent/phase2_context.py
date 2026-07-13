@@ -857,7 +857,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     section_names += ["stall_warning", "ingest_gate", "disproof_guidance",
                       "directive",
                       "plan_note", "inject_batches", "pending_reopens",
-                      "active_goals", "failure_replay", "tree",
+                      "active_goals", "failure_replay", "tree", "catalog",
                       "manifest_meta", "paper_index"]
     sections += [
         _section_stall_warning(conn, problem),
@@ -870,6 +870,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_active_goals(conn, problem),
         _section_failure_replay(conn, problem),
         _section_tree_inline(conn, workspace, problem),
+        _section_catalog_index_strategist(conn, problem, attempts_dir),
         _section_manifest_meta(mfst, workspace, problem),
         _section_paper_index_strategist(mfst, workspace, conn),
     ]
@@ -887,6 +888,33 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     context.write_context_stats(
         attempts_dir, label=f"strategist {problem}",
         names=section_names, sections=sections)
+    return out
+
+
+def _section_catalog_index_strategist(conn: sqlite3.Connection,
+                                      problem: str,
+                                      attempts_dir: Path) -> list[str]:
+    """Strategist's citable-catalog surface (2026-07-13, user call):
+    slug index inline + exact statements in the `CATALOG.md` companion.
+    This is the machine-generated replacement for the hand-maintained
+    LANDED-CATALOG block the Strategist grew inside the standing
+    directive (drift-prone: pipeline renames burned the hand-copy four
+    times) — copy signatures from the companion into briefs instead of
+    hand-maintaining them."""
+    rows = context.write_catalog_companion(conn, problem, attempts_dir)
+    if not rows:
+        return []
+    out = [
+        "## Proved catalog (index)",
+        f"_{len(rows)} landed bricks. Exact statements live in"
+        f" `{context.CATALOG_COMPANION}` (read-only companion,"
+        " machine-generated from what actually landed — never drifts"
+        " from pipeline renames). Copy signatures from there into"
+        " briefs/directives instead of hand-maintaining a catalog._",
+        "",
+    ]
+    out += [f"- `{r['slug']}`" for r in rows]
+    out.append("")
     return out
 
 
@@ -960,26 +988,29 @@ def _section_forward_brief(conn: sqlite3.Connection,
     return ["## Strategist brief", "", str(row["brief"]).strip(), ""]
 
 
-def _section_library_inventory(conn: sqlite3.Connection,
-                               problem: str) -> list[str]:
+def _section_library_inventory(conn: sqlite3.Connection, problem: str,
+                               attempts_dir: Path) -> list[str]:
     """All proved goals in this problem (Forward's local toolkit).
+    Slug index + `CATALOG.md` companion (2026-07-13, user call): at 147
+    proved bricks the inline truncated statements were 17KB of every
+    Forward context — slugs stay inline as the cue, exact statements
+    move to the machine-generated companion (same lazy pattern as
+    lessons). Header kept verbatim: forward.md points at `## Library`.
     Cross-problem Library promotion is out of Phase 2 scope; just
     same-problem proved lemmas for now."""
-    rows = list(conn.execute(
-        "SELECT slug, statement FROM goals"
-        " WHERE problem = ? AND status = 'proved'"
-        " ORDER BY id",
-        (problem,),
-    ))
+    rows = context.write_catalog_companion(conn, problem, attempts_dir)
+    header = "## Library (proved lemmas in this problem)"
     if not rows:
-        return ["## Library (proved lemmas in this problem)", "",
-                "(none yet)", ""]
-    out = ["## Library (proved lemmas in this problem)", ""]
-    for r in rows:
-        st = str(r["statement"])
-        if len(st) > 200:
-            st = st[:200].rstrip() + "…"
-        out.append(f"- `{r['slug']}`: `{st}`")
+        return [header, "", "(none yet)", ""]
+    out = [
+        header,
+        f"_Slugs only — the exact statements of all {len(rows)} bricks"
+        f" live in `{context.CATALOG_COMPANION}` (read-only companion)."
+        " Read an entry there BEFORE citing it or proposing anything"
+        " similar._",
+        "",
+    ]
+    out += [f"- `{r['slug']}`" for r in rows]
     out.append("")
     return out
 
@@ -1039,7 +1070,7 @@ def compile_forward_context(conn: sqlite3.Connection, *,
                      "paper_index"]
     sections: list[list[str]] = [
         _section_forward_brief(conn, decision_id),
-        _section_library_inventory(conn, problem),
+        _section_library_inventory(conn, problem, attempts_dir),
         _section_forward_history(conn, problem),
         _section_active_goals(conn, problem),
         _section_manifest_meta(mfst, workspace, problem),
