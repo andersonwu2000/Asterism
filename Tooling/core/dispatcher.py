@@ -1600,8 +1600,9 @@ def _spawn_handoff_successor(workspace: Path, scope: "str | None") -> None:
         # process, nothing to autopsy) — whatever the waiter prints
         # (its REFUSED reason, a traceback) is the only evidence the
         # next failure will leave.
-        waiter_log = open(workspace / ".asterism" / "logs"
-                          / "handoff-waiter.log", "ab")
+        logs_dir = workspace / ".asterism" / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        waiter_log = open(logs_dir / "handoff-waiter.log", "ab")
         waiter_log.write(
             f"\n=== handoff waiter spawned {db.now()} ===\n".encode())
         waiter_log.flush()
