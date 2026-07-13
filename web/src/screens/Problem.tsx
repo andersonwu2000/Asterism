@@ -67,8 +67,17 @@ function GoalsList({
 }) {
   if (goals.length === 0)
     return <div className="px-4 py-8 text-center text-xs text-ink-faint">No goals yet.</div>
+  // live work first (status), then within each group: root, then the
+  // claims you sign, then ALPHABETICAL — slug prefixes are the de
+  // facto topic taxonomy, so alpha order clusters the torus_*/int_*
+  // families that creation order scattered (owner, 2026-07-13)
   const sorted = [...goals].sort(
-    (a, b) => (GOAL_SORT[a.status] ?? 9) - (GOAL_SORT[b.status] ?? 9) || a.id - b.id,
+    (a, b) =>
+      (GOAL_SORT[a.status] ?? 9) - (GOAL_SORT[b.status] ?? 9) ||
+      Number(b.origin === 'root') - Number(a.origin === 'root') ||
+      Number(b.is_deliverable) - Number(a.is_deliverable) ||
+      a.slug.localeCompare(b.slug) ||
+      a.id - b.id,
   )
   return (
     <table className="w-full border-collapse text-left">
