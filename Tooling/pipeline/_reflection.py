@@ -172,16 +172,31 @@ def attempt_reflection(*,
             # Framework feedback is DECOUPLED from reflection — it runs as its
             # own `--resume` step (`_feedback.attempt_feedback`) at every
             # pipeline's tail, so reflection here is KB-lessons-only.
-            rendered = _render_prompt(
-                template_path.read_text(encoding="utf-8"),
-                kind=kind, slug=slug, outcome=outcome, problem=problem,
-                goal_id=str(goal_id),
-                global_lessons=_render_globals(existing_globals),
-                directive=directive or "(no standing directive)",
-                decision_path=str(decision_path),
-                attempts_dir=str(attempts_dir),
-                timeout_min=str(max(1, _REFLECTION_TIMEOUT_SEC // 60)),
-            )
+            # Bound the directive leg to whatever argv budget remains
+            # after everything else is rendered (2026-07-13). Twin of
+            # the titles-only fix on the lessons leg (2026-07-05, same
+            # Windows argv cap): the directive was left unbounded and a
+            # 35KB standing directive (simple_loop) pushed the prompt
+            # to 47K > 25K — PromptTooLarge, swallowed, every lesson on
+            # the problem silently lost. Measure-then-fit keeps the
+            # bound exact as the template / lessons list evolve.
+            template = template_path.read_text(encoding="utf-8")
+
+            def _rendered(directive_text: str) -> str:
+                return _render_prompt(
+                    template,
+                    kind=kind, slug=slug, outcome=outcome, problem=problem,
+                    goal_id=str(goal_id),
+                    global_lessons=_render_globals(existing_globals),
+                    directive=directive_text,
+                    decision_path=str(decision_path),
+                    attempts_dir=str(attempts_dir),
+                    timeout_min=str(max(1, _REFLECTION_TIMEOUT_SEC // 60)),
+                )
+
+            from ..llm.claude_cli import _ARGV_PROMPT_MAX
+            room = _ARGV_PROMPT_MAX - len(_rendered(""))
+            rendered = _rendered(_bounded_directive(directive, room))
             rendered_path = attempts_dir / _REFLECTION_PROMPT_FILENAME
             rendered_path.write_text(rendered, encoding="utf-8")
 
@@ -219,6 +234,22 @@ def attempt_reflection(*,
         except Exception as exc:  # noqa: BLE001
             print(f"[reflection] {kind} {slug}: error swallowed — {exc}",
                   flush=True)
+
+
+_DIRECTIVE_TRUNC_MARK = ("\n[... directive truncated to fit the argv "
+                         "budget — retract only claims visible above]")
+
+
+def _bounded_directive(directive: "str | None", room: int) -> str:
+    """Directive text cut to `room` chars (the argv budget left after
+    the rest of the prompt rendered). Retraction judgment only needs
+    the claims it can see; a truncated directive beats the pre-fix
+    state where the whole reflection died on PromptTooLarge."""
+    text = directive or "(no standing directive)"
+    if len(text) <= room:
+        return text
+    return text[:max(0, room - len(_DIRECTIVE_TRUNC_MARK))] + \
+        _DIRECTIVE_TRUNC_MARK
 
 
 def _render_globals(rows: list[sqlite3.Row]) -> str:

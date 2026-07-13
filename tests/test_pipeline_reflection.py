@@ -294,6 +294,47 @@ def test_attempt_reflection_retracts_directive_on_sentinel(
     assert _read_directive_p() is None          # retracted
 
 
+def test_attempt_reflection_bounds_giant_directive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-07-13: the directive leg of the reflection prompt was
+    unbounded (the lessons leg got its titles-only fix 2026-07-05 for
+    the same Windows argv cap). A 35KB standing directive pushed the
+    prompt past _ARGV_PROMPT_MAX — PromptTooLarge, swallowed, every
+    lesson on the problem silently lost. The directive is now cut to
+    the room left after the rest of the prompt renders."""
+    from Tooling.llm.claude_cli import _ARGV_PROMPT_MAX
+    monkeypatch.chdir(tmp_path)
+    problem_dir, attempts, prompt_dir = _setup_reflection_ws(
+        tmp_path, "CATALOG: " + "x" * 40_000)
+
+    captured: list[str] = []
+
+    def fake_spawn(**kw):
+        captured.append(kw["prompt_path"].read_text(encoding="utf-8"))
+        return 0
+    monkeypatch.setattr(_reflection.agent, "spawn_llm", fake_spawn)
+
+    _reflection.attempt_reflection(
+        kind="backward", sid="s1", slug="g", outcome="success", goal_id=1,
+        problem="p", problem_dir=problem_dir, attempts_dir=attempts,
+        prompt_dir=prompt_dir, workspace=tmp_path)
+    assert captured, "reflection spawn never fired"
+    prompt = captured[0]
+    assert len(prompt) <= _ARGV_PROMPT_MAX
+    assert "directive truncated to fit the argv budget" in prompt
+    assert "CATALOG: xxx" in prompt          # head survives
+
+
+def test_bounded_directive_small_passthrough_and_none() -> None:
+    assert _reflection._bounded_directive("short", 1000) == "short"
+    assert _reflection._bounded_directive(None, 1000) == \
+        "(no standing directive)"
+    out = _reflection._bounded_directive("y" * 500, 100)
+    assert len(out) == 100
+    assert out.endswith("visible above]")
+
+
 def test_attempt_reflection_keeps_directive_without_sentinel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
