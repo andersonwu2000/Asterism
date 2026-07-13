@@ -915,7 +915,10 @@ def test_current_directive_section_surfaces_existing_body(
     body = "\n".join(lines)
     assert "## Current standing directive" in body
     assert "Module.End.exists_eigenvalue" in body
-    assert "rolling curated document" in body
+    # 2026-07-13 (user wording): the header binds subtraction into the
+    # definition of every update — agents add by default and never
+    # subtract unless reminded.
+    assert "Curate, don't accumulate" in body
 
 
 def test_current_directive_section_silent_when_only_whitespace(

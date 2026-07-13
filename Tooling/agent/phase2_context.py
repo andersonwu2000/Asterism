@@ -714,8 +714,8 @@ def _section_current_directive(conn: sqlite3.Connection,
         "## Current standing directive",
         "",
         "(Visible to every worker's Context.md until you overwrite it. "
-        "Treat as a rolling curated document — diff-update each routine "
-        "tick: keep useful entries, prune stale, append new findings.)",
+        "Curate, don't accumulate: each update merges, shortens and "
+        "retires as well as appends.)",
         "",
         str(directive).strip(),
         "",
