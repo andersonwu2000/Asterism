@@ -65,6 +65,11 @@ function GoalsList({
   onSelect: (id: number) => void
   engineWorking: boolean
 }) {
+  // facet + name filter (design round: "just the 3 open goals" was
+  // impossible on a 171-row table). Facet pills only for statuses
+  // that exist here — a chip for an absent state is homework.
+  const [facet, setFacet] = useState<string | null>(null)
+  const [q, setQ] = useState('')
   if (goals.length === 0)
     return <div className="px-4 py-8 text-center text-xs text-ink-faint">No goals yet.</div>
   // live work first (status), then within each group: root, then the
@@ -79,7 +84,38 @@ function GoalsList({
       a.slug.localeCompare(b.slug) ||
       a.id - b.id,
   )
+  const facets = [...new Set(sorted.map((g) => g.status))]
+  const shown = sorted.filter(
+    (g) =>
+      (facet === null || g.status === facet) &&
+      (q === '' || g.slug.toLowerCase().includes(q.toLowerCase())),
+  )
   return (
+    <>
+    <div className="flex flex-wrap items-center gap-1.5 px-4 pt-1 pb-2">
+      {facets.map((s) => (
+        <button
+          key={s}
+          className={`rounded-full border px-2 py-0.5 text-[11px] ${
+            facet === s
+              ? 'border-star/60 bg-star/10 text-star'
+              : 'border-edge text-ink-faint hover:text-ink'
+          }`}
+          onClick={() => setFacet(facet === s ? null : s)}
+        >
+          {goalStatusLabel(s)} {goals.filter((g) => g.status === s).length}
+        </button>
+      ))}
+      <input
+        className="ml-2 w-48 rounded-md border border-edge bg-surface px-2 py-0.5 text-[11px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
+        placeholder="filter by name…"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+      />
+      {(facet !== null || q !== '') && (
+        <span className="text-[11px] text-ink-faint">{shown.length} shown</span>
+      )}
+    </div>
     <table className="w-full border-collapse text-left">
       <thead>
         <tr className="border-b border-edge text-xs text-ink-faint">
@@ -90,7 +126,7 @@ function GoalsList({
         </tr>
       </thead>
       <tbody>
-        {sorted.map((g) => (
+        {shown.map((g) => (
           <tr
             key={g.id}
             className="cursor-pointer border-b border-edge/60 hover:bg-surface"
@@ -163,6 +199,7 @@ function GoalsList({
         ))}
       </tbody>
     </table>
+    </>
   )
 }
 
@@ -585,7 +622,15 @@ export default function Problem({ name }: { name: string }) {
           )}
           {tab === 'timeline' && (
             <div className="mx-auto max-w-4xl px-4 py-3">
-              <DecisionTimeline decisions={data.decisions} />
+              <DecisionTimeline
+                decisions={data.decisions}
+                goals={data.goals}
+                onSelectGoal={(id) => {
+                  setSelectedGoal(id)
+                  setSelectedStrategy(null)
+                  setTab('stars')
+                }}
+              />
             </div>
           )}
           {tab === 'files' && (

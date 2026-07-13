@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { decisionKindLabel, decisionKindTitle } from '../lib/vocab'
 import type { Decision } from '../lib/types'
 
@@ -62,7 +62,61 @@ const OUTCOME_CLS: Record<string, string> = {
   stalled: 'text-warn',
 }
 
-function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
+/** Wrap every known goal slug in the text with a jump link — the
+ * narrative constantly names goals the reader otherwise has to hunt
+ * across 171 rows (design round, 2026-07-13). */
+function linkifyGoals(
+  text: string,
+  slugRe: RegExp | null,
+  bySlug: Map<string, number>,
+  onSelectGoal: ((id: number) => void) | undefined,
+  key: string,
+) {
+  if (!slugRe || !onSelectGoal) return text
+  const parts = text.split(slugRe)
+  if (parts.length === 1) return text
+  return parts.map((p, i) => {
+    const gid = bySlug.get(p)
+    // a span, not a nested <button> — rows are already buttons
+    return gid !== undefined ? (
+      <span
+        key={`${key}-${i}`}
+        role="link"
+        tabIndex={0}
+        className="cursor-pointer font-mono underline decoration-edge-strong decoration-dotted underline-offset-2 hover:text-ink"
+        onClick={(e) => {
+          e.stopPropagation()
+          onSelectGoal(gid)
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.stopPropagation()
+            onSelectGoal(gid)
+          }
+        }}
+        title="open this goal on the map"
+      >
+        {p}
+      </span>
+    ) : (
+      <span key={`${key}-${i}`}>{p}</span>
+    )
+  })
+}
+
+function Row({
+  d,
+  grouped,
+  slugRe,
+  bySlug,
+  onSelectGoal,
+}: {
+  d: Decision
+  grouped: boolean
+  slugRe: RegExp | null
+  bySlug: Map<string, number>
+  onSelectGoal?: (id: number) => void
+}) {
   const [open, setOpen] = useState(false)
   // briefs are working markdown — the one-line summary strips the
   // notation ("## Need ONE Forward brick…" leaked literal hashes;
@@ -91,7 +145,9 @@ function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
           {decisionKindLabel(d.decision_kind)}
           {pipeline && <span className="text-ink-faint"> · {pipeline}</span>}
         </span>
-        <span className="truncate text-xs text-ink-dim">{summary}</span>
+        <span className="truncate text-xs text-ink-dim">
+          {linkifyGoals(summary, slugRe, bySlug, onSelectGoal, `s${d.id}`)}
+        </span>
         <span className="flex items-baseline justify-end gap-2 text-right text-[11px] whitespace-nowrap text-ink-faint">
           {d.outcome &&
             (OK_OUTCOMES.has(d.outcome) ? null : (
@@ -112,7 +168,7 @@ function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
         <div className="mx-2 mb-2 rounded-md border border-edge bg-surface px-3 py-2">
           {d.brief && (
             <pre className="mb-2 font-mono text-[11px] whitespace-pre-wrap text-ink-dim">
-              {d.brief}
+              {linkifyGoals(d.brief, slugRe, bySlug, onSelectGoal, `b${d.id}`)}
             </pre>
           )}
           {d.reason && <div className="mb-1 text-xs text-ink-dim">{d.reason}</div>}
@@ -138,8 +194,31 @@ const DAY_FMT = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
 })
 
-export default function DecisionTimeline({ decisions }: { decisions: Decision[] }) {
+export default function DecisionTimeline({
+  decisions,
+  goals,
+  onSelectGoal,
+}: {
+  decisions: Decision[]
+  /** known goals — their slugs become jump links inside event text */
+  goals?: { id: number; slug: string }[]
+  onSelectGoal?: (id: number) => void
+}) {
   const [filter, setFilter] = useState<string | null>(null)
+  // one regex over all known slugs, longest first so a slug that
+  // prefixes another never steals its match
+  const bySlug = useMemo(
+    () => new Map((goals ?? []).map((g) => [g.slug, g.id])),
+    [goals],
+  )
+  const slugRe = useMemo(() => {
+    if (!goals || goals.length === 0) return null
+    const alts = goals
+      .map((g) => g.slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .sort((a, b) => b.length - a.length)
+      .join('|')
+    return new RegExp(`\\b(${alts})\\b`)
+  }, [goals])
   if (decisions.length === 0) {
     return <div className="px-4 py-8 text-center text-xs text-ink-faint">No decisions yet.</div>
   }
@@ -214,6 +293,9 @@ export default function DecisionTimeline({ decisions }: { decisions: Decision[] 
                 (filtered[i - 1]?.batch_id === d.batch_id ||
                   filtered[i + 1]?.batch_id === d.batch_id)
               }
+              slugRe={slugRe}
+              bySlug={bySlug}
+              onSelectGoal={onSelectGoal}
             />
           </div>
         )

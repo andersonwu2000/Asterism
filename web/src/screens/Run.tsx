@@ -3,6 +3,7 @@ import { apiPost, usePoll } from '../lib/api'
 import { weightedBurn } from '../lib/burn'
 import { switchAccount } from '../lib/claudeAuth'
 import { compactNumber, duration } from '../lib/format'
+import { goalStatusLabel } from '../lib/vocab'
 import { Lean } from '../lib/lean'
 import { Link } from '../lib/router'
 import { Button } from '../components/ui'
@@ -50,6 +51,38 @@ function laneAge(iso: string | null): string | null {
   if (!iso) return null
   const sec = Math.max(0, (Date.now() - Date.parse(iso)) / 1000)
   return duration(sec)
+}
+
+/** A whisper from the collapsed engine log: latest line + anomaly
+ * count — the fold header used to transmit zero bits while a
+ * swallowed-error line scrolled beneath it (design round). One
+ * lightweight stream; the full tail keeps its own when opened. */
+function useLogPulse(active: boolean) {
+  const [last, setLast] = useState<string | null>(null)
+  const [alerts, setAlerts] = useState(0)
+  useEffect(() => {
+    if (!active) return
+    setAlerts(0)
+    const es = new EventSource('/api/events/stream')
+    es.onmessage = (e) => {
+      const line = e.data as string
+      setLast(line)
+      if (/\berror\b|\bfatal\b|traceback|swallowed|exception/i.test(line))
+        setAlerts((n) => n + 1)
+    }
+    return () => es.close()
+  }, [active])
+  return { last, alerts }
+}
+
+/** A departed agent's 30s receipt — completions used to simply
+ * evaporate between polls (design round). */
+interface Ghost {
+  k: string
+  kind: string
+  slug: string
+  leased_at: string | null
+  until: number
 }
 
 /** the Strategist's wake reason (trigger_kind) in human words — which
@@ -182,7 +215,36 @@ export default function Run() {
   )
   const [selGoal, setSelGoal] = useState<number | null>(null)
   useEffect(() => setSelGoal(null), [focusProblem])
+  // lane ↔ star umbilical: hovering an agent's lane lights the star
+  // it is working (design round — the lanes and the sky were two
+  // disconnected worlds)
+  const [laneHover, setLaneHover] = useState<number[] | null>(null)
   useTick(1000)
+  const logPulse = useLogPulse(Boolean(data?.daemon.running))
+  // landed receipts: an agent that vanishes between polls leaves a
+  // 30s ghost card naming what it was on
+  const ghostsRef = useRef<Ghost[]>([])
+  const prevWorkersRef = useRef<RunWorker[]>([])
+  useEffect(() => {
+    const ws = data?.workers ?? []
+    if (data?.daemon.running) {
+      const cur = new Set(ws.map((w) => `${w.kind}:${w.slug}`))
+      for (const p of prevWorkersRef.current) {
+        const k = `${p.kind}:${p.slug}`
+        if (!cur.has(k))
+          ghostsRef.current.push({
+            k,
+            kind: p.kind,
+            slug: p.slug,
+            leased_at: p.leased_at,
+            until: Date.now() + 30_000,
+          })
+      }
+    } else {
+      ghostsRef.current = []
+    }
+    prevWorkersRef.current = ws
+  }, [data])
 
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
@@ -408,6 +470,7 @@ export default function Run() {
                 onSelect={setSelGoal}
                 shelveThreshold={detail.shelve_threshold}
                 engineWorking={detail.engine_working}
+                highlightIds={laneHover}
               />
             </div>
             {selGoal !== null && (
@@ -450,19 +513,68 @@ export default function Run() {
                   </div>
                 ) : (
                   <div className="grid gap-3 lg:grid-cols-2">
-                    {workers.map((w, i) => (
-                      <Lane key={`${w.kind}:${w.slug}:${i}`} w={w} problem={data.problem} />
-                    ))}
-                    {Array.from({ length: Math.max(0, slotCount - workers.length) }).map(
-                      (_, i) => (
+                    {workers.map((w, i) => {
+                      const gid = detail?.goals.find((g) => g.slug === w.slug)?.id
+                      return (
                         <div
-                          key={`free${i}`}
-                          className="flex min-h-24 items-center justify-center rounded-lg border border-dashed border-edge text-[11px] text-ink-faint"
-                          title="an open slot for one more agent (engine setting: dispatch.pool)"
+                          key={`${w.kind}:${w.slug}:${i}`}
+                          onMouseEnter={() =>
+                            gid !== undefined && setLaneHover([gid])
+                          }
+                          onMouseLeave={() => setLaneHover(null)}
                         >
-                          {freeHint}
+                          <Lane w={w} problem={data.problem} />
                         </div>
-                      ),
+                      )
+                    })}
+                    {(ghostsRef.current = ghostsRef.current.filter(
+                      (g) => g.until > Date.now(),
+                    )).map((g) => {
+                      const goal = detail?.goals.find((x) => x.slug === g.slug)
+                      const held = g.leased_at
+                        ? duration(
+                            Math.max(
+                              0,
+                              (g.until - 30_000 - Date.parse(g.leased_at)) / 1000,
+                            ),
+                          )
+                        : null
+                      return (
+                        <div
+                          key={`${g.k}:${g.until}`}
+                          className="min-h-24 rounded-lg border border-edge/60 bg-surface/50 p-3 opacity-70"
+                        >
+                          <div className="flex items-baseline gap-2.5">
+                            <span className="text-xs text-ink-dim">
+                              {g.kind.toLowerCase()}
+                            </span>
+                            <span className="max-w-72 truncate font-mono text-xs text-ink-faint">
+                              {g.slug}
+                            </span>
+                            <span className="tnum ml-auto text-[11px] text-ink-faint">
+                              landed{held ? ` · ${held} on it` : ''}
+                            </span>
+                          </div>
+                          <div className="mt-2 text-[11px] text-ink-faint">
+                            {goal
+                              ? `the goal is now ${goalStatusLabel(goal.status)}`
+                              : 'finished — the result lands on the problem page'}
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {/* ONE quiet card for all vacancies — three identical
+                        "free" cards at working-lane weight competed with
+                        the lane that matters (design round; subtraction) */}
+                    {slotCount - workers.length > 0 && (
+                      <div
+                        className="flex min-h-24 items-center justify-center rounded-lg border border-dashed border-edge/60 text-[11px] text-ink-faint/70"
+                        title="open slots for more agents (engine setting: dispatch.pool)"
+                      >
+                        {slotCount - workers.length === 1
+                          ? freeHint
+                          : `${slotCount - workers.length} slots ${freeHint}`}
+                      </div>
                     )}
                   </div>
                 )}
@@ -577,9 +689,24 @@ export default function Run() {
           className="group"
           onToggle={(e) => setLogOpen((e.currentTarget as HTMLDetailsElement).open)}
         >
-          <summary className="cursor-pointer list-none text-[11px] font-medium tracking-[0.14em] text-ink-faint/70 uppercase transition-colors hover:text-ink-dim">
+          <summary className="flex cursor-pointer list-none items-baseline gap-2 text-[11px] font-medium tracking-[0.14em] text-ink-faint/70 uppercase transition-colors hover:text-ink-dim">
             <span className="mr-1 inline-block text-[9px] transition-transform duration-150 group-open:rotate-90">▸</span>
             engine log
+            {logPulse.alerts > 0 && (
+              <span
+                className="tnum rounded-full bg-warn/15 px-1.5 font-normal tracking-normal normal-case text-warn"
+                title="lines that look like errors — open the log"
+              >
+                {logPulse.alerts}
+              </span>
+            )}
+            {/* the fold whispers its latest line instead of
+                transmitting zero bits (design round) */}
+            {!logOpen && logPulse.last && (
+              <span className="min-w-0 flex-1 truncate font-mono text-[10px] font-normal tracking-normal normal-case text-ink-faint/60">
+                {logPulse.last}
+              </span>
+            )}
           </summary>
           <div className="mt-2">{logOpen && <LogTail />}</div>
         </details>

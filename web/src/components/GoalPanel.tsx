@@ -132,10 +132,48 @@ export default function GoalPanel({
             <SectionLabel>{data.proof_text ? 'source' : 'statement'}</SectionLabel>
             {/* no inner scroll: the panel body is the ONE scroll
                 context — a nested max-h pane read as double
-                scrollbars (owner) */}
-            <pre className="mb-3 font-mono text-xs leading-snug break-words whitespace-pre-wrap text-ink">
-              <Lean code={data.proof_text ?? data.statement} />
-            </pre>
+                scrollbars (owner). The import/open/namespace preamble
+                folds away so the first visible line is the THEOREM —
+                a professor judging a claim wants the proposition, not
+                eight lines of plumbing (design round, 2026-07-13) */}
+            {(() => {
+              const src = data.proof_text ?? data.statement
+              const lines = src.split('\n')
+              let cut = 0
+              while (
+                cut < lines.length &&
+                (/^\s*(import|open|namespace|section|noncomputable section|set_option|universe|attribute|variable)\b/.test(
+                  lines[cut],
+                ) ||
+                  lines[cut].trim() === '')
+              )
+                cut++
+              const preamble = lines.slice(0, cut).join('\n').trimEnd()
+              const body = lines.slice(cut).join('\n')
+              return (
+                <>
+                  {preamble && (
+                    <details className="group/pre mb-1">
+                      <summary className="cursor-pointer list-none font-mono text-[10px] text-ink-faint transition-colors hover:text-ink-dim">
+                        <span
+                          className="mr-1 inline-block text-[9px] transition-transform duration-150 group-open/pre:rotate-90"
+                          aria-hidden
+                        >
+                          ▸
+                        </span>
+                        context · {cut} line{cut === 1 ? '' : 's'}
+                      </summary>
+                      <pre className="mt-1 font-mono text-[11px] leading-snug break-words whitespace-pre-wrap text-ink-faint">
+                        <Lean code={preamble} />
+                      </pre>
+                    </details>
+                  )}
+                  <pre className="mb-3 font-mono text-xs leading-snug break-words whitespace-pre-wrap text-ink">
+                    <Lean code={body} />
+                  </pre>
+                </>
+              )
+            })()}
             <div className="mb-4 text-[11px] break-all text-ink-faint">
               {onOpenFile && (data.source_path ?? data.lean_path).includes('proofs/') ? (
                 <button

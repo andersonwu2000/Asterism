@@ -347,6 +347,48 @@ export default function Constellation({
     [],
   )
 
+  // afterglow: a star that just turned PROVED keeps a hot halo that
+  // cools over ~15 minutes — "what lit up while I was away" read
+  // straight off the sky (design round, two reviewers independently).
+  // Brightness-as-recency, grayscale-native. Decay steps schedule
+  // their own re-renders (the node layer is memoized).
+  const glowRef = useRef<{ status: Map<number, string>; lit: Map<number, number>; primed: boolean }>({
+    status: new Map(),
+    lit: new Map(),
+    primed: false,
+  })
+  const [glowTick, setGlowTick] = useState(0)
+  const glowTimers = useRef<Set<number>>(new Set())
+  useEffect(() => {
+    const g = glowRef.current
+    if (!g.primed) {
+      for (const x of goals) g.status.set(x.id, x.status)
+      if (goals.length > 0) g.primed = true
+      return
+    }
+    for (const x of goals) {
+      const prev = g.status.get(x.id)
+      if (prev === x.status) continue
+      g.status.set(x.id, x.status)
+      if (x.status === 'proved' && prev !== undefined) {
+        g.lit.set(x.id, Date.now())
+        for (const dt of [90_000, 5 * 60_000, 15 * 60_000]) {
+          const t = window.setTimeout(() => {
+            glowTimers.current.delete(t)
+            setGlowTick((v) => v + 1)
+          }, dt)
+          glowTimers.current.add(t)
+        }
+      }
+    }
+  }, [goals])
+  useEffect(
+    () => () => {
+      for (const t of glowTimers.current) window.clearTimeout(t)
+    },
+    [],
+  )
+
   // The shared sky camera (lib/camera.tsx). Fit per PROBLEM and on
   // frontier-focus toggles, never per poll (resetKey: the layout
   // shifts on every poll and refitting would fight the user's zoom);
@@ -1120,6 +1162,25 @@ export default function Constellation({
                   pointerEvents="none"
                 />
               )}
+              {/* afterglow — freshly proved runs hot, cools in steps */}
+              {(() => {
+                const litAt = glowRef.current.lit.get(n.goal.id)
+                if (litAt === undefined) return null
+                const age = Date.now() - litAt
+                if (age > 15 * 60_000) {
+                  glowRef.current.lit.delete(n.goal.id)
+                  return null
+                }
+                const heat = age < 90_000 ? 0.55 : age < 5 * 60_000 ? 0.3 : 0.14
+                return (
+                  <circle
+                    r={r * 4}
+                    fill="url(#star-halo)"
+                    opacity={heat}
+                    pointerEvents="none"
+                  />
+                )
+              })()}
               {/* Two orthogonal axes, two channels (owner): IDENTITY
                   speaks in ring + shape + size — THE permanent ring is
                   a single ring = the signed surface (root, claim,
@@ -1296,6 +1357,7 @@ export default function Constellation({
       rowCounts,
       selectCb,
       birthTick,
+      glowTick,
     ])
 
   if (layout.nodes.length === 0) {
