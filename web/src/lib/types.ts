@@ -310,6 +310,8 @@ export interface LibraryChapter {
   bridged_at: string | null
   files: LibraryChapterFile[]
   signoff?: SignoffRecord | null
+  /** the gates' recorded guarantees — sorry-free, axioms whitelist */
+  colophon?: { decls: number; axioms: string[] } | null
 }
 
 /** A problem citing a shelf paper, as reported by GET /api/papers. */

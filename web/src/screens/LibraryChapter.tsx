@@ -662,6 +662,18 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
             </span>
           )}
         </span>
+        {/* trust colophon (design round): what a mathematician asks a
+            machine-built chapter first — which axioms, any sorry —
+            answered from the gates' recorded guarantees. Per-decl
+            live proof stays one click away (▸ run → #print axioms). */}
+        {data.colophon && data.colophon.axioms.length > 0 && (
+          <span
+            className="w-full font-mono text-[11px] text-ink-faint"
+            title="every bridged chapter passed Gate B: the root theorem re-derived from the Library alone, no axiom outside this whitelist, no sorry (gate-enforced). Hover any statement and press ▸ run for a live per-declaration re-check."
+          >
+            sorry-free · axioms ⊆ {'{'}{data.colophon.axioms.join(', ')}{'}'}
+          </span>
+        )}
         <Link
           to={`/problems/${encodeURIComponent(problem)}`}
           className="ml-auto text-xs text-ink-faint underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"

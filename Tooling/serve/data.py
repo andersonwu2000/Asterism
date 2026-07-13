@@ -1098,10 +1098,29 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
             "imports_within": [mod_paths[i] for i in imports
                                if i in mod_paths and mod_paths[i] != path],
         })
+    # Trust colophon (design round, 2026-07-13): the chapter states its
+    # own guarantees from RECORDED facts only — decl count, and the
+    # axiom whitelist the bridge gate enforced (Gate B re-derives the
+    # root from the Library alone and rejects any axiom outside it;
+    # the migrate gate rejects sorry). Read-side; nothing here feeds
+    # soundness.
+    axioms: "list[str]" = []
+    try:
+        from ..state import manifest as _mfst
+        mpath = db.problem_dir(workspace, problem) / "Manifest.md"
+        axioms = (_mfst.effective_axioms(_mfst.parse(mpath), problem=problem)
+                  if mpath.exists()
+                  else list(_mfst.FRAMEWORK_DEFAULT_AXIOMS))
+    except Exception:  # noqa: BLE001 — a colophon must never 500 the page
+        axioms = []
     return {
         "problem": problem,
         "bridged_at": rows[0]["library_bridged_at"],
         "files": files,
+        "colophon": {
+            "decls": sum(len(f["decls"]) for f in files),
+            "axioms": axioms,
+        },
     }
 
 
