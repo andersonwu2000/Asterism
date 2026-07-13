@@ -724,46 +724,52 @@ def _section_current_directive(conn: sqlite3.Connection,
 
 def _section_tree_inline(conn: sqlite3.Connection,
                          workspace: Path, problem: str) -> list[str]:
-    """Inline the FRONTIER view of the proof tree for the Strategist
-    (framework_backlog #2). Rendered live from the DB with
-    `tree.render(frontier=True)`: settled (proved / shelved / dead /
-    disproved / frozen) subtrees collapse to a single labelled line so
-    the live frontier (open / attempting / pending + in-flight proposed
-    strategies) is not buried under hundreds of settled nodes on a mature
-    problem. The full, uncollapsed tree stays on disk in TREE.md (written
-    by the dispatcher every cascade) — linked below as an escape hatch
-    for inspecting any collapsed subtree.
-
-    Rendering from the DB (not reading the precompiled TREE.md) also makes
-    the inline view current as of this context build, never one cascade
-    stale. Falls back to a stub note if the problem has no tree yet."""
-    try:
-        body = tree.render(conn, problem, frontier=True).strip()
-    except Exception:
-        body = ""
-    # Phase 7 regression fix (sphere_homology, ~8 agent reports): the old
-    # substring test `"no root goal" in body` also matched tree.py's
-    # pure-NL header `_(pure-NL problem — no root goal; deliverable forest
-    # below)_`, silently DISCARDING the entire deliverable-forest render
-    # on every strategist wake of a pure-NL problem. The placeholder it
-    # guarded against ("run `asterism init`") no longer exists — Phase 6
-    # made the rootless render a real forest — so only emptiness remains.
-    if not body:
-        return ["## TREE", "", "(TREE.md not yet generated)", ""]
+    """Tree SUMMARY header for the Strategist (2026-07-13, user call):
+    status counts + the non-proved exception list + a pointer to the
+    on-disk TREE.md. The full tree left the per-wake context — on a
+    mature problem it was ~10KB that was >90% the proved-brick roster
+    (already in the catalog index), while the decision-relevant nodes
+    are the handful of exceptions listed here. For structure, dead-
+    branch forensics and OR-alternative history the agent reads TREE.md
+    on demand (dispatcher-maintained every cascade; reading the file
+    was already its habit). The frontier=True collapsed render this
+    replaced is deleted from tree.py."""
+    rows = conn.execute(
+        "SELECT slug, status, attempts FROM goals WHERE problem = ?"
+        " ORDER BY id", (problem,)).fetchall()
+    if not rows:
+        return ["## TREE", "", "(no goals yet)", ""]
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[str(r["status"])] = counts.get(str(r["status"]), 0) + 1
+    count_line = " / ".join(
+        f"{n} {s}" for s, n in sorted(counts.items(), key=lambda kv: -kv[1]))
     tree_path = db.problem_dir(workspace, problem) / "TREE.md"
     try:
         rel = tree_path.relative_to(workspace).as_posix()
     except ValueError:
         rel = "TREE.md"
-    return [
+    out = [
         "## TREE",
         "",
-        body,
-        "",
-        f"_Frontier view (settled subtrees collapsed). Full decomposition "
-        f"tree on disk: `{rel}` — read it to inspect a collapsed subtree._",
+        f"**Counters:** {count_line}",
         "",
     ]
+    exceptions = [r for r in rows if str(r["status"]) != "proved"]
+    if exceptions:
+        out.append("_Non-proved goals:_")
+        for r in exceptions:
+            att = (f", attempts={r['attempts']}"
+                   if r["attempts"] else "")
+            out.append(f"- `{r['slug']}`  ({r['status']}{att})")
+        out.append("")
+    out += [
+        f"_Full decomposition tree: `{rel}` (dispatcher-maintained, "
+        f"current every cascade) — read it for structure, dead-branch "
+        f"forensics, and OR-alternative history._",
+        "",
+    ]
+    return out
 
 
 def _section_manifest_meta(mfst: manifest.Manifest,
