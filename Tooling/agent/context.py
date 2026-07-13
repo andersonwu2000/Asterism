@@ -88,8 +88,10 @@ def _section_sandbox(strategy_id: int | None = None,
         "Mathlib source.",
         "- Reads NOT allowed: other `Problems/<...>/` dirs — irrelevant "
         "to this goal. Use Loogle / Grep on Mathlib instead.",
-        "- `Context.md` + `PAST_*.md` / `LESSONS.md` companion files: "
-        "read-only.",
+        "- `Context.md` + `PAST_*.md` / `LESSONS.md` / `CATALOG.md` "
+        "companion files: read-only. `CATALOG.md` holds the exact "
+        "statement of every proved brick in this problem — read it "
+        "before citing one.",
         "- `patch.lean` is your single output. Lead with `--` annotation "
         "comments, then edit the body (Builder fills in the proof; "
         "Backward edits the strategy skeleton's body — signature locked). "
