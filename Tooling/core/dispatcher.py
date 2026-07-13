@@ -1595,9 +1595,19 @@ def _spawn_handoff_successor(workspace: Path, scope: "str | None") -> None:
     else:
         kwargs["start_new_session"] = True
     try:
+        # Waiter output goes to a logfile, not DEVNULL: the 2026-07-13
+        # 21:01 handoff died without a trace (no successor log, no
+        # process, nothing to autopsy) — whatever the waiter prints
+        # (its REFUSED reason, a traceback) is the only evidence the
+        # next failure will leave.
+        waiter_log = open(workspace / ".asterism" / "logs"
+                          / "handoff-waiter.log", "ab")
+        waiter_log.write(
+            f"\n=== handoff waiter spawned {db.now()} ===\n".encode())
+        waiter_log.flush()
         subprocess.Popen(argv, cwd=str(workspace),
-                         stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL,
+                         stdout=waiter_log,
+                         stderr=subprocess.STDOUT,
                          stdin=subprocess.DEVNULL,
                          creationflags=flags, **kwargs)
     except OSError as e:
