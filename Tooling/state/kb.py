@@ -96,6 +96,60 @@ def edit_global_lesson(
     return cur.rowcount
 
 
+def delete_global_lesson(conn: sqlite3.Connection, *,
+                         entry_id: int,
+                         problem: str) -> sqlite3.Row | None:
+    """Audit-curation write (2026-07-13, user call) — remove one GLOBAL
+    lesson. Same scoping wall as `edit_global_lesson`: only this
+    problem's global lessons are reachable, so a stale id can never
+    touch another problem, a node-bound row, or an antipattern.
+    Returns the deleted row (audit-trail snapshot) or None if the id
+    matched no eligible row."""
+    row = conn.execute(
+        "SELECT * FROM kb_entries"
+        " WHERE id = ? AND problem = ? AND type = 'lesson'"
+        " AND node_id IS NULL",
+        (entry_id, problem),
+    ).fetchone()
+    if row is None:
+        return None
+    conn.execute("DELETE FROM kb_entries WHERE id = ?", (entry_id,))
+    conn.commit()
+    return row
+
+
+def merge_global_lessons(conn: sqlite3.Connection, *,
+                         keep_id: int,
+                         absorb_ids: list[int],
+                         problem: str,
+                         title: str,
+                         body: str) -> list[sqlite3.Row] | None:
+    """Audit-curation write — consolidate several GLOBAL lessons into
+    one: the `keep_id` row gets the merged title/body, the absorbed
+    rows are deleted, atomically (one transaction — a crash never
+    leaves the absorbed deleted but the keeper unwritten). Returns the
+    pre-merge snapshots of ALL touched rows, or None (nothing changed)
+    if any id fails the same scoping wall as `edit_global_lesson`."""
+    ids = [keep_id, *absorb_ids]
+    marks = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT * FROM kb_entries WHERE id IN ({marks})"
+        " AND problem = ? AND type = 'lesson' AND node_id IS NULL",
+        (*ids, problem),
+    ).fetchall()
+    if len(rows) != len(set(ids)):
+        return None
+    absorb_marks = ",".join("?" for _ in absorb_ids)
+    with conn:
+        conn.execute(
+            "UPDATE kb_entries SET title = ?, body = ? WHERE id = ?",
+            (title, body, keep_id))
+        conn.execute(
+            f"DELETE FROM kb_entries WHERE id IN ({absorb_marks})",
+            tuple(absorb_ids))
+    return rows
+
+
 def global_lessons(conn: sqlite3.Connection,
                    problem: str) -> list[sqlite3.Row]:
     """A problem's GLOBAL lessons (id, title, body), oldest first — the surface

@@ -1839,6 +1839,9 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 failure_reason="strategist_schema_invalid",
                 failure_detail=f"commit raised: {type(e).__name__}: {e}",
             )
+        if trigger_kind == "audit":
+            _apply_kb_curation(conn, problem=problem,
+                               attempts_dir=attempts_dir)
         return PipelineResult(
             outcome="failed",
             failure_reason="strategist_noop",
@@ -1862,6 +1865,13 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             failure_detail=f"commit raised: {type(e).__name__}: {e}",
         )
 
+    if trigger_kind == "audit":
+        # Curation applies only after the wake's decisions committed —
+        # a rejected batch (retry loop above) must not half-apply a
+        # sidecar the agent may still rewrite.
+        _apply_kb_curation(conn, problem=problem,
+                           attempts_dir=attempts_dir)
+
     kinds = ",".join(d.kind for d in decisions)
     row_ids = ",".join(str(o.decision_row_id) for o in outcomes)
     # Framework feedback (dedicated tail step) — fired here, after every
@@ -1880,6 +1890,116 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             f"(decision_rows=[{row_ids}])"
         ),
     )
+
+
+_KB_CURATION_MAX_OPS = 10
+
+
+def _apply_kb_curation(conn: "Any", *, problem: str,
+                       attempts_dir: Path) -> None:
+    """Audit-wake KB curation (2026-07-13, user call): apply the
+    optional `kb_curation.json` sidecar the audit agent may drop next
+    to decision.json. Ops:
+
+      {"op": "delete", "id": N, "reason": "..."}
+      {"op": "merge", "keep_id": N, "absorb_ids": [..],
+       "title": "...", "body": "...", "reason": "..."}
+
+    Deliberately a sidecar, NOT a decision kind: curation is
+    belief-store maintenance (same class as the direct `_plan.md`
+    curation), never problem-state advance — keeping it out of
+    decision.json means it can never satisfy the stall-advance delta
+    gate, and no DB CHECK migration is needed. Only the audit runner
+    calls this, so the power is structurally audit-only.
+
+    Strict all-or-nothing: any invalid op rejects the whole file with
+    a loud `[kb-curation]` line and nothing is applied — but the wake
+    itself never fails on it (the sidecar is best-effort; the wake's
+    deliverables are its decisions + note). Applied ops print full
+    pre-image snapshots to the daemon log as the audit trail."""
+    from ..state import kb
+
+    path = attempts_dir / "kb_curation.json"
+    if not path.exists():
+        return
+
+    def _reject(msg: str) -> None:
+        print(f"[kb-curation] {problem}: rejected, nothing applied — "
+              f"{msg}", flush=True)
+
+    try:
+        ops = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        return _reject(f"unreadable/invalid JSON: {e}")
+    if not isinstance(ops, list) or not ops:
+        return _reject("must be a non-empty JSON array of ops")
+    if len(ops) > _KB_CURATION_MAX_OPS:
+        return _reject(f"{len(ops)} ops exceeds the per-wake cap of "
+                       f"{_KB_CURATION_MAX_OPS}")
+
+    eligible = {int(r["id"]) for r in kb.global_lessons(conn, problem)}
+    seen_ids: set[int] = set()
+
+    def _claim(raw: "Any", i: int, field: str) -> int | None:
+        if not isinstance(raw, int) or isinstance(raw, bool):
+            _reject(f"op #{i}: {field} must be an integer id")
+            return None
+        if raw not in eligible:
+            _reject(f"op #{i}: id {raw} is not one of this problem's "
+                    "global lessons")
+            return None
+        if raw in seen_ids:
+            _reject(f"op #{i}: id {raw} referenced by more than one op")
+            return None
+        seen_ids.add(raw)
+        return raw
+
+    parsed: list[dict] = []
+    for i, op in enumerate(ops):
+        if not isinstance(op, dict):
+            return _reject(f"op #{i}: not a JSON object")
+        if not str(op.get("reason", "")).strip():
+            return _reject(f"op #{i}: non-empty source-checked 'reason' "
+                           "is required")
+        kind = op.get("op")
+        if kind == "delete":
+            if _claim(op.get("id"), i, "id") is None:
+                return None
+        elif kind == "merge":
+            if _claim(op.get("keep_id"), i, "keep_id") is None:
+                return None
+            absorb = op.get("absorb_ids")
+            if not isinstance(absorb, list) or not absorb:
+                return _reject(f"op #{i}: absorb_ids must be a non-empty "
+                               "list")
+            for a in absorb:
+                if _claim(a, i, "absorb_ids entry") is None:
+                    return None
+            if not str(op.get("title", "")).strip():
+                return _reject(f"op #{i}: merged 'title' must be "
+                               "non-empty")
+        else:
+            return _reject(f"op #{i}: unknown op {kind!r} (delete|merge)")
+        parsed.append(op)
+
+    for op in parsed:
+        if op["op"] == "delete":
+            snap = kb.delete_global_lesson(
+                conn, entry_id=op["id"], problem=problem)
+            print(f"[kb-curation] {problem}: deleted lesson "
+                  f"[id-{op['id']}] reason={op['reason']!r} "
+                  f"snapshot={dict(snap) if snap else None}", flush=True)
+        else:
+            snaps = kb.merge_global_lessons(
+                conn, keep_id=op["keep_id"],
+                absorb_ids=[int(a) for a in op["absorb_ids"]],
+                problem=problem, title=str(op["title"]),
+                body=str(op.get("body", "")))
+            print(f"[kb-curation] {problem}: merged "
+                  f"{op['absorb_ids']} into [id-{op['keep_id']}] "
+                  f"reason={op['reason']!r} "
+                  f"pre-images={[dict(r) for r in snaps or []]}",
+                  flush=True)
 
 
 def _persist_plan(problem_dir: Path, attempts_dir: Path) -> None:
