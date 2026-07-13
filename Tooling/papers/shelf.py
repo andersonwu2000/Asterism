@@ -45,6 +45,23 @@ class PaperMeta:
     pages: int
     chars: int
     text_sha: str
+    # Owner-editable display title (UI rename, 2026-07-13): "paper.pdf"
+    # names nothing on a shelf. Optional + defaulted so every existing
+    # meta.json keeps loading; identity stays the content hash.
+    title: "str | None" = None
+
+
+def set_title(workspace: Path, pid: str, title: "str | None") -> "PaperMeta | None":
+    """Rename a paper's DISPLAY title (empty/whitespace clears it back
+    to the filename). Display metadata only — id, text and bindings are
+    untouched."""
+    meta = load_meta(workspace, pid)
+    if meta is None:
+        return None
+    meta.title = (title or "").strip() or None
+    (paper_dir(workspace, pid) / "meta.json").write_text(
+        json.dumps(asdict(meta), indent=2), encoding="utf-8")
+    return meta
 
 
 def papers_root(workspace: Path) -> Path:

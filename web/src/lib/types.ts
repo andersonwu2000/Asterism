@@ -322,6 +322,8 @@ export interface PaperBoundRef {
 export interface PaperShelfItem {
   id: string
   source_name: string
+  /** owner-editable display title; null = the filename stands in */
+  title: string | null
   pages: number
   chars: number
   original: string

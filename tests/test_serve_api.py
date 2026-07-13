@@ -1081,6 +1081,30 @@ def test_papers_bookshelf_flow(workspace: Path) -> None:
     assert c.get("/api/papers").json() == {"papers": []}
 
 
+def test_paper_rename_display_title(workspace: Path) -> None:
+    """The display title is owner-editable and display-ONLY: identity
+    (content hash) and the source filename survive; empty clears back
+    to the filename; old meta.json files without the field keep
+    loading (dataclass default)."""
+    c = _client(workspace)
+    src = workspace / "notes.md"
+    src.write_text("# Paper\n\nsome text", encoding="utf-8")
+    pid = c.post("/api/papers/add", json={"path": str(src)}).json()["id"]
+    assert c.get("/api/papers").json()["papers"][0]["title"] is None
+    r = c.post(f"/api/papers/{pid}/rename",
+               json={"title": "Residues and their applications"})
+    assert r.status_code == 200
+    got = c.get("/api/papers").json()["papers"][0]
+    assert got["title"] == "Residues and their applications"
+    assert got["source_name"] == "notes.md" and got["id"] == pid
+    # empty title clears back to the filename standing in
+    assert c.post(f"/api/papers/{pid}/rename",
+                  json={"title": "  "}).status_code == 200
+    assert c.get("/api/papers").json()["papers"][0]["title"] is None
+    assert c.post("/api/papers/nope/rename",
+                  json={"title": "x"}).status_code == 404
+
+
 def test_create_settings_and_papers_are_authoritative(
         workspace: Path) -> None:
     """Creation-time settings land in the DB via the chokepoint —

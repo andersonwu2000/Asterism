@@ -79,7 +79,10 @@ function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
         ) : (
           <span className="max-w-72 truncate font-mono text-xs text-ink-dim">{w.slug}</span>
         )}
-        <span className="tnum ml-auto text-[11px] text-ink-faint" title="how long this agent has held the unit">
+        <span
+          className="tnum ml-auto text-[11px] text-ink-faint"
+          title="how long this agent has worked this goal (engine term: unit lease)"
+        >
           on it {laneAge(w.leased_at) ?? '—'}
         </span>
       </div>
@@ -430,7 +433,7 @@ export default function Run() {
             const freeHint =
               d.gateway === 'warming'
                 ? 'free — agents spawn once the toolchain is hot'
-                : 'free — waiting for the dispatcher'
+                : 'free — waiting for work'
             return (
               <>
                 <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
@@ -455,7 +458,7 @@ export default function Run() {
                         <div
                           key={`free${i}`}
                           className="flex min-h-24 items-center justify-center rounded-lg border border-dashed border-edge text-[11px] text-ink-faint"
-                          title="one of dispatch.pool parallel work slots"
+                          title="an open slot for one more agent (engine setting: dispatch.pool)"
                         >
                           {freeHint}
                         </div>
@@ -472,9 +475,11 @@ export default function Run() {
       {data.quota && (
         <section className="mt-7">
           <div className="mb-3 flex items-baseline text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
-            plan windows
+            <span title="engine term: quota windows — usage read live from your subscription">
+              plan usage
+            </span>
             <span className="ml-2 font-normal tracking-normal normal-case text-ink-faint/80">
-              your subscription's own meters
+              how much of your subscription's allowance is used, and when it resets
             </span>
             {/* the quota-reset move lives WHERE you watch the quota:
                 switch accounts without leaving the console (owner) */}

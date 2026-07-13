@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { decisionKindLabel, decisionKindTitle } from '../lib/vocab'
 import type { Decision } from '../lib/types'
 
 /* rows sit under day rules — a clock time reads better than thirty
@@ -77,14 +78,17 @@ function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
-        <span className={`text-xs font-medium ${KIND_CLS[d.decision_kind] ?? 'text-ink-dim'}`}>
+        <span
+          className={`text-xs font-medium ${KIND_CLS[d.decision_kind] ?? 'text-ink-dim'}`}
+          title={decisionKindTitle(d.decision_kind)}
+        >
           <span
             className={`mr-1.5 inline-block text-[9px] text-ink-faint transition-transform duration-150 ${open ? 'rotate-90' : ''} opacity-0 group-hover:opacity-100 ${open ? 'opacity-100' : ''}`}
             aria-hidden
           >
             ▸
           </span>
-          {d.decision_kind}
+          {decisionKindLabel(d.decision_kind)}
           {pipeline && <span className="text-ink-faint"> · {pipeline}</span>}
         </span>
         <span className="truncate text-xs text-ink-dim">{summary}</span>
@@ -148,7 +152,7 @@ export default function DecisionTimeline({ decisions }: { decisions: Decision[] 
       : filter === '__failures'
         ? decisions.filter(isFailure)
         : decisions.filter((d) => d.decision_kind === filter)
-  const chip = (key: string | null, label: string, count: number) => (
+  const chip = (key: string | null, label: string, count: number, title?: string) => (
     <button
       key={key ?? 'all'}
       className={`rounded-full border px-2 py-0.5 text-[11px] ${
@@ -157,6 +161,7 @@ export default function DecisionTimeline({ decisions }: { decisions: Decision[] 
           : 'border-edge text-ink-faint hover:text-ink'
       }`}
       onClick={() => setFilter(filter === key ? null : key)}
+      title={title}
     >
       {label} {count}
     </button>
@@ -165,7 +170,14 @@ export default function DecisionTimeline({ decisions }: { decisions: Decision[] 
     <div className="flex flex-col">
       <div className="mb-2 flex flex-wrap gap-1.5 px-2">
         {chip(null, 'all', decisions.length)}
-        {kinds.map((k) => chip(k, k, decisions.filter((d) => d.decision_kind === k).length))}
+        {kinds.map((k) =>
+          chip(
+            k,
+            decisionKindLabel(k),
+            decisions.filter((d) => d.decision_kind === k).length,
+            decisionKindTitle(k),
+          ),
+        )}
         {decisions.some(isFailure) &&
           chip('__failures', 'failures', decisions.filter(isFailure).length)}
       </div>

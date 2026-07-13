@@ -104,6 +104,10 @@ class PaperAddBody(BaseModel):
     path: str
 
 
+class PaperRenameBody(BaseModel):
+    title: str = ""
+
+
 class PaperBindBody(BaseModel):
     paper_id: str
 
@@ -708,6 +712,18 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(e)) from e
         return {"id": meta.id, "source_name": meta.source_name,
                 "pages": meta.pages, "chars": meta.chars}
+
+    @app.post("/api/papers/{pid}/rename")
+    def paper_rename(pid: str, body: PaperRenameBody) -> dict:
+        """Set the display title (empty clears back to the filename).
+        Display metadata only — identity, text and bindings untouched."""
+        from ..papers import shelf as _shelf
+        meta = _shelf.set_title(workspace, pid, body.title)
+        if meta is None:
+            raise HTTPException(status_code=404,
+                                detail=f"paper {pid!r} not shelved here")
+        return {"id": meta.id, "title": meta.title,
+                "source_name": meta.source_name}
 
     @app.delete("/api/papers/{pid}")
     def paper_delete(pid: str) -> dict:

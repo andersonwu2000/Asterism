@@ -4,6 +4,7 @@ import { leafOf, moduleOf, relTime } from '../lib/format'
 import { Link } from '../lib/router'
 import { ErrorState } from '../components/ui'
 import { Lean } from '../lib/lean'
+import { withMath } from '../lib/tex'
 import { LeanProbe } from '../components/LeanProbe'
 import { CameraControls, useSkyCamera } from '../lib/camera'
 import { citePath } from '../lib/sky'
@@ -63,7 +64,10 @@ function Prose({ text, className = '' }: { text: string; className?: string }) {
 
 function renderSpans(s: string) {
   // split on `code` spans; plain prose gets *emphasis* (docstring
-  // markdown); bare math stays untouched (code spans split first)
+  // markdown) and $math$ typeset by KaTeX (raw dollar-LaTeX in
+  // keystone prose read as broken to the professor audience —
+  // cold-eye + owner, 2026-07-13). Code spans split first so a
+  // dollar inside backticks stays code.
   const parts = s.split(/(`[^`]+`)/)
   return parts.map((p, i) => {
     if (p.startsWith('`') && p.endsWith('`')) {
@@ -73,16 +77,22 @@ function renderSpans(s: string) {
         </code>
       )
     }
-    const em = p.replace(/\*\*/g, '').split(/(\*[^*\s][^*]*\*)/)
     return (
       <span key={i}>
-        {em.map((e, j) =>
-          e.startsWith('*') && e.endsWith('*') && e.length > 2 ? (
-            <em key={j}>{e.slice(1, -1)}</em>
-          ) : (
-            e
-          ),
-        )}
+        {withMath(p, (seg, k) => {
+          const em = seg.replace(/\*\*/g, '').split(/(\*[^*\s][^*]*\*)/)
+          return (
+            <span key={k}>
+              {em.map((e, j) =>
+                e.startsWith('*') && e.endsWith('*') && e.length > 2 ? (
+                  <em key={j}>{e.slice(1, -1)}</em>
+                ) : (
+                  e
+                ),
+              )}
+            </span>
+          )
+        })}
       </span>
     )
   })
@@ -529,11 +539,14 @@ function ModuleMap({
 function HighlightSection({
   title,
   hint,
+  hintTitle,
   decls,
   onOpenModule,
 }: {
   title: string
   hint?: string
+  /** tooltip on the hint — where the engine vocabulary lives */
+  hintTitle?: string
   decls: (LibraryChapterDecl & { file: string })[]
   onOpenModule: (path: string) => void
 }) {
@@ -543,7 +556,10 @@ function HighlightSection({
       <div className="mb-4 border-b border-edge pb-2 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
         {title}
         {hint && (
-          <span className="ml-3 font-normal tracking-normal normal-case text-ink-faint/80">
+          <span
+            className="ml-3 font-normal tracking-normal normal-case text-ink-faint/80"
+            title={hintTitle}
+          >
             {hint}
           </span>
         )}
@@ -679,7 +695,12 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
             hint={
               leadIsVouched
                 ? 'the results a human vouched for at sign-off'
-                : 'no claim flags survive this harvest — these are the results the other modules reach for'
+                : 'no result here carries a sign-off mark — these are the ones the other modules reach for'
+            }
+            hintTitle={
+              leadIsVouched
+                ? undefined
+                : 'engine terms: no claim flags survived this harvest (older harvests never recorded them), so the most-cited keystones stand in'
             }
             decls={lead}
             onOpenModule={openModule}

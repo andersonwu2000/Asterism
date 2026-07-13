@@ -260,8 +260,11 @@ export default function ManifestEditor({
       )}
       <fieldset disabled={data.pending_amend} className="flex flex-col gap-4">
         <div>
-          <div className="mb-1 text-[11px] font-medium tracking-widest text-ink-faint uppercase">
-            instructions — natural language, hot-reloaded
+          <div
+            className="mb-1 text-[11px] font-medium tracking-widest text-ink-faint uppercase"
+            title="engine term: hot-reloaded — a save takes effect at the next agent launch; nothing restarts"
+          >
+            instructions — plain language; saves apply from the next agent onward
           </div>
           <MarkdownEditor
             value={body}

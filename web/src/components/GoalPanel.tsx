@@ -2,7 +2,15 @@ import { useEffect, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
-import { GOAL_STATUS_CLS, goalStatusLabel, originLabel, strategyStatusLabel } from '../lib/vocab'
+import {
+  DETACHED_LABEL,
+  DETACHED_TITLE,
+  GOAL_STATUS_CLS,
+  goalStatusLabel,
+  originLabel,
+  originTitle,
+  strategyStatusLabel,
+} from '../lib/vocab'
 import { SectionLabel } from './ui'
 import type { DeadAttempt, GoalDetail } from '../lib/types'
 
@@ -96,8 +104,17 @@ export default function GoalPanel({
                 {goalStatusLabel(data.status)}
               </span>
               <span className="text-ink-faint">{data.kind}</span>
-              <span className="text-ink-faint">{originLabel(data.origin)}</span>
-              {data.is_deliverable && <span className="text-star">claim</span>}
+              <span className="text-ink-faint" title={originTitle(data.origin)}>
+                {originLabel(data.origin)}
+              </span>
+              {data.is_deliverable && (
+                <span
+                  className="text-star"
+                  title="a result the human vouches for at sign-off (engine term: deliverable)"
+                >
+                  claim
+                </span>
+              )}
               {data.disproof_of && (
                 <span
                   className="text-warn"
@@ -106,7 +123,11 @@ export default function GoalPanel({
                   disproof of {data.disproof_of.slug}
                 </span>
               )}
-              {data.detached && <span className="text-ink-faint">detached</span>}
+              {data.detached && (
+                <span className="text-ink-faint" title={DETACHED_TITLE}>
+                  {DETACHED_LABEL}
+                </span>
+              )}
             </div>
             <SectionLabel>{data.proof_text ? 'source' : 'statement'}</SectionLabel>
             {/* no inner scroll: the panel body is the ONE scroll

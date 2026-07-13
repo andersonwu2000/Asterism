@@ -1578,8 +1578,11 @@ export default function Constellation({
         {/* grouped: star status | landmark marks | line kinds — and the
             status icons must MATCH the sky (the old "open" swatch drew a
             hollow accent ring that exists nowhere) */}
+        {/* NOT pointer-events-none: every swatch carries an explanatory
+            title, and the old none made all of them unreachable — the
+            legend explained nothing on hover (cold-eye) */}
         <div
-          className={`pointer-events-none ${legendOpen ? 'flex' : 'hidden'} flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-faint`}
+          className={`${legendOpen ? 'flex' : 'hidden'} flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-faint`}
         >
         {/* STATUS group — swatches carry the TRUE inking (brightness,
             blink); the shape is fixed so only the status axis varies */}
@@ -1725,7 +1728,10 @@ export default function Constellation({
         </span>
         )}
         {present.alias && (
-<span className="flex items-center gap-1">
+<span
+          className="flex items-center gap-1"
+          title="two names, one theorem — the dashed link ties a goal to the star it turned out to equal"
+>
           <svg width="18" height="13" viewBox="0 0 14 10">
             <line x1="1" y1="5" x2="13" y2="5" stroke="var(--color-accent)" strokeWidth="1" strokeDasharray="3 2.5" opacity="0.7" />
           </svg>

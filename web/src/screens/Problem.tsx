@@ -129,13 +129,17 @@ function GoalsList({
               }
             >
               {/* "attempting" is a liveness claim — a stopped run's
-                  leftover reads as interrupted, not live work; and
-                  'proved' is the settled norm — it earns no ink */}
-              {g.status === 'attempting' && !engineWorking
-                ? 'interrupted'
-                : g.status === 'proved'
-                  ? null
-                  : goalStatusLabel(g.status)}
+                  leftover reads as interrupted, not live work. The
+                  settled norm gets the FAINTEST word, not blankness:
+                  two cold-eye reviewers read the empty cell as
+                  missing data — ambiguity is noise too */}
+              {g.status === 'attempting' && !engineWorking ? (
+                'interrupted'
+              ) : g.status === 'proved' ? (
+                <span className="text-ink-faint/60">proved</span>
+              ) : (
+                goalStatusLabel(g.status)
+              )}
             </td>
             <td
               className="max-w-md truncate py-2 pr-4 text-[12px] text-ink-dim"

@@ -113,7 +113,7 @@ export function ErrorState({ error }: { error: Error }) {
   if (error instanceof ApiError && error.detail === 'NO_DATABASE') {
     return (
       <EmptyState title="This workspace hasn't been initialized yet">
-        Run the engine once (start the daemon from the header, or{' '}
+        Run the engine once (press Run in the header, or{' '}
         <code className="font-mono">asterism init</code> a problem) and the board will populate.
       </EmptyState>
     )

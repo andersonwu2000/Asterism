@@ -27,7 +27,18 @@ function errText(e: unknown): string {
  * arms it, 3s of silence disarms. */
 function ShelfRow({ p, onChanged }: { p: PaperShelfItem; onChanged: () => void }) {
   const [armed, setArmed] = useState(false)
+  const [renaming, setRenaming] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const rename = async (title: string) => {
+    setRenaming(false)
+    setErr(null)
+    try {
+      await apiPost(`/api/papers/${encodeURIComponent(p.id)}/rename`, { title })
+      onChanged()
+    } catch (e) {
+      setErr(errText(e))
+    }
+  }
   const timer = useRef<number | null>(null)
   useEffect(
     () => () => {
@@ -54,17 +65,41 @@ function ShelfRow({ p, onChanged }: { p: PaperShelfItem; onChanged: () => void }
   }
   return (
     <>
-      <tr className="h-9 border-b border-edge/60 transition-colors duration-150 hover:bg-surface">
+      <tr className="group/row h-9 border-b border-edge/60 transition-colors duration-150 hover:bg-surface">
         <td className="pr-4 pl-3">
-          <Link
-            to={`/papers/${encodeURIComponent(p.id)}`}
-            className="block truncate font-mono text-[13px] text-ink transition-colors hover:text-starlight"
-            title={`read ${p.source_name}`}
-          >
-            {p.source_name}
-          </Link>
+          {renaming ? (
+            <input
+              className="w-full rounded border border-edge bg-bg px-1.5 py-0.5 text-[13px] text-ink focus:border-ink-faint focus:outline-none"
+              defaultValue={p.title ?? ''}
+              placeholder={p.source_name}
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void rename(e.currentTarget.value)
+                if (e.key === 'Escape') setRenaming(false)
+              }}
+              onBlur={() => setRenaming(false)}
+            />
+          ) : (
+            <span className="flex min-w-0 items-baseline gap-2">
+              <Link
+                to={`/papers/${encodeURIComponent(p.id)}`}
+                className={`block truncate text-[13px] text-ink transition-colors hover:text-starlight ${p.title ? '' : 'font-mono'}`}
+                title={`read it — ${p.source_name} · ${sizeLabel(p)}`}
+              >
+                {p.title ?? p.source_name}
+              </Link>
+              {/* a human name for "paper.pdf" (owner, 2026-07-13) —
+                  display only; identity stays the content hash */}
+              <button
+                className="shrink-0 text-[11px] text-ink-faint opacity-0 transition-opacity hover:text-ink group-hover/row:opacity-100"
+                onClick={() => setRenaming(true)}
+                title="rename (display only — the file keeps its name)"
+              >
+                rename
+              </button>
+            </span>
+          )}
         </td>
-        <td className="tnum pr-4 text-xs whitespace-nowrap text-ink-dim">{sizeLabel(p)}</td>
         <td className="pr-4">
           {p.bound.length === 0 ? (
             <span className="text-xs text-ink-faint">—</span>
@@ -208,7 +243,8 @@ export default function Papers() {
           <thead>
             <tr className="border-b border-edge text-xs text-ink-faint">
               <th className="py-2 pr-4 pl-3 font-medium">paper</th>
-              <th className="w-[140px] py-2 pr-4 font-medium">size</th>
+              {/* size dropped (owner: low-value column) — it lives in
+                  the row's hover title now */}
               <th className="w-[220px] py-2 pr-4 font-medium">cited by</th>
               <th className="w-[90px] py-2 pr-4 font-medium">
                 <span title="a page-level index lets agents jump straight to the relevant pages">
@@ -264,7 +300,7 @@ export function PaperReader({ id }: { id: string }) {
               }`}
               title={p.source_name}
             >
-              {p.source_name}
+              {p.title ?? p.source_name}
             </Link>
           ))}
         </nav>
@@ -272,7 +308,7 @@ export function PaperReader({ id }: { id: string }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex shrink-0 items-baseline gap-4 border-b border-edge px-4 py-2.5">
           <span className="min-w-0 truncate font-mono text-[13px] text-ink">
-            {current?.source_name ?? id}
+            {current ? (current.title ?? current.source_name) : id}
           </span>
           {current && (
             <span className="tnum text-[11px] whitespace-nowrap text-ink-faint">

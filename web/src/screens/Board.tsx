@@ -67,10 +67,12 @@ function ProgressBar({
 
 /** Quiet text status for settled rows — the pill treatment is reserved
  * for states that ask something of the reader. */
-// 'complete' (ingested) is the settled norm — it earns NO ink; the
-// pill treatment stays reserved for states that ask something.
+// The settled norm gets the FAINTEST word, not blankness: cold-eye
+// reviewers read the empty ingested cell as missing data — ambiguity
+// is noise too. Pills stay reserved for states that ask something.
 const SETTLED_LABEL: Record<string, string> = {
   bridged: 'in Library ◆',
+  ingested: 'complete',
   idle: 'not started',
 }
 
@@ -105,7 +107,7 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
           {p.in_flight > 0 && (
             <span
               className="tnum flex shrink-0 items-center gap-1.5 text-[11px] text-accent"
-              title={`${p.in_flight} agent(s) running now`}
+              title={`${p.in_flight} agent${p.in_flight === 1 ? '' : 's'} working this problem right now (engine term: in-flight)`}
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
               {p.in_flight}
@@ -125,7 +127,9 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
               title={
                 p.status === 'bridged'
                   ? 'merged into the Library (engine term: bridged)'
-                  : 'not started yet'
+                  : p.status === 'ingested'
+                    ? 'proved and signed off — awaiting Library curation'
+                    : 'not started yet'
               }
             >
               {SETTLED_LABEL[p.status]}

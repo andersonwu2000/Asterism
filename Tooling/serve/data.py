@@ -1185,6 +1185,8 @@ def papers_list(conn: "sqlite3.Connection | None",
             papers.append({
                 "id": meta.id,
                 "source_name": meta.source_name,
+                # owner-editable display title; null = filename stands in
+                "title": meta.title,
                 "pages": meta.pages,
                 "chars": meta.chars,
                 "original": original,
@@ -1192,7 +1194,7 @@ def papers_list(conn: "sqlite3.Connection | None",
                 "map_stale": _shelf.map_is_stale(workspace, meta.id),
                 "bound": bound.get(meta.id, []),
             })
-    papers.sort(key=lambda p: p["source_name"].lower())
+    papers.sort(key=lambda p: (p["title"] or p["source_name"]).lower())
     return {"papers": papers}
 
 

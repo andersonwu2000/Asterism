@@ -47,7 +47,7 @@ function DaemonChip({ meta }: { meta: Meta | null }) {
         title={
           d.stopping
             ? 'engine stopping — finishing in-flight work'
-            : `engine working on ${d.scope ?? 'all problems'}${elapsed ? ` for ${elapsed}` : ''} — open the run console`
+            : `the live run — the engine has been working on ${d.scope ?? 'all problems'}${elapsed ? ` for ${elapsed}` : ''}; open the run console`
         }
       >
         <span
