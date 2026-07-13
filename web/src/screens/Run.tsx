@@ -375,6 +375,17 @@ export default function Run() {
               {g.open} open
             </span>
           )}
+          {/* the arithmetic must close on screen: "161/164 · 1 open"
+              left two goals unaccounted for and the reader asking
+              (cold-eye) — name the shelved/dead remainder */}
+          {g.total - g.proved - g.open - g.attempting > 0 && (
+            <span
+              className="tnum text-xs text-ink-faint"
+              title="shelved or dead — set aside by the strategist, not part of the live count"
+            >
+              {g.total - g.proved - g.open - g.attempting} set aside
+            </span>
+          )}
         </div>
       )}
 
@@ -528,7 +539,12 @@ export default function Run() {
                 {compactNumber(Math.round(rate))}
                 <span className="text-[12px] text-ink-dim">/min</span>
               </div>
-              <div className="text-[11px] text-ink-faint">burn rate</div>
+              <div
+                className="text-[11px] text-ink-faint"
+                title="run total ÷ elapsed — a whole-run average, not the last minute (bursts don't show here)"
+              >
+                avg burn
+              </div>
             </div>
           )}
           <div>

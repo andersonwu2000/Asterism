@@ -63,7 +63,12 @@ const OUTCOME_CLS: Record<string, string> = {
 
 function Row({ d, grouped }: { d: Decision; grouped: boolean }) {
   const [open, setOpen] = useState(false)
-  const summary = d.brief || d.reason || ''
+  // briefs are working markdown — the one-line summary strips the
+  // notation ("## Need ONE Forward brick…" leaked literal hashes;
+  // cold-eye). The expanded view keeps the raw text.
+  const summary = (d.brief || d.reason || '')
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/\*\*/g, '')
   const pipeline = typeof d.payload?.pipeline === 'string' ? (d.payload.pipeline as string) : null
   return (
     <div className={`relative pl-4 ${grouped ? 'border-l border-edge-strong/60' : ''}`}>

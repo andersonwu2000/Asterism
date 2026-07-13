@@ -61,7 +61,7 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
           const days = Math.floor((Date.now() - Date.parse(a.created_at)) / 86400_000)
           return days >= 2 ? (
             <span className="rounded-full bg-warn/15 px-2 py-0.5 text-[11px] font-semibold text-warn">
-              waiting {days} days
+              waiting {days}d
             </span>
           ) : (
             <span className="text-[11px] text-ink-faint">{relTime(a.created_at)}</span>
@@ -108,10 +108,12 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
           </Button>
         </div>
       </div>
-      {/* the highest-stakes click states its consequence — one line */}
+      {/* the highest-stakes click states its consequence — one line.
+          "Either choice" misled next to THREE buttons (cold-eye): Edit
+          is a mode toggle, not a resolution — name the two that are. */}
       <div className="mb-3 truncate text-[11px] text-ink-faint">
-        Either choice unpauses the problem — Accept writes the file, Reject keeps it and your
-        reason guides the re-plan.
+        Accept writes the file (with your edits, if any); Reject keeps it and asks you
+        why — either resolution unpauses the problem.
       </div>
 
       {(longQuestion || a.reason) && (

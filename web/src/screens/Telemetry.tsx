@@ -41,7 +41,9 @@ function ConfigPanel() {
     const current = String(s.resolved ?? '')
     return (
       <div key={s.key} className="flex items-center gap-3 py-1">
-        <span className="w-44 shrink-0 font-mono text-xs text-ink-dim">{s.key}</span>
+        {/* wide enough for the longest key (strategist.audit_interval_min)
+            — w-44 rammed dispatch.shelve_threshold into its input (cold-eye) */}
+        <span className="w-56 shrink-0 font-mono text-xs text-ink-dim">{s.key}</span>
         {s.choices ? (
           // a select kills the free-text failure mode (a typo'd model
           // name only explodes at the NEXT run) — power users can

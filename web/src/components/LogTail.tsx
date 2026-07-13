@@ -43,7 +43,18 @@ export default function LogTail() {
       }}
     >
       <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
-        {lines.join('\n')}
+        {/* an error line in routine gray is invisible (cold-eye: a
+            swallowed-error line hid in plain sight) — failures carry
+            the warn ink, line by line */}
+        {lines.map((l, i) => {
+          const bad = /\berror\b|\bfatal\b|traceback|swallowed|exception/i.test(l)
+          return (
+            <span key={i} className={bad ? 'text-warn' : undefined}>
+              {l}
+              {'\n'}
+            </span>
+          )
+        })}
       </pre>
     </div>
   )

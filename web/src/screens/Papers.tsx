@@ -69,7 +69,9 @@ function ShelfRow({ p, onChanged }: { p: PaperShelfItem; onChanged: () => void }
           {p.bound.length === 0 ? (
             <span className="text-xs text-ink-faint">—</span>
           ) : (
-            <span className="truncate text-xs">
+            /* block, or truncate is inert on an inline span and the
+               names overprint the neighbouring columns (cold-eye) */
+            <span className="block truncate text-xs" title={p.bound.map((b) => b.problem).join(', ')}>
               {p.bound.map((b, i) => (
                 <span key={b.problem}>
                   {i > 0 && <span className="text-ink-faint">, </span>}

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { lineDiff, wordDiff } from '../lib/diff'
 import type { DiffRow, Seg } from '../lib/diff'
 
@@ -55,7 +55,7 @@ function Line({
     <div
       className={`flex min-w-0 px-2 whitespace-pre-wrap ${
         tone === 'del'
-          ? 'bg-white/[0.025] text-ink-faint'
+          ? 'bg-white/[0.025] text-ink-dim'
           : tone === 'add'
             ? 'bg-white/[0.07] text-ink'
             : 'text-ink-dim'
@@ -67,7 +67,9 @@ function Line({
       <span className="mr-2 w-3 shrink-0 text-ink-faint select-none">{sign}</span>
       <span className="min-w-0 break-words">
         {/* achromatic word-diff: removed words are struck, added words
-            sit on a light plate */}
+            sit on a light plate. Removed content stays READABLE (dim,
+            not faint) — it is exactly what the reviewer must weigh
+            before giving it up (cold-eye) */}
         {segs
           ? segs.map((s, i) =>
               s.changed ? (
@@ -75,7 +77,7 @@ function Line({
                   key={i}
                   className={`rounded-[2px] ${
                     tone === 'del'
-                      ? 'text-ink-faint line-through decoration-ink-faint/70'
+                      ? 'text-ink-dim line-through decoration-ink-faint/70'
                       : 'bg-white/15 text-ink'
                   }`}
                 >
@@ -136,16 +138,29 @@ export default function DiffView({ left, right }: { left: string; right: string 
   const rows = useMemo(() => lineDiff(left, right), [left, right])
   const chunks = useMemo(() => chunkRows(rows), [rows])
   const changed = rows.filter((r) => r.type !== 'same').length
+  // The bottom edge must SAY there is more, not merely fade: an
+  // unconditional gradient ended mid-sentence and read as truncation
+  // (cold-eye). Shown only while scrollable-and-not-at-bottom.
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [more, setMore] = useState(false)
+  const check = () => {
+    const el = scrollRef.current
+    if (el) setMore(el.scrollHeight - el.scrollTop - el.clientHeight > 8)
+  }
+  useEffect(check, [chunks])
   return (
     <div className="overflow-hidden rounded-md border border-edge">
       <div className="flex items-center gap-2 border-b border-edge bg-surface-2 px-3 py-1 text-[11px] text-ink-faint">
         <span>current → proposed</span>
         {changed > 0 && <span className="tnum">· {changed} changed lines</span>}
       </div>
-      {/* scrollable region announces itself — a diff that visually ends
-          mid-sentence reads as truncated, not scrollable */}
-      <div className="relative">
-        <div className="max-h-96 overflow-auto font-mono text-[11px] leading-relaxed">
+      {/* re-check on fold clicks: opening one grows scrollHeight */}
+      <div className="relative" onClickCapture={() => window.setTimeout(check, 0)}>
+        <div
+          ref={scrollRef}
+          onScroll={check}
+          className="max-h-96 overflow-auto font-mono text-[11px] leading-relaxed"
+        >
           {chunks.map((c, i) =>
             c.kind === 'fold' && c.rows.length > 3 ? (
               <Fold key={i} rows={c.rows} />
@@ -154,7 +169,13 @@ export default function DiffView({ left, right }: { left: string; right: string 
             ),
           )}
         </div>
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-surface to-transparent" />
+        {more && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-8 items-end justify-center bg-gradient-to-t from-surface to-transparent">
+            <span className="mb-0.5 rounded-full bg-surface-2 px-2 text-[10px] text-ink-dim">
+              ↓ scroll for the rest
+            </span>
+          </div>
+        )}
       </div>
     </div>
   )

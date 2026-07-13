@@ -410,7 +410,7 @@ export default function Board() {
             {problems.length}
             {attention > 0 && (
               <span className="ml-2 font-medium text-warn">
-                {attention} need{attention === 1 ? 's' : ''} input
+                · {attention} need{attention === 1 ? 's' : ''} input
               </span>
             )}
           </span>
@@ -452,12 +452,16 @@ export default function Board() {
           push "last event" off a laptop screen (main clips overflow) */}
       {(
         <table className="w-full table-fixed border-collapse text-left">
-          <thead className="sticky top-0 z-10 bg-bg">
+          {/* the opaque paint lives on the TH cells: with
+              border-collapse a sticky thead's own background doesn't
+              reliably render, and scrolled rows bled through the
+              header (cold-eye) */}
+          <thead className="sticky top-0 z-10">
             <tr className="border-b border-edge text-xs text-ink-faint">
-              <th className="py-2 pr-4 pl-3 font-medium">problem</th>
-              <th className="w-[120px] py-2 pr-4 font-medium">status</th>
-              <th className="w-[230px] py-2 pr-4 font-medium">progress</th>
-              <th className="w-[80px] py-2 pr-3 text-right font-medium whitespace-nowrap">
+              <th className="bg-bg py-2 pr-4 pl-3 font-medium">problem</th>
+              <th className="w-[120px] bg-bg py-2 pr-4 font-medium">status</th>
+              <th className="w-[230px] bg-bg py-2 pr-4 font-medium">progress</th>
+              <th className="w-[80px] bg-bg py-2 pr-3 text-right font-medium whitespace-nowrap">
                 last event
               </th>
             </tr>

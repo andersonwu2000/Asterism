@@ -1507,7 +1507,9 @@ export default function Constellation({
           style={{
             left: Math.min(
               tx + (shownPosRef.current.get(hovered.goal.id) ?? hovered).x * k + 14,
-              (containerRef.current?.clientWidth ?? 800) - 340,
+              // clamp ≥ the card's real max width (max-w-sm = 384px):
+              // 340 let right-edge popovers run off-screen (cold-eye)
+              (containerRef.current?.clientWidth ?? 800) - 400,
             ),
             top: Math.min(
               ty + (shownPosRef.current.get(hovered.goal.id) ?? hovered).y * k + 14,
@@ -1551,7 +1553,9 @@ export default function Constellation({
           choice sticks. It opens RIGHTWARD on the toggle's own line
           (owner, 2026-07-11): the second line used to hang exactly
           over the root band at the sky's top-left */}
-      <div className="absolute top-3 left-3 flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md bg-surface/90 px-2.5 py-1">
+      {/* opaque: at high zoom the sky's strokes crossed straight
+          through the 90%-alpha plate and garbled the labels (cold-eye) */}
+      <div className="absolute top-3 left-3 flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md bg-surface px-2.5 py-1">
         <button
           className="cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink-dim"
           onClick={() =>

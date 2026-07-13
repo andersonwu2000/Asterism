@@ -439,8 +439,17 @@ export default function Problem({ name }: { name: string }) {
             'paper_fetched',
           ])
           const lastOk = data.decisions.find((d) => d.outcome !== null && OK.has(d.outcome))
+          // a blocker must still be IN the way: the old not-proved
+          // filter crowned dead goals — the header named a "top
+          // blocker" the panel then called dead (cold-eye)
           const blocker = [...data.goals]
-            .filter((g) => g.status !== 'proved' && g.dead_attempts > 0)
+            .filter(
+              (g) =>
+                (g.status === 'open' ||
+                  g.status === 'attempting' ||
+                  g.status === 'pending_strategist_review') &&
+                g.dead_attempts > 0,
+            )
             .sort((a, b) => b.dead_attempts - a.dead_attempts)[0]
           const paused = data.status === 'awaiting_human' || data.status === 'signoff_pending'
           if (!lastOk && !blocker && !paused) return null
