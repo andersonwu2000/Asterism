@@ -776,22 +776,24 @@ def _section_manifest_meta(mfst: manifest.Manifest,
                            workspace: Path, problem: str) -> list[str]:
     """For T0 / T3 — surface Manifest statement + Defs.lean preview so
     Strategist can decide whether RequestUserAmend on Defs.lean is needed
-    (statement-vocabulary missing)."""
+    (statement-vocabulary missing). An ABSENT Defs.lean renders nothing:
+    pure-NL problems have none by design (Phase 6), and the old
+    placeholder ("does not exist — RequestUserAmend candidate") was a
+    standing lure that mislabelled the legal state as a defect with a
+    human-escalation hint attached (user call 2026-07-13)."""
     out = ["## Manifest", "", "### Statement", ""]
     out.append(f"```\n{mfst.statement}\n```")
     if mfst.strategic_notes:
         out += ["", "### Strategic notes", ""]
         out.append(mfst.strategic_notes)
     defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
-    out += ["", "### Defs.lean", ""]
     if defs_path.exists():
+        out += ["", "### Defs.lean", ""]
         try:
             defs_text = defs_path.read_text(encoding="utf-8")
             out.append(f"```lean\n{defs_text}\n```")
         except OSError:
             out.append("(Defs.lean unreadable)")
-    else:
-        out.append("(Defs.lean does not exist — RequestUserAmend candidate)")
     out.append("")
     return out
 
