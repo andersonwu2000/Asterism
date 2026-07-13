@@ -13,6 +13,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
    - Lines tagged `SUSPECT:` by earlier wakes → adjudicate these first.
    - Framework-behavior claims (daemon / gate behavior, what is "healthy") → legitimate only when they quote a prompt rule, a gate message, or a directive; unsourced → DELETE, and never use as evidence.
    - Directive content `CATALOG.md` already carries → re-emit the directive without it.
+   - The directive: merge, shorten, retire — an audit that leaves it larger has not curated it.
 
 3. **Curate `_plan.md` directly**: every `## Facts` line must re-derive from its cited source — demote what doesn't; narrow verdicts wider than the attempts they cite; delete the wrong, fix the imprecise, `SUSPECT:` what you cannot settle within budget.
 
