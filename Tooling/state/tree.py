@@ -179,6 +179,17 @@ def _walk_goal(conn: sqlite3.Connection, goal_id: int,
         "SELECT id, goal_id, status FROM strategies "
         "WHERE goal_id = ? ORDER BY id", (goal_id,),
     ).fetchall()
+    # Childless succeeded strategies (a Backward leaf-bypass / in-place
+    # proof) render as pure noise under an already-proved goal — the
+    # `via sNN (succeeded)` line carries no structure and no decision
+    # value (user call 2026-07-13). Succeeded strategies WITH sub-goals
+    # stay: they are the decomposition skeleton.
+    strategies = [
+        s for s in strategies
+        if s["status"] != "succeeded" or conn.execute(
+            "SELECT 1 FROM strategy_subgoals WHERE strategy_id = ? LIMIT 1",
+            (int(s["id"]),)).fetchone() is not None
+    ]
 
     for i, strat in enumerate(strategies):
         is_last_strat = (i == len(strategies) - 1)

@@ -59,6 +59,27 @@ def _seed_subgoal(conn, parent_strategy_id: int, slug: str,
 # render() — content correctness
 # ---------------------------------------------------------------------
 
+def test_childless_succeeded_strategy_hidden(conn) -> None:
+    """2026-07-13 (user call): `via sNN (succeeded)` under a goal a
+    Backward proved in place carries no structure and no decision value
+    — 196 such lines were most of a mature problem's tree. Hidden in
+    both views; a succeeded strategy WITH sub-goals keeps its line (it
+    is the decomposition skeleton)."""
+    root_id = _seed_root(conn)
+    conn.execute("UPDATE goals SET status='proved' WHERE id=?", (root_id,))
+    leaf_sid = _seed_strategy(conn, root_id, status="succeeded")
+    for frontier in (False, True):
+        out = tree.render(conn, "p", frontier=frontier)
+        assert f"via s{leaf_sid}" not in out, f"frontier={frontier}"
+        assert "main  (proved)" in out
+    # decomposition shape: succeeded strategy with sub-goals stays
+    deco_sid = _seed_strategy(conn, root_id, status="succeeded")
+    _seed_subgoal(conn, deco_sid, "s_sub_1", status="proved", position=0)
+    out = tree.render(conn, "p")
+    assert f"via s{deco_sid}  (succeeded)" in out
+    assert f"via s{leaf_sid}" not in out
+
+
 def test_render_no_problem_returns_init_hint(conn) -> None:
     out = tree.render(conn, "ghost")
     assert "no root goal" in out
