@@ -539,6 +539,11 @@ def test_build_strategy_skeleton_renames_and_stubs() -> None:
     assert "import Problems.p.Defs" in sk
     assert "namespace Problems.p" in sk
     assert "end Problems.p" in sk
+    # Framework-owned lint handling (2026-07-15): the source's trailing
+    # space before `:=` must not ship a double-space style lint, and
+    # the locked-signature linter suppression is part of the skeleton.
+    assert "  := by" not in sk
+    assert "set_option linter.unusedVariables false in" in sk
 
 
 def test_build_strategy_skeleton_oracle_sig_reconstructs_inferred_def() -> None:
@@ -568,6 +573,8 @@ def test_build_strategy_skeleton_oracle_sig_reconstructs_inferred_def() -> None:
     assert "import Mathlib" in sk and "import Problems.p.Defs" in sk
     assert "open scoped Manifold" in sk
     assert "variable {R : Type}" not in sk          # pp already binds R
+    assert "  := by" not in sk
+    assert "set_option linter.unusedVariables false in" in sk
     assert "namespace Problems.p" in sk and "end Problems.p" in sk
 
 

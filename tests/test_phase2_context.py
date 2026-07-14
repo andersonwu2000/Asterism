@@ -663,9 +663,14 @@ def test_pending_reopens_suppresses_when_promised_batch_inflight(
 def test_pending_reopens_suppresses_after_already_addressed(
     conn: sqlite3.Connection,
 ) -> None:
-    """Once Strategist has emitted a later ConfirmShelve/Reopen on the
-    same goal, the previously-promised batch is "addressed"; don't
-    re-surface (brouwer g2771 re-ConfirmShelve x4 incident)."""
+    """A re-ConfirmShelve is the Strategist's ANSWER to the surfaced
+    promise, not a new promise (2026-07-14, goal 5941: every wake's
+    decisions share one batch_id, so a terminal re-confirm co-batched
+    with an unrelated forced-advance Inject used to read as a fresh
+    pairing and re-arm this section forever). After the answer the
+    goal never re-surfaces; only a Reopen starts a new promise cycle
+    (brouwer g2771 re-ConfirmShelve x4 is also covered — the first
+    surfacing is answered once)."""
     _insert_problem(conn)
     _insert_root(conn)
     g = _seed_shelved_goal(conn, slug="g_addressed")
@@ -673,18 +678,54 @@ def test_pending_reopens_suppresses_after_already_addressed(
         conn, goal_id=g, batch_id="batch-first",
         inject_outcomes=["success"],
     )
-    # Strategist already considered + re-shelved with a fresher batch.
+    # Strategist answered the surfaced promise with a re-confirm; the
+    # co-batched Inject is unrelated forced-advance work.
     _seed_confirmshelve_with_inject_batch(
         conn, goal_id=g, batch_id="batch-second",
         inject_outcomes=["success"],
     )
     lines = phase2_context._section_pending_reopens(
         conn, "p", "inject_batch_done")
+    assert "g_addressed" not in "\n".join(lines)
+
+
+def test_pending_reopens_reopen_starts_a_new_promise_cycle(
+    conn: sqlite3.Connection,
+) -> None:
+    """Reopen resets the promise clock: the first ConfirmShelve AFTER
+    the goal's latest Reopen is a genuine new pairing and surfaces
+    when its batch completes — even though older answered
+    ConfirmShelves exist."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    g = _seed_shelved_goal(conn, slug="g_reshelved")
+    _seed_confirmshelve_with_inject_batch(
+        conn, goal_id=g, batch_id="cycle1-promise",
+        inject_outcomes=["success"],
+    )
+    _seed_confirmshelve_with_inject_batch(
+        conn, goal_id=g, batch_id="cycle1-answer",
+        inject_outcomes=["success"],
+    )
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, outcome, created_at, updated_at)"
+        " VALUES ('p', 0, 'inject_batch_done', 'Reopen', ?, NULL,"
+        "         'new tools landed', '{}', 'cycle2-reopen', NULL, ?, ?)",
+        (str(g), ts, ts),
+    )
+    conn.commit()
+    _seed_confirmshelve_with_inject_batch(
+        conn, goal_id=g, batch_id="cycle2-promise",
+        inject_outcomes=["success"],
+    )
+    lines = phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done")
     body = "\n".join(lines)
-    # The fresher (batch-second) WAS the latest CS — and its batch is
-    # complete — so it should surface; but the original "batch-first"
-    # surfacing must not. Single appearance only.
-    assert body.count("g_addressed") == 1
+    assert body.count("g_reshelved") == 1
+    assert "cycle2-promise" in body or "g_reshelved" in body
 
 
 def test_pending_reopens_skips_legacy_cs_with_null_batch_id(

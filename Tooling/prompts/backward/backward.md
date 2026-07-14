@@ -25,7 +25,7 @@ Workflow:
 4. **Revise**: errors → revise + apply_edit, loop until clean.
 5. **Cite**: for each sub-claim, grep mathlib + scan proved siblings / Library / `## Lessons learned` for a direct replacement. If found, drop the `have h_<slug>` from the skeleton and cite inline (`apply @X <;> assumption`-style) — one less sub-goal to register.
 6. **Stub**: for each remaining sub-claim, write `new_<slug>.lean` stub in attempts_dir (`:= by sorry` + `entry_kind` directive) and `validate_file` each.
-7. **Link**: final apply_edit on `patch.lean` — replace each `have h_<slug> : <type> := by sorry` placeholder with `have h_<slug> := <slug> <args>` (real sub-goal reference). Without this, patch.lean ships sorry → main inherits sorryAx.
+7. **Link**: final apply_edit on `patch.lean` — replace each `have h_<slug> : <type> := by sorry` placeholder with `have h_<slug> := <slug> <args>` (live tools resolve `<slug>` once its `new_<slug>.lean` is on disk — Unknown identifier here means the stub file isn't written yet). Without this, patch.lean ships sorry → main inherits sorryAx.
 
 `patch.lean` lives in attempts_dir and is sandboxed — your exploratory edits never touch the parent's source file. Outputs (patch.lean + new_*.lean) in attempts_dir are what the framework commits.
 

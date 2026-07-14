@@ -150,11 +150,18 @@ def build_strategy_skeleton(
     if opens:
         header += "\n" + "\n".join(opens)
     var_block = ("\n".join(variables) + "\n\n") if variables else ""
+    # `signature_prefix` keeps the source's trailing whitespace before
+    # `:=`, shipping a double-space style lint the agent cannot fix
+    # (locked head) — rstrip. The linter set_option is scoped to this
+    # one decl (`in`): unused binders in the LOCKED signature are the
+    # framework's choice to carry, not the agent's to silence
+    # (agent_feedback 2026-07-13/14, 17 reports).
     return (
         header + "\n\n"
         f"namespace {namespace}\n\n"
         f"{var_block}"
-        f"{mods}{new_sig} := by sorry\n\n"
+        "set_option linter.unusedVariables false in\n"
+        f"{mods}{new_sig.rstrip()} := by sorry\n\n"
         f"end {namespace}\n"
     )
 
@@ -202,11 +209,14 @@ def _skeleton_from_oracle_sig(
     header = "\n".join(imports)
     if opens:
         header += "\n" + "\n".join(opens)
+    # Same whitespace + locked-signature-lint handling as the verbatim
+    # arm above.
     return (
         header + "\n\n"
         f"namespace {namespace}\n\n"
-        f"{mods}{kind} {sid_token}{universes} {binders_and_type} "
-        f":= by sorry\n\n"
+        "set_option linter.unusedVariables false in\n"
+        f"{mods}{kind} {sid_token}{universes} "
+        f"{binders_and_type.strip()} := by sorry\n\n"
         f"end {namespace}\n"
     )
 

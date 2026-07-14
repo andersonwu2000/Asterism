@@ -433,7 +433,8 @@ def _section_catalog_pointer(conn: sqlite3.Connection, problem: str,
         "## Proved catalog",
         f"_All {len(rows)} proved bricks of this problem are citable;"
         f" exact statements live in `{CATALOG_COMPANION}` (read-only"
-        " companion). Read an entry there BEFORE citing it — never"
+        " companion, beside this Context.md). Read an entry there"
+        " BEFORE citing it — never"
         " re-derive a landed brick. Pre-search candidates (when"
         " present) are the curated subset for THIS goal._",
         "",

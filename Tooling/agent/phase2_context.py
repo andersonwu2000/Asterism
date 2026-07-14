@@ -460,10 +460,11 @@ def _section_pending_reopens(conn: sqlite3.Connection,
     *every* shelved goal in the problem on every inject_batch_done
     wake, causing Strategist to re-ConfirmShelve g2771 four times with
     no new evidence between calls. Post-fix it lists ONLY goals whose
-    own promised batch (the one cited by their latest ConfirmShelve)
-    is now complete — i.e., goals where the Inject(s) Strategist
-    explicitly designed to address them have produced their outcomes
-    and there's now genuine new evidence to re-evaluate.
+    own promised batch (the one cited by their promise-bearing
+    ConfirmShelve — the first since the goal's latest Reopen) is now
+    complete — i.e., goals where the Inject(s) Strategist explicitly
+    designed to address them have produced their outcomes and there's
+    now genuine new evidence to re-evaluate.
 
     Fortuitous unblock (a Forward designed for an unrelated batch
     happens to make a shelved goal provable) is handled separately by
@@ -472,30 +473,42 @@ def _section_pending_reopens(conn: sqlite3.Connection,
     shelved goals here.
 
     Per surfaced goal:
-      * latest ConfirmShelve `reason` (the explicit promise);
+      * the promise-bearing ConfirmShelve's `reason` (the explicit
+        promise);
       * the now-complete promised batch's Inject decisions + their
         produced goals (so Strategist sees exactly what landed).
     """
     if trigger_kind != "inject_batch_done":
         return []
 
-    # Find shelved goals whose latest ConfirmShelve was committed in a
-    # batch whose every sibling Inject row has `outcome IS NOT NULL`
-    # (batch fully terminal). Latest-per-goal so a goal that's been
-    # re-ConfirmShelved across multiple batches surfaces against its
-    # most recent promise — older batches' completion is moot.
+    # Find shelved goals whose PROMISE-BEARING ConfirmShelve was
+    # committed in a batch whose every sibling Inject row has `outcome
+    # IS NOT NULL` (batch fully terminal). Promise-bearing = the FIRST
+    # ConfirmShelve since the goal's latest Reopen (or first ever) —
+    # that's the one the verifier forced to pair with a compensating
+    # Inject. Later re-confirms are terminal answers, not new promises:
+    # every wake's decisions share one batch_id, so a standalone
+    # re-confirm co-batched with an UNRELATED forced-advance Inject
+    # used to read as a fresh pairing and re-arm this section every
+    # wake (agent_feedback 2026-07-14, goal 5941 — 15 reports).
     rows = list(conn.execute(
         """
         WITH latest_cs AS (
             SELECT g.id AS goal_id, g.slug AS goal_slug,
                    g.updated_at AS shelved_at,
-                   MAX(d.id) AS cs_decision_id
+                   MIN(d.id) AS cs_decision_id
             FROM goals g
             JOIN strategist_decisions d
               ON d.target_id = CAST(g.id AS TEXT)
              AND d.decision_kind = 'ConfirmShelve'
              AND d.problem = g.problem
              AND d.batch_id IS NOT NULL
+             AND d.id > COALESCE((
+                 SELECT MAX(r.id) FROM strategist_decisions r
+                 WHERE r.problem = g.problem
+                   AND r.target_id = CAST(g.id AS TEXT)
+                   AND r.decision_kind = 'Reopen'
+             ), 0)
             WHERE g.problem = ? AND g.status = 'shelved'
             GROUP BY g.id
         )
@@ -931,11 +944,13 @@ def _section_catalog_index_strategist(conn: sqlite3.Connection,
     out = [
         "## Proved catalog (index)",
         f"_{len(rows)} landed bricks — full list & exact statements in"
-        f" `{context.CATALOG_COMPANION}` (read-only companion,"
-        " machine-generated from what actually landed — never drifts"
-        " from pipeline renames; grep it by slug). Copy signatures from"
-        " there into briefs/directives instead of hand-maintaining a"
-        f" catalog. The {len(recent)} newest:_",
+        f" `{context.CATALOG_COMPANION}` (read-only companion beside"
+        " this Context.md, machine-generated from what actually landed"
+        " — never drifts from pipeline renames; grep it by slug; every"
+        " worker gets its own copy beside its Context.md, so cite it by"
+        " bare name in briefs). Copy signatures from there into"
+        " briefs/directives instead of hand-maintaining a catalog."
+        f" The {len(recent)} newest:_",
         "",
     ]
     out += [f"- `{r['slug']}`" for r in recent]
@@ -1034,9 +1049,10 @@ def _section_library_inventory(conn: sqlite3.Connection, problem: str,
     out = [
         header,
         f"_{len(rows)} proved bricks — full list & exact statements in"
-        f" `{context.CATALOG_COMPANION}` (read-only companion; grep it"
-        " by slug). Read an entry there BEFORE citing it or proposing"
-        f" anything similar. The {len(recent)} newest:_",
+        f" `{context.CATALOG_COMPANION}` (read-only companion beside"
+        " this Context.md; grep it by slug). Read an entry there BEFORE"
+        f" citing it or proposing anything similar."
+        f" The {len(recent)} newest:_",
         "",
     ]
     out += [f"- `{r['slug']}`" for r in recent]
