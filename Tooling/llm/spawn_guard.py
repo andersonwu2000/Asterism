@@ -44,27 +44,34 @@ _PATH_FIELDS = ("file_path", "path", "notebook_path")
 
 _POSIX_DRIVE = re.compile(r"^/(?:mnt/)?([A-Za-z])(/|$)")
 # Absolute-path tokens inside a Bash command: windows drive form,
-# posix drive form, or ~-anchored. Quotes/spaces delimit tokens.
+# posix drive form, plain POSIX absolute (so a Linux host's
+# /home/... references are guarded too), or ~-anchored. Quotes/spaces
+# delimit tokens. The generic /-form can over-match (URLs' //host,
+# /dev/null) — harmless: deny still requires under-home ∧ ¬whitelist.
 _BASH_TOKEN = re.compile(
-    r"""(?:[A-Za-z]:[\\/]|(?<![\w.])/(?:mnt/)?[A-Za-z]/|~[\\/])"""
+    r"""(?:[A-Za-z]:[\\/]|(?<![\w.])/(?:mnt/)?[A-Za-z]/|(?<![\w.])/|~[\\/])"""
     r"""[^\s'"();|&<>]*""")
 
 
 def _normalize(raw: str, cwd: str | None) -> Path | None:
     """Best-effort canonical absolute Path for a raw path string.
     Returns None for relative paths when no cwd is known (treated as
-    in-workspace — the session cwd is always inside the repo)."""
+    in-workspace — the session cwd is always inside the repo).
+    Drive-letter rewriting and backslash folding are Windows-host
+    semantics — on POSIX a backslash is a literal filename char and
+    /c/... is a real directory, so both are gated on os.name."""
     p = raw.strip().strip("'\"")
     if not p:
         return None
     if p.startswith("~"):
         p = os.path.expanduser(p)
-    m = _POSIX_DRIVE.match(p.replace("\\", "/"))
-    if m:
-        rest = p.replace("\\", "/")[m.end(1):]   # keep the leading slash
-        p = f"{m.group(1)}:{rest or '/'}"
-    # collapse doubled separators from shell/JSON escaping
-    p = re.sub(r"[\\/]+", lambda _: os.sep, p)
+    if os.name == "nt":
+        m = _POSIX_DRIVE.match(p.replace("\\", "/"))
+        if m:
+            rest = p.replace("\\", "/")[m.end(1):]  # keep the leading slash
+            p = f"{m.group(1)}:{rest or '/'}"
+        # collapse doubled separators from shell/JSON escaping
+        p = re.sub(r"[\\/]+", lambda _: os.sep, p)
     if not os.path.isabs(p):
         if cwd is None:
             return None
@@ -121,12 +128,14 @@ def check(tool_name: str, tool_input: dict, cwd: str | None) -> str | None:
         return None
     if tool_name == "Bash":
         home = Path.home()
-        allowed_home = _allowed_home()
         for m in _BASH_TOKEN.finditer(str(tool_input.get("command", ""))):
             path = _normalize(m.group(0), cwd)
             if path is None or not _under(path, home):
                 continue
-            if not any(_under(path, root) for root in allowed_home):
+            # Exempt the FULL whitelist, not just the home subtrees: on
+            # hosts where the repo itself lives under home (Linux CI,
+            # any ~/src checkout) repo paths must never deny.
+            if not any(_under(path, root) for root in wl):
                 return (
                     f"Bash command references {m.group(0)}, which is "
                     "under the user's home directory. Home is outside "

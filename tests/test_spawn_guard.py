@@ -27,15 +27,21 @@ def _mem(name: str = "MEMORY.md") -> str:
 # ---------- file tools: whitelist semantics ----------
 
 def test_file_tools_allow_repo_paths() -> None:
-    for raw in (
+    cases = [
         str(REPO_ROOT / "Problems" / "p" / "proofs" / "L_x.lean"),
         str(REPO_ROOT / ".attempts" / "abc" / "patch.lean"),
         str(REPO_ROOT / ".lake" / "packages" / "mathlib" / "M.lean"),
-        # POSIX drive spelling and doubled separators, as seen live
-        "/" + str(REPO_ROOT)[0].lower() + str(REPO_ROOT)[2:].replace("\\", "/") + "/TREE.md",
-        str(REPO_ROOT).replace("\\", "\\\\") + "\\\\proofs\\\\a.lean",
         "relative/inside/cwd.lean",
-    ):
+    ]
+    if os.name == "nt":
+        # POSIX drive spelling and doubled separators, as seen live —
+        # Windows-host spellings; meaningless where REPO_ROOT has no drive
+        cases += [
+            "/" + str(REPO_ROOT)[0].lower()
+            + str(REPO_ROOT)[2:].replace("\\", "/") + "/TREE.md",
+            str(REPO_ROOT).replace("\\", "\\\\") + "\\\\proofs\\\\a.lean",
+        ]
+    for raw in cases:
         assert check("Read", {"file_path": raw}, CWD) is None, raw
         assert check("Grep", {"path": raw}, CWD) is None, raw
 
@@ -53,8 +59,11 @@ def test_file_tools_deny_operator_state_and_escapes() -> None:
     assert check("Read", {"file_path": _mem()}, CWD)
     assert check("Edit", {"file_path": _mem("some_lesson.md")}, CWD)
     assert check("Write", {"file_path": str(HOME / ".ssh" / "config")}, CWD)
-    # ..-traversal that lands outside the repo (live b6 sample)
-    esc = str(REPO_ROOT / "Problems" / "P" / "proofs") + ("\\.." * 5) + "\\.attempts\\x.lean"
+    # ..-traversal that lands outside the repo (live b6 sample);
+    # separator spelling per host — POSIX keeps backslashes literal
+    sep = "\\" if os.name == "nt" else "/"
+    esc = (str(REPO_ROOT / "Problems" / "P" / "proofs")
+           + (f"{sep}.." * 5) + f"{sep}.attempts{sep}x.lean")
     assert check("Write", {"file_path": esc}, CWD)
     # ..-traversal that STAYS inside the repo is fine
     ok = str(REPO_ROOT / "Problems" / "P" / "proofs" / ".." / "Defs.lean")
@@ -69,15 +78,20 @@ def test_file_tools_deny_message_teaches() -> None:
 # ---------- Bash: home-directory guard ----------
 
 def test_bash_denies_home_references_all_spellings() -> None:
-    for cmd in (
+    home_fwd = str(HOME).replace("\\", "/")
+    cmds = [
         f'cat "{_mem()}"',
-        'grep -n x "/c/Users/anyone/.claude/projects/D--A/memory/MEMORY.md"',
         'ls ~/.claude/projects/',
-        'cd /d/Asterism && ls x && cat "C:/Users/u/.claude/projects/p/memory/f.md"',
-    ):
-        # normalize the middle sample onto THIS home so _under(home) holds
-        cmd = cmd.replace("/c/Users/anyone", "/" + str(HOME)[0].lower() + str(HOME)[2:].replace("\\", "/")) \
-                 .replace("C:/Users/u", str(HOME).replace("\\", "/"))
+        f'cd /d/Asterism && ls x && cat "{home_fwd}/.claude/projects/p/memory/f.md"',
+    ]
+    if os.name == "nt":
+        # POSIX drive spelling of THIS home (/c/Users/...) — a
+        # Windows-host rewrite; on POSIX the plain absolute form above
+        # already covers the /home/... spelling
+        cmds.append('grep -n x "/' + str(HOME)[0].lower()
+                    + str(HOME)[2:].replace("\\", "/")
+                    + '/.claude/projects/D--A/memory/MEMORY.md"')
+    for cmd in cmds:
         assert check("Bash", {"command": cmd}, CWD), cmd
 
 
