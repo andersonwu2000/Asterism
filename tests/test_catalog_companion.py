@@ -137,6 +137,28 @@ def test_forward_inventory_is_slug_index_with_companion(conn, tmp_path):
         encoding="utf-8")
 
 
+def test_inline_indexes_carry_recent_tail_only(conn, tmp_path):
+    """2026-07-14 (user call): the inline slug list grew linearly with
+    proved count (438 bricks = 16KB, 47% of the strategist context).
+    Inline keeps only the newest _CATALOG_RECENT_N as the freshness
+    floor; the full list stays in the companion."""
+    n = phase2_context._CATALOG_RECENT_N
+    for i in range(n + 10):
+        _goal(conn, f"brick_{i:03d}")
+    for lines in (
+        phase2_context._section_catalog_index_strategist(conn, "P", tmp_path),
+        phase2_context._section_library_inventory(conn, "P", tmp_path),
+    ):
+        text = "\n".join(lines)
+        assert f"{n + 10} " in text  # total count still stated
+        assert ctx.CATALOG_COMPANION in text
+        assert f"- `brick_{n + 9:03d}`" in text   # newest present
+        assert "- `brick_000`" not in text        # oldest dropped
+        assert text.count("- `brick_") == n
+    body = (tmp_path / ctx.CATALOG_COMPANION).read_text(encoding="utf-8")
+    assert "## brick_000" in body  # companion keeps the full list
+
+
 def test_strategist_index_present_and_wired(conn, tmp_path):
     _goal(conn, "brick_a")
     lines = phase2_context._section_catalog_index_strategist(

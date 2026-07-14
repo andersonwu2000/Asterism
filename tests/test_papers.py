@@ -200,6 +200,28 @@ def test_section_paper_index_gating_and_shapes(tmp_path: Path) -> None:
     assert len(joined) < ctx.PAPER_INDEX_MAX_CHARS + 600
 
 
+def test_section_paper_index_map_goes_to_companion(tmp_path: Path) -> None:
+    """2026-07-14 (user call): the static navigation map repeated ~4KB
+    into every context for 140+ wakes. With an attempts_dir the map
+    body moves to the PAPER_MAP.md companion; inline keeps the pointer.
+    No attempts_dir (legacy caller) → old inline behavior (pinned by
+    test_section_paper_index_gating_and_shapes)."""
+    from Tooling.agent import context as ctx
+    meta = _add_text_paper(tmp_path, "short paper\n")
+    map_body = (f"---\npaper: {meta.id}\ntext_sha: {meta.text_sha}\n---\n\n"
+                "## Structure\n- [p.1] lemma X\n")
+    shelf.map_path(tmp_path, meta.id).write_text(map_body, encoding="utf-8")
+    attempts = tmp_path / ".attempts" / "x"
+    attempts.mkdir(parents=True)
+    joined = "\n".join(ctx._section_paper_index(
+        _mfst(meta.id), tmp_path, attempts_dir=attempts))
+    assert ctx.PAPER_MAP_COMPANION in joined
+    assert "- [p.1] lemma X" not in joined  # body not inline
+    companion = (attempts / ctx.PAPER_MAP_COMPANION).read_text(
+        encoding="utf-8")
+    assert "- [p.1] lemma X" in companion
+
+
 def test_strategist_paper_section_carries_paper_ref_instruction(
         tmp_path: Path) -> None:
     """Phase 2: the MarkDeliverable provenance instruction is a

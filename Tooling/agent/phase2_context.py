@@ -28,6 +28,11 @@ from pathlib import Path
 from ..state import db, manifest, tree
 from . import context
 
+# Inline tail of the proved catalog (strategist index + Forward
+# library): the freshness floor against a stale plan note / brief.
+# Full list lives in the CATALOG.md companion.
+_CATALOG_RECENT_N = 25
+
 
 # ---------------------------------------------------------------------
 # Strategist
@@ -800,12 +805,15 @@ def _section_manifest_meta(mfst: manifest.Manifest,
 
 def _section_paper_index_strategist(mfst: manifest.Manifest,
                                     workspace: Path,
-                                    conn=None) -> list[str]:
+                                    conn=None,
+                                    attempts_dir: "Path | None" = None,
+                                    ) -> list[str]:
     """Strategist view of the paper section: the shared navigation
     block + the provenance-recording instruction + the FetchPaper
     channel (conditional — only a paper-bound problem renders them;
     prompt stays static per the prompt-editing principle)."""
-    lines = context._section_paper_index(mfst, workspace, conn)
+    lines = context._section_paper_index(mfst, workspace, conn,
+                                         attempts_dir=attempts_dir)
     if not lines:
         return lines
     return lines + [
@@ -880,7 +888,8 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_tree_inline(conn, workspace, problem),
         _section_catalog_index_strategist(conn, problem, attempts_dir),
         _section_manifest_meta(mfst, workspace, problem),
-        _section_paper_index_strategist(mfst, workspace, conn),
+        _section_paper_index_strategist(mfst, workspace, conn,
+                                        attempts_dir=attempts_dir),
     ]
     if trigger_kind == "audit":
         # Curation surface for the kb_curation.json sidecar — only the
@@ -912,16 +921,24 @@ def _section_catalog_index_strategist(conn: sqlite3.Connection,
     rows = context.write_catalog_companion(conn, problem, attempts_dir)
     if not rows:
         return []
+    # Recent tail only (2026-07-14, user call): the full slug list grew
+    # linearly with proved count (438 bricks = 16KB, 47% of the
+    # context) while its lookup roles are covered elsewhere — dedupe
+    # gate catches re-inventions, grep serves name checks. What stays
+    # inline is the freshness floor: the newest bricks, rendered from
+    # goal records, as ground truth against a stale plan note.
+    recent = rows[-_CATALOG_RECENT_N:]
     out = [
         "## Proved catalog (index)",
-        f"_{len(rows)} landed bricks. Exact statements live in"
+        f"_{len(rows)} landed bricks — full list & exact statements in"
         f" `{context.CATALOG_COMPANION}` (read-only companion,"
         " machine-generated from what actually landed — never drifts"
-        " from pipeline renames). Copy signatures from there into"
-        " briefs/directives instead of hand-maintaining a catalog._",
+        " from pipeline renames; grep it by slug). Copy signatures from"
+        " there into briefs/directives instead of hand-maintaining a"
+        f" catalog. The {len(recent)} newest:_",
         "",
     ]
-    out += [f"- `{r['slug']}`" for r in rows]
+    out += [f"- `{r['slug']}`" for r in recent]
     out.append("")
     return out
 
@@ -1010,15 +1027,19 @@ def _section_library_inventory(conn: sqlite3.Connection, problem: str,
     header = "## Library (proved lemmas in this problem)"
     if not rows:
         return [header, "", "(none yet)", ""]
+    # Recent tail only (2026-07-14, user call — same cut as the
+    # Strategist index): the brief names the bricks to use; the inline
+    # list only needs to cover what the brief may predate.
+    recent = rows[-_CATALOG_RECENT_N:]
     out = [
         header,
-        f"_Slugs only — the exact statements of all {len(rows)} bricks"
-        f" live in `{context.CATALOG_COMPANION}` (read-only companion)."
-        " Read an entry there BEFORE citing it or proposing anything"
-        " similar._",
+        f"_{len(rows)} proved bricks — full list & exact statements in"
+        f" `{context.CATALOG_COMPANION}` (read-only companion; grep it"
+        " by slug). Read an entry there BEFORE citing it or proposing"
+        f" anything similar. The {len(recent)} newest:_",
         "",
     ]
-    out += [f"- `{r['slug']}`" for r in rows]
+    out += [f"- `{r['slug']}`" for r in recent]
     out.append("")
     return out
 
@@ -1084,7 +1105,8 @@ def compile_forward_context(conn: sqlite3.Connection, *,
         _section_manifest_meta(mfst, workspace, problem),
         # Paper navigation — Forward mints the vocabulary; exact
         # hypotheses/definitions come from the paper (design D1).
-        context._section_paper_index(mfst, workspace, conn),
+        context._section_paper_index(mfst, workspace, conn,
+                                     attempts_dir=attempts_dir),
     ]
     parts: list[str] = [f"# Forward context — {problem}", ""]
     for sect in sections:

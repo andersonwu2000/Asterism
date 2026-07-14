@@ -88,10 +88,10 @@ def _section_sandbox(strategy_id: int | None = None,
         "Mathlib source.",
         "- Reads NOT allowed: other `Problems/<...>/` dirs — irrelevant "
         "to this goal. Use Loogle / Grep on Mathlib instead.",
-        "- `Context.md` + `PAST_*.md` / `LESSONS.md` / `CATALOG.md` "
-        "companion files: read-only. `CATALOG.md` holds the exact "
-        "statement of every proved brick in this problem — read it "
-        "before citing one.",
+        "- `Context.md` + `PAST_*.md` / `LESSONS.md` / `CATALOG.md` / "
+        "`PAPER_MAP.md` companion files: read-only. `CATALOG.md` holds "
+        "the exact statement of every proved brick in this problem — "
+        "read it before citing one.",
         "- `patch.lean` is your single output. Lead with `--` annotation "
         "comments, then edit the body (Builder fills in the proof; "
         "Backward edits the strategy skeleton's body — signature locked). "
@@ -315,6 +315,7 @@ def _section_brief_inline(problem_dir: Path) -> list[str]:
 
 
 CATALOG_COMPANION = "CATALOG.md"
+PAPER_MAP_COMPANION = "PAPER_MAP.md"
 
 # Display-grade signature extraction for the catalog (2026-07-13, user
 # call: `goals.statement` on a Backward sub-goal is the bare conclusion
@@ -1022,13 +1023,17 @@ def _paper_ids_for(mfst: manifest.Manifest, conn=None) -> list[str]:
 
 
 def _section_paper_index(mfst: manifest.Manifest,
-                         workspace: Path, conn=None) -> list[str]:
+                         workspace: Path, conn=None,
+                         attempts_dir: "Path | None" = None) -> list[str]:
     """Paper navigation section — rendered when the problem binds ≥1
     shelved paper (Manifest `paper:` pointer ∪ DB bindings). The
-    PRIMARY paper gets the full map inline (capped); auxiliary papers
+    PRIMARY paper's map goes to the `PAPER_MAP.md` companion with a
+    pointer inline (2026-07-14, user call: the static map repeated
+    ~4KB into every context for 140+ wakes); auxiliary papers
     (scholar-fetched etc.) get one-line entries — their maps stay on
     disk, Read on demand (D14 budget bar). Original text is the
-    content authority; this section only navigates (D1)."""
+    content authority; this section only navigates (D1). No
+    attempts_dir (legacy/odd caller) → full map inline as before."""
     pids = _paper_ids_for(mfst, conn)
     if not pids:
         return []
@@ -1055,13 +1060,27 @@ def _section_paper_index(mfst: manifest.Manifest,
             body = ""
         if body:
             if shelf.map_is_stale(workspace, primary):
-                lines.append("(WARNING: map below was built from an older "
-                             "extraction — trust text.md over it.)")
-            if len(body) > PAPER_INDEX_MAX_CHARS:
-                body = (body[:PAPER_INDEX_MAX_CHARS]
-                        + "\n\n[TRUNCATED at Context cap — map.md exceeds "
-                          "budget; the full map is on disk]")
-            lines += ["", body]
+                lines.append("(WARNING: the navigation map was built from "
+                             "an older extraction — trust text.md over it.)")
+            written = False
+            if attempts_dir is not None:
+                try:
+                    (attempts_dir / PAPER_MAP_COMPANION).write_text(
+                        body + "\n", encoding="utf-8")
+                    written = True
+                except OSError:
+                    pass  # fall back to inline below
+            if written:
+                lines.append(
+                    f"Navigation map (sections / dependencies / notation):"
+                    f" `{PAPER_MAP_COMPANION}` (read-only companion) — Read"
+                    f" or grep it before slicing the paper.")
+            else:
+                if len(body) > PAPER_INDEX_MAX_CHARS:
+                    body = (body[:PAPER_INDEX_MAX_CHARS]
+                            + "\n\n[TRUNCATED at Context cap — map.md "
+                              "exceeds budget; the full map is on disk]")
+                lines += ["", body]
         else:
             lines.append(f"(No navigation map — paper is short; read "
                          f"`{tpath}` directly.)")
@@ -1179,7 +1198,8 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                                 attempts_dir),
         # Paper navigation — cross-spawn-stable (map.md changes only on
         # regeneration), so it sits in the cacheable prefix with BRIEF.
-        _section_paper_index(mfst, workspace, conn),
+        _section_paper_index(mfst, workspace, conn,
+                             attempts_dir=attempts_dir),
         # Phase 2 — Strategist injections sit between cross-spawn-stable
         # content (BRIEF / LESSONS) and per-goal sections. Directive is
         # problem-level standing (every cold-start); brief is per-decision
