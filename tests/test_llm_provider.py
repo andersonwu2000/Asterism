@@ -1,6 +1,7 @@
 """LLM provider registry: dispatch by env, error on unknown, default Claude."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -1873,6 +1874,29 @@ def test_claude_spawn_isolates_operator_memory(
     cmd = calls[0]["cmd"]
     deny = [a for a in cmd if ".claude/projects/**" in a]
     assert sorted(a.split("(")[0] for a in deny) == ["Edit", "Read", "Write"]
+
+
+def test_claude_spawn_injects_repo_root_pythonpath(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The allowlisted `python -m Tooling.knowledge.loogle` must run
+    from the spawn's cwd (problem_dir): without PYTHONPATH the
+    advertised search tool was dead on arrival (2026-07-15)."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    calls = _capture_call(monkeypatch, module_name="claude_cli")
+    claude_cli.ClaudeCliProvider().spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/Problems/myproblem"),
+        attempts_dir=Path("/x/.attempts/abc"),
+        timeout_sec=600,
+    ))
+    env = calls[0]["kwargs"]["env"]
+    repo_root = str(Path(claude_cli.__file__).resolve().parents[2])
+    assert repo_root in str(env.get("PYTHONPATH", "")).split(os.pathsep)
 
 
 def test_claude_spawn_thinking_budget_floors_at_api_minimum(

@@ -75,9 +75,8 @@ end Problems.<problem>
 
 Mathlib at `.lake/packages/mathlib/Mathlib/`. Names drift across versions (`pow_le_pow_left` → `pow_le_pow_left₀`), so verify before citing:
 
-- name: `rg -n "(theorem|lemma) <name>\b" .lake/packages/mathlib/Mathlib/`
+- name / notation: the Grep tool over `.lake/packages/mathlib/Mathlib/` (pattern `(theorem|lemma) <name>\b`) — works from any cwd; shell `cd && rg` is blocked
 - type pattern: `python -m Tooling.knowledge.loogle '<pattern>'`
-- notation / symbol: `rg -n "<symbol>" .lake/packages/mathlib/Mathlib/`
 
 ## Stop signals
 

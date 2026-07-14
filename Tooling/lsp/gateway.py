@@ -1646,9 +1646,8 @@ def _annotation_submission(content: str) -> "dict":
     ok = bool(_gw_leading_comments(content).strip())
     return {"checked": True, "ok": ok,
             "note": "" if ok else
-            "no leading -- comment block; commit rejects with "
-            "agent_no_annotation (strategy rationale required for goal "
-            "annotation propagation)"}
+            "FINAL patch only: add a leading -- comment before commit "
+            "(agent_no_annotation). Ignore on exploratory probes."}
 
 
 def _locked_signature_submission(content: str,

@@ -2303,3 +2303,57 @@ def test_run_strategist_noop_only_batch_maps_to_strategist_noop(
     ))
     assert [r["decision_kind"] for r in rows] == ["Noop", "Noop"]
     assert [r["reason"] for r in rows] == ["wait A", "wait B"]
+
+
+# ---------------------------------------------------------------------
+# EmitDirective body_file (2026-07-15) — the framework ingests the file
+# content at parse time; downstream sees a plain `body`.
+# ---------------------------------------------------------------------
+
+def test_body_file_resolves_into_body(tmp_path):
+    from Tooling.pipeline.strategist import (Decision,
+                                             resolve_directive_body_files)
+    (tmp_path / "_directive.md").write_text("new standing hints\nline 2",
+                                            encoding="utf-8")
+    d = Decision(kind="EmitDirective",
+                 payload={"scope": "problem:p",
+                          "body_file": "_directive.md"})
+    err = resolve_directive_body_files([d], tmp_path)
+    assert err == ""
+    assert d.payload["body"] == "new standing hints\nline 2"
+
+
+def test_body_file_wins_over_inline_body_and_strips_traversal(tmp_path):
+    from Tooling.pipeline.strategist import (Decision,
+                                             resolve_directive_body_files)
+    (tmp_path / "dir.md").write_text("from file", encoding="utf-8")
+    d = Decision(kind="EmitDirective",
+                 payload={"scope": "problem:p", "body": "inline junk",
+                          "body_file": "../../dir.md"})  # basename only
+    assert resolve_directive_body_files([d], tmp_path) == ""
+    assert d.payload["body"] == "from file"
+
+
+def test_body_file_missing_or_empty_is_teaching_error(tmp_path):
+    from Tooling.pipeline.strategist import (Decision,
+                                             resolve_directive_body_files)
+    d = Decision(kind="EmitDirective",
+                 payload={"scope": "problem:p", "body_file": "absent.md"})
+    err = resolve_directive_body_files([d], tmp_path)
+    assert "unreadable" in err and "attempts dir" in err
+    (tmp_path / "empty.md").write_text("   \n", encoding="utf-8")
+    d2 = Decision(kind="EmitDirective",
+                  payload={"scope": "problem:p", "body_file": "empty.md"})
+    assert "is empty" in resolve_directive_body_files([d2], tmp_path)
+
+
+def test_body_file_ignores_other_kinds_and_inline_only(tmp_path):
+    from Tooling.pipeline.strategist import (Decision,
+                                             resolve_directive_body_files)
+    inline = Decision(kind="EmitDirective",
+                      payload={"scope": "problem:p", "body": "plain"})
+    other = Decision(kind="Noop", reason="r",
+                     payload={"body_file": "x.md"})
+    assert resolve_directive_body_files([inline, other], tmp_path) == ""
+    assert inline.payload["body"] == "plain"
+    assert "body" not in other.payload

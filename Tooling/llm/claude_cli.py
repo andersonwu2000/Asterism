@@ -1098,6 +1098,14 @@ class ClaudeCliProvider:
         # short-timeout feedback turn before this floor (#33).
         env["CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"] = "1"
         env["MAX_THINKING_TOKENS"] = str(_thinking_budget(req.timeout_sec))
+        # The allowlisted `python -m Tooling.knowledge.loogle` must be
+        # runnable from the spawn's cwd (problem_dir, not repo root) —
+        # without PYTHONPATH the advertised search tool was dead on
+        # arrival for every agent (agent_feedback 2026-07-13, 5 reports).
+        _repo_root = str(Path(__file__).resolve().parents[2])
+        env["PYTHONPATH"] = (
+            _repo_root + os.pathsep + env["PYTHONPATH"]
+            if env.get("PYTHONPATH") else _repo_root)
         # Spawn memory isolation (2026-07-13): see
         # _operator_state_deny_rules for the whole story. This env var
         # is the root-cause layer — no memory section in the spawn

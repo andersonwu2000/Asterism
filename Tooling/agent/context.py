@@ -209,8 +209,12 @@ def _names_from_deads(deads: list) -> list[str]:
 
 
 def _section_manifest_forbidden(mfst: manifest.Manifest) -> list[str]:
+    # Empty list still renders — the prompts reference this section
+    # unconditionally, and a silently absent heading left agents unsure
+    # whether the list was empty or the Context truncated
+    # (agent_feedback 2026-07-12..13).
     if not mfst.forbidden_lemmas:
-        return []
+        return ["## FORBIDDEN_LEMMAS (from Manifest.md)", "(none)", ""]
     return [
         "## FORBIDDEN_LEMMAS (from Manifest.md)",
         "**Do NOT use any of the following in your proof or in any "

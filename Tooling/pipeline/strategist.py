@@ -99,6 +99,38 @@ class Decision:
 # Parsing
 # ---------------------------------------------------------------------
 
+def resolve_directive_body_files(decisions: "list[Decision]",
+                                 attempts_dir: Path) -> str:
+    """EmitDirective may hand its body over as `body_file` — a bare
+    filename inside the strategist's attempts dir. JSON-escaping a
+    multi-KB directive inline was the single most error-prone
+    strategist step and the top blocked-Bash need (11 attempts + 5
+    explicit wishes, agent_feedback 2026-07-12..14). The framework
+    ingests the content HERE, right after parse: downstream (verify,
+    commit, worker Context rendering) sees a plain `body` — the file is
+    a hand-off vehicle, never a live reference. body_file wins over an
+    inline body when both are present. Returns a verify-style error
+    string ('' = ok)."""
+    for d in decisions:
+        if d.kind != "EmitDirective":
+            continue
+        ref = d.payload.get("body_file")
+        if not ref:
+            continue
+        name = Path(str(ref)).name        # basename only — no traversal
+        try:
+            text = (attempts_dir / name).read_text(encoding="utf-8")
+        except OSError as e:
+            return (f"EmitDirective.body_file {ref!r} unreadable ({e}). "
+                    f"Write the directive text to a file in your "
+                    f"attempts dir first, then reference its bare "
+                    f"filename.")
+        if not text.strip():
+            return f"EmitDirective.body_file {ref!r} is empty"
+        d.payload["body"] = text.strip()
+    return ""
+
+
 def parse_decisions(json_text: str) -> tuple[list[Decision] | None, str]:
     """Parse the agent's `decision.json` content into a list of decisions.
 
@@ -1763,9 +1795,10 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             failure_detail=f"parse: {parse_err}",
         )
 
-    verify_err = verify_decisions(decisions, conn, problem=problem,
-                                  workspace=workspace,
-                                  trigger_kind=trigger_kind)
+    verify_err = (resolve_directive_body_files(decisions, attempts_dir)
+                  or verify_decisions(decisions, conn, problem=problem,
+                                      workspace=workspace,
+                                      trigger_kind=trigger_kind))
     if verify_err and retry_enabled:
         # Single retry on the same session. The provider's `is_retry`
         # path resumes the session and inlines `retry_context` (the
@@ -1800,9 +1833,11 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                     f"first-attempt verify: {verify_err}"
                 ),
             )
-        verify_err2 = verify_decisions(decisions, conn, problem=problem,
-                                       workspace=workspace,
-                                       trigger_kind=trigger_kind)
+        verify_err2 = (resolve_directive_body_files(decisions, attempts_dir)
+                       or verify_decisions(decisions, conn,
+                                           problem=problem,
+                                           workspace=workspace,
+                                           trigger_kind=trigger_kind))
         if verify_err2:
             return PipelineResult(
                 outcome="failed",

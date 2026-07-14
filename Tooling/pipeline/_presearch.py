@@ -206,7 +206,12 @@ def _verify(blocks, workspace: Path, problem_dir: Path,
                         "signature": (getattr(info, "signature", "")
                                       or "").strip()})
         elif not infos:
-            out.append({"name": name, "source": "mathlib", "why": why})
+            # Whole-batch lookup failure (offline / lake hiccup): keep
+            # the names but say so — rendering them under the section's
+            # "#check-verified" banner sent agents chasing lemmas that
+            # don't exist (agent_feedback 2026-07-13).
+            out.append({"name": name, "source": "mathlib", "why": why,
+                        "unverified": True})
         # else: name didn't resolve → hallucination, drop
     return out
 
@@ -228,6 +233,8 @@ def _render_section(candidates: list) -> str:
         status = str(c.get("status") or "").strip()
         if status:
             tag += f", {status if status == 'proved' else status.upper()}"
+        if c.get("unverified"):
+            tag += ", UNVERIFIED — lookup unavailable, #check before use"
         why = str(c.get("why") or "").strip()
         sig = str(c.get("signature") or "").strip()
         stmt = str(c.get("statement") or "").strip()

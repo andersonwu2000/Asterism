@@ -373,6 +373,35 @@ def _seed_inject_batch_done(conn: sqlite3.Connection, *, problem: str = "p",
     return ids
 
 
+def test_batch_outcomes_filter_non_inject_and_flag_unattributed(
+    conn: sqlite3.Connection,
+) -> None:
+    """2026-07-15: (a) non-Inject siblings sharing the wake's batch_id
+    rendered as brief-less phantom 'step 0' rows — filtered; (b) a
+    success step with no produced_goal_id (renamed/merged landing) now
+    says so explicitly instead of omitting the landed line."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    _seed_inject_batch_done(
+        conn, batch_id="batch-mix",
+        briefs=["## Deliver\n`brick_x` : stuff"], outcomes=["success"],
+    )
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, outcome, created_at, updated_at)"
+        " VALUES ('p', 0, 'pending_review', 'EmitDirective', NULL, NULL,"
+        "         'notes', '{}', 'batch-mix', 'committed', ?, ?)",
+        (ts, ts))
+    conn.commit()
+    lines = phase2_context._section_inject_batch_outcomes(conn, "p")
+    body = "\n".join(lines)
+    assert "(1 steps)" in body            # EmitDirective row filtered out
+    assert body.count("**step") == 1
+    assert "nothing attributed to this step" in body  # NULL produced_goal
+
+
 def test_inject_batch_done_surfaces_briefs_and_outcomes(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, tmp_path: Path,

@@ -22,6 +22,7 @@ Forward sees:
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -377,6 +378,9 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
         return []
     out = ["## Completed Inject batches (newest first)", ""]
     placeholders = ",".join("?" * len(batch_ids))
+    # Inject rows only: every wake's decisions share the batch_id, so
+    # ConfirmShelve/EmitDirective siblings used to render as brief-less
+    # phantom "step 0" rows (agent_feedback 2026-07-11..13).
     rows = list(conn.execute(
         f"SELECT d.id, d.batch_id, d.brief, d.payload, d.outcome,"
         f" d.outcome_detail, d.updated_at,"
@@ -385,6 +389,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
         f" FROM strategist_decisions d"
         f" LEFT JOIN goals g ON g.id = d.produced_goal_id"
         f" WHERE d.batch_id IN ({placeholders})"
+        f"   AND d.decision_kind = 'Inject'"
         f" ORDER BY MAX(d.updated_at) OVER (PARTITION BY d.batch_id) DESC,"
         f"          d.batch_id, d.id",
         batch_ids,
@@ -425,10 +430,24 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                 stmt = " ".join(str(r["landed_statement"] or "").split())
                 if len(stmt) > 300:
                     stmt = stmt[:300].rstrip() + "…"
+                # Rename flag: `success` can mean a renamed/generalized
+                # landing — say so instead of making the Strategist
+                # grep CATALOG to find out (agent_feedback 2026-07-13).
+                briefed = re.search(
+                    r"##\s*Deliver\s*\n+\s*`([A-Za-z_][\w']*)`", brief)
+                renamed = (f" — LANDED UNDER A DIFFERENT NAME than briefed"
+                           f" (`{briefed.group(1)}`)"
+                           if briefed and briefed.group(1) != r["landed_slug"]
+                           else "")
                 out.append(
                     f"  landed: `{r['landed_slug']}` "
                     f"(status={r['landed_status']})"
-                    + (f" — `{stmt}`" if stmt else ""))
+                    + (f" — `{stmt}`" if stmt else "") + renamed)
+            elif str(r["outcome"] or "") in ("success", "proved"):
+                out.append(
+                    "  landed: (nothing attributed to this step — the "
+                    "brick may have landed renamed/merged; grep "
+                    "CATALOG.md before treating it as landed)")
             out.append(f"  brief: {brief}")
             detail = (r["outcome_detail"] or "").strip()
             if detail:
