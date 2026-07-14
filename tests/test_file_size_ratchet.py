@@ -182,7 +182,11 @@ _WATERMARKS = {
     # 2026-07-12 — conscious bump.
     # 2400→2420 (2026-07-12): FSM P3 wake-legality guards at the four
     # seat sources — conscious bump.
-    "Tooling/core/dispatcher.py": 2420,
+    # 2420→2490 (2026-07-14): quota-wait wiring (user: sleep to resets_at
+    # instead of exiting) — breaker consult, rc=126 escalation, refill/pop
+    # gate, budget-clock pause; the behavior itself lives in
+    # core/quota_wait.py — conscious bump.
+    "Tooling/core/dispatcher.py": 2490,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

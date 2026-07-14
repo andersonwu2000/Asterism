@@ -51,6 +51,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "builder.threshold": "modern alias of dispatch.builder_threshold (ASTERISM_BUILDER_THRESHOLD; falls back to legacy key)",
     "dispatch.shelve_threshold": "attempts before shelve (ASTERISM_SHELVE_THRESHOLD; 8)",
     "dispatch.handoff_on_code_change": "daemon drains + hands off to a fresh daemon when the source tree changes under it (ASTERISM_HANDOFF_ON_CODE_CHANGE; true)",
+    "dispatch.quota_wait": "confirmed-exhausted subscription window pauses dispatch until resets_at instead of exiting (ASTERISM_QUOTA_WAIT; true)",
     "dispatch.spawn_timeout_sec": "main spawn SIGKILL cap (ASTERISM_SPAWN_TIMEOUT_SEC; 900)",
     "dispatch.postmortem_timeout_sec": "postmortem spawn cap (ASTERISM_POSTMORTEM_TIMEOUT_SEC; 180)",
     "dispatch.trap_check_sec": "watchdog thinking-trap check point (ASTERISM_TRAP_CHECK_SEC; 660)",
@@ -277,6 +278,9 @@ UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
     "dispatch.pool": (int, "max agents working at once"),
     "dispatch.budget_sec": (int, "wall-clock budget per engine run (seconds)"),
     "dispatch.shelve_threshold": (int, "failed attempts before a goal is shelved"),
+    "dispatch.quota_wait": (bool, "when the subscription quota runs out, "
+                                  "wait for the window to reset and resume "
+                                  "instead of exiting"),
 }
 
 #: dropdown choices for `.model` keys — what the UI offers (free text
@@ -309,6 +313,10 @@ def ui_settings(workspace: Path) -> "list[dict[str, object]]":
             cur = cur.get(part) if isinstance(cur, dict) else None
         resolved = get(key, workspace=workspace,
                        cast=int if typ is int else None)
+        if typ is bool and resolved is not None:
+            # env/.env supplies a string, yaml a real bool — one shape out
+            resolved = str(resolved).strip().lower() in (
+                "true", "1", "yes", "on")
         row: dict[str, object] = {
             "key": key, "yaml": cur, "resolved": resolved,
             "type": typ.__name__, "description": desc,
@@ -341,6 +349,11 @@ def set_ui_setting(workspace: Path, key: str,
         lo, hi = _INT_BOUNDS[key]
         if not (lo <= value <= hi):
             return 1, f"FAIL: {key} must be in [{lo}, {hi}]"
+    elif typ is bool:
+        sval = str(value).strip().lower()
+        if sval not in ("true", "false", "1", "0", "yes", "no", "on", "off"):
+            return 1, f"FAIL: {key} expects true/false"
+        value = "true" if sval in ("true", "1", "yes", "on") else "false"
     else:
         value = str(value).strip()
         if not _re.fullmatch(r"[A-Za-z0-9._-]+", value):
@@ -392,6 +405,9 @@ def set_ui_setting(workspace: Path, key: str,
             cur = cur.get(part) if isinstance(cur, dict) else None
         if typ is int:
             assert int(str(cur)) == value
+        elif typ is bool:
+            # yaml parses the bare true/false token into a real bool
+            assert isinstance(cur, bool) and cur == (value == "true")
         else:
             assert str(cur) == str(value)
     except Exception as e:  # noqa: BLE001

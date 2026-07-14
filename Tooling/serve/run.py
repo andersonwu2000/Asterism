@@ -19,10 +19,10 @@ import json
 import re
 import sqlite3
 import time
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from ..core import usage_quota
 from ..state import db
 from . import data as _data
 
@@ -159,15 +159,10 @@ def reset_quota_memo() -> None:
 
 
 def _fetch_oauth_usage() -> "dict | None":
-    """One raw call. Separated for tests (monkeypatch me)."""
-    creds_path = Path.home() / ".claude" / ".credentials.json"
-    token = json.loads(creds_path.read_text(encoding="utf-8"))[
-        "claudeAiOauth"]["accessToken"]
-    req = urllib.request.Request(
-        "https://api.anthropic.com/api/oauth/usage",
-        headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=4) as resp:
-        return json.loads(resp.read())
+    """One raw call. Separated for tests (monkeypatch me). Body lives
+    in core/usage_quota so the dispatcher's quota-wait probes the same
+    endpoint through the same code path."""
+    return usage_quota.fetch_usage()
 
 
 def quota() -> "dict | None":

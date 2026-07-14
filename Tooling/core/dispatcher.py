@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .. import agent, pipeline
-from . import config
+from . import config, fsutil, quota_wait
 from ..state import db, manifest, thresholds, transitions, tree
 from ..state import failures as _failures
 from ..quality import prune, verify
@@ -961,6 +961,14 @@ class SchedulerState:
     # Per-kind provider-quota backoff (#103): kind → resume time / consec.
     quota_cooldown_kind: "dict[str, float]" = field(default_factory=dict)
     consec_quota_per_kind: "dict[str, int]" = field(default_factory=dict)
+    # Quota-wait (dispatch.quota_wait): global dispatch pause until the
+    # subscription window resets. In-memory on purpose: a restart
+    # re-probes the usage endpoint and re-enters the wait on the first
+    # quota failure — same destination, fresh evidence.
+    quota_wait_until: float = 0.0
+    quota_wait_entered: float = 0.0
+    quota_wait_logged_at: float = 0.0
+    quota_wait_paused: float = 0.0  # cumulative, excluded from budget
     # Global consecutive spawn_fast_fail counter; breaker exits the daemon
     # at CONSEC_SPAWN_FAIL_LIMIT (claude.exe persistently broken).
     consec_fast_fails: int = 0
@@ -1620,15 +1628,19 @@ def run(workspace: Path, *, once: bool = False,
         scope: str | None = None) -> int:
     pid_lock = _acquire_singleton_lock(workspace)
     # The start-side anti-double-spawn marker is consumed here: the
-    # singleton lock has settled the race either way.
-    (workspace / ".asterism" / "daemon-starting.txt").unlink(missing_ok=True)
+    # singleton lock has settled the race either way. Tolerant unlinks
+    # throughout the lifecycle files — the serve status poll reads them
+    # every ~2s, and a bare unlink colliding with that read raises
+    # WinError 32 (killed the 07-13 21:01 handoff waiter).
+    fsutil.unlink_tolerant(
+        workspace / ".asterism" / "daemon-starting.txt")
     if pid_lock is None:
         return 1
     import atexit
-    atexit.register(lambda: pid_lock.unlink(missing_ok=True))
+    atexit.register(lambda: fsutil.unlink_tolerant(pid_lock))
     # A stale stop file from a prior stop request must not insta-kill
     # this fresh daemon (the start side also clears it — belt+braces).
-    stop_file_path(workspace).unlink(missing_ok=True)
+    fsutil.unlink_tolerant(stop_file_path(workspace))
     # Scope pointer is written by the DAEMON ITSELF (single truth): when
     # only the UI's daemon_start wrote it, a terminal-started run left
     # the UI reading the PREVIOUS run's scope — Stop on the wrong
@@ -1663,6 +1675,19 @@ def run(workspace: Path, *, once: bool = False,
     budget_sec = config.get(
         "dispatch.budget_sec", default=1800,
         env_var="ASTERISM_BUDGET_SEC", cast=int, workspace=workspace)
+    # Quota-wait switch (user 2026-07-14): on = a CONFIRMED-exhausted
+    # subscription window pauses dispatch until resets_at instead of
+    # exiting (breaker consult + sleep-to-reset). Off = the old
+    # behavior exactly: quota bursts trip the fast-fail breaker and the
+    # daemon exits — the web UI exposes this so an unattended install
+    # doesn't burn tokens window after window without anyone deciding.
+    quota_wait_enabled = str(config.get(
+        "dispatch.quota_wait", default="true",
+        env_var="ASTERISM_QUOTA_WAIT", workspace=workspace,
+    )).strip().lower() in ("true", "1", "yes", "on")
+    # `--once` runs are operator-attended experiments — finishing (with
+    # the quota failure visible) beats silently parking for hours.
+    quota_wait_enabled = quota_wait_enabled and not once
     # BUILDER_THRESHOLD semantically belongs to the Builder kind
     # (controls Builder→Backward transition based on Builder model
     # strength). Canonical key: `builder.threshold`. Old
@@ -1881,7 +1906,7 @@ def run(workspace: Path, *, once: bool = False,
         if stopping and not futures:
             print("[dispatcher] stop requested (daemon.stop) — no "
                   "in-flight work; exiting cleanly", flush=True)
-            stop_file_path(workspace).unlink(missing_ok=True)
+            fsutil.unlink_tolerant(stop_file_path(workspace))
             _exit_pool_fast(pool)
             return 0
         if stopping and not stop_announced:
@@ -1964,6 +1989,15 @@ def run(workspace: Path, *, once: bool = False,
                               f"(consec={n}, backoff={backoff:.0f}s, "
                               f"flushed={flushed} queued; all {kind} "
                               f"dispatch suspended)", flush=True)
+                        # Quota-wait: when the usage endpoint confirms
+                        # a window is truly exhausted, sleep to its
+                        # resets_at instead of blind-probing at the
+                        # backoff cap. Unconfirmed (transient 429 /
+                        # endpoint offline) keeps the exponential
+                        # backoff above.
+                        quota_wait.maybe_enter(
+                            st, enabled=quota_wait_enabled,
+                            source=f"{kind} quota_exhausted")
                     elif (outcome == "failed"
                           and reason in _failures.TARGET_COOLDOWN_REASONS):
                         st.cooldown_until[(tid, kind)] = (
@@ -1975,14 +2009,33 @@ def run(workspace: Path, *, once: bool = False,
                                   f"spawn_fast_fail "
                                   f"(consec={st.consec_fast_fails})", flush=True)
                             if st.consec_fast_fails >= CONSEC_SPAWN_FAIL_LIMIT:
-                                print(f"[dispatcher] {st.consec_fast_fails} "
-                                      f"consecutive spawn_fast_fails — "
-                                      f"claude.exe or provider appears broken; "
-                                      f"exiting. Inspect "
-                                      f".attempts/<pid>/_spawn.stderr "
-                                      f"for the underlying error.", flush=True)
-                                _exit_pool_fast(pool)
-                                return 2
+                                # Quota-wait: an exhausted subscription
+                                # window shows up as a fast-fail burst
+                                # whenever claude.exe dies without the
+                                # rc=126 marker text. Ask the usage
+                                # endpoint before declaring the exe
+                                # broken — POSITIVE confirmation
+                                # converts the trip into a wait; an
+                                # unreachable endpoint or healthy quota
+                                # keeps the exit (the breaker's actual
+                                # job).
+                                if quota_wait.maybe_enter(
+                                        st, enabled=quota_wait_enabled,
+                                        source=(f"{st.consec_fast_fails} "
+                                                f"consecutive "
+                                                f"spawn_fast_fails")):
+                                    st.consec_fast_fails = 0
+                                else:
+                                    print(f"[dispatcher] "
+                                          f"{st.consec_fast_fails} "
+                                          f"consecutive spawn_fast_fails — "
+                                          f"claude.exe or provider appears "
+                                          f"broken; exiting. Inspect "
+                                          f".attempts/<pid>/_spawn.stderr "
+                                          f"for the underlying error.",
+                                          flush=True)
+                                    _exit_pool_fast(pool)
+                                    return 2
                         elif reason == "gateway_unreachable":
                             # (cooldown already set by the generic infra
                             # branch above; the helper re-sets the same key
@@ -2197,13 +2250,22 @@ def run(workspace: Path, *, once: bool = False,
                       f"graceful exit", flush=True)
             return 0
 
+        # Quota-wait gate: while the subscription window is confirmed
+        # exhausted, spawn nothing (refill + pop are the only spawn
+        # sources). Triggers/reconcile/lease hygiene below still run —
+        # they only touch the DB, and queued wakes fire the moment the
+        # window resets.
+        quota_waiting = quota_wait.tick(st, time.time(),
+                                         enabled=quota_wait_enabled)
+
         # Refill queue (uses in-memory `running` for dedup; st.cooldown_until
         # holds spawn_fast_fail back-offs; st.quota_cooldown_kind holds the
         # per-kind quota backoff (#103); scope restricts to a benchmark
         # subset like `minif2f_%`).
-        bfs_refill(conn, running, st.cooldown_until, scope=scope,
-                   quota_cooldown_kind=st.quota_cooldown_kind,
-                   verified_problems=st.verified_problems)
+        if not quota_waiting:
+            bfs_refill(conn, running, st.cooldown_until, scope=scope,
+                       quota_cooldown_kind=st.quota_cooldown_kind,
+                       verified_problems=st.verified_problems)
 
         # Phase 2 — Strategist T0/T1 triggers (T2 pending_review fires at
         # cascade time in `cascade_one` as the fast path). Skipped under
@@ -2240,7 +2302,8 @@ def run(workspace: Path, *, once: bool = False,
         # the same (target_id, kind) is already in flight in this
         # daemon — bfs_refill caps at 1 but daemon recovery + race
         # corners mean defense-in-depth here is cheap.
-        while not (stopping or drifting) and len(futures) < pool_size:
+        while (not (stopping or drifting or quota_waiting)
+                and len(futures) < pool_size):
             row = db.pop_queue(conn, scope=scope)
             if row is None:
                 break
@@ -2399,7 +2462,11 @@ def run(workspace: Path, *, once: bool = False,
                 print(f"[tree] periodic write skipped for "
                       f"{problem_name}: {exc}", flush=True)
 
-        if time.time() - start_time > budget_sec:
+        # Budget clock excludes quota-wait time — a wait longer than
+        # budget_sec must not read as budget exhaustion (that would be
+        # exit-on-quota with extra steps).
+        _now = time.time()
+        if _now - start_time - quota_wait.paused_total(st, _now) > budget_sec:
             print(f"[dispatcher] {budget_sec}s budget exceeded; stopping",
                   flush=True)
             _exit_pool_fast(pool)
