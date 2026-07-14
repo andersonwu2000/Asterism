@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-13
+- Reworked the context given to the proving agents, adding an auto-generated index of already-proved results with full statements and replacing bulky search-tree dumps with compact on-demand summaries.
+- Added a self-audit step that curates the accumulated knowledge base of proof lessons and prunes instructions made redundant by machine-generated context.
+- Redesigned the web progress dashboard and fixed a dozen defects found in review, including cleaner grouping of goals and hiding of empty proof branches.
+- Hardened sandboxing of spawned worker processes with a filesystem whitelist and fixed logging for background handoff tasks.
+
 ### 2026-07-12
 - Gave each problem an explicit lifecycle state machine with checked transitions, so the system can only act on a problem when its state legally allows it.
 - Hardened soundness guarantees: proofs are now pinned to a verified snapshot of the user's files, spawned provers cannot write outside their sandbox, and unauthorized axioms are stripped before a proof is accepted.
@@ -218,11 +224,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Overhauled the bookkeeping for concurrent proof attempts, adding an explicit "stalled" status to replace an earlier stopgap, keeping shelved attempts visible for review, and counting active searches by live processes rather than stale connections.
 - Made each proving step elaborate exactly one unit against a single shared Lean compilation state.
 - Refined the prover's instructions to look for an existing lemma before deriving a new intermediate step, and to back out of a subgoal only when its statement is genuinely malformed.
-
-### 2026-06-13
-- Unified how the system detects when a sub-problem has stalled, and extended automatic cleanup to cover sub-problems that had already collapsed into dead ends.
-- A lemma that was shelved but never disproved is now revived whenever another step still cites it, with its statement reinserted so that step can be checked.
-- Tightened how a goal is split into sub-goals: normalizing and de-duplicating their names, rejecting circular decompositions, and seeding each one with the right namespace context.
 
 <!-- ASTERISM-PROGRESS:END -->
 
