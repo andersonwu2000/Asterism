@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..state import brief, db, kb, kb_ingest, manifest, tree
-from . import dispatcher
+from . import dispatcher, fsutil
 from ..quality import prune
 
 
@@ -668,21 +668,10 @@ def _robust_unlink(path: Path, retries: int = 5,
     """Unlink with retry-on-OSError. Windows file locks (orphan
     lean/lake/claude holding handles after a kill) usually clear
     within 1-2s; we retry up to ~5×0.5s = 2.5s before giving up.
-    Returns True on success, False on persistent failure."""
-    import time
-    for attempt in range(retries):
-        try:
-            path.unlink(missing_ok=True)
-            return True
-        except OSError:
-            if attempt + 1 < retries:
-                time.sleep(backoff_s)
-    # Final attempt — let the exception escape so caller sees it
-    try:
-        path.unlink(missing_ok=True)
-        return True
-    except OSError:
-        return False
+    Returns True on success, False on persistent failure. Body lives in
+    core/fsutil (shared with the dispatcher's status-file unlinks)."""
+    return fsutil.unlink_tolerant(path, retries=retries,
+                                  delay_sec=backoff_s)
 
 
 def _robust_rmtree(path: Path, retries: int = 5,
@@ -1745,14 +1734,18 @@ def daemon_start(workspace: Path, *, scope: "str | None" = None,
                 except OSError:
                     pass
                 if refusal is None:
-                    _disp.stop_file_path(workspace).unlink(missing_ok=True)
+                    # Tolerant unlinks: the serve status poll reads these
+                    # files every ~2s; a collision raised WinError 32 and
+                    # killed the drift-handoff waiter (2026-07-13 21:01,
+                    # convicted 07-14 via handoff-waiter.log).
+                    fsutil.unlink_tolerant(_disp.stop_file_path(workspace))
                     logs = workspace / ".asterism" / "logs"
                     logs.mkdir(parents=True, exist_ok=True)
                     marker.write_text(db.now(), encoding="utf-8")
                     # last run's exit summary belongs to the last run — a
                     # force-killed run writes none, and a stale one must not
                     # be reported as this run's ending
-                    (logs / "daemon-exit.txt").unlink(missing_ok=True)
+                    fsutil.unlink_tolerant(logs / "daemon-exit.txt")
         if refusal is None:
             break
         if _time.time() >= deadline:
@@ -1836,7 +1829,7 @@ def daemon_stop(workspace: Path, *, force: bool = False) -> "tuple[int, str]":
     stop_file = _disp.stop_file_path(workspace)
     pid = _daemon_live_pid(workspace)
     if pid is None:
-        stop_file.unlink(missing_ok=True)
+        fsutil.unlink_tolerant(stop_file)
         return 0, "no daemon running"
     if force:
         n = _daemon_in_flight(workspace)
@@ -1856,7 +1849,7 @@ def daemon_stop(workspace: Path, *, force: bool = False) -> "tuple[int, str]":
         # the status, and the dead pid's leases rendered as running
         # agents until some future daemon start happened to sweep them
         # (scope-filtered, so possibly never).
-        stop_file.unlink(missing_ok=True)
+        fsutil.unlink_tolerant(stop_file)
         released = 0
         db_path = workspace / "asterism.db"
         if db_path.exists():
