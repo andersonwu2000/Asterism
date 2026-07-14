@@ -56,10 +56,19 @@ def _tail(path: Path) -> "dict | None":
     lines = raw.decode("utf-8", errors="replace").splitlines()
     if st.st_size > _TAIL_BYTES and len(lines) > 1:
         lines = lines[1:]  # first line is almost surely cut mid-way
-    while lines and _PRELUDE_RE.match(lines[0]):
-        lines.pop(0)
-    while lines and _CLOSER_RE.match(lines[-1]):
-        lines.pop()
+    # prelude/`end` stripping is LEAN grammar — applied to a markdown
+    # plan note it ate lines like "end state: …" (self-audit,
+    # 2026-07-14); non-.lean files only lose blank edges
+    if path.suffix == ".lean":
+        while lines and _PRELUDE_RE.match(lines[0]):
+            lines.pop(0)
+        while lines and _CLOSER_RE.match(lines[-1]):
+            lines.pop()
+    else:
+        while lines and lines[0].strip() == "":
+            lines.pop(0)
+        while lines and lines[-1].strip() == "":
+            lines.pop()
     quiet = max(0.0, datetime.now(timezone.utc).timestamp() - st.st_mtime)
     return {
         "tail": "\n".join(lines),

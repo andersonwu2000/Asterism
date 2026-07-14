@@ -62,8 +62,11 @@ function useLogPulse(active: boolean) {
   const [alerts, setAlerts] = useState(0)
   useEffect(() => {
     if (!active) return
-    setAlerts(0)
     const es = new EventSource('/api/events/stream')
+    // reset on every (re)connect: the stream replays its backlog, so
+    // counting from zero each time yields the true total instead of
+    // doubling it after an auto-reconnect (self-audit, 2026-07-14)
+    es.onopen = () => setAlerts(0)
     es.onmessage = (e) => {
       const line = e.data as string
       setLast(line)
@@ -568,25 +571,25 @@ export default function Run() {
                         </div>
                       )
                     })}
-                    {/* ONE quiet card for the vacancies receipts didn't
-                        borrow — three identical "free" cards at
-                        working-lane weight competed with the lane that
-                        matters (design round; subtraction) */}
+                    {/* one card PER free slot — a slot is a fixed berth
+                        (owner, 2026-07-14: collapsing them broke the
+                        spatial metaphor); quieter ink than the working
+                        lanes so the vacancies never compete */}
                     {(() => {
                       const ghostsShown = Math.min(
                         ghostsRef.current.length,
                         Math.max(0, slotCount - workers.length),
                       )
                       const free = slotCount - workers.length - ghostsShown
-                      if (free <= 0) return null
-                      return (
+                      return Array.from({ length: Math.max(0, free) }).map((_, i) => (
                         <div
+                          key={`free${i}`}
                           className="flex min-h-24 items-center justify-center rounded-lg border border-dashed border-edge/60 text-[11px] text-ink-faint/70"
-                          title="open slots for more agents (engine setting: dispatch.pool)"
+                          title="an open slot for one more agent (engine setting: dispatch.pool)"
                         >
-                          {free === 1 ? freeHint : `${free} slots ${freeHint}`}
+                          {freeHint}
                         </div>
-                      )
+                      ))
                     })()}
                   </div>
                 )}

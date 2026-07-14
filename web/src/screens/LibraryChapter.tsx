@@ -680,12 +680,16 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
             machine-built chapter first — which axioms, any sorry —
             answered from the gates' recorded guarantees. Per-decl
             live proof stays one click away (▸ run → #print axioms). */}
+        {/* policy + a live check, NOT a stored historical claim: some
+            chapters predate the universal axiom gate, and a colophon
+            must never assert a passage it can't point to (self-audit,
+            2026-07-14) */}
         {data.colophon && data.colophon.axioms.length > 0 && (
           <span
             className="w-full font-mono text-[11px] text-ink-faint"
-            title="every bridged chapter passed Gate B: the root theorem re-derived from the Library alone, no axiom outside this whitelist, no sorry (gate-enforced). Hover any statement and press ▸ run for a live per-declaration re-check."
+            title="sorry is rejected at every gate; this axiom whitelist is enforced at proving and harvest. For the kernel's own word on any declaration: hover its statement and press ▸ run — a live re-check (#print axioms), not a stored claim."
           >
-            sorry-free · axioms ⊆ {'{'}{data.colophon.axioms.join(', ')}{'}'}
+            axiom whitelist {'{'}{data.colophon.axioms.join(', ')}{'}'} · sorry rejected at every gate
           </span>
         )}
         <Link
