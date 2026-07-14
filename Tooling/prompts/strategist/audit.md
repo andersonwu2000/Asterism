@@ -12,6 +12,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
    - Status claims ("X is the sole gate", "Y is in flight") → check the tree.
    - Lines tagged `SUSPECT:` by earlier wakes → adjudicate these first.
    - Framework-behavior claims (daemon / gate behavior, what is "healthy") → legitimate only when they quote a prompt rule, a gate message, or a directive; unsourced → DELETE, and never use as evidence.
+   - The route (`## My route` / the active arc) → check against the Manifest (Statement + Strategic notes); drifted → rewrite the route and steer THIS batch.
    - Directive content `CATALOG.md` already carries → re-emit the directive without it.
    - The directive: merge, shorten, retire — an audit that leaves it larger has not curated it.
 
