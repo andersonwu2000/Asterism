@@ -265,8 +265,12 @@ def _render_globals(rows: list[sqlite3.Row]) -> str:
     reads them, not the elaboration."""
     if not rows:
         return "(none yet)"
-    return "\n".join(f"- [id {r['id']}] {(r['title'] or '').strip()}"
-                     for r in rows)
+    from ..state.kb import GLOBAL_LESSON_CAP
+    head = f"({len(rows)}/{GLOBAL_LESSON_CAP} entries"
+    head += (" — AT CAPACITY: adding requires replacing one via"
+             " global_edit)" if len(rows) >= GLOBAL_LESSON_CAP else ")")
+    return "\n".join([head] + [
+        f"- [id {r['id']}] {(r['title'] or '').strip()}" for r in rows])
 
 
 def _apply_decision(problem: str, goal_id: int, sid: str,
@@ -297,6 +301,13 @@ def _apply_decision(problem: str, goal_id: int, sid: str,
         if action == "global_add":
             if not title:
                 return "skip (global_add: empty title)"
+            # Capacity gate (user call, 2026-07-15): at the cap, adding
+            # means replacing — the agent must judge which existing
+            # entry its insight outranks and global_edit it instead.
+            if len(kb.global_lessons(conn, problem)) >= kb.GLOBAL_LESSON_CAP:
+                return (f"skip (global_add at the "
+                        f"{kb.GLOBAL_LESSON_CAP}-entry cap — replace the "
+                        f"least valuable entry via global_edit instead)")
             n = kb.add_lesson(conn, problem=problem, title=title, body=body,
                               node_id=None, provenance=provenance)
             return f"global add ({'wrote' if n else 'dup'})"

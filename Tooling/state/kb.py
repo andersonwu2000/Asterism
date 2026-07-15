@@ -48,6 +48,14 @@ def insert_entry(
     return int(cur.lastrowid)
 
 
+# Hard cap on a problem's GLOBAL lessons (user call, 2026-07-15): the
+# corpus grew +25/day against ~2/day of audit curation — append-only
+# with judgment-based pruning never converges. At capacity, adding
+# means REPLACING the least valuable entry (reflection's global_edit);
+# enforcement lives at the reflection write site.
+GLOBAL_LESSON_CAP = 25
+
+
 def add_lesson(
     conn: sqlite3.Connection,
     *,

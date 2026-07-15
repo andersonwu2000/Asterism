@@ -15,8 +15,8 @@ Existing global lessons for this problem:
 
 OUTPUT — write your decision as JSON to `{decision_path}`. Exactly one of:
   - `{"action": "skip"}` — no cross-goal-transferable insight (the common case).
-  - `{"action": "global_add", "title": "<one-line insight>", "body": "<optional: decls, tactic, exact shapes>"}` — a transferable insight for OTHER goals, AND no entry above already covers it (no duplicates).
-  - `{"action": "global_edit", "id": <id from the list above>, "title": "<corrected one-liner>", "body": "<optional detail>"}` — an entry above is now false or superseded by this `{outcome}`. No count cap; global experience evolves by editing.
+  - `{"action": "global_add", "title": "<one-line insight>", "body": "<optional: decls, tactic, exact shapes>"}` — a transferable insight for OTHER goals, AND no entry above already covers it (no duplicates). Rejected at the entry cap (shown above the list) — at capacity use `global_edit` instead.
+  - `{"action": "global_edit", "id": <id from the list above>, "title": "<corrected one-liner>", "body": "<optional detail>"}` — an entry above is now false or superseded by this `{outcome}`; or, AT CAPACITY, the least valuable entry your new insight outranks — full overwrite. Not sure it outranks any → `skip`.
 
 `title` is the actionable one-liner; `body` is optional elaboration.
 

@@ -398,3 +398,49 @@ def test_attempt_reflection_uses_full_problem_name_for_kb(
         assert kb.entries_for_problem(conn, "foo") == []         # NOT the leaf
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------
+# GLOBAL_LESSON_CAP (2026-07-15, user call): at 25 entries, global_add
+# is rejected — adding means replacing via global_edit.
+# ---------------------------------------------------------------------
+
+def test_apply_decision_global_add_rejected_at_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _seed_problem_goal(tmp_path)
+    conn = db.connect()
+    for i in range(kb.GLOBAL_LESSON_CAP):
+        kb.add_lesson(conn, problem="p", title=f"lesson {i}", body="",
+                      node_id=None, provenance=f"seed:{i}")
+    conn.close()
+    dp = tmp_path / "_reflection_decision.json"
+    dp.write_text(json.dumps(
+        {"action": "global_add", "title": "one more", "body": "b"}),
+        encoding="utf-8")
+    out = _reflection._apply_decision("p", 1, "sidcap", dp)
+    assert "cap" in out and "global_edit" in out
+    conn = db.connect()
+    assert len(kb.global_lessons(conn, "p")) == kb.GLOBAL_LESSON_CAP
+    conn.close()
+    # global_edit (the replace path) still works at capacity
+    conn = db.connect()
+    victim = kb.global_lessons(conn, "p")[0]["id"]
+    conn.close()
+    dp.write_text(json.dumps(
+        {"action": "global_edit", "id": victim,
+         "title": "replacement insight", "body": "nb"}), encoding="utf-8")
+    assert "global edit" in _reflection._apply_decision("p", 1, "side", dp)
+
+
+def test_render_globals_capacity_header() -> None:
+    from Tooling.state.kb import GLOBAL_LESSON_CAP
+    rows = [{"id": i, "title": f"t{i}", "body": ""}
+            for i in range(GLOBAL_LESSON_CAP)]
+    out = _render_globals(rows)
+    assert f"({GLOBAL_LESSON_CAP}/{GLOBAL_LESSON_CAP}" in out
+    assert "AT CAPACITY" in out and "global_edit" in out
+    below = _render_globals(rows[:3])
+    assert f"(3/{GLOBAL_LESSON_CAP} entries)" in below
+    assert "AT CAPACITY" not in below
