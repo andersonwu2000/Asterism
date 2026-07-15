@@ -82,6 +82,11 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-14
+- Trimmed the system's working memory to keep only recent context and deferred loading reference material until it is actually needed.
+- Made the automated prover pause until its usage quota resets rather than shutting down when it hits the limit.
+- Fixed cross-platform reliability problems on Windows and POSIX systems and applied self-audit corrections to earlier work.
+
 ### 2026-07-13
 - Reworked the context given to the proving agents, adding an auto-generated index of already-proved results with full statements and replacing bulky search-tree dumps with compact on-demand summaries.
 - Added a self-audit step that curates the accumulated knowledge base of proof lessons and prunes instructions made redundant by machine-generated context.
@@ -219,11 +224,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Improved reuse of equivalent subgoals, so an already-proved or in-progress goal is shared—or cited as a lemma—rather than re-derived.
 - Hardened the subgoal scheduler to recover interrupted work after restarts and to avoid dropping or duplicating tasks.
 - Refined the prompts and feedback given to the proving agents, giving clearer reasons when a step is declined and keeping self-reflection focused on the mathematics.
-
-### 2026-06-14
-- Overhauled the bookkeeping for concurrent proof attempts, adding an explicit "stalled" status to replace an earlier stopgap, keeping shelved attempts visible for review, and counting active searches by live processes rather than stale connections.
-- Made each proving step elaborate exactly one unit against a single shared Lean compilation state.
-- Refined the prover's instructions to look for an existing lemma before deriving a new intermediate step, and to back out of a subgoal only when its statement is genuinely malformed.
 
 <!-- ASTERISM-PROGRESS:END -->
 
