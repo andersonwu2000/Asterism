@@ -283,7 +283,7 @@ function RunStrip({
         </span>
       )}
       <Link
-        to="/run"
+        to="/engine"
         className="text-ink-faint underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"
         title="the run console: agent lanes, live writes, burn"
       >

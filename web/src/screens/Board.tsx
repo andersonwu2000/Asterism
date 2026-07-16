@@ -506,7 +506,7 @@ export default function Board() {
                       meta && !meta.daemon.running && !meta.daemon.stopping ? (
                         <>
                           engine idle — not being worked ·{' '}
-                          <Link to="/telemetry" className="underline decoration-ink-faint underline-offset-2 hover:text-ink">
+                          <Link to="/engine" className="underline decoration-ink-faint underline-offset-2 hover:text-ink">
                             start it
                           </Link>
                         </>

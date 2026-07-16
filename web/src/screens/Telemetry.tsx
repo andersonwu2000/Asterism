@@ -299,17 +299,18 @@ function AccountPanel() {
   )
 }
 
-export default function Telemetry() {
+/** The knobs + account face of the Engine page. Config is read once
+ * at run start (the banner says so while a run is live); the Manifest
+ * tab next door is the hot-reloaded lever. */
+export function SettingsTab() {
   const { data: daemon } = usePoll<{ running: boolean }>('/api/daemon', 5000)
   return (
-    <div className="mx-auto max-w-5xl px-6 py-6">
-      <h1 className="font-display mb-4 text-[22px] font-medium text-ink">Settings</h1>
-      {/* liveness, lanes and burn live on the Run console (#/run) —
-          this page is the machine room: knobs, the ledger, the log */}
+    <div>
       {daemon?.running && (
         <div className="mb-4 rounded-md border border-edge bg-surface-2 px-3 py-2 text-xs text-ink-dim">
           A run is live — the engine reads its configuration once at start, so every change
-          here lands on the <span className="text-ink">next</span> run.
+          here lands on the <span className="text-ink">next</span> run. (Instructions on the
+          Manifest tab DO reach the live run.)
         </div>
       )}
       <div className="flex flex-col gap-6">
@@ -321,10 +322,12 @@ export default function Telemetry() {
           <SectionLabel>settings</SectionLabel>
           <ConfigPanel />
         </section>
-        <section>
-          <UsageTable />
-        </section>
       </div>
     </div>
   )
+}
+
+/** The ledger face: usage per problem and per agent kind. */
+export function UsageTab() {
+  return <UsageTable />
 }

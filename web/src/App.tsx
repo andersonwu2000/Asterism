@@ -9,8 +9,8 @@ import LibraryChapterScreen from './screens/LibraryChapter'
 import New from './screens/New'
 import Papers, { PaperReader } from './screens/Papers'
 import Problem from './screens/Problem'
-import Run from './screens/Run'
-import Telemetry from './screens/Telemetry'
+import Engine from './screens/Engine'
+import type { EngineTab } from './screens/Engine'
 import type { Meta } from './lib/types'
 
 /** Global run strip: from any page, what is the engine doing right
@@ -25,7 +25,7 @@ function DaemonChip({ meta }: { meta: Meta | null }) {
     // seconds after the user pressed Run
     return (
       <Link
-        to="/run"
+        to="/engine"
         className="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap text-ink transition-colors hover:bg-surface-2"
         title="the engine is booting — open the run console"
       >
@@ -42,7 +42,7 @@ function DaemonChip({ meta }: { meta: Meta | null }) {
     const elapsed = mins === null ? '' : mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`
     return (
       <Link
-        to="/run"
+        to="/engine"
         className="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap text-ink transition-colors hover:bg-surface-2"
         title={
           d.stopping
@@ -63,7 +63,7 @@ function DaemonChip({ meta }: { meta: Meta | null }) {
   const crashed = d.last_exit !== null && d.last_exit.rc !== null && d.last_exit.rc !== 0
   return (
     <Link
-      to="/run"
+      to="/engine"
       className="group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
       title={
         crashed
@@ -292,11 +292,20 @@ function Shell() {
             label="Board"
             active={section === '' || section === 'problems'}
           />
+          {/* ONE door for the machine (owner, 2026-07-14): console,
+              manifest steering, settings and the usage ledger are four
+              faces of the same engine — Run + Settings had begun
+              duplicating its cost surfaces across two pages */}
           <NavItem
-            to="/run"
+            to="/engine"
             icon="run"
-            label="Run"
-            active={section === 'run'}
+            label="Engine"
+            active={
+              section === 'engine' ||
+              section === 'run' ||
+              section === 'settings' ||
+              section === 'telemetry'
+            }
             live={meta?.daemon.running ?? false}
           />
           <NavItem
@@ -317,12 +326,6 @@ function Shell() {
             label="Inbox"
             active={section === 'inbox'}
             badge={meta?.inbox_count}
-          />
-          <NavItem
-            to="/settings"
-            icon="settings"
-            label="Settings"
-            active={section === 'settings' || section === 'telemetry'}
           />
         </nav>
         <div className="mt-auto flex flex-col gap-1">
@@ -355,10 +358,21 @@ function Shell() {
             ) : (
               <Papers />
             )
+          ) : section === 'engine' ? (
+            <Engine
+              tab={
+                (['manifest', 'settings', 'usage'].includes(
+                  route.segments[1] ?? '',
+                )
+                  ? route.segments[1]
+                  : 'console') as EngineTab
+              }
+            />
           ) : section === 'run' ? (
-            <Run />
+            // legacy routes keep working — same machine, new door
+            <Engine tab="console" />
           ) : section === 'settings' || section === 'telemetry' ? (
-            <Telemetry />
+            <Engine tab="settings" />
           ) : section === 'problems' && route.segments[1] ? (
             <Problem name={route.segments[1]} />
           ) : (

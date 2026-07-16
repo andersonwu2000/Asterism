@@ -75,7 +75,7 @@ export default function RunControl({ problem }: { problem: string }) {
       ) : busyElsewhere ? (
         <span className="text-[11px] text-ink-faint">
           engine busy — <span className="font-mono">{d.scope ?? 'all problems'}</span> ·{' '}
-          <Link to="/telemetry" className="underline decoration-ink-faint underline-offset-2 hover:text-ink">
+          <Link to="/engine" className="underline decoration-ink-faint underline-offset-2 hover:text-ink">
             Engine
           </Link>
         </span>
