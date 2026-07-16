@@ -1,6 +1,7 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react'
+import type { ButtonHTMLAttributes, ReactNode, SelectHTMLAttributes } from 'react'
 import type { ProblemStatus } from '../lib/types'
 import { ApiError } from '../lib/api'
+import { Link } from '../lib/router'
 
 /* ------------------------------------------------------------------ */
 /* Button — one component, five intents; every action in the app goes
@@ -37,6 +38,80 @@ export function Button({
       } ${BUTTON_VARIANT[variant]} ${className}`}
       {...rest}
     />
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* TabNav — THE tab bar (Problem, Library chapter, Engine): one form,
+ * the star underline as the active mark. Items with href render as
+ * links (routed tabs); items without use onSelect (state tabs).       */
+/* ------------------------------------------------------------------ */
+
+export function TabNav<T extends string>({
+  tabs,
+  active,
+  onSelect,
+  className = '',
+}: {
+  tabs: { id: T; label: ReactNode; href?: string; title?: string }[]
+  active: T
+  onSelect?: (id: T) => void
+  className?: string
+}) {
+  const cls = (id: T) =>
+    `relative cursor-pointer pb-2 text-xs transition-colors duration-150 ${
+      active === id ? 'text-ink' : 'text-ink-dim hover:text-ink'
+    }`
+  const mark = (id: T) =>
+    active === id && (
+      <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-star" />
+    )
+  return (
+    <nav className={`flex gap-5 ${className}`}>
+      {tabs.map((t) =>
+        t.href ? (
+          <Link key={t.id} to={t.href} title={t.title} className={cls(t.id)}>
+            {t.label}
+            {mark(t.id)}
+          </Link>
+        ) : (
+          <button
+            key={t.id}
+            title={t.title}
+            className={cls(t.id)}
+            onClick={() => onSelect?.(t.id)}
+          >
+            {t.label}
+            {mark(t.id)}
+          </button>
+        ),
+      )}
+    </nav>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Select — the native box was a bare rectangle (owner): quiet border,
+ * surface fill, a small chevron the platform styling never gave us.   */
+/* ------------------------------------------------------------------ */
+
+export function Select({
+  className = '',
+  ...rest
+}: SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <span className={`relative inline-block ${className}`}>
+      <select
+        {...rest}
+        className="w-full cursor-pointer appearance-none rounded-md border border-edge bg-surface py-1 pr-7 pl-2 font-mono text-xs text-ink transition-colors hover:border-edge-strong focus:border-ink-faint focus:outline-none"
+      />
+      <span
+        className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-[8px] text-ink-faint"
+        aria-hidden
+      >
+        ▼
+      </span>
+    </span>
   )
 }
 

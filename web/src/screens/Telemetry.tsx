@@ -2,7 +2,7 @@ import { Fragment, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { weightedBurn } from '../lib/burn'
 import { compactNumber, duration } from '../lib/format'
-import { SectionLabel } from '../components/ui'
+import { SectionLabel, Select } from '../components/ui'
 import { logout, switchAccount } from '../lib/claudeAuth'
 import type { ConfigSetting, Meta, UsageProblem } from '../lib/types'
 
@@ -48,8 +48,8 @@ function ConfigPanel() {
           // a select kills the free-text failure mode (a typo'd model
           // name only explodes at the NEXT run) — power users can
           // still put anything in yaml/.env; it shows up as a choice
-          <select
-            className="w-56 rounded border border-edge bg-bg px-2 py-1 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
+          <Select
+            className="w-56"
             value={draft ?? current}
             onChange={(e) => setDrafts((d) => ({ ...d, [s.key]: e.target.value }))}
           >
@@ -58,22 +58,26 @@ function ConfigPanel() {
                 {c}
               </option>
             ))}
-          </select>
+          </Select>
         ) : (
           <input
-            className="w-56 rounded border border-edge bg-bg px-2 py-1 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
+            className="w-56 rounded-md border border-edge bg-surface px-2 py-1 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
             value={draft ?? current}
             onChange={(e) => setDrafts((d) => ({ ...d, [s.key]: e.target.value }))}
           />
         )}
-        {draft !== undefined && draft !== current && (
-          <button
-            className="rounded-md bg-ink px-2 py-1 text-[11px] font-semibold text-bg transition-colors hover:bg-starlight"
-            onClick={() => void save(s.key)}
-          >
-            Save
-          </button>
-        )}
+        {/* the slot is ALWAYS there — a Save popping into existence
+            shoved the description sideways (owner, 2026-07-14) */}
+        <span className="w-12 shrink-0">
+          {draft !== undefined && draft !== current && (
+            <button
+              className="rounded-md bg-ink px-2 py-1 text-[11px] font-semibold text-bg transition-colors hover:bg-starlight"
+              onClick={() => void save(s.key)}
+            >
+              Save
+            </button>
+          )}
+        </span>
         <span className="min-w-0 truncate text-[11px] text-ink-faint">{s.description}</span>
       </div>
     )

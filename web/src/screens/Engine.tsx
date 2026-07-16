@@ -4,6 +4,7 @@ import { Link } from '../lib/router'
 import RunConsole from './Run'
 import { SettingsTab, UsageTab } from './Telemetry'
 import ManifestEditor from '../components/ManifestEditor'
+import { TabNav } from '../components/ui'
 import type { DaemonStatus, RunStatus } from '../lib/types'
 
 /*
@@ -73,23 +74,9 @@ function SteerManifest() {
 export default function Engine({ tab }: { tab: EngineTab }) {
   return (
     <div>
-      <nav className="mx-auto flex max-w-5xl gap-5 px-6 pt-5">
-        {TABS.map((t) => (
-          <Link
-            key={t.id}
-            to={t.href}
-            title={t.title}
-            className={`relative pb-2 text-xs transition-colors duration-150 ${
-              tab === t.id ? 'text-ink' : 'text-ink-dim hover:text-ink'
-            }`}
-          >
-            {t.label}
-            {tab === t.id && (
-              <span className="absolute inset-x-0 bottom-0 h-px bg-star" />
-            )}
-          </Link>
-        ))}
-      </nav>
+      <div className="mx-auto max-w-5xl px-6 pt-5">
+        <TabNav tabs={TABS} active={tab} />
+      </div>
       <div className="border-t border-edge">
         {tab === 'console' && <RunConsole />}
         {tab === 'manifest' && (

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { leafOf, moduleOf, relTime } from '../lib/format'
 import { Link } from '../lib/router'
-import { ErrorState } from '../components/ui'
+import { ErrorState, TabNav } from '../components/ui'
 import { Lean } from '../lib/lean'
 import { withMath } from '../lib/tex'
 import { LeanProbe } from '../components/LeanProbe'
@@ -701,22 +701,7 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
         </Link>
       </div>
 
-      <nav className="mt-4 flex gap-5 border-b border-edge">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            className={`relative cursor-pointer pb-2 text-xs transition-colors duration-150 ${
-              tab === t.id ? 'text-ink' : 'text-ink-dim hover:text-ink'
-            }`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-            {tab === t.id && (
-              <span className="absolute inset-x-0 -bottom-px h-px bg-ink" aria-hidden />
-            )}
-          </button>
-        ))}
-      </nav>
+      <TabNav className="mt-4" tabs={tabs} active={tab} onSelect={setTab} />
 
       {tab === 'highlights' && (
         <div>

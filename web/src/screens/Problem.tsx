@@ -4,7 +4,7 @@ import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { goalStatusLabel } from '../lib/vocab'
-import { Button, ErrorState, StatusBadge } from '../components/ui'
+import { Button, ErrorState, StatusBadge, TabNav } from '../components/ui'
 import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
 import StrategyPanel from '../components/StrategyPanel'
@@ -532,27 +532,24 @@ export default function Problem({ name }: { name: string }) {
             neither parse nor act on (owner, 2026-07-12). Its history
             lives where history lives: the Timeline's EmitDirective
             rows. */}
-        <nav className="mt-3 flex gap-5">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              className={`relative pb-2 text-xs transition-colors duration-150 ${
-                tab === t.id ? 'text-ink' : 'text-ink-dim hover:text-ink'
-              }`}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-              {t.id === 'manifest' && manifestDirty && (
-                <span className="ml-1 text-star" title="unsaved changes">
-                  ·
-                </span>
-              )}
-              {tab === t.id && (
-                <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-star" />
-              )}
-            </button>
-          ))}
-        </nav>
+        <TabNav
+          className="mt-3"
+          tabs={tabs.map((t) => ({
+            id: t.id,
+            label: (
+              <>
+                {t.label}
+                {t.id === 'manifest' && manifestDirty && (
+                  <span className="ml-1 text-star" title="unsaved changes">
+                    ·
+                  </span>
+                )}
+              </>
+            ),
+          }))}
+          active={tab}
+          onSelect={setTab}
+        />
       </div>
 
       <div className="flex min-h-0 flex-1">

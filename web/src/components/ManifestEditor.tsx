@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { apiDelete, apiGet, apiPost } from '../lib/api'
 import { Link } from '../lib/router'
-import { Button } from './ui'
+import { Button, Select } from './ui'
 import ListField from './ListField'
 import { MarkdownEditor } from '../lib/markdown'
 import type { ManifestData, PaperShelfItem, ProblemPaperBinding } from '../lib/types'
@@ -136,18 +136,14 @@ function PapersBlock({ problem }: { problem: string }) {
       )}
       {bindable.length > 0 && (
         <div className="mt-2 flex items-center gap-2">
-          <select
-            className="w-72 rounded border border-edge bg-surface px-2 py-1 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
-            value={pick}
-            onChange={(e) => setPick(e.target.value)}
-          >
+          <Select className="w-72" value={pick} onChange={(e) => setPick(e.target.value)}>
             <option value="">bind a paper from the shelf…</option>
             {bindable.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.source_name}
+                {s.title ?? s.source_name}
               </option>
             ))}
-          </select>
+          </Select>
           {pick !== '' && (
             <Button variant="outline" size="xs" disabled={busy} onClick={() => void bind()}>
               bind
