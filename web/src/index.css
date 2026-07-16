@@ -75,6 +75,18 @@ body,
   height: 100%;
 }
 
+/* the console is dark — telling the UA makes NATIVE surfaces (the
+   select's dropdown list, scrollbars it owns, form controls) render
+   dark too: the open menu was an OS-white slab in a black page
+   (owner, 2026-07-14) */
+html {
+  color-scheme: dark;
+}
+select option {
+  background-color: var(--color-surface-2);
+  color: var(--color-ink);
+}
+
 body {
   background: var(--color-bg);
   color: var(--color-ink);

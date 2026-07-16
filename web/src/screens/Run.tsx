@@ -346,7 +346,9 @@ export default function Run() {
   const g = data.goals
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-6">
+    // no own container: the console renders inside the Engine page's
+    // (title → tabs → content, one anatomy across every tabbed screen)
+    <div className="pt-5">
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
         <span className="flex items-center gap-3">
           <span

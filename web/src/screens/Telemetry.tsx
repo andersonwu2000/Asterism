@@ -2,7 +2,7 @@ import { Fragment, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { weightedBurn } from '../lib/burn'
 import { compactNumber, duration } from '../lib/format'
-import { SectionLabel, Select } from '../components/ui'
+import { Button, SectionLabel, Select } from '../components/ui'
 import { logout, switchAccount } from '../lib/claudeAuth'
 import type { ConfigSetting, Meta, UsageProblem } from '../lib/types'
 
@@ -15,23 +15,36 @@ function ConfigPanel() {
   const { data, refresh } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [msg, setMsg] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
   if (!data) return null
-  const save = async (key: string) => {
+  // ONE Save for the whole panel (owner, 2026-07-14): per-row buttons
+  // either shoved the layout or reserved awkward gaps — edits collect
+  // as drafts, dirty rows tint their border, one click lands them all
+  const dirtyKeys = data.settings
+    .filter((s) => {
+      const d = drafts[s.key]
+      return d !== undefined && d !== String(s.resolved ?? '')
+    })
+    .map((s) => s.key)
+  const saveAll = async () => {
+    setSaving(true)
     setMsg(null)
+    const notes: string[] = []
     try {
-      const r = await apiPost<{ message: string }>('/api/config', {
-        key,
-        value: drafts[key],
-      })
-      setMsg(r.message)
-      setDrafts((d) => {
-        const next = { ...d }
-        delete next[key]
-        return next
-      })
+      for (const key of dirtyKeys) {
+        const r = await apiPost<{ message: string }>('/api/config', {
+          key,
+          value: drafts[key],
+        })
+        notes.push(r.message)
+      }
+      setDrafts({})
+      setMsg(notes[notes.length - 1] ?? null)
       refresh()
     } catch (e) {
       setMsg(String((e as Error).message))
+    } finally {
+      setSaving(false)
     }
   }
   const models = data.settings.filter((s) => s.key.endsWith('.model'))
@@ -39,6 +52,7 @@ function ConfigPanel() {
   const row = (s: ConfigSetting) => {
     const draft = drafts[s.key]
     const current = String(s.resolved ?? '')
+    const dirty = draft !== undefined && draft !== current
     return (
       <div key={s.key} className="flex items-center gap-3 py-1">
         {/* wide enough for the longest key (strategist.audit_interval_min)
@@ -61,24 +75,21 @@ function ConfigPanel() {
           </Select>
         ) : (
           <input
-            className="w-56 rounded-md border border-edge bg-surface px-2 py-1 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
+            className={`w-56 rounded-md border bg-surface px-2 py-1 font-mono text-xs text-ink focus:outline-none ${
+              dirty ? 'border-star/50' : 'border-edge focus:border-ink-faint'
+            }`}
             value={draft ?? current}
             onChange={(e) => setDrafts((d) => ({ ...d, [s.key]: e.target.value }))}
           />
         )}
-        {/* the slot is ALWAYS there — a Save popping into existence
-            shoved the description sideways (owner, 2026-07-14) */}
-        <span className="w-12 shrink-0">
-          {draft !== undefined && draft !== current && (
-            <button
-              className="rounded-md bg-ink px-2 py-1 text-[11px] font-semibold text-bg transition-colors hover:bg-starlight"
-              onClick={() => void save(s.key)}
-            >
-              Save
-            </button>
+        <span className="min-w-0 truncate text-[11px] text-ink-faint">
+          {dirty && (
+            <span className="mr-1.5 text-star" title="unsaved change">
+              ·
+            </span>
           )}
+          {s.description}
         </span>
-        <span className="min-w-0 truncate text-[11px] text-ink-faint">{s.description}</span>
       </div>
     )
   }
@@ -91,7 +102,23 @@ function ConfigPanel() {
       {models.map(row)}
       <div className="mt-3 mb-1 text-[11px] text-ink-faint">engine knobs</div>
       {knobs.map(row)}
-      {msg && <div className="mt-2 font-mono text-[11px] text-ink-dim">{msg}</div>}
+      {/* the ONE Save: always present (no layout shift), disabled until
+          something is dirty; the count says how much it will land */}
+      <div className="mt-3 flex items-center gap-3 border-t border-edge pt-3">
+        <Button
+          variant="ok"
+          disabled={saving || dirtyKeys.length === 0}
+          onClick={() => void saveAll()}
+        >
+          {saving ? 'Saving…' : 'Save changes'}
+        </Button>
+        <span className="tnum text-[11px] text-ink-faint">
+          {dirtyKeys.length > 0
+            ? `${dirtyKeys.length} unsaved change${dirtyKeys.length === 1 ? '' : 's'}`
+            : 'no unsaved changes'}
+        </span>
+        {msg && <span className="min-w-0 truncate font-mono text-[11px] text-ink-dim">{msg}</span>}
+      </div>
     </div>
   )
 }

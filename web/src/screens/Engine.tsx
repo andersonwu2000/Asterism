@@ -15,6 +15,8 @@ import type { DaemonStatus, RunStatus } from '../lib/types'
  *   Manifest — steer the live run (hot-reloaded instructions)
  *   Settings — knobs + account (read once at run start)
  *   Usage    — the ledger (per-problem, per-agent-kind)
+ * Page anatomy matches Problem/Library chapter exactly: title, TabNav,
+ * content — one container, no extra rules.
  */
 
 export type EngineTab = 'console' | 'manifest' | 'settings' | 'usage'
@@ -73,28 +75,21 @@ function SteerManifest() {
 
 export default function Engine({ tab }: { tab: EngineTab }) {
   return (
-    <div>
-      <div className="mx-auto max-w-5xl px-6 pt-5">
-        <TabNav tabs={TABS} active={tab} />
-      </div>
-      <div className="border-t border-edge">
-        {tab === 'console' && <RunConsole />}
-        {tab === 'manifest' && (
-          <div className="mx-auto max-w-5xl px-6 py-4">
-            <SteerManifest />
-          </div>
-        )}
-        {tab === 'settings' && (
-          <div className="mx-auto max-w-5xl px-6 py-6">
-            <SettingsTab />
-          </div>
-        )}
-        {tab === 'usage' && (
-          <div className="mx-auto max-w-5xl px-6 py-6">
-            <UsageTab />
-          </div>
-        )}
-      </div>
+    <div className="mx-auto max-w-5xl px-6 py-6">
+      <h1 className="font-display text-[22px] font-medium text-ink">Engine</h1>
+      <TabNav className="mt-3" tabs={TABS} active={tab} />
+      {tab === 'console' && <RunConsole />}
+      {tab === 'manifest' && <SteerManifest />}
+      {tab === 'settings' && (
+        <div className="mt-5">
+          <SettingsTab />
+        </div>
+      )}
+      {tab === 'usage' && (
+        <div className="mt-5">
+          <UsageTab />
+        </div>
+      )}
     </div>
   )
 }
