@@ -278,9 +278,11 @@ UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
     "dispatch.pool": (int, "max agents working at once"),
     "dispatch.budget_sec": (int, "wall-clock budget per engine run (seconds)"),
     "dispatch.shelve_threshold": (int, "failed attempts before a goal is shelved"),
-    "dispatch.quota_wait": (bool, "when the subscription quota runs out, "
-                                  "wait for the window to reset and resume "
-                                  "instead of exiting"),
+    # dispatch.quota_wait deliberately NOT UI-editable (owner,
+    # 2026-07-14): the feature hasn't met a real quota exhaustion yet —
+    # an untested switch doesn't belong on the product surface. It
+    # stays fully operable via Asterism.yaml / ASTERISM_QUOTA_WAIT;
+    # re-admit it as a proper toggle once it has survived the field.
 }
 
 #: dropdown choices for `.model` keys — what the UI offers (free text
