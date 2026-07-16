@@ -82,6 +82,10 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-15
+- Added an automated audit that flags when a prompt's stated routing no longer matches the project's central specification.
+- Worked through two batches of user-reported issues, fixing problems in how the system spawns provers, assembles context, and drafts proof skeletons.
+
 ### 2026-07-14
 - Trimmed the system's working memory to keep only recent context and deferred loading reference material until it is actually needed.
 - Made the automated prover pause until its usage quota resets rather than shutting down when it hits the limit.
@@ -219,11 +223,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Made the automated search loop more robust against wasted effort, preventing duplicate attempts on the same goal, immediate retries of subgoals that had been set aside, and overly broad sweeps of stray files.
 - Pruned the working proof tree down to its active frontier to keep the search focused.
 - Improved observability by surfacing why a step stalls and keeping the run logs readable.
-
-### 2026-06-15
-- Improved reuse of equivalent subgoals, so an already-proved or in-progress goal is shared—or cited as a lemma—rather than re-derived.
-- Hardened the subgoal scheduler to recover interrupted work after restarts and to avoid dropping or duplicating tasks.
-- Refined the prompts and feedback given to the proving agents, giving clearer reasons when a step is declined and keeping self-reflection focused on the mathematics.
 
 <!-- ASTERISM-PROGRESS:END -->
 
