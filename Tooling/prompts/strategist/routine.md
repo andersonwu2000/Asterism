@@ -34,9 +34,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
     ## Thesis       the whole story: route, why it should work, main risks. Keep it readable; keep the
                     surrogate↔intent dictionary here
 
-Start from `## Programme` in Context.md: Roadmap/Thesis evolve, Title/Argument are fresh each batch. Admit gaps plainly; no "obviously"/"clearly"; mark formal↔informal claims not yet kernel-checked. Every Inject brief names its Roadmap entry with a `Roadmap: <entry phrase>` line.
-
-A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) against the Manifest and the latest outcomes before anything dispatches. On a rebuttal: revise, or defend inside `## Argument` — do not concede points you believe are misreadings. If the cycle exhausts, the proposal is discarded and the next wake re-derives fresh. Pick experiments for information (confirm / refute / discriminate), not provability alone; a proposal carries ≥1 Inject or AttemptDisproof (batches with MarkDeliverable/Ingest exempt). Batches wholly within FetchPaper / RequestUserAmend / Noop skip all of this.
+Start from `## Programme` in Context.md: Roadmap/Thesis evolve, Title/Argument are fresh each batch. Admit gaps plainly; no "obviously"/"clearly"; mark formal↔informal claims not yet kernel-checked. Every Inject brief names its Roadmap entry with a `Roadmap: <entry phrase>` line. Pick experiments for information (confirm / refute / discriminate), not provability alone; carry ≥1 Inject or AttemptDisproof (MarkDeliverable/Ingest batches exempt). A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before anything dispatches; batches wholly within FetchPaper / RequestUserAmend / Noop skip all of this.
 
 ## Decision kinds
 - `Inject` — `target_goal_id`, `brief`. `pipeline`:
@@ -64,12 +62,12 @@ A fresh, isolated **Adversary** judges the package (proposal + briefs + directiv
 [{"kind": "ConfirmShelve", "target_goal_id": "family_card_eq_finrank",
   "reason": "Branch reinvents Module.finrank_eq_card_basis (mathlib has)."},
  {"kind": "Inject", "pipeline": "Backward", "target_goal_id": "extended_jordan_family",
-  "brief": "Skip the card-decomposition chain; cite `Module.finrank_eq_card_basis` directly. See current directive entry on finrank/Basis API for signature."}]
+  "brief": "Roadmap: jordan family assembly\nSkip the card-decomposition chain; cite `Module.finrank_eq_card_basis` directly. See current directive entry on finrank/Basis API for signature."}]
 ```
 
 ```json
 [{"kind": "ConfirmShelve", "target_goal_id": "lu_step_assembly",
   "reason": "Six dead Backward strategies all shelved with the same structural complaint: the four conjuncts bind to the same `Matrix.reindex (Matrix.fromBlocks …)` witness, which replicates verbatim across each sub-goal signature."},
  {"kind": "Inject", "pipeline": "Forward",
-  "brief": "## Need\nA `noncomputable def lu_assembled_lower` packaging `Matrix.reindex e e (Matrix.fromBlocks 1 0 w L')` so Backward sub-goals can cite the witness by name instead of replicating it. (Grep + Loogle confirmed no mathlib analogue.)"}]
+  "brief": "Roadmap: LU witness packaging\n## Need\nA `noncomputable def lu_assembled_lower` packaging `Matrix.reindex e e (Matrix.fromBlocks 1 0 w L')` so Backward sub-goals can cite the witness by name instead of replicating it. (Grep + Loogle confirmed no mathlib analogue.)"}]
 ```

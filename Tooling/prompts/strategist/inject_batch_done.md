@@ -39,9 +39,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
     ## Thesis       the whole story: route, why it should work, main risks. Keep it readable; keep the
                     surrogate↔intent dictionary here
 
-Start from `## Programme` in Context.md: Roadmap/Thesis evolve, Title/Argument are fresh each batch. Admit gaps plainly; no "obviously"/"clearly"; mark formal↔informal claims not yet kernel-checked. Every Inject brief names its Roadmap entry with a `Roadmap: <entry phrase>` line.
-
-A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) against the Manifest and the latest outcomes before anything dispatches. On a rebuttal: revise, or defend inside `## Argument` — do not concede points you believe are misreadings. If the cycle exhausts, the proposal is discarded and the next wake re-derives fresh. Pick experiments for information (confirm / refute / discriminate), not provability alone; a proposal carries ≥1 Inject or AttemptDisproof (batches with MarkDeliverable/Ingest exempt). Batches wholly within FetchPaper / RequestUserAmend / Noop skip all of this.
+Start from `## Programme` in Context.md: Roadmap/Thesis evolve, Title/Argument are fresh each batch. Admit gaps plainly; no "obviously"/"clearly"; mark formal↔informal claims not yet kernel-checked. Every Inject brief names its Roadmap entry with a `Roadmap: <entry phrase>` line. Pick experiments for information (confirm / refute / discriminate), not provability alone; carry ≥1 Inject or AttemptDisproof (MarkDeliverable/Ingest batches exempt). A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before anything dispatches; batches wholly within FetchPaper / RequestUserAmend / Noop skip all of this.
 
 ## Decision kinds
 - `Inject` — `target_goal_id`, `brief`. `pipeline`:
@@ -68,15 +66,15 @@ A fresh, isolated **Adversary** judges the package (proposal + briefs + directiv
 ```json
 // brick landed as expected → re-dispatch the parked goal
 [{"kind": "Inject", "pipeline": "Builder", "target_goal_id": "succ_glue",
-  "brief": "Brick `block_enum_consecutive` (batch 8027877c) landed — provides the Fin-index layout that previously blocked. Cite `block_enum_consecutive` directly; don't reconstruct the enumeration."}]
+  "brief": "Roadmap: succ glue\nBrick `block_enum_consecutive` (batch 8027877c) landed — provides the Fin-index layout that previously blocked. Cite `block_enum_consecutive` directly; don't reconstruct the enumeration."}]
 ```
 
 ```json
 // gap remains → brick(s) + keep parked (N Forward allowed per batch)
 [{"kind": "Inject", "pipeline": "Forward",
-  "brief": "## Need\nFollow-up brick Y to fill remaining gap..."},
+  "brief": "Roadmap: remaining gap\n## Need\nFollow-up brick Y to fill remaining gap..."},
  {"kind": "Inject", "pipeline": "Forward",
-  "brief": "## Need\nBrick Z, independent of Y..."},
+  "brief": "Roadmap: remaining gap\n## Need\nBrick Z, independent of Y..."},
  {"kind": "ConfirmShelve", "target_goal_id": 2950,
   "reason": "Still parked; awaits bricks Y + Z"}]
 ```
@@ -86,5 +84,5 @@ A fresh, isolated **Adversary** judges the package (proposal + briefs + directiv
 [{"kind": "ConfirmShelve", "target_goal_id": "wagon_class0_col0_three_invariant",
   "reason": "Two prior Backward Injects on this goal both died with the same parent_needs_fix pattern — agents identify that the joint-mod-3 form lemma the parent decomposition relies on is itself unprovable in isolation. The whole class-0 sub-tree is built on a flawed decomposition."},
  {"kind": "Inject", "pipeline": "Backward", "target_goal_id": "wagon_head_class0_joint_mod3_invariant",
-  "brief": "Reframe upward: stop separating 'pure form' from 'non-divisibility' bricks. Carry both as a single joint invariant on the integer triple from the start; induct on word length so the mod-3 constraint co-evolves with the form."}]
+  "brief": "Roadmap: joint invariant reframe\nReframe upward: stop separating 'pure form' from 'non-divisibility' bricks. Carry both as a single joint invariant on the integer triple from the start; induct on word length so the mod-3 constraint co-evolves with the form."}]
 ```

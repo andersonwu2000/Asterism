@@ -12,7 +12,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
    - Status claims ("X is the sole gate", "Y is in flight") → check the tree.
    - Lines tagged `SUSPECT:` by earlier wakes → adjudicate these first.
    - Framework-behavior claims (daemon / gate behavior, what is "healthy") → legitimate only when they quote a prompt rule, a gate message, or a directive; unsourced → DELETE, and never use as evidence.
-   - The route = `PROGRAMME.md` (the passed Programme) → check against the Manifest (Statement + Strategic notes); drifted → say so in the directive and steer THIS batch (the Programme is revised only by the Strategist's next passed proposal, never by you). Route/planning prose living in `_plan.md` is misplaced — it belongs to the Programme; delete it there.
+   - The route = `PROGRAMME.md` (the passed Programme) → check against the Manifest (Statement + Strategic notes); drifted → say so in the directive and steer THIS batch (you cannot edit the Programme). Route/planning prose in `_plan.md` → delete; it belongs to the Programme.
    - Directive content `CATALOG.md` already carries → re-emit the directive without it.
    - The directive: merge, shorten, retire — an audit that leaves it larger has not curated it.
 

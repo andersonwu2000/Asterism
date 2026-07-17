@@ -39,9 +39,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
     ## Thesis       the whole story: route, why it should work, main risks. Keep it readable; keep the
                     surrogate↔intent dictionary here
 
-Start from `## Programme` in Context.md: Roadmap/Thesis evolve, Title/Argument are fresh each batch. Admit gaps plainly; no "obviously"/"clearly"; mark formal↔informal claims not yet kernel-checked. Every Inject brief names its Roadmap entry with a `Roadmap: <entry phrase>` line.
-
-A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) against the Manifest and the latest outcomes before anything dispatches. On a rebuttal: revise, or defend inside `## Argument` — do not concede points you believe are misreadings. If the cycle exhausts, the proposal is discarded and the next wake re-derives fresh. Pick experiments for information (confirm / refute / discriminate), not provability alone; a proposal carries ≥1 Inject or AttemptDisproof (batches with MarkDeliverable/Ingest exempt). Batches wholly within FetchPaper / RequestUserAmend / Noop skip all of this.
+Start from `## Programme` in Context.md: Roadmap/Thesis evolve, Title/Argument are fresh each batch. Admit gaps plainly; no "obviously"/"clearly"; mark formal↔informal claims not yet kernel-checked. Every Inject brief names its Roadmap entry with a `Roadmap: <entry phrase>` line. Pick experiments for information (confirm / refute / discriminate), not provability alone; carry ≥1 Inject or AttemptDisproof (MarkDeliverable/Ingest batches exempt). A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before anything dispatches; batches wholly within FetchPaper / RequestUserAmend / Noop skip all of this.
 
 ## Decision kinds
 - `Inject` — `target_goal_id`, `brief`. `pipeline`:
@@ -69,7 +67,7 @@ A fresh, isolated **Adversary** judges the package (proposal + briefs + directiv
 ```json
 // tactical — agent missed existing mathlib API
 [{"kind": "Inject", "pipeline": "Builder", "target_goal_id": "sub_lemma_X",
-  "brief": "Agent shelved citing 'mathlib lacks X', but Grep confirmed `Module.End.X` exists. Cite it directly — don't reconstruct."}]
+  "brief": "Roadmap: sub-lemma X\nAgent shelved citing 'mathlib lacks X', but Grep confirmed `Module.End.X` exists. Cite it directly — don't reconstruct."}]
 ```
 
 ```json
@@ -77,15 +75,15 @@ A fresh, isolated **Adversary** judges the package (proposal + briefs + directiv
 [{"kind": "ConfirmShelve", "target_goal_id": "wagon_class0_head_b_nondiv_from_form",
   "reason": "Agent's disproof is correct: the statement isolates ¬3∣b from joint form alone, but h0/h1/h2 only constrain a/b/c via the column equality, not their individual mod-3 residues. Parent decomposition is asking the impossible."},
  {"kind": "Inject", "pipeline": "Backward", "target_goal_id": "wagon_class0_col0_three_invariant",
-  "brief": "Reframe parent: instead of decomposing into separate 'pure form + ¬3∣b', state a stronger joint invariant ∃ a b c : ℤ, M_ω·e_3 = (a,b,c)/3^|ω| ∧ 3 ∤ gcd(a,b,c). Induct on word length so the mod-3 constraint co-evolves with the integer triple — never extracted as a separate sub-goal that loses context."}]
+  "brief": "Roadmap: joint mod-3 invariant\nReframe parent: instead of decomposing into separate 'pure form + ¬3∣b', state a stronger joint invariant ∃ a b c : ℤ, M_ω·e_3 = (a,b,c)/3^|ω| ∧ 3 ∤ gcd(a,b,c). Induct on word length so the mod-3 constraint co-evolves with the integer triple — never extracted as a separate sub-goal that loses context."}]
 ```
 
 ```json
 // missing prereq(s) → Forward(s) + park (N Forward allowed per batch)
 [{"kind": "Inject", "pipeline": "Forward",
-  "brief": "## Need\nA composition lemma for Equidecomp.trans over partial bijections... (Grep + Loogle confirmed missing)..."},
+  "brief": "Roadmap: equidecomp composition\n## Need\nA composition lemma for Equidecomp.trans over partial bijections... (Grep + Loogle confirmed missing)..."},
  {"kind": "Inject", "pipeline": "Forward",
-  "brief": "## Need\nThe inverse lemma for Equidecomp.symm, independent of the above... (Grep + Loogle confirmed missing)..."},
+  "brief": "Roadmap: equidecomp composition\n## Need\nThe inverse lemma for Equidecomp.symm, independent of the above... (Grep + Loogle confirmed missing)..."},
  {"kind": "ConfirmShelve", "target_goal_id": 1743,
   "reason": "Parked pending both Forward bricks; reassess after they land."}]
 ```
