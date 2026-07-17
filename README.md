@@ -82,6 +82,9 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-16
+- Capped the framework's library of general lessons at 25 entries, requiring an old one to be dropped whenever a new one is added.
+
 ### 2026-07-15
 - Added an automated audit that flags when a prompt's stated routing no longer matches the project's central specification.
 - Worked through two batches of user-reported issues, fixing problems in how the system spawns provers, assembles context, and drafts proof skeletons.
@@ -217,12 +220,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Expanded the stage that tidies machine-proved lemmas into a clean, reusable library, enforcing Mathlib's submission standards: no compiler warnings, deduplicated variable blocks, consistent namespaces, and no unused hypotheses.
 - Added whole-library consistency checks, including an editor-side validation that mirrors the checks run when results are committed.
 - Carried out a broad documentation cleanup, fixing drift from the current code, garbled text, and scattered design notes, and added an automated guard to keep code-referencing docs in sync.
-
-### 2026-06-16
-- Tightened the integrity of generated proofs so an unfilled placeholder can no longer be cited as a proof of the main goal, and supporting definitions are now placed ahead of the results that rely on them.
-- Made the automated search loop more robust against wasted effort, preventing duplicate attempts on the same goal, immediate retries of subgoals that had been set aside, and overly broad sweeps of stray files.
-- Pruned the working proof tree down to its active frontier to keep the search focused.
-- Improved observability by surfacing why a step stalls and keeping the run logs readable.
 
 <!-- ASTERISM-PROGRESS:END -->
 
