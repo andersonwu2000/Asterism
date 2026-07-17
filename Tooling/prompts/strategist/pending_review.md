@@ -21,11 +21,27 @@ Also check `## Recent decisions` for your prior decisions and their outcomes.
    - Ontological → `ConfirmShelve` + escalate upward (or `RequestUserAmend` if user file is wrong)
    - Missing prereq → `Inject(Forward)` to build the brick + `ConfirmShelve` to park
 
-5. **Rewrite `_plan.md`** (your private note): REWRITE to the current state — drop what's done or stale; plans and progress belong here, not in EmitDirective. Keep a `## Facts` section: verified statements only, each citing its source (lemma / s<id> / gate message); everything outside is unverified. A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
+5. **Rewrite `_plan.md`** (your private note): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY — the route and plans live in the Programme; do not maintain a second route document here. `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message); everything outside is unverified. A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
 
 Before committing, `Grep` mathlib briefly for any concept the agent claims is missing.
 
 **Difficulty alone is not a reason to give up.** "Hard problem" / "Mathlib lacks X" describe work, not stop signs.
+
+## Programme proposal
+
+Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelve / MarkDeliverable / Ingest / EmitDirective) ships a Programme revision: Write `programme.md` (bare filename, in your attempts dir) —
+
+    # <Title>       one line: this batch's goal
+    ## Argument     why THIS batch: what the latest outcomes showed, what these experiments will settle
+    ## Roadmap      ordered next goals — near entries brief-ready, far entries coarse; open questions are
+                    entries too (say when they come due); a closure names the exact instantiation that died
+                    AND a revival condition the system itself can produce
+    ## Thesis       the whole story: route, why it should work, main risks. Keep it readable; keep the
+                    surrogate↔intent dictionary here
+
+Start from `## Programme` in Context.md: Roadmap/Thesis evolve, Title/Argument are fresh each batch. Admit gaps plainly; no "obviously"/"clearly"; mark formal↔informal claims not yet kernel-checked. Every Inject brief names its Roadmap entry with a `Roadmap: <entry phrase>` line.
+
+A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) against the Manifest and the latest outcomes before anything dispatches. On a rebuttal: revise, or defend inside `## Argument` — do not concede points you believe are misreadings. If the cycle exhausts, the proposal is discarded and the next wake re-derives fresh. Pick experiments for information (confirm / refute / discriminate), not provability alone; a proposal carries ≥1 Inject or AttemptDisproof (batches with MarkDeliverable/Ingest exempt). Batches wholly within FetchPaper / RequestUserAmend / Noop skip all of this.
 
 ## Decision kinds
 - `Inject` — `target_goal_id`, `brief`. `pipeline`:
