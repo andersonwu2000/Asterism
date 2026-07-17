@@ -575,6 +575,34 @@ def apply(conn: sqlite3.Connection) -> None:
             "  WHERE outcome = 'awaiting_human')")
         conn.execute("PRAGMA user_version = 29")
         conn.commit()
+    if v < 30:
+        # v30 — research mode (research_mode_design.md §2): the
+        # Programme is the adversarially-reviewed argument layer
+        # between the Manifest and the bricks. One row per RESOLVED
+        # proposal cycle: `passed` rows form the revision chain (rev
+        # strictly increasing per problem; the latest passed row is
+        # the current Programme), `rejected` rows keep the discarded
+        # proposal plus the full criticism dialogue for audit. SoT is
+        # this table; PROGRAMME.md in the problem dir is a render.
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "programme_revisions" not in tables:
+            conn.execute("""
+                CREATE TABLE programme_revisions (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    problem    TEXT NOT NULL REFERENCES problems(name),
+                    rev        INTEGER NOT NULL,
+                    body       TEXT NOT NULL,
+                    status     TEXT NOT NULL
+                               CHECK (status IN ('passed', 'rejected')),
+                    verdict    TEXT,
+                    dialogue   TEXT,
+                    rounds     INTEGER NOT NULL DEFAULT 0,
+                    batch_id   TEXT,
+                    created_at TEXT NOT NULL
+                )""")
+        conn.execute("PRAGMA user_version = 30")
+        conn.commit()
 
 
 def _migrate_to_v26(conn: sqlite3.Connection) -> None:

@@ -1063,6 +1063,10 @@ class ClaudeCliProvider:
             "Write(**/Manifest.md)", "Edit(**/Manifest.md)",
             "Write(**/Defs.lean)", "Edit(**/Defs.lean)",
             "Write(**/Root.lean)", "Edit(**/Root.lean)",
+            # PROGRAMME.md is a read-only render of the adversarially
+            # reviewed Programme (research_mode_design.md §2); the only
+            # write path is state.programme on a passed proposal commit.
+            "Write(**/PROGRAMME.md)", "Edit(**/PROGRAMME.md)",
             *_operator_state_deny_rules(),
             # Whitelist fence (spawn_guard.py): PreToolUse hook denies
             # file tools outside {repo, scratchpad, ~/.elan} and Bash
