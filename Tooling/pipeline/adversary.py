@@ -162,8 +162,15 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
     err empty); rc == 0 with err → the judge produced no usable
     verdict; else verdict is validated."""
     from .. import agent
+    from ..core import config
     from . import PROMPT_DIR
 
+    # NL argumentation layer runs without a work budget (design §0);
+    # the cap is a hang guard, same class as strategist.timeout_sec.
+    timeout_sec = config.get(
+        "adversary.timeout_sec", default=7200,
+        env_var="ASTERISM_ADVERSARY_TIMEOUT_SEC", cast=int,
+    )
     proj = build_projection(
         round_no=round_no, attempts_dir=attempts_dir,
         problem_dir=problem_dir, conn=conn, problem=problem,
@@ -178,7 +185,7 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
         rc = agent.spawn_llm(
             kind="adversary", prompt_path=prompt_path,
             problem_dir=proj, attempts_dir=proj,
-            session_id=str(uuid.uuid4()),
+            session_id=str(uuid.uuid4()), timeout_sec=timeout_sec,
         )
         if rc != 0:
             return None, "", rc

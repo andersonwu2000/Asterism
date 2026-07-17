@@ -65,6 +65,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "strategist.audit_interval_min": "epistemic-auditor wake cadence, 0 disables (ASTERISM_AUDIT_INTERVAL_MIN; 180.0)",
     "strategist.verify_retry": "strategist verify/Adversary revision rounds per wake (ASTERISM_STRATEGIST_VERIFY_RETRY; 4)",
     "strategist.timeout_sec": "strategist wake spawn cap — hang guard, not a work budget (ASTERISM_STRATEGIST_TIMEOUT_SEC; 7200)",
+    "adversary.timeout_sec": "adversary spawn cap — hang guard, not a work budget (ASTERISM_ADVERSARY_TIMEOUT_SEC; 7200)",
     "verify.olean_warm": "background olean warmer kill switch #103 (ASTERISM_OLEAN_WARM; True)",
     "lessons.reflection_enabled": "reflection spawn kill switch (ASTERISM_LESSONS_REFLECTION_ENABLED; True)",
     "feedback.enabled": "dev-mode agent feedback questionnaire (ASTERISM_FEEDBACK_ENABLED; False)",
