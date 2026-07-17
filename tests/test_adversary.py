@@ -103,11 +103,21 @@ def test_package_requires_file_and_experiment(tmp_path: Path):
     body, sections, err = strategist.verify_proposal_package(
         [_d("Ingest")], tmp_path)
     assert err is None and body == _PROPOSAL
-    # Inject satisfies the rule; AttemptDisproof counts too.
-    for kind in ("Inject", "AttemptDisproof"):
-        body, sections, err = strategist.verify_proposal_package(
-            [_d(kind)], tmp_path)
-        assert err is None, kind
+    # AttemptDisproof counts as the experiment (no brief → no tag rule).
+    body, sections, err = strategist.verify_proposal_package(
+        [_d("AttemptDisproof")], tmp_path)
+    assert err is None
+    # Inject briefs must name an existing Roadmap entry (P2 check).
+    body, sections, err = strategist.verify_proposal_package(
+        [_d("Inject", brief="## Need\nx")], tmp_path)
+    assert body is None and "Roadmap:" in err
+    body, sections, err = strategist.verify_proposal_package(
+        [_d("Inject", brief="Roadmap: no such entry\n## Need\nx")],
+        tmp_path)
+    assert body is None and "no such entry" in err
+    body, sections, err = strategist.verify_proposal_package(
+        [_d("Inject", brief="Roadmap: the brick\n## Need\nx")], tmp_path)
+    assert err is None
 
 
 # ------------------------------------------------- verdict contract
@@ -155,7 +165,7 @@ def _spawn_script(rebuttals_before_pass: int):
         n = state["strategist_calls"]
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({"kind": "Inject", "pipeline": "Forward",
-                        "brief": f"## Need\nbrick v{n}"}),
+                        "brief": f"Roadmap: the brick\n## Need\nbrick v{n}"}),
             encoding="utf-8")
         (kw["attempts_dir"] / "programme.md").write_text(
             _PROPOSAL.replace("# Step", f"# Step v{n}"),
@@ -258,6 +268,32 @@ def test_exempt_batch_skips_adversary(
     )
     assert r.failure_reason == "strategist_noop"
     assert calls["adversary"] == 0
+
+
+# -------------------------------------------------- context surfaces
+
+def test_context_surfaces(workspace: Path, conn: sqlite3.Connection):
+    from Tooling.agent import context as wctx
+    from Tooling.agent import phase2_context
+
+    # Bootstrap: strategist sees the founding line; workers see nothing.
+    boot = "\n".join(phase2_context._section_programme_strategist(conn, "p"))
+    assert "rev 1" in boot and "none yet" in boot
+    assert wctx._section_programme_worker(conn, "p", None) == []
+
+    programme.record_pass(
+        conn, "p", _PROPOSAL,
+        {"verdict": "pass", "reservations": ["watch the sign"]},
+        [], 1, "b1")
+    s = "\n".join(phase2_context._section_programme_strategist(conn, "p"))
+    assert "rev 1" in s and "## Thesis" in s and "watch the sign" in s
+    w = "\n".join(wctx._section_programme_worker(conn, "p", None))
+    assert "PROGRAMME.md" in w and "watch the sign" in w
+
+    # After a discarded cycle the strategist gets the one-line record.
+    programme.record_rejection(conn, "p", _PROPOSAL, [], 3)
+    s2 = "\n".join(phase2_context._section_programme_strategist(conn, "p"))
+    assert "Previous proposal rejected" in s2
 
 
 # ------------------------------------------------------- projection

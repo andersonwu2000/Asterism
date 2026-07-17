@@ -116,6 +116,27 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
             "AttemptDisproof) — thinking runs inside the wake; the "
             "commit is how the argument touches the machine. (Endgame "
             "batches carrying MarkDeliverable/Ingest are exempt.)")
+    # P2 — every Inject brief names its Roadmap entry (parse-level
+    # existence check; experiments trace to the argument they test).
+    roadmap_lc = sections["roadmap"].lower()
+    for d in decisions:
+        if d.kind != "Inject":
+            continue
+        tag = ""
+        for line in str(getattr(d, "brief", "") or "").splitlines():
+            if line.strip().lower().startswith("roadmap:"):
+                tag = line.split(":", 1)[1].strip()
+                break
+        if not tag:
+            return None, None, (
+                "every Inject brief must name its Roadmap entry with a "
+                "`Roadmap: <entry phrase>` line (copy the entry's "
+                "leading phrase from `## Roadmap`).")
+        if tag.lower() not in roadmap_lc:
+            return None, None, (
+                f"an Inject brief cites `Roadmap: {tag}` but no "
+                "`## Roadmap` line contains that phrase — copy the "
+                "entry text verbatim, or add the entry.")
     return body, sections, None
 
 

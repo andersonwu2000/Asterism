@@ -903,7 +903,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     # never Reopens" was never closed by the agent on its own; surfacing
     # the cross-reference gives it a structured cue.
     section_names += ["stall_warning", "ingest_gate", "disproof_guidance",
-                      "directive",
+                      "programme", "directive",
                       "plan_note", "inject_batches", "pending_reopens",
                       "active_goals", "failure_replay", "tree", "catalog",
                       "manifest_meta", "paper_index"]
@@ -911,6 +911,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_stall_warning(conn, problem),
         _section_ingest_gate(conn, problem),
         _section_disproof_guidance(conn, problem),
+        _section_programme_strategist(conn, problem),
         _section_current_directive(conn, problem),
         _section_plan_note(workspace, problem),
         _section_inject_batch_outcomes(conn, problem),
@@ -937,6 +938,43 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     context.write_context_stats(
         attempts_dir, label=f"strategist {problem}",
         names=section_names, sections=sections)
+    return out
+
+
+def _section_programme_strategist(conn: sqlite3.Connection,
+                                  problem: str) -> list[str]:
+    """Research mode (research_mode_design.md §2): the current
+    Programme rev inline — it is the commitment object your proposal
+    revises (route/planning lives HERE, not in the plan note) — plus
+    the Adversary's reservations on it, and, after a discarded cycle,
+    the one-line rejection record (never the failed draft)."""
+    import json as _json
+    from ..state import programme as _programme
+    try:
+        row = _programme.current_rev(conn, problem)
+        notice = _programme.rejection_notice(conn, problem)
+    except sqlite3.OperationalError:
+        return []
+    out: list[str] = []
+    if row is None:
+        out += ["## Programme", "",
+                "(none yet — the proposal you deliver this wake founds "
+                "rev 1)", ""]
+    else:
+        out += [f"## Programme (rev {row['rev']}, passed "
+                f"{str(row['created_at'])[:10]})", "",
+                str(row["body"]).strip(), ""]
+        try:
+            verdict = _json.loads(row["verdict"] or "{}")
+        except ValueError:
+            verdict = {}
+        reservations = verdict.get("reservations") or []
+        if reservations:
+            out += ["Adversary reservations on this rev:"]
+            out += [f"- {r}" for r in reservations]
+            out.append("")
+    if notice:
+        out += ["### Previous proposal rejected", "", notice, ""]
     return out
 
 

@@ -935,6 +935,59 @@ def _section_prior_patch(kind: str | None, problem_dir: Path,
 # Phase 2 — Strategist directive / brief sections
 # ---------------------------------------------------------------------
 
+def _section_programme_worker(conn: sqlite3.Connection, problem: str,
+                              decision_id: "int | None") -> list[str]:
+    """Research mode (research_mode_design.md §2): the worker's slice
+    of the Programme — the Adversary's advisory reservations on the
+    current rev (attributed voice, distinct from the Strategist's
+    directive) + the Roadmap entry the brief cites (matched via the
+    brief's `Roadmap:` tag) + a pointer to the full render. The pointer
+    resolves: PROGRAMME.md sits in the problem dir (spawn cwd, inside
+    the Read allowlist)."""
+    import json as _json
+    from ..state import programme as _programme
+    try:
+        row = _programme.current_rev(conn, problem)
+    except sqlite3.OperationalError:
+        return []
+    if row is None:
+        return []
+    out = [f"## Programme (rev {row['rev']})", "",
+           "This batch executes the research Programme. Full text: "
+           "`PROGRAMME.md` beside the problem files — read it when your "
+           "brief's purpose is unclear.", ""]
+    try:
+        verdict = _json.loads(row["verdict"] or "{}")
+    except ValueError:
+        verdict = {}
+    reservations = verdict.get("reservations") or []
+    if reservations:
+        out += ["Adversary reservations (advisory, on this rev):"]
+        out += [f"- {r}" for r in reservations]
+        out.append("")
+    # Roadmap excerpt for THIS worker's entry (brief's `Roadmap:` tag).
+    tag = ""
+    if decision_id is not None:
+        try:
+            brow = conn.execute(
+                "SELECT brief FROM strategist_decisions WHERE id = ?",
+                (int(decision_id),)).fetchone()
+        except sqlite3.OperationalError:
+            brow = None
+        for line in str((brow and brow["brief"]) or "").splitlines():
+            if line.strip().lower().startswith("roadmap:"):
+                tag = line.split(":", 1)[1].strip()
+                break
+    if tag:
+        matches = [ln for ln in str(row["body"]).splitlines()
+                   if tag.lower() in ln.lower()][:3]
+        if matches:
+            out += ["Your Roadmap entry:"]
+            out += [f"> {m.strip()}" for m in matches]
+            out.append("")
+    return out
+
+
 def _section_strategist_directive(conn: sqlite3.Connection,
                                   problem: str) -> list[str]:
     """Render `problems.strategist_directive` as a top-level Context.md
@@ -1192,7 +1245,8 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     # (~2-10 KB) rather than zero. Per-goal / per-spawn surfaces follow.
     presearch_lines = _section_presearch_candidates(problem_dir, int(goal["id"]))
     section_names = [
-        "brief", "kb_lessons", "paper_index", "directive", "inject_brief",
+        "brief", "kb_lessons", "paper_index", "programme", "directive",
+        "inject_brief",
         "goal", "library_available", "strategy_naming", "parent_strategy",
         "mathlib_lemmas", "presearch", "proved_goals", "catalog",
         "prior_partial", "prior_patch", "goal_history",
@@ -1209,6 +1263,8 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         # content (BRIEF / LESSONS) and per-goal sections. Directive is
         # problem-level standing (every cold-start); brief is per-decision
         # one-shot (only when Strategist Inject spawned this pipeline).
+        _section_programme_worker(conn, str(goal["problem"]),
+                                  decision_id),
         _section_strategist_directive(conn, str(goal["problem"])),
         _section_strategist_brief(conn, decision_id),
         _section_header(goal),

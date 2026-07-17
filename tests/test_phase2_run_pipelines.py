@@ -115,7 +115,7 @@ def test_run_strategist_inject_enqueues_forward(
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({
                 "kind": "Inject", "pipeline": "Forward",
-                "brief": "## Need\nA contour lemma.",
+                "brief": "Roadmap: contour lemma\n## Need\nA contour lemma.",
             }),
             encoding="utf-8")
         (kw["attempts_dir"] / "programme.md").write_text(
