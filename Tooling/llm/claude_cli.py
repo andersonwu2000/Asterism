@@ -686,6 +686,18 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     # does NOT need quoting either — pattern boundaries are pulled by
     # balanced parens, not whitespace. Verified empirically; the
     # pre-quoting attempt broke the Bash pattern's existing test.
+    # Adversary (research_mode_design.md §3) — projection isolation:
+    # the judge's whole world is its assembled directory (problem_dir
+    # IS the projection); no Library/Papers/mathlib surfaces. Loogle
+    # stays available for checking "mathlib has X" claims.
+    if req.kind == "adversary":
+        return " ".join(p for p in [
+            os.environ.get("ASTERISM_CLAUDE_ALLOWED_BASH",
+                           DEFAULT_BASH_ALLOWED),
+            f"Read({problem}/**)",
+            f"Read({attempts}/**)",
+            f"Grep({problem}/**)",
+        ] if p)
     patterns = [
         # Bash (Loogle, plus operator override)
         os.environ.get("ASTERISM_CLAUDE_ALLOWED_BASH", DEFAULT_BASH_ALLOWED),
@@ -997,12 +1009,20 @@ class ClaudeCliProvider:
         library_dir = _workspace_from_problem_dir(req.problem_dir) / "Library"
         add_dir_library: list[str] = (
             ["--add-dir", str(library_dir)] if library_dir.is_dir() else [])
+        # Adversary hard isolation (research_mode_design.md §3): the
+        # projection directory IS req.problem_dir, and the trust
+        # boundary must stop there — no mathlib/Library/Papers grants.
+        if req.kind == "adversary":
+            add_dir_packages = []
+            add_dir_library = []
         # Papers/ bookshelf — same trust-boundary reasoning as Library:
         # the allowlist patterns above only take effect inside
         # `cwd ∪ --add-dir`.
         papers_dir = _workspace_from_problem_dir(req.problem_dir) / "Papers"
         add_dir_papers: list[str] = (
             ["--add-dir", str(papers_dir)] if papers_dir.is_dir() else [])
+        if req.kind == "adversary":
+            add_dir_papers = []
         # MCP config — Builder pipeline (Phase 1 LSP swap) sets
         # mcp_config_path to a JSON file describing the LSP MCP
         # server. claude spawns the server itself as a child process

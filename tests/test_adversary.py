@@ -1,0 +1,292 @@
+"""Research mode P1 — the proposal-package gate + Adversary cycle
+(research_mode_design.md §1/§3).
+
+Covers: gate shape (exempt kinds / audit trigger / experiment rule),
+the rebut→revise→pass round trip (dialogue recorded, rev advances,
+fresh judge per round), exhaustion → strategist_proposal_rejected with
+the discarded proposal + criticisms in programme_revisions, and the
+projection's isolation-relevant contents. Mirrors
+test_phase2_run_pipelines fixtures (mocked spawn_llm, everything else
+real).
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from Tooling import agent
+from Tooling.pipeline import adversary, strategist
+from Tooling.state import db, manifest, programme
+
+
+@pytest.fixture
+def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.chdir(tmp_path)
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    (pdir / "Manifest.md").write_text(
+        "---\nproblem: p\n---\n\n## Statement\nT\n", encoding="utf-8")
+    (pdir / "proofs").mkdir()
+    return tmp_path
+
+
+@pytest.fixture
+def conn(workspace: Path) -> sqlite3.Connection:
+    c = db.connect()
+    db.init_schema(c)
+    c.execute(
+        "INSERT INTO problems (name, manifest_path, created_at,"
+        " bootstrap_done) VALUES ('p', 'Problems/p/Manifest.md', ?, 1)",
+        (db.now(),),
+    )
+    c.commit()
+    return c
+
+
+@pytest.fixture
+def mfst() -> manifest.Manifest:
+    return manifest.Manifest(problem="p", statement="T")
+
+
+def _insert_root(conn: sqlite3.Connection) -> int:
+    return db.insert_goal(
+        conn, problem="p", slug="main",
+        lean_path="Problems/p/Root.lean", statement="T",
+        origin="root", depth=0, entry_kind="Backward",
+    )
+
+
+def _d(kind: str, **kw) -> SimpleNamespace:
+    return SimpleNamespace(kind=kind, pipeline=kw.get("pipeline"),
+                           target_id=kw.get("target_id"),
+                           brief=kw.get("brief"), body=kw.get("body"),
+                           reason=kw.get("reason"))
+
+
+_PROPOSAL = ("# Step\n## Argument\nWhy this batch.\n"
+             "## Roadmap\n1. the brick\n## Thesis\nThe route holds.\n")
+
+
+# -------------------------------------------------------------- gate
+
+def test_gate_shape():
+    assert not strategist.package_gate_applies(
+        [_d("FetchPaper"), _d("Noop")], "routine")
+    assert not strategist.package_gate_applies(
+        [_d("RequestUserAmend")], "pending_review")
+    # Any route-moving kind arms the gate — including EmitDirective
+    # (the drift side door) and the endgame kinds.
+    for kind in ("Inject", "AttemptDisproof", "ConfirmShelve",
+                 "MarkDeliverable", "Ingest", "EmitDirective"):
+        assert strategist.package_gate_applies(
+            [_d(kind), _d("Noop")], "routine"), kind
+    # Audit wakes sit wholly outside the gate.
+    assert not strategist.package_gate_applies(
+        [_d("EmitDirective")], "audit")
+
+
+def test_package_requires_file_and_experiment(tmp_path: Path):
+    body, sections, err = strategist.verify_proposal_package(
+        [_d("Inject", pipeline="Forward", brief="b")], tmp_path)
+    assert body is None and "programme.md" in err
+
+    (tmp_path / "programme.md").write_text(_PROPOSAL, encoding="utf-8")
+    # EmitDirective-only (no experiment, not endgame) → rejected.
+    body, sections, err = strategist.verify_proposal_package(
+        [_d("EmitDirective", body="x")], tmp_path)
+    assert body is None and "experiment" in err
+    # Endgame batches are exempt from the experiment rule.
+    body, sections, err = strategist.verify_proposal_package(
+        [_d("Ingest")], tmp_path)
+    assert err is None and body == _PROPOSAL
+    # Inject satisfies the rule; AttemptDisproof counts too.
+    for kind in ("Inject", "AttemptDisproof"):
+        body, sections, err = strategist.verify_proposal_package(
+            [_d(kind)], tmp_path)
+        assert err is None, kind
+
+
+# ------------------------------------------------- verdict contract
+
+def test_parse_verdict_contract():
+    v, err = adversary.parse_verdict(
+        json.dumps({"verdict": "pass"}))
+    assert err == "" and v["reservations"] == [] and v["criticisms"] == []
+    v, err = adversary.parse_verdict(
+        json.dumps({"verdict": "rebut", "criticisms": ["weak step 2"]}))
+    assert err == "" and v["criticisms"] == ["weak step 2"]
+    for bad in ("not json", json.dumps(["x"]),
+                json.dumps({"verdict": "maybe"}),
+                json.dumps({"verdict": "rebut"}),
+                json.dumps({"verdict": "pass", "reservations": [1]})):
+        v, err = adversary.parse_verdict(bad)
+        assert v is None and err
+
+
+# ------------------------------------- full cycle via run_strategist
+
+def _spawn_script(rebuttals_before_pass: int):
+    """A scripted spawn_llm: the strategist writes an Inject batch +
+    proposal (revising the title per round); the adversary rebuts N
+    times, then passes with one reservation. Captures adversary
+    session ids to assert fresh-per-round."""
+    state = {"adversary_calls": 0, "adversary_sids": [],
+             "strategist_calls": 0}
+
+    def fake_spawn(**kw):
+        if kw.get("kind") == "adversary":
+            state["adversary_calls"] += 1
+            state["adversary_sids"].append(kw.get("session_id"))
+            if state["adversary_calls"] <= rebuttals_before_pass:
+                verdict = {"verdict": "rebut",
+                           "criticisms": [
+                               f"objection {state['adversary_calls']}"]}
+            else:
+                verdict = {"verdict": "pass",
+                           "reservations": ["watch the sign"]}
+            (kw["attempts_dir"] / "verdict.json").write_text(
+                json.dumps(verdict), encoding="utf-8")
+            return 0
+        state["strategist_calls"] += 1
+        n = state["strategist_calls"]
+        (kw["attempts_dir"] / "decision.json").write_text(
+            json.dumps({"kind": "Inject", "pipeline": "Forward",
+                        "brief": f"## Need\nbrick v{n}"}),
+            encoding="utf-8")
+        (kw["attempts_dir"] / "programme.md").write_text(
+            _PROPOSAL.replace("# Step", f"# Step v{n}"),
+            encoding="utf-8")
+        return 0
+
+    return fake_spawn, state
+
+
+def test_rebut_then_pass_advances_rev(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _insert_root(conn)
+    fake, state = _spawn_script(rebuttals_before_pass=1)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="routine", tick=1,
+        workspace=workspace, mfst=mfst, pipeline_id="adv-1",
+    )
+    assert r.outcome == "success"
+    # One rebuttal round: 2 strategist spawns, 2 adversary spawns,
+    # each adversary round on a FRESH session id.
+    assert state["strategist_calls"] == 2
+    assert state["adversary_calls"] == 2
+    assert len(set(state["adversary_sids"])) == 2
+
+    row = programme.current_rev(conn, "p")
+    assert row is not None and row["rev"] == 1
+    assert "# Step v2" in row["body"]  # the revised proposal passed
+    assert row["rounds"] == 1
+    assert row["batch_id"] is not None
+    verdict = json.loads(row["verdict"])
+    assert verdict["reservations"] == ["watch the sign"]
+    dialogue = json.loads(row["dialogue"])
+    assert dialogue[0]["criticisms"] == ["objection 1"]
+    assert "# Step v1" in dialogue[0]["proposal"]
+    # Render landed beside the problem files.
+    rendered = (workspace / "Problems" / "p" / "PROGRAMME.md")
+    assert rendered.exists()
+    assert "watch the sign" in rendered.read_text(encoding="utf-8")
+
+
+def test_exhaustion_records_rejection(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _insert_root(conn)
+    monkeypatch.setenv("ASTERISM_STRATEGIST_VERIFY_RETRY", "2")
+    fake, state = _spawn_script(rebuttals_before_pass=99)
+    monkeypatch.setattr(agent, "spawn_llm", fake)
+
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="routine", tick=1,
+        workspace=workspace, mfst=mfst, pipeline_id="adv-2",
+    )
+    assert r.outcome == "failed"
+    assert r.failure_reason == "strategist_proposal_rejected"
+    # No rev passed; the rejected row keeps proposal + full dialogue.
+    assert programme.current_rev(conn, "p") is None
+    row = conn.execute(
+        "SELECT * FROM programme_revisions WHERE problem='p'"
+        " AND status='rejected'").fetchone()
+    assert row is not None and row["rounds"] == 2
+    dialogue = json.loads(row["dialogue"])
+    assert [e["criticisms"] for e in dialogue] == [
+        ["objection 1"], ["objection 2"], ["objection 3"]]
+    # Next wake gets the one-line record, never the draft.
+    notice = programme.rejection_notice(conn, "p")
+    assert notice and "rejected" in notice
+    # No commit happened: no strategist_decisions row for the batch.
+    assert conn.execute(
+        "SELECT COUNT(*) FROM strategist_decisions WHERE problem='p'"
+    ).fetchone()[0] == 0
+
+
+def test_exempt_batch_skips_adversary(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Noop-only batch (wholly exempt kinds) never spawns the
+    Adversary and needs no programme.md."""
+    _insert_root(conn)
+    calls = {"adversary": 0}
+
+    def fake_spawn(**kw):
+        if kw.get("kind") == "adversary":
+            calls["adversary"] += 1
+            return 0
+        (kw["attempts_dir"] / "decision.json").write_text(
+            json.dumps({"kind": "Noop", "reason": "work in flight"}),
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="routine", tick=1,
+        workspace=workspace, mfst=mfst, pipeline_id="adv-3",
+    )
+    assert r.failure_reason == "strategist_noop"
+    assert calls["adversary"] == 0
+
+
+# ------------------------------------------------------- projection
+
+def test_projection_contents(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    attempts = workspace / ".attempts" / "adv-proj"
+    attempts.mkdir(parents=True)
+    pdir = workspace / "Problems" / "p"
+    (pdir / "CATALOG.md").write_text("- brick_a\n", encoding="utf-8")
+
+    proj = adversary.build_projection(
+        round_no=2, attempts_dir=attempts, problem_dir=pdir,
+        conn=conn, problem="p", proposal_body=_PROPOSAL,
+        decisions=[_d("Inject", pipeline="Forward", brief="## Need\nx")],
+        dialogue=[{"round": 1, "role": "adversary",
+                   "criticisms": ["too vague"], "proposal": "# old"}],
+        thesis_warn="WARN: long thesis")
+
+    assert proj == attempts / "adversary" / "r2"
+    assert (proj / "Manifest.md").exists()
+    assert (proj / "CATALOG.md").read_text(encoding="utf-8") == "- brick_a\n"
+    # No passed rev yet → bootstrap placeholder, judged as rev 1.
+    assert "rev 1" in (proj / "PROGRAMME.md").read_text(encoding="utf-8")
+    assert "WARN: long thesis" in (proj / "proposal.md").read_text(
+        encoding="utf-8")
+    assert "Inject(Forward)" in (proj / "decisions.md").read_text(
+        encoding="utf-8")
+    d = (proj / "dialogue.md").read_text(encoding="utf-8")
+    assert "too vague" in d and "# old" in d
+    assert (proj / "outcomes.md").exists()

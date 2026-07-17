@@ -76,6 +76,13 @@ REGISTRY: "dict[str, FailureTraits]" = {
     # --- pipeline-level infra (clean declines / framework self-reject) --
     "strategist_noop": _T("pipeline_infra"),
     "strategist_schema_invalid": _T("pipeline_infra"),
+    # Research mode: the Adversary rejected the proposal package after
+    # the full revision cycle — proposal + criticisms are in
+    # programme_revisions; the next wake re-derives blind. Target
+    # cooldown paces back-to-back rejection cycles (each is several
+    # spawns); no attempts++ (no agent-side proof failure happened).
+    "strategist_proposal_rejected": _T("pipeline_infra",
+                                       cooldown_scope="target"),
     "forward_no_new_goal": _T("pipeline_infra"),
 
     # --- structured decline directives (terminal in the retry loop) -----

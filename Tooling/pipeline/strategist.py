@@ -69,6 +69,70 @@ TRIGGER_KINDS: frozenset[str] = frozenset({
     "audit",
 })
 
+# Research mode (research_mode_design.md §1) — the proposal-package
+# gate keys on decision SHAPE: a batch wholly within the exempt kinds
+# moves no route (literature intake / hand-back / no-op), and audit
+# wakes sit outside the gate entirely (the auditor checks books, it
+# does not propose). Any other batch must carry a Programme proposal
+# (four sections in `programme.md`) and pass the Adversary.
+_PACKAGE_EXEMPT_KINDS: frozenset[str] = frozenset(
+    {"FetchPaper", "RequestUserAmend", "Noop"})
+_ENDGAME_KINDS: frozenset[str] = frozenset({"MarkDeliverable", "Ingest"})
+_EXPERIMENT_KINDS: frozenset[str] = frozenset({"Inject", "AttemptDisproof"})
+PROPOSAL_BASENAME = "programme.md"
+
+
+def package_gate_applies(decisions, trigger_kind: str | None) -> bool:
+    if trigger_kind == "audit":
+        return False
+    return any(d.kind not in _PACKAGE_EXEMPT_KINDS for d in decisions)
+
+
+def verify_proposal_package(decisions, attempts_dir) -> tuple[
+        "str | None", "dict[str, str] | None", "str | None"]:
+    """Package-side checks for a gated batch: proposal file present,
+    four-section contract, and the ≥1-experiment rule (endgame batches
+    exempt). Returns (body, sections, err)."""
+    from ..state import programme
+    path = attempts_dir / PROPOSAL_BASENAME
+    if not path.exists():
+        return None, None, (
+            "this batch moves the route, so it must carry a Programme "
+            f"proposal: Write `{PROPOSAL_BASENAME}` (bare filename, in "
+            "your attempts dir) with the four sections `# <Title>`, "
+            "`## Argument`, `## Roadmap`, `## Thesis`. Then re-emit "
+            "decision.json (unchanged if it was already right).")
+    try:
+        body = path.read_text(encoding="utf-8")
+    except OSError as e:
+        return None, None, f"{PROPOSAL_BASENAME} unreadable: {e}"
+    sections, err = programme.parse_proposal(body)
+    if err:
+        return None, None, err
+    kinds = {d.kind for d in decisions}
+    if not (kinds & _ENDGAME_KINDS) and not (kinds & _EXPERIMENT_KINDS):
+        return None, None, (
+            "a proposal must carry at least one experiment (Inject or "
+            "AttemptDisproof) — thinking runs inside the wake; the "
+            "commit is how the argument touches the machine. (Endgame "
+            "batches carrying MarkDeliverable/Ingest are exempt.)")
+    return body, sections, None
+
+
+def _format_rebuttal(verdict: dict, round_no: int,
+                     rounds_left: int) -> str:
+    crits = "\n".join(f"- {c}" for c in verdict.get("criticisms", []))
+    return (
+        f"ADVERSARY REBUTTAL (round {round_no}; {rounds_left} revision "
+        "round(s) left before this proposal is discarded and the next "
+        "wake restarts fresh):\n" + crits + "\n"
+        "For EACH point: either revise (rewrite programme.md — and "
+        "decision.json if the experiments change) or defend (keep your "
+        "position and answer the point inside `## Argument`). Do not "
+        "concede points you believe are misreadings. Re-emit "
+        "decision.json in every case.")
+
+
 # Files allowed in RequestUserAmend(file=...).
 # Root.lean joined 2026-07-08 (feature D live livelock): a FALSE root
 # claim is amendable — before this, the hand-back verb could not
@@ -1732,14 +1796,20 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
         pending_review_id=pending_review_id,
     )
 
-    # Stage 2 — agent spawn. Mint a session id so a single in-pipeline
-    # verify retry can resume the same claude session and see the
-    # framework's verify error inline.
+    # Stage 2 — agent spawn. Mint a session id so the in-pipeline
+    # revision rounds can resume the same claude session and see the
+    # framework's verify error / Adversary rebuttal inline.
+    # Thinking is legal work (research_mode_design.md §0): the
+    # strategist cap is a hang guard, not a work budget.
+    strategist_timeout = config.get(
+        "strategist.timeout_sec", default=7200,
+        env_var="ASTERISM_STRATEGIST_TIMEOUT_SEC", cast=int,
+    )
     sid = str(uuid.uuid4())
     rc = agent.spawn_llm(
         kind="strategist", prompt_path=prompt_path,
         problem_dir=problem_dir, attempts_dir=attempts_dir,
-        session_id=sid,
+        session_id=sid, timeout_sec=strategist_timeout,
     )
     # Persist the plan note BEFORE any outcome branching: the note is the
     # agent's memory of its own thinking — worth keeping even when the
@@ -1752,19 +1822,17 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             failure_detail=f"agent rc={rc}",
         )
 
-    # Stage 3-4 — parse + verify, with one optional retry on verify
-    # failure. Parse failures are NOT retried: a malformed decision.json
-    # usually means session-level breakage (no clean recovery from
-    # re-prompting). Verify failures usually ARE fixable — the rejected
-    # reason is informative ("brief missing", "Reopen ancestor is dead",
-    # "ConfirmShelve+Inject(B/B) same target", ...). Feeding the error
-    # back into the same session and asking for a fresh decision.json
-    # converts most of these from "burn a trigger cycle" into "one
-    # extra LLM call".
-    retry_enabled = config.get(
-        "strategist.verify_retry", default=1,
+    # Stage 3-4 — parse + verify + the proposal-package gate + the
+    # Adversary, unified into one N-round revision loop on the same
+    # strategist session (research_mode_design.md §3). Mechanical
+    # verify errors and Adversary rebuttals SHARE the round counter
+    # (v14 ruling). Parse failures are still NOT retried: a malformed
+    # decision.json usually means session-level breakage (no clean
+    # recovery from re-prompting).
+    max_rounds = config.get(
+        "strategist.verify_retry", default=4,
         env_var="ASTERISM_STRATEGIST_VERIFY_RETRY", cast=int,
-    ) >= 1
+    )
     decision_path = attempts_dir / "decision.json"
 
     def _read_and_parse() -> tuple[
@@ -1795,19 +1863,90 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             failure_detail=f"parse: {parse_err}",
         )
 
-    verify_err = (resolve_directive_body_files(decisions, attempts_dir)
-                  or verify_decisions(decisions, conn, problem=problem,
-                                      workspace=workspace,
-                                      trigger_kind=trigger_kind))
-    if verify_err and retry_enabled:
-        # Single retry on the same session. The provider's `is_retry`
-        # path resumes the session and inlines `retry_context` (the
-        # verify error) into a Strategist-specific prompt asking for a
-        # fresh decision.json.
+    from ..state import programme as _programme
+    from . import adversary as _adversary
+
+    dialogue: list[dict] = []
+    rounds_used = 0
+    package_verdict: "dict | None" = None
+    proposal_body: "str | None" = None
+    first_err: "str | None" = None
+    while True:
+        err = (resolve_directive_body_files(decisions, attempts_dir)
+               or verify_decisions(decisions, conn, problem=problem,
+                                   workspace=workspace,
+                                   trigger_kind=trigger_kind))
+        err_is_rebuttal = False
+        if not err and package_gate_applies(decisions, trigger_kind):
+            proposal_body, sections, err = verify_proposal_package(
+                decisions, attempts_dir)
+            if not err:
+                thesis_warn = _programme.thesis_warning(sections)
+                if thesis_warn:
+                    print(f"[strategist] {problem}: {thesis_warn}",
+                          flush=True)
+                verdict, aerr, arc = _adversary.review(
+                    round_no=rounds_used + 1,
+                    attempts_dir=attempts_dir, problem_dir=problem_dir,
+                    conn=conn, problem=problem,
+                    proposal_body=proposal_body, decisions=decisions,
+                    dialogue=dialogue, thesis_warn=thesis_warn)
+                if arc != 0:
+                    return PipelineResult(
+                        outcome="failed",
+                        failure_reason=_rc_to_reason(arc),
+                        failure_detail=f"adversary rc={arc}")
+                if verdict is None:
+                    return PipelineResult(
+                        outcome="failed",
+                        failure_reason="agent_no_output",
+                        failure_detail=f"adversary: {aerr}")
+                if verdict["verdict"] == "pass":
+                    package_verdict = verdict
+                    break
+                # Rebuttal: the criticisms target THIS body — keep it
+                # with them so the next (fresh) judge reads the round
+                # as documents (fresh-per-round, design §3).
+                dialogue.append({"round": rounds_used + 1,
+                                 "role": "adversary",
+                                 "criticisms": verdict["criticisms"],
+                                 "proposal": proposal_body})
+                err = _format_rebuttal(
+                    verdict, rounds_used + 1,
+                    max(0, max_rounds - rounds_used - 1))
+                err_is_rebuttal = True
+        if not err:
+            break  # verify clean; exempt batches skip the package gate
+        if first_err is None:
+            first_err = err
+        if rounds_used >= max_rounds:
+            if err_is_rebuttal and proposal_body is not None:
+                # Exhaustion on the adversarial channel discards the
+                # proposal AND the session: the rejected draft + full
+                # criticism go to the DB for audit; the next wake gets
+                # one line and re-derives blind (design §1/§3).
+                _programme.record_rejection(
+                    conn, problem, proposal_body, dialogue, rounds_used)
+                conn.commit()
+                return PipelineResult(
+                    outcome="failed",
+                    failure_reason="strategist_proposal_rejected",
+                    failure_detail=(
+                        f"adversary rejected after {rounds_used} "
+                        "revision round(s); proposal + criticisms "
+                        "recorded in programme_revisions"))
+            return PipelineResult(
+                outcome="failed",
+                failure_reason="strategist_schema_invalid",
+                failure_detail=(f"verify (round {rounds_used}): {err}; "
+                                f"first-attempt: {first_err}"),
+            )
+        rounds_used += 1
         rc2 = agent.spawn_llm(
             kind="strategist", prompt_path=prompt_path,
             problem_dir=problem_dir, attempts_dir=attempts_dir,
-            session_id=sid, is_retry=True, retry_context=verify_err,
+            session_id=sid, is_retry=True, retry_context=err,
+            timeout_sec=strategist_timeout,
         )
         _persist_plan(problem_dir, attempts_dir)  # retry may rewrite it
         if rc2 != 0:
@@ -1815,45 +1954,21 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 outcome="failed",
                 failure_reason=_rc_to_reason(rc2),
                 failure_detail=(
-                    f"verify-retry agent rc={rc2}; "
-                    f"first-attempt verify: {verify_err}"
+                    f"revision round {rounds_used} rc={rc2}; "
+                    f"pending: {err}"
                 ),
             )
         decisions, parse_err, missing = _read_and_parse()
         if missing or decisions is None:
-            # Treat both as schema_invalid here — the first attempt's
-            # decision.json was real but bad, the retry didn't produce
-            # a usable replacement.
             detail = missing or f"parse: {parse_err}"
             return PipelineResult(
                 outcome="failed",
                 failure_reason="strategist_schema_invalid",
                 failure_detail=(
-                    f"verify-retry output: {detail}; "
-                    f"first-attempt verify: {verify_err}"
+                    f"revision round {rounds_used} output: {detail}; "
+                    f"pending: {err}"
                 ),
             )
-        verify_err2 = (resolve_directive_body_files(decisions, attempts_dir)
-                       or verify_decisions(decisions, conn,
-                                           problem=problem,
-                                           workspace=workspace,
-                                           trigger_kind=trigger_kind))
-        if verify_err2:
-            return PipelineResult(
-                outcome="failed",
-                failure_reason="strategist_schema_invalid",
-                failure_detail=(
-                    f"verify-retry: {verify_err2}; "
-                    f"first-attempt: {verify_err}"
-                ),
-            )
-        # Retry succeeded — fall through to commit.
-    elif verify_err:
-        return PipelineResult(
-            outcome="failed",
-            failure_reason="strategist_schema_invalid",
-            failure_detail=f"verify: {verify_err}",
-        )
 
     # Stage 5 — commit + outcome mapping
     if all(d.kind == "Noop" for d in decisions):
@@ -1899,6 +2014,22 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             failure_reason="strategist_schema_invalid",
             failure_detail=f"commit raised: {type(e).__name__}: {e}",
         )
+
+    if package_verdict is not None and proposal_body is not None:
+        # Passed proposal → the Programme revision chain advances in
+        # the same wake as its batch (rev↔batch link via batch_id).
+        # PROGRAMME.md render is best-effort — the DB row is the SoT.
+        batch_id = next(
+            (o.batch_id for o in outcomes if o.batch_id), None)
+        _programme.record_pass(
+            conn, problem, proposal_body, package_verdict, dialogue,
+            rounds_used, batch_id)
+        conn.commit()
+        try:
+            _programme.render(conn, problem, problem_dir)
+        except OSError as e:
+            print(f"[strategist] PROGRAMME.md render failed: {e}",
+                  flush=True)
 
     if trigger_kind == "audit":
         # Curation applies only after the wake's decisions committed —

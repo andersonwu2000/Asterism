@@ -35,6 +35,7 @@ def test_provider_infra_set_pinned():
 def test_pipeline_infra_set_pinned():
     assert failures.PIPELINE_INFRA_REASONS == {
         "strategist_noop", "strategist_schema_invalid",
+        "strategist_proposal_rejected",
         "forward_no_new_goal",
     }
 
@@ -60,7 +61,7 @@ def test_non_agent_set_pinned():
 def test_target_cooldown_set_pinned():
     assert failures.TARGET_COOLDOWN_REASONS == {
         "spawn_fast_fail", "missing_dep", "gateway_unreachable",
-        "transient_timeout",
+        "transient_timeout", "strategist_proposal_rejected",
     }
 
 

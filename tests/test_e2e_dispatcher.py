@@ -175,6 +175,20 @@ def test_e2e_root_proved_through_dispatcher(
                 _json.dumps({"kind": "Ingest",
                              "reason": "root proved; manifest satisfied"}),
                 encoding="utf-8")
+            # Research mode: an Ingest batch is route-moving, so it
+            # carries a Programme proposal (endgame batches are exempt
+            # from the ≥1-experiment rule but still adversarially
+            # reviewed) — the e2e covers the endgame package path.
+            (attempts / "programme.md").write_text(
+                "# Close out\n## Argument\nRoot proved by Builder.\n"
+                "## Roadmap\n1. Ingest.\n## Thesis\nManifest satisfied "
+                "by the proved root.\n",
+                encoding="utf-8")
+        elif kind == "adversary":
+            import json as _json
+            (attempts / "verdict.json").write_text(
+                _json.dumps({"verdict": "pass", "reservations": []}),
+                encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 

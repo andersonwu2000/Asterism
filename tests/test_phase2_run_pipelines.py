@@ -104,11 +104,23 @@ def test_run_strategist_inject_enqueues_forward(
     _insert_root(conn)
 
     def fake_spawn(**kw):
+        if kw.get("kind") == "adversary":
+            # Package gate (research mode): the projection spawn's
+            # verdict — auto-pass so this test stays about the Inject
+            # commit path.
+            (kw["attempts_dir"] / "verdict.json").write_text(
+                json.dumps({"verdict": "pass", "reservations": []}),
+                encoding="utf-8")
+            return 0
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({
                 "kind": "Inject", "pipeline": "Forward",
                 "brief": "## Need\nA contour lemma.",
             }),
+            encoding="utf-8")
+        (kw["attempts_dir"] / "programme.md").write_text(
+            "# Contour step\n## Argument\nNeed the lemma.\n"
+            "## Roadmap\n1. contour lemma\n## Thesis\nRoute holds.\n",
             encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
@@ -261,8 +273,10 @@ def test_run_strategist_verify_retry_both_fail(
         workspace=workspace, mfst=mfst, pipeline_id="test-strat-retry-2",
     )
     assert r.failure_reason == "strategist_schema_invalid"
-    assert len(calls) == 2
-    assert "verify-retry" in r.failure_detail
+    # N-round revision loop (research mode): main spawn + verify_retry
+    # rounds (default 4) — mechanical errors share the round counter.
+    assert len(calls) == 5
+    assert "round 4" in r.failure_detail
     assert "first-attempt" in r.failure_detail
 
 

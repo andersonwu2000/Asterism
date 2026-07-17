@@ -114,8 +114,9 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 這兩個 pipeline 的 target 不是一般 Goal，cascade 與 event 投影都跟 Builder/Backward 不同：失敗**不**動 sub-goal、**不**投影到任何 Context.md（target≠Goal、`events.py` 只看 Goal-target rows）。
 
 Strategist（`Tooling/pipeline/strategist.py`）：
-- `strategist_schema_invalid` — `decision.json` 解析過但 `verify_decisions` 不過（schema / ancestor-safety 違規）；`ASTERISM_STRATEGIST_VERIFY_RETRY` 開時同 session resume 一次
+- `strategist_schema_invalid` — `decision.json` 解析過但 `verify_decisions` / 提案包機械檢查不過；同 session resume 修訂,輪數上限 `strategist.verify_retry`(預設 4,與 Adversary 反駁共用計數)
 - `strategist_noop` — Strategist 合法地決定 Noop（當下無事可做）；非錯誤、記錄用
+- `strategist_proposal_rejected` — Adversary 於修訂輪用盡後仍反駁：提案+全部批評存 `programme_revisions`（status='rejected'）、session 拋棄、下一 wake 只帶一行被拒紀錄盲重推；target cooldown 節流連續拒絕循環；不 burn root.attempts
 - 另含共用的 `agent_no_output`
 
 Librarian（`Tooling/pipeline/librarian.py`，Phase 4）：失敗走 `dispatcher._advance_librarian_chain` 的 **per-unit fail-count**（`librarian_fail_counts`、跨 restart 持久）；連續 `LIBRARIAN_MAX_CHAIN_RETRIES`（=2）次 → 該 unit **STALL**（不再 refill、不動 goal、無 shelve）。`librarian_file_busy` 不計數（另一 worker 正持有該檔）。
