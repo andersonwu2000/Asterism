@@ -317,12 +317,15 @@ def test_projection_contents(
     assert proj == attempts / "adversary" / "r2"
     assert (proj / "Manifest.md").exists()
     assert (proj / "CATALOG.md").read_text(encoding="utf-8") == "- brick_a\n"
-    # No passed rev yet → bootstrap placeholder, judged as rev 1.
-    assert "rev 1" in (proj / "PROGRAMME.md").read_text(encoding="utf-8")
+    # PROGRAMME.md = current rev (bootstrap placeholder here) + its
+    # execution record, welded into one file.
+    prog = (proj / "PROGRAMME.md").read_text(encoding="utf-8")
+    assert "rev 1" in prog
+    assert "Completed Inject batches" in prog
+    assert not (proj / "outcomes.md").exists()
     assert "WARN: long thesis" in (proj / "proposal.md").read_text(
         encoding="utf-8")
     assert "Inject(Forward)" in (proj / "decisions.md").read_text(
         encoding="utf-8")
     d = (proj / "dialogue.md").read_text(encoding="utf-8")
     assert "too vague" in d and "# old" in d
-    assert (proj / "outcomes.md").exists()

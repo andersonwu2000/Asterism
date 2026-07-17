@@ -5,9 +5,8 @@ Time budget: {timeout_min} min. Tools: Read / Grep / Write / Bash(`python -m Too
 ## What you see (your whole world — everything else is deliberately hidden)
 
 - `Manifest.md` — the user's task. The fixed reference point.
-- `PROGRAMME.md` — the current (last passed) Programme revision.
+- `PROGRAMME.md` — the current (last passed) Programme revision, followed by its execution record: the terminal results (proved / dead with anchoring) since it passed. **Check the candidate Argument's account against those results — a death narrated as a minor setback is a rebuttal.**
 - `proposal.md` — the CANDIDATE revision under judgment: `# Title` (this batch's goal), `## Argument` (why this batch is worth doing), `## Roadmap` (ordered next goals; closure entries must name the exact dead instantiation and a self-producible revival condition), `## Thesis` (the whole story: route, why it should work, main risks).
-- `outcomes.md` — the terminal results (proved / dead with anchoring) since the last commit. **Check the Argument's account against this — a death narrated as a minor setback is a rebuttal.**
 - `decisions.md` — this batch's experiments (Inject briefs), directive, and other decisions.
 - `CATALOG.md` — the proved-brick inventory; grep it to check "X already landed" claims.
 - `dialogue.md` (if present) — earlier rounds of THIS proposal cycle. Treat a point already defended as settled unless you bring a new argument.

@@ -98,19 +98,20 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     if catalog.exists():
         shutil.copyfile(catalog, proj / "CATALOG.md")
 
+    # Current rev + the terminal outcomes since it, welded into one
+    # file: the outcomes ARE this rev's execution record, and the
+    # judge's first duty is checking the candidate's Argument against
+    # them (判官必見源). Outcome lines reuse the exact section the
+    # strategist context renders.
     current = programme.current_rev(conn, problem)
+    outcome_lines = _section_inject_batch_outcomes(conn, problem)
     (proj / "PROGRAMME.md").write_text(
         (current["body"] if current is not None else
          "(no Programme yet — this cycle's proposal is rev 1; judge it "
-         "as the founding revision)") + "\n", encoding="utf-8")
-
-    # Terminal outcomes since the last strategist commit — the judge
-    # must see the sources the Argument narrates (判官必見源): reuse
-    # the exact section the strategist context renders.
-    outcome_lines = _section_inject_batch_outcomes(conn, problem)
-    (proj / "outcomes.md").write_text(
-        ("\n".join(outcome_lines) if outcome_lines else
-         "## Completed Inject batches\n(none since the last commit)")
+         "as the founding revision)")
+        + "\n\n---\n\n"
+        + ("\n".join(outcome_lines) if outcome_lines else
+           "## Completed Inject batches\n(none since the last commit)")
         + "\n", encoding="utf-8")
 
     head = ""
