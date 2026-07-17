@@ -1933,9 +1933,14 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                                  "role": "adversary",
                                  "criticisms": verdict["criticisms"],
                                  "proposal": proposal_body})
+                # rounds_left = revisions still available AFTER this
+                # rebuttal: a retry fires whenever rounds_used <
+                # max_rounds, so exactly max_rounds - rounds_used
+                # remain (off-by-one here once taught "0 left" while
+                # the loop granted one more).
                 err = _format_rebuttal(
                     verdict, rounds_used + 1,
-                    max(0, max_rounds - rounds_used - 1))
+                    max_rounds - rounds_used)
                 err_is_rebuttal = True
         if not err:
             break  # verify clean; exempt batches skip the package gate

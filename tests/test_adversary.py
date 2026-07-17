@@ -237,10 +237,16 @@ def test_exhaustion_records_rejection(
     # Next wake gets the one-line record, never the draft.
     notice = programme.rejection_notice(conn, "p")
     assert notice and "rejected" in notice
-    # No commit happened: no strategist_decisions row for the batch.
+    # No commit happened: no strategist_decisions row for the batch,
+    # and the stall anchor (last_strategist_at ratchet) did not move —
+    # a rejected wake stays visible to the cross-wake no-delta
+    # machinery (design §1: 被拒 wake 計入跨-wake 無 delta 序列).
     assert conn.execute(
         "SELECT COUNT(*) FROM strategist_decisions WHERE problem='p'"
     ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT last_strategist_at FROM problems WHERE name='p'"
+    ).fetchone()[0] is None
 
 
 def test_exempt_batch_skips_adversary(
@@ -294,6 +300,16 @@ def test_context_surfaces(workspace: Path, conn: sqlite3.Connection):
     programme.record_rejection(conn, "p", _PROPOSAL, [], 3)
     s2 = "\n".join(phase2_context._section_programme_strategist(conn, "p"))
     assert "Previous proposal rejected" in s2
+
+    # Dangling pointer heals: rev in DB, file gone → the worker
+    # section re-renders idempotently before advertising it.
+    pdir = workspace / "Problems" / "p"
+    rendered = pdir / "PROGRAMME.md"
+    if rendered.exists():
+        rendered.unlink()
+    w2 = "\n".join(wctx._section_programme_worker(conn, "p", None, pdir))
+    assert "PROGRAMME.md" in w2
+    assert rendered.exists()
 
 
 # ------------------------------------------------------- projection

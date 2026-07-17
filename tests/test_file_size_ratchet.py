@@ -278,7 +278,9 @@ _WATERMARKS = {
     # 1750→1780 (2026-07-12): v29 problem-state backfill — conscious bump.
     # 1780→1800 (2026-07-17): v30 programme_revisions (research mode) —
     # conscious bump; the migration chain grows by design per version.
-    "Tooling/state/db_migrations.py": 1800,
+    # 1800→1815 (2026-07-18): v31 passed-rev partial unique index —
+    # conscious bump.
+    "Tooling/state/db_migrations.py": 1815,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

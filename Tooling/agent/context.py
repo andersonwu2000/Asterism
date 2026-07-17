@@ -936,7 +936,9 @@ def _section_prior_patch(kind: str | None, problem_dir: Path,
 # ---------------------------------------------------------------------
 
 def _section_programme_worker(conn: sqlite3.Connection, problem: str,
-                              decision_id: "int | None") -> list[str]:
+                              decision_id: "int | None",
+                              problem_dir: "Path | None" = None
+                              ) -> list[str]:
     """Research mode (research_mode_design.md §2): the worker's slice
     of the Programme — the Adversary's advisory reservations on the
     current rev (attributed voice, distinct from the Strategist's
@@ -952,6 +954,16 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
         return []
     if row is None:
         return []
+    # The pointer must resolve (design §2 P1 acceptance point): the
+    # pass-commit render is best-effort, so a fresh checkout / failed
+    # render can leave a rev in the DB with no file on disk. Re-render
+    # idempotently before advertising it.
+    if problem_dir is not None and not (
+            problem_dir / _programme.PROGRAMME_BASENAME).exists():
+        try:
+            _programme.render(conn, problem, problem_dir)
+        except OSError:
+            pass
     out = [f"## Programme (rev {row['rev']})", "",
            "This batch executes the research Programme. Full text: "
            "`PROGRAMME.md` beside the problem files — read it when your "
@@ -1264,7 +1276,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         # problem-level standing (every cold-start); brief is per-decision
         # one-shot (only when Strategist Inject spawned this pipeline).
         _section_programme_worker(conn, str(goal["problem"]),
-                                  decision_id),
+                                  decision_id, problem_dir),
         _section_strategist_directive(conn, str(goal["problem"])),
         _section_strategist_brief(conn, decision_id),
         _section_header(goal),

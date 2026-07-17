@@ -603,6 +603,18 @@ def apply(conn: sqlite3.Connection) -> None:
                 )""")
         conn.execute("PRAGMA user_version = 30")
         conn.commit()
+    if v < 31:
+        # v31 — pin the Programme chain invariant in the schema: at
+        # most one PASSED row per (problem, rev). Single-daemon wake
+        # serialization already guarantees it operationally; the
+        # partial unique index makes a violation loud instead of a
+        # silent forked chain (CLAUDE.md rule 6).
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_programme_passed_rev"
+            " ON programme_revisions(problem, rev)"
+            " WHERE status = 'passed'")
+        conn.execute("PRAGMA user_version = 31")
+        conn.commit()
 
 
 def _migrate_to_v26(conn: sqlite3.Connection) -> None:
