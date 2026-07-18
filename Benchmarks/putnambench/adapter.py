@@ -317,6 +317,7 @@ def _manifest_md(spec: ProblemSpec, *, upstream_commit: str = "") -> str:
         f"  - Classical.choice\n"
         f"forbidden_lemmas: []\n"
         f"library: false\n"
+        f"signoff: false\n"
         f"---\n"
         f"\n"
         f"# {spec.slug} — imported from PutnamBench\n"

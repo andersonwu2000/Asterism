@@ -42,19 +42,22 @@ from .db import now
 if TYPE_CHECKING:  # circular-import guard (manifest imports us lazily)
     from .manifest import Manifest
 
-#: the settings this table owns. Kept in LOCKSTEP with
-#: manifest.UI_SETTING_KEYS (a drift-guard test pins the equality;
+#: the settings this table owns: the UI trio (kept in LOCKSTEP with
+#: manifest.UI_SETTING_KEYS — a drift-guard test pins the subset;
 #: importing across would close the manifest→settings→db→manifest
-#: cycle, so both stay literals).
+#: cycle, so both stay literals) plus the machine-owned `signoff`
+#: (benchmark adapters' unattended opt-out; never surfaced in the UI,
+#: so deliberately NOT in UI_SETTING_KEYS).
 SETTING_KEYS: tuple[str, ...] = (
-    "axioms_whitelist", "forbidden_lemmas", "library",
+    "axioms_whitelist", "forbidden_lemmas", "library", "signoff",
 )
 
 _LIST_KEYS = ("axioms_whitelist", "forbidden_lemmas")
+_BOOL_KEYS = ("library", "signoff")
 
 
 def _valid(key: str, value: object) -> bool:
-    if key == "library":
+    if key in _BOOL_KEYS:
         return isinstance(value, bool)
     return isinstance(value, list) and all(
         isinstance(x, str) for x in value)
@@ -95,7 +98,7 @@ def write(conn: sqlite3.Connection, problem: str, key: str,
     if not _valid(key, value):
         raise ValueError(
             f"setting {key!r} expects "
-            f"{'bool' if key == 'library' else 'list[str]'},"
+            f"{'bool' if key in _BOOL_KEYS else 'list[str]'},"
             f" got {type(value).__name__}")
     sql = ("INSERT INTO problem_settings (problem, key, value, updated_at)"
            " VALUES (?, ?, ?, ?)"

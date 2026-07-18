@@ -2098,6 +2098,27 @@ def _claude_login_email() -> "str | None":
         return None
 
 
+def _effective_library_flag(conn, problem: str) -> bool:
+    """The harvest decision as the librarian scheduler will see it:
+    `problem_settings` row wins, Manifest.md value is the fallback,
+    unreadable-anything reads False (no harvest without an explicit
+    opt-in — mirrors the `library` default)."""
+    from ..state import settings as _settings
+    val = _settings.read(conn, problem).get("library")
+    if isinstance(val, bool):
+        return val
+    try:
+        from ..state import manifest as _manifest
+        row = conn.execute(
+            "SELECT manifest_path FROM problems WHERE name = ?",
+            (problem,)).fetchone()
+        if row is None:
+            return False
+        return bool(_manifest.parse(Path(row["manifest_path"])).library)
+    except Exception:  # noqa: BLE001 — conservative: no silent harvest
+        return False
+
+
 def _signoff_record(conn, problem: str,
                     signer: "str | None") -> dict:
     """The signature written at approve: the operator's claim (name),
@@ -2126,8 +2147,11 @@ def cmd_approve_ingest(args: argparse.Namespace) -> int:
     The single resume action of the sign-off gate (not a per-anchor
     checklist): clears the pause, RECORDS THE SIGNATURE (v27 — who
     signed, when, sealing exactly what was reviewed), and enqueues the
-    Librarian. Reject specific anchors/claims BEFORE approving via
-    `asterism reject`."""
+    Librarian iff the effective `library` flag says harvest (the serve
+    endpoint writes the signer's Library decision through the settings
+    chokepoint BEFORE calling here — signing with library:false must
+    not start a harvest). Reject specific anchors/claims BEFORE
+    approving via `asterism reject`."""
     conn = db.connect()
     db.init_schema(conn)
     problem = args.problem
@@ -2142,11 +2166,15 @@ def cmd_approve_ingest(args: argparse.Namespace) -> int:
     from ..state import transitions as _transitions
     _transitions.apply_problem_transition(
         conn, problem, "ingested", event="signoff_approved")
-    db.enqueue(conn, kind="Librarian", target_id=problem,
-               target_kind="Problem", priority=0, problem=problem)
     signed = f" signed by {record['name']}" if record["name"] else ""
-    print(f"approved ingest for {problem}{signed} — enqueued Librarian; "
-          f"harvest runs on the next dispatcher tick.")
+    if _effective_library_flag(conn, problem):
+        db.enqueue(conn, kind="Librarian", target_id=problem,
+                   target_kind="Problem", priority=0, problem=problem)
+        print(f"approved ingest for {problem}{signed} — enqueued "
+              f"Librarian; harvest runs on the next dispatcher tick.")
+    else:
+        print(f"approved ingest for {problem}{signed} — library: false, "
+              f"no harvest.")
     conn.close()
     return 0
 

@@ -521,8 +521,11 @@ def test_amend_bad_action_and_unknown_id(workspace: Path) -> None:
 # ---------------------------------------------------------------------
 
 def test_approve_ingest_via_api(workspace: Path, monkeypatch) -> None:
+    from Tooling.state import settings as _settings
     conn = _open_db(workspace)
     _add_problem(conn, "p", ingest_signoff_pending=1, ingested_at=db.now())
+    # opted-in problem: approval must enqueue the harvest
+    _settings.write(conn, "p", "library", True)
     conn.close()
     monkeypatch.chdir(workspace)  # chokepoints open the cwd-relative DB
     c = _client(workspace)
@@ -557,6 +560,9 @@ def test_approve_ingest_carries_the_library_decision(
     conn = db.connect(workspace / "asterism.db")
     assert _settings.read(conn, "p")["library"] is False
     assert not db.problem_ingest_signoff_pending(conn, "p")
+    # signing with library:false must not start a harvest (2026-07-18:
+    # the old unconditional enqueue was a BUG3-class gate bypass)
+    assert not db.is_in_queue(conn, target_id="p", kind="Librarian")
     conn.close()
 
 

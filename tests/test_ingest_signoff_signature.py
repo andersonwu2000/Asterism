@@ -82,6 +82,45 @@ def test_approve_signs_and_reject_revokes(tmp_path: Path, monkeypatch) -> None:
     assert db.get_ingest_signoff(conn, "p") is None
 
 
+def test_approve_enqueues_librarian_iff_library_flag(
+        tmp_path: Path, monkeypatch) -> None:
+    """2026-07-18 gate retirement: the signature carries the Library
+    decision (serve writes the flag through the settings chokepoint
+    before calling approve). Signing with library:false must NOT start
+    a harvest — the old unconditional enqueue was a BUG3-class bypass
+    (the consumer gate only checks the pending flag, which approval
+    just cleared)."""
+    from Tooling.core import cli as _cli
+    from Tooling.state import settings as _settings
+
+    def _pause(conn, name):
+        db.set_ingest_signoff_pending(conn, name, True)
+        conn.execute("UPDATE problems SET state='ingest_signoff'"
+                     " WHERE name=?", (name,))
+        conn.commit()
+
+    conn = _open(tmp_path)
+    _add_problem(conn, "p")
+    _add_problem(conn, "q")
+    _pause(conn, "p")
+    _pause(conn, "q")
+    _settings.write(conn, "p", "library", False)
+    _settings.write(conn, "q", "library", True)
+    conn.close()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_cli, "_claude_login_email", lambda: "a@x.y")
+
+    assert _cli.cmd_approve_ingest(
+        argparse.Namespace(problem="p", signer="A")) == 0
+    assert _cli.cmd_approve_ingest(
+        argparse.Namespace(problem="q", signer="A")) == 0
+    conn = _open(tmp_path)
+    rows = conn.execute(
+        "SELECT problem FROM queue WHERE kind='Librarian'").fetchall()
+    assert [str(r["problem"]) for r in rows] == ["q"]
+    conn.close()
+
+
 def test_seal_breaks_when_snapshot_changes(tmp_path: Path) -> None:
     """signoff_with_seal: seal_ok flips false the moment the stored
     snapshot no longer matches what was signed — the reader sees the

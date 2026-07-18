@@ -39,6 +39,13 @@ class Manifest:
     # docs/archive/design/librarian_plan.md). Scope flag, NOT a safety gate —
     # default False so a missing/garbled field never auto-promotes.
     library: bool = False
+    # Machine channel (benchmark adapters ONLY — never surfaced in the
+    # UI): `signoff: false` opts a problem out of the human Ingest
+    # sign-off pause, for unattended batch runs. Default True and
+    # coerced True on any garble — a typo must pause, never skip the
+    # human gate. The Library decision itself stays with `library`
+    # (standing default) / the signature (frontend).
+    signoff: bool = True
     # Paper pipeline (docs/internal/paper_pipeline_design.md): shelf id
     # of the source paper (`Papers/<id>/`). Empty = no paper. Drives the
     # Context paper-index section + provenance; never consumed by gates.
@@ -445,6 +452,11 @@ def parse(path: Path) -> Manifest:
         forbidden_lemmas=list(forbidden),
         strategic_notes=notes,
         library=_coerce_bool(fm.get('library')),
+        # Inverse polarity from `library`: absent/garbled must land on
+        # True (pause for the human), only an explicit "false"/"no"/"0"
+        # opts out — so _coerce_bool (junk→False) is the wrong tool.
+        signoff=(fm.get('signoff') is None or str(
+            fm.get('signoff')).strip().lower() not in ("false", "no", "0")),
         paper=str(fm.get('paper') or "").strip(),
     )
 

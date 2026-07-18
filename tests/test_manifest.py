@@ -394,6 +394,27 @@ True
     assert mfst.library is False
 
 
+def test_signoff_flag_inverse_polarity(tmp_path: Path) -> None:
+    """`signoff` is opt-OUT of the human gate: absent -> True, garbage
+    -> True (a typo must pause, never skip sign-off), only an explicit
+    false/no/0 opts out."""
+    def parse_with(header_line: str) -> manifest.Manifest:
+        return manifest.parse(write(tmp_path, "Manifest.md", f"""---
+problem: sg
+{header_line}
+---
+# sg
+
+## Statement
+True
+"""))
+    assert parse_with("library: false").signoff is True   # absent
+    assert parse_with("signoff: maybe?").signoff is True  # garble → pause
+    assert parse_with("signoff: FALSE").signoff is False
+    assert parse_with("signoff: no").signoff is False
+    assert parse_with("signoff: true").signoff is True
+
+
 def test_library_flag_case_insensitive(tmp_path: Path) -> None:
     mfst = manifest.parse(write(tmp_path, "Manifest.md", """---
 problem: caps

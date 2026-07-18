@@ -36,16 +36,22 @@ def _mfst(**kw) -> manifest.Manifest:
 
 def test_keys_lockstep_with_ui_setting_keys() -> None:
     """Both stay literals (import would close a module cycle) — this
-    pin is what keeps them from drifting apart."""
-    assert settings.SETTING_KEYS == manifest.UI_SETTING_KEYS
+    pin is what keeps them from drifting apart. `signoff` is the one
+    machine-owned key (benchmark adapters' unattended opt-out): stored
+    and validated like the trio, deliberately NOT UI-owned."""
+    assert set(manifest.UI_SETTING_KEYS) < set(settings.SETTING_KEYS)
+    assert set(settings.SETTING_KEYS) - set(manifest.UI_SETTING_KEYS) == {
+        "signoff"}
 
 
 def test_write_read_round_trip(conn) -> None:
     settings.write(conn, "p", "axioms_whitelist", ["propext", "Custom.ax"])
     settings.write(conn, "p", "library", True)
+    settings.write(conn, "p", "signoff", False)
     got = settings.read(conn, "p")
     assert got["axioms_whitelist"] == ["propext", "Custom.ax"]
     assert got["library"] is True
+    assert got["signoff"] is False
     assert "forbidden_lemmas" not in got  # absent = fall back to file
 
 
@@ -105,7 +111,7 @@ def test_empty_db_whitelist_never_weakens_the_gate(conn) -> None:
 def test_migrate_is_idempotent_and_never_clobbers_db(conn) -> None:
     m = _mfst(axioms_whitelist=["file.ax"], forbidden_lemmas=["bad*"],
               library=True)
-    assert settings.migrate_from_manifest(conn, "p", m) == 3
+    assert settings.migrate_from_manifest(conn, "p", m) == 4  # + signoff
     # second run: nothing to do
     assert settings.migrate_from_manifest(conn, "p", m) == 0
     # a UI edit survives a re-migration against the stale file

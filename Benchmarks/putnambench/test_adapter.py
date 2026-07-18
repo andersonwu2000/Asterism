@@ -198,6 +198,7 @@ def test_emit_three_files(tmp_path: Path) -> None:
     mfst = (pdir / "Manifest.md").read_text(encoding="utf-8")
     assert "problem: Putnam.putnam_1999_a1" in mfst
     assert "library: false" in mfst
+    assert "signoff: false" in mfst   # unattended: skip the human gate
     assert "Find all $x$" in mfst
     assert "Putnam 1999 A1" in mfst
     assert "abc1234" in mfst

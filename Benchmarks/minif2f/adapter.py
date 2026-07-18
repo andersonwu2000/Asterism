@@ -198,6 +198,8 @@ def _manifest_md(spec: ProblemSpec) -> str:
         f"  - Quot.sound\n"
         f"  - Classical.choice\n"
         f"forbidden_lemmas: []\n"
+        f"library: false\n"
+        f"signoff: false\n"
         f"---\n"
         f"\n"
         f"# {spec.slug} — imported from miniF2F\n"

@@ -357,37 +357,61 @@ def test_ingest_commit_library_gate_and_signoff(conn, tmp_path):
     pdir = _db.problem_dir(tmp_path, "P.a")
     pdir.mkdir(parents=True)
 
-    def write_manifest(lib: str):
+    def write_manifest(lib: str, signoff: "str | None" = None):
+        extra = f"signoff: {signoff}\n" if signoff is not None else ""
         (pdir / "Manifest.md").write_text(
-            f"---\nproblem: P.a\nlibrary: {lib}\n---\n# P.a\n", encoding="utf-8")
+            f"---\nproblem: P.a\nlibrary: {lib}\n{extra}---\n# P.a\n",
+            encoding="utf-8")
 
     def n_librarian():
         return conn.execute(
             "SELECT count(*) FROM queue WHERE kind='Librarian'").fetchone()[0]
 
+    def reset_rig():
+        # re-committing Ingest on one problem is a test rig — reset the
+        # v29 FSM state to 'active' like the carriers are reset below
+        _db.set_ingest_signoff_pending(conn, "P.a", False)
+        conn.execute("UPDATE problems SET state='active' WHERE name='P.a'")
+        conn.commit()
+
     try:
-        # library:false → opted out: no pause, no enqueue
+        # library:false alone → still PAUSES (2026-07-18 gate
+        # retirement: the Library opt-out must not skip the human gate;
+        # the decision is re-made at the signature), no enqueue
         write_manifest("false")
         config._reset_cache()
+        _commit_ingest(conn, problem="P.a", workspace=tmp_path)
+        assert _db.problem_ingest_signoff_pending(conn, "P.a")
+        assert n_librarian() == 0
+
+        # benchmark shape: signoff:false + library:false → direct, no
+        # pause, no enqueue
+        write_manifest("false", signoff="false")
+        reset_rig()
         _commit_ingest(conn, problem="P.a", workspace=tmp_path)
         assert not _db.problem_ingest_signoff_pending(conn, "P.a")
         assert n_librarian() == 0
 
-        # library:true + default require_signoff (True) → PAUSE, no enqueue
-        # (re-committing Ingest on one problem is a test rig — reset the
-        # v29 FSM state to 'active' like the carriers are reset below)
-        write_manifest("true")
-        config._reset_cache()
-        conn.execute("UPDATE problems SET state='active' WHERE name='P.a'")
+        # unattended harvest shape: signoff:false + library:true →
+        # direct, enqueue
+        write_manifest("true", signoff="false")
+        reset_rig()
+        _commit_ingest(conn, problem="P.a", workspace=tmp_path)
+        assert not _db.problem_ingest_signoff_pending(conn, "P.a")
+        assert n_librarian() == 1
+        conn.execute("DELETE FROM queue WHERE kind='Librarian'")
         conn.commit()
+
+        # library:true + default require_signoff (True) → PAUSE, no enqueue
+        write_manifest("true")
+        reset_rig()
+        config._reset_cache()
         _commit_ingest(conn, problem="P.a", workspace=tmp_path)
         assert _db.problem_ingest_signoff_pending(conn, "P.a")
         assert n_librarian() == 0
 
         # direct mode (yaml require_signoff:false) → enqueue, no pause
-        _db.set_ingest_signoff_pending(conn, "P.a", False)
-        conn.execute("UPDATE problems SET state='active' WHERE name='P.a'")
-        conn.commit()
+        reset_rig()
         (tmp_path / "Asterism.yaml").write_text(
             "library:\n  require_signoff: false\n", encoding="utf-8")
         config._reset_cache()
