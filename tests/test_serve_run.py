@@ -153,7 +153,10 @@ def test_run_live_lanes_carry_statement_and_file_tail(
     lane = body["workers"][0]
     assert lane["kind"] == "Builder"
     assert lane["slug"] == "lemma_a"
-    assert lane["statement"] == "a = a"
+    # the lane statement is the DISPLAY signature read from the stub
+    # (binders included — goals.statement stores the bare conclusion;
+    # context.goal_display_signature via serve, 2026-07-18)
+    assert lane["statement"] == "theorem lemma_a : a = a"
     assert lane["file"] is not None
     assert "rfl" in lane["file"]["tail"]
     # the card shows the mathematics: prelude stripped
@@ -297,3 +300,33 @@ def test_run_idle_keeps_telling_the_last_story(
     assert body["goals"]["proved"] == 1
     assert body["workers"] == []
     assert body["burn_run"] is None
+
+
+def test_problem_detail_signature_binders_and_alias_suppression(
+        workspace: Path) -> None:
+    """goals[].signature: binders from the stub; alias plumbing and
+    binder-less matches fall back to null (statement stands)."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    db.insert_goal(conn, problem="p", slug="lemma_b",
+                   lean_path="Problems/p/proofs/L_lemma_b.lean",
+                   statement="q x", origin="backward", depth=1)
+    db.insert_goal(conn, problem="p", slug="alias_g",
+                   lean_path="Problems/p/proofs/L_alias_g.lean",
+                   statement="r y", origin="backward", depth=1)
+    conn.commit()
+    conn.close()
+    proofs = workspace / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+    (proofs / "L_lemma_b.lean").write_text(
+        "import Mathlib\n\ntheorem lemma_b (x : Nat) (h : 0 < x) :\n"
+        "    q x := by\n  sorry\n", encoding="utf-8")
+    (proofs / "L_alias_g.lean").write_text(
+        "import Mathlib\n\ndef alias_g := @Problems.p.s42\n",
+        encoding="utf-8")
+    body = _client(workspace).get("/api/problems/p").json()
+    by_slug = {g["slug"]: g for g in body["goals"]}
+    assert by_slug["lemma_b"]["signature"] == \
+        "theorem lemma_b (x : Nat) (h : 0 < x) : q x"
+    assert by_slug["lemma_b"]["statement"] == "q x"
+    assert by_slug["alias_g"]["signature"] is None

@@ -5,6 +5,7 @@ import { switchAccount } from '../lib/claudeAuth'
 import { duration } from '../lib/format'
 import { goalStatusLabel } from '../lib/vocab'
 import { Lean } from '../lib/lean'
+import { splitSignature } from '../lib/leanSig'
 import { Link } from '../lib/router'
 import { Button } from '../components/ui'
 import Constellation from '../components/Constellation'
@@ -122,11 +123,27 @@ function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
           on it {laneAge(w.leased_at) ?? '—'}
         </span>
       </div>
-      {w.statement && (
-        <div className="mt-1 truncate font-mono text-[11px] text-ink-faint" title={w.statement}>
-          <Lean code={w.statement} />
-        </div>
-      )}
+      {w.statement &&
+        (() => {
+          // the lane statement now carries binders (serve reads the
+          // stub) — two lines: hypotheses faint, ⊢ conclusion under
+          // them, so the card means something without the full file
+          const sig = splitSignature(w.statement)
+          return sig !== null && sig.binders.length > 0 ? (
+            <div className="mt-1 font-mono text-[11px] text-ink-faint" title={w.statement}>
+              <div className="truncate opacity-75">
+                <Lean code={sig.binders.join(' ')} />
+              </div>
+              <div className="truncate">
+                <Lean code={'⊢ ' + sig.conclusion} />
+              </div>
+            </div>
+          ) : (
+            <div className="mt-1 truncate font-mono text-[11px] text-ink-faint" title={w.statement}>
+              <Lean code={sig !== null ? '⊢ ' + sig.conclusion : w.statement} />
+            </div>
+          )
+        })()}
       {w.file ? (
         // the tail folds away (owner: the sky owns the space) — the
         // activity line IS the summary, one click opens the text

@@ -431,7 +431,13 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             " attempts, alias_target_id, is_deliverable, statement,"
             " lean_path, created_at FROM goals WHERE problem = ?"
             " ORDER BY id", (problem,)):
+        sig = _goal_signature(workspace, str(g["slug"]),
+                              g["lean_path"], g["statement"])
         goals.append({
+            # display signature WITH binders (context.goal_display_
+            # signature, the engine's own fix for "statement = bare
+            # conclusion"); null when the file adds nothing
+            "signature": sig,
             "id": int(g["id"]),
             "doc": goal_docs.get(int(g["id"])),
             "slug": str(g["slug"]),
@@ -660,6 +666,39 @@ def programme(conn: sqlite3.Connection, problem: str) -> dict:
             "reservations": reservations,
         }
     return {"current": current, "history": history}
+
+
+# display-signature cache: mtime-keyed per lean file so the 3s detail
+# poll doesn't re-read a hundred stubs (the underlying reader is the
+# engine's context.goal_display_signature — ONE extraction, no serve
+# dialect; #5, 2026-07-18)
+_SIG_CACHE: "dict[str, tuple[float, str | None]]" = {}
+
+
+def _goal_signature(workspace: Path, slug: str,
+                    lean_path: "str | None",
+                    statement: "str | None") -> "str | None":
+    """Binders+conclusion display form, or None when the file offers
+    nothing beyond the stored statement (alias bodies read as plumbing,
+    not mathematics — the bare statement is more honest there)."""
+    if not lean_path:
+        return None
+    key = f"{workspace}|{lean_path}"
+    try:
+        mtime = (workspace / str(lean_path)).stat().st_mtime
+    except OSError:
+        return None
+    hit = _SIG_CACHE.get(key)
+    if hit is not None and hit[0] == mtime:
+        return hit[1]
+    from ..agent.context import goal_display_signature
+    sig: "str | None" = goal_display_signature(
+        workspace, slug, lean_path, statement)
+    if (not sig or sig == str(statement or "")
+            or ":= @" in sig or " : " not in sig):
+        sig = None
+    _SIG_CACHE[key] = (mtime, sig)
+    return sig
 
 
 def _disproof_links(conn: sqlite3.Connection,

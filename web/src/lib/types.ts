@@ -46,6 +46,9 @@ export interface Goal {
   alias_target_id: number | null
   is_deliverable: boolean
   statement: string
+  /** binders+conclusion display form read from the stub (the DB
+   * statement is often the bare conclusion); null = statement stands */
+  signature?: string | null
   lean_path: string
   created_at: string
   attempts: number

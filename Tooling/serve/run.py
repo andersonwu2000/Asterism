@@ -283,10 +283,15 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                 " FROM queue q LEFT JOIN goals g ON q.target_kind = 'Goal'"
                 " AND g.id = CAST(q.target_id AS INTEGER)"
                 " WHERE q.owner_pid = ? ORDER BY q.leased_at", (live_pid,)):
+            # binders+conclusion for the card (statement stores the
+            # bare conclusion; same chokepoint as problem_detail)
+            sig = _data._goal_signature(
+                workspace, str(r["slug"] or ""), r["lean_path"],
+                r["statement"]) if r["slug"] is not None else None
             lane: dict = {
                 "kind": str(r["kind"]),
                 "slug": r["slug"] if r["slug"] is not None else str(r["tid"]),
-                "statement": r["statement"],
+                "statement": sig if sig is not None else r["statement"],
                 "leased_at": r["leased_at"],
                 "file": None,
                 "path": None,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Goal, Strategy, StrategyEdge } from '../lib/types'
 import { CameraControls, useSkyCamera } from '../lib/camera'
+import { splitSignature } from '../lib/leanSig'
 import { layoutConstellation } from '../lib/layout'
 import { Lean } from '../lib/lean'
 import { citePath } from '../lib/sky'
@@ -1649,10 +1650,40 @@ export default function Constellation({
           {/* break-words: a fully-qualified name is one giant token —
               without break permission it overflows sideways and the
               clip SWALLOWS its middle ("…has_simple_l / f" read as the
-              whole statement; owner, 2026-07-12) */}
-          <div className="line-clamp-4 font-mono text-[11px] leading-snug break-words text-ink-dim">
-            <Lean code={hovered.goal.statement} />
-          </div>
+              whole statement; owner, 2026-07-12).
+              InfoView shape when the stub's signature is available
+              (owner, 2026-07-18: the bare conclusion without its
+              hypotheses "意義很低"): binder lines, then ⊢ goal. */}
+          {(() => {
+            const sig = hovered.goal.signature
+              ? splitSignature(hovered.goal.signature)
+              : null
+            if (sig !== null && sig.binders.length > 0) {
+              const shown = sig.binders.slice(0, 5)
+              return (
+                <div className="font-mono text-[11px] leading-snug break-words">
+                  {shown.map((b, i) => (
+                    <div key={i} className="text-ink-faint">
+                      <Lean code={b} />
+                    </div>
+                  ))}
+                  {sig.binders.length > shown.length && (
+                    <div className="text-ink-faint">
+                      … {sig.binders.length - shown.length} more
+                    </div>
+                  )}
+                  <div className="line-clamp-3 text-ink-dim">
+                    <Lean code={'⊢ ' + sig.conclusion} />
+                  </div>
+                </div>
+              )
+            }
+            return (
+              <div className="line-clamp-4 font-mono text-[11px] leading-snug break-words text-ink-dim">
+                <Lean code={hovered.goal.signature ?? hovered.goal.statement} />
+              </div>
+            )
+          })()}
           {(hovered.goal.attempts > 0 || hovered.goal.dead_attempts > 0) && (
             <div className="mt-1 text-[11px] text-ink-faint">
               {hovered.goal.attempts} attempt{hovered.goal.attempts === 1 ? '' : 's'}
