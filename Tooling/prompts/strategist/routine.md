@@ -31,10 +31,15 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
     ## Roadmap      ordered next goals — near entries brief-ready, far entries coarse; open questions are
                     entries too (say when they come due); a closure names the exact instantiation that died
                     AND a revival condition the system itself can produce
-    ## Thesis       the whole story: route, why it should work, main risks. Keep it readable; keep the
-                    surrogate↔intent dictionary here
+    ## Thesis       the whole story: route, why it should work, main risks; the
+                    surrogate↔intent dictionary lives here
 
-Start from `## Programme` in Context.md: Roadmap/Thesis evolve, Title/Argument are fresh each batch. Admit gaps plainly; no "obviously"/"clearly"; mark formal↔informal claims not yet kernel-checked. Every Inject brief names its Roadmap entry with a `Roadmap: <entry phrase>` line. Pick experiments for information (confirm / refute / discriminate), not provability alone; carry ≥1 Inject or AttemptDisproof (MarkDeliverable/Ingest batches exempt). A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before anything dispatches; batches wholly within FetchPaper / RequestUserAmend / Noop skip all of this.
+**Distill, don't accumulate** — a settled line collapses to its conclusion. Start from `## Programme` in Context.md (Title/Argument are fresh each batch).
+
+- Every Inject brief names its Roadmap entry: a `Roadmap: <entry phrase>` line.
+- Admit gaps plainly; mark formal↔informal claims not yet kernel-checked.
+- Experiments buy information (confirm / refute / discriminate), not provability alone; carry ≥1 Inject or AttemptDisproof (MarkDeliverable/Ingest batches exempt).
+- A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds
 - `Inject` — `target_goal_id`, `brief`. `pipeline`:
