@@ -834,7 +834,12 @@ def _inline_sibling_stubs(
     for ln, orig in content_body:
         merged.append(ln)
         line_map.append(orig)
-    return "\n".join(merged), line_map
+    # Terminating newline: without it, Lean's end-of-input pseudo-command
+    # starts at the END of the last line and Mathlib's
+    # `linter.style.whitespace` fires the ghost "'' starts on column N"
+    # warning on the candidate's `end` line — reported by every proving
+    # agent, every day (~25 feedback entries).
+    return "\n".join(merged) + "\n", line_map
 
 
 # Declaration of `<slug>` in the candidate itself — so validating a
