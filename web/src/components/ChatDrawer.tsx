@@ -90,7 +90,7 @@ function renderCites(seg: string, keyBase: string): ReactNode[] {
           key={`${keyBase}c${m.index}`}
           role="link"
           tabIndex={0}
-          className="cursor-pointer rounded-sm bg-surface-2 px-1 font-mono text-[0.92em] text-ink underline decoration-edge underline-offset-2 hover:decoration-ink-dim"
+          className="cursor-pointer font-mono text-[0.92em] text-ink underline decoration-ink-faint decoration-dotted underline-offset-2 hover:decoration-ink"
           onClick={() => navigate(to)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') navigate(to)
@@ -444,20 +444,32 @@ export default function ChatDrawer({
           e.preventDefault()
         }}
       />
-      {/* header: what this is + clear */}
+      {/* header: what this is + model + clear (QPaper shape: the model
+          picker is a first-class header control, not footer fine print) */}
       <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
         <span className="text-[13px] font-medium text-ink">ask</span>
         <span
           className="truncate text-[11px] text-ink-faint"
-          title="questions are answered about this page; it can read the whole workspace"
+          title="questions are answered about this page; it can read the whole workspace — read-only, it explains, it never acts"
         >
           about {pageLabel(page)}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
+          <Select
+            value={model ?? meta?.model_default ?? 'sonnet'}
+            onChange={(e) => setModel(e.target.value)}
+            title="stronger models cost more of the same subscription quota"
+          >
+            {(meta?.models ?? ['haiku', 'sonnet', 'opus']).map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </Select>
           {messages.length > 0 &&
             (confirmClear ? (
               <button
-                className="cursor-pointer rounded-md border border-edge px-2 py-0.5 text-[11px] text-warn transition-colors hover:bg-surface-2"
+                className="cursor-pointer rounded-md border border-edge px-2 py-0.5 text-[11px] whitespace-nowrap text-warn transition-colors hover:bg-surface-2"
                 onClick={() => void clear()}
                 disabled={streaming}
               >
@@ -508,43 +520,46 @@ export default function ChatDrawer({
             </div>
           </div>
         ) : (
-          <div className="space-y-3">
-            {messages.map((m, i) => (
-              <div key={i} className={m.role === 'user' ? 'flex justify-end' : ''}>
-                {m.role === 'user' ? (
-                  <div className="max-w-[85%] rounded-lg bg-surface-2 px-3 py-1.5 text-[13px] whitespace-pre-wrap text-ink">
-                    {m.text}
-                  </div>
-                ) : (
-                  <div className="text-[13px] leading-relaxed text-ink-dim">
-                    {m.text === '' && streaming && i === messages.length - 1 ? (
-                      <span className="text-[12px] text-ink-faint">
-                        {STAGE_LABEL[stage ?? 'thinking'] ?? 'thinking…'}
-                      </span>
-                    ) : (
-                      renderAnswer(m.text)
-                    )}
-                    {m.note && (
-                      <div className="mt-1 text-[11px] text-ink-faint italic">— {m.note}</div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
+          <div>
+            {/* QPaper shape: the question is a full-width quiet card, the
+                answer is bare prose under it — a document, not a chat app */}
+            {messages.map((m, i) =>
+              m.role === 'user' ? (
+                <div
+                  key={i}
+                  className="mt-5 rounded-lg bg-surface-2 px-3 py-2 text-[13px] whitespace-pre-wrap text-ink first:mt-0"
+                >
+                  {m.text}
+                </div>
+              ) : (
+                <div key={i} className="mt-2.5 text-[13px] leading-relaxed text-ink-dim">
+                  {m.text === '' && streaming && i === messages.length - 1 ? (
+                    <span className="text-[12px] text-ink-faint">
+                      {STAGE_LABEL[stage ?? 'thinking'] ?? 'thinking…'}
+                    </span>
+                  ) : (
+                    renderAnswer(m.text)
+                  )}
+                  {m.note && (
+                    <div className="mt-1 text-[11px] text-ink-faint italic">— {m.note}</div>
+                  )}
+                </div>
+              ),
+            )}
           </div>
         )}
       </div>
 
-      {/* composer */}
+      {/* composer — one pill, send lives inside it (QPaper shape) */}
       <div className="border-t border-edge px-3 py-2.5">
         {note && <div className="mb-1.5 text-[11px] text-warn">{note}</div>}
-        <div className="flex items-end gap-1.5">
+        <div className="flex items-end gap-1.5 rounded-xl border border-edge bg-bg px-1.5 py-1 transition-colors focus-within:border-ink-faint">
           <textarea
             ref={inputRef}
             value={input}
             rows={Math.min(6, Math.max(1, input.split('\n').length))}
             placeholder="ask anything…"
-            className="min-w-0 flex-1 resize-none rounded-md border border-edge bg-bg px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+            className="min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-[13px] text-ink placeholder:text-ink-faint focus:outline-none"
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -555,36 +570,32 @@ export default function ChatDrawer({
           />
           {streaming ? (
             <button
-              className="cursor-pointer rounded-md border border-edge px-2.5 py-1.5 text-[12px] text-ink transition-colors hover:bg-surface-2"
+              className="mb-0.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full border border-edge text-ink transition-colors hover:bg-surface-2"
               onClick={stop}
               title="stop — whatever has streamed stays"
+              aria-label="stop"
             >
-              stop
+              <span className="block h-2 w-2 rounded-[1px] bg-current" />
             </button>
           ) : (
             <button
-              className="cursor-pointer rounded-md border border-edge px-2.5 py-1.5 text-[12px] text-ink transition-colors hover:bg-surface-2 disabled:cursor-default disabled:opacity-40"
+              className="mb-0.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-bg transition-colors enabled:bg-ink enabled:hover:bg-ink-dim disabled:cursor-default disabled:bg-surface-3 disabled:text-ink-faint"
               onClick={() => void send(input)}
               disabled={input.trim() === ''}
+              title="send (Enter)"
+              aria-label="send"
             >
-              send
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
+                <path
+                  d="M6 9.5v-7M3 5l3-2.7L9 5"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
             </button>
           )}
-        </div>
-        <div className="mt-1.5 flex items-center gap-2">
-          <Select
-            value={model ?? meta?.model_default ?? 'sonnet'}
-            onChange={(e) => setModel(e.target.value)}
-            className="text-[11px]"
-            title="stronger models cost more of the same subscription quota"
-          >
-            {(meta?.models ?? ['haiku', 'sonnet', 'opus']).map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </Select>
-          <span className="text-[10px] text-ink-faint">read-only · it explains, it never acts</span>
         </div>
       </div>
     </aside>
