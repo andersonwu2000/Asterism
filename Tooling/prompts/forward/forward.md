@@ -57,17 +57,15 @@ The seeded imports are already present — keep them; add `import` lines only to
 
 ## Decline
 
-If after reading Library / Mathlib / brief you believe **no new lemma is needed**, edit `new_forward.lean` to a decline placeholder instead. Framework reports `forward_no_new_goal` with detail `agent declined`.
-
-**Exception — deliverable assembly**: when the brief says the statement is a **Manifest deliverable**, derivability from proved siblings is NOT a reason to decline. A one-liner composing proved siblings under the requested name is exactly the deliverable node the Manifest asks for — mint it.
+If after reading Library / Mathlib / brief you believe **the lemma already exists**, edit `new_forward.lean` to a decline placeholder instead. Framework reports `forward_no_new_goal` with detail `agent declined`.
 
 ```lean
 namespace Problems.<problem>
 
 -- decline: library_sufficient
 -- ## Why
--- Brief asked for X; <existing_lemma_name> in Library already covers it,
--- composed with Mathlib's <foo> for the missing edge case.
+-- Brief asked for X; `<existing_lemma_name>` already states exactly this
+-- (verified via Grep).
 theorem _forward_decline : True := by trivial
 
 end Problems.<problem>
