@@ -210,12 +210,16 @@ def test_reset_sweeps_drafts_and_presearch(
     # it would hand a rerun the prior run's winning worldview (leak
     # audit 2026-07-19)
     (pdir / "PROGRAMME.md").write_text("# rev 13\nroute...", encoding="utf-8")
+    # _plan.md at the problem root: strategists sometimes write the plan
+    # note here instead of .drafts/ (a5 run did) — same leak class
+    (pdir / "_plan.md").write_text("facts...", encoding="utf-8")
 
     rc = cmd_reset(argparse.Namespace(problem="wilson"))
     assert rc == 0
     assert not (pdir / ".drafts").exists()
     assert not (pdir / ".presearch").exists()
     assert not (pdir / "PROGRAMME.md").exists()
+    assert not (pdir / "_plan.md").exists()
 
 
 def test_reset_clears_pipelines_for_problem_only(
