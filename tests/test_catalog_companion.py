@@ -47,7 +47,10 @@ def test_companion_carries_full_statements(conn, tmp_path):
     body = (tmp_path / ctx.CATALOG_COMPANION).read_text(encoding="utf-8")
     assert "## brick_a  (theorem)" in body
     assert "theorem brick_a : 1 + 1 = 2" in body
-    assert "still_open" not in body
+    # alive goals surface up top, fenced as NOT citable (2026-07-19:
+    # the Forward alive-collision rule finally has a list to check)
+    assert "## Alive goals (1 — OPEN, NOT citable)" in body
+    assert "- `still_open` (theorem):" in body
     # per-entry cite line (a5 run ×4: citing a brick cost a directory
     # hunt — the import path and citable name lived only on disk)
     assert "cite `brick_a` — `import P.proofs.L_brick_a`" in body

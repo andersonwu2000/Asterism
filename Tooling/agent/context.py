@@ -428,6 +428,28 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
         " `s<N>` head is an internal alias target — never cite it)._",
         "",
     ]
+    # Alive goals up top (user call 2026-07-19): the Forward rule
+    # "a statement matching an ALIVE in-problem Goal is discarded —
+    # decline and name it" was unenforceable with no list to check
+    # (a5 run ×4); same grep motion as a citation lookup, so it lives
+    # in the same file, clearly fenced as NOT citable.
+    alive = list(conn.execute(
+        "SELECT slug, statement, kind FROM goals"
+        " WHERE problem = ? AND status IN"
+        " ('open','attempting','pending_strategist_review')"
+        " ORDER BY id", (problem,)))
+    if alive:
+        lines += [
+            f"## Alive goals ({len(alive)} — OPEN, NOT citable)",
+            "_In-flight statements. A Forward lemma matching one of"
+            " these is discarded by dedupe — decline and name the goal"
+            " instead. Never cite these names in a proof._",
+            "",
+        ]
+        for a in alive:
+            stmt = " ".join(str(a["statement"] or "").split())
+            lines.append(f"- `{a['slug']}` ({a['kind']}): `{stmt}`")
+        lines.append("")
     for r in rows:
         slug = str(r["slug"])
         sig = (_catalog_signature(workspace, str(r["lean_path"]), slug)
