@@ -51,7 +51,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "builder.threshold": "modern alias of dispatch.builder_threshold (ASTERISM_BUILDER_THRESHOLD; falls back to legacy key)",
     "dispatch.shelve_threshold": "attempts before shelve (ASTERISM_SHELVE_THRESHOLD; 8)",
     "dispatch.handoff_on_code_change": "daemon drains + hands off to a fresh daemon when the source tree changes under it (ASTERISM_HANDOFF_ON_CODE_CHANGE; true)",
-    "dispatch.quota_wait": "confirmed-exhausted subscription window pauses dispatch until resets_at instead of exiting (ASTERISM_QUOTA_WAIT; true)",
+    "dispatch.quota_wait": "confirmed-exhausted subscription window pauses dispatch until resets_at instead of exiting (ASTERISM_QUOTA_WAIT; false — riding further windows is opt-in, user 2026-07-18)",
     "dispatch.spawn_timeout_sec": "main spawn SIGKILL cap (ASTERISM_SPAWN_TIMEOUT_SEC; 900)",
     "dispatch.postmortem_timeout_sec": "postmortem spawn cap (ASTERISM_POSTMORTEM_TIMEOUT_SEC; 180)",
     "dispatch.trap_check_sec": "watchdog thinking-trap check point (ASTERISM_TRAP_CHECK_SEC; 660)",
@@ -312,7 +312,7 @@ _INT_BOUNDS = {
 #: `config.get(..., default=…)` — the Settings select shows what a run
 #: would actually do when the key is unset)
 _UI_BOOL_DEFAULTS = {
-    "dispatch.quota_wait": True,
+    "dispatch.quota_wait": False,  # riding further windows is opt-in
 }
 
 

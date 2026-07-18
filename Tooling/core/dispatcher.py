@@ -1681,12 +1681,12 @@ def run(workspace: Path, *, once: bool = False,
         env_var="ASTERISM_BUDGET_SEC", cast=int, workspace=workspace)
     # Quota-wait switch (user 2026-07-14): on = a CONFIRMED-exhausted
     # subscription window pauses dispatch until resets_at instead of
-    # exiting (breaker consult + sleep-to-reset). Off = the old
-    # behavior exactly: quota bursts trip the fast-fail breaker and the
-    # daemon exits — the web UI exposes this so an unattended install
-    # doesn't burn tokens window after window without anyone deciding.
+    # exiting (breaker consult + sleep-to-reset). Off = quota bursts
+    # trip the fast-fail breaker and the daemon exits. Default OFF
+    # (user 2026-07-18): an unattended run riding window after window
+    # is opt-in — Settings toggle / yaml / env.
     quota_wait_enabled = str(config.get(
-        "dispatch.quota_wait", default="true",
+        "dispatch.quota_wait", default="false",
         env_var="ASTERISM_QUOTA_WAIT", workspace=workspace,
     )).strip().lower() in ("true", "1", "yes", "on")
     # `--once` runs are operator-attended experiments — finishing (with
