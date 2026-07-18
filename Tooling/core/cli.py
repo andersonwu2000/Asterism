@@ -935,9 +935,14 @@ def _reset_problem_files(workspace: Path, pdir: Path, problem: str,
     #     clean a pre-Model-B problem dir that still carries one
     #   - Root.lean.backup: spawn-side snapshot from in-pipeline retry
     #     path; only an unclean shutdown leaves it behind
+    #   - PROGRAMME.md: rendered from programme_revisions (wiped above);
+    #     the file carries the run's full route/thesis — left behind it
+    #     would hand a rerun the prior run's winning worldview (leak
+    #     audit for the model-comparison rerun, 2026-07-19)
     # BRIEF.md is intentionally NOT swept — it's auto-regenerated at
     # daemon startup from Manifest+Library.
-    for name in ("TREE.md", "LESSONS.md", "Root.lean.backup"):
+    for name in ("TREE.md", "LESSONS.md", "Root.lean.backup",
+                 "PROGRAMME.md"):
         p = pdir / name
         if p.exists():
             if _robust_unlink(p):

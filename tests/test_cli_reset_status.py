@@ -206,11 +206,16 @@ def test_reset_sweeps_drafts_and_presearch(
     (pdir / ".drafts" / "builder_g7.md").write_text("note", encoding="utf-8")
     (pdir / ".presearch").mkdir()
     (pdir / ".presearch" / "g7.md").write_text("- `Foo.bar`", encoding="utf-8")
+    # PROGRAMME.md = the run's rendered route/thesis; surviving a reset
+    # it would hand a rerun the prior run's winning worldview (leak
+    # audit 2026-07-19)
+    (pdir / "PROGRAMME.md").write_text("# rev 13\nroute...", encoding="utf-8")
 
     rc = cmd_reset(argparse.Namespace(problem="wilson"))
     assert rc == 0
     assert not (pdir / ".drafts").exists()
     assert not (pdir / ".presearch").exists()
+    assert not (pdir / "PROGRAMME.md").exists()
 
 
 def test_reset_clears_pipelines_for_problem_only(
