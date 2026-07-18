@@ -1223,9 +1223,15 @@ def _stub_fingerprint(attempts_dir: "Path") -> tuple:
         return ()
 
 
-def _resync_buffer_from_disk(meta: "SessionMetadata") -> None:
+def _resync_buffer_from_disk(meta: "SessionMetadata") -> "str | None":
     """Adopt the on-disk `target_path` as the source of truth for the
     in-memory `file_content` mirror before any tool reads it.
+
+    Returns an error string when the disk read FAILED (transient lock /
+    missing file) — the mirror is then possibly stale. Read-only tools
+    may proceed on the stale mirror; `apply_edit` must NOT (its
+    write-through would overwrite newer on-disk content with
+    stale-based text — the resurrection corruption class).
 
     Agents edit patch.lean through the `Write` / `Edit` tools too, which
     touch disk directly and bypass apply_edit's mirror update — leaving
@@ -1252,8 +1258,8 @@ def _resync_buffer_from_disk(meta: "SessionMetadata") -> None:
 
     try:
         disk = meta.target_path.read_text(encoding="utf-8")
-    except OSError:
-        return
+    except OSError as e:
+        return f"target file unreadable during resync: {e}"
     if disk != meta.file_content:
         meta.file_content = disk
         # Invalidate the claimed slot's content ownership: the hot path in
@@ -1302,8 +1308,17 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
     t0 = time.perf_counter()
 
     # External Write/Edit may have advanced disk past the mirror; splice
-    # against the current on-disk text, not a stale buffer (T1).
-    _resync_buffer_from_disk(meta)
+    # against the current on-disk text, not a stale buffer (T1). A
+    # FAILED resync aborts the edit: writing through a possibly-stale
+    # mirror would overwrite newer on-disk content (resurrection
+    # corruption, agent_feedback 2026-07-18).
+    _resync_err = _resync_buffer_from_disk(meta)
+    if _resync_err:
+        return json.dumps({"error": (
+            f"{_resync_err}; edit aborted — the buffer may be stale and "
+            "writing through it could clobber newer on-disk content. "
+            "Retry, or Read the file and use Write."),
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     lines = meta.file_content.split("\n")
     if start_line < 1 or start_line > len(lines):
         return json.dumps({"error":
@@ -1312,8 +1327,24 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
         return json.dumps({"error":
             f"end_line {end_line} out of range {start_line}..{len(lines)}"})
 
+    # Editor-sanity normalization (agent_feedback ~30 reports):
+    # CRLF → LF, and ONE trailing newline stripped — a block ending in
+    # a newline means "content ends here", not "plus a blank line".
+    # Empty new_text DELETES the range (the old splice left a blank
+    # line behind, which no editor means by "replace with nothing").
+    new_text = new_text.replace("\r\n", "\n")
+    if new_text.endswith("\n"):
+        new_text = new_text[:-1]
+    replacement = [] if new_text == "" else new_text.split("\n")
+    # Echo of the OLD region (the splice's precondition): a range that
+    # drifted after an earlier edit becomes visible in THIS response
+    # instead of via a confusing downstream diagnostic.
+    replaced_text = "\n".join(lines[start_line - 1:end_line])
+    if len(replaced_text) > 600:
+        replaced_text = replaced_text[:600] + " …[truncated]"
+
     new_lines = (lines[: start_line - 1]
-                 + new_text.split("\n")
+                 + replacement
                  + lines[end_line:])
     new_content = "\n".join(new_lines)
 
@@ -1325,11 +1356,19 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
     # dropped `:= by`, clobbered `have`): the recurring corruption in
     # agent_feedback (C1). Seeing the actual result makes a misfire obvious
     # immediately rather than via a confusing downstream diagnostic.
-    _nt = new_text.split("\n")
     _lo = max(1, start_line - 2)
-    _hi = min(len(new_lines), start_line + len(_nt) - 1 + 2)
+    _hi = min(len(new_lines), start_line + len(replacement) - 1 + 2)
     post_edit_region = "\n".join(
         f"{i}: {new_lines[i - 1]}" for i in range(_lo, _hi + 1))
+
+    # Locked-signature tripwire (warning, not a block): the commit gate
+    # byte-compares the seeded `s<sid>` signature, so an edit touching
+    # it — usually via a drifted range — is doomed at commit. Same
+    # helper as validate_file's submission mirror.
+    _locked_warn = _locked_signature_submission(
+        new_content, meta.target_path.parent)
+    if _locked_warn is not None and _locked_warn.get("ok", True):
+        _locked_warn = None
 
     # Disk + mirror hold the RAW patch (write-through for the framework
     # cascade); the slot elaborates the MERGED compilation unit (patch +
@@ -1377,9 +1416,11 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
     formatted = [_format_diag(d) for d in diags]
     if line_map is not None:
         formatted = _remap_inlined_diags(formatted, line_map)
+    _verb = "deleted" if not replacement else "replaced"
     response = {
-        "edit": (f"replaced lines {start_line}-{end_line}; "
+        "edit": (f"{_verb} lines {start_line}-{end_line}; "
                  f"file is now {len(new_lines)} lines"),
+        "replaced_text": replaced_text,
         "post_edit_region": post_edit_region,
         "goal_at_edit_start": goal_text,
         "diagnostics": formatted,
@@ -1387,6 +1428,8 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
         "_server_recv_ts": _recv_ts,
         "_server_send_ts": _ts_now(),
     }
+    if _locked_warn is not None:
+        response["locked_signature"] = _locked_warn
     dur = time.perf_counter() - t0
     _log_for(meta, {"event": "tool_call", "name": "apply_edit",
                     "args": {"start_line": start_line,
