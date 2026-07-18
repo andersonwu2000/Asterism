@@ -5,13 +5,19 @@ import { withMath } from './tex'
 
 /*
  * Markdown-lite for MACHINE-AUTHORED prose the human reads: chat
- * answers, the Programme. One renderer, two rules learned elsewhere:
- * fences and $math$ are tokenized out before any inline styling
- * (QPaper ordering lesson), and citation links come from bracket
- * tokens the model emits while the CLIENT owns every route — a
- * hallucinated citation can point at the wrong object, never invent
- * a destination. NOT for the Manifest editor overlay (lib/markdown
- * .tsx is metric-faithful colouring, a different job).
+ * answers, the Programme. Block engine shaped by QPaper's field-tested
+ * renderer (chat-utils.js renderMarkdown): fences and $math$ tokenized
+ * out before inline styling, TeX \(..\)/\[..\] normalized to dollar
+ * form (models drift off the prompt's delimiter instruction), ordered/
+ * mixed lists, quotes, rules and tables as real blocks. One deliberate
+ * departure: single newlines inside a paragraph JOIN AS SPACES
+ * (CommonMark soft break) — our authors write 72-column hard-wrapped
+ * prose (the Programme, plan notes), and QPaper's <br> treatment
+ * renders that as a ragged column. Citation links come from bracket
+ * tokens the model emits while the CLIENT owns every route.
+ *
+ * NOT for the Manifest editor overlay (lib/markdown.tsx is metric-
+ * faithful colouring, a different job).
  */
 
 const CITE_RE = /\[(problem|goal|library|paper):([^[\]\n]+)\]/g
@@ -92,13 +98,127 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
   return out
 }
 
-/** Full prose body: fenced code (lean-colored), paragraphs, lists,
- * headings. `headings: true` renders #/## lines as quiet headers
- * (the Programme's four sections); false strips the marks (chat). */
-export function renderProse(text: string, { headings = false } = {}): ReactNode {
+// -- block engine ------------------------------------------------------------
+
+const BULLET_RE = /^\s*[-*•]\s+/
+const ORDERED_RE = /^\s*\d+[.)]\s+/
+const QUOTE_RE = /^\s*>\s?/
+// hard-wrap continuation: an indented line that is not itself a marker
+const CONT_RE = /^\s{2,}\S/
+
+type Run =
+  | { type: 'p'; text: string }
+  | { type: 'ul' | 'ol'; items: string[] }
+  | { type: 'quote'; text: string }
+
+/** One paragraph-block → runs of paragraphs / lists / quotes. Single
+ * newlines join as spaces; indented continuations belong to the item
+ * above them (72-column sources wrap list items too). */
+function parseRuns(lines: string[]): Run[] {
+  const runs: Run[] = []
+  const last = () => runs[runs.length - 1]
+  for (const line of lines) {
+    if (line.trim() === '') continue
+    if (QUOTE_RE.test(line)) {
+      const text = line.replace(QUOTE_RE, '')
+      const l = last()
+      if (l?.type === 'quote') l.text += ' ' + text
+      else runs.push({ type: 'quote', text })
+    } else if (BULLET_RE.test(line)) {
+      const item = line.replace(BULLET_RE, '')
+      const l = last()
+      if (l?.type === 'ul') l.items.push(item)
+      else runs.push({ type: 'ul', items: [item] })
+    } else if (ORDERED_RE.test(line)) {
+      const item = line.replace(ORDERED_RE, '')
+      const l = last()
+      if (l?.type === 'ol') l.items.push(item)
+      else runs.push({ type: 'ol', items: [item] })
+    } else {
+      const l = last()
+      if ((l?.type === 'ul' || l?.type === 'ol') && CONT_RE.test(line)) {
+        l.items[l.items.length - 1] += ' ' + line.trim()
+      } else if (l?.type === 'p') {
+        l.text += ' ' + line.trim()
+      } else {
+        runs.push({ type: 'p', text: line.trim() })
+      }
+    }
+  }
+  return runs
+}
+
+function renderRuns(runs: Run[], keyBase: string): ReactNode[] {
+  return runs.map((r, i) => {
+    if (r.type === 'p')
+      return <p key={`${keyBase}r${i}`}>{renderInline(r.text, `${keyBase}r${i}`)}</p>
+    if (r.type === 'quote')
+      return (
+        <blockquote
+          key={`${keyBase}r${i}`}
+          className="border-l-2 border-edge-strong pl-3 text-ink-faint italic"
+        >
+          {renderInline(r.text, `${keyBase}r${i}`)}
+        </blockquote>
+      )
+    const Tag = r.type
+    return (
+      <Tag
+        key={`${keyBase}r${i}`}
+        className={`space-y-1 pl-4 ${r.type === 'ol' ? 'list-decimal' : 'list-disc'} marker:text-ink-faint`}
+      >
+        {r.items.map((it, li) => (
+          <li key={li}>{renderInline(it, `${keyBase}r${i}.${li}`)}</li>
+        ))}
+      </Tag>
+    )
+  })
+}
+
+function renderTable(lines: string[], keyBase: string): ReactNode {
+  const cells = (l: string) =>
+    l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim())
+  const head = cells(lines[0])
+  const rows = lines.slice(2).filter((l) => l.trim().startsWith('|')).map(cells)
+  return (
+    <div key={keyBase} className="overflow-x-auto">
+      <table className="text-[0.95em]">
+        <thead>
+          <tr>
+            {head.map((c, i) => (
+              <th key={i} className="border-b border-edge-strong px-2 py-1 text-left font-medium text-ink">
+                {renderInline(c, `${keyBase}h${i}`)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, ri) => (
+            <tr key={ri}>
+              {row.map((c, ci) => (
+                <td key={ci} className="border-b border-edge px-2 py-1 align-top">
+                  {renderInline(c, `${keyBase}${ri}.${ci}`)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** Full prose body. `mode: 'chat'` = compact, heading marks stripped;
+ * `mode: 'document'` = a reading page — real headings (the Programme's
+ * title + sections), more air between blocks. */
+export function renderProse(
+  text: string,
+  { mode = 'chat' }: { mode?: 'chat' | 'document' } = {},
+): ReactNode {
+  const doc = mode === 'document'
   const blocks = text.split(/(```[\s\S]*?(?:```|$))/)
   return (
-    <div className="space-y-2">
+    <div className={doc ? 'space-y-3' : 'space-y-2'}>
       {blocks.map((block, bi) => {
         if (block.startsWith('```')) {
           const body = block.replace(/^```[^\n]*\n?/, '').replace(/```\s*$/, '')
@@ -111,52 +231,61 @@ export function renderProse(text: string, { headings = false } = {}): ReactNode 
             </pre>
           )
         }
-        const paras = block.split(/\n{2,}/).filter((p) => p.trim() !== '')
+        // TeX delimiter drift (QPaper: models emit \(..\)/\[..\] no
+        // matter what the prompt says) — normalized outside fences only
+        const prose = block
+          .replace(/\\\[([\s\S]*?)\\\]/g, (_, tex: string) => `$$${tex}$$`)
+          .replace(/\\\(([^\n]*?)\\\)/g, (_, tex: string) => `$${tex}$`)
+        const paras = prose.split(/\n{2,}/).filter((p) => p.trim() !== '')
         return paras.map((para, pi) => {
+          const key = `${bi}.${pi}`
           const lines = para.split('\n')
-          const isList = lines.every((l) => /^\s*[-*•]\s+/.test(l) || l.trim() === '')
-          if (isList) {
-            return (
-              <ul key={`${bi}.${pi}`} className="space-y-1 pl-4">
-                {lines
-                  .filter((l) => l.trim() !== '')
-                  .map((l, li) => (
-                    <li key={li} className="list-disc marker:text-ink-faint">
-                      {renderInline(l.replace(/^\s*[-*•]\s+/, ''), `${bi}.${pi}.${li}`)}
-                    </li>
-                  ))}
-              </ul>
-            )
-          }
+          const first = lines.find((l) => l.trim() !== '') ?? ''
+          if (/^(-{3,}|\*{3,}|_{3,})$/.test(first.trim()) && lines.length === 1)
+            return <hr key={key} className="border-edge" />
+          if (
+            lines.length >= 2 &&
+            /^\|(.+\|)+\s*$/.test(lines[0].trim()) &&
+            /^\|[-\s|:]+\|$/.test(lines[1].trim())
+          )
+            return renderTable(lines, key)
           // a heading owns the paragraph's first line even without a
           // blank line after it (the Programme writes `## Argument`
           // flush against its text)
-          const h = headings ? /^(#{1,6})\s+(.*)$/.exec(lines[0]) : null
-          if (h) {
-            const rest = lines.slice(1).join('\n').trim()
+          const h = /^(#{1,6})\s+(.*)$/.exec(first)
+          const rest = h ? lines.slice(lines.indexOf(first) + 1) : lines
+          const restRuns = renderRuns(parseRuns(rest), key)
+          if (h && doc) {
             return (
-              <div key={`${bi}.${pi}`}>
+              <div key={key} className={h[1].length > 1 ? 'space-y-2' : 'space-y-3'}>
                 {h[1].length === 1 ? (
-                  <h3 className="pt-1 text-[15px] font-medium text-ink">
-                    {renderInline(h[2], `${bi}.${pi}h`)}
+                  <h3 className="font-display pt-1 text-[19px] leading-snug font-medium text-ink">
+                    {renderInline(h[2], `${key}h`)}
                   </h3>
                 ) : (
-                  <h4 className="pt-2 text-[11px] font-medium tracking-wider text-ink-faint uppercase">
+                  <h4 className="pt-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
                     {h[2]}
                   </h4>
                 )}
-                {rest !== '' && (
-                  <p className="mt-1.5 whitespace-pre-wrap">
-                    {renderInline(rest, `${bi}.${pi}`)}
-                  </p>
-                )}
+                {restRuns}
               </div>
             )
           }
-          return (
-            <p key={`${bi}.${pi}`} className="whitespace-pre-wrap">
-              {renderInline(para.replace(/^#{1,6}\s+/, ''), `${bi}.${pi}`)}
-            </p>
+          if (h) {
+            // chat: heading marks read as emphasis, not structure
+            return (
+              <div key={key} className="space-y-2">
+                <p className="font-medium text-ink">{renderInline(h[2], `${key}h`)}</p>
+                {restRuns}
+              </div>
+            )
+          }
+          return restRuns.length === 1 ? (
+            <div key={key}>{restRuns}</div>
+          ) : (
+            <div key={key} className="space-y-2">
+              {restRuns}
+            </div>
           )
         })
       })}

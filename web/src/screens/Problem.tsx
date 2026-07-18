@@ -71,8 +71,8 @@ function ProgrammePanel({ problem }: { problem: string }) {
           </ul>
         </div>
       )}
-      <div className="text-[13px] leading-relaxed text-ink-dim">
-        {renderProse(cur.body, { headings: true })}
+      <div className="text-sm leading-relaxed text-ink-dim">
+        {renderProse(cur.body, { mode: 'document' })}
       </div>
     </div>
   )
