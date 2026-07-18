@@ -456,6 +456,10 @@ export default function ChatDrawer({
         </span>
         <div className="ml-auto flex items-center gap-1.5">
           <Select
+            // fixed width: a base-select trigger hugs its current
+            // value, so an unsized one makes the header jiggle on
+            // every model switch
+            className="w-24 shrink-0"
             value={model ?? meta?.model_default ?? 'sonnet'}
             onChange={(e) => setModel(e.target.value)}
             title="stronger models cost more of the same subscription quota"

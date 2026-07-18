@@ -136,7 +136,7 @@ function PapersBlock({ problem }: { problem: string }) {
       )}
       {bindable.length > 0 && (
         <div className="mt-2 flex items-center gap-2">
-          <Select className="w-72" value={pick} onChange={(e) => setPick(e.target.value)}>
+          <Select className="w-72 shrink-0" value={pick} onChange={(e) => setPick(e.target.value)}>
             <option value="">bind a paper from the shelf…</option>
             {bindable.map((s) => (
               <option key={s.id} value={s.id}>

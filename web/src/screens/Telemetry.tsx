@@ -63,7 +63,12 @@ function ConfigPanel() {
           // name only explodes at the NEXT run) — power users can
           // still put anything in yaml/.env; it shows up as a choice
           <Select
-            className="w-56"
+            // shrink-0: when the chat drawer squeezes the page, the
+            // shrink must land on the truncating description — a
+            // base-select's minimum width is its CURRENT value's text
+            // (a classic select's was the longest option), so letting
+            // these compress gives every row a different width
+            className="w-56 shrink-0"
             value={draft ?? current}
             onChange={(e) => setDrafts((d) => ({ ...d, [s.key]: e.target.value }))}
           >
@@ -75,7 +80,7 @@ function ConfigPanel() {
           </Select>
         ) : (
           <input
-            className={`w-56 rounded-lg border bg-surface px-2 py-1 font-mono text-xs text-ink focus:outline-none ${
+            className={`w-56 shrink-0 rounded-lg border bg-surface px-2 py-1 font-mono text-xs text-ink focus:outline-none ${
               dirty ? 'border-star/50' : 'border-edge focus:border-ink-faint'
             }`}
             value={draft ?? current}
