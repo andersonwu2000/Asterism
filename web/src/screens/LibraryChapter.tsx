@@ -140,9 +140,15 @@ function probeSeed(d: LibraryChapterDecl & { file?: string }, short: string): st
     const ns = fq.includes('.') ? fq.slice(0, fq.lastIndexOf('.')) : null
     // `_root_.` pins the axioms check to the buffer's own top-level
     // redefinition — with the namespace open, the bare name is
-    // ambiguous against the Library original and #print answers BOTH
+    // ambiguous against the Library original and #print answers BOTH.
+    // The module context (opens + the variable block carrying the
+    // instance hypotheses) comes along: without it the source is not
+    // self-contained — autoImplicit rebinds the variables as naked
+    // Types and the probe drowns in "failed to synthesize" (owner
+    // report, 2026-07-18)
     return (
       (ns ? `open ${ns}\n\n` : '') +
+      (d.context ? d.context + '\n\n' : '') +
       d.source +
       `\n\n#print axioms ${ns ? '_root_.' : ''}${short}`
     )

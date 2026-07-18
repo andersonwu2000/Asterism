@@ -1017,15 +1017,43 @@ def _stmt_head(text: str, start: int) -> str:
     return text[start:limit].rstrip()
 
 
+_CTX_LINE_RE = re.compile(r"^(?:open(?:\s+scoped)?\b|universe\b|variable\b)")
+
+
+def _context_preamble(text: str, first_decl_pos: int) -> str:
+    """The module's context lines (`open` / `open scoped` / `universe`
+    / `variable` + their indented continuations) before the first decl.
+    A decl's source is NOT self-contained without them: the librarian
+    hoists instance hypotheses into a `variable` block, so a probe
+    that re-elaborates the bare source auto-binds `N`/`EH` as naked
+    Types and every instance lookup fails (owner report, 2026-07-18:
+    a wall of `failed to synthesize TopologicalSpace N` over a goal of
+    sorries). Comments are stripped first so prose starting with
+    "open …" inside the module docstring can't leak in."""
+    head = re.sub(r"/-[\s\S]*?-/", "", text[:first_decl_pos])
+    out: "list[str]" = []
+    cont = False
+    for ln in head.split("\n"):
+        if _CTX_LINE_RE.match(ln):
+            out.append(ln)
+            cont = True
+        elif cont and ln.strip() != "" and ln[:1] in (" ", "\t"):
+            out.append(ln)
+        else:
+            cont = False
+    return "\n".join(out).strip()
+
+
 def _scan_library_file(
         text: str,
-) -> "tuple[str, dict[str, tuple[int, str, str, str, str | None]], list[str]]":
+) -> "tuple[str, dict[str, tuple[int, str, str, str, str | None]], list[str], str]":
     """(module_doc, {short_decl_name: (line, docstring, kind, stmt,
-    source)}, imports). `line` is 1-based — same domain as the
+    source)}, imports, context). `line` is 1-based — same domain as the
     oracle-backed `library_decls.src_line`, so the two sort keys mix
     cleanly. `source` is the decl's full source block (attributes +
     header + body, docstring excluded) — the chapter's run state seeds
-    an editor with it."""
+    an editor with it; `context` is the preamble that makes a source
+    block elaborate standalone."""
     m = _MODULE_DOC_RE.search(text)
     module_doc = m.group(1).strip() if m else ""
     docs: "dict[str, tuple[int, str, str, str, str | None]]" = {}
@@ -1062,18 +1090,20 @@ def _scan_library_file(
         docs[name] = (text.count("\n", 0, dm.start()) + 1, doc,
                       dm.group(1), _stmt_head(text, dm.start()),
                       src or None)
-    return module_doc, docs, _IMPORT_RE.findall(text)
+    context = _context_preamble(
+        text, matches[0].start() if matches else len(text))
+    return module_doc, docs, _IMPORT_RE.findall(text), context
 
 
-#: path str -> (mtime_ns, module_doc, docs, imports, word-set) — the
-#: _cite_file_cache pattern: stat everything, re-read only changes.
-#: The chapter is polled every 30s; steady-state must be ~stat-only.
-_chapter_scan_cache: "dict[str, tuple[int, str, dict, list[str], frozenset]]" = {}
+#: path str -> (mtime_ns, module_doc, docs, imports, word-set, context)
+#: — the _cite_file_cache pattern: stat everything, re-read only
+#: changes. The chapter is polled every 30s; steady-state ~stat-only.
+_chapter_scan_cache: "dict[str, tuple[int, str, dict, list[str], frozenset, str]]" = {}
 
 
 def _scanned_library_file(
         workspace: Path, path: str,
-) -> "tuple[str, dict[str, tuple[int, str, str, str]], list[str], frozenset]":
+) -> "tuple[str, dict[str, tuple[int, str, str, str]], list[str], frozenset, str]":
     """Mtime-memoized `_scan_library_file` plus the file's whole-word
     token set — `short in words` is equivalent to the boundary-guarded
     regex search because decl short names are single `[\\w']+` tokens."""
@@ -1082,7 +1112,7 @@ def _scanned_library_file(
         mtime = fp.stat().st_mtime_ns
     except OSError:
         _chapter_scan_cache.pop(path, None)
-        return "", {}, [], frozenset()
+        return "", {}, [], frozenset(), ""
     cached = _chapter_scan_cache.get(path)
     if cached is None or cached[0] != mtime:
         try:
@@ -1090,12 +1120,12 @@ def _scanned_library_file(
             # (same policy as _cite_file_cache)
             text = fp.read_text(encoding="utf-8", errors="replace")
         except OSError:  # transient read failure — retry next request
-            return "", {}, [], frozenset()
-        module_doc, docs, imports = _scan_library_file(text)
+            return "", {}, [], frozenset(), ""
+        module_doc, docs, imports, context = _scan_library_file(text)
         cached = (mtime, module_doc, docs, imports,
-                  frozenset(re.findall(r"[\w']+", text)))
+                  frozenset(re.findall(r"[\w']+", text)), context)
         _chapter_scan_cache[path] = cached
-    return cached[1], cached[2], cached[3], cached[4]
+    return cached[1], cached[2], cached[3], cached[4], cached[5]
 
 
 def library_chapter(conn: sqlite3.Connection, workspace: Path,
@@ -1152,7 +1182,7 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
     # heuristic (blueprint precedent), display only.
     files = []
     for path in ordered:
-        module_doc, docs, imports, _words = scanned[path]
+        module_doc, docs, imports, _words, context = scanned[path]
         keyed: "list[tuple[int, dict]]" = []
         for r in per_file[path]:
             slug = str(r["slug"])
@@ -1179,6 +1209,11 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
                 # the decl's real source block — the run state seeds a
                 # live editor with it (proof included, editable)
                 "source": file_src,
+                # the module preamble (opens + variable block) that
+                # makes `source` elaborate standalone — without it the
+                # probe's instance hypotheses vanish and the goal
+                # collapses into sorries
+                "context": context or None,
                 "is_deliverable": deliverable.get(slug, False),
                 "used_by": used_by,
             }))

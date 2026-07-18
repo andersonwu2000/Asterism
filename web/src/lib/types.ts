@@ -304,6 +304,11 @@ export interface LibraryChapterDecl {
   /** the decl's real source block (attributes + header + proof body,
    * docstring excluded) — the run state seeds a live editor with it */
   source: string | null
+  /** the module preamble (open/open scoped/universe/variable lines)
+   * that makes `source` elaborate standalone — the librarian hoists
+   * instance hypotheses into `variable`, so a probe without this
+   * loses them and the goal collapses into sorries */
+  context: string | null
   is_deliverable: boolean
   /** how many OTHER modules of this problem reach for it — the
    * keystone weight (ingest weakens the claim flags; demonstrated
