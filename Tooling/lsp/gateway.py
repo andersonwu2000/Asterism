@@ -1320,12 +1320,19 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
             "Retry, or Read the file and use Write."),
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     lines = meta.file_content.split("\n")
-    if start_line < 1 or start_line > len(lines):
+    # Line count as an editor shows it: the empty element after a
+    # trailing newline is NOT a line. Counting it let a range overshoot
+    # by one land on the phantom slot — check passed, splice ate the
+    # file's last real line (the namespace `end`) and reported success
+    # (a5 run, inject2502).
+    n_lines = len(lines) - 1 if lines and lines[-1] == "" else len(lines)
+    if start_line < 1 or start_line > n_lines:
         return json.dumps({"error":
-            f"start_line {start_line} out of range 1..{len(lines)}"})
-    if end_line < start_line or end_line > len(lines):
+            f"start_line {start_line} out of range 1..{n_lines}"})
+    if end_line < start_line or end_line > n_lines:
         return json.dumps({"error":
-            f"end_line {end_line} out of range {start_line}..{len(lines)}"})
+            f"end_line {end_line} out of range {start_line}..{n_lines}"
+            f" (the file has {n_lines} lines)"})
 
     # Editor-sanity normalization (agent_feedback ~30 reports):
     # CRLF → LF, and ONE trailing newline stripped — a block ending in

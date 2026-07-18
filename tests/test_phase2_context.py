@@ -1065,3 +1065,43 @@ def test_tree_inline_keeps_pure_nl_forest(
     text = "\n".join(lines)
     assert "(TREE.md not yet generated)" not in text
     assert "brick_a" in text
+
+
+def test_inject_batch_done_flags_retargeted_delivery(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, tmp_path: Path,
+) -> None:
+    """a5 run: `outcome=success` means "a declaration got proved", not
+    "the briefed one" — the strategist kept a hand tally to compensate.
+    A landed slug the (untruncated) brief never names gets a RETARGETED
+    marker; a brief that names it stays unmarked."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    ids = _seed_inject_batch_done(
+        conn, batch_id="batch-retgt",
+        briefs=["## Need\ntheorem f_pos : 0 < f n s",
+                "## Need\ntheorem g_mono : Monotone g"],
+        outcomes=["success", "success"])
+    for i, (slug, stmt) in enumerate(
+            [("exists_fiber_count_eq", "∃ k, fiber k = f n s"),
+             ("g_mono", "Monotone g")]):
+        gid = db.insert_goal(
+            conn, problem="p", slug=slug,
+            lean_path=f"Problems/p/proofs/L_{slug}.lean",
+            statement=stmt, origin="forward", status="proved")
+        conn.execute(
+            "UPDATE strategist_decisions SET produced_goal_id=? WHERE id=?",
+            (gid, ids[i]))
+    conn.commit()
+    attempts_dir = tmp_path / "_attempts_retgt"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="inject_batch_done",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        pending_review_id=None,
+    )
+    text = out.read_text(encoding="utf-8")
+    # step 0: briefed f_pos, landed something else -> flagged
+    assert "RETARGETED" in text
+    # step 1: briefed name == landed name -> exactly one flag in total
+    assert text.count("RETARGETED") == 1

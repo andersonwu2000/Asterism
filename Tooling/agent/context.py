@@ -423,26 +423,28 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
     lines = [
         f"# Proved catalog — {problem} ({len(rows)} entries)",
         "_Machine-generated from the framework's goal records on every"
-        " spawn; always matches what actually landed. Proof of `<slug>`"
-        " lives in `proofs/L_<slug>.lean` (an alias def there points at"
-        " its `_strategy_s<N>.lean`); entries note the path only when it"
-        " deviates._",
+        " spawn; always matches what actually landed. Each entry carries"
+        " the exact import line and the name to cite (the file's inner"
+        " `s<N>` head is an internal alias target — never cite it)._",
         "",
     ]
     for r in rows:
         slug = str(r["slug"])
         sig = (_catalog_signature(workspace, str(r["lean_path"]), slug)
                or str(r["statement"]).strip())
+        mod = str(r["lean_path"]).replace("\\", "/")
+        if mod.endswith(".lean"):
+            mod = mod[:-len(".lean")].replace("/", ".")
         lines += [
             f"## {slug}  ({r['kind']})",
             "```lean",
             sig,
             "```",
+            # a5 run ×4: citing a brick cost a directory hunt because
+            # the module path and citable name lived only on disk
+            f"cite `{slug}` — `import {mod}`",
+            "",
         ]
-        if not str(r["lean_path"]).replace("\\", "/").endswith(
-                f"proofs/L_{slug}.lean"):
-            lines.append(f"proof: `{r['lean_path']}`")
-        lines.append("")
     try:
         (attempts_dir / CATALOG_COMPANION).write_text(
             "\n".join(lines) + "\n", encoding="utf-8")

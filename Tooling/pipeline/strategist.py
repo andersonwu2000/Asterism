@@ -186,33 +186,41 @@ class Decision:
 
 def resolve_directive_body_files(decisions: "list[Decision]",
                                  attempts_dir: Path) -> str:
-    """EmitDirective may hand its body over as `body_file` — a bare
-    filename inside the strategist's attempts dir. JSON-escaping a
-    multi-KB directive inline was the single most error-prone
-    strategist step and the top blocked-Bash need (11 attempts + 5
-    explicit wishes, agent_feedback 2026-07-12..14). The framework
+    """File-form hand-off for the two multi-KB text fields: EmitDirective
+    `body_file` → payload['body'], and Inject `brief_file` → `brief`
+    (2026-07-19; agent_feedback ×3 in the a5 run — briefs are multi-KB
+    Lean-and-markdown blobs the sandbox forces agents to hand-escape
+    into JSON, one stray backslash from silent corruption). Each ref is
+    a bare filename inside the strategist's attempts dir. The framework
     ingests the content HERE, right after parse: downstream (verify,
-    commit, worker Context rendering) sees a plain `body` — the file is
-    a hand-off vehicle, never a live reference. body_file wins over an
-    inline body when both are present. Returns a verify-style error
+    commit, worker Context rendering) sees plain text — the file is a
+    hand-off vehicle, never a live reference. The file wins over an
+    inline value when both are present. Returns a verify-style error
     string ('' = ok)."""
-    for d in decisions:
-        if d.kind != "EmitDirective":
-            continue
-        ref = d.payload.get("body_file")
-        if not ref:
-            continue
+    def _read(ref: object, field: str) -> "tuple[str | None, str]":
         name = Path(str(ref)).name        # basename only — no traversal
         try:
             text = (attempts_dir / name).read_text(encoding="utf-8")
         except OSError as e:
-            return (f"EmitDirective.body_file {ref!r} unreadable ({e}). "
-                    f"Write the directive text to a file in your "
-                    f"attempts dir first, then reference its bare "
-                    f"filename.")
+            return None, (f"{field} {ref!r} unreadable ({e}). Write the "
+                          f"text to a file in your attempts dir first, "
+                          f"then reference its bare filename.")
         if not text.strip():
-            return f"EmitDirective.body_file {ref!r} is empty"
-        d.payload["body"] = text.strip()
+            return None, f"{field} {ref!r} is empty"
+        return text.strip(), ""
+
+    for d in decisions:
+        if d.kind == "EmitDirective" and d.payload.get("body_file"):
+            text, err = _read(d.payload["body_file"],
+                              "EmitDirective.body_file")
+            if err:
+                return err
+            d.payload["body"] = text
+        elif d.kind == "Inject" and d.payload.get("brief_file"):
+            text, err = _read(d.payload["brief_file"], "Inject.brief_file")
+            if err:
+                return err
+            d.brief = text
     return ""
 
 

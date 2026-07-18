@@ -48,10 +48,10 @@ def test_companion_carries_full_statements(conn, tmp_path):
     assert "## brick_a  (theorem)" in body
     assert "theorem brick_a : 1 + 1 = 2" in body
     assert "still_open" not in body
-    # path convention stated once in the header, not per entry (the
-    # seeded lean_path P/proofs/L_brick_a.lean matches the convention)
-    assert "proofs/L_<slug>.lean" in body
-    assert "proof: `P/proofs/L_brick_a.lean`" not in body
+    # per-entry cite line (a5 run ×4: citing a brick cost a directory
+    # hunt — the import path and citable name lived only on disk)
+    assert "cite `brick_a` — `import P.proofs.L_brick_a`" in body
+    assert "cite `brick_b` — `import P.proofs.L_brick_b`" in body
 
 
 def test_companion_extracts_full_signature_and_resolves_alias(tmp_path):

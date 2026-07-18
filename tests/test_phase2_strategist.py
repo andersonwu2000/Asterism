@@ -2405,3 +2405,23 @@ def test_body_file_ignores_other_kinds_and_inline_only(tmp_path):
     assert resolve_directive_body_files([inline, other], tmp_path) == ""
     assert inline.payload["body"] == "plain"
     assert "body" not in other.payload
+
+
+def test_inject_brief_file_resolves_into_brief(tmp_path):
+    """a5 run x3: briefs are multi-KB Lean-and-markdown blobs the
+    sandbox forces agents to hand-escape into JSON. `brief_file`
+    mirrors EmitDirective's `body_file`: bare filename in the attempts
+    dir, ingested at parse time, wins over an inline brief."""
+    from Tooling.pipeline.strategist import (Decision,
+                                             resolve_directive_body_files)
+    (tmp_path / "b0.md").write_text("## Need\ntheorem f_pos ...",
+                                    encoding="utf-8")
+    d = Decision(kind="Inject", target_id=7, brief="inline junk",
+                 payload={"pipeline": "Forward", "brief_file": "b0.md"})
+    assert resolve_directive_body_files([d], tmp_path) == ""
+    assert d.brief == "## Need\ntheorem f_pos ..."
+    missing = Decision(kind="Inject", target_id=7,
+                       payload={"pipeline": "Forward",
+                                "brief_file": "absent.md"})
+    err = resolve_directive_body_files([missing], tmp_path)
+    assert "Inject.brief_file" in err and "unreadable" in err

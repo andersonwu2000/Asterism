@@ -47,7 +47,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 - A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds
-- `Inject` — `target_goal_id`, `brief`. `pipeline`:
+- `Inject` — `target_goal_id`, `brief` or `brief_file` (bare filename in your attempts dir — Write the brief there, no JSON escaping). `pipeline`:
   - `Forward`: produces one new def/theorem into `proofs/L_<slug>.lean`; no `target_goal_id`. Search for an existing lemma first. Do not add defs via `Defs.lean`. Never brief Forward with an alive goal's statement.
   - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
   - `Builder`: single file inline, one tactic block.

@@ -1875,3 +1875,27 @@ def test_interactive_reclaim_evicts_stale_interactive_only(
     assert slots[0].claimed_by == "pipe-A"       # pipeline untouched
     assert slots[1].claimed_by == "interactive-new"
     lsp_gateway._release_session_internal(tok3)
+
+
+def test_apply_edit_rejects_range_on_phantom_trailing_line(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """a5 inject2502: split("\\n") counts the empty element after the
+    trailing newline as a line, so replacing lines 1-12 of an 11-line
+    file passed the range check, ate the file's last real line (the
+    namespace `end`) and reported success. The check must use the
+    editor's line count."""
+    content = "line one\nline two\nend Problems.p\n"
+    (tmp_path / "x.lean").write_text(content, encoding="utf-8")
+    backend = _DiagBackend()
+    ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
+    lsp_gateway._state.sessions["tok-A"].file_content = content
+    try:
+        out = json.loads(asyncio.run(lsp_gateway.apply_edit(1, 4, "x")))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert "error" in out
+    assert "1..3" in out["error"]
+    # nothing was written through
+    assert (tmp_path / "x.lean").read_text(encoding="utf-8") == content

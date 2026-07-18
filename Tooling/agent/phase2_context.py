@@ -463,6 +463,22 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                         f"  landed: `{r['landed_slug']}` "
                         f"(status={r['landed_status']})"
                         + (f" — `{stmt}`" if stmt else ""))
+                    # Delivered-vs-briefed (a5 run: `outcome=success`
+                    # read as "the brief was delivered" while the worker
+                    # had shipped a different declaration; the
+                    # strategist kept a hand tally to compensate). The
+                    # UNTRUNCATED brief never naming the landed slug is
+                    # the mechanical tell.
+                    full_brief = str(r["brief"] or "")
+                    slug = str(r["landed_slug"])
+                    if full_brief and not re.search(
+                            rf"\b{re.escape(slug)}\b", full_brief):
+                        out.append(
+                            "  RETARGETED: the brief never names this "
+                            "declaration — the worker delivered under a "
+                            "different name/statement than briefed; "
+                            "diff it against the brief before building "
+                            "on it")
             elif str(r["outcome"] or "") in ("success", "proved"):
                 out.append(
                     "  landed: (nothing attributed to this step — the "
