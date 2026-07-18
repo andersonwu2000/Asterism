@@ -92,9 +92,9 @@ def test_gate_shape():
 def test_package_requires_file_and_experiment(tmp_path: Path):
     body, sections, err = strategist.verify_proposal_package(
         [_d("Inject", pipeline="Forward", brief="b")], tmp_path)
-    assert body is None and "programme.md" in err
+    assert body is None and "proposal.md" in err
 
-    (tmp_path / "programme.md").write_text(_PROPOSAL, encoding="utf-8")
+    (tmp_path / "proposal.md").write_text(_PROPOSAL, encoding="utf-8")
     # EmitDirective-only (no experiment, not endgame) → rejected.
     body, sections, err = strategist.verify_proposal_package(
         [_d("EmitDirective", body="x")], tmp_path)
@@ -167,7 +167,7 @@ def _spawn_script(rebuttals_before_pass: int):
             json.dumps({"kind": "Inject", "pipeline": "Forward",
                         "brief": f"Roadmap: the brick\n## Need\nbrick v{n}"}),
             encoding="utf-8")
-        (kw["attempts_dir"] / "programme.md").write_text(
+        (kw["attempts_dir"] / "proposal.md").write_text(
             _PROPOSAL.replace("# Step", f"# Step v{n}"),
             encoding="utf-8")
         return 0
@@ -254,7 +254,7 @@ def test_exempt_batch_skips_adversary(
     mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A Noop-only batch (wholly exempt kinds) never spawns the
-    Adversary and needs no programme.md."""
+    Adversary and needs no proposal.md."""
     _insert_root(conn)
     calls = {"adversary": 0}
 

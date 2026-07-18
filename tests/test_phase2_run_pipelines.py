@@ -118,7 +118,7 @@ def test_run_strategist_inject_enqueues_forward(
                 "brief": "Roadmap: contour lemma\n## Need\nA contour lemma.",
             }),
             encoding="utf-8")
-        (kw["attempts_dir"] / "programme.md").write_text(
+        (kw["attempts_dir"] / "proposal.md").write_text(
             "# Contour step\n## Argument\nNeed the lemma.\n"
             "## Roadmap\n1. contour lemma\n## Thesis\nRoute holds.\n",
             encoding="utf-8")

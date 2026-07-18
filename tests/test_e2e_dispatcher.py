@@ -179,7 +179,7 @@ def test_e2e_root_proved_through_dispatcher(
             # carries a Programme proposal (endgame batches are exempt
             # from the ≥1-experiment rule but still adversarially
             # reviewed) — the e2e covers the endgame package path.
-            (attempts / "programme.md").write_text(
+            (attempts / "proposal.md").write_text(
                 "# Close out\n## Argument\nRoot proved by Builder.\n"
                 "## Roadmap\n1. Ingest.\n## Thesis\nManifest satisfied "
                 "by the proved root.\n",

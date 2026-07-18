@@ -74,12 +74,12 @@ TRIGGER_KINDS: frozenset[str] = frozenset({
 # moves no route (literature intake / hand-back / no-op), and audit
 # wakes sit outside the gate entirely (the auditor checks books, it
 # does not propose). Any other batch must carry a Programme proposal
-# (four sections in `programme.md`) and pass the Adversary.
+# (four sections in `proposal.md`) and pass the Adversary.
 _PACKAGE_EXEMPT_KINDS: frozenset[str] = frozenset(
     {"FetchPaper", "RequestUserAmend", "Noop"})
 _ENDGAME_KINDS: frozenset[str] = frozenset({"MarkDeliverable", "Ingest"})
 _EXPERIMENT_KINDS: frozenset[str] = frozenset({"Inject", "AttemptDisproof"})
-PROPOSAL_BASENAME = "programme.md"
+PROPOSAL_BASENAME = "proposal.md"
 
 
 def package_gate_applies(decisions, trigger_kind: str | None) -> bool:
@@ -147,7 +147,7 @@ def _format_rebuttal(verdict: dict, round_no: int,
         f"ADVERSARY REBUTTAL (round {round_no}; {rounds_left} revision "
         "round(s) left before this proposal is discarded and the next "
         "wake restarts fresh):\n" + crits + "\n"
-        "For EACH point: either revise (rewrite programme.md — and "
+        "For EACH point: either revise (rewrite proposal.md — and "
         "decision.json if the experiments change) or defend (keep your "
         "position and answer the point inside `## Argument`). Do not "
         "concede points you believe are misreadings. Re-emit "

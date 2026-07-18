@@ -24,7 +24,7 @@ Tools: Read / Write / Edit / Grep / Bash(`python -m Tooling.knowledge.loogle ...
 
 ## Programme proposal
 
-Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelve / MarkDeliverable / Ingest / EmitDirective) ships a Programme revision: Write `programme.md` (bare filename, in your attempts dir) —
+Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelve / MarkDeliverable / Ingest / EmitDirective) ships a Programme revision: Write `proposal.md` (bare filename, in your attempts dir) —
 
     # <Title>       one line: this batch's goal
     ## Argument     why THIS batch: what the latest outcomes showed, what these experiments will settle
