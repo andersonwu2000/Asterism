@@ -271,21 +271,13 @@ function Shell() {
     d != null && !d.running && d.last_exit !== null &&
     d.last_exit.rc !== null && d.last_exit.rc !== 0
 
-  // closing the page never stops the engine — it runs on this machine
-  // until the run ends or Stop is pressed. Users didn't know (owner,
-  // 2026-07-18), so a live run makes leaving deliberate: the browser
-  // shows its generic leave prompt (custom wording isn't allowed
-  // anymore); the console's status line carries the actual explanation
-  const engineRunning = d?.running ?? false
-  useEffect(() => {
-    if (!engineRunning) return
-    const warn = (e: BeforeUnloadEvent) => {
-      e.preventDefault()
-      e.returnValue = ''
-    }
-    window.addEventListener('beforeunload', warn)
-    return () => window.removeEventListener('beforeunload', warn)
-  }, [engineRunning])
+  // NO beforeunload prompt for a live run (owner, 2026-07-18, same
+  // day it shipped): the browser's generic dialog says "changes may
+  // not be saved" — implying unsaved work that doesn't exist — and
+  // cannot carry the actual message. The truth ("closing this page
+  // does NOT stop the engine") lives as plain words on the surfaces
+  // where the run is watched: the console status line and the problem
+  // page's engine strip.
 
   return (
     <div className="flex h-full">
