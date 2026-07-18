@@ -129,7 +129,11 @@ const CONT_RE = /^\s{2,}\S/
 
 type Run =
   | { type: 'p'; text: string }
-  | { type: 'ul' | 'ol'; items: string[] }
+  | { type: 'ul'; items: string[] }
+  // start: the source's own first number — an HTML <ol> restarts at 1,
+  // which silently renumbered "3. 4. 5." (and every list resumed after
+  // a paragraph break) to "1. 2. 3." (owner catch, 2026-07-18)
+  | { type: 'ol'; items: string[]; start: number }
   | { type: 'quote'; text: string }
 
 /** One paragraph-block → runs of paragraphs / lists / quotes. Single
@@ -154,7 +158,12 @@ function parseRuns(lines: string[]): Run[] {
       const item = line.replace(ORDERED_RE, '')
       const l = last()
       if (l?.type === 'ol') l.items.push(item)
-      else runs.push({ type: 'ol', items: [item] })
+      else
+        runs.push({
+          type: 'ol',
+          items: [item],
+          start: Number(/^\s*(\d+)/.exec(line)?.[1] ?? '1'),
+        })
     } else {
       const l = last()
       if ((l?.type === 'ul' || l?.type === 'ol') && CONT_RE.test(line)) {
@@ -182,16 +191,21 @@ function renderRuns(runs: Run[], keyBase: string): ReactNode[] {
           {renderInline(r.text, `${keyBase}r${i}`)}
         </blockquote>
       )
-    const Tag = r.type
-    return (
-      <Tag
+    const items = r.items.map((it, li) => (
+      <li key={li}>{renderInline(it, `${keyBase}r${i}.${li}`)}</li>
+    ))
+    return r.type === 'ol' ? (
+      <ol
         key={`${keyBase}r${i}`}
-        className={`space-y-1 pl-4 ${r.type === 'ol' ? 'list-decimal' : 'list-disc'} marker:text-ink-faint`}
+        start={r.start !== 1 ? r.start : undefined}
+        className="list-decimal space-y-1 pl-4 marker:text-ink-faint"
       >
-        {r.items.map((it, li) => (
-          <li key={li}>{renderInline(it, `${keyBase}r${i}.${li}`)}</li>
-        ))}
-      </Tag>
+        {items}
+      </ol>
+    ) : (
+      <ul key={`${keyBase}r${i}`} className="list-disc space-y-1 pl-4 marker:text-ink-faint">
+        {items}
+      </ul>
     )
   })
 }
