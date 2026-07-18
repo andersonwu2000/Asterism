@@ -1152,8 +1152,10 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, target_id, brief, reason, payload,"
-        " batch_id, produced_goal_id, outcome, created_at, updated_at)"
-        " VALUES (?, ?, ?, 'Inject', ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+        " batch_id, produced_goal_id, produced_kind, outcome,"
+        " created_at, updated_at)"
+        " VALUES (?, ?, ?, 'Inject', ?, ?, ?, ?, ?, ?, 'redispatch',"
+        " NULL, ?, ?)",
         (problem, tick, trigger_kind, target_id,
          brief, decision.reason,
          json.dumps(row_payload, ensure_ascii=False),
@@ -1398,9 +1400,10 @@ def _commit_attempt_disproof(decision: Decision, conn: sqlite3.Connection,
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, target_id, brief, reason, payload,"
-        " produced_goal_id, outcome, created_at, updated_at)"
+        " produced_goal_id, produced_kind, outcome, created_at,"
+        " updated_at)"
         " VALUES (?, ?, ?, 'AttemptDisproof', ?, NULL, ?, '{}', ?,"
-        " NULL, ?, ?)",
+        " 'disproof', NULL, ?, ?)",
         (problem, tick, trigger_kind, gid, decision.reason,
          neg_gid, ts, ts),
     )

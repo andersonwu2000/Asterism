@@ -57,12 +57,33 @@ def write_context_stats(attempts_dir: Path, *, label: str,
 # Sections
 # ---------------------------------------------------------------------
 
-def _section_header(goal: sqlite3.Row) -> list[str]:
+def goal_display_signature(workspace: Path, slug: str,
+                           lean_path: "str | None",
+                           statement: "str | None") -> str:
+    """Full binders+conclusion display form for a goal (#5, user call
+    2026-07-18): `goals.statement` stores the bare conclusion — a
+    by_contra sub-goal reads as just `False` — while the on-disk stub
+    carries the whole signature. Read it CATALOG-style; fall back to
+    the stored statement. Display-only: dedupe keeps matching on the
+    statement column."""
+    if lean_path:
+        try:
+            text = (workspace / str(lean_path)).read_text(encoding="utf-8")
+            sig = _decl_signature(text, slug)
+            if sig:
+                return " ".join(sig.split())
+        except OSError:
+            pass
+    return str(statement or "")
+
+
+def _section_header(goal: sqlite3.Row, workspace: Path) -> list[str]:
     return [
         f"# Context for goal {goal['slug']}",
         "",
         "## Goal statement",
-        goal["statement"],
+        goal_display_signature(workspace, str(goal["slug"]),
+                               goal["lean_path"], goal["statement"]),
         "",
     ]
 
@@ -122,11 +143,13 @@ def _section_strategy_naming(strategy_id: int | None,
 
 
 def _section_parent_strategy(conn: sqlite3.Connection,
-                             goal: sqlite3.Row) -> list[str]:
+                             goal: sqlite3.Row,
+                             workspace: Path) -> list[str]:
     if goal["origin"] != "backward":
         return []
     row = conn.execute(
         "SELECT g.slug AS parent_slug, g.statement AS parent_statement,"
+        "       g.lean_path AS parent_lean_path,"
         "       s.proposal_md AS proposal_md "
         "FROM strategy_subgoals ss "
         "JOIN strategies s ON s.id = ss.strategy_id "
@@ -137,12 +160,15 @@ def _section_parent_strategy(conn: sqlite3.Connection,
     ).fetchone()
     if not row:
         return []
+    parent_sig = goal_display_signature(
+        workspace, str(row["parent_slug"]), row["parent_lean_path"],
+        row["parent_statement"])
     out = [
         "## Parent goal & strategy",
         f"This goal `{goal['slug']}` is a sub-goal of "
         f"`{row['parent_slug']}`:",
         "",
-        f"> {row['parent_statement']}",
+        f"> {parent_sig}",
         "",
     ]
     if row["proposal_md"]:
@@ -1279,10 +1305,10 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                                   decision_id, problem_dir),
         _section_strategist_directive(conn, str(goal["problem"])),
         _section_strategist_brief(conn, decision_id),
-        _section_header(goal),
+        _section_header(goal, workspace),
         _section_library_available(conn, mfst),
         _section_strategy_naming(strategy_id, goal),
-        _section_parent_strategy(conn, goal),
+        _section_parent_strategy(conn, goal, workspace),
         _section_mathlib_lemmas_from_deads(direct_events, workspace),
         # target-1 pre-search candidates (written in cold-prep). When present
         # it supersedes `_section_proved_goals` — both list this problem's

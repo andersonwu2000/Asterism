@@ -311,7 +311,7 @@ def test_active_goals_filters_by_status_only(
     )
     _link_subgoal(conn, strategy_id=live_strat, subgoal_id=live_sub)
 
-    lines = phase2_context._section_active_goals(conn, "p")
+    lines = phase2_context._section_active_goals(conn, workspace, "p")
     text = "\n".join(lines)
     assert "`main`" in text
     assert "`live_sub`" in text
@@ -342,7 +342,7 @@ def test_active_goals_includes_detached_orphan(
     db.set_goal_detached(conn, detached_orphan, True)
     _link_subgoal(conn, strategy_id=dead_strat, subgoal_id=detached_orphan)
 
-    lines = phase2_context._section_active_goals(conn, "p")
+    lines = phase2_context._section_active_goals(conn, workspace, "p")
     text = "\n".join(lines)
     assert "`detached_orphan`" in text
 

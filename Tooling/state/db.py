@@ -653,7 +653,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 31
+_CURRENT_USER_VERSION = 32
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -1027,10 +1027,15 @@ def set_inject_outcome_detail(conn: sqlite3.Connection, goal_id: int,
 
 def set_inject_decision_produced_goal(
     conn: sqlite3.Connection, decision_id: int, goal_id: int,
+    kind: "str | None" = None,
 ) -> None:
     """Link an Inject decision row to the Forward goal it produced.
     The decision's `outcome` stays NULL until the goal reaches a
     terminal status — see `propagate_inject_outcome_from_goal`.
+
+    `kind` (v32, #3 attribution): HOW the artifact came to be —
+    'minted' | 'alias' | 'reuse' | 'redispatch' | 'disproof'. The
+    batch-outcomes render reads it instead of guessing from joins.
 
     Single-write invariant: a given Strategist decision row produces
     AT MOST one artifact (one goal OR one strategy, not both). If
@@ -1074,11 +1079,18 @@ def set_inject_decision_produced_goal(
                   f"{existing['produced_strategy_id']} already set "
                   f"(double-dispatch indicator)", flush=True)
             return
-    conn.execute(
-        "UPDATE strategist_decisions SET produced_goal_id = ?,"
-        " updated_at = ? WHERE id = ?",
-        (goal_id, now(), decision_id),
-    )
+    if kind is not None:
+        conn.execute(
+            "UPDATE strategist_decisions SET produced_goal_id = ?,"
+            " produced_kind = ?, updated_at = ? WHERE id = ?",
+            (goal_id, kind, now(), decision_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE strategist_decisions SET produced_goal_id = ?,"
+            " updated_at = ? WHERE id = ?",
+            (goal_id, now(), decision_id),
+        )
     conn.commit()
 
 
@@ -1240,8 +1252,14 @@ def propagate_inject_outcome_from_strategy(
     if s is None:
         return None
     status = str(s["status"])
-    if status in ("succeeded", "superseded"):
+    if status == "succeeded":
         outcome = "success"
+    elif status == "superseded":
+        # #3(a): the briefed decomposition did NOT run to completion —
+        # the target settled via ANOTHER route. Mapping this to
+        # 'success' taught the strategist its plan worked; the render
+        # spells out the distinction.
+        outcome = "superseded"
     elif status == "dead":
         outcome = "failed:dead"
     elif status == "stalled":

@@ -615,6 +615,25 @@ def apply(conn: sqlite3.Connection) -> None:
             " WHERE status = 'passed'")
         conn.execute("PRAGMA user_version = 31")
         conn.commit()
+    if v < 32:
+        # v32 — batch attribution (#3, user call 2026-07-18):
+        # `produced_kind` records HOW an Inject decision's artifact
+        # came to be — 'minted' (fresh Forward decl), 'alias' (dedupe
+        # landed it as an alias of an existing decl), 'reuse' (inject
+        # repointed at an existing alive goal; nothing minted),
+        # 'redispatch' (Backward/Builder re-fire at an existing goal),
+        # 'disproof' (framework-minted ¬P goal). NULL = pre-v32 rows /
+        # declines. The batch-outcomes render reads this instead of
+        # guessing from joins (the success-without-landing /
+        # nothing-attributed misattribution pair).
+        pcols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(strategist_decisions)")}
+        if "produced_kind" not in pcols:
+            conn.execute(
+                "ALTER TABLE strategist_decisions"
+                " ADD COLUMN produced_kind TEXT NULL")
+        conn.execute("PRAGMA user_version = 32")
+        conn.commit()
 
 
 def _migrate_to_v26(conn: sqlite3.Connection) -> None:

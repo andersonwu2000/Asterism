@@ -40,7 +40,8 @@ _CATALOG_RECENT_N = 25
 # ---------------------------------------------------------------------
 
 def _section_trigger(trigger_kind: str, pending_review_id: int | None,
-                     conn: sqlite3.Connection) -> list[str]:
+                     conn: sqlite3.Connection,
+                     workspace: Path) -> list[str]:
     lines = [
         "## Trigger",
         "",
@@ -54,7 +55,7 @@ def _section_trigger(trigger_kind: str, pending_review_id: int | None,
                 f"Pending review on goal {pending_review_id}:",
                 "",
                 f"- slug: `{g['slug']}`",
-                f"- statement: `{g['statement']}`",
+                f"- statement: `{context.goal_display_signature(workspace, str(g['slug']), g['lean_path'], g['statement'])}`",
                 f"- depth: {g['depth']}",
                 f"- attempts: {g['attempts']}",
                 "",
@@ -383,7 +384,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     # phantom "step 0" rows (agent_feedback 2026-07-11..13).
     rows = list(conn.execute(
         f"SELECT d.id, d.batch_id, d.brief, d.payload, d.outcome,"
-        f" d.outcome_detail, d.updated_at,"
+        f" d.outcome_detail, d.updated_at, d.produced_kind,"
         f" g.slug AS landed_slug, g.status AS landed_status,"
         f" g.statement AS landed_statement"
         f" FROM strategist_decisions d"
@@ -426,23 +427,42 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                 brief = brief[:1200].rstrip() + "…"
             outcome_text = r["outcome"] or "(no outcome)"
             out.append(f"- **step {idx}** outcome=`{outcome_text}`")
+            kind = str(r["produced_kind"] or "")
             if r["landed_slug"]:
                 stmt = " ".join(str(r["landed_statement"] or "").split())
                 if len(stmt) > 300:
                     stmt = stmt[:300].rstrip() + "…"
-                # Rename flag: `success` can mean a renamed/generalized
-                # landing — say so instead of making the Strategist
-                # grep CATALOG to find out (agent_feedback 2026-07-13).
-                briefed = re.search(
-                    r"##\s*Deliver\s*\n+\s*`([A-Za-z_][\w']*)`", brief)
-                renamed = (f" — LANDED UNDER A DIFFERENT NAME than briefed"
-                           f" (`{briefed.group(1)}`)"
-                           if briefed and briefed.group(1) != r["landed_slug"]
-                           else "")
-                out.append(
-                    f"  landed: `{r['landed_slug']}` "
-                    f"(status={r['landed_status']})"
-                    + (f" — `{stmt}`" if stmt else "") + renamed)
+                # v32 attribution: say HOW the artifact relates to the
+                # brief instead of making the Strategist guess (#3 —
+                # the success-without-landing / renamed-landing pair).
+                if kind == "reuse":
+                    out.append(
+                        f"  REPOINTED to existing goal "
+                        f"`{r['landed_slug']}` "
+                        f"(status={r['landed_status']}) — nothing new "
+                        f"was minted; your statement matched it")
+                elif kind == "alias":
+                    out.append(
+                        f"  landed as ALIAS: `{r['landed_slug']}` "
+                        f"(status={r['landed_status']})"
+                        + (f" — `{stmt}`" if stmt else "")
+                        + " — an existing decl carries the content; "
+                          "cite this slug")
+                elif kind == "redispatch":
+                    settled_note = (
+                        " — CAUTION: outcome=`superseded` means the "
+                        "target settled via ANOTHER route, not your "
+                        "briefed decomposition"
+                        if str(r["outcome"] or "") == "superseded"
+                        else "")
+                    out.append(
+                        f"  redispatch of goal `{r['landed_slug']}` "
+                        f"(status={r['landed_status']})" + settled_note)
+                else:
+                    out.append(
+                        f"  landed: `{r['landed_slug']}` "
+                        f"(status={r['landed_status']})"
+                        + (f" — `{stmt}`" if stmt else ""))
             elif str(r["outcome"] or "") in ("success", "proved"):
                 out.append(
                     "  landed: (nothing attributed to this step — the "
@@ -621,6 +641,7 @@ def _section_pending_reopens(conn: sqlite3.Connection,
 
 
 def _section_active_goals(conn: sqlite3.Connection,
+                          workspace: Path,
                           problem: str) -> list[str]:
     # Status-based filter: any non-terminal status (open / attempting /
     # pending_strategist_review). Descendants of a shelved / disproved
@@ -629,7 +650,7 @@ def _section_active_goals(conn: sqlite3.Connection,
     # this status filter naturally. No view-level alive-set CTE needed:
     # the goal status IS the source of truth for "is this dispatchable".
     rows = list(conn.execute(
-        "SELECT id, slug, statement, depth, status, attempts"
+        "SELECT id, slug, statement, lean_path, depth, status, attempts"
         " FROM goals WHERE problem = ?"
         "   AND status IN ('open','attempting','pending_strategist_review')"
         " ORDER BY depth, id",
@@ -643,7 +664,11 @@ def _section_active_goals(conn: sqlite3.Connection,
         # conclusions (decl-#1) and 200 cut many real ones mid-term —
         # the Strategist fell back to reading stub files to compare
         # goals (feedback: twin-goal hunt done by hand).
-        st = str(r["statement"])
+        # #5 (2026-07-18): display the FULL signature from the stub
+        # file — the stored conclusion-only column renders a by_contra
+        # sub-goal as just `False`.
+        st = context.goal_display_signature(
+            workspace, str(r["slug"]), r["lean_path"], r["statement"])
         if len(st) > 400:
             st = st[:400].rstrip() + "…"
         out.append(
@@ -880,7 +905,8 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     """
     section_names = ["trigger"]
     sections: list[list[str]] = [
-        _section_trigger(trigger_kind, pending_review_id, conn),
+        _section_trigger(trigger_kind, pending_review_id, conn,
+                 workspace),
     ]
     # T2 review_context (Phase 2 §2.2) — failure brief + existing
     # strategies + ancestor chain. Only emitted for pending_review trigger
@@ -916,7 +942,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_plan_note(workspace, problem),
         _section_inject_batch_outcomes(conn, problem),
         _section_pending_reopens(conn, problem, trigger_kind),
-        _section_active_goals(conn, problem),
+        _section_active_goals(conn, workspace, problem),
         _section_failure_replay(conn, problem),
         _section_tree_inline(conn, workspace, problem),
         _section_catalog_index_strategist(conn, problem, attempts_dir),
@@ -1174,7 +1200,7 @@ def compile_forward_context(conn: sqlite3.Connection, *,
         _section_forward_brief(conn, decision_id),
         _section_library_inventory(conn, problem, attempts_dir),
         _section_forward_history(conn, problem),
-        _section_active_goals(conn, problem),
+        _section_active_goals(conn, workspace, problem),
         _section_manifest_meta(mfst, workspace, problem),
         # Paper navigation — Forward mints the vocabulary; exact
         # hypotheses/definitions come from the paper (design D1).

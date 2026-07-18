@@ -903,7 +903,8 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 conn.commit()
                 print(f"[forward-reuse] revived+detached cascade-shelved goal "
                       f"{x_id} ({x['slug']}) for inject reuse", flush=True)
-            db.set_inject_decision_produced_goal(conn, decision_id, x_id)
+            db.set_inject_decision_produced_goal(conn, decision_id, x_id,
+                                                 kind="reuse")
             return PipelineResult(
                 outcome="success", failure_reason="",
                 failure_detail=(
@@ -911,6 +912,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                     f"{x_status}); inject repointed, no new goal"),
                 produced_goal_id=x_id,
             )
+        alias_committed = False
         if h is not None and h.kind in ("alias", "library_alias"):
             try:
                 outcome = commit_forward_alias(
@@ -925,6 +927,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 )
             # outcome is None → alias body failed to build → fall through
             # and commit the novel lemma below.
+            alias_committed = outcome is not None
 
         if outcome is None:
             try:
@@ -952,17 +955,21 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                     failure_detail=f"commit raised: {type(e).__name__}: {e}",
                 )
 
-        # Phase 2 — when a sorry-bearing Forward lemma comes from an
-        # Inject decision, link the goal to the decision row so the
-        # decision's outcome is filled when the goal reaches terminal
-        # (proved / shelved / disproved), not when this agent writes
-        # the sorry stub. Leaf-bypass (status='proved' immediately) is
-        # already terminal — cascade fills outcome the legacy way for
-        # those. See `docs/archive/design/phase2/pipelines.md` §4.2.
-        if decision_id is not None and outcome.status != "proved":
+        # Phase 2 / #3 (2026-07-18) — link the produced goal to the
+        # decision row UNCONDITIONALLY. The old `!= "proved"` guard
+        # meant the BEST case (one-shot proof / alias landing) left
+        # produced_goal_id NULL, so the batch record read "(nothing
+        # attributed — grep CATALOG)" precisely when the briefed brick
+        # landed. For already-terminal goals the goal-side propagation
+        # is invoked directly (it is status-based and idempotent).
+        if decision_id is not None:
             db.set_inject_decision_produced_goal(
                 conn, decision_id, outcome.goal_id,
+                kind="alias" if alias_committed else "minted",
             )
+            if outcome.status == "proved":
+                db.propagate_inject_outcome_from_goal(
+                    conn, outcome.goal_id)
 
         # G1 shelved-revival linkage — when Strategist-Injected Forward
         # output restates a previously-shelved sub-goal (alpha-equivalent

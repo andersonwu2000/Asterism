@@ -266,7 +266,9 @@ _WATERMARKS = {
     # 2026-07-12 — conscious bump.
     # 3120→3150 (2026-07-12): problem_quiet extraction (FSM P3, the
     # named quiet guard) — conscious bump.
-    "Tooling/state/db.py": 3150,
+    # 3150→3180 (2026-07-18): produced_kind attribution setter
+    # branch + superseded outcome split — conscious bump.
+    "Tooling/state/db.py": 3180,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,
@@ -280,7 +282,9 @@ _WATERMARKS = {
     # conscious bump; the migration chain grows by design per version.
     # 1800→1815 (2026-07-18): v31 passed-rev partial unique index —
     # conscious bump.
-    "Tooling/state/db_migrations.py": 1815,
+    # 1815→1840 (2026-07-18): v32 produced_kind attribution column —
+    # conscious bump.
+    "Tooling/state/db_migrations.py": 1840,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
