@@ -846,12 +846,23 @@ def wipe_problem_rows(conn, problem: str) -> "tuple[int, int]":
     conn.execute(
         "DELETE FROM strategist_decisions WHERE problem = ?", (problem,),
     )
-    # Problem-keyed satellite tables (both REFERENCE problems(name), so
+    # Problem-keyed satellite tables (all REFERENCE problems(name), so
     # they must go before the problems row or the FK blocks the reset —
-    # problem_papers had the same latent gap since v23):
+    # problem_papers had this latent gap since v23, user_file_history
+    # since v28 (the actual b6 run-2 reset blocker, 2026-07-18),
+    # kb_entries' problem-scoped lessons likewise, programme_revisions
+    # since v30. Deliberately NOT wiped: library_decls — a bridged
+    # problem must be un-harvested first, and its FK failing here is
+    # the (crude) backstop for that rule.
     conn.execute("DELETE FROM problem_settings WHERE problem = ?",
                  (problem,))
     conn.execute("DELETE FROM problem_papers WHERE problem = ?",
+                 (problem,))
+    conn.execute("DELETE FROM user_file_history WHERE problem = ?",
+                 (problem,))
+    conn.execute("DELETE FROM kb_entries WHERE problem = ?",
+                 (problem,))
+    conn.execute("DELETE FROM programme_revisions WHERE problem = ?",
                  (problem,))
     conn.execute("DELETE FROM problems WHERE name = ?", (problem,))
     return len(gids), len(sids)

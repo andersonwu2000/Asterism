@@ -141,6 +141,7 @@ def test_reset_clears_problem_settings_and_paper_bindings(
     REFERENCE problems(name): reset must clear them or the problems
     DELETE dies on the FK — problem_papers carried this latent gap
     since v23 (reset tests never bound a paper)."""
+    from Tooling.state import programme as _programme
     from Tooling.state import settings as _settings
     _setup_problem(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -149,6 +150,21 @@ def test_reset_clears_problem_settings_and_paper_bindings(
     _settings.write(conn, "wilson", "library", True)
     db.bind_paper(conn, problem="wilson", paper_id="abc123",
                   origin="user")
+    # programme_revisions (v30), user_file_history (v28) and
+    # problem-scoped kb_entries all REFERENCE problems(name) too — the
+    # b6 run-2 reset died on the user_file_history FK (2026-07-18).
+    _programme.record_pass(
+        conn, "wilson",
+        "# T\n## Argument\na\n## Roadmap\nr\n## Thesis\nt\n",
+        {"verdict": "pass", "reservations": []}, [], 0, "b1")
+    conn.execute(
+        "INSERT INTO user_file_history"
+        " (problem, file, sha, body, seen_at, source)"
+        " VALUES ('wilson', 'Manifest.md', 'x', 'b', ?, 'observed')",
+        (db.now(),))
+    conn.execute(
+        "INSERT INTO kb_entries (type, title, problem, created_at)"
+        " VALUES ('lesson', 't', 'wilson', ?)", (db.now(),))
     conn.commit()
     conn.close()
 
@@ -160,6 +176,15 @@ def test_reset_clears_problem_settings_and_paper_bindings(
     ).fetchone()[0] == 0
     assert conn.execute(
         "SELECT count(*) FROM problem_papers WHERE problem='wilson'"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM programme_revisions WHERE problem='wilson'"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM user_file_history WHERE problem='wilson'"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM kb_entries WHERE problem='wilson'"
     ).fetchone()[0] == 0
     assert conn.execute(
         "SELECT count(*) FROM problems WHERE name='wilson'"
