@@ -604,7 +604,62 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             workspace, problem, goals, strategies, edges),
         "decisions": decisions,
         "proof_files": proof_files,
+        # research mode (v30): the current Programme's rev, or null
+        # before bootstrap — the UI shows the Programme tab only when
+        # there is a Programme to read
+        "programme_rev": _programme_rev(conn, problem),
     }
+
+
+def _programme_rev(conn: sqlite3.Connection, problem: str) -> "int | None":
+    try:
+        row = conn.execute(
+            "SELECT MAX(rev) FROM programme_revisions"
+            " WHERE problem = ? AND status = 'passed'", (problem,)).fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    except sqlite3.OperationalError:
+        return None  # pre-v30 DB opened read-only — no table, no tab
+
+
+def programme(conn: sqlite3.Connection, problem: str) -> dict:
+    """The Programme page read: current passed revision (full body) +
+    the whole revision history (passed AND rejected, no bodies — the
+    audit dialogue stays in the DB; design §2 keeps the render clean).
+
+    Verdict reservations ride along for the current rev: they are the
+    Adversary's on-the-record caveats, exactly what a reader signing
+    off on the argument should see."""
+    rows = conn.execute(
+        "SELECT id, rev, status, verdict, rounds, created_at"
+        " FROM programme_revisions WHERE problem = ?"
+        " ORDER BY id DESC", (problem,)).fetchall()
+    history = [{
+        "rev": int(r["rev"]),
+        "status": str(r["status"]),
+        "rounds": int(r["rounds"]),
+        "created_at": str(r["created_at"]),
+    } for r in rows]
+    cur = conn.execute(
+        "SELECT rev, body, verdict, rounds, created_at"
+        " FROM programme_revisions"
+        " WHERE problem = ? AND status = 'passed'"
+        " ORDER BY rev DESC LIMIT 1", (problem,)).fetchone()
+    current = None
+    if cur is not None:
+        reservations: "list[str]" = []
+        try:
+            v = json.loads(cur["verdict"] or "{}")
+            reservations = [str(x) for x in (v.get("reservations") or [])]
+        except (TypeError, ValueError):
+            pass
+        current = {
+            "rev": int(cur["rev"]),
+            "body": str(cur["body"]),
+            "rounds": int(cur["rounds"]),
+            "created_at": str(cur["created_at"]),
+            "reservations": reservations,
+        }
+    return {"current": current, "history": history}
 
 
 def _disproof_links(conn: sqlite3.Connection,

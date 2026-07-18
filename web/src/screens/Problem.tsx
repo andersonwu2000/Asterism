@@ -3,6 +3,7 @@ import { apiPost, usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
+import { renderProse } from '../lib/prose'
 import { goalStatusLabel } from '../lib/vocab'
 import { Button, ErrorState, StatusBadge, TabNav } from '../components/ui'
 import Constellation from '../components/Constellation'
@@ -12,9 +13,70 @@ import DecisionTimeline from '../components/DecisionTimeline'
 import FileViewer from '../components/FileViewer'
 import ManifestEditor from '../components/ManifestEditor'
 import RunControl from '../components/RunControl'
-import type { DaemonStatus, Goal, ProblemDetail } from '../lib/types'
+import type { DaemonStatus, Goal, ProblemDetail, Programme } from '../lib/types'
 
-type Tab = 'stars' | 'manifest' | 'goals' | 'timeline' | 'files'
+type Tab = 'stars' | 'manifest' | 'programme' | 'goals' | 'timeline' | 'files'
+
+/** The Programme (research mode): the machine's standing argument —
+ * what it believes, the route, the whole story — adversarially
+ * reviewed before every revision. The Manifest is what the HUMAN
+ * asked; this is what the ENGINE currently argues. Read-only by
+ * construction (the only writer is a passed proposal commit). */
+function ProgrammePanel({ problem }: { problem: string }) {
+  // 30s poll: revisions land once per strategist wake at most
+  const { data, error } = usePoll<Programme>(
+    `/api/problems/${encodeURIComponent(problem)}/programme`,
+    30000,
+  )
+  if (error) return <ErrorState error={error} />
+  if (!data) return null
+  if (data.current === null)
+    return (
+      <div className="px-6 py-10 text-sm text-ink-faint">
+        no programme yet — the first passed proposal will start the revision chain
+      </div>
+    )
+  const cur = data.current
+  const rejected = data.history.filter((h) => h.status === 'rejected').length
+  return (
+    <div className="mx-auto max-w-3xl px-6 py-5">
+      <div className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] text-ink-faint">
+        <span
+          className="text-ink-dim"
+          title="the revision chain: each passed proposal advances the Programme by one rev"
+        >
+          rev {cur.rev}
+        </span>
+        <span title="how many criticism rounds this revision survived before the reviewer let it pass">
+          {cur.rounds === 0 ? 'passed unchallenged' : `passed after ${cur.rounds} round${cur.rounds === 1 ? '' : 's'} of review`}
+        </span>
+        <span>{relTime(cur.created_at)}</span>
+        {rejected > 0 && (
+          <span title="proposals the adversarial reviewer discarded outright — their drafts and the full criticism stay in the engine's records">
+            {rejected} rejected along the way
+          </span>
+        )}
+      </div>
+      {cur.reservations.length > 0 && (
+        <div className="mb-4 rounded-xl border border-edge bg-surface px-3.5 py-2.5">
+          <div className="mb-1 text-[11px] tracking-wider text-ink-faint uppercase">
+            reviewer's reservations — caveats it passed WITH, on the record
+          </div>
+          <ul className="space-y-1 pl-4 text-[12px] text-ink-dim">
+            {cur.reservations.map((r, i) => (
+              <li key={i} className="list-disc marker:text-ink-faint">
+                {r}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div className="text-[13px] leading-relaxed text-ink-dim">
+        {renderProse(cur.body, { headings: true })}
+      </div>
+    </div>
+  )
+}
 
 /* proved is the settled majority — it reads quiet; color is spent on
  * the live minority (open/attempting) and exceptions. */
@@ -395,6 +457,11 @@ export default function Problem({ name }: { name: string }) {
   const tabs: { id: Tab; label: string }[] = [
     { id: 'stars', label: 'Constellation' },
     { id: 'manifest', label: 'Manifest' },
+    // the tab exists only once a Programme exists — pre-research-mode
+    // problems keep their old anatomy
+    ...(data.programme_rev !== null
+      ? [{ id: 'programme' as Tab, label: 'Programme' }]
+      : []),
     { id: 'goals', label: `Goals (${data.goals.length})` },
     { id: 'timeline', label: 'Timeline' },
     { id: 'files', label: 'Files' },
@@ -610,6 +677,7 @@ export default function Problem({ name }: { name: string }) {
             />
             <DeleteProblem problem={data.name} />
           </div>
+          {tab === 'programme' && <ProgrammePanel problem={data.name} />}
           {tab === 'goals' && (
             <GoalsList
               goals={data.goals}
@@ -640,7 +708,11 @@ export default function Problem({ name }: { name: string }) {
             </div>
           )}
         </div>
-        {selectedGoal !== null && tab !== 'files' && tab !== 'timeline' && tab !== 'manifest' && (
+        {selectedGoal !== null &&
+          tab !== 'files' &&
+          tab !== 'timeline' &&
+          tab !== 'manifest' &&
+          tab !== 'programme' && (
           <GoalPanel
             problem={data.name}
             goalId={selectedGoal}
@@ -664,7 +736,8 @@ export default function Problem({ name }: { name: string }) {
           selectedStrategy !== null &&
           tab !== 'files' &&
           tab !== 'timeline' &&
-          tab !== 'manifest' && (
+          tab !== 'manifest' &&
+          tab !== 'programme' && (
             <StrategyPanel
               problem={data.name}
               strategyId={selectedStrategy}

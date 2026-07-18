@@ -278,6 +278,7 @@ UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
     "presearch.model": (str, "model that scouts Mathlib before proving"),
     "librarian.model": (str, "model that curates the Library"),
     "scholar.model": (str, "model that searches and fetches cited papers"),
+    "adversary.model": (str, "model that adversarially reviews the research programme"),
     "dispatch.pool": (int, "max agents working at once"),
     "dispatch.budget_sec": (int, "wall-clock budget per engine run (seconds)"),
     "dispatch.shelve_threshold": (int, "failed attempts before a goal is shelved"),

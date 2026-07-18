@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
-import { useRoute, navigate } from '../lib/router'
+import { useRoute } from '../lib/router'
 import { apiGet, apiPost } from '../lib/api'
-import { Lean } from '../lib/lean'
-import { withMath } from '../lib/tex'
+import { renderProse } from '../lib/prose'
 import { Select } from './ui'
 
 /*
@@ -54,137 +52,9 @@ function pageLabel(p: Page): string {
   return p.kind
 }
 
-// -- citations ---------------------------------------------------------------
-// The model cites with bracket tokens; the client owns the link target
-// (a hallucination can point at a wrong object, never invent a route).
-
-const CITE_RE = /\[(problem|goal|library|paper):([^[\]\n]+)\]/g
-
-function citeTarget(kind: string, body: string): { to: string; label: string } | null {
-  const parts = body.split(':')
-  if (kind === 'problem') return { to: `/problems/${body}`, label: body }
-  if (kind === 'goal') {
-    if (parts.length < 2) return null
-    const slug = parts.slice(1).join(':')
-    return { to: `/problems/${parts[0]}`, label: slug }
-  }
-  if (kind === 'library') return { to: `/library/${body}`, label: body }
-  if (kind === 'paper') return { to: `/papers/${body}`, label: body }
-  return null
-}
-
-function renderCites(seg: string, keyBase: string): ReactNode[] {
-  const out: ReactNode[] = []
-  let last = 0
-  let m: RegExpExecArray | null
-  CITE_RE.lastIndex = 0
-  while ((m = CITE_RE.exec(seg)) !== null) {
-    if (m.index > last) out.push(seg.slice(last, m.index))
-    const t = citeTarget(m[1], m[2])
-    if (t === null) {
-      out.push(m[0])
-    } else {
-      const to = t.to
-      out.push(
-        <span
-          key={`${keyBase}c${m.index}`}
-          role="link"
-          tabIndex={0}
-          className="cursor-pointer font-mono text-[0.92em] text-ink underline decoration-ink-faint decoration-dotted underline-offset-2 hover:decoration-ink"
-          onClick={() => navigate(to)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') navigate(to)
-          }}
-        >
-          {t.label}
-        </span>,
-      )
-    }
-    last = m.index + m[0].length
-  }
-  if (last < seg.length) out.push(seg.slice(last))
-  return out
-}
-
-// -- markdown-lite -----------------------------------------------------------
-// Order matters (QPaper lesson): fences out first, then inline code,
-// then math, then cites/emphasis on what remains.
-
-function renderInline(text: string, keyBase: string): ReactNode[] {
-  const out: ReactNode[] = []
-  text.split(/(`[^`\n]+`)/).forEach((part, i) => {
-    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
-      out.push(
-        <code key={`${keyBase}i${i}`} className="rounded-md bg-surface-2 px-1 font-mono text-[0.92em]">
-          {part.slice(1, -1)}
-        </code>,
-      )
-      return
-    }
-    out.push(
-      ...withMath(part, (seg, j) => (
-        <span key={`${keyBase}i${i}m${j}`}>
-          {seg.split(/(\*\*[^*\n]+\*\*)/).map((b, k) =>
-            b.startsWith('**') && b.endsWith('**') && b.length > 4 ? (
-              <strong key={k} className="font-medium text-ink">
-                {renderCites(b.slice(2, -2), `${keyBase}b${k}`)}
-              </strong>
-            ) : (
-              <span key={k}>{renderCites(b, `${keyBase}p${i}.${j}.${k}`)}</span>
-            ),
-          )}
-        </span>
-      )),
-    )
-  })
-  return out
-}
-
-function renderAnswer(text: string): ReactNode {
-  const blocks = text.split(/(```[\s\S]*?(?:```|$))/)
-  return (
-    <div className="space-y-2">
-      {blocks.map((block, bi) => {
-        if (block.startsWith('```')) {
-          const body = block.replace(/^```[^\n]*\n?/, '').replace(/```\s*$/, '')
-          return (
-            <pre
-              key={bi}
-              className="overflow-x-auto rounded-lg border border-edge bg-surface p-2.5 font-mono text-[12px] leading-relaxed"
-            >
-              <Lean code={body.replace(/\n$/, '')} />
-            </pre>
-          )
-        }
-        const paras = block.split(/\n{2,}/).filter((p) => p.trim() !== '')
-        return paras.map((para, pi) => {
-          const lines = para.split('\n')
-          const isList = lines.every((l) => /^\s*[-*•]\s+/.test(l) || l.trim() === '')
-          if (isList) {
-            return (
-              <ul key={`${bi}.${pi}`} className="space-y-1 pl-4">
-                {lines
-                  .filter((l) => l.trim() !== '')
-                  .map((l, li) => (
-                    <li key={li} className="list-disc marker:text-ink-faint">
-                      {renderInline(l.replace(/^\s*[-*•]\s+/, ''), `${bi}.${pi}.${li}`)}
-                    </li>
-                  ))}
-              </ul>
-            )
-          }
-          return (
-            <p key={`${bi}.${pi}`} className="whitespace-pre-wrap">
-              {renderInline(para.replace(/^#{1,6}\s+/, ''), `${bi}.${pi}`)}
-            </p>
-          )
-        })
-      })}
-    </div>
-  )
-}
-
 // -- stream plumbing ---------------------------------------------------------
+// (citations + markdown-lite live in lib/prose.tsx — shared with the
+// Programme page)
 
 const STAGE_LABEL: Record<string, string> = {
   context: 'gathering context…',
@@ -542,7 +412,7 @@ export default function ChatDrawer({
                       {STAGE_LABEL[stage ?? 'thinking'] ?? 'thinking…'}
                     </span>
                   ) : (
-                    renderAnswer(m.text)
+                    renderProse(m.text)
                   )}
                   {m.note && (
                     <div className="mt-1 text-[11px] text-ink-faint italic">— {m.note}</div>

@@ -411,6 +411,24 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             raise HTTPException(status_code=404, detail="no such file")
         return {"path": path, "content": text}
 
+    @app.get("/api/problems/{problem}/programme")
+    def problem_programme(problem: str) -> dict:
+        """Research mode's argument layer: the current adversarially-
+        passed Programme + its revision history (bodies of past/
+        rejected rows stay in the DB — audit material, not page
+        furniture)."""
+        with _ro(workspace) as conn:
+            known = conn.execute(
+                "SELECT 1 FROM problems WHERE name = ?",
+                (problem,)).fetchone()
+            if known is None:
+                raise HTTPException(status_code=404,
+                                    detail="unknown problem")
+            try:
+                return _data.programme(conn, problem)
+            except sqlite3.OperationalError:
+                return {"current": None, "history": []}
+
     @app.get("/api/problems/{problem}/manifest")
     def manifest_get(problem: str) -> dict:
         """The Manifest as the UI works with it: structured settings +

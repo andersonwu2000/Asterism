@@ -110,6 +110,20 @@ export interface ProblemDetail {
   citation_edges: { from: number; to: number }[]
   decisions: Decision[]
   proof_files: string[]
+  /** current Programme rev (research mode); null before bootstrap —
+   * the Programme tab only exists when this is set */
+  programme_rev: number | null
+}
+
+export interface Programme {
+  current: {
+    rev: number
+    body: string
+    rounds: number
+    created_at: string
+    reservations: string[]
+  } | null
+  history: { rev: number; status: string; rounds: number; created_at: string }[]
 }
 
 export interface DeadAttempt {
