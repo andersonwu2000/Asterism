@@ -274,9 +274,9 @@ def test_run_strategist_verify_retry_both_fail(
     )
     assert r.failure_reason == "strategist_schema_invalid"
     # N-round revision loop (research mode): main spawn + verify_retry
-    # rounds (default 4) — mechanical errors share the round counter.
-    assert len(calls) == 5
-    assert "round 4" in r.failure_detail
+    # rounds (default 6) — mechanical errors share the round counter.
+    assert len(calls) == 7
+    assert "round 6" in r.failure_detail
     assert "first-attempt" in r.failure_detail
 
 

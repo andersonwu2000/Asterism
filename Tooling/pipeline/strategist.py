@@ -1824,7 +1824,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # Thinking is legal work (research_mode_design.md §0): the
     # strategist cap is a hang guard, not a work budget.
     strategist_timeout = config.get(
-        "strategist.timeout_sec", default=7200,
+        "strategist.timeout_sec", default=10800,
         env_var="ASTERISM_STRATEGIST_TIMEOUT_SEC", cast=int,
     )
     sid = str(uuid.uuid4())
@@ -1852,7 +1852,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # decision.json usually means session-level breakage (no clean
     # recovery from re-prompting).
     max_rounds = config.get(
-        "strategist.verify_retry", default=4,
+        "strategist.verify_retry", default=6,
         env_var="ASTERISM_STRATEGIST_VERIFY_RETRY", cast=int,
     )
     decision_path = attempts_dir / "decision.json"
