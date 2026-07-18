@@ -4,7 +4,7 @@ import { weightedBurn } from '../lib/burn'
 import { compactNumber, duration } from '../lib/format'
 import { Button, SectionLabel, Select } from '../components/ui'
 import { logout, switchAccount } from '../lib/claudeAuth'
-import type { ConfigSetting, Meta, UsageProblem } from '../lib/types'
+import type { ConfigSetting, Meta, RunStatus, UsageProblem } from '../lib/types'
 
 /** Settings — the machine room: account, model/knob config, and the
  * all-time usage ledger. Liveness, lanes, burn-of-the-run and the
@@ -364,6 +364,76 @@ export function SettingsTab() {
 }
 
 /** The ledger face: usage per problem and per agent kind. */
+/** The run's burn figures — moved here from the console (owner,
+ * 2026-07-18): accounting lives with accounting. Weighted units
+ * against the subscription window (no USD, no pretend ceiling). */
+function BurnStrip() {
+  const { data } = usePoll<RunStatus>('/api/run', 5000)
+  const { data: cfg } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
+  if (!data) return null
+  const d = data.daemon
+  const running = d.running
+  const sumBurn = (b: { problems: { kinds: never[] }[] } | null): number =>
+    b ? b.problems.reduce((s, p) => s + weightedBurn(p.kinds, cfg?.settings), 0) : 0
+  const burnRun = sumBurn(data.burn_run as never)
+  const burn5h = sumBurn(data.burn_5h as never)
+  const elapsedMin = d.started_at
+    ? Math.max(1 / 60, (Date.now() - Date.parse(d.started_at)) / 60000)
+    : null
+  const rate = running && elapsedMin ? burnRun / elapsedMin : null
+  if (!running && burn5h <= 0) return null
+  return (
+    <div className="mb-6">
+      <SectionLabel>burn</SectionLabel>
+      <div className="flex flex-wrap gap-x-8 gap-y-2 rounded-xl border border-edge bg-surface px-4 py-3">
+        {running && (
+          <div>
+            <div className="tnum font-display text-[20px] text-ink">
+              {compactNumber(Math.round(burnRun))}
+            </div>
+            <div
+              className="text-[11px] text-ink-faint"
+              title="tokens weighted by each pipeline's model price (top-model output = 1 unit) — a quota share, not a token count"
+            >
+              weighted, this run
+            </div>
+          </div>
+        )}
+        {rate !== null && rate > 0 && (
+          <div>
+            <div className="tnum font-display text-[20px] text-ink">
+              {compactNumber(Math.round(rate))}
+              <span className="text-[12px] text-ink-dim">/min</span>
+            </div>
+            <div
+              className="text-[11px] text-ink-faint"
+              title="run total ÷ elapsed — a whole-run average, not the last minute (bursts don't show here)"
+            >
+              avg burn
+            </div>
+          </div>
+        )}
+        <div>
+          <div className="tnum font-display text-[20px] text-ink">
+            {compactNumber(Math.round(burn5h))}
+          </div>
+          <div
+            className="text-[11px] text-ink-faint"
+            title="everything spent in the trailing 5 hours — the same window your subscription meters; Asterism cannot see the plan's ceiling, so it shows the spend"
+          >
+            weighted, last 5h
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function UsageTab() {
-  return <UsageTable />
+  return (
+    <>
+      <BurnStrip />
+      <UsageTable />
+    </>
+  )
 }

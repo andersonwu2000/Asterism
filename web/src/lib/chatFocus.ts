@@ -26,22 +26,29 @@ export function emitChatGoalHover(ref: GoalRef | null): void {
   for (const cb of hoverListeners) cb(ref)
 }
 
-/* Click-to-open: the citation ALSO navigates (its normal job), so a
- * cross-problem click lands on the right page first and the target
- * screen consumes the pending open when its data arrives. Short TTL —
- * a stale pending open must not select a star minutes later. */
+/* Click-to-open. A mounted screen showing that problem's sky handles
+ * the open IN PLACE (returns true → the citation skips navigation:
+ * the engine console keeps you in the console). Unhandled, the
+ * citation navigates and the target screen consumes the pending open
+ * when its data arrives. Short TTL — a stale pending open must not
+ * select a star minutes later. */
+
+export type OpenListener = (ref: GoalRef) => boolean | void
 
 let pendingOpen: { ref: GoalRef; at: number } | null = null
 const OPEN_TTL_MS = 4000
 
-export function emitChatGoalOpen(ref: GoalRef): void {
-  pendingOpen = { ref, at: Date.now() }
-  for (const cb of openListeners) cb(ref)
+/** Returns true when a live listener claimed the open. */
+export function emitChatGoalOpen(ref: GoalRef): boolean {
+  let handled = false
+  for (const cb of openListeners) handled = cb(ref) === true || handled
+  if (!handled) pendingOpen = { ref, at: Date.now() }
+  return handled
 }
 
-const openListeners = new Set<Listener>()
+const openListeners = new Set<OpenListener>()
 
-export function onChatGoalOpen(cb: Listener): () => void {
+export function onChatGoalOpen(cb: OpenListener): () => void {
   openListeners.add(cb)
   return () => openListeners.delete(cb)
 }

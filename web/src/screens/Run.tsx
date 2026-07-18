@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
-import { weightedBurn } from '../lib/burn'
+import { onChatGoalHover, onChatGoalOpen } from '../lib/chatFocus'
 import { switchAccount } from '../lib/claudeAuth'
-import { compactNumber, duration } from '../lib/format'
+import { duration } from '../lib/format'
 import { goalStatusLabel } from '../lib/vocab'
 import { Lean } from '../lib/lean'
 import { Link } from '../lib/router'
@@ -222,6 +222,27 @@ export default function Run() {
   // it is working (design round — the lanes and the sky were two
   // disconnected worlds)
   const [laneHover, setLaneHover] = useState<number[] | null>(null)
+  // chat ↔ star: same law for the drawer's [goal:…] citations — when
+  // the console's sky IS that problem, hover lights the star and click
+  // selects it here (claimed open → the citation skips navigation)
+  const [chatHoverSlug, setChatHoverSlug] = useState<string | null>(null)
+  useEffect(
+    () =>
+      onChatGoalHover((ref) =>
+        setChatHoverSlug(ref !== null && ref.problem === focusProblem ? ref.slug : null),
+      ),
+    [focusProblem],
+  )
+  useEffect(() => {
+    if (!detail || focusProblem === null) return
+    return onChatGoalOpen((ref) => {
+      if (ref.problem !== focusProblem) return false
+      const goal = detail.goals.find((x) => x.slug === ref.slug)
+      if (goal === undefined) return false
+      setSelGoal(goal.id)
+      return true
+    })
+  }, [detail, focusProblem])
   useTick(1000)
   const logPulse = useLogPulse(Boolean(data?.daemon.running))
   // landed receipts: an agent that vanishes between polls leaves a
@@ -331,17 +352,6 @@ export default function Run() {
   }
   const wall = running ? wallClock(d.started_at) : null
   const crashed = !running && d.last_exit && d.last_exit.rc !== 0 && d.last_exit.rc !== null
-
-  // burn: weighted units against the subscription window (no USD, no
-  // pretend quota ceiling — spend and rate, honestly labelled)
-  const sumBurn = (b: { problems: { kinds: never[] }[] } | null): number =>
-    b ? b.problems.reduce((s, p) => s + weightedBurn(p.kinds, cfg?.settings), 0) : 0
-  const burnRun = sumBurn(data.burn_run as never)
-  const burn5h = sumBurn(data.burn_5h as never)
-  const elapsedMin = d.started_at
-    ? Math.max(1 / 60, (Date.now() - Date.parse(d.started_at)) / 60000)
-    : null
-  const rate = running && elapsedMin ? burnRun / elapsedMin : null
 
   const g = data.goals
 
@@ -475,7 +485,17 @@ export default function Run() {
                 onSelect={setSelGoal}
                 shelveThreshold={detail.shelve_threshold}
                 engineWorking={detail.engine_working}
-                highlightIds={laneHover}
+                highlightIds={
+                  laneHover ??
+                  (chatHoverSlug !== null
+                    ? (() => {
+                        const ids = detail.goals
+                          .filter((x) => x.slug === chatHoverSlug)
+                          .map((x) => x.id)
+                        return ids.length > 0 ? ids : null
+                      })()
+                    : null)
+                }
               />
             </div>
             {selGoal !== null && (
@@ -648,53 +668,9 @@ export default function Run() {
         </section>
       )}
 
-      {(running || burn5h > 0) && (
-      <section className="mt-7">
-        <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
-          burn
-        </div>
-        <div className="flex flex-wrap gap-x-8 gap-y-2">
-          {running && (
-            <div>
-              <div className="tnum font-display text-[20px] text-ink">
-                {compactNumber(Math.round(burnRun))}
-              </div>
-              <div
-                className="text-[11px] text-ink-faint"
-                title="tokens weighted by each pipeline's model price (top-model output = 1 unit) — a quota share, not a token count"
-              >
-                weighted, this run
-              </div>
-            </div>
-          )}
-          {rate !== null && rate > 0 && (
-            <div>
-              <div className="tnum font-display text-[20px] text-ink">
-                {compactNumber(Math.round(rate))}
-                <span className="text-[12px] text-ink-dim">/min</span>
-              </div>
-              <div
-                className="text-[11px] text-ink-faint"
-                title="run total ÷ elapsed — a whole-run average, not the last minute (bursts don't show here)"
-              >
-                avg burn
-              </div>
-            </div>
-          )}
-          <div>
-            <div className="tnum font-display text-[20px] text-ink">
-              {compactNumber(Math.round(burn5h))}
-            </div>
-            <div
-              className="text-[11px] text-ink-faint"
-              title="everything spent in the trailing 5 hours — the same window your subscription meters; Asterism cannot see the plan's ceiling, so it shows the spend"
-            >
-              weighted, last 5h
-            </div>
-          </div>
-        </div>
-      </section>
-      )}
+      {/* burn figures moved to the Usage tab (owner, 2026-07-18):
+          accounting lives with accounting; the console keeps the live
+          quota meters because spend-against-window is a run instrument */}
 
       {/* the run's own log lives where the run's story is told —
           collapsed: it's the "what actually happened" window for a

@@ -462,13 +462,14 @@ export default function Problem({ name }: { name: string }) {
   )
   useEffect(() => {
     if (!data) return
-    const consume = (ref: { problem: string; slug: string } | null) => {
-      if (ref === null || ref.problem !== name) return
+    const consume = (ref: { problem: string; slug: string } | null): boolean => {
+      if (ref === null || ref.problem !== name) return false
       const g = data.goals.find((x) => x.slug === ref.slug)
-      if (g === undefined) return
+      if (g === undefined) return false
       setSelectedGoal(g.id)
       setSelectedStrategy(null)
       setTab('stars')
+      return true
     }
     consume(takePendingGoalOpen(name))
     return onChatGoalOpen(consume)

@@ -52,9 +52,11 @@ function renderCites(seg: string, keyBase: string): ReactNode[] {
     } else {
       const { to, goal } = t
       const open = () => {
-        // goal citations pin their star: the pending-open survives the
-        // navigation and the problem screen consumes it on arrival
-        if (goal) emitChatGoalOpen(goal)
+        // goal citations pin their star. A screen already showing that
+        // sky claims the open in place (no navigation); otherwise the
+        // pending-open survives the navigation and the problem screen
+        // consumes it on arrival.
+        if (goal && emitChatGoalOpen(goal)) return
         navigate(to)
       }
       out.push(
