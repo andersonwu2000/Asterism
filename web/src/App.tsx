@@ -271,6 +271,22 @@ function Shell() {
     d != null && !d.running && d.last_exit !== null &&
     d.last_exit.rc !== null && d.last_exit.rc !== 0
 
+  // closing the page never stops the engine — it runs on this machine
+  // until the run ends or Stop is pressed. Users didn't know (owner,
+  // 2026-07-18), so a live run makes leaving deliberate: the browser
+  // shows its generic leave prompt (custom wording isn't allowed
+  // anymore); the console's status line carries the actual explanation
+  const engineRunning = d?.running ?? false
+  useEffect(() => {
+    if (!engineRunning) return
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [engineRunning])
+
   return (
     <div className="flex h-full">
       <aside className="flex w-52 shrink-0 flex-col border-r border-edge bg-surface px-3 py-4">

@@ -453,7 +453,15 @@ export default function Run() {
           </span>
         )}
       </div>
-      <div className="mt-1 text-xs text-ink-faint">{phaseHint[phase]}</div>
+      <div className="mt-1 text-xs text-ink-faint">
+        {phaseHint[phase]}
+        {running && !d.stopping && (
+          // users assumed closing the tab stops the run (owner) — say
+          // the truth where the run is watched; the beforeunload prompt
+          // in App.tsx is the speed bump, this line is the explanation
+          <span> · closing this page does NOT stop it — only Stop does</span>
+        )}
+      </div>
 
       {g && g.total > 0 && (
         <div className="mt-4 flex items-center gap-3">

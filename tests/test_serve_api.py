@@ -1422,15 +1422,22 @@ def test_config_get_and_set(workspace: Path) -> None:
     assert "strategist.model" in keys and "dispatch.pool" in keys
     assert "scholar.model" in keys
     # .model keys carry dropdown choices (typo-proof select); the
-    # resolved value is always a legal choice; knobs carry none
+    # resolved value is always a legal choice; bools render as a
+    # true/false select reflecting the ENGINE default when unset
+    # (quota_wait defaults ON — the select must not claim "false");
+    # numeric knobs carry none
     by_key = {row["key"]: row for row in got}
     for k, row in by_key.items():
         if k.endswith(".model"):
             assert row["choices"], k
             if row["resolved"]:
                 assert str(row["resolved"]) in row["choices"], k
+        elif row["type"] == "bool":
+            assert row["choices"] == ["true", "false"], k
+            assert row["resolved"] in ("true", "false"), k
         else:
             assert "choices" not in row, k
+    assert by_key["dispatch.quota_wait"]["resolved"] == "true"
     r = c.post("/api/config",
                json={"key": "strategist.model", "value": "claude-fable-5"})
     assert r.status_code == 200

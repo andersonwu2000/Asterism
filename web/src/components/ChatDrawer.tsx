@@ -461,7 +461,7 @@ export default function ChatDrawer({
                   {m.text}
                 </div>
               ) : (
-                <div key={i} className="mt-2.5 text-[13px] leading-relaxed text-ink-dim">
+                <div key={i} className="mt-2.5 text-[13px] leading-relaxed text-ink">
                   {m.text === '' && streaming && i === messages.length - 1 ? (
                     <span className="text-[12px] text-ink-faint">
                       {STAGE_LABEL[stage ?? 'thinking'] ?? 'thinking…'}

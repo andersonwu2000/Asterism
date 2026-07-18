@@ -282,11 +282,14 @@ UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
     "dispatch.pool": (int, "max agents working at once"),
     "dispatch.budget_sec": (int, "wall-clock budget per engine run (seconds)"),
     "dispatch.shelve_threshold": (int, "failed attempts before a goal is shelved"),
-    # dispatch.quota_wait deliberately NOT UI-editable (owner,
-    # 2026-07-14): the feature hasn't met a real quota exhaustion yet —
-    # an untested switch doesn't belong on the product surface. It
-    # stays fully operable via Asterism.yaml / ASTERISM_QUOTA_WAIT;
-    # re-admit it as a proper toggle once it has survived the field.
+    # re-admitted (owner, 2026-07-18, reversing the 2026-07-14 hold):
+    # the user must be able to choose whether an unattended run rides
+    # quota window after quota window — "ask it to prove Riemann and
+    # close the tab" must not silently spend every future window.
+    "dispatch.quota_wait": (
+        bool,
+        "when the subscription window runs out: wait for the reset and keep going (off: the run stops instead)",
+    ),
 }
 
 #: dropdown choices for `.model` keys — what the UI offers (free text
@@ -303,6 +306,13 @@ _INT_BOUNDS = {
     "dispatch.pool": (1, 32),
     "dispatch.budget_sec": (60, 604800),
     "dispatch.shelve_threshold": (1, 50),
+}
+
+#: engine-side defaults for UI bool keys (must mirror the reader's
+#: `config.get(..., default=…)` — the Settings select shows what a run
+#: would actually do when the key is unset)
+_UI_BOOL_DEFAULTS = {
+    "dispatch.quota_wait": True,
 }
 
 
@@ -335,6 +345,14 @@ def ui_settings(workspace: Path) -> "list[dict[str, object]]":
             if resolved and str(resolved) not in choices:
                 choices.insert(0, str(resolved))
             row["choices"] = choices
+        elif typ is bool:
+            # booleans render as a two-way select, never a free-text box.
+            # Unset resolves to the ENGINE's default (mirrored below) —
+            # showing "false" for an engine that defaults true is a lie.
+            row["choices"] = ["true", "false"]
+            if resolved is None:
+                resolved = _UI_BOOL_DEFAULTS.get(key, False)
+            row["resolved"] = "true" if resolved else "false"
         out.append(row)
     return out
 
