@@ -156,6 +156,29 @@ def code_fingerprint() -> str:
     return h.hexdigest()
 
 
+def config_fingerprint(workspace: Path) -> str:
+    """Fingerprint of the runtime config files (Asterism.yaml + .env):
+    (name, mtime_ns, size), hashed like `code_fingerprint`. The daemon's
+    drift handoff watches this ALONGSIDE the code fingerprint, so a
+    settings edit (the UI writes Asterism.yaml; .env is the manual
+    override) applies within one drift-check window via the normal
+    graceful handoff — config is process-cached (core/config.py) and
+    would otherwise stay frozen until a manual restart. Deliberately a
+    SEPARATE function: the gateway's stale check keys on
+    `code_fingerprint` only — a model/knob change must not cost a
+    gateway re-warm."""
+    import hashlib
+    h = hashlib.sha1()
+    for name in ("Asterism.yaml", ".env"):
+        p = workspace / name
+        try:
+            st = p.stat()
+            h.update(f"{name}|{st.st_mtime_ns}|{st.st_size}\n".encode())
+        except OSError:
+            h.update(f"{name}|absent\n".encode())
+    return h.hexdigest()
+
+
 def _ping_health(timeout: float = 2.0) -> dict | None:
     """Single /health probe. Returns parsed JSON dict on success,
     None on any error (port not yet listening, JSON garbage, etc.)."""

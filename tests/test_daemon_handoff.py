@@ -116,3 +116,35 @@ def test_daemon_status_reports_code_stale(
     assert st["code_stale"] is True
     monkeypatch.setattr(gwl, "code_fingerprint", lambda: "OLD")
     assert _cli.daemon_status(tmp_path)["code_stale"] is False
+
+
+def test_config_fingerprint_tracks_yaml_and_env(tmp_path: Path) -> None:
+    """Config drift handoff (2026-07-18): the fingerprint must move when
+    Asterism.yaml or .env changes (the UI writes yaml; .env is the
+    manual override) and stay put otherwise - missing files are a
+    stable state, not an error."""
+    from Tooling.lsp.lifecycle import config_fingerprint
+    fp_empty = config_fingerprint(tmp_path)
+    assert fp_empty == config_fingerprint(tmp_path)  # stable when absent
+
+    (tmp_path / "Asterism.yaml").write_text(
+        "strategist:\n  model: claude-opus-4-8\n", encoding="utf-8")
+    fp_yaml = config_fingerprint(tmp_path)
+    assert fp_yaml != fp_empty
+
+    (tmp_path / ".env").write_text(
+        "ASTERISM_FORWARD_MODEL=claude-sonnet-5\n", encoding="utf-8")
+    fp_env = config_fingerprint(tmp_path)
+    assert fp_env != fp_yaml
+    assert fp_env == config_fingerprint(tmp_path)  # stable between edits
+
+
+def test_config_fingerprint_is_not_part_of_code_fingerprint(
+        tmp_path: Path) -> None:
+    """A settings edit must NOT flip the gateway's stale check - models
+    and knobs are daemon-side; re-warming the gateway for them would be
+    pure waste. code_fingerprint covers Tooling *.py only."""
+    from Tooling.lsp.lifecycle import code_fingerprint
+    before = code_fingerprint()
+    (tmp_path / "Asterism.yaml").write_text("x: 1\n", encoding="utf-8")
+    assert code_fingerprint() == before

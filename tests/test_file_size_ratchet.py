@@ -186,7 +186,10 @@ _WATERMARKS = {
     # instead of exiting) — breaker consult, rc=126 escalation, refill/pop
     # gate, budget-clock pause; the behavior itself lives in
     # core/quota_wait.py — conscious bump.
-    "Tooling/core/dispatcher.py": 2490,
+    # 2490→2510 (2026-07-18): config drift joins the code-drift handoff
+    # (settings apply to a live run via graceful handoff) — conscious
+    # bump; the fingerprints themselves live in lsp/lifecycle.py.
+    "Tooling/core/dispatcher.py": 2510,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

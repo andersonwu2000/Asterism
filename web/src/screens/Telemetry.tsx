@@ -101,8 +101,9 @@ function ConfigPanel() {
   return (
     <div className="rounded-xl border border-edge bg-surface px-4 py-3">
       <div className="mb-1 text-[11px] text-ink-faint">
-        which model does each job — changes apply from the next run (an .env override, if
-        you have one, still wins)
+        which model does each job — a live run picks changes up within a minute (it
+        gracefully hands off to a fresh engine); an .env override, if you have one,
+        still wins
       </div>
       {models.map(row)}
       <div className="mt-3 mb-1 text-[11px] text-ink-faint">engine knobs</div>
@@ -344,9 +345,9 @@ export function SettingsTab() {
     <div>
       {daemon?.running && (
         <div className="mb-4 rounded-lg border border-edge bg-surface-2 px-3 py-2 text-xs text-ink-dim">
-          A run is live — the engine reads its configuration once at start, so every change
-          here lands on the <span className="text-ink">next</span> run. (Instructions on the
-          Manifest tab DO reach the live run.)
+          A run is live — a change here makes the engine finish its in-flight work, then
+          hand off to a fresh process on the new settings (
+          <span className="text-ink">~1 min</span>, nothing is interrupted).
         </div>
       )}
       <div className="flex flex-col gap-6">

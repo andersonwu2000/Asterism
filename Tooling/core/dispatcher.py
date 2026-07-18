@@ -1651,6 +1651,13 @@ def run(workspace: Path, *, once: bool = False,
     # problem page would have killed this run. "" = workspace-wide.
     from ..lsp import lifecycle as _gwl
     code_fp_at_boot = _gwl.code_fingerprint()
+    # Config drift arms the same handoff as code drift (user call
+    # 2026-07-18): config is process-cached, so a settings edit (UI
+    # writes Asterism.yaml) only ever applies through a fresh process.
+    # Kept OUT of daemon-fp.txt — the UI's "runs old code" comparison
+    # and the gateway stale check stay code-only (a model change must
+    # not cost a gateway re-warm).
+    config_fp_at_boot = _gwl.config_fingerprint(workspace)
     try:
         _logs = workspace / ".asterism" / "logs"
         _logs.mkdir(parents=True, exist_ok=True)
@@ -1901,12 +1908,21 @@ def run(workspace: Path, *, once: bool = False,
         if (handoff_enabled and not drifting and not stopping
                 and time.monotonic() - fp_checked_at >= _DRIFT_CHECK_SEC):
             fp_checked_at = time.monotonic()
-            if _gwl.code_fingerprint() != code_fp_at_boot:
+            code_drift = _gwl.code_fingerprint() != code_fp_at_boot
+            config_drift = (_gwl.config_fingerprint(workspace)
+                            != config_fp_at_boot)
+            if code_drift:
                 drifting = True
                 print(f"[dispatcher] code drift — the source tree changed "
                       f"under this daemon; draining {len(futures)} "
                       f"in-flight worker(s), then handing off to a fresh "
                       f"daemon on current code", flush=True)
+            elif config_drift:
+                drifting = True
+                print(f"[dispatcher] config drift — Asterism.yaml/.env "
+                      f"changed under this daemon; draining {len(futures)} "
+                      f"in-flight worker(s), then handing off to a fresh "
+                      f"daemon on current settings", flush=True)
         if drifting and not stopping and not futures:
             _spawn_handoff_successor(workspace, scope)
             print("[dispatcher] handoff successor spawned (waiting on the "

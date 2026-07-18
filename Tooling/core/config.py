@@ -50,7 +50,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "dispatch.builder_threshold": "attempts before Builder→Backward — legacy yaml key (3)",
     "builder.threshold": "modern alias of dispatch.builder_threshold (ASTERISM_BUILDER_THRESHOLD; falls back to legacy key)",
     "dispatch.shelve_threshold": "attempts before shelve (ASTERISM_SHELVE_THRESHOLD; 8)",
-    "dispatch.handoff_on_code_change": "daemon drains + hands off to a fresh daemon when the source tree changes under it (ASTERISM_HANDOFF_ON_CODE_CHANGE; true)",
+    "dispatch.handoff_on_code_change": "daemon drains + hands off to a fresh daemon when the source tree OR Asterism.yaml/.env changes under it (ASTERISM_HANDOFF_ON_CODE_CHANGE; true)",
     "dispatch.quota_wait": "confirmed-exhausted subscription window pauses dispatch until resets_at instead of exiting (ASTERISM_QUOTA_WAIT; false — riding further windows is opt-in, user 2026-07-18)",
     "dispatch.spawn_timeout_sec": "main spawn SIGKILL cap (ASTERISM_SPAWN_TIMEOUT_SEC; 900)",
     "dispatch.postmortem_timeout_sec": "postmortem spawn cap (ASTERISM_POSTMORTEM_TIMEOUT_SEC; 180)",
@@ -440,4 +440,7 @@ def set_ui_setting(workspace: Path, key: str,
     tmp.write_text(new_text, encoding="utf-8", newline="\n")
     tmp.replace(path)
     _reset_cache()
-    return 0, f"OK: {key} = {value} (applies from the next engine run)"
+    # A live daemon notices the file change on its drift cadence and
+    # gracefully hands off to a fresh process on the new settings.
+    return 0, (f"OK: {key} = {value} (a live engine applies it within "
+               f"~1 min via handoff; otherwise from the next run)")
