@@ -246,6 +246,15 @@ export interface RunWorker {
   /** tail of the file it is writing — spawn writes go through to the
    * real path, so this is the live view; null = nothing on disk yet */
   file: { tail: string; size: number; quiet_sec: number } | null
+  /** Strategist only (research mode): the live proposal↔reviewer
+   * cycle read from its working files — the argument would otherwise
+   * be half an hour of silence */
+  cycle?: {
+    phase: 'proposing' | 'judging' | 'revising' | 'passed'
+    round: number
+    objections: string[]
+    since_sec: number | null
+  } | null
 }
 
 /** One subscription window (from the account's own OAuth usage read). */

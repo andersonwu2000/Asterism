@@ -330,3 +330,34 @@ def test_problem_detail_signature_binders_and_alias_suppression(
         "theorem lemma_b (x : Nat) (h : 0 < x) : q x"
     assert by_slug["lemma_b"]["statement"] == "q x"
     assert by_slug["alias_g"]["signature"] is None
+
+
+def test_proposal_cycle_phases(tmp_path: Path) -> None:
+    """_proposal_cycle narrates the proposal-Adversary argument from
+    the wake's working files (research mode; display-only)."""
+    from Tooling.serve.run import _proposal_cycle
+    wa = tmp_path
+    assert _proposal_cycle(wa) is None
+    (wa / "proposal.md").write_text("# P\n", encoding="utf-8")
+    c = _proposal_cycle(wa)
+    assert c["phase"] == "proposing" and c["round"] == 0
+    assert c["_tail_path"].endswith("proposal.md")
+    r1 = wa / "adversary" / "r1"
+    r1.mkdir(parents=True)
+    (r1 / "proposal.md").write_text("# P\n", encoding="utf-8")
+    c = _proposal_cycle(wa)
+    assert c["phase"] == "judging" and c["round"] == 1
+    (r1 / "verdict.json").write_text(
+        '{"verdict": "rebut", "criticisms": ["too vague", "no experiment"]}',
+        encoding="utf-8")
+    c = _proposal_cycle(wa)
+    assert c["phase"] == "revising" and c["round"] == 1
+    assert c["objections"] == ["too vague", "no experiment"]
+    r2 = wa / "adversary" / "r2"
+    r2.mkdir(parents=True)
+    (r2 / "proposal.md").write_text("# P2\n", encoding="utf-8")
+    (r2 / "verdict.json").write_text(
+        '{"verdict": "pass", "reservations": []}', encoding="utf-8")
+    c = _proposal_cycle(wa)
+    assert c["phase"] == "passed" and c["round"] == 2
+    assert c["objections"] == []

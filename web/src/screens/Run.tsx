@@ -98,6 +98,50 @@ const STRATEGIST_MODE: Record<string, string> = {
   routine: 'routine look at the whole problem — fresh eyes on the plan',
 }
 
+/** The proposal↔reviewer cycle, narrated (research mode): the
+ * strategist's main deliverable is the Programme, and the argument
+ * with the adversarial reviewer lives in files the plan note never
+ * touches — without this line the card reads as half an hour of
+ * silence (owner, 2026-07-18). */
+function CycleLine({ cycle }: { cycle: NonNullable<RunWorker['cycle']> }) {
+  const dur = cycle.since_sec !== null ? duration(cycle.since_sec) : null
+  const text =
+    cycle.phase === 'proposing'
+      ? 'drafting a programme proposal — the adversarial reviewer reads it next'
+      : cycle.phase === 'judging'
+        ? `round ${cycle.round} — the reviewer is examining the proposal${dur ? ` (${dur})` : ''}`
+        : cycle.phase === 'revising'
+          ? `round ${cycle.round} — rejected with ${cycle.objections.length} objection${cycle.objections.length === 1 ? '' : 's'}; revising the proposal`
+          : `round ${cycle.round} — passed review; committing the programme`
+  return (
+    <div className="mt-1.5 text-[11px] text-ink-dim">
+      <span title="the proposal-review cycle: the strategist argues its research programme past an adversarial reviewer before it can act on it">
+        {text}
+      </span>
+      {cycle.objections.length > 0 && (
+        <details className="group/obj mt-0.5">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[10px] text-ink-faint transition-colors hover:text-ink-dim">
+            <span
+              className="inline-block text-[9px] transition-transform duration-150 group-open/obj:rotate-90"
+              aria-hidden
+            >
+              ▸
+            </span>
+            the reviewer's objections
+          </summary>
+          <ul className="mt-1 space-y-1 pl-4 text-[11px] text-ink-faint">
+            {cycle.objections.map((o, i) => (
+              <li key={i} className="list-disc marker:text-ink-faint/60">
+                {o}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  )
+}
+
 /** One agent, one lane: what it is, what it's on, what it's writing. */
 function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
   const quiet = w.file?.quiet_sec ?? null
@@ -144,6 +188,7 @@ function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
             </div>
           )
         })()}
+      {w.kind === 'Strategist' && w.cycle && <CycleLine cycle={w.cycle} />}
       {w.file ? (
         // the tail folds away (owner: the sky owns the space) — the
         // activity line IS the summary, one click opens the text

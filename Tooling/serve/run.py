@@ -214,6 +214,64 @@ def quota() -> "dict | None":
     return _quota_memo["value"]  # type: ignore[return-value]
 
 
+def _proposal_cycle(workarea: Path) -> "dict | None":
+    """The strategist wake's proposal↔Adversary cycle, read from its
+    working files (research_mode_design §2-§3; display-only). Phases:
+    `proposing` (drafting, no round yet) → `judging` (round dir exists,
+    no verdict) → `revising` (rebut verdict; objections ride along) →
+    `passed`. `_tail_path` names the live text of the phase — the draft
+    while the strategist speaks, the on-trial proposal while the judge
+    deliberates."""
+    proposal = workarea / "proposal.md"
+    rounds: "list[tuple[int, Path]]" = []
+    adv = workarea / "adversary"
+    if adv.is_dir():
+        try:
+            for p in adv.iterdir():
+                if p.is_dir() and re.fullmatch(r"r\d+", p.name):
+                    rounds.append((int(p.name[1:]), p))
+        except OSError:
+            pass
+        rounds.sort()
+    if not rounds and not proposal.is_file():
+        return None
+
+    def _mtime(p: Path) -> "float | None":
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return None
+
+    def _since(m: "float | None") -> "int | None":
+        return max(0, int(time.time() - m)) if m is not None else None
+
+    if not rounds:
+        return {"phase": "proposing", "round": 0, "objections": [],
+                "since_sec": _since(_mtime(proposal)),
+                "_tail_path": str(proposal)}
+    n, rdir = rounds[-1]
+    verdict_p = rdir / "verdict.json"
+    if not verdict_p.is_file():
+        return {"phase": "judging", "round": n, "objections": [],
+                "since_sec": _since(_mtime(rdir / "proposal.md")
+                                    or _mtime(rdir)),
+                "_tail_path": str(rdir / "proposal.md")}
+    try:
+        v = json.loads(verdict_p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        v = {}
+    if v.get("verdict") == "rebut":
+        return {"phase": "revising", "round": n,
+                "objections": [str(c) for c in
+                               (v.get("criticisms") or [])][:6],
+                "since_sec": _since(_mtime(verdict_p)),
+                "_tail_path": str(proposal if proposal.is_file()
+                                  else rdir / "proposal.md")}
+    return {"phase": "passed", "round": n, "objections": [],
+            "since_sec": _since(_mtime(verdict_p)),
+            "_tail_path": str(rdir / "proposal.md")}
+
+
 def run_status(conn: sqlite3.Connection, workspace: Path,
                daemon: "dict | None") -> dict:
     d = daemon or {}
@@ -369,6 +427,22 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                                         workspace).as_posix()
                                     lane["file"] = ptail
                                     break
+                        # research mode: the proposal↔Adversary argument
+                        # happens in FILES (proposal.md, adversary/r<N>/
+                        # verdict.json) and the plan note may not move at
+                        # all — narrate the cycle instead of half an hour
+                        # of silence (owner, 2026-07-18)
+                        cyc = _proposal_cycle(match[3])
+                        if cyc is not None:
+                            tail_path = cyc.pop("_tail_path", None)
+                            lane["cycle"] = cyc
+                            if tail_path is not None:
+                                cand = Path(tail_path)
+                                ptail = _tail(cand)
+                                if ptail is not None:
+                                    lane["path"] = cand.relative_to(
+                                        workspace).as_posix()
+                                    lane["file"] = ptail
                     if lane["file"] is None:
                         newest: "Path | None" = None
                         newest_m = -1.0
