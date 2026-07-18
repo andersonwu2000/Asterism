@@ -230,6 +230,10 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     from .lean_eval import register as _register_lean_eval
     _register_lean_eval(app, workspace)
 
+    # explainer chat drawer (POST /api/chat, SSE)
+    from .chat import register as _register_chat
+    _register_chat(app, workspace)
+
     # -- meta ---------------------------------------------------------
 
     @app.get("/api/meta")
