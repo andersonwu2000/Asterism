@@ -59,6 +59,8 @@ The seeded imports are already present — keep them; add `import` lines only to
 
 If after reading Library / Mathlib / brief you believe **no new lemma is needed**, edit `new_forward.lean` to a decline placeholder instead. Framework reports `forward_no_new_goal` with detail `agent declined`.
 
+**Exception — deliverable assembly**: when the brief says the statement is a **Manifest deliverable**, derivability from proved siblings is NOT a reason to decline. A one-liner composing proved siblings under the requested name is exactly the deliverable node the Manifest asks for — mint it.
+
 ```lean
 namespace Problems.<problem>
 
