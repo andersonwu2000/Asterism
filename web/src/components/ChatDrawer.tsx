@@ -43,6 +43,7 @@ function pageFromRoute(segments: string[]): Page {
   if (s0 === 'engine' || s0 === 'run' || s0 === 'settings' || s0 === 'telemetry')
     return { kind: 'engine' }
   if (s0 === 'papers') return { kind: 'papers' }
+  if (s0 === 'inbox') return { kind: 'inbox' }
   return { kind: 'board' }
 }
 

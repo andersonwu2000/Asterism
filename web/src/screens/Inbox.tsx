@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { Link } from '../lib/router'
 import { relTime } from '../lib/format'
+import { renderProse } from '../lib/prose'
 import { Button, EmptyState, ErrorState, SectionLabel } from '../components/ui'
 import DiffView from '../components/DiffView'
 import ReviewTree from '../components/ReviewTree'
@@ -125,8 +126,10 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
         </button>
       )}
       {showReasoning && (longQuestion || a.reason) && (
-        <div className="mb-3 max-w-[75ch] rounded-lg border border-edge bg-bg px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap text-ink-dim">
-          {a.question}
+        <div className="mb-3 max-w-[75ch] rounded-lg border border-edge bg-bg px-3 py-2 text-[13px] leading-relaxed text-ink-dim">
+          {/* strategist-authored markdown — the shared prose engine
+              joins its hard-wrapped lines and renders lists/code */}
+          {renderProse(a.question)}
         </div>
       )}
 

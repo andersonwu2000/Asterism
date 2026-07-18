@@ -4,7 +4,7 @@ import { leafOf, moduleOf, relTime } from '../lib/format'
 import { Link } from '../lib/router'
 import { ErrorState, TabNav } from '../components/ui'
 import { Lean } from '../lib/lean'
-import { withMath } from '../lib/tex'
+import { renderInline } from '../lib/prose'
 import { LeanProbe } from '../components/LeanProbe'
 import { CameraControls, useSkyCamera } from '../lib/camera'
 import { citePath } from '../lib/sky'
@@ -62,40 +62,13 @@ function Prose({ text, className = '' }: { text: string; className?: string }) {
   )
 }
 
+// inline layer = the ONE shared pipeline (lib/prose.tsx): lean-coloured
+// `code` spans, $math$ via KaTeX (raw dollar-LaTeX read as broken to
+// the professor audience — cold-eye + owner, 2026-07-13), **bold** and
+// *emphasis*. Only the compact block shell above stays local — a
+// docstring card is not a reading page.
 function renderSpans(s: string) {
-  // split on `code` spans; plain prose gets *emphasis* (docstring
-  // markdown) and $math$ typeset by KaTeX (raw dollar-LaTeX in
-  // keystone prose read as broken to the professor audience —
-  // cold-eye + owner, 2026-07-13). Code spans split first so a
-  // dollar inside backticks stays code.
-  const parts = s.split(/(`[^`]+`)/)
-  return parts.map((p, i) => {
-    if (p.startsWith('`') && p.endsWith('`')) {
-      return (
-        <code key={i} className="rounded-md bg-white/[0.06] px-1 font-mono text-[0.92em] text-ink">
-          <Lean code={p.slice(1, -1)} />
-        </code>
-      )
-    }
-    return (
-      <span key={i}>
-        {withMath(p, (seg, k) => {
-          const em = seg.replace(/\*\*/g, '').split(/(\*[^*\s][^*]*\*)/)
-          return (
-            <span key={k}>
-              {em.map((e, j) =>
-                e.startsWith('*') && e.endsWith('*') && e.length > 2 ? (
-                  <em key={j}>{e.slice(1, -1)}</em>
-                ) : (
-                  e
-                ),
-              )}
-            </span>
-          )
-        })}
-      </span>
-    )
-  })
+  return renderInline(s, 's')
 }
 
 /** The resting statement, for humans: short name + explicit `(...)`

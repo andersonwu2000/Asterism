@@ -68,13 +68,18 @@ function renderCites(seg: string, keyBase: string): ReactNode[] {
   return out
 }
 
-function renderInline(text: string, keyBase: string): ReactNode[] {
+/** Inline pipeline, exported for renderers that keep their own block
+ * shell (the Library chapter's docstring cards). `code` spans go
+ * through the Lean tokenizer — code is the one coloured thing on every
+ * screen (DESIGN.md) — then $math$, then **bold** / *emphasis* /
+ * citation tokens on the rest. */
+export function renderInline(text: string, keyBase: string): ReactNode[] {
   const out: ReactNode[] = []
   text.split(/(`[^`\n]+`)/).forEach((part, i) => {
     if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
       out.push(
-        <code key={`${keyBase}i${i}`} className="rounded-md bg-surface-2 px-1 font-mono text-[0.92em]">
-          {part.slice(1, -1)}
+        <code key={`${keyBase}i${i}`} className="rounded-md bg-surface-2 px-1 font-mono text-[0.92em] text-ink">
+          <Lean code={part.slice(1, -1)} />
         </code>,
       )
       return
@@ -82,11 +87,13 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
     out.push(
       ...withMath(part, (seg, j) => (
         <span key={`${keyBase}i${i}m${j}`}>
-          {seg.split(/(\*\*[^*\n]+\*\*)/).map((b, k) =>
+          {seg.split(/(\*\*[^*\n]+\*\*|\*[^*\s][^*\n]*\*)/).map((b, k) =>
             b.startsWith('**') && b.endsWith('**') && b.length > 4 ? (
               <strong key={k} className="font-medium text-ink">
                 {renderCites(b.slice(2, -2), `${keyBase}b${k}`)}
               </strong>
+            ) : b.startsWith('*') && b.endsWith('*') && b.length > 2 ? (
+              <em key={k}>{renderCites(b.slice(1, -1), `${keyBase}e${k}`)}</em>
             ) : (
               <span key={k}>{renderCites(b, `${keyBase}p${i}.${j}.${k}`)}</span>
             ),
@@ -210,15 +217,33 @@ function renderTable(lines: string[], keyBase: string): ReactNode {
 
 /** Full prose body. `mode: 'chat'` = compact, heading marks stripped;
  * `mode: 'document'` = a reading page — real headings (the Programme's
- * title + sections), more air between blocks. */
+ * title + sections, the Manifest in the Files tab), more air between
+ * blocks. `frontmatter` renders a leading `---` block as a quiet mono
+ * preamble instead of prose (Manifest.md settings). */
 export function renderProse(
   text: string,
-  { mode = 'chat' }: { mode?: 'chat' | 'document' } = {},
+  {
+    mode = 'chat',
+    frontmatter = false,
+  }: { mode?: 'chat' | 'document'; frontmatter?: boolean } = {},
 ): ReactNode {
   const doc = mode === 'document'
+  let fmBlock: ReactNode = null
+  if (frontmatter && text.startsWith('---\n')) {
+    const end = text.indexOf('\n---', 4)
+    if (end > 0) {
+      fmBlock = (
+        <pre className="rounded-lg border border-edge bg-surface px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-faint">
+          {text.slice(4, end)}
+        </pre>
+      )
+      text = text.slice(end + 4).replace(/^\n+/, '')
+    }
+  }
   const blocks = text.split(/(```[\s\S]*?(?:```|$))/)
   return (
     <div className={doc ? 'space-y-3' : 'space-y-2'}>
+      {fmBlock}
       {blocks.map((block, bi) => {
         if (block.startsWith('```')) {
           const body = block.replace(/^```[^\n]*\n?/, '').replace(/```\s*$/, '')
@@ -256,16 +281,25 @@ export function renderProse(
           const rest = h ? lines.slice(lines.indexOf(first) + 1) : lines
           const restRuns = renderRuns(parseRuns(rest), key)
           if (h && doc) {
+            // one heading ladder for every reading page: # = title
+            // voice, ## = section voice (both Fraunces), ###+ = quiet
+            // uppercase eyebrow — FileViewer / Programme / chapter had
+            // three private dialects before
+            const level = h[1].length
             return (
-              <div key={key} className={h[1].length > 1 ? 'space-y-2' : 'space-y-3'}>
-                {h[1].length === 1 ? (
-                  <h3 className="font-display pt-1 text-[19px] leading-snug font-medium text-ink">
+              <div key={key} className={level > 1 ? 'space-y-2' : 'space-y-3'}>
+                {level === 1 ? (
+                  <h3 className="font-display pt-1 text-[20px] leading-snug font-medium text-ink">
                     {renderInline(h[2], `${key}h`)}
                   </h3>
-                ) : (
-                  <h4 className="pt-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
-                    {h[2]}
+                ) : level === 2 ? (
+                  <h4 className="font-display pt-2 text-[16px] leading-snug font-medium text-ink">
+                    {renderInline(h[2], `${key}h`)}
                   </h4>
+                ) : (
+                  <h5 className="pt-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
+                    {h[2]}
+                  </h5>
                 )}
                 {restRuns}
               </div>
