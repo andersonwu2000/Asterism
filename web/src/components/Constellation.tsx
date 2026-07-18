@@ -400,10 +400,21 @@ export default function Constellation({
     {
       resetKey: problemKey,
       fit: (el) => computeFit(el, layout),
+      // panel/drawer resizes keep the scale and re-centre on the
+      // selected star (a side panel opening used to shrink the sky)
+      focus: () => {
+        if (selectedId === null) return null
+        const n = layout.nodes.find((m) => m.goal.id === selectedId)
+        return n ? { x: n.x, y: n.y } : null
+      },
     },
   )
   const containerRef = cam.containerRef
   const [hovered, setHovered] = useState<LayoutNode | null>(null)
+  // the glide animator (an effect) needs the CURRENT selection, not
+  // the one its closure captured at layout-change time
+  const selectedIdRef = useRef(selectedId)
+  selectedIdRef.current = selectedId
 
   // ---- poll-to-poll transition (imperative) --------------------------
   // A structure change re-layouts the whole sky (readability outranks
@@ -494,12 +505,28 @@ export default function Constellation({
       !camRef.current.userAdjustedRef.current &&
       camRef.current.containerRef.current !== null &&
       camRef.current.viewRef.current !== null
+    // re-frame target: with a star selected the camera keeps its scale
+    // and follows the star to its new place — a re-layout (or the
+    // panel it opened) must not shrink the sky under the reader (the
+    // resize path in lib/camera.tsx applies the same law)
+    const cameraTarget = (el: HTMLElement): View => {
+      const sel = selectedIdRef.current
+      const v = camRef.current.viewRef.current
+      if (sel !== null && v !== null) {
+        const n = layout.nodes.find((m) => m.goal.id === sel)
+        if (n) {
+          const { width: cw, height: ch } = el.getBoundingClientRect()
+          return { k: v.k, tx: cw / 2 - n.x * v.k, ty: ch / 2 - n.y * v.k }
+        }
+      }
+      return computeFit(el, layout)
+    }
     const tween: Tween = {
       t0: performance.now(),
       fromPos: new Map(shownPosRef.current),
       fromJunc: new Map(shownJuncRef.current),
       fromView: glide ? { ...camRef.current.viewRef.current! } : null,
-      toView: glide ? computeFit(camRef.current.containerRef.current!, layout) : null,
+      toView: glide ? cameraTarget(camRef.current.containerRef.current!) : null,
     }
 
     const apply = (alpha: number) => {
@@ -582,10 +609,11 @@ export default function Constellation({
       done = true
       apply(1)
       stop()
-      // commit the camera through React with a FRESH fit — the derive-
-      // time toView goes stale if the container resized mid-glide
+      // commit the camera through React with a FRESH target — the
+      // derive-time toView goes stale if the container resized mid-
+      // glide (cameraTarget keeps a selected star centred at scale)
       if (tween.toView && !camRef.current.userAdjustedRef.current && camRef.current.containerRef.current) {
-        camRef.current.commitView(computeFit(camRef.current.containerRef.current, layout))
+        camRef.current.commitView(cameraTarget(camRef.current.containerRef.current))
       }
     }
     const step = () => {

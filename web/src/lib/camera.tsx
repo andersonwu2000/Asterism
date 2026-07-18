@@ -33,6 +33,12 @@ export interface SkyCameraOpts {
   /** refit trigger. Default: content dimensions (right for static
    * maps); pass a problem key when the content re-layouts per poll. */
   resetKey?: unknown
+  /** the view's focal point in CONTENT coordinates (the selected
+   * star), or null. When a panel/drawer resizes the container and a
+   * focus exists, the camera keeps its zoom and pans the focus to the
+   * new centre instead of re-fitting — a side panel opening used to
+   * shrink the whole sky (owner, 2026-07-18). */
+  focus?: () => { x: number; y: number } | null
 }
 
 export function useSkyCamera(
@@ -103,7 +109,10 @@ export function useSkyCamera(
   // transition attaches exactly once per appearance.
   const attached = view !== null
   // window/panel resize re-fits ONLY untouched views (fighting an
-  // explicit zoom is worse than letting it drift off-centre)
+  // explicit zoom is worse than letting it drift off-centre). With a
+  // focal point on screen the resize keeps the SCALE and re-centres
+  // on it — the goal panel / chat drawer taking width must not shrink
+  // the sky the reader is inspecting.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -113,7 +122,17 @@ export function useSkyCamera(
         initial = false
         return
       }
-      if (!userAdjusted.current) setView(null)
+      if (userAdjusted.current) return
+      const f = optsRef.current?.focus?.()
+      const v = viewRef.current
+      if (f && v) {
+        const { width: cw, height: ch } = el.getBoundingClientRect()
+        const next = { k: v.k, tx: cw / 2 - f.x * v.k, ty: ch / 2 - f.y * v.k }
+        viewRef.current = next
+        setView(next)
+        return
+      }
+      setView(null)
     })
     ro.observe(el)
     return () => ro.disconnect()
