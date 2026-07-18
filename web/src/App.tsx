@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { RouterProvider, useRoute, Link } from './lib/router'
 import { apiPost, usePoll } from './lib/api'
@@ -11,69 +11,36 @@ import Papers, { PaperReader } from './screens/Papers'
 import Problem from './screens/Problem'
 import Engine from './screens/Engine'
 import type { EngineTab } from './screens/Engine'
+import ChatDrawer from './components/ChatDrawer'
 import type { Meta } from './lib/types'
 
-/** Global run strip: from any page, what is the engine doing right
- * now? Running → the problem it works (click lands on its cockpit) +
- * elapsed; idle → quiet; crashed last run → say so (a crash must not
- * wear the same face as a clean finish). */
-function DaemonChip({ meta }: { meta: Meta | null }) {
-  if (!meta) return <span className="px-2.5 text-xs text-ink-faint">engine…</span>
-  const d = meta.daemon
-  if (d.starting && !d.running) {
-    // boot window — pulsing already, so the strip never says "idle"
-    // seconds after the user pressed Run
-    return (
-      <Link
-        to="/engine"
-        className="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap text-ink transition-colors hover:bg-surface-2"
-        title="the engine is booting — open the run console"
-      >
-        <span className="bg-ok h-1.5 w-1.5 shrink-0 animate-pulse rounded-full" />
-        <span className="truncate font-mono text-[12px]">starting</span>
-      </Link>
-    )
-  }
-  if (d.running) {
-    const leaf = d.scope ? (d.scope.split('.').pop() ?? d.scope) : 'running'
-    const mins = d.started_at
-      ? Math.max(0, Math.floor((Date.now() - Date.parse(d.started_at)) / 60000))
-      : null
-    const elapsed = mins === null ? '' : mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`
-    return (
-      <Link
-        to="/engine"
-        className="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap text-ink transition-colors hover:bg-surface-2"
-        title={
-          d.stopping
-            ? 'engine stopping — finishing in-flight work'
-            : `the live run — the engine has been working on ${d.scope ?? 'all problems'}${elapsed ? ` for ${elapsed}` : ''}; open the run console`
-        }
-      >
-        <span
-          className={`h-1.5 w-1.5 shrink-0 rounded-full ${d.stopping ? 'bg-warn' : 'bg-ok animate-pulse'}`}
-        />
-        <span className="truncate font-mono text-[12px]">
-          {d.stopping ? 'stopping' : leaf}
-        </span>
-        {!d.stopping && elapsed && <span className="tnum shrink-0 text-ink-faint">{elapsed}</span>}
-      </Link>
-    )
-  }
-  const crashed = d.last_exit !== null && d.last_exit.rc !== null && d.last_exit.rc !== 0
+/** The explainer's door — the one utility slot at the sidebar's foot
+ * (owner, 2026-07-18: chat entry outranks the old engine-status chip;
+ * run liveness lives on the Engine nav row now). Pulse = an answer is
+ * streaming behind a closed drawer. */
+function AskChip({
+  open,
+  streaming,
+  onToggle,
+}: {
+  open: boolean
+  streaming: boolean
+  onToggle: () => void
+}) {
   return (
-    <Link
-      to="/engine"
-      className="group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
-      title={
-        crashed
-          ? `the last run exited abnormally: ${d.last_exit?.error ?? 'unknown error'} — open the run console`
-          : 'engine not running — open the run console'
-      }
+    <button
+      onClick={onToggle}
+      className={`group flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors duration-150 ${
+        open ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:bg-surface-2/60 hover:text-ink'
+      }`}
+      title="ask the engine to explain progress, code or mechanics (Ctrl+/) — read-only, it never acts"
     >
-      <span className={`h-1.5 w-1.5 rounded-full ${crashed ? 'bg-warn' : 'bg-ink-faint'}`} />
-      {crashed ? <span className="text-warn">last run crashed</span> : 'engine idle'}
-    </Link>
+      <span className={open ? 'text-star' : 'text-ink-faint group-hover:text-ink-dim'}>
+        {ICONS.ask}
+      </span>
+      <span className="flex-1 text-left">ask</span>
+      {streaming && !open && <span className="bg-ok h-1.5 w-1.5 animate-pulse rounded-full" />}
+    </button>
   )
 }
 
@@ -203,6 +170,18 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M5.8 8h4.4M5.8 10.5h3" stroke="currentColor" strokeWidth="0.9" strokeLinecap="round" opacity="0.55" />
     </svg>
   ),
+  ask: (
+    // a speech bubble with a star inside — conversation about the sky
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M2.5 3.5A1.5 1.5 0 014 2h8a1.5 1.5 0 011.5 1.5v6A1.5 1.5 0 0112 11H7.2L4.5 13.6V11H4a1.5 1.5 0 01-1.5-1.5v-6z"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinejoin="round"
+      />
+      <circle cx="8" cy="6.5" r="1.3" fill="currentColor" opacity="0.85" />
+    </svg>
+  ),
 }
 
 function NavItem({
@@ -212,6 +191,8 @@ function NavItem({
   active,
   badge,
   live = false,
+  warn = false,
+  title,
 }: {
   to: string
   icon: string
@@ -220,10 +201,14 @@ function NavItem({
   badge?: number
   /** a pulsing dot: the machine is working behind this entry */
   live?: boolean
+  /** a steady warn dot: something behind this entry ended badly */
+  warn?: boolean
+  title?: string
 }) {
   return (
     <Link
       to={to}
+      title={title}
       className={`group relative flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors duration-150 ${
         active ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:bg-surface-2/60 hover:text-ink'
       }`}
@@ -236,6 +221,7 @@ function NavItem({
       </span>
       <span className="flex-1">{label}</span>
       {live && <span className="bg-ok h-1.5 w-1.5 animate-pulse rounded-full" />}
+      {!live && warn && <span className="bg-warn h-1.5 w-1.5 rounded-full" />}
       {badge !== undefined && badge > 0 && (
         <span className="tnum rounded-full bg-warn/15 px-1.5 py-px text-[11px] font-medium text-warn">
           {badge}
@@ -256,6 +242,34 @@ function Shell() {
   useEffect(() => {
     document.title = inboxCount > 0 ? `(${inboxCount}) Asterism` : 'Asterism'
   }, [inboxCount])
+
+  // explainer drawer: open state persists (QPaper shape), width doesn't
+  const [chatOpen, setChatOpen] = useState(
+    () => localStorage.getItem('asterism.chatOpen') === '1',
+  )
+  const [chatStreaming, setChatStreaming] = useState(false)
+  const setChat = useCallback((v: boolean | ((o: boolean) => boolean)) => {
+    setChatOpen((o) => {
+      const next = typeof v === 'function' ? v(o) : v
+      localStorage.setItem('asterism.chatOpen', next ? '1' : '0')
+      return next
+    })
+  }, [])
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.altKey && !e.metaKey && e.key === '/') {
+        e.preventDefault()
+        setChat((o) => !o)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [setChat])
+
+  const d = meta?.daemon
+  const engineCrashed =
+    d != null && !d.running && d.last_exit !== null &&
+    d.last_exit.rc !== null && d.last_exit.rc !== 0
 
   return (
     <div className="flex h-full">
@@ -306,7 +320,13 @@ function Shell() {
               section === 'settings' ||
               section === 'telemetry'
             }
-            live={meta?.daemon.running ?? false}
+            live={(d?.running || d?.starting) ?? false}
+            warn={engineCrashed}
+            title={
+              engineCrashed
+                ? `the last run exited abnormally: ${d?.last_exit?.error ?? 'unknown error'} — open the console`
+                : undefined
+            }
           />
           <NavItem
             to="/library"
@@ -329,7 +349,11 @@ function Shell() {
           />
         </nav>
         <div className="mt-auto flex flex-col gap-1">
-          <DaemonChip meta={meta} />
+          <AskChip
+            open={chatOpen}
+            streaming={chatStreaming}
+            onToggle={() => setChat((o) => !o)}
+          />
           {meta?.db === 'behind' && (
             <span className="px-2.5 text-[11px] text-warn">db needs migration</span>
           )}
@@ -380,6 +404,11 @@ function Shell() {
           )}
         </main>
       </div>
+      <ChatDrawer
+        open={chatOpen}
+        onClose={() => setChat(false)}
+        onStreamingChange={setChatStreaming}
+      />
     </div>
   )
 }

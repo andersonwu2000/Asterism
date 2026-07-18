@@ -1,0 +1,592 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import { useRoute, navigate } from '../lib/router'
+import { apiGet, apiPost } from '../lib/api'
+import { Lean } from '../lib/lean'
+import { withMath } from '../lib/tex'
+import { Select } from './ui'
+
+/*
+ * The explainer drawer — ask the engine to explain progress, code and
+ * mechanics. Docked flex sibling (content reflows; nothing floats,
+ * per the visual charter). READ-ONLY by construction: the backend
+ * spawn has no write tools, and this panel never offers an action.
+ *
+ * Field-tested shapes borrowed from QPaper's chat panel (design SoT
+ * docs/internal/chat_explainer_design.md "借鑑" section): page context
+ * frozen at send, partial answers kept as first-class messages, send
+ * button morphs to stop, failed sends roll the text back into the
+ * input, citations are model-emitted tokens that ONLY the client
+ * turns into navigation.
+ */
+
+interface ChatMsg {
+  role: 'user' | 'assistant'
+  text: string
+  /** assistant-only trailing note: 'stopped' | error detail */
+  note?: string
+}
+
+interface ChatState {
+  busy: boolean
+  has_session: boolean
+  model_default: string
+  models: string[]
+}
+
+type Page = { kind: string; name?: string }
+
+/** What the user is looking at, from the route — frozen per send. */
+function pageFromRoute(segments: string[]): Page {
+  const s0 = segments[0] ?? ''
+  if (s0 === 'problems' && segments[1]) return { kind: 'problem', name: segments[1] }
+  if (s0 === 'library' && segments[1]) return { kind: 'library', name: segments[1] }
+  if (s0 === 'library') return { kind: 'board' }
+  if (s0 === 'engine' || s0 === 'run' || s0 === 'settings' || s0 === 'telemetry')
+    return { kind: 'engine' }
+  if (s0 === 'papers') return { kind: 'papers' }
+  return { kind: 'board' }
+}
+
+function pageLabel(p: Page): string {
+  if (p.kind === 'problem') return p.name ?? 'problem'
+  if (p.kind === 'library') return `library · ${p.name ?? ''}`
+  return p.kind
+}
+
+// -- citations ---------------------------------------------------------------
+// The model cites with bracket tokens; the client owns the link target
+// (a hallucination can point at a wrong object, never invent a route).
+
+const CITE_RE = /\[(problem|goal|library|paper):([^[\]\n]+)\]/g
+
+function citeTarget(kind: string, body: string): { to: string; label: string } | null {
+  const parts = body.split(':')
+  if (kind === 'problem') return { to: `/problems/${body}`, label: body }
+  if (kind === 'goal') {
+    if (parts.length < 2) return null
+    const slug = parts.slice(1).join(':')
+    return { to: `/problems/${parts[0]}`, label: slug }
+  }
+  if (kind === 'library') return { to: `/library/${body}`, label: body }
+  if (kind === 'paper') return { to: `/papers/${body}`, label: body }
+  return null
+}
+
+function renderCites(seg: string, keyBase: string): ReactNode[] {
+  const out: ReactNode[] = []
+  let last = 0
+  let m: RegExpExecArray | null
+  CITE_RE.lastIndex = 0
+  while ((m = CITE_RE.exec(seg)) !== null) {
+    if (m.index > last) out.push(seg.slice(last, m.index))
+    const t = citeTarget(m[1], m[2])
+    if (t === null) {
+      out.push(m[0])
+    } else {
+      const to = t.to
+      out.push(
+        <span
+          key={`${keyBase}c${m.index}`}
+          role="link"
+          tabIndex={0}
+          className="cursor-pointer rounded-sm bg-surface-2 px-1 font-mono text-[0.92em] text-ink underline decoration-edge underline-offset-2 hover:decoration-ink-dim"
+          onClick={() => navigate(to)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') navigate(to)
+          }}
+        >
+          {t.label}
+        </span>,
+      )
+    }
+    last = m.index + m[0].length
+  }
+  if (last < seg.length) out.push(seg.slice(last))
+  return out
+}
+
+// -- markdown-lite -----------------------------------------------------------
+// Order matters (QPaper lesson): fences out first, then inline code,
+// then math, then cites/emphasis on what remains.
+
+function renderInline(text: string, keyBase: string): ReactNode[] {
+  const out: ReactNode[] = []
+  text.split(/(`[^`\n]+`)/).forEach((part, i) => {
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+      out.push(
+        <code key={`${keyBase}i${i}`} className="rounded-sm bg-surface-2 px-1 font-mono text-[0.92em]">
+          {part.slice(1, -1)}
+        </code>,
+      )
+      return
+    }
+    out.push(
+      ...withMath(part, (seg, j) => (
+        <span key={`${keyBase}i${i}m${j}`}>
+          {seg.split(/(\*\*[^*\n]+\*\*)/).map((b, k) =>
+            b.startsWith('**') && b.endsWith('**') && b.length > 4 ? (
+              <strong key={k} className="font-medium text-ink">
+                {renderCites(b.slice(2, -2), `${keyBase}b${k}`)}
+              </strong>
+            ) : (
+              <span key={k}>{renderCites(b, `${keyBase}p${i}.${j}.${k}`)}</span>
+            ),
+          )}
+        </span>
+      )),
+    )
+  })
+  return out
+}
+
+function renderAnswer(text: string): ReactNode {
+  const blocks = text.split(/(```[\s\S]*?(?:```|$))/)
+  return (
+    <div className="space-y-2">
+      {blocks.map((block, bi) => {
+        if (block.startsWith('```')) {
+          const body = block.replace(/^```[^\n]*\n?/, '').replace(/```\s*$/, '')
+          return (
+            <pre
+              key={bi}
+              className="overflow-x-auto rounded-md border border-edge bg-surface p-2.5 font-mono text-[12px] leading-relaxed"
+            >
+              <Lean code={body.replace(/\n$/, '')} />
+            </pre>
+          )
+        }
+        const paras = block.split(/\n{2,}/).filter((p) => p.trim() !== '')
+        return paras.map((para, pi) => {
+          const lines = para.split('\n')
+          const isList = lines.every((l) => /^\s*[-*•]\s+/.test(l) || l.trim() === '')
+          if (isList) {
+            return (
+              <ul key={`${bi}.${pi}`} className="space-y-1 pl-4">
+                {lines
+                  .filter((l) => l.trim() !== '')
+                  .map((l, li) => (
+                    <li key={li} className="list-disc marker:text-ink-faint">
+                      {renderInline(l.replace(/^\s*[-*•]\s+/, ''), `${bi}.${pi}.${li}`)}
+                    </li>
+                  ))}
+              </ul>
+            )
+          }
+          return (
+            <p key={`${bi}.${pi}`} className="whitespace-pre-wrap">
+              {renderInline(para.replace(/^#{1,6}\s+/, ''), `${bi}.${pi}`)}
+            </p>
+          )
+        })
+      })}
+    </div>
+  )
+}
+
+// -- stream plumbing ---------------------------------------------------------
+
+const STAGE_LABEL: Record<string, string> = {
+  context: 'gathering context…',
+  thinking: 'thinking…',
+  reading: 'reading the workspace…',
+  retry: 'reconnecting…',
+}
+
+async function readSse(
+  res: Response,
+  onEvent: (ev: Record<string, unknown>) => void,
+): Promise<void> {
+  const reader = res.body?.getReader()
+  if (!reader) throw new Error('no stream')
+  const dec = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    for (;;) {
+      const nl = buf.indexOf('\n\n')
+      if (nl < 0) break
+      const frame = buf.slice(0, nl)
+      buf = buf.slice(nl + 2)
+      for (const line of frame.split('\n')) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          onEvent(JSON.parse(line.slice(6)))
+        } catch {
+          /* partial or malformed frame — skip */
+        }
+      }
+    }
+  }
+}
+
+const SUGGESTIONS = [
+  'Why is this problem stalled?',
+  'What happened in the last few decisions?',
+  'What exactly am I endorsing when I sign off?',
+]
+
+// -- the drawer --------------------------------------------------------------
+
+export default function ChatDrawer({
+  open,
+  onClose,
+  onStreamingChange,
+}: {
+  open: boolean
+  onClose: () => void
+  onStreamingChange: (v: boolean) => void
+}) {
+  const route = useRoute()
+  const [messages, setMessages] = useState<ChatMsg[]>([])
+  const [input, setInput] = useState('')
+  const [streaming, setStreaming] = useState(false)
+  const [stage, setStage] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  const [model, setModel] = useState<string | null>(null)
+  const [meta, setMeta] = useState<ChatState | null>(null)
+  const [width, setWidth] = useState(380)
+  const [confirmClear, setConfirmClear] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  const streamingRef = useRef(false)
+
+  useEffect(() => {
+    apiGet<ChatState>('/api/chat/state')
+      .then(setMeta)
+      .catch(() => undefined)
+  }, [])
+  useEffect(() => {
+    if (open) inputRef.current?.focus()
+  }, [open])
+
+  const setStreamingBoth = useCallback(
+    (v: boolean) => {
+      streamingRef.current = v
+      setStreaming(v)
+      onStreamingChange(v)
+    },
+    [onStreamingChange],
+  )
+
+  // autoscroll only when the reader is already at the bottom
+  const nearBottom = useRef(true)
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (el) nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  }, [])
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el && nearBottom.current) el.scrollTop = el.scrollHeight
+  })
+
+  const send = useCallback(
+    async (raw: string) => {
+      const text = raw.trim()
+      if (text === '' || streamingRef.current) return
+      const page = pageFromRoute(route.segments) // frozen at send
+      setNote(null)
+      setConfirmClear(false)
+      setInput('')
+      setMessages((m) => [...m, { role: 'user', text }, { role: 'assistant', text: '' }])
+      setStage('context')
+      setStreamingBoth(true)
+      const ac = new AbortController()
+      abortRef.current = ac
+      const appendDelta = (t: string) =>
+        setMessages((m) => {
+          const out = m.slice()
+          const last = out[out.length - 1]
+          out[out.length - 1] = { ...last, text: last.text + t }
+          return out
+        })
+      const rollback = (detail: string) => {
+        // failed send → the question returns to the input box, no
+        // orphan bubble pair
+        setMessages((m) => m.slice(0, -2))
+        setInput(text)
+        setNote(detail)
+      }
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text, page, model }),
+          signal: ac.signal,
+        })
+        if (!res.ok) {
+          let detail = res.statusText
+          try {
+            detail = String((await res.json())?.detail ?? detail)
+          } catch {
+            /* non-JSON body */
+          }
+          rollback(res.status === 409 ? 'still answering the previous question' : detail)
+          return
+        }
+        let sawDelta = false
+        let finished = false
+        await readSse(res, (ev) => {
+          const t = ev.type
+          if (t === 'delta' && typeof ev.text === 'string') {
+            sawDelta = true
+            setStage(null)
+            appendDelta(ev.text)
+          } else if (t === 'status' && typeof ev.stage === 'string') {
+            setStage(ev.stage)
+          } else if (t === 'done') {
+            finished = true
+            if (ev.ok === false)
+              setMessages((m) => {
+                const out = m.slice()
+                out[out.length - 1] = {
+                  ...out[out.length - 1],
+                  note: `the answer ended abnormally (${String(ev.subtype ?? '')})`,
+                }
+                return out
+              })
+          } else if (t === 'error') {
+            finished = true
+            const detail = String(ev.detail ?? 'unknown error')
+            if (sawDelta) {
+              setMessages((m) => {
+                const out = m.slice()
+                out[out.length - 1] = { ...out[out.length - 1], note: detail }
+                return out
+              })
+            } else {
+              rollback(detail)
+            }
+          }
+        })
+        if (!finished && !sawDelta) rollback('the stream ended before an answer arrived')
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') {
+          // partial answers are first-class: keep what streamed
+          setMessages((m) => {
+            const out = m.slice()
+            const last = out[out.length - 1]
+            if (last.text === '') return m.slice(0, -2)
+            out[out.length - 1] = { ...last, note: 'stopped' }
+            return out
+          })
+          setMessages((m) => (m.length > 0 && m[m.length - 1].text === '' ? m.slice(0, -1) : m))
+        } else {
+          rollback(`could not reach the engine (${(e as Error).message})`)
+        }
+      } finally {
+        setStage(null)
+        setStreamingBoth(false)
+        abortRef.current = null
+      }
+    },
+    [model, route.segments, setStreamingBoth],
+  )
+
+  const stop = useCallback(() => abortRef.current?.abort(), [])
+
+  const clear = useCallback(async () => {
+    if (streamingRef.current) return
+    try {
+      await apiPost('/api/chat/clear')
+      setMessages([])
+      setNote(null)
+    } catch (e) {
+      setNote(String((e as Error).message))
+    }
+    setConfirmClear(false)
+  }, [])
+
+  // width drag — clamped, not persisted
+  const dragRef = useRef<{ startX: number; startW: number } | null>(null)
+  useEffect(() => {
+    const move = (e: MouseEvent) => {
+      const d = dragRef.current
+      if (!d) return
+      const w = d.startW + (d.startX - e.clientX)
+      setWidth(Math.min(Math.max(w, 300), Math.min(window.innerWidth * 0.6, 640)))
+    }
+    const up = () => {
+      dragRef.current = null
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+    return () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+    }
+  }, [])
+
+  const page = useMemo(() => pageFromRoute(route.segments), [route.segments])
+
+  // closed = hidden, not unmounted — the transcript survives the
+  // close/open cycle (and a stream keeps writing into it)
+  return (
+    <aside
+      className={`relative shrink-0 flex-col border-l border-edge bg-surface ${open ? 'flex' : 'hidden'}`}
+      style={{ width }}
+      aria-label="explainer chat"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') onClose()
+      }}
+    >
+      <div
+        className="absolute top-0 bottom-0 left-0 z-10 w-1 cursor-col-resize hover:bg-edge"
+        onMouseDown={(e) => {
+          dragRef.current = { startX: e.clientX, startW: width }
+          document.body.style.cursor = 'col-resize'
+          document.body.style.userSelect = 'none'
+          e.preventDefault()
+        }}
+      />
+      {/* header: what this is + clear */}
+      <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
+        <span className="text-[13px] font-medium text-ink">ask</span>
+        <span
+          className="truncate text-[11px] text-ink-faint"
+          title="questions are answered about this page; it can read the whole workspace"
+        >
+          about {pageLabel(page)}
+        </span>
+        <div className="ml-auto flex items-center gap-1.5">
+          {messages.length > 0 &&
+            (confirmClear ? (
+              <button
+                className="cursor-pointer rounded-md border border-edge px-2 py-0.5 text-[11px] text-warn transition-colors hover:bg-surface-2"
+                onClick={() => void clear()}
+                disabled={streaming}
+              >
+                confirm — forget this conversation
+              </button>
+            ) : (
+              <button
+                className="cursor-pointer rounded-md px-2 py-0.5 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
+                onClick={() => setConfirmClear(true)}
+                disabled={streaming}
+                title="forget the conversation, both here and on the engine side"
+              >
+                clear
+              </button>
+            ))}
+          <button
+            className="cursor-pointer rounded-md px-1.5 py-0.5 text-[13px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
+            onClick={onClose}
+            title="close (Esc; Ctrl+/ reopens)"
+            aria-label="close chat"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+
+      {/* transcript */}
+      <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        {messages.length === 0 ? (
+          <div className="flex h-full flex-col justify-center gap-3 text-[12px] text-ink-faint">
+            <p>
+              ask about progress, a lemma, or how the machine works. it reads the workspace and
+              answers with sources; it never acts.
+            </p>
+            <div className="space-y-1.5">
+              {SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  className="block cursor-pointer rounded-md border border-edge/60 px-2.5 py-1.5 text-left text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
+                  onClick={() => {
+                    setInput(s)
+                    inputRef.current?.focus()
+                  }}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {messages.map((m, i) => (
+              <div key={i} className={m.role === 'user' ? 'flex justify-end' : ''}>
+                {m.role === 'user' ? (
+                  <div className="max-w-[85%] rounded-lg bg-surface-2 px-3 py-1.5 text-[13px] whitespace-pre-wrap text-ink">
+                    {m.text}
+                  </div>
+                ) : (
+                  <div className="text-[13px] leading-relaxed text-ink-dim">
+                    {m.text === '' && streaming && i === messages.length - 1 ? (
+                      <span className="text-[12px] text-ink-faint">
+                        {STAGE_LABEL[stage ?? 'thinking'] ?? 'thinking…'}
+                      </span>
+                    ) : (
+                      renderAnswer(m.text)
+                    )}
+                    {m.note && (
+                      <div className="mt-1 text-[11px] text-ink-faint italic">— {m.note}</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* composer */}
+      <div className="border-t border-edge px-3 py-2.5">
+        {note && <div className="mb-1.5 text-[11px] text-warn">{note}</div>}
+        <div className="flex items-end gap-1.5">
+          <textarea
+            ref={inputRef}
+            value={input}
+            rows={Math.min(6, Math.max(1, input.split('\n').length))}
+            placeholder="ask anything…"
+            className="min-w-0 flex-1 resize-none rounded-md border border-edge bg-bg px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                void send(input)
+              }
+            }}
+          />
+          {streaming ? (
+            <button
+              className="cursor-pointer rounded-md border border-edge px-2.5 py-1.5 text-[12px] text-ink transition-colors hover:bg-surface-2"
+              onClick={stop}
+              title="stop — whatever has streamed stays"
+            >
+              stop
+            </button>
+          ) : (
+            <button
+              className="cursor-pointer rounded-md border border-edge px-2.5 py-1.5 text-[12px] text-ink transition-colors hover:bg-surface-2 disabled:cursor-default disabled:opacity-40"
+              onClick={() => void send(input)}
+              disabled={input.trim() === ''}
+            >
+              send
+            </button>
+          )}
+        </div>
+        <div className="mt-1.5 flex items-center gap-2">
+          <Select
+            value={model ?? meta?.model_default ?? 'sonnet'}
+            onChange={(e) => setModel(e.target.value)}
+            className="text-[11px]"
+            title="stronger models cost more of the same subscription quota"
+          >
+            {(meta?.models ?? ['haiku', 'sonnet', 'opus']).map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </Select>
+          <span className="text-[10px] text-ink-faint">read-only · it explains, it never acts</span>
+        </div>
+      </div>
+    </aside>
+  )
+}

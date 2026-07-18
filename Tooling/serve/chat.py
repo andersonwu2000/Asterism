@@ -155,13 +155,36 @@ def _problem_context(conn: sqlite3.Connection, name: str) -> str:
               "strategist_plan.md (the strategist's live plan note).")
 
 
-def _board_context(conn: sqlite3.Connection) -> str:
-    rows = [
-        {"name": str(r["name"]), "state": str(r["state"])}
+def _board_context(conn: sqlite3.Connection, workspace: Path) -> str:
+    """Board = the overview page, so the context is an overview: state
+    counts + the live run + what needs the human + what moved lately.
+    (An alphabetical LIMIT slice shipped first and made the model cite
+    whatever early-alphabet problem looked busy — wrong by design.)"""
+    counts = {str(r["state"]): int(r["n"]) for r in conn.execute(
+        "SELECT state, COUNT(*) AS n FROM problems GROUP BY state")}
+    awaiting = [str(r["name"]) for r in conn.execute(
+        "SELECT name FROM problems WHERE state = 'awaiting_human'"
+        " ORDER BY name LIMIT 10")]
+    recent = [
+        {"name": str(r["name"]), "state": str(r["state"]),
+         "last_decision_at": r["last_strategist_at"]}
         for r in conn.execute(
-            "SELECT name, state FROM problems ORDER BY name LIMIT 40")]
-    return json.dumps({"page": "board", "problems": rows},
-                      ensure_ascii=False)
+            "SELECT name, state, last_strategist_at FROM problems"
+            " WHERE last_strategist_at IS NOT NULL"
+            " ORDER BY last_strategist_at DESC LIMIT 8")]
+    daemon: dict = {}
+    try:
+        from ..core.cli import daemon_status
+        d = daemon_status(workspace)
+        daemon = {"running": d.get("running"), "scope": d.get("scope"),
+                  "started_at": d.get("started_at")}
+    except Exception:  # noqa: BLE001 — garnish
+        pass
+    return json.dumps({
+        "page": "board", "problem_state_counts": counts,
+        "engine": daemon, "awaiting_human": awaiting,
+        "recently_active": recent,
+    }, ensure_ascii=False)
 
 
 def _page_context(workspace: Path, page: "dict | None") -> "tuple[str, str]":
@@ -197,7 +220,7 @@ def _page_context(workspace: Path, page: "dict | None") -> "tuple[str, str]":
                     for p in shelf]
             return key, json.dumps({"page": "papers", "papers": rows},
                                    ensure_ascii=False)
-        return key, _board_context(conn)
+        return key, _board_context(conn, workspace)
     except sqlite3.Error:
         return key, f"Page: {kind}. (Context query failed — answer from" \
                     f" files instead.)"
