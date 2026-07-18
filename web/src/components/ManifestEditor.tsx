@@ -245,7 +245,7 @@ export default function ManifestEditor({
   return (
     <div className="mx-auto max-w-4xl px-6 py-5">
       {data.pending_amend && (
-        <div className="mb-4 rounded-md border border-warn/50 bg-warn/10 px-3 py-2 text-xs text-warn">
+        <div className="mb-4 rounded-lg border border-warn/50 bg-warn/10 px-3 py-2 text-xs text-warn">
           The strategist has a pending amend request on this Manifest — editing is locked so
           the two changes don't collide.{' '}
           <Link to="/inbox" className="underline">

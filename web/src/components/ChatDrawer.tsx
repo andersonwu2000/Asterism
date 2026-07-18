@@ -115,7 +115,7 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
   text.split(/(`[^`\n]+`)/).forEach((part, i) => {
     if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
       out.push(
-        <code key={`${keyBase}i${i}`} className="rounded-sm bg-surface-2 px-1 font-mono text-[0.92em]">
+        <code key={`${keyBase}i${i}`} className="rounded-md bg-surface-2 px-1 font-mono text-[0.92em]">
           {part.slice(1, -1)}
         </code>,
       )
@@ -150,7 +150,7 @@ function renderAnswer(text: string): ReactNode {
           return (
             <pre
               key={bi}
-              className="overflow-x-auto rounded-md border border-edge bg-surface p-2.5 font-mono text-[12px] leading-relaxed"
+              className="overflow-x-auto rounded-lg border border-edge bg-surface p-2.5 font-mono text-[12px] leading-relaxed"
             >
               <Lean code={body.replace(/\n$/, '')} />
             </pre>
@@ -469,7 +469,7 @@ export default function ChatDrawer({
           {messages.length > 0 &&
             (confirmClear ? (
               <button
-                className="cursor-pointer rounded-md border border-edge px-2 py-0.5 text-[11px] whitespace-nowrap text-warn transition-colors hover:bg-surface-2"
+                className="cursor-pointer rounded-lg border border-edge px-2 py-0.5 text-[11px] whitespace-nowrap text-warn transition-colors hover:bg-surface-2"
                 onClick={() => void clear()}
                 disabled={streaming}
               >
@@ -477,7 +477,7 @@ export default function ChatDrawer({
               </button>
             ) : (
               <button
-                className="cursor-pointer rounded-md px-2 py-0.5 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
+                className="cursor-pointer rounded-lg px-2 py-0.5 text-[11px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
                 onClick={() => setConfirmClear(true)}
                 disabled={streaming}
                 title="forget the conversation, both here and on the engine side"
@@ -486,7 +486,7 @@ export default function ChatDrawer({
               </button>
             ))}
           <button
-            className="cursor-pointer rounded-md px-1.5 py-0.5 text-[13px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
+            className="cursor-pointer rounded-lg px-1.5 py-0.5 text-[13px] text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
             onClick={onClose}
             title="close (Esc; Ctrl+/ reopens)"
             aria-label="close chat"
@@ -508,7 +508,7 @@ export default function ChatDrawer({
               {SUGGESTIONS.map((s) => (
                 <button
                   key={s}
-                  className="block cursor-pointer rounded-md border border-edge/60 px-2.5 py-1.5 text-left text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
+                  className="block cursor-pointer rounded-lg border border-edge/60 px-2.5 py-1.5 text-left text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
                   onClick={() => {
                     setInput(s)
                     inputRef.current?.focus()
@@ -527,7 +527,7 @@ export default function ChatDrawer({
               m.role === 'user' ? (
                 <div
                   key={i}
-                  className="mt-5 rounded-lg bg-surface-2 px-3 py-2 text-[13px] whitespace-pre-wrap text-ink first:mt-0"
+                  className="mt-5 rounded-xl bg-surface-2 px-3 py-2 text-[13px] whitespace-pre-wrap text-ink first:mt-0"
                 >
                   {m.text}
                 </div>
@@ -553,7 +553,7 @@ export default function ChatDrawer({
       {/* composer — one pill, send lives inside it (QPaper shape) */}
       <div className="border-t border-edge px-3 py-2.5">
         {note && <div className="mb-1.5 text-[11px] text-warn">{note}</div>}
-        <div className="flex items-end gap-1.5 rounded-xl border border-edge bg-bg px-1.5 py-1 transition-colors focus-within:border-ink-faint">
+        <div className="flex items-end gap-1.5 rounded-2xl border border-edge bg-bg px-1.5 py-1 transition-colors focus-within:border-ink-faint">
           <textarea
             ref={inputRef}
             value={input}

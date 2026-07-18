@@ -107,7 +107,7 @@ function GoalsList({
         </button>
       ))}
       <input
-        className="ml-2 w-48 rounded-md border border-edge bg-surface px-2 py-0.5 text-[11px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
+        className="ml-2 w-48 rounded-lg border border-edge bg-surface px-2 py-0.5 text-[11px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
         placeholder="filter by name…"
         value={q}
         onChange={(e) => setQ(e.target.value)}
@@ -334,7 +334,7 @@ function DeleteProblem({ problem }: { problem: string }) {
           onClick={() => setOpen(false)}
         >
           <div
-            className="w-[26rem] rounded-lg border border-edge bg-surface p-5"
+            className="w-[26rem] rounded-xl border border-edge bg-surface p-5"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="text-sm font-medium text-ink">Delete {problem}?</div>
@@ -342,7 +342,7 @@ function DeleteProblem({ problem }: { problem: string }) {
               Erases this problem's folder, proofs and history. It cannot be undone.
             </p>
             <input
-              className="mt-3 w-full rounded border border-edge bg-bg px-2 py-1.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+              className="mt-3 w-full rounded-md border border-edge bg-bg px-2 py-1.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
               placeholder={`type ${problem} to confirm`}
               value={typed}
               onChange={(e) => setTyped(e.target.value)}
@@ -354,7 +354,7 @@ function DeleteProblem({ problem }: { problem: string }) {
                 Cancel
               </Button>
               <button
-                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                   match && !busy
                     ? 'bg-destruct cursor-pointer text-starlight hover:opacity-90'
                     : 'cursor-default border border-edge text-ink-faint'

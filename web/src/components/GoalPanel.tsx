@@ -22,7 +22,7 @@ import type { DeadAttempt, GoalDetail } from '../lib/types'
 function Attempt({ a }: { a: DeadAttempt }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className="rounded-md border border-edge">
+    <div className="rounded-lg border border-edge">
       <button
         className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-surface-2"
         onClick={() => setOpen((v) => !v)}
@@ -87,7 +87,7 @@ export default function GoalPanel({
       <div className="flex items-center justify-between border-b border-edge px-4 py-2.5">
         <span className="truncate font-mono text-sm text-ink" title={data?.slug}>{data?.slug ?? `#${goalId}`}</span>
         <button
-          className="ml-2 rounded px-1.5 text-ink-faint hover:text-ink"
+          className="ml-2 rounded-md px-1.5 text-ink-faint hover:text-ink"
           onClick={onClose}
           title="Close"
         >
@@ -216,7 +216,7 @@ export default function GoalPanel({
                               hover lights their stars, the s-number
                               matches the plan notes' vocabulary */}
                           <div
-                            className="flex items-baseline gap-1.5 rounded px-2 py-1 hover:bg-surface-2"
+                            className="flex items-baseline gap-1.5 rounded-md px-2 py-1 hover:bg-surface-2"
                             onMouseEnter={() =>
                               subs.length > 0 &&
                               onHoverGoals?.(subs.map((x) => x.id))
@@ -274,7 +274,7 @@ export default function GoalPanel({
                               {subs.map((x) => (
                                 <button
                                   key={x.id}
-                                  className="truncate rounded px-2 py-0.5 text-left font-mono text-[11px] text-ink-dim hover:bg-surface-2 hover:text-ink"
+                                  className="truncate rounded-md px-2 py-0.5 text-left font-mono text-[11px] text-ink-dim hover:bg-surface-2 hover:text-ink"
                                   onMouseEnter={() => onHoverGoals?.([x.id])}
                                   onMouseLeave={() => onHoverGoals?.(null)}
                                   onClick={() => onSelectGoal?.(x.id)}

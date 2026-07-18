@@ -101,7 +101,7 @@ const STRATEGIST_MODE: Record<string, string> = {
 function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
   const quiet = w.file?.quiet_sec ?? null
   return (
-    <div className="rounded-lg border border-edge bg-surface p-3">
+    <div className="rounded-xl border border-edge bg-surface p-3">
       <div className="flex items-baseline gap-2.5">
         <span className="text-xs font-medium text-ink">{w.kind.toLowerCase()}</span>
         {problem ? (
@@ -147,7 +147,7 @@ function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
               </span>
             )}
           </summary>
-          <pre className="mt-1.5 max-h-96 overflow-y-auto rounded-md border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
+          <pre className="mt-1.5 max-h-96 overflow-y-auto rounded-lg border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
             <Lean code={w.file.tail} />
           </pre>
         </details>
@@ -463,7 +463,7 @@ export default function Run() {
 
       {detail && focusProblem && detail.goals.length > 0 && (
         <section className="mt-6">
-          <div className="flex h-[52vh] overflow-hidden rounded-lg border border-edge bg-bg">
+          <div className="flex h-[52vh] overflow-hidden rounded-xl border border-edge bg-bg">
             <div className="relative min-w-0 flex-1">
               <Constellation
                 goals={detail.goals}
@@ -552,7 +552,7 @@ export default function Run() {
                       return (
                         <div
                           key={`${g.k}:${g.until}`}
-                          className="min-h-24 rounded-lg border border-edge/60 bg-surface/50 p-3 opacity-70"
+                          className="min-h-24 rounded-xl border border-edge/60 bg-surface/50 p-3 opacity-70"
                         >
                           <div className="flex items-baseline gap-2.5">
                             <span className="text-xs text-ink-dim">
@@ -586,7 +586,7 @@ export default function Run() {
                       return Array.from({ length: Math.max(0, free) }).map((_, i) => (
                         <div
                           key={`free${i}`}
-                          className="flex min-h-24 items-center justify-center rounded-lg border border-dashed border-edge/60 text-[11px] text-ink-faint/70"
+                          className="flex min-h-24 items-center justify-center rounded-xl border border-dashed border-edge/60 text-[11px] text-ink-faint/70"
                           title="an open slot for one more agent (engine setting: dispatch.pool)"
                         >
                           {freeHint}

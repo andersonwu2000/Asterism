@@ -23,7 +23,7 @@ function mdInline(s: string): string {
   return parts
     .map((p) =>
       p.startsWith('`') && p.endsWith('`') && p.length > 2
-        ? `<code class="rounded bg-surface-2 px-1 py-px font-mono text-[12px] text-ink">${leanHtml(p.slice(1, -1))}</code>`
+        ? `<code class="rounded-md bg-surface-2 px-1 py-px font-mono text-[12px] text-ink">${leanHtml(p.slice(1, -1))}</code>`
         : escapeHtml(p).replace(
             /\*\*([^*]+)\*\*/g,
             '<strong class="font-semibold text-ink">$1</strong>',
@@ -41,7 +41,7 @@ function Markdown({ src }: { src: string }) {
     const end = lines.indexOf('---', 1)
     if (end > 0) {
       out.push(
-        `<pre class="mb-4 rounded-md border border-edge bg-surface px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-faint">${escapeHtml(
+        `<pre class="mb-4 rounded-lg border border-edge bg-surface px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-faint">${escapeHtml(
           lines.slice(1, end).join('\n'),
         )}</pre>`,
       )
@@ -62,7 +62,7 @@ function Markdown({ src }: { src: string }) {
       const end = lines.findIndex((l, j) => j > i && l.startsWith('```'))
       const body = lines.slice(i + 1, end === -1 ? undefined : end).join('\n')
       out.push(
-        `<pre class="my-3 overflow-x-auto rounded-md border border-edge bg-bg px-3 py-2 font-mono text-[12px] leading-relaxed text-ink-dim">${leanHtml(body)}</pre>`,
+        `<pre class="my-3 overflow-x-auto rounded-lg border border-edge bg-bg px-3 py-2 font-mono text-[12px] leading-relaxed text-ink-dim">${leanHtml(body)}</pre>`,
       )
       i = end === -1 ? lines.length : end + 1
       continue

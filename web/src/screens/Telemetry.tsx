@@ -75,7 +75,7 @@ function ConfigPanel() {
           </Select>
         ) : (
           <input
-            className={`w-56 rounded-md border bg-surface px-2 py-1 font-mono text-xs text-ink focus:outline-none ${
+            className={`w-56 rounded-lg border bg-surface px-2 py-1 font-mono text-xs text-ink focus:outline-none ${
               dirty ? 'border-star/50' : 'border-edge focus:border-ink-faint'
             }`}
             value={draft ?? current}
@@ -94,7 +94,7 @@ function ConfigPanel() {
     )
   }
   return (
-    <div className="rounded-lg border border-edge bg-surface px-4 py-3">
+    <div className="rounded-xl border border-edge bg-surface px-4 py-3">
       <div className="mb-1 text-[11px] text-ink-faint">
         which model does each job — changes apply from the next run (an .env override, if
         you have one, still wins)
@@ -126,7 +126,7 @@ function ConfigPanel() {
 
 function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
-    <div className="rounded-lg border border-edge bg-surface px-4 py-3" title={title}>
+    <div className="rounded-xl border border-edge bg-surface px-4 py-3" title={title}>
       <div className="font-display tnum text-[26px] font-medium text-ink">{value}</div>
       <div className="mt-0.5 text-[11px] text-ink-faint">{label}</div>
     </div>
@@ -150,7 +150,7 @@ function UsageTable() {
     return (
       <>
         <SectionLabel>{label}</SectionLabel>
-        <div className="rounded-lg border border-edge bg-surface px-4 py-2 text-xs text-ink-faint">
+        <div className="rounded-xl border border-edge bg-surface px-4 py-2 text-xs text-ink-faint">
           {data?.window === 'run'
             ? 'Nothing burned yet this run — figures appear as the engine works.'
             : 'No usage yet — figures appear once the engine runs.'}
@@ -292,7 +292,7 @@ function AccountPanel() {
     }
   }
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-edge bg-surface px-4 py-3">
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-edge bg-surface px-4 py-3">
       <span
         className={`h-2 w-2 rounded-full ${c.logged_in ? 'bg-ok' : 'bg-warn'}`}
         aria-hidden
@@ -307,7 +307,7 @@ function AccountPanel() {
       {c.installed && (
         <span className="ml-auto flex items-center gap-2">
           <button
-            className="cursor-pointer rounded-md border border-edge bg-surface-2 px-2.5 py-1 text-xs text-ink transition-colors hover:bg-surface-3 disabled:opacity-50"
+            className="cursor-pointer rounded-lg border border-edge bg-surface-2 px-2.5 py-1 text-xs text-ink transition-colors hover:bg-surface-3 disabled:opacity-50"
             disabled={busy}
             onClick={() => void run(switchAccount)}
             title="log this account out and open the login window for another — running agents keep their session; new work uses the new account"
@@ -316,7 +316,7 @@ function AccountPanel() {
           </button>
           {c.logged_in && (
             <button
-              className="cursor-pointer rounded-md border border-edge px-2.5 py-1 text-xs text-ink-dim transition-colors hover:text-ink disabled:opacity-50"
+              className="cursor-pointer rounded-lg border border-edge px-2.5 py-1 text-xs text-ink-dim transition-colors hover:text-ink disabled:opacity-50"
               disabled={busy}
               onClick={() => void run(logout)}
             >
@@ -338,7 +338,7 @@ export function SettingsTab() {
   return (
     <div>
       {daemon?.running && (
-        <div className="mb-4 rounded-md border border-edge bg-surface-2 px-3 py-2 text-xs text-ink-dim">
+        <div className="mb-4 rounded-lg border border-edge bg-surface-2 px-3 py-2 text-xs text-ink-dim">
           A run is live — the engine reads its configuration once at start, so every change
           here lands on the <span className="text-ink">next</span> run. (Instructions on the
           Manifest tab DO reach the live run.)

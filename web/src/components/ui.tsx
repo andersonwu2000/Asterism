@@ -33,7 +33,7 @@ export function Button({
 } & ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
-      className={`rounded-md font-medium transition-colors duration-150 disabled:pointer-events-none disabled:opacity-45 ${
+      className={`rounded-lg font-medium transition-colors duration-150 disabled:pointer-events-none disabled:opacity-45 ${
         size === 'sm' ? 'px-3 py-1.5 text-xs' : 'px-2 py-1 text-[11px]'
       } ${BUTTON_VARIANT[variant]} ${className}`}
       {...rest}
@@ -103,7 +103,7 @@ export function Select({
     <span className={`relative inline-block ${className}`}>
       <select
         {...rest}
-        className="w-full cursor-pointer appearance-none rounded-md border border-edge bg-surface py-1 pr-7 pl-2 font-mono text-xs text-ink transition-colors hover:border-edge-strong focus:border-ink-faint focus:outline-none"
+        className="w-full cursor-pointer appearance-none rounded-lg border border-edge bg-surface py-1 pr-7 pl-2 font-mono text-xs text-ink transition-colors hover:border-edge-strong focus:border-ink-faint focus:outline-none"
       />
       <span
         className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-[8px] text-ink-faint"

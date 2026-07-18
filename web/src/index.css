@@ -87,6 +87,44 @@ select option {
   color: var(--color-ink);
 }
 
+/* Customizable select (Chrome/Edge 134+, Safari 27) — the OPEN menu
+   joins the design language instead of rendering as the OS's square
+   slab: raised surface, strong edge, container-tier radius, options
+   as rounded rows. Non-supporting browsers keep the classic native
+   popup (the option colors above still apply there). */
+@supports (appearance: base-select) {
+  select,
+  select::picker(select) {
+    appearance: base-select;
+  }
+  select::picker-icon {
+    display: none; /* the Select component draws its own ▼ */
+  }
+  select::picker(select) {
+    margin-top: 4px;
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-edge-strong);
+    border-radius: 10px; /* nested: options 6px + 4px padding */
+    padding: 4px;
+  }
+  select option {
+    border-radius: 6px;
+    padding: 3px 8px;
+    font: inherit;
+  }
+  select option:hover,
+  select option:focus-visible {
+    background-color: var(--color-surface-3);
+    outline: none;
+  }
+  select option:checked {
+    color: var(--color-star);
+  }
+  select option::checkmark {
+    display: none; /* selection speaks through brightness, not a glyph */
+  }
+}
+
 body {
   background: var(--color-bg);
   color: var(--color-ink);
@@ -102,11 +140,18 @@ body {
 }
 
 /* Keyboard affordance — visible focus without mouse-click noise;
-   focus speaks in the brand voice */
-:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-star) 65%, transparent);
-  outline-offset: 1px;
-  border-radius: 4px;
+   focus speaks in the brand voice. Inside @layer base so per-element
+   utilities (focus:outline-none on inputs that delegate focus to a
+   styled wrapper) can override it — unlayered, it silently beat every
+   utility and drew a mismatched ring over the chat composer pill
+   (owner report 2026-07-18). No border-radius here: the outline hugs
+   each element's own radius; forcing 4px visibly misaligned on
+   anything rounder. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-star) 65%, transparent);
+    outline-offset: 1px;
+  }
 }
 
 /* Data alignment: digits line up in tables and counters */

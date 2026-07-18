@@ -26,6 +26,25 @@ for the values). Every Lean fragment on every screen goes through it.
 No rainbow brackets, no editor underlines: reading ink, not tooling
 ink.
 
+## Shape — the radius ladder
+
+Radius states nesting depth: the more an element envelops, the
+rounder it is (2026-07-18, owner push toward the modern end).
+
+- **6px** (`rounded-md`) — micro: inline code chips, kbd, tags,
+  row-hover highlights, mini inputs.
+- **8px** (`rounded-lg`) — controls: buttons, selects, inputs,
+  nav items.
+- **12px** (`rounded-xl`) — containers: cards, panels, popovers,
+  code blocks, editors, the floating destruction confirm.
+- **16px** (`rounded-2xl`) — the chat composer pill.
+- **full** — dots, pills, circular icon buttons, scrollbar thumbs.
+
+Nested corners follow inner = outer − padding (a menu at 10px holds
+6px option rows). The keyboard focus ring hugs each element's own
+radius — never force one on the outline. Native select popups join
+the ladder via `::picker(select)` where supported.
+
 ## Type — three voices
 
 - **Inter** = the UI voice. **JetBrains Mono** = identifiers and code.

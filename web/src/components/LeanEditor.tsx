@@ -49,7 +49,7 @@ export function LeanEditor({
         'relative ' +
         (frameless
           ? ''
-          : 'rounded-md border border-edge bg-surface focus-within:border-ink-faint')
+          : 'rounded-lg border border-edge bg-surface focus-within:border-ink-faint')
       }
     >
       <pre

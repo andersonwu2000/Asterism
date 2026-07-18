@@ -30,7 +30,7 @@ function AskChip({
   return (
     <button
       onClick={onToggle}
-      className={`group flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors duration-150 ${
+      className={`group flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors duration-150 ${
         open ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:bg-surface-2/60 hover:text-ink'
       }`}
       title="ask the engine to explain progress, code or mechanics (Ctrl+/) — read-only, it never acts"
@@ -79,7 +79,7 @@ function ClaudeBanner({ meta }: { meta: Meta | null }) {
       </span>
       {installed && (
         <button
-          className="cursor-pointer rounded-md border border-edge bg-surface px-2.5 py-1 text-ink transition-colors hover:bg-surface-3"
+          className="cursor-pointer rounded-lg border border-edge bg-surface px-2.5 py-1 text-ink transition-colors hover:bg-surface-3"
           disabled={busy}
           onClick={() => void openLogin()}
         >
@@ -209,7 +209,7 @@ function NavItem({
     <Link
       to={to}
       title={title}
-      className={`group relative flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors duration-150 ${
+      className={`group relative flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors duration-150 ${
         active ? 'bg-surface-2 text-ink' : 'text-ink-dim hover:bg-surface-2/60 hover:text-ink'
       }`}
     >

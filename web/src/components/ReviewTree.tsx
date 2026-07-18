@@ -35,7 +35,7 @@ function PaperPane({ pid, anchor }: { pid: string; anchor: string }) {
   if (error) return <div className="text-xs text-ink-faint">Paper text unavailable: {error.message}</div>
   if (!data) return <div className="text-xs text-ink-faint">Loading paper…</div>
   return (
-    <div className="rounded-md border border-edge bg-bg p-3">
+    <div className="rounded-lg border border-edge bg-bg p-3">
       {!data.found && (
         <div className="mb-1 text-[11px] text-warn">
           anchor not found — showing the document head for orientation
@@ -69,7 +69,7 @@ function VouchRow({
     <div className="mb-1.5">
       <div className="flex items-baseline gap-2">
         <span
-          className={`rounded px-1.5 py-0.5 font-mono text-[11px] ${
+          className={`rounded-md px-1.5 py-0.5 font-mono text-[11px] ${
             claim ? 'bg-star/10 text-star' : 'bg-surface-2 text-ink-dim'
           }`}
         >
@@ -119,7 +119,7 @@ function Deliverable({
     }
   }
   return (
-    <div className="rounded-md border border-edge">
+    <div className="rounded-lg border border-edge">
       <button
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-2"
         onClick={() => setOpen((v) => !v)}
@@ -156,7 +156,7 @@ function Deliverable({
           <div className="mb-2 flex items-center justify-end gap-2">
             {rejecting && (
               <input
-                className="w-56 rounded-md border border-edge bg-bg px-2 py-1 text-[11px] text-ink focus:border-danger focus:outline-none"
+                className="w-56 rounded-lg border border-edge bg-bg px-2 py-1 text-[11px] text-ink focus:border-danger focus:outline-none"
                 placeholder="why is this wrong?"
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
@@ -164,7 +164,7 @@ function Deliverable({
               />
             )}
             <button
-              className="rounded-md border border-danger/40 px-2 py-1 text-[11px] text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
+              className="rounded-lg border border-danger/40 px-2 py-1 text-[11px] text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
               disabled={busy}
               title="Kill this claim + everything whose meaning depends on it (slow — recomputes closures)"
               onClick={() => (rejecting ? void reject() : setRejecting(true))}
@@ -179,7 +179,7 @@ function Deliverable({
                 {d.paper}
                 {paper && (
                   <button
-                    className="rounded border border-edge px-1.5 py-0.5 text-[11px] text-ink-dim hover:text-ink"
+                    className="rounded-md border border-edge px-1.5 py-0.5 text-[11px] text-ink-dim hover:text-ink"
                     onClick={() => setShowPaper((v) => !v)}
                   >
                     {showPaper ? 'hide paper' : 'view paper'}
@@ -254,7 +254,7 @@ function RefreshButton({ problem, onDone }: { problem: string; onDone: () => voi
   }
   return (
     <button
-      className="rounded border border-edge px-1.5 py-0.5 text-[11px] text-ink-dim hover:text-ink disabled:opacity-50"
+      className="rounded-md border border-edge px-1.5 py-0.5 text-[11px] text-ink-dim hover:text-ink disabled:opacity-50"
       disabled={state === 'running'}
       onClick={() => void start()}
       title="Recompute the closure live (warms the Lean gateway — slow)"

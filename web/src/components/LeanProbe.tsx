@@ -53,7 +53,7 @@ export function DiagList({ diags }: { diags: EvalDiag[] }) {
         ) : (
           <pre
             key={i}
-            className="overflow-x-auto rounded-md border border-edge bg-white/[0.02] px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink"
+            className="overflow-x-auto rounded-lg border border-edge bg-white/[0.02] px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink"
           >
             <Lean code={d.message} />
           </pre>
@@ -113,7 +113,7 @@ export function LeanProbe({
   const hasInfo = status !== '' || goalText != null || diags.length > 0
   return (
     <div className="mt-2 ml-[22px] max-w-4xl">
-      <div className="rounded-md border border-edge bg-white/[0.02]">
+      <div className="rounded-lg border border-edge bg-white/[0.02]">
         <LeanEditor
           value={code}
           onChange={setCode}
@@ -135,7 +135,7 @@ export function LeanProbe({
         )}
       </div>
       {hasInfo && (
-        <div className="mt-1.5 rounded-md border border-edge px-3 py-2">
+        <div className="mt-1.5 rounded-lg border border-edge px-3 py-2">
           {status !== '' && <div className="text-[11px] text-ink-faint">{status}</div>}
           {goalText && (
             <pre className="overflow-x-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink">

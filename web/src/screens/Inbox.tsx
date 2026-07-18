@@ -44,7 +44,7 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
   const [showReasoning, setShowReasoning] = useState(!longQuestion && !a.reason)
 
   return (
-    <div className="rounded-lg border border-warn/40 bg-surface p-4">
+    <div className="rounded-xl border border-warn/40 bg-surface p-4">
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Link
@@ -53,7 +53,7 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
           >
             {a.problem}
           </Link>
-          <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-ink-dim">
+          <span className="rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-ink-dim">
             {a.file}
           </span>
         </div>
@@ -92,7 +92,7 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
         <div className="ml-auto flex items-center gap-2">
           {rejecting && (
             <input
-              className="w-64 rounded-md border border-edge bg-bg px-2 py-1.5 text-xs text-ink focus:border-danger focus:outline-none"
+              className="w-64 rounded-lg border border-edge bg-bg px-2 py-1.5 text-xs text-ink focus:border-danger focus:outline-none"
               placeholder="why? (guides the Strategist)"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
@@ -125,14 +125,14 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
         </button>
       )}
       {showReasoning && (longQuestion || a.reason) && (
-        <div className="mb-3 max-w-[75ch] rounded-md border border-edge bg-bg px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap text-ink-dim">
+        <div className="mb-3 max-w-[75ch] rounded-lg border border-edge bg-bg px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap text-ink-dim">
           {a.question}
         </div>
       )}
 
       {editing ? (
         <textarea
-          className="h-72 w-full resize-y rounded-md border border-edge bg-bg p-3 font-mono text-xs text-ink focus:border-accent focus:outline-none"
+          className="h-72 w-full resize-y rounded-lg border border-edge bg-bg p-3 font-mono text-xs text-ink focus:border-accent focus:outline-none"
           value={body}
           onChange={(e) => setBody(e.target.value)}
           spellCheck={false}
@@ -184,7 +184,7 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
   }
 
   return (
-    <div className="rounded-lg border border-warn/30 bg-surface p-4">
+    <div className="rounded-xl border border-warn/30 bg-surface p-4">
       <div className="mb-2 flex items-center justify-between">
         <Link
           to={`/problems/${encodeURIComponent(s.problem)}`}
@@ -207,7 +207,7 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
           signed off by
         </span>
         <input
-          className="w-56 rounded-md border border-edge bg-bg px-2 py-1 text-xs text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+          className="w-56 rounded-lg border border-edge bg-bg px-2 py-1 text-xs text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
           placeholder="your name — signs the approval"
           value={signer}
           onChange={(e) => setSigner(e.target.value)}
@@ -260,7 +260,7 @@ function SignoffCard({ s, onDone }: { s: Signoff; onDone: () => void }) {
         <div className="ml-auto flex items-center gap-2">
           {rejecting && (
             <input
-              className="w-64 rounded-md border border-edge bg-bg px-2 py-1.5 text-xs text-ink focus:border-danger focus:outline-none"
+              className="w-64 rounded-lg border border-edge bg-bg px-2 py-1.5 text-xs text-ink focus:border-danger focus:outline-none"
               placeholder="what's still missing?"
               value={reason}
               onChange={(e) => setReason(e.target.value)}

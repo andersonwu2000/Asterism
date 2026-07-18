@@ -1589,7 +1589,7 @@ export default function Constellation({
       {/* the selected node's facts live in the side panel — no echo */}
       {hovered && hovered.goal.id !== selectedId && cam.view !== null && (
         <div
-          className="pointer-events-none absolute z-10 max-w-sm rounded-md border border-edge-strong bg-surface-3 px-3 py-2"
+          className="pointer-events-none absolute z-10 max-w-sm rounded-lg border border-edge-strong bg-surface-3 px-3 py-2"
           style={{
             left: Math.min(
               tx + (shownPosRef.current.get(hovered.goal.id) ?? hovered).x * k + 14,
@@ -1641,7 +1641,7 @@ export default function Constellation({
           over the root band at the sky's top-left */}
       {/* opaque: at high zoom the sky's strokes crossed straight
           through the 90%-alpha plate and garbled the labels (cold-eye) */}
-      <div className="absolute top-3 left-3 flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md bg-surface px-2.5 py-1">
+      <div className="absolute top-3 left-3 flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg bg-surface px-2.5 py-1">
         <button
           className="cursor-pointer text-[11px] text-ink-faint transition-colors hover:text-ink-dim"
           onClick={() =>

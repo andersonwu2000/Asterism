@@ -88,7 +88,7 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
   const leaf = ns ? p.problem.slice(ns.length + 1) : p.problem
 
   return (
-    <div className="relative rounded-lg border border-edge bg-white/[0.015] px-1 pt-1" style={{ width: w }}>
+    <div className="relative rounded-xl border border-edge bg-white/[0.015] px-1 pt-1" style={{ width: w }}>
       <svg width={w} height={h} className="block">
         {/* generous invisible hit areas — 1.5px stars are not targets */}
         {stars.map((s, i) => (
@@ -150,7 +150,7 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
       </Link>
       {hover && (
         <div
-          className="pointer-events-none absolute z-10 max-w-xs rounded-md border border-edge-strong bg-surface-3 px-2.5 py-1.5"
+          className="pointer-events-none absolute z-10 max-w-xs rounded-lg border border-edge-strong bg-surface-3 px-2.5 py-1.5"
           style={{
             left: Math.max(0, Math.min(hover.x + 10, w - 180)),
             top: Math.max(0, Math.min(hover.y + 10, h - 20)),
@@ -231,7 +231,7 @@ export default function Library() {
               <span className="tnum text-[11px] text-star">{hitCount} stars lit</span>
             )}
             <input
-              className="w-56 rounded-md border border-edge bg-surface py-1.5 px-2.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-accent focus:outline-none"
+              className="w-56 rounded-lg border border-edge bg-surface py-1.5 px-2.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-accent focus:outline-none"
               placeholder="find a declaration…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}

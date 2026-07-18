@@ -31,7 +31,7 @@ export default function ListField({
         {values.map((v) => (
           <span
             key={v}
-            className="group flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-ink-dim"
+            className="group flex items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-ink-dim"
           >
             {v}
             <button
@@ -44,7 +44,7 @@ export default function ListField({
           </span>
         ))}
         <input
-          className="w-44 rounded border border-edge bg-surface px-1.5 py-0.5 font-mono text-[11px] text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+          className="w-44 rounded-md border border-edge bg-surface px-1.5 py-0.5 font-mono text-[11px] text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
           placeholder={hint}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}

@@ -65,7 +65,7 @@ export default function RunControl({ problem }: { problem: string }) {
                 : 'engine running'}
           </span>
           <button
-            className="rounded-md border border-edge px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-edge-strong hover:text-ink disabled:pointer-events-none disabled:opacity-45"
+            className="rounded-lg border border-edge px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-edge-strong hover:text-ink disabled:pointer-events-none disabled:opacity-45"
             disabled={busy || d.stopping}
             onClick={() => void act('/api/daemon/stop', { force: false }, 'stop')}
           >
@@ -96,7 +96,7 @@ export default function RunControl({ problem }: { problem: string }) {
               </span>
             )}
           <button
-            className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight disabled:pointer-events-none disabled:opacity-45"
+            className="rounded-lg bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight disabled:pointer-events-none disabled:opacity-45"
             disabled={busy}
             title="run the engine on this problem only"
             onClick={() => void act('/api/daemon/start', { scope: problem }, 'start')}

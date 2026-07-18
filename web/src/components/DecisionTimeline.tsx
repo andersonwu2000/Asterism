@@ -128,7 +128,7 @@ function Row({
   return (
     <div className={`relative pl-4 ${grouped ? 'border-l border-edge-strong/60' : ''}`}>
       <button
-        className="group grid w-full grid-cols-[9.5rem_1fr_auto] items-baseline gap-2 rounded px-2 py-1.5 text-left hover:bg-surface"
+        className="group grid w-full grid-cols-[9.5rem_1fr_auto] items-baseline gap-2 rounded-md px-2 py-1.5 text-left hover:bg-surface"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
@@ -155,7 +155,7 @@ function Row({
                  ('failed:stalled') read as debris glued to the summary
                  (owner, audit 2026-07-11) */
               <span
-                className={`rounded border border-edge px-1.5 py-px text-[10px] ${OUTCOME_CLS[d.outcome] ?? 'text-ink-dim'}`}
+                className={`rounded-md border border-edge px-1.5 py-px text-[10px] ${OUTCOME_CLS[d.outcome] ?? 'text-ink-dim'}`}
               >
                 {OUTCOME_LABEL[d.outcome] ??
                   d.outcome.replace(':', ' · ').replace(/_/g, ' ')}
@@ -165,7 +165,7 @@ function Row({
         </span>
       </button>
       {open && (
-        <div className="mx-2 mb-2 rounded-md border border-edge bg-surface px-3 py-2">
+        <div className="mx-2 mb-2 rounded-lg border border-edge bg-surface px-3 py-2">
           {d.brief && (
             <pre className="mb-2 font-mono text-[11px] whitespace-pre-wrap text-ink-dim">
               {linkifyGoals(d.brief, slugRe, bySlug, onSelectGoal, `b${d.id}`)}

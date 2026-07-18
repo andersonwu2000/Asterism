@@ -111,7 +111,7 @@ export function MarkdownEditor({
   heightClass?: string
 }) {
   return (
-    <div className="relative rounded-md border border-edge bg-surface focus-within:border-ink-faint has-[textarea:disabled]:opacity-60">
+    <div className="relative rounded-xl border border-edge bg-surface focus-within:border-ink-faint has-[textarea:disabled]:opacity-60">
       <pre
         aria-hidden
         className={'pointer-events-none absolute inset-0 overflow-hidden text-ink ' + METRICS}

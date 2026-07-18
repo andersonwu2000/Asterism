@@ -56,7 +56,7 @@ export default function StrategyPanel({
           {data && <span className="text-ink-faint"> on {data.goal_slug}</span>}
         </span>
         <button
-          className="ml-2 rounded px-1.5 text-ink-faint hover:text-ink"
+          className="ml-2 rounded-md px-1.5 text-ink-faint hover:text-ink"
           onClick={onClose}
           title="Close"
         >
@@ -81,7 +81,7 @@ export default function StrategyPanel({
               {data.subgoals.map((sg) => (
                 <button
                   key={sg.id}
-                  className="flex items-baseline justify-between rounded px-2 py-1 text-left hover:bg-surface-2"
+                  className="flex items-baseline justify-between rounded-md px-2 py-1 text-left hover:bg-surface-2"
                   onClick={() => onSelectGoal(sg.id)}
                 >
                   <span className="font-mono text-xs text-ink">{sg.slug}</span>
@@ -96,7 +96,7 @@ export default function StrategyPanel({
                 <SectionLabel>failures</SectionLabel>
                 <div className="mb-4 flex flex-col gap-1">
                   {data.dead_attempts.map((a) => (
-                    <div key={a.id} className="rounded border border-edge px-2 py-1.5">
+                    <div key={a.id} className="rounded-md border border-edge px-2 py-1.5">
                       <div className="flex justify-between text-[11px]">
                         <span className="font-mono text-danger/90">{a.failure_reason}</span>
                         <span className="text-ink-faint">{relTime(a.ts)}</span>

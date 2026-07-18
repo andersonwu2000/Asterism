@@ -72,7 +72,7 @@ function renderSpans(s: string) {
   return parts.map((p, i) => {
     if (p.startsWith('`') && p.endsWith('`')) {
       return (
-        <code key={i} className="rounded bg-white/[0.06] px-1 font-mono text-[0.92em] text-ink">
+        <code key={i} className="rounded-md bg-white/[0.06] px-1 font-mono text-[0.92em] text-ink">
           <Lean code={p.slice(1, -1)} />
         </code>
       )
@@ -265,13 +265,13 @@ function DeclEntry({
       {d.signature && !probing && (
         <div className="group/sig relative mt-2 ml-[22px] max-w-4xl">
           <pre
-            className="overflow-x-auto rounded-md border border-edge bg-white/[0.02] px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink"
+            className="overflow-x-auto rounded-lg border border-edge bg-white/[0.02] px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink"
             title={d.signature}
           >
             <Lean code={conciseSignature(d.signature, short)} declHead />
           </pre>
           <button
-            className="absolute right-2 bottom-2 cursor-pointer rounded border border-edge bg-surface px-2.5 py-0.5 font-mono text-[11px] text-ink-dim opacity-0 transition-opacity group-hover/sig:opacity-100 hover:border-edge-strong hover:text-ink"
+            className="absolute right-2 bottom-2 cursor-pointer rounded-md border border-edge bg-surface px-2.5 py-0.5 font-mono text-[11px] text-ink-dim opacity-0 transition-opacity group-hover/sig:opacity-100 hover:border-edge-strong hover:text-ink"
             onClick={() => setProbing(true)}
             title="expand into runnable Lean — full type via #check, axioms below, edit freely"
           >
@@ -645,7 +645,7 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
             buried in the counts line (owner, 2026-07-14) */}
         {data.signoff?.name && (
           <span
-            className={`ml-auto rounded-md border px-3 py-1 text-right ${
+            className={`ml-auto rounded-lg border px-3 py-1 text-right ${
               data.signoff.seal_ok ? 'border-edge' : 'border-warn/50'
             }`}
             title={`signed ${data.signoff.at}${
@@ -792,7 +792,7 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
               {data.files.map((f) => (
                 <button
                   key={f.path}
-                  className={`flex cursor-pointer items-baseline justify-between rounded px-2 py-1.5 text-left font-mono text-xs transition-colors ${
+                  className={`flex cursor-pointer items-baseline justify-between rounded-md px-2 py-1.5 text-left font-mono text-xs transition-colors ${
                     f.path === active?.path
                       ? 'bg-surface-2 text-ink'
                       : 'text-ink-dim hover:bg-surface-2 hover:text-ink'

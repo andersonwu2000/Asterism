@@ -28,7 +28,7 @@ export default function LogTail() {
   // sentence (design review).
   if (lines.length === 0) {
     return (
-      <div className="rounded-lg border border-edge bg-surface px-3 py-2 text-xs text-ink-faint">
+      <div className="rounded-xl border border-edge bg-surface px-3 py-2 text-xs text-ink-faint">
         No log output yet — the tail picks up when a daemon run starts.
       </div>
     )
@@ -36,7 +36,7 @@ export default function LogTail() {
   return (
     <div
       ref={boxRef}
-      className="h-64 overflow-y-auto rounded-lg border border-edge bg-bg p-3"
+      className="h-64 overflow-y-auto rounded-xl border border-edge bg-bg p-3"
       onScroll={(e) => {
         const el = e.currentTarget
         stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30

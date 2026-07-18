@@ -149,7 +149,7 @@ export default function DiffView({ left, right }: { left: string; right: string 
   }
   useEffect(check, [chunks])
   return (
-    <div className="overflow-hidden rounded-md border border-edge">
+    <div className="overflow-hidden rounded-lg border border-edge">
       <div className="flex items-center gap-2 border-b border-edge bg-surface-2 px-3 py-1 text-[11px] text-ink-faint">
         <span>current → proposed</span>
         {changed > 0 && <span className="tnum">· {changed} changed lines</span>}

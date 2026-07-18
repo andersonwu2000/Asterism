@@ -152,7 +152,7 @@ export default function New() {
         name
       </label>
       <input
-        className="mb-1 w-96 rounded-md border border-edge bg-surface px-2.5 py-1.5 font-mono text-sm text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+        className="mb-1 w-96 rounded-lg border border-edge bg-surface px-2.5 py-1.5 font-mono text-sm text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
         placeholder="Topology.my_theorem"
         value={name}
         onChange={(e) => setName(e.target.value)}
@@ -165,7 +165,7 @@ export default function New() {
         what should be proved?
       </label>
       <textarea
-        className="h-64 w-full resize-y rounded-md border border-edge bg-surface p-3 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+        className="h-64 w-full resize-y rounded-lg border border-edge bg-surface p-3 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
         placeholder={
           'Describe the mathematics in natural language: the objects involved, the ' +
           'statements you want, any routes to prefer or avoid.\n\nExample: Compute the ' +
@@ -243,7 +243,7 @@ export default function New() {
             <DiagList diags={check.parts.root ?? []} />
           </div>
           {check.phase !== 'idle' && (
-            <div className="rounded-md border border-edge bg-white/[0.02]">
+            <div className="rounded-lg border border-edge bg-white/[0.02]">
               <div className="flex items-baseline gap-2 border-b border-edge px-3 py-1.5">
                 <span className="text-[10px] tracking-widest text-ink-faint uppercase">
                   goal at cursor
@@ -305,7 +305,7 @@ export default function New() {
       )}
 
       {error && (
-        <pre className="mb-3 rounded-md border border-edge-strong bg-surface px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink">
+        <pre className="mb-3 rounded-lg border border-edge-strong bg-surface px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink">
           {error}
         </pre>
       )}

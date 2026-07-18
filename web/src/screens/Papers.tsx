@@ -69,7 +69,7 @@ function ShelfRow({ p, onChanged }: { p: PaperShelfItem; onChanged: () => void }
         <td className="pr-4 pl-3">
           {renaming ? (
             <input
-              className="w-full rounded border border-edge bg-bg px-1.5 py-0.5 text-[13px] text-ink focus:border-ink-faint focus:outline-none"
+              className="w-full rounded-md border border-edge bg-bg px-1.5 py-0.5 text-[13px] text-ink focus:border-ink-faint focus:outline-none"
               defaultValue={p.title ?? ''}
               placeholder={p.source_name}
               autoFocus
@@ -207,7 +207,7 @@ export default function Papers() {
         </div>
         <div className="flex items-center gap-2">
           <input
-            className="w-96 rounded-md border border-edge bg-surface px-2.5 py-1.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+            className="w-96 rounded-lg border border-edge bg-surface px-2.5 py-1.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
             placeholder={'C:\\path\\to\\paper.pdf — or .md/.txt/.tex'}
             value={path}
             onChange={(e) => setPath(e.target.value)}
@@ -293,7 +293,7 @@ export function PaperReader({ id }: { id: string }) {
             <Link
               key={p.id}
               to={`/papers/${encodeURIComponent(p.id)}`}
-              className={`block truncate rounded-md px-2 py-1.5 font-mono text-[12px] transition-colors ${
+              className={`block truncate rounded-lg px-2 py-1.5 font-mono text-[12px] transition-colors ${
                 p.id === id
                   ? 'bg-surface-2 text-ink'
                   : 'text-ink-dim hover:bg-surface-2/60 hover:text-ink'

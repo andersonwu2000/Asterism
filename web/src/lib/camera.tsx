@@ -220,7 +220,7 @@ export function CameraControls({
   refit: () => void
 }) {
   return (
-    <div className="absolute bottom-3 left-3 flex overflow-hidden rounded-md border border-edge bg-surface">
+    <div className="absolute bottom-3 left-3 flex overflow-hidden rounded-lg border border-edge bg-surface">
       {(
         [
           ['−', 0.7],

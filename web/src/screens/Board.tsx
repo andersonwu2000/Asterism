@@ -327,7 +327,7 @@ export default function Board() {
         {Array.from({ length: 7 }, (_, i) => (
           <div
             key={i}
-            className="mb-3 h-9 animate-pulse rounded-md bg-surface"
+            className="mb-3 h-9 animate-pulse rounded-lg bg-surface"
             style={{ animationDelay: `${i * 80}ms`, opacity: 1 - i * 0.11 }}
           />
         ))}
@@ -346,7 +346,7 @@ export default function Board() {
         </ol>
         <Link
           to="/new"
-          className="mt-5 inline-block rounded-md bg-ink px-4 py-2 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
+          className="mt-5 inline-block rounded-lg bg-ink px-4 py-2 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
         >
           New problem
         </Link>
@@ -421,13 +421,13 @@ export default function Board() {
         </div>
         <Link
           to="/new"
-          className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
+          className="rounded-lg bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
         >
           New problem
         </Link>
       </div>
       {error && (
-        <div className="mb-3 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+        <div className="mb-3 rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
           Live update failed ({error.message}) — showing last known state.
         </div>
       )}
@@ -435,7 +435,7 @@ export default function Board() {
         <div className="relative">
           <input
             ref={filterRef}
-            className="w-64 rounded-md border border-edge bg-surface py-1.5 pr-8 pl-2.5 text-xs text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
+            className="w-64 rounded-lg border border-edge bg-surface py-1.5 pr-8 pl-2.5 text-xs text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
             placeholder="filter problems…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -446,7 +446,7 @@ export default function Board() {
               }
             }}
           />
-          <kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border border-edge bg-surface-2 px-1.5 text-[10px] text-ink-faint">
+          <kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded-md border border-edge bg-surface-2 px-1.5 text-[10px] text-ink-faint">
             /
           </kbd>
         </div>
