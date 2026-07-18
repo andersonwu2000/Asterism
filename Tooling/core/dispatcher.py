@@ -908,6 +908,10 @@ DAEMON_START_ISO: "str | None" = None
 # (librarian audit / backward retry chains run for hours under load).
 LEASE_TTL_SEC = 6 * 3600.0
 
+# Re-export (tests + pop loop): the Lean/NL queue-kind partition lives
+# in core/warmup.py with the background-warm machinery.
+from .warmup import LEAN_QUEUE_KINDS  # noqa: E402
+
 
 class WorkerDone(_typing.NamedTuple):
     """`_run_pipeline`'s result — NAMED so a new field can never silently
@@ -1842,33 +1846,13 @@ def run(workspace: Path, *, once: bool = False,
               f"awaiting_human (unresolved RequestUserAmend); dispatch "
               f"suppressed until resolved: {_paused_startup}", flush=True)
 
-    # Phase 1 gateway: launch long-living LSP HTTP MCP server, wait
-    # until backend pre-warm completes (mathlib loaded). Per-spawn MCP
-    # config will point at this gateway via HTTP; spawns no longer
-    # fork their own lake serve. Cold start ~30-145s amortized once
-    # per daemon startup. start_gateway registers an atexit handler so
-    # the subprocess dies with the daemon — we don't need to track the
-    # Popen ourselves here.
-    from ..lsp import lifecycle as gateway_lifecycle
-    gateway_lifecycle.start_gateway(workspace)
-
-    # Framework⇄Lean contract gate (task #12): when the toolchain
-    # fingerprint (lean-toolchain + lake-manifest) changed since the last
-    # recorded pass, run the interface-contract suite once on the freshly
-    # warmed gateway — a red contract means every proving spawn would be
-    # burning budget against a broken probe/parser, so refuse to start.
-    # Unchanged fingerprint = zero cost. Mechanism, not discipline: the
-    # toolchain cannot change without the suite running once.
-    from ..quality import lean_contracts
-    if not lean_contracts.check_on_startup(workspace):
-        # the warm workers themselves are usually what a red contract
-        # indicts (stock-lean fallback when the server binary landed
-        # after warm-up) — leaving that gateway alive would wedge
-        # every retry into the same failure via reuse
-        from ..lsp import lifecycle
-        lifecycle.kill_current_gateway()
-        _exit_pool_fast(pool)
-        return 2
+    # Phase 1 gateway — NL-first background warm (core/warmup.py):
+    # NL kinds dispatch immediately; Lean kinds gate on the ready
+    # flip; warm/contract failure exits rc 2 after the NL drain. The
+    # strategist commit path is gateway-free (dedupe defeq probes ride
+    # the Forward side, which is gated).
+    from . import warmup as _warmup
+    gateway_warm = _warmup.start_background(workspace)
 
     # Periodic TREE.md refresh targets. A `--scope X` run only mutates
     # in-scope problems, so refreshing all ~281 problems' trees every tick
@@ -2302,9 +2286,15 @@ def run(workspace: Path, *, once: bool = False,
         # the same (target_id, kind) is already in flight in this
         # daemon — bfs_refill caps at 1 but daemon recovery + race
         # corners mean defense-in-depth here is cheap.
-        while (not (stopping or drifting or quota_waiting)
+        # While the gateway is still warming, only NL kinds pop —
+        # Lean rows stay queued (unleased) for the ready flip.
+        while (not (stopping or drifting or quota_waiting
+                    or gateway_warm["failed"])
                 and len(futures) < pool_size):
-            row = db.pop_queue(conn, scope=scope)
+            row = db.pop_queue(
+                conn, scope=scope,
+                exclude_kinds=(None if gateway_warm["ready"]
+                               else LEAN_QUEUE_KINDS))
             if row is None:
                 break
             qid = int(row["id"])
@@ -2396,6 +2386,17 @@ def run(workspace: Path, *, once: bool = False,
                          if _disp_file else target_id)
             print(f"[dispatch] {kind} {target_kind}={_disp_tid} "
                   f"pid={pipeline_id[:8]}", flush=True)
+
+        # Deferred warm-failure exit: keep the pre-NL-first semantics
+        # (refuse to run without a healthy gateway + green contract),
+        # but only after the in-flight NL work drains — its commits are
+        # durable and the next start picks them up.
+        if gateway_warm["failed"] and not futures:
+            print(f"[gateway] warm-up failed: {gateway_warm['failed']} "
+                  f"— NL work drained, exiting", flush=True)
+            pool.shutdown(wait=True)
+            db.release_own_leases(conn)
+            return 2
 
         # Non-destructive emptiness check (v17): the old probing pop
         # silently DISCARDED a row whenever every popped row above had

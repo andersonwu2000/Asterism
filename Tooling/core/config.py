@@ -73,6 +73,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "presearch.timeout_sec": "pre-search agent budget (ASTERISM_PRESEARCH_TIMEOUT_SEC)",
     "library.require_signoff": "Ingest pauses for approve-ingest (True)",
     "paper_index.timeout_sec": "paper-map one-shot spawn budget (1200)",
+    "explainer.model": "serve chat-explainer spawn model (teammate serve/chat.py; registered here to keep the drift gate green)",
     "<kind>.model": "per-pipeline model override (ASTERISM_<KIND>_MODEL → ASTERISM_AGENT_MODEL)",
     "<kind>.provider": "per-pipeline LLM provider (ASTERISM_<KIND>_PROVIDER → ASTERISM_LLM_PROVIDER; 'claude')",
 }

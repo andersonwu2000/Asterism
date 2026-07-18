@@ -2658,7 +2658,9 @@ def enqueue(conn: sqlite3.Connection, *, kind: str, target_id: str,
 
 
 def pop_queue(conn: sqlite3.Connection, *, scope: "str | None" = None,
-              lease_owner: "int | None" = None) -> sqlite3.Row | None:
+              lease_owner: "int | None" = None,
+              exclude_kinds: "tuple[str, ...] | None" = None,
+              ) -> sqlite3.Row | None:
     """CLAIM the highest-priority unleased row (v17 lease semantics).
 
     The row is NOT deleted: it gets `owner_pid`+`leased_at` stamped and
@@ -2671,21 +2673,32 @@ def pop_queue(conn: sqlite3.Connection, *, scope: "str | None" = None,
 
     `scope` filters to one problem's rows (None = all rows — an unscoped
     daemon still pops everything; concurrent double-dispatch is prevented
-    by the lease, not by scope). BEGIN IMMEDIATE makes the select+claim
-    atomic across processes (WAL single-writer)."""
+    by the lease, not by scope). `exclude_kinds` leaves rows of those
+    kinds unclaimed (NL-first startup: Lean kinds wait out the gateway
+    warm without losing their queue position). BEGIN IMMEDIATE makes
+    the select+claim atomic across processes (WAL single-writer)."""
     owner = lease_owner if lease_owner is not None else os.getpid()
+    excl_sql = ""
+    excl_params: "tuple[str, ...]" = ()
+    if exclude_kinds:
+        excl_sql = (" AND kind NOT IN ("
+                    + ",".join("?" * len(exclude_kinds)) + ")")
+        excl_params = tuple(exclude_kinds)
     conn.execute("BEGIN IMMEDIATE")
     try:
         if scope is None:
             row = conn.execute(
                 "SELECT * FROM queue WHERE owner_pid IS NULL"
-                " ORDER BY priority DESC, id ASC LIMIT 1").fetchone()
+                + excl_sql +
+                " ORDER BY priority DESC, id ASC LIMIT 1",
+                excl_params).fetchone()
         else:
             row = conn.execute(
                 "SELECT * FROM queue WHERE owner_pid IS NULL"
                 " AND problem LIKE ?"        # scope is a LIKE pattern
+                + excl_sql +
                 " ORDER BY priority DESC, id ASC LIMIT 1",
-                (scope,)).fetchone()
+                (scope, *excl_params)).fetchone()
         if row is None:
             conn.commit()
             return None
