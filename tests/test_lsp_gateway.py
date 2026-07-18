@@ -1044,6 +1044,47 @@ def test_validate_file_clean_when_no_diags(
     assert "timed_out" not in out
 
 
+def test_errors_at_unconverged_says_elaborating_not_clean(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """errors_at fake-clean class (2026-07-18): while Lean is still
+    elaborating (waitForDiagnostics expires), the stash is typically
+    empty — the old response was a bare count:0 that read as 'clean'.
+    The response must carry elaborating:true + a warning saying 0 does
+    NOT mean clean."""
+    (tmp_path / "x.lean").write_text(
+        "theorem t : True := trivial\n", encoding="utf-8")
+    backend = _DiagBackend(wait_raises=TimeoutError("still elaborating"))
+    ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
+    try:
+        out = json.loads(asyncio.run(lsp_gateway.errors_at()))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert out["count"] == 0
+    assert out["elaborating"] is True
+    assert "does NOT mean" in out["warning"]
+
+
+def test_errors_at_converged_clean_has_no_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Guard: the normal path (wait confirms, zero diagnostics) stays a
+    plain clean answer — no elaborating marker, no warning noise."""
+    (tmp_path / "x.lean").write_text(
+        "theorem t : True := trivial\n", encoding="utf-8")
+    backend = _DiagBackend(wait_raises=None, diags=[])
+    ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
+    try:
+        out = json.loads(asyncio.run(lsp_gateway.errors_at()))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert out["count"] == 0
+    assert "elaborating" not in out
+    assert "warning" not in out
+
+
 def test_verify_sync_unconfirmed_diags_are_transient(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

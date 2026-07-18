@@ -1389,11 +1389,7 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
         # publishDiagnostics for it, and all command snapshots have
         # elaborated. Replaces the prior fileProgress + 3s-settle
         # polling, which over-waited by ~3s on every tool call.
-        try:
-            backend.wait_for_diagnostics(slot.slot_uri, slot.file_version,
-                                          timeout=120)
-        except (TimeoutError, RuntimeError):
-            pass
+        converged = _diags_converged(backend, slot)
         diags = backend.diagnostics_for(slot.slot_uri)
         q_line = _merged_line_for(line_map, start_line)
         try:
@@ -1428,6 +1424,9 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
         "_server_recv_ts": _recv_ts,
         "_server_send_ts": _ts_now(),
     }
+    if not converged:
+        response["elaborating"] = True
+        response["warning"] = _ELABORATING_WARNING
     if _locked_warn is not None:
         response["locked_signature"] = _locked_warn
     dur = time.perf_counter() - t0
@@ -1436,7 +1435,7 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
                              "end_line": end_line,
                              "new_text_lines": new_text.count("\n") + 1},
                     "duration_s": dur,
-                    "slot_kind": _slot_kind,
+                    "slot_kind": _slot_kind, "converged": converged,
                     "diagnostic_count": len(diags)})
     return json.dumps(response, ensure_ascii=False)
 
@@ -1504,6 +1503,29 @@ def goal_at(line: int, col: int) -> str:
     return json.dumps(resp, ensure_ascii=False)
 
 
+def _diags_converged(backend, slot) -> bool:
+    """True iff Lean finished elaborating the slot's current version and
+    flushed its publishDiagnostics — i.e. `diagnostics_for` is the FINAL
+    answer. False (wait expired / client error) means the stash is a
+    snapshot of an unfinished elaborate: an empty list is NOT "clean",
+    it is "no news yet". Every tool that returns diagnostics to the
+    agent must surface this bit instead of letting a timeout masquerade
+    as a clean file (the `errors_at`-fake-clean class, 2026-07-18)."""
+    try:
+        backend.wait_for_diagnostics(slot.slot_uri, slot.file_version,
+                                     timeout=120)
+        return True
+    except (TimeoutError, RuntimeError):
+        return False
+
+
+_ELABORATING_WARNING = (
+    "Lean has NOT finished elaborating this file (120s wait expired) — "
+    "the diagnostics here are INCOMPLETE and a count of 0 does NOT mean "
+    "the file is clean. Re-run this tool to check again."
+)
+
+
 @mcp.tool()
 @_offload_to_thread
 def errors_at(line: int | None = None) -> str:
@@ -1528,6 +1550,7 @@ def errors_at(line: int | None = None) -> str:
     # mirror into the slot, so diagnostics track current disk (T1).
     _resync_buffer_from_disk(meta)
     with _acquire_slot(meta, swap_in=True) as (slot, _slot_kind):
+        converged = _diags_converged(backend, slot)
         diags = backend.diagnostics_for(slot.slot_uri)
         formatted = [_format_diag(d) for d in diags]
         slot_line_map = slot.line_map
@@ -1541,12 +1564,15 @@ def errors_at(line: int | None = None) -> str:
     dur = time.perf_counter() - t0
     _log_for(meta, {"event": "tool_call", "name": "errors_at",
                     "args": {"line": line}, "duration_s": dur,
-                    "slot_kind": _slot_kind,
+                    "slot_kind": _slot_kind, "converged": converged,
                     "returned_count": len(formatted)})
-    return json.dumps({"diagnostics": formatted, "count": len(formatted),
-                       "_server_recv_ts": _recv_ts,
-                       "_server_send_ts": _ts_now()},
-                      ensure_ascii=False)
+    response = {"diagnostics": formatted, "count": len(formatted),
+                "_server_recv_ts": _recv_ts,
+                "_server_send_ts": _ts_now()}
+    if not converged:
+        response["elaborating"] = True
+        response["warning"] = _ELABORATING_WARNING
+    return json.dumps(response, ensure_ascii=False)
 
 
 # ── validate_file submission mirror (#8 / P2) ────────────────────────
