@@ -110,6 +110,14 @@ def build_projection(*, round_no: int, attempts_dir: Path,
          "(no Programme yet — this cycle's proposal is rev 1; judge it "
          "as the founding revision)")
         + "\n\n---\n\n"
+        # Label the weld (a5 rev-13 verdict called a Thesis line stale
+        # because of it): the execution record below exists only in
+        # THIS projection; the problem-dir PROGRAMME.md carries the
+        # revision text alone, so proposal text describing that file
+        # is judged against the right referent.
+        + "_(Execution record below is assembled for this review; the "
+        "problem's PROGRAMME.md file carries the revision text only.)_"
+        + "\n\n"
         + ("\n".join(outcome_lines) if outcome_lines else
            "## Completed Inject batches\n(none since the last commit)")
         + "\n", encoding="utf-8")
@@ -182,10 +190,11 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
     # produced no usable ruling twice is a wake-level failure).
     last_err = ""
     for _attempt in range(2):
+        sid = str(uuid.uuid4())
         rc = agent.spawn_llm(
             kind="adversary", prompt_path=prompt_path,
             problem_dir=proj, attempts_dir=proj,
-            session_id=str(uuid.uuid4()), timeout_sec=timeout_sec,
+            session_id=sid, timeout_sec=timeout_sec,
             # The projection dir breaks the standard attempts layout —
             # attribute the judge's cost explicitly or the spawn_usage
             # row is silently dropped (invisible-judge class, 07-18).
@@ -209,5 +218,16 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
             last_err = perr
             vpath.unlink(missing_ok=True)
             continue
+        # Framework-feedback questionnaire — the judge was the one spawn
+        # family without the channel (zero adversary lines ever landed).
+        # Resume cwd stays the projection: isolation holds; only the
+        # record's label names the real problem.
+        from . import _feedback
+        _feedback.attempt_feedback(
+            kind="adversary", sid=sid, slug=f"r{round_no}",
+            outcome=str(verdict.get("verdict", "")),
+            problem_dir=proj, attempts_dir=proj,
+            workspace=attempts_dir.parent.parent,
+            problem_label=problem)
         return verdict, "", 0
     return None, last_err, 0

@@ -177,7 +177,8 @@ _FEEDBACK_TIMEOUT_SEC = 90
 
 def attempt_feedback(*, kind: str, sid: str, slug: str, outcome: str,
                      problem_dir: Path, attempts_dir: Path,
-                     workspace: Path | None) -> None:
+                     workspace: Path | None,
+                     problem_label: str | None = None) -> None:
     """Dedicated framework-feedback STEP, run at the tail of every pipeline.
 
     `--resume <sid>` the just-finished agent session (so the agent answers with
@@ -213,8 +214,12 @@ def attempt_feedback(*, kind: str, sid: str, slug: str, outcome: str,
         if rc != 0 or not wrote:
             print(f"[feedback] {kind}/{slug}: spawn rc={rc}, "
                   f"scratch_written={wrote} (no record landed)", flush=True)
+        # `problem_label` override: a caller whose problem_dir is not the
+        # problem (the Adversary's isolated projection dir) still labels
+        # the record honestly.
         record_survivor(workspace, attempts_dir=attempts_dir, kind=kind,
-                        slug=slug, problem=problem_dir.name, outcome=outcome)
+                        slug=slug, problem=problem_label or problem_dir.name,
+                        outcome=outcome)
     except Exception as exc:  # noqa: BLE001 — feedback must never break pipeline
         print(f"[feedback] {kind}/{slug}: raised {type(exc).__name__}: {exc}",
               flush=True)
