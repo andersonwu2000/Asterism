@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { navigate } from './router'
 import { Lean } from './lean'
 import { withMath } from './tex'
+import { emitChatGoalHover, emitChatGoalOpen } from './chatFocus'
 
 /*
  * Markdown-lite for MACHINE-AUTHORED prose the human reads: chat
@@ -22,13 +23,16 @@ import { withMath } from './tex'
 
 const CITE_RE = /\[(problem|goal|library|paper):([^[\]\n]+)\]/g
 
-function citeTarget(kind: string, body: string): { to: string; label: string } | null {
+function citeTarget(
+  kind: string,
+  body: string,
+): { to: string; label: string; goal?: { problem: string; slug: string } } | null {
   const parts = body.split(':')
   if (kind === 'problem') return { to: `/problems/${body}`, label: body }
   if (kind === 'goal') {
     if (parts.length < 2) return null
     const slug = parts.slice(1).join(':')
-    return { to: `/problems/${parts[0]}`, label: slug }
+    return { to: `/problems/${parts[0]}`, label: slug, goal: { problem: parts[0], slug } }
   }
   if (kind === 'library') return { to: `/library/${body}`, label: body }
   if (kind === 'paper') return { to: `/papers/${body}`, label: body }
@@ -46,17 +50,25 @@ function renderCites(seg: string, keyBase: string): ReactNode[] {
     if (t === null) {
       out.push(m[0])
     } else {
-      const to = t.to
+      const { to, goal } = t
+      const open = () => {
+        // goal citations pin their star: the pending-open survives the
+        // navigation and the problem screen consumes it on arrival
+        if (goal) emitChatGoalOpen(goal)
+        navigate(to)
+      }
       out.push(
         <span
           key={`${keyBase}c${m.index}`}
           role="link"
           tabIndex={0}
           className="cursor-pointer font-mono text-[0.92em] text-ink underline decoration-ink-faint decoration-dotted underline-offset-2 hover:decoration-ink"
-          onClick={() => navigate(to)}
+          onClick={open}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') navigate(to)
+            if (e.key === 'Enter') open()
           }}
+          onMouseEnter={goal ? () => emitChatGoalHover(goal) : undefined}
+          onMouseLeave={goal ? () => emitChatGoalHover(null) : undefined}
         >
           {t.label}
         </span>,

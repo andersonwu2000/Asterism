@@ -101,6 +101,34 @@ const SUGGESTIONS = [
 
 // -- the drawer --------------------------------------------------------------
 
+// Transcript survives a refresh (QPaper lesson: they shipped storage
+// persistence + restore after refresh bugs bit real users). Session-
+// storage: per-tab, survives F5, dies with the tab — matching the
+// design's "browser session survival" scope. Capped like QPaper's 50.
+const STORE_KEY = 'asterism.chat.transcript'
+const STORE_MAX = 50
+
+function loadTranscript(): ChatMsg[] {
+  try {
+    const raw = sessionStorage.getItem(STORE_KEY)
+    if (!raw) return []
+    const v = JSON.parse(raw)
+    return Array.isArray(v)
+      ? v.filter((m) => m && typeof m.text === 'string' && (m.role === 'user' || m.role === 'assistant'))
+      : []
+  } catch {
+    return []
+  }
+}
+
+function saveTranscript(messages: ChatMsg[]): void {
+  try {
+    sessionStorage.setItem(STORE_KEY, JSON.stringify(messages.slice(-STORE_MAX)))
+  } catch {
+    /* quota / private mode — the transcript just won't survive */
+  }
+}
+
 export default function ChatDrawer({
   open,
   onClose,
@@ -111,7 +139,7 @@ export default function ChatDrawer({
   onStreamingChange: (v: boolean) => void
 }) {
   const route = useRoute()
-  const [messages, setMessages] = useState<ChatMsg[]>([])
+  const [messages, setMessages] = useState<ChatMsg[]>(loadTranscript)
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [stage, setStage] = useState<string | null>(null)
@@ -125,14 +153,33 @@ export default function ChatDrawer({
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const streamingRef = useRef(false)
 
+  // restored transcript + a backend that forgot the session (serve
+  // restart) = the display remembers, the engine doesn't; say so once
+  const [engineForgot, setEngineForgot] = useState(false)
   useEffect(() => {
     apiGet<ChatState>('/api/chat/state')
-      .then(setMeta)
+      .then((s) => {
+        setMeta(s)
+        if (!s.has_session && loadTranscript().length > 0) setEngineForgot(true)
+      })
       .catch(() => undefined)
   }, [])
   useEffect(() => {
     if (open) inputRef.current?.focus()
   }, [open])
+
+  // persist: settled states normally, plus beforeunload so a refresh
+  // mid-stream keeps the partial answer (first-class, like stop)
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
+  useEffect(() => {
+    if (!streaming) saveTranscript(messages)
+  }, [messages, streaming])
+  useEffect(() => {
+    const flush = () => saveTranscript(messagesRef.current)
+    window.addEventListener('beforeunload', flush)
+    return () => window.removeEventListener('beforeunload', flush)
+  }, [])
 
   const setStreamingBoth = useCallback(
     (v: boolean) => {
@@ -210,6 +257,7 @@ export default function ChatDrawer({
             setStage(ev.stage)
           } else if (t === 'done') {
             finished = true
+            if (ev.ok !== false) setEngineForgot(false)
             if (ev.ok === false)
               setMessages((m) => {
                 const out = m.slice()
@@ -265,6 +313,12 @@ export default function ChatDrawer({
       await apiPost('/api/chat/clear')
       setMessages([])
       setNote(null)
+      setEngineForgot(false)
+      try {
+        sessionStorage.removeItem(STORE_KEY)
+      } catch {
+        /* ignore */
+      }
     } catch (e) {
       setNote(String((e as Error).message))
     }
@@ -420,6 +474,13 @@ export default function ChatDrawer({
                   )}
                 </div>
               ),
+            )}
+            {engineForgot && (
+              <div className="mt-4 flex items-center gap-2 text-[10px] text-ink-faint">
+                <span className="h-px flex-1 bg-edge" />
+                restored on this tab — the engine reads your next question fresh
+                <span className="h-px flex-1 bg-edge" />
+              </div>
             )}
           </div>
         )}

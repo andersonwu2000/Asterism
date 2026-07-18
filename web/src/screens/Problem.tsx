@@ -4,6 +4,7 @@ import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { renderProse } from '../lib/prose'
+import { onChatGoalHover, onChatGoalOpen, takePendingGoalOpen } from '../lib/chatFocus'
 import { goalStatusLabel } from '../lib/vocab'
 import { Button, ErrorState, StatusBadge, TabNav } from '../components/ui'
 import Constellation from '../components/Constellation'
@@ -447,12 +448,41 @@ export default function Problem({ name }: { name: string }) {
   const [routeHover, setRouteHover] = useState<number[] | null>(null)
   const [selectedStrategy, setSelectedStrategy] = useState<number | null>(null)
   const [fileToOpen, setFileToOpen] = useState<string | null>(null)
+  // stars lit from the chat drawer: hovering a [goal:…] citation in an
+  // answer lights the star (same text↔map law as route hover); clicking
+  // one selects it — takePendingGoalOpen survives the navigation when
+  // the citation pointed at a different problem's sky
+  const [chatHoverSlug, setChatHoverSlug] = useState<string | null>(null)
+  useEffect(
+    () =>
+      onChatGoalHover((ref) =>
+        setChatHoverSlug(ref !== null && ref.problem === name ? ref.slug : null),
+      ),
+    [name],
+  )
+  useEffect(() => {
+    if (!data) return
+    const consume = (ref: { problem: string; slug: string } | null) => {
+      if (ref === null || ref.problem !== name) return
+      const g = data.goals.find((x) => x.slug === ref.slug)
+      if (g === undefined) return
+      setSelectedGoal(g.id)
+      setSelectedStrategy(null)
+      setTab('stars')
+    }
+    consume(takePendingGoalOpen(name))
+    return onChatGoalOpen(consume)
+  }, [data, name])
 
   if (loading) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
   if (error && !data) return <ErrorState error={error} />
   if (!data) return null
 
   const proved = data.goals.filter((g) => g.status === 'proved').length
+  const chatHoverIds =
+    chatHoverSlug !== null
+      ? (data.goals.filter((g) => g.slug === chatHoverSlug).map((g) => g.id) ?? null)
+      : null
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'stars', label: 'Constellation' },
@@ -652,7 +682,7 @@ export default function Problem({ name }: { name: string }) {
                 strategyEdges={data.strategy_edges}
                 anchorEdges={data.anchor_edges}
                 citationEdges={data.citation_edges}
-                highlightIds={routeHover}
+                highlightIds={routeHover ?? (chatHoverIds?.length ? chatHoverIds : null)}
                 selectedId={selectedGoal}
                 onSelect={(id) => {
                   setSelectedGoal(id)
