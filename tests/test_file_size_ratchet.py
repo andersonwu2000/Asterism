@@ -268,7 +268,10 @@ _WATERMARKS = {
     # named quiet guard) — conscious bump.
     # 3150→3180 (2026-07-18): produced_kind attribution setter
     # branch + superseded outcome split — conscious bump.
-    "Tooling/state/db.py": 3180,
+    # 3180→3220 (2026-07-18): _strategy_death_detail (dead-redispatch
+    # WHY synthesized into outcome_detail; the Forward-decline parity
+    # fix) — conscious bump.
+    "Tooling/state/db.py": 3220,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,

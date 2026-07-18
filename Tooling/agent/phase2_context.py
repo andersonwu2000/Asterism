@@ -690,7 +690,8 @@ def _section_failure_replay(conn: sqlite3.Connection,
     try:
         rows = list(conn.execute(
             "SELECT triggered_at_tick, trigger_kind, decision_kind,"
-            " target_id, brief, reason, payload, outcome, created_at"
+            " target_id, brief, reason, payload, outcome, outcome_detail,"
+            " created_at"
             " FROM strategist_decisions WHERE problem = ?"
             " ORDER BY id DESC LIMIT ?",
             (problem, k),
@@ -718,6 +719,15 @@ def _section_failure_replay(conn: sqlite3.Connection,
             if len(brief) > 200:
                 brief = brief[:200] + "…"
             out.append(f"  brief: {brief}")
+        # A failed decision's WHY (FetchPaper unfetchable detail, a dead
+        # redispatch's forensics) — without it the replay teaches only
+        # THAT it failed, and the same move gets re-tried blind.
+        if (str(r["outcome"] or "").startswith("failed")
+                and (r["outcome_detail"] or "").strip()):
+            why = " ".join(str(r["outcome_detail"]).split())
+            if len(why) > 200:
+                why = why[:200] + "…"
+            out.append(f"  why: {why}")
     out.append("")
     return out
 

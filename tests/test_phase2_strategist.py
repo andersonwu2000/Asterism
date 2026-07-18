@@ -1532,6 +1532,54 @@ def test_propagate_inject_outcome_from_strategy_dead_fires_batch_done(
     assert root  # root exists but the wake is problem-keyed
 
 
+def test_propagate_strategy_death_carries_why_to_outcome_detail(
+    conn: sqlite3.Connection,
+) -> None:
+    """07-18 survey asymmetry: Forward declines push their `## Why`
+    prose into `outcome_detail` (rendered as the `why:` line), but a
+    dead Backward redispatch surfaced only the bare enum while the
+    forensics sat in dead_attempts behind the gated pending_review
+    trigger. Propagation now synthesizes the WHY from the freshest
+    dead_attempts rows on the strategy's goal/subgoals."""
+    _insert_root(conn)
+    gid = db.insert_goal(
+        conn, problem="p", slug="dw_target",
+        lean_path="Problems/p/proofs/L_dw_target.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    sid = db.insert_strategy(
+        conn, goal_id=gid,
+        lean_path="Problems/p/proofs/L_dw_target.lean",
+        scratch_path="Problems/p/proofs/_strategy_dw.lean",
+        created_by="pid",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-dw", step_index=0,
+        batch_size=1, brief="hint",
+    )
+    db.set_inject_decision_produced_strategy(conn, decision_id, sid)
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind,"
+        " status, outcome, started_at, finished_at) VALUES ('pid-dw',"
+        " 'Backward', ?, 'Goal', 'failed', 'agent_declined', ?, ?)",
+        (str(gid), db.now(), db.now()))
+    conn.commit()
+    db.record_dead_attempt(
+        conn, target_id=gid, target_kind="Goal", pipeline_id="pid-dw",
+        failure_reason="circular_decomposition",
+        failure_detail="sub-goal restates ancestor g5 verbatim")
+
+    db.update_strategy_status(conn, sid, "dead")
+    row = conn.execute(
+        "SELECT outcome, outcome_detail FROM strategist_decisions"
+        " WHERE id = ?", (decision_id,)).fetchone()
+    assert row["outcome"] == "failed:dead"
+    detail = str(row["outcome_detail"] or "")
+    assert "circular_decomposition" in detail
+    assert "restates ancestor g5" in detail
+    assert "dw_target" in detail
+
+
 def test_inject_batch_done_waits_for_last_kind_in_mixed_batch(
     conn: sqlite3.Connection,
 ) -> None:

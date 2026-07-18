@@ -1217,6 +1217,41 @@ def set_inject_decision_produced_strategy(
     conn.commit()
 
 
+def _strategy_death_detail(conn: sqlite3.Connection,
+                           strategy_id: int) -> str:
+    """One-line WHY for a dead/stalled strategy, destined for the
+    producing Inject decision's `outcome_detail` (the strategist's
+    always-on batch-outcome surface). Forward declines push their
+    `## Why` prose through this column; Backward/Builder redispatches
+    historically surfaced a bare enum while the forensics sat in
+    `dead_attempts` behind the gated pending_review trigger (07-18
+    survey). Derivation: the freshest dead_attempts rows on the
+    strategy's own goal (decline shapes — circularity / no_progress
+    target the decomposed goal) or its subgoals (cascade shapes — a
+    subgoal died/shelved)."""
+    s = conn.execute(
+        "SELECT goal_id FROM strategies WHERE id = ?",
+        (strategy_id,)).fetchone()
+    if s is None:
+        return ""
+    ids = [int(s["goal_id"])] + [int(r["subgoal_id"]) for r in conn.execute(
+        "SELECT subgoal_id FROM strategy_subgoals WHERE strategy_id = ?",
+        (strategy_id,))]
+    marks = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT da.failure_reason, da.failure_detail, g.slug"
+        f" FROM dead_attempts da JOIN goals g ON g.id = da.target_id"
+        f" WHERE da.target_kind = 'Goal' AND da.target_id IN ({marks})"
+        f" ORDER BY da.id DESC LIMIT 2",
+        ids).fetchall()
+    parts = []
+    for r in rows:
+        d = " ".join((r["failure_detail"] or "").split())
+        parts.append(f"`{r['slug']}`: {r['failure_reason']}"
+                     + (f" — {d[:300]}" if d else ""))
+    return "; ".join(parts)[:700]
+
+
 def propagate_inject_outcome_from_strategy(
     conn: sqlite3.Connection, strategy_id: int,
 ) -> int | None:
@@ -1266,10 +1301,17 @@ def propagate_inject_outcome_from_strategy(
         outcome = "failed:stalled"
     else:
         return None  # not terminal; wait
+    # Failed redispatches carry their WHY to the strategist's next wake
+    # (the `why:` line the Forward decline path already renders) instead
+    # of a bare enum. COALESCE: never clobber a detail someone else set.
+    detail: str | None = None
+    if outcome in ("failed:dead", "failed:stalled"):
+        detail = _strategy_death_detail(conn, strategy_id) or None
     conn.execute(
-        "UPDATE strategist_decisions SET outcome = ?, updated_at = ?"
+        "UPDATE strategist_decisions SET outcome = ?, updated_at = ?,"
+        "       outcome_detail = COALESCE(outcome_detail, ?)"
         " WHERE id = ? AND outcome IS NULL",
-        (outcome, now(), int(row["id"])),
+        (outcome, now(), detail, int(row["id"])),
     )
     conn.commit()
     return int(row["id"])
