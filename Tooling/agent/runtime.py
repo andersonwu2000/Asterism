@@ -118,7 +118,10 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
               mcp_config_path: Path | None = None,
               inline_prompt: str | None = None,
               timeout_sec_override: int | None = None,
-              trap_check_sec_override: int | None = None) -> int:
+              trap_check_sec_override: int | None = None,
+              usage_workspace: Path | None = None,
+              usage_problem: str | None = None,
+              usage_pipeline_id: str | None = None) -> int:
     """Dispatch to the configured LLM provider for one agent invocation.
 
     Provider is resolved per-kind: `ASTERISM_<KIND>_PROVIDER` →
@@ -149,6 +152,14 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     (cold), skips the watchdog (these are short rescue/postmortem
     replacements). Pair with `timeout_sec_override` (typically 180s)
     for tight budgets.
+
+    `usage_workspace` / `usage_problem` / `usage_pipeline_id`: explicit
+    spawn_usage attribution for callers whose dirs break the standard
+    layout (`attempts_dir = <ws>/.attempts/<pid>`, `problem_dir` under
+    Problems/). The Adversary spawns into a projection dir nested
+    inside another pipeline's attempts dir — the derived workspace
+    pointed at `.attempts/<pid>/` and every judge row was silently
+    dropped (b6: ~0.5h of judge cost invisible, 2026-07-18).
     """
     if timeout_sec is None:
         if is_postmortem:
@@ -184,12 +195,17 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     ))
     _record_spawn_usage(kind=kind, attempts_dir=attempts_dir,
                         problem_dir=problem_dir,
-                        wall_sec=_time.monotonic() - _t0)
+                        wall_sec=_time.monotonic() - _t0,
+                        workspace=usage_workspace, problem=usage_problem,
+                        pipeline_id=usage_pipeline_id)
     return rc
 
 
 def _record_spawn_usage(*, kind: str, attempts_dir: Path,
-                        problem_dir: Path, wall_sec: float) -> None:
+                        problem_dir: Path, wall_sec: float,
+                        workspace: Path | None = None,
+                        problem: str | None = None,
+                        pipeline_id: str | None = None) -> None:
     """Persist the spawn's token/turn accounting into `spawn_usage`
     (frontend charter §5-2). Source = the provider's
     `_parser_state.json` usage block (claude provider writes it; other
@@ -204,25 +220,35 @@ def _record_spawn_usage(*, kind: str, attempts_dir: Path,
         usage = (_json.loads(raw).get("usage") or {})
         if not (usage.get("turns") or usage.get("output_tokens")):
             return
+        # Defaults assume the standard layout (explicit params override:
         # attempts_dir = <workspace>/.attempts/<pipeline_id>;
         # problem name = problem_dir relative to <workspace>/Problems
-        # with / → . (matches db.problem_dir's inverse).
-        workspace = attempts_dir.parent.parent
-        try:
-            rel = problem_dir.resolve().relative_to(
-                (workspace / "Problems").resolve())
-            problem = ".".join(rel.parts)
-        except ValueError:
-            problem = problem_dir.name
+        # with / → . (matches db.problem_dir's inverse)).
+        if workspace is None:
+            workspace = attempts_dir.parent.parent
+        if problem is None:
+            try:
+                rel = problem_dir.resolve().relative_to(
+                    (workspace / "Problems").resolve())
+                problem = ".".join(rel.parts)
+            except ValueError:
+                problem = problem_dir.name
+        if pipeline_id is None:
+            pipeline_id = attempts_dir.name
         from ..state import db as _db
-        conn = _db.connect(workspace / "asterism.db")
+        db_path = workspace / "asterism.db"
+        if not db_path.exists():
+            # A miscomputed workspace must fail silent-and-clean, not
+            # mint a junk sqlite file wherever it happened to point.
+            return
+        conn = _db.connect(db_path)
         try:
             conn.execute(
                 "INSERT INTO spawn_usage (pipeline_id, kind, problem,"
                 " input_tokens, output_tokens, cache_read_tokens,"
                 " cache_new_tokens, turns, wall_sec, ts)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (attempts_dir.name, kind, problem,
+                (pipeline_id, kind, problem,
                  int(usage.get("input_tokens") or 0),
                  int(usage.get("output_tokens") or 0),
                  int(usage.get("cache_read_input_tokens") or 0),

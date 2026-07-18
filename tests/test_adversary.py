@@ -345,3 +345,58 @@ def test_projection_contents(
         encoding="utf-8")
     d = (proj / "dialogue.md").read_text(encoding="utf-8")
     assert "too vague" in d and "# old" in d
+
+
+# ---------------------------------------------------------------------
+# spawn_usage attribution (invisible-judge class, 2026-07-18)
+# ---------------------------------------------------------------------
+
+def test_record_spawn_usage_explicit_attribution(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The Adversary spawns into a projection dir nested inside another
+    pipeline's attempts dir — layout-derived attribution pointed the
+    workspace at `.attempts/<pid>/` and silently dropped every judge
+    row (b6: ~0.5h invisible). Explicit params must land the row on the
+    real problem, tied to the host strategist pipeline."""
+    from Tooling.agent.runtime import _record_spawn_usage
+    strategist_attempts = workspace / ".attempts" / "pid-strat-7"
+    proj = strategist_attempts / "adversary" / "r3"
+    proj.mkdir(parents=True)
+    (proj / "_parser_state.json").write_text(
+        json.dumps({"usage": {"turns": 4, "output_tokens": 1234,
+                              "input_tokens": 56}}),
+        encoding="utf-8")
+
+    _record_spawn_usage(
+        kind="adversary", attempts_dir=proj, problem_dir=proj,
+        wall_sec=12.5, workspace=workspace, problem="p",
+        pipeline_id=strategist_attempts.name)
+
+    row = conn.execute("SELECT * FROM spawn_usage").fetchone()
+    assert row is not None
+    assert row["problem"] == "p"
+    assert row["kind"] == "adversary"
+    assert row["pipeline_id"] == "pid-strat-7"
+    assert row["output_tokens"] == 1234
+
+
+def test_record_spawn_usage_never_mints_a_junk_db(
+    workspace: Path,
+) -> None:
+    """Without explicit params the old code derived a wrong workspace
+    and `connect()` CREATED an empty sqlite file there. A derived
+    workspace with no asterism.db must be a silent no-op, not a mint."""
+    from Tooling.agent.runtime import _record_spawn_usage
+    proj = workspace / ".attempts" / "pid-x" / "adversary" / "r1"
+    proj.mkdir(parents=True)
+    (proj / "_parser_state.json").write_text(
+        json.dumps({"usage": {"turns": 1, "output_tokens": 9}}),
+        encoding="utf-8")
+
+    _record_spawn_usage(kind="adversary", attempts_dir=proj,
+                        problem_dir=proj, wall_sec=1.0)
+
+    # derived workspace = proj.parent.parent = .attempts/pid-x — the
+    # guard must not have created an asterism.db there
+    assert not (workspace / ".attempts" / "pid-x" / "asterism.db").exists()

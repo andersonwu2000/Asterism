@@ -186,6 +186,12 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
             kind="adversary", prompt_path=prompt_path,
             problem_dir=proj, attempts_dir=proj,
             session_id=str(uuid.uuid4()), timeout_sec=timeout_sec,
+            # The projection dir breaks the standard attempts layout —
+            # attribute the judge's cost explicitly or the spawn_usage
+            # row is silently dropped (invisible-judge class, 07-18).
+            usage_workspace=attempts_dir.parent.parent,
+            usage_problem=problem,
+            usage_pipeline_id=attempts_dir.name,
         )
         if rc != 0:
             return None, "", rc
