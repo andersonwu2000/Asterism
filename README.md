@@ -82,6 +82,11 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-17
+- Built out a new automated research pipeline that stores a working programme, gates each package, and runs multiple rounds of adversarial review with a path to discard weak candidates.
+- Consolidated the web interface into a single engine view with unified tabbed pages, styling, and one Save button.
+- Revised the guiding prompts through a self-review pass for consistency.
+
 ### 2026-07-16
 - Capped the framework's library of general lessons at 25 entries, requiring an old one to be dropped whenever a new one is added.
 
@@ -215,11 +220,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Reorganized the generated lemma library to group files by their dependency graph rather than by how problems were split, with sturdier retries and size limits that account for merged mutually-recursive groups.
 - Switched proof generation and library cleanup to edit files incrementally through the Lean language server instead of regenerating them whole, behind a single shared routine.
 - Made the cleanup and audit passes more reliable by rerunning fresh passes instead of retrying entire files and by confining their searches to the library directory.
-
-### 2026-06-17
-- Expanded the stage that tidies machine-proved lemmas into a clean, reusable library, enforcing Mathlib's submission standards: no compiler warnings, deduplicated variable blocks, consistent namespaces, and no unused hypotheses.
-- Added whole-library consistency checks, including an editor-side validation that mirrors the checks run when results are committed.
-- Carried out a broad documentation cleanup, fixing drift from the current code, garbled text, and scattered design notes, and added an automated guard to keep code-referencing docs in sync.
 
 <!-- ASTERISM-PROGRESS:END -->
 
