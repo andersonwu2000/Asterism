@@ -1899,3 +1899,42 @@ def test_apply_edit_rejects_range_on_phantom_trailing_line(
     assert "1..3" in out["error"]
     # nothing was written through
     assert (tmp_path / "x.lean").read_text(encoding="utf-8") == content
+
+
+def test_apply_edit_carries_citation_mirror(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """2026-07-19: the citation predictor lived only in validate_file;
+    agents shipping via apply_edit never saw it and burned commits on
+    cite_unproved_sibling. apply_edit now surfaces the same submission
+    block when something is citation-wrong."""
+    from Tooling.state import db as _db
+    conn = _db.connect(tmp_path / "asterism.db")
+    _db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (_db.now(),))
+    conn.commit()
+    _db.insert_goal(conn, problem="p", slug="inflight_dep",
+                    lean_path="Problems/p/proofs/L_inflight_dep.lean",
+                    statement="T", origin="backward", status="attempting")
+    conn.close()
+
+    content = ("import Mathlib\n"
+               "import Problems.p.proofs.L_inflight_dep\n"
+               "theorem t : True := trivial\n")
+    (tmp_path / "x.lean").write_text(content, encoding="utf-8")
+    backend = _DiagBackend()
+    ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
+    meta = lsp_gateway._state.sessions["tok-A"]
+    meta.file_content = content
+    meta.kind = "builder"   # Builder: non-proved citation = error
+    try:
+        out = json.loads(asyncio.run(
+            lsp_gateway.apply_edit(3, 3, "theorem t : True := trivial")))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert "citation" in out
+    assert out["citation"]["ok"] is False
+    assert out["citation"]["issues"][0]["slug"] == "inflight_dep"

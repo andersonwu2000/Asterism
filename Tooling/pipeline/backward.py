@@ -171,6 +171,30 @@ def _strict_ancestor_slugs(conn, goal_id: int) -> "dict[str, str]":
     return {r["slug"]: r["lean_path"] for r in rows}
 
 
+def _strict_ancestor_ids(conn, goal_id: int) -> "set[int]":
+    """Goal ids of every STRICT ancestor of `goal_id` (same walk as
+    `_strict_ancestor_slugs`, id form). Used by the ancestor-link guard:
+    linking an ancestor as a sub-goal closes a strategy-level cycle —
+    every strategy on the loop waits for the next and none can ever
+    complete (PutnamCmp a5 live deadlock, 2026-07-19). Content guards
+    (restatement / defeq) never see this: the statements all differ;
+    only the graph knows."""
+    rows = conn.execute(
+        "WITH RECURSIVE ancestors(id) AS ("
+        "  SELECT s.goal_id FROM strategies s"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    WHERE ss.subgoal_id = ?"
+        "  UNION"
+        "  SELECT s.goal_id FROM strategies s"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    JOIN ancestors a ON a.id = ss.subgoal_id"
+        ") "
+        "SELECT id FROM ancestors",
+        (goal_id,),
+    ).fetchall()
+    return {int(r["id"]) for r in rows} - {int(goal_id)}
+
+
 def _theorem_head(text: str, slug: str) -> "str | None":
     """The whitespace-normalized `<binders> : <conclusion>` of
     `theorem <slug> ... :=` in `text`, for cheap structural comparison
@@ -1649,6 +1673,28 @@ def _backward_parse_and_commit(
         if cite_err:
             _discard_placed()
             return _abort("cite_unproved_sibling", cite_err, leading)
+
+        # Ancestor-link guard: an auto-link target that is an ANCESTOR
+        # of this goal would close a strategy-level dependency cycle.
+        if auto_link_ids:
+            cyc = sorted(set(auto_link_ids)
+                         & _strict_ancestor_ids(conn, goal_id))
+            if cyc:
+                names = []
+                for _gid in cyc:
+                    _g = db.get_goal(conn, _gid)
+                    names.append(str(_g["slug"]) if _g else f"goal {_gid}")
+                _discard_placed()
+                return _abort(
+                    "circular_decomposition",
+                    f"linking {', '.join(names)} as a sub-goal closes a "
+                    f"dependency cycle — it is an ANCESTOR of this goal "
+                    f"(this goal is part of ITS proof, so it cannot also "
+                    f"prove this goal; the strategies would wait on each "
+                    f"other forever). Decompose into genuinely smaller "
+                    f"NEW pieces instead of citing a goal above you.",
+                    leading,
+                )
 
         # P3 duplicate-strategy guard (agent_feedback 2026-07-11, the b6
         # strategy pile: ~30 byte-identical reductions s22785–s22831): a

@@ -1419,6 +1419,19 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
     formatted = [_format_diag(d) for d in diags]
     if line_map is not None:
         formatted = _remap_inlined_diags(formatted, line_map)
+
+    # Citation mirror on the live-file path too (2026-07-19, user call):
+    # the predictor lived only in validate_file, but agents editing
+    # patch.lean via apply_edit ship without ever calling validate — the
+    # a5 run burned six commits on cite_unproved_sibling rejects the
+    # mirror would have predicted. Cheap (a few classify queries, only
+    # when the content carries Problems-imports); surfaced only when
+    # something is wrong, so clean edits stay noise-free.
+    _own_stubs = {p.stem[len("new_"):]
+                  for p in meta.target_path.parent.glob("new_*.lean")}
+    _cite = _citation_submission(
+        new_content, meta.problem, meta.workspace, _own_stubs,
+        kind=meta.kind, attempts_dir=meta.target_path.parent)
     _verb = "deleted" if not replacement else "replaced"
     response = {
         "edit": (f"{_verb} lines {start_line}-{end_line}; "
@@ -1434,6 +1447,8 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
     if not converged:
         response["elaborating"] = True
         response["warning"] = _ELABORATING_WARNING
+    if _cite is not None and _cite.get("issues"):
+        response["citation"] = _cite
     if _locked_warn is not None:
         response["locked_signature"] = _locked_warn
     dur = time.perf_counter() - t0

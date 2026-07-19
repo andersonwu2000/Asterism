@@ -2425,3 +2425,32 @@ def test_inject_brief_file_resolves_into_brief(tmp_path):
                                 "brief_file": "absent.md"})
     err = resolve_directive_body_files([missing], tmp_path)
     assert "Inject.brief_file" in err and "unreadable" in err
+
+
+def test_strict_ancestor_ids_walks_the_chain(conn):
+    """Ancestor-link guard (PutnamCmp a5 deadlock 2026-07-19): the id
+    walk must reach grandparents through strategy_subgoals so linking
+    an ancestor as a sub-goal can be refused before it closes a cycle."""
+    from Tooling.pipeline.backward import _strict_ancestor_ids
+    from Tooling.state import db as _db
+    _insert_root(conn)
+    g1 = _db.insert_goal(conn, problem="p", slug="anc_top",
+                         lean_path="Problems/p/proofs/L_anc_top.lean",
+                         statement="A", origin="backward", depth=1)
+    g2 = _db.insert_goal(conn, problem="p", slug="anc_mid",
+                         lean_path="Problems/p/proofs/L_anc_mid.lean",
+                         statement="B", origin="backward", depth=2)
+    g3 = _db.insert_goal(conn, problem="p", slug="anc_leaf",
+                         lean_path="Problems/p/proofs/L_anc_leaf.lean",
+                         statement="C", origin="backward", depth=3)
+    s1 = _db.insert_strategy(conn, goal_id=g1, lean_path="x",
+                             scratch_path="s1", created_by="t")
+    _db.link_subgoal(conn, strategy_id=s1, subgoal_id=g2, position=0)
+    s2 = _db.insert_strategy(conn, goal_id=g2, lean_path="x",
+                             scratch_path="s2", created_by="t")
+    _db.link_subgoal(conn, strategy_id=s2, subgoal_id=g3, position=0)
+
+    anc = _strict_ancestor_ids(conn, g3)
+    assert g1 in anc and g2 in anc      # parent AND grandparent
+    assert g3 not in anc                # strict
+    assert _strict_ancestor_ids(conn, g1) == set()  # top has none
