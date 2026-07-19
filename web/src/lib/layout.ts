@@ -214,6 +214,33 @@ export function layoutConstellation(
     }
     primaryParent.set(child, best)
   }
+  // Cycle guard: a research-mode relink can wire a strategy's declared
+  // sub-goal back to an ancestor (live case 2026-07-19: goals
+  // 6370→6375→6380→6370 — three 'proposed' strategies in a ring). In
+  // the child→parent map a cycle has no root, so no tree walk ever
+  // reaches its members, the bottom-up x pass averages over nothing,
+  // and the alignment sweeps smear that NaN across the whole sky (the
+  // a5 constellation rendered blank). Cut each cycle at its
+  // smallest-id member (deterministic); the severed link re-renders
+  // as a secondary cross-link, so the relation stays visible.
+  {
+    const color = new Map<number, 1 | 2>()
+    for (const start of [...primaryParent.keys()]) {
+      if (color.has(start)) continue
+      const path: number[] = []
+      let cur: number | undefined = start
+      while (cur !== undefined && !color.has(cur)) {
+        color.set(cur, 1)
+        path.push(cur)
+        cur = primaryParent.get(cur)
+      }
+      if (cur !== undefined && color.get(cur) === 1) {
+        const cycle = path.slice(path.indexOf(cur))
+        primaryParent.delete(Math.min(...cycle))
+      }
+      for (const n of path) color.set(n, 2)
+    }
+  }
   const treeKids = new Map<number, number[]>()
   for (const [c, p] of primaryParent) {
     treeKids.set(p, [...(treeKids.get(p) ?? []), c])
@@ -236,9 +263,6 @@ export function layoutConstellation(
     const prev = stratOfChild.get(e.to)
     if (prev === undefined || e.strategyId < prev) stratOfChild.set(e.to, e.strategyId)
   }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ;(globalThis as any).__layoutDebug = { treeKids, primaryParent, layer }
 
   const isSingleton = (id: number) =>
     !primaryParent.has(id) && (treeKids.get(id)?.length ?? 0) === 0

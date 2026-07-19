@@ -4,6 +4,7 @@ import type { ConstellationLayout } from './layout'
 import type { Goal, Strategy, StrategyEdge } from './types'
 import residueFixture from './__fixtures__/residue_thm.json'
 import jordanFixture from './__fixtures__/jordan.json'
+import a5CmpFixture from './__fixtures__/a5_cmp.json'
 
 /*
  * Layout laws — the invariants the sky engine must hold on ANY input.
@@ -28,6 +29,11 @@ interface Fixture {
 const FIXTURES: Record<string, Fixture> = {
   residue_thm: residueFixture as unknown as Fixture,
   jordan: jordanFixture as unknown as Fixture,
+  // research-mode shape (2026-07-19): a relink cycle in the strategy
+  // hierarchy (goals 6370→6375→6380→6370) — no tree root reaches the
+  // ring, the x pass averaged over nothing, and the sky rendered
+  // blank (owner report). The layout must survive ANY db state.
+  a5_cmp: a5CmpFixture as unknown as Fixture,
 }
 
 function run(f: Fixture): ConstellationLayout {
@@ -98,7 +104,9 @@ function checkLaws(v: ConstellationLayout, f: Fixture) {
 }
 
 describe('layout laws on real problem states', () => {
-  for (const name of ['residue_thm', 'jordan']) {
+  // EVERY fixture — a hardcoded pair here meant the a5 fixtures never
+  // ran and the suite said "passed" while the live sky was NaN
+  for (const name of Object.keys(FIXTURES)) {
     it(`${name}: holds every law`, () => {
       const f = FIXTURES[name]
       const v = run(f)
