@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-18
+- Configuration changes can now be handed off to a run already in progress, and waiting for quota windows became an explicit opt-in rather than the default.
+- The web interface gained an explainer chat that cites its claims back to the visualization, a unified prose renderer, and a set of layout and navigation fixes.
+- Research mode gained a wider rebuttal budget, a longer hang guard, and a reworked external-review batch; the proof-search prompts were tightened around declined lemmas and goal-statement collisions.
+- Several correctness fixes landed in the proof pipeline and its bookkeeping: chapter probes now carry module context, unconverged diagnostics no longer look clean, and telemetry and database cleanup were corrected.
+
 ### 2026-07-17
 - Built out a new automated research pipeline that stores a working programme, gates each package, and runs multiple rounds of adversarial review with a path to discard weak candidates.
 - Consolidated the web interface into a single engine view with unified tabbed pages, styling, and one Save button.
@@ -215,11 +221,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 ### 2026-06-19
 - Expanded the automated cleanup of finished proofs, adding a pass that renames unused hypotheses with a leading underscore and moving the validation checks into an already-loaded Lean environment for speed, though the type-checking check was rolled back after it caused repeated spurious rework.
 - Added a way to categorize the feedback returned during proof attempts alongside a separate diagnostic channel, and fixed a model reasoning-budget setting that had fallen below the API's minimum.
-
-### 2026-06-18
-- Reorganized the generated lemma library to group files by their dependency graph rather than by how problems were split, with sturdier retries and size limits that account for merged mutually-recursive groups.
-- Switched proof generation and library cleanup to edit files incrementally through the Lean language server instead of regenerating them whole, behind a single shared routine.
-- Made the cleanup and audit passes more reliable by rerunning fresh passes instead of retrying entire files and by confining their searches to the library directory.
 
 <!-- ASTERISM-PROGRESS:END -->
 
