@@ -1285,6 +1285,17 @@ def _resync_buffer_from_disk(meta: "SessionMetadata") -> "str | None":
                         "disk_lines": disk.count("\n") + 1})
 
 
+def _editor_line_count(text: str) -> int:
+    """Line count as an editor shows it: the empty element after a
+    trailing newline is NOT a line (bbe7169 — counting it let a range
+    overshoot land on the phantom slot and eat the file's last real
+    line). ONE law, shared by apply_edit's range check and
+    interactive_sync's full-buffer replace — they drifted apart once
+    and every chapter probe broke (QA, 2026-07-20)."""
+    lines = text.split("\n")
+    return len(lines) - 1 if lines and lines[-1] == "" else len(lines)
+
+
 @mcp.tool()
 @_offload_to_thread
 def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
@@ -1326,12 +1337,7 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
             "Retry, or Read the file and use Write."),
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     lines = meta.file_content.split("\n")
-    # Line count as an editor shows it: the empty element after a
-    # trailing newline is NOT a line. Counting it let a range overshoot
-    # by one land on the phantom slot — check passed, splice ate the
-    # file's last real line (the namespace `end`) and reported success
-    # (a5 run, inject2502).
-    n_lines = len(lines) - 1 if lines and lines[-1] == "" else len(lines)
+    n_lines = _editor_line_count(meta.file_content)
     if start_line < 1 or start_line > n_lines:
         return json.dumps({"error":
             f"start_line {start_line} out of range 1..{n_lines}"})
@@ -2254,7 +2260,12 @@ async def interactive_sync(request: Request):
         return JSONResponse({"error": "unknown interactive session"},
                             status_code=404)
     _session_ctx.set(token)
-    end = meta.file_content.count("\n") + 1
+    # ONE line-count law with apply_edit (`_editor_line_count`) — the
+    # old `count("\n") + 1` here was one high for any buffer ending in
+    # a newline (the probe assembler always emits one), so every
+    # chapter-probe sync bounced off apply_edit's range check with
+    # "end_line N+1 out of range 1..N" (QA, 2026-07-20).
+    end = max(1, _editor_line_count(meta.file_content))
     edit_raw = await apply_edit(1, end, str(data.get("content") or ""))
     edit = json.loads(edit_raw)
     if edit.get("error"):
