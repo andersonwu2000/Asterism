@@ -8,7 +8,7 @@
 
 dispatch:
   quota_wait: true
-  pool: 6                     # Max in-flight pipelines, also = number of
+  pool: 4                     # Max in-flight pipelines, also = number of
                               # persistent lean workers in the LSP gateway
                               # pool (1:1 binding — every spawn claims one
                               # dedicated worker for its lifetime, freed on
