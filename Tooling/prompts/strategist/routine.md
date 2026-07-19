@@ -34,7 +34,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
     ## Thesis       the whole story: route, why it should work, main risks; the
                     surrogate↔intent dictionary lives here
 
-**Distill, don't accumulate** — a settled line collapses to its conclusion. Start from `## Programme` in Context.md (Title/Argument are fresh each batch).
+**Distill the settled** — a closed line collapses to its conclusion. Start from `## Programme` in Context.md (Roadmap/Thesis evolve; Title/Argument are fresh each batch).
 
 - Every Inject brief names its Roadmap entry: a `Roadmap: <entry phrase>` line.
 - Admit gaps plainly; mark formal↔informal claims not yet kernel-checked.
