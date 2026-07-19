@@ -614,7 +614,29 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
         # before bootstrap — the UI shows the Programme tab only when
         # there is a Programme to read
         "programme_rev": _programme_rev(conn, problem),
+        # revision events for the timeline: a proposal cycle (passed OR
+        # rejected) leaves no strategist_decisions row, so hours of
+        # argument were invisible there — b6_1's founding proposal
+        # survived 5 rounds and the timeline showed two Injects
+        # (owner report, 2026-07-19)
+        "programme_events": _programme_events(conn, problem),
     }
+
+
+def _programme_events(conn: sqlite3.Connection,
+                      problem: str) -> "list[dict]":
+    try:
+        return [{
+            "rev": int(r["rev"]),
+            "status": str(r["status"]),
+            "rounds": int(r["rounds"]),
+            "created_at": str(r["created_at"]),
+        } for r in conn.execute(
+            "SELECT rev, status, rounds, created_at"
+            " FROM programme_revisions WHERE problem = ?"
+            " ORDER BY id DESC LIMIT 100", (problem,))]
+    except sqlite3.OperationalError:
+        return []  # pre-v30 DB
 
 
 def _programme_rev(conn: sqlite3.Connection, problem: str) -> "int | None":

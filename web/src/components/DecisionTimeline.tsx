@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { decisionKindLabel, decisionKindTitle } from '../lib/vocab'
-import type { Decision } from '../lib/types'
+import type { Decision, ProgrammeEvent } from '../lib/types'
 
 /* rows sit under day rules — a clock time reads better than thirty
  * copies of "37d ago". Locale is PINNED: `undefined` followed the
@@ -194,15 +194,63 @@ const DAY_FMT = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
 })
 
+/** A Programme revision on the timeline — a proposal cycle (passed OR
+ * rejected) leaves no decision row, so hours of argument with the
+ * adversarial reviewer were invisible here (owner report, 2026-07-19:
+ * a founding proposal survived 5 rounds and the timeline showed two
+ * Injects). Click lands on the Programme tab. */
+function ProgRow({ e, onOpen }: { e: ProgrammeEvent; onOpen?: () => void }) {
+  const passed = e.status === 'passed'
+  const rounds =
+    e.rounds === 0
+      ? 'unchallenged'
+      : `after ${e.rounds} round${e.rounds === 1 ? '' : 's'} of review`
+  return (
+    <div className="relative pl-4">
+      <button
+        className="grid w-full grid-cols-[9.5rem_1fr_auto] items-baseline gap-2 rounded-md px-2 py-1.5 text-left hover:bg-surface"
+        onClick={onOpen}
+        title="the research programme — the strategist's standing argument, adversarially reviewed before every revision; click to read it"
+      >
+        <span className={`text-xs font-medium ${passed ? 'text-star' : 'text-ink-dim'}`}>
+          programme
+        </span>
+        <span className="truncate text-xs text-ink-dim">
+          {passed
+            ? `rev ${e.rev} adopted — ${e.rounds === 0 ? 'passed review unchallenged' : `survived ${rounds.replace('after ', '')}`}`
+            : `a proposal for rev ${e.rev} was rejected ${rounds}`}
+        </span>
+        <span className="flex items-baseline justify-end gap-2 text-right text-[11px] whitespace-nowrap text-ink-faint">
+          {!passed && (
+            <span className="rounded-md border border-edge px-1.5 py-px text-[10px] text-warn">
+              rejected
+            </span>
+          )}
+          {TIME_FMT.format(new Date(e.created_at))}
+        </span>
+      </button>
+    </div>
+  )
+}
+
+type TimelineItem =
+  | { kind: 'decision'; at: string; d: Decision }
+  | { kind: 'programme'; at: string; e: ProgrammeEvent }
+
 export default function DecisionTimeline({
   decisions,
+  programmeEvents,
   goals,
   onSelectGoal,
+  onOpenProgramme,
 }: {
   decisions: Decision[]
+  /** programme revision events, woven in by timestamp */
+  programmeEvents?: ProgrammeEvent[]
   /** known goals — their slugs become jump links inside event text */
   goals?: { id: number; slug: string }[]
   onSelectGoal?: (id: number) => void
+  onOpenProgramme?: () => void
 }) {
   const [filter, setFilter] = useState<string | null>(null)
   // one regex over all known slugs, longest first so a slug that
@@ -219,18 +267,29 @@ export default function DecisionTimeline({
       .join('|')
     return new RegExp(`\\b(${alts})\\b`)
   }, [goals])
-  if (decisions.length === 0) {
+  const progs = programmeEvents ?? []
+  if (decisions.length === 0 && progs.length === 0) {
     return <div className="px-4 py-8 text-center text-xs text-ink-faint">No decisions yet.</div>
   }
   const dayOf = (iso: string) => DAY_FMT.format(new Date(iso))
   const isFailure = (d: Decision) => d.outcome !== null && isFailureOutcome(d.outcome)
   const kinds = [...new Set(decisions.map((d) => d.decision_kind))].sort()
-  const filtered =
+  const filteredDecisions =
     filter === null
       ? decisions
       : filter === '__failures'
         ? decisions.filter(isFailure)
-        : decisions.filter((d) => d.decision_kind === filter)
+        : filter === '__programme'
+          ? []
+          : decisions.filter((d) => d.decision_kind === filter)
+  // programme events ride 'all' and their own chip; a kind filter is
+  // asking about decisions only. Same-timestamp ties keep the passed
+  // rev ABOVE the batch it authorized (newest-first).
+  const filteredProgs = filter === null || filter === '__programme' ? progs : []
+  const filtered: TimelineItem[] = [
+    ...filteredDecisions.map((d): TimelineItem => ({ kind: 'decision', at: d.created_at, d })),
+    ...filteredProgs.map((e): TimelineItem => ({ kind: 'programme', at: e.created_at, e })),
+  ].sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.kind === 'programme' ? -1 : 1))
   const chip = (key: string | null, label: string, count: number, title?: string) => (
     <button
       key={key ?? 'all'}
@@ -248,7 +307,14 @@ export default function DecisionTimeline({
   return (
     <div className="flex flex-col">
       <div className="mb-2 flex flex-wrap gap-1.5 px-2">
-        {chip(null, 'all', decisions.length)}
+        {chip(null, 'all', decisions.length + progs.length)}
+        {progs.length > 0 &&
+          chip(
+            '__programme',
+            'programme',
+            progs.length,
+            'programme revisions — proposals passed or rejected by the adversarial reviewer',
+          )}
         {kinds.map((k) =>
           chip(
             k,
@@ -265,38 +331,44 @@ export default function DecisionTimeline({
           No events match this filter.
         </div>
       )}
-      {filtered.map((d, i) => {
-        const newDay = i === 0 || dayOf(filtered[i - 1].created_at) !== dayOf(d.created_at)
+      {filtered.map((item, i) => {
+        const newDay = i === 0 || dayOf(filtered[i - 1].at) !== dayOf(item.at)
         // burst-vs-stall rhythm: a same-day gap over an hour gets
         // whitespace ∝ log(Δt), so a 6-hour stall looks different
         // from a 40-second burst (newest-first: gap to the row above)
-        const dt = newDay
-          ? 0
-          : Math.abs(Date.parse(filtered[i - 1].created_at) - Date.parse(d.created_at))
+        const dt = newDay ? 0 : Math.abs(Date.parse(filtered[i - 1].at) - Date.parse(item.at))
         const gap =
           dt > 3600_000 ? Math.min(26, 6 + Math.round(Math.log10(dt / 3600_000) * 16)) : 0
+        const key =
+          item.kind === 'decision' ? `d${item.d.id}` : `p${item.e.rev}-${item.e.created_at}`
         return (
-          <div key={d.id} style={gap > 0 ? { marginTop: gap } : undefined}>
+          <div key={key} style={gap > 0 ? { marginTop: gap } : undefined}>
             {/* day rules give a 44-day history its chapters */}
             {newDay && (
               <div className="mt-4 mb-1 flex items-center gap-3 px-2 first:mt-1">
                 <span className="text-[11px] font-medium tracking-widest text-ink-faint uppercase">
-                  {dayOf(d.created_at)}
+                  {dayOf(item.at)}
                 </span>
                 <span className="h-px flex-1 bg-edge" />
               </div>
             )}
-            <Row
-              d={d}
-              grouped={
-                d.batch_id !== null &&
-                (filtered[i - 1]?.batch_id === d.batch_id ||
-                  filtered[i + 1]?.batch_id === d.batch_id)
-              }
-              slugRe={slugRe}
-              bySlug={bySlug}
-              onSelectGoal={onSelectGoal}
-            />
+            {item.kind === 'decision' ? (
+              <Row
+                d={item.d}
+                grouped={
+                  item.d.batch_id !== null &&
+                  ((filtered[i - 1]?.kind === 'decision' &&
+                    (filtered[i - 1] as { d: Decision }).d.batch_id === item.d.batch_id) ||
+                    (filtered[i + 1]?.kind === 'decision' &&
+                      (filtered[i + 1] as { d: Decision }).d.batch_id === item.d.batch_id))
+                }
+                slugRe={slugRe}
+                bySlug={bySlug}
+                onSelectGoal={onSelectGoal}
+              />
+            ) : (
+              <ProgRow e={item.e} onOpen={onOpenProgramme} />
+            )}
           </div>
         )
       })}

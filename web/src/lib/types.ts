@@ -116,6 +116,16 @@ export interface ProblemDetail {
   /** current Programme rev (research mode); null before bootstrap —
    * the Programme tab only exists when this is set */
   programme_rev: number | null
+  /** revision events for the timeline — a proposal cycle leaves no
+   * decision row, so the argument was invisible there */
+  programme_events: ProgrammeEvent[]
+}
+
+export interface ProgrammeEvent {
+  rev: number
+  status: string
+  rounds: number
+  created_at: string
 }
 
 export interface Programme {

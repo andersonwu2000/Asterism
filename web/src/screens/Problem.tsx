@@ -720,12 +720,16 @@ export default function Problem({ name }: { name: string }) {
             <div className="mx-auto max-w-4xl px-4 py-3">
               <DecisionTimeline
                 decisions={data.decisions}
+                programmeEvents={data.programme_events}
                 goals={data.goals}
                 onSelectGoal={(id) => {
                   setSelectedGoal(id)
                   setSelectedStrategy(null)
                   setTab('stars')
                 }}
+                onOpenProgramme={
+                  data.programme_rev !== null ? () => setTab('programme') : undefined
+                }
               />
             </div>
           )}

@@ -102,3 +102,19 @@ def test_programme_verdict_json_garbage_is_tolerated(workspace: Path) -> None:
     body = TestClient(create_app(workspace)).get(
         "/api/problems/Test.rm/programme").json()
     assert body["current"]["reservations"] == []
+
+
+def test_problem_detail_carries_programme_events(workspace: Path) -> None:
+    conn = _open_db(workspace)
+    _add_problem(conn)
+    prog.record_rejection(conn, "Test.rm", "# Bad\n\n## Argument\nx",
+                          [], rounds=4)
+    prog.record_pass(conn, "Test.rm", _BODY_V1, {"reservations": []},
+                     [], rounds=1, batch_id="b1")
+    conn.commit()
+    conn.close()
+    body = TestClient(create_app(workspace)).get(
+        "/api/problems/Test.rm").json()
+    ev = body["programme_events"]
+    assert [(e["rev"], e["status"], e["rounds"]) for e in ev] == [
+        (1, "passed", 1), (1, "rejected", 4)]
