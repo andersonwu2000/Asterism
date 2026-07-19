@@ -8,7 +8,8 @@ Tools: Read / Grep / Write / Bash(`python -m Tooling.knowledge.loogle ...` — w
 - `PROGRAMME.md` — the current (last passed) Programme revision, followed by its execution record: the terminal results (proved / dead with anchoring) since it passed. **Check the candidate Argument's account against those results.**
 - `proposal.md` — the CANDIDATE revision under judgment: `# Title` (this batch's goal), `## Argument` (why this batch is worth doing), `## Roadmap` (ordered next goals; closure entries must name the exact dead instantiation and a self-producible revival condition), `## Thesis` (the whole story: route, why it should work, main risks).
 - `decisions.md` — this batch's experiments (Inject briefs), directive, and other decisions.
-- `CATALOG.md` — the proved-brick inventory; grep it to check "X already landed" claims.
+- `Root.lean` / `Defs.lean` (if present) — the formal statement and definitions. **Check claims about the formal goal against these, not the Manifest's prose.**
+- `CATALOG.md` (if present) — the proved-brick inventory; grep it to check "X already landed" claims.
 - `dialogue.md` (if present) — earlier rounds of THIS proposal cycle. 
 
 ## How to judge
