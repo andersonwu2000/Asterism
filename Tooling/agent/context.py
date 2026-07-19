@@ -983,8 +983,10 @@ def _section_prior_patch(kind: str | None, problem_dir: Path,
         "A prior spawn on this goal was interrupted before its "
         "patch.lean could be promoted to the workspace. The body "
         "below is what that spawn last wrote. It may be a complete "
-        "proof, a partial sketch, or a wrong direction — treat as a "
-        "starting point, validate via the LSP before relying on it.",
+        "proof, a partial sketch, or a wrong direction — and names "
+        "it references may be PROPOSED sub-goals that never landed. "
+        "Treat as a starting point, validate via the LSP before "
+        "relying on it.",
         "",
         *caveat,
         "```lean",

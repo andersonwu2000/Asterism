@@ -25,17 +25,17 @@ Workflow:
 4. **Revise**: errors → revise + apply_edit, loop until clean.
 5. **Cite**: for each sub-claim, grep mathlib + scan proved siblings / Library / `## Lessons learned` for a direct replacement. If found, drop the `have h_<slug>` from the skeleton and cite inline (`apply @X <;> assumption`-style) — one less sub-goal to register.
 6. **Stub**: for each remaining sub-claim, write `new_<slug>.lean` stub in attempts_dir (`:= by sorry` + `entry_kind` directive) and `validate_file` each.
-7. **Link**: final apply_edit on `patch.lean` — replace each `have h_<slug> : <type> := by sorry` placeholder with `have h_<slug> := <slug> <args>` (live tools resolve `<slug>` once its `new_<slug>.lean` is on disk — Unknown identifier here means the stub file isn't written yet). Without this, patch.lean ships sorry → main inherits sorryAx.
+7. **Link**: final apply_edit on `patch.lean` — reference each sub-goal directly (`<slug> <args>`; a `have h_<slug> := by sorry` placeholder is optional — replace it if you used one). Live tools resolve `<slug>` once its `new_<slug>.lean` is on disk — Unknown identifier here means the stub file isn't written yet. Without this, patch.lean ships sorry → main inherits sorryAx.
 
 `patch.lean` lives in attempts_dir and is sandboxed — your exploratory edits never touch the parent's source file. Outputs (patch.lean + new_*.lean) in attempts_dir are what the framework commits.
 
 ## Output
 
-Edit `patch.lean` (the strategy patch — pre-written skeleton with locked signature) and add `new_<slug>.lean` × N (one per sub-goal). Framework auto-prepends `import Mathlib` + `Defs` and auto-appends sub-goal imports — write no imports yourself.
+Edit `patch.lean` (the strategy patch — pre-written skeleton with locked signature) and add `new_<slug>.lean` × N (one per sub-goal). Framework auto-prepends `import Mathlib` + `Defs` and auto-appends sub-goal imports — write no imports yourself (sole exception: citing an existing sibling, see Rules).
 
 ### patch.lean
 
-Skeleton has `<kind> s<id> ... := by sorry` — keep the parent's keyword (`theorem` / `noncomputable def` / …). Edit only the body; signature changes are rejected as `patch_signature_mismatch`. Add annotation comments immediately above the theorem (Mathlib doc-style):
+Skeleton has `<kind> s<id> ... := by sorry` — keep the parent's keyword (`theorem` / `noncomputable def` / …). Edit only the body; signature changes are rejected as `patch_signature_mismatch`. Add annotation comments above the theorem — above or below its `set_option ... in` lines, both are read (Mathlib doc-style):
 
 ```lean
 namespace ...
@@ -120,10 +120,9 @@ Ship as `:= by sorry` with `entry_kind: Builder`. Wrong types compile-fail in se
 - Each sub-goal must be **strictly simpler** and as abstract as possible, and do real work — re-stating the parent, or a split one existing lemma closes in a single step, does not count. Bundling adjacent steps into one intermediate lemma is fine.
 - Each sub-goal is a stand-alone Lean theorem — re-declare any parent binder its type uses, or that you anticipate its own sub-goals will thread. When unsure, keep — over-keeping is mild bloat, dropping a future-needed binder is a wasted attempt.
 - Do NOT use any name in FORBIDDEN_LEMMAS — anywhere.
-- **Cite an existing sibling** by writing its import line yourself: `import Problems.<problem>.proofs.L_<slug>` (the one import you write — declared `new_*.lean` sub-goals are auto-appended), then reference `<slug>`. The framework classifies by status:
+- **Cite an existing sibling** (decomposition path — you also declare ≥1 `new_*.lean`; a leaf-bypass `patch.lean`-alone proof, axiom-probed at submit, can cite **proved** only) by writing its import line yourself: `import Problems.<problem>.proofs.L_<slug>` (the one import you write — declared `new_*.lean` sub-goals are auto-appended), then reference `<slug>`. The framework classifies by status:
   - **proved** → used directly.
   - **open / attempting / pending_review** → auto-linked; your strategy waits for it to prove.
   - **shelved** → auto-revived (reopened) + linked — a leaf parked because a sibling failed becomes usable again the moment you cite it.
   - **dead / disproved** → rejected (dead = wrong as stated in its old context; disproved = false). Re-declare the statement fresh as your own `new_<slug>.lean` instead of citing.
-- This machinery is the **decomposition path** only; a leaf-bypass `patch.lean`-alone proof (axiom-probed at submit) can cite **proved** siblings only.
 - If a sorry-free direct proof builds cleanly, ship `patch.lean` alone (no `new_*.lean`); framework leaf-bypass takes it.

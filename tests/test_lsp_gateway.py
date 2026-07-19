@@ -1966,3 +1966,12 @@ def test_build_compilation_unit_opens_defs_namespace(tmp_path: Path) -> None:
     merged2, _, _ = lsp_gateway._build_compilation_unit(
         "theorem t2 : True := trivial\n", prob2, tmp_path, att2)
     assert "open Problems" not in merged2
+
+
+def test_annotation_submission_stub_skip_carries_note() -> None:
+    """07-19 x2: a bare `checked: false` on a sorry stub read as
+    "annotation maybe required here too"."""
+    out = lsp_gateway._annotation_submission(
+        "theorem t : True := by sorry\n")
+    assert out["checked"] is False
+    assert "stubs need no annotation" in out.get("note", "")

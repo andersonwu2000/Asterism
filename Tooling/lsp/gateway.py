@@ -1496,6 +1496,10 @@ def goal_at(line: int, col: int) -> str:
         # The slot holds the merged compilation unit; the agent's `line`
         # is in its own content frame, so translate to the merged frame.
         q_line = _merged_line_for(slot.line_map, line)
+        # Same honesty signal as errors_at/apply_edit (#106; 07-19: a
+        # goal_at blocked ~2min and the agent could not tell timeout
+        # from truth): an unconverged elaboration must say so.
+        converged = _diags_converged(backend, slot)
         try:
             result = backend.plain_goal(
                 slot.slot_path, line=q_line - 1, character=col, timeout=15
@@ -1524,6 +1528,9 @@ def goal_at(line: int, col: int) -> str:
                     "slot_kind": _slot_kind})
     resp = {"line": line, "col": col, "goal": goal_text,
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()}
+    if not converged:
+        resp["elaborating"] = True
+        resp["warning"] = _ELABORATING_WARNING
     if resolved_at_sorry is not None:
         resp["note"] = ("queried position had no goal (a `sorry` admits its "
                         "goal); showing the goal at the `sorry` token "
@@ -1744,7 +1751,11 @@ def _annotation_submission(content: str) -> "dict":
     couldn't tell whether the gate applied)."""
     if (not _GW_DECL_HEAD_RE.search(content)
             or _GW_SORRY_STUB_RE.search(content)):
-        return {"checked": False}
+        # Explain the skip (07-19 ×2: agents read a bare
+        # `checked: false` on a stub as "annotation maybe required").
+        return {"checked": False,
+                "note": "stubs need no annotation — whoever proves the "
+                        "sub-goal writes it"}
     ok = bool(_gw_leading_comments(content).strip())
     return {"checked": True, "ok": ok,
             "note": "" if ok else

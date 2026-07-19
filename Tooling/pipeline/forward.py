@@ -95,6 +95,11 @@ def _forward_seed_scaffold(*, problem: str, workspace: Path) -> str:
     from .backward import _ensure_imports_subgoal
     from ..state import manifest as _mfst
     base = (
+        # longLine pre-waived: math statements routinely exceed 100
+        # chars and the lint round-trip cost every Forward an extra
+        # edit (07-19 feedback ×2; backward's skeleton has the same
+        # per-decl waiver precedent).
+        "set_option linter.style.longLine false\n\n"
         f"namespace Problems.{problem}\n\n"
         "-- Write ONE forward lemma here (see forward.md). Edit this file with\n"
         "-- apply_edit and validate_file to type-check before finishing.\n\n"

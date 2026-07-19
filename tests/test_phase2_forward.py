@@ -826,3 +826,12 @@ def test_extract_metadata_no_declaration_lists_all_kinds() -> None:
     assert md is None
     for kw in ("theorem", "def", "structure", "class"):
         assert kw in err
+
+
+def test_forward_seed_scaffold_waives_longline_lint(
+    workspace: Path,
+) -> None:
+    """07-19 x2: math statements routinely exceed 100 chars; every
+    Forward paid an extra edit round-trip adding the waiver by hand."""
+    seed = forward._forward_seed_scaffold(problem="p", workspace=workspace)
+    assert "set_option linter.style.longLine false" in seed
