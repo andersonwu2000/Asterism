@@ -586,21 +586,14 @@ def _extract_statement(text: str) -> str:
             break
         return ""
 
-    # Capture type until top-level `:=`
-    start = pos
-    dp = db_ = dk = 0
-    while pos < n - 1:
-        c = text[pos]
-        if c == "(": dp += 1
-        elif c == ")": dp -= 1
-        elif c == "{": db_ += 1
-        elif c == "}": db_ -= 1
-        elif c == "[": dk += 1
-        elif c == "]": dk -= 1
-        elif c == ":" and text[pos + 1] == "=" and dp == 0 and db_ == 0 and dk == 0:
-            return text[start:pos].strip()
-        pos += 1
-    return ""
+    # Capture type until the BODY's `:=` — let/have binders in the type
+    # own their `:=` and must not truncate it (same hole as the skeleton
+    # seed, PutnamCmp b6_1 2026-07-19; single impl in state.assemble).
+    from ..state.assemble import body_assign_index
+    idx = body_assign_index(text, pos)
+    if idx < 0:
+        return ""
+    return text[pos:idx].strip()
 
 
 def _extract_statement_from_lean(path: Path) -> str:

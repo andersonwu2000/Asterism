@@ -130,10 +130,12 @@ _REDERIVATION_TOKEN_BUDGET = 40
 
 
 def _proof_body(text: str) -> str:
-    """Everything after the first top-level `:=` — best-effort. The
-    bridge file is tiny (imports + one theorem), so the first `:=` is the
-    theorem's definition site."""
-    idx = text.find(":=")
+    """Everything after the theorem's body `:=` — best-effort. The
+    bridge file is tiny (imports + one theorem); `body_assign_index`
+    skips `:=` inside binders and let/have type binders (same hole
+    class as the skeleton seed, 2026-07-19)."""
+    from ...state.assemble import body_assign_index
+    idx = body_assign_index(text, 0)
     return text[idx + 2:] if idx >= 0 else ""
 
 

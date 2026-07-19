@@ -1409,3 +1409,38 @@ def test_decl_head_re_captures_unicode_identifier() -> None:
     assert m is not None and m.group(2) == "td_gen_maps_to_sigma_ι"
     m2 = DECL_HEAD_RE.search("noncomputable def foo' : Nat := 1")
     assert m2 is not None and m2.group(2) == "foo'"
+
+
+def test_extract_statement_survives_let_binder_in_type() -> None:
+    """PutnamCmp b6_1 gap_bounds_growth_ratio (2026-07-19): a type
+    containing `let x := ...` was truncated at the let's `:=` -- the
+    first top-level `:=` is NOT always the body separator."""
+    src = ("theorem gap (r : Real) (hr : 0 < r) :\n"
+           "    let a := Filter.liminf f Filter.atTop\n"
+           "    r <= (a - 1) / a ^ 2  := by sorry\n")
+    got = _extract_statement(src)
+    assert "let a := Filter.liminf f Filter.atTop" in got
+    assert "r <= (a - 1) / a ^ 2" in got
+    assert "sorry" not in got
+
+
+def test_signature_prefix_survives_let_binder_in_type() -> None:
+    """Same hole in the skeleton seed: the child patch.lean was seeded
+    as `... : let a := by sorry` -- everything after the let's `:=`
+    (the bound expression AND the real conclusion) vanished."""
+    from Tooling.state.assemble import signature_prefix
+    src = ("theorem gap (r : Real) (hr : 0 < r) :\n"
+           "    let a := Filter.liminf f Filter.atTop\n"
+           "    r <= (a - 1) / a ^ 2  := by sorry\n")
+    sig = signature_prefix(src, "gap")
+    assert "r <= (a - 1) / a ^ 2" in sig
+    assert "by sorry" not in sig
+    # ordinary statements unchanged
+    assert signature_prefix("theorem t : True := by trivial", "t") \
+        == "theorem t : True "
+    # `have` in the type owns its := too
+    src2 = ("theorem t2 :\n"
+            "    have h : 1 <= 2 := Nat.le_succ 1\n"
+            "    1 <= 2  := by exact h\n")
+    sig2 = signature_prefix(src2, "t2")
+    assert "1 <= 2" in sig2 and "exact h" not in sig2

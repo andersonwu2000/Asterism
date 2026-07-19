@@ -109,31 +109,62 @@ def ensure_framework_imports(content: str, *, problem: str,
 #    moved here so the gateway's submission mirror can run the SAME
 #    comparison the Backward commit gate runs — task #5 D-lite) ──
 
-def signature_prefix(text: str, name: str) -> str:
-    """Return the substring `<kind> <name> <binders> : <type>` (up to
-    but not including `:=`). `<kind>` ∈ {theorem, def, structure,
-    class, inductive, instance}. Returns "" if no matching declaration
-    head found.
+_LET_LIKE_RE = re.compile(r"(?:let|letI|have|haveI)\b")
 
-    Walks balanced paren/brace/bracket depth so a top-level `:=` is
-    distinguished from `:=` inside a binder default value or anonymous
-    constructor literal."""
-    m = re.search(DECL_KIND_RE_SRC + re.escape(name) + r"\b", text)
-    if not m:
-        return ""
-    pos = m.end()
+
+def body_assign_index(text: str, pos: int) -> int:
+    """Index of the `:=` that separates a declaration's signature from
+    its body, scanning from `pos`; -1 when absent.
+
+    Depth-walks paren/brace/bracket nesting, AND counts top-level
+    `let`/`letI`/`have`/`haveI` binders in the type: each owns the next
+    top-level `:=` (`… : let α := liminf …, r ≤ (α-1)/α²  := by sorry`
+    — the first `:=` is the let's, the second is the body's; splitting
+    at the first truncated the seeded skeleton mid-goal, PutnamCmp b6_1
+    `gap_bounds_growth_ratio` 2026-07-19)."""
     n = len(text)
     depth = 0
+    pending = 0  # top-level let/have binders awaiting their `:=`
     while pos < n - 1:
         ch = text[pos]
         if ch in "({[":
             depth += 1
         elif ch in ")}]":
             depth = max(0, depth - 1)
-        elif depth == 0 and ch == ":" and text[pos + 1] == "=":
-            return text[m.start():pos]
+        elif depth == 0:
+            if ch == ":" and text[pos + 1] == "=":
+                if pending:
+                    pending -= 1
+                    pos += 2
+                    continue
+                return pos
+            if ch in "lh" and (pos == 0 or not (
+                    text[pos - 1].isalnum() or text[pos - 1] in "_.")):
+                mm = _LET_LIKE_RE.match(text, pos)
+                if mm:
+                    pending += 1
+                    pos = mm.end()
+                    continue
         pos += 1
-    return text[m.start():]
+    return -1
+
+
+def signature_prefix(text: str, name: str) -> str:
+    """Return the substring `<kind> <name> <binders> : <type>` (up to
+    but not including the body's `:=`). `<kind>` ∈ {theorem, def,
+    structure, class, inductive, instance}. Returns "" if no matching
+    declaration head found.
+
+    Body-`:=` detection is `body_assign_index`: balanced-depth walk
+    plus let/have binder counting, so a `let x := …` inside the type
+    does not truncate the signature."""
+    m = re.search(DECL_KIND_RE_SRC + re.escape(name) + r"\b", text)
+    if not m:
+        return ""
+    idx = body_assign_index(text, m.end())
+    if idx < 0:
+        return text[m.start():]
+    return text[m.start():idx]
 
 
 def normalize_signature(s: str) -> str:
