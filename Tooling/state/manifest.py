@@ -510,6 +510,23 @@ def defs_opens(workspace: Path, problem: str) -> list[str]:
     return out
 
 
+def defs_namespaces(workspace: Path, problem: str) -> list[str]:
+    """File-scope `namespace ...` paths declared in Defs.lean, in the
+    same raw-arg shape as `defs_opens` entries. The validation unit
+    opens these so a bare snippet resolves Defs symbols (`f`,
+    `<problem>_solution`, …) the way the committed namespace-wrapped
+    file does (07-18 ×3 + 07-19 ×9: bogus "unknown identifier" on
+    content that elaborates clean in the live file). Extracted from
+    the file, not assumed — a Defs without a namespace yields [] and
+    nothing is opened. Absent Defs → []."""
+    from . import db
+    defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
+    if not defs_path.exists():
+        return []
+    text = defs_path.read_text(encoding="utf-8")
+    return re.findall(r"(?m)^namespace\s+([\w.]+)", text)
+
+
 def inject_defs_opens(
     content: str, *, problem: str, workspace: Path,
 ) -> str:

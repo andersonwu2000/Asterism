@@ -320,7 +320,14 @@ def test_projection_contents(
     attempts = workspace / ".attempts" / "adv-proj"
     attempts.mkdir(parents=True)
     pdir = workspace / "Problems" / "p"
-    (pdir / "CATALOG.md").write_text("- brick_a\n", encoding="utf-8")
+    # CATALOG.md never lives in problem_dir — the projection generates
+    # it from goal records (07-19: the old problem_dir copy was dead
+    # code and the judge never saw the landed-brick list).
+    db.insert_goal(
+        conn, problem="p", slug="brick_a",
+        lean_path="Problems/p/proofs/L_brick_a.lean",
+        statement="theorem brick_a : 1 + 1 = 2", origin="forward",
+        depth=1, status="proved")
 
     proj = adversary.build_projection(
         round_no=2, attempts_dir=attempts, problem_dir=pdir,
@@ -332,7 +339,8 @@ def test_projection_contents(
 
     assert proj == attempts / "adversary" / "r2"
     assert (proj / "Manifest.md").exists()
-    assert (proj / "CATALOG.md").read_text(encoding="utf-8") == "- brick_a\n"
+    cat = (proj / "CATALOG.md").read_text(encoding="utf-8")
+    assert "brick_a" in cat and "Proved catalog" in cat
     # PROGRAMME.md = current rev (bootstrap placeholder here) + its
     # execution record, welded into one file.
     prog = (proj / "PROGRAMME.md").read_text(encoding="utf-8")

@@ -1024,7 +1024,13 @@ def _build_compilation_unit(
         _needed_imports(content, problem, workspace)
         + _proved_sibling_import_lines(
             [content] + sib_texts, problem, workspace, declared),
-        opens=_merge_opens(content, manifest.defs_opens(workspace, problem),
+        # Defs' own namespace rides along with its opens: a bare snippet
+        # (no `namespace Problems.…` wrapper) then resolves Defs symbols
+        # the way the committed wrapped file does; redundant-but-harmless
+        # for content that carries the wrapper (07-18 ×3 + 07-19 ×9).
+        opens=_merge_opens(content,
+                           manifest.defs_opens(workspace, problem)
+                           + manifest.defs_namespaces(workspace, problem),
                            list(extra_opens)),
     )
     return merged, line_map, [s for s, _ in siblings]

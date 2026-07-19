@@ -179,3 +179,55 @@ def test_strategist_index_present_and_wired(conn, tmp_path):
     c = (root / "Tooling" / "agent" / "context.py").read_text(
         encoding="utf-8")
     assert "_section_catalog_pointer(conn, str(goal[\"problem\"]), attempts_dir)" in c
+
+
+def test_alive_entries_carry_full_signature(tmp_path):
+    """07-19 feedback x6: the alive section rendered goals.statement --
+    the conclusion only (dedupe's matching key) -- so workers could not
+    tell whether an in-flight sibling's hypotheses matched theirs and
+    defaulted to minting duplicates. Alive entries now read the stub
+    file's full signature exactly like proved entries do; the explicit
+    `workspace=` override serves callers off the standard .attempts
+    layout (the adversary projection)."""
+    import sqlite3 as _s
+    ws = tmp_path / "ws"
+    attempts = ws / ".attempts" / "pid"
+    proofs = ws / "Problems" / "P" / "proofs"
+    for d in (attempts, proofs):
+        d.mkdir(parents=True)
+    conn = _s.connect(":memory:")
+    conn.row_factory = _s.Row
+    db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES ('P','P/Manifest.md',?)", (db.now(),))
+    conn.execute(
+        "INSERT INTO goals (problem, slug, lean_path, statement, kind,"
+        " origin, status, depth, created_at, updated_at) VALUES "
+        "('P','done_brick','Problems/P/proofs/L_done_brick.lean',"
+        "'theorem done_brick : 1 + 1 = 2','theorem','forward','proved',"
+        "0,?,?)", (db.now(), db.now()))
+    conn.execute(
+        "INSERT INTO goals (problem, slug, lean_path, statement, kind,"
+        " origin, status, depth, created_at, updated_at) VALUES "
+        "('P','inflight','Problems/P/proofs/L_inflight.lean',"
+        "'n <= n + 1','theorem','backward','attempting',1,?,?)",
+        (db.now(), db.now()))
+    (proofs / "L_inflight.lean").write_text(
+        "import Mathlib\n\ntheorem inflight (n : Nat) (hn : 1 <= n) :\n"
+        "    n <= n + 1  := by sorry\n", encoding="utf-8")
+    conn.commit()
+
+    ctx.write_catalog_companion(conn, "P", attempts)
+    body = (attempts / ctx.CATALOG_COMPANION).read_text(encoding="utf-8")
+    # hypotheses visible on the alive line, conclusion-only fallback gone
+    assert "theorem inflight (n : Nat) (hn : 1 <= n)" in body
+    assert "- `inflight` (theorem): `n <= n + 1`" not in body
+
+    # projection-style call: attempts dir outside <ws>/.attempts, real
+    # workspace passed explicitly -- signature must still resolve
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    ctx.write_catalog_companion(conn, "P", proj, workspace=ws)
+    body2 = (proj / ctx.CATALOG_COMPANION).read_text(encoding="utf-8")
+    assert "theorem inflight (n : Nat) (hn : 1 <= n)" in body2

@@ -94,9 +94,13 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     manifest = problem_dir / "Manifest.md"
     if manifest.exists():
         shutil.copyfile(manifest, proj / "Manifest.md")
-    catalog = problem_dir / "CATALOG.md"
-    if catalog.exists():
-        shutil.copyfile(catalog, proj / "CATALOG.md")
+    # CATALOG.md is lazily machine-generated per assembly and never
+    # lives in problem_dir — generate it into the projection directly
+    # (the old problem_dir copy was dead code: the judge could never
+    # check "X already landed" claims; 07-19 feedback).
+    from ..agent.context import write_catalog_companion
+    write_catalog_companion(conn, problem, proj,
+                            workspace=problem_dir.parent.parent)
 
     # Current rev + the terminal outcomes since it, welded into one
     # file: the outcomes ARE this rev's execution record, and the

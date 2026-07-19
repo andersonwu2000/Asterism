@@ -1938,3 +1938,31 @@ def test_apply_edit_carries_citation_mirror(
     assert "citation" in out
     assert out["citation"]["ok"] is False
     assert out["citation"]["issues"][0]["slug"] == "inflight_dep"
+
+
+def test_build_compilation_unit_opens_defs_namespace(tmp_path: Path) -> None:
+    """07-18 x3 + 07-19 x9: a bare snippet (no `namespace Problems...`
+    wrapper) could not resolve Defs symbols because the unit carried
+    Defs' opens but not its namespace -- bogus "unknown identifier `f`"
+    on content that elaborates clean in the live wrapped file. The unit
+    now opens whatever namespace Defs actually declares; without a Defs
+    there is nothing to open and no open is injected."""
+    prob = "p"
+    pdir = db.problem_dir(tmp_path, prob)
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "Defs.lean").write_text(
+        "import Mathlib\nnamespace Problems.T.p\ndef f (n : Nat) := n\n"
+        "end Problems.T.p\n", encoding="utf-8")
+    attempts = tmp_path / "att"
+    attempts.mkdir()
+    merged, _, _ = lsp_gateway._build_compilation_unit(
+        "theorem t : f 1 = 1 := by rfl\n", prob, tmp_path, attempts)
+    assert "open Problems.T.p" in merged
+
+    prob2 = "q"
+    db.problem_dir(tmp_path, prob2).mkdir(parents=True, exist_ok=True)
+    att2 = tmp_path / "att2"
+    att2.mkdir()
+    merged2, _, _ = lsp_gateway._build_compilation_unit(
+        "theorem t2 : True := trivial\n", prob2, tmp_path, att2)
+    assert "open Problems" not in merged2

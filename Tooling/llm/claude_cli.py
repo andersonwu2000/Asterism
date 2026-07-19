@@ -584,14 +584,20 @@ def _load_prompt(req: LLMRequest) -> str:
 def _build_cold_prompt(req: LLMRequest) -> str:
     """Compose the `-p` payload for a cold (non-retry) spawn: the full
     prompt template content, followed by short framework instructions
-    pointing at Context.md and the output directory.
+    pointing at Context.md and the output directory. The Context.md
+    clause only renders when the file exists — adversary spawns point
+    `attempts_dir` at the projection, which has no Context.md and whose
+    reading order the prompt template itself dictates (07-19 ×5:
+    spurious file-not-found as the judge's first action).
     """
     body = _load_prompt(req)
+    ctx = req.attempts_dir / "Context.md"
+    context_clause = (f"read context at {ctx} and " if ctx.exists()
+                      else "")
     return (
         f"You are running a {req.kind} task. Follow the instructions "
-        f"below exactly.\n\nAfter reading them, read context at "
-        f"{req.attempts_dir}/Context.md and write outputs into "
-        f"{req.attempts_dir}/.\n\n"
+        f"below exactly.\n\nAfter reading them, {context_clause}write "
+        f"outputs into {req.attempts_dir}/.\n\n"
         f"=== INSTRUCTIONS ===\n{body}\n=== END INSTRUCTIONS ==="
     )
 

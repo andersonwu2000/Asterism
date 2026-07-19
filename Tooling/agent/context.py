@@ -398,7 +398,9 @@ def _catalog_signature(workspace: Path, lean_path: str,
 
 
 def write_catalog_companion(conn: sqlite3.Connection, problem: str,
-                            attempts_dir: Path) -> list[sqlite3.Row]:
+                            attempts_dir: Path,
+                            workspace: "Path | None" = None,
+                            ) -> list[sqlite3.Row]:
     """`CATALOG.md` — the problem's proved-brick catalog, machine-
     generated from goal records (2026-07-13, user call): slug + exact
     statement + kind + proof file for every proved goal.
@@ -411,6 +413,9 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
     slugs / curated subsets; exact statements are read here on demand —
     the same lazy pattern as `LESSONS.md` / `PAST_*.md`.
 
+    `workspace` must be passed when `attempts_dir` is not the standard
+    `<workspace>/.attempts/<pid>` layout (the adversary projection dir).
+
     Returns the proved rows (empty when nothing proved or the write
     failed — callers render no section in that case)."""
     rows = list(conn.execute(
@@ -419,7 +424,8 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
         (problem,)))
     if not rows:
         return []
-    workspace = attempts_dir.parent.parent
+    if workspace is None:
+        workspace = attempts_dir.parent.parent
     lines = [
         f"# Proved catalog — {problem} ({len(rows)} entries)",
         "_Machine-generated from the framework's goal records on every"
@@ -434,7 +440,7 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
     # (a5 run ×4); same grep motion as a citation lookup, so it lives
     # in the same file, clearly fenced as NOT citable.
     alive = list(conn.execute(
-        "SELECT slug, statement, kind FROM goals"
+        "SELECT slug, statement, kind, lean_path FROM goals"
         " WHERE problem = ? AND status IN"
         " ('open','attempting','pending_strategist_review')"
         " ORDER BY id", (problem,)))
@@ -447,7 +453,14 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
             "",
         ]
         for a in alive:
-            stmt = " ".join(str(a["statement"] or "").split())
+            # `goals.statement` is the conclusion only (sig_conclusion,
+            # dedupe's matching key) — the cite-vs-fresh decision needs
+            # the hypotheses, so read the full signature off the stub
+            # file like the proved entries do (07-19 feedback ×6).
+            sig = (_catalog_signature(workspace, str(a["lean_path"] or ""),
+                                      str(a["slug"]))
+                   or str(a["statement"] or ""))
+            stmt = " ".join(sig.split())
             lines.append(f"- `{a['slug']}` ({a['kind']}): `{stmt}`")
         lines.append("")
     for r in rows:

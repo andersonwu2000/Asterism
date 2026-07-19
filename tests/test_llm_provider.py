@@ -2077,3 +2077,22 @@ def test_claude_complete_text_oversized_prompt_raises(
     big = "y" * (claude_cli._ARGV_PROMPT_MAX + 10)
     with pytest.raises(claude_cli.PromptTooLarge):
         claude_cli.ClaudeCliProvider().complete_text(prompt=big)
+
+
+def test_cold_prompt_context_clause_only_when_file_exists(tmp_path) -> None:
+    """07-19 x5: adversary spawns point attempts_dir at the projection,
+    which has no Context.md -- the unconditional clause sent every judge
+    hunting a nonexistent file as its first action. The clause now
+    renders only when Context.md actually exists."""
+    from Tooling.llm import claude_cli
+    (tmp_path / "p.md").write_text("INSTR", encoding="utf-8")
+    req = llm.LLMRequest(
+        kind="adversary", prompt_path=tmp_path / "p.md",
+        problem_dir=tmp_path, attempts_dir=tmp_path, timeout_sec=60)
+    out = claude_cli._build_cold_prompt(req)
+    assert "Context.md" not in out
+    assert f"write outputs into {tmp_path}/." in out
+
+    (tmp_path / "Context.md").write_text("ctx", encoding="utf-8")
+    out2 = claude_cli._build_cold_prompt(req)
+    assert "read context at" in out2 and "Context.md" in out2
