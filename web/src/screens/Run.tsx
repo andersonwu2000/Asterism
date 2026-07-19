@@ -464,7 +464,14 @@ export default function Run() {
             {data.problem}
           </Link>
         )}
-        {wall && <span className="tnum font-mono text-sm text-ink-dim">{wall}</span>}
+        {wall && (
+          <span
+            className="tnum font-mono text-sm text-ink-dim"
+            title="how long this run has been going (wall clock)"
+          >
+            {wall}
+          </span>
+        )}
         {running && (
           <span className="ml-auto flex items-center gap-2">
             {confirmForce ? (

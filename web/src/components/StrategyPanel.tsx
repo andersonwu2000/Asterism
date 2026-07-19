@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
 import { GOAL_STATUS_CLS, goalStatusLabel, strategyStatusLabel } from '../lib/vocab'
@@ -47,6 +48,19 @@ export default function StrategyPanel({
     `/api/problems/${encodeURIComponent(problem)}/strategies/${strategyId}`,
     5000,
   )
+  // Esc closes — same law as GoalPanel (QA: the star panels were the
+  // only surfaces that ignored it)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      const t = e.target as Element | null
+      if (t?.closest('input, textarea, [contenteditable], aside[aria-label="explainer chat"]'))
+        return
+      onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
 
   return (
     <div className="rise-in flex h-full w-96 shrink-0 flex-col border-l border-edge bg-surface">

@@ -237,11 +237,27 @@ function Shell() {
   const section = route.segments[0] ?? ''
   const workspaceName = meta ? (meta.workspace.split(/[\\/]/).pop() ?? '') : ''
   // the tab title carries the inbox count — the one place a decision
-  // can wait on the human while they look at another tab
+  // can wait on the human while they look at another tab — and names
+  // the route (first-time QA: five open tabs all read "Asterism")
   const inboxCount = meta?.inbox_count ?? 0
   useEffect(() => {
-    document.title = inboxCount > 0 ? `(${inboxCount}) Asterism` : 'Asterism'
-  }, [inboxCount])
+    const detail = route.segments[1]
+    const leaf =
+      (section === 'problems' || section === 'library') && detail
+        ? (detail.split('.').pop() ?? detail)
+        : {
+            engine: 'Engine',
+            run: 'Engine',
+            settings: 'Engine',
+            telemetry: 'Engine',
+            library: 'Library',
+            papers: 'Papers',
+            inbox: 'Inbox',
+            new: 'New problem',
+          }[section]
+    const base = leaf ? `${leaf} — Asterism` : 'Asterism'
+    document.title = inboxCount > 0 ? `(${inboxCount}) ${base}` : base
+  }, [inboxCount, section, route.segments])
 
   // explainer drawer: open state persists (QPaper shape), width doesn't
   const [chatOpen, setChatOpen] = useState(

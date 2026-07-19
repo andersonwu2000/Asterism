@@ -24,7 +24,10 @@ function GoalCounts({ p }: { p: BoardProblem }) {
     <span className="tnum shrink-0 text-xs whitespace-nowrap">
       {p.goals.open > 0 && <span className="text-ink">{p.goals.open} open · </span>}
       <span className="text-ink-faint">
-        {p.goals.proved}/{p.goals.total}
+        {/* name the unit — "36/43" of WHAT was the first-time reader's
+            first question (the bar's tooltip answered it; the visible
+            text should too) */}
+        {p.goals.proved}/{p.goals.total} proved
       </span>
     </span>
   )

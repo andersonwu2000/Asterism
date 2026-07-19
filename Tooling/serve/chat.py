@@ -71,9 +71,11 @@ rationale). Cite objects with bracket tokens so the UI can link them: \
 Use the token forms exactly; never write URLs or file paths as \
 citations. If you are not sure, say so plainly.
 3. Audience. Plain mathematical language first, engine vocabulary \
-only when asked. Answer in the language the user writes in. Keep \
-answers short by default — one focused paragraph unless depth is \
-asked for. No emoji.
+only when asked. Answer in the language the user writes in, matching \
+their script variant (Traditional Chinese in, Traditional Chinese \
+out — never switch to Simplified, and vice versa). Keep answers \
+short by default — one focused paragraph unless depth is asked for. \
+No emoji.
 4. Lean code and statements go in fenced code blocks; inline math in \
 $...$.
 """
@@ -206,12 +208,11 @@ def _page_context(workspace: Path, page: "dict | None") -> "tuple[str, str]":
                 f" Library/ (Lean files; Read them for exact statements)."
             )
         if kind == "engine":
-            from ..core.cli import daemon_status
-            d = daemon_status(workspace)
-            slim = {k: d.get(k) for k in
-                    ("running", "starting", "scope", "started_at")}
-            return key, json.dumps({"page": "engine", "daemon": slim},
-                                   ensure_ascii=False)
+            # the console IS an overview surface — give it the board's
+            # whole-run context (QA: an Engine-page question got "the
+            # current view only shows daemon status" because that was
+            # literally all we handed over)
+            return key, _board_context(conn, workspace)
         if kind == "papers":
             from . import data as _data
             shelf = _data.papers_list(conn, workspace)["papers"][:30]

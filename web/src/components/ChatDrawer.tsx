@@ -144,7 +144,24 @@ export default function ChatDrawer({
   const [streaming, setStreaming] = useState(false)
   const [stage, setStage] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
-  const [model, setModel] = useState<string | null>(null)
+  // the model choice persists (QA, 2026-07-20): it silently reverted
+  // to the costlier default on every reload — a user who parked it on
+  // haiku kept paying sonnet
+  const [model, setModelState] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('asterism.chat.model')
+    } catch {
+      return null
+    }
+  })
+  const setModel = (m: string) => {
+    setModelState(m)
+    try {
+      localStorage.setItem('asterism.chat.model', m)
+    } catch {
+      /* private mode */
+    }
+  }
   const [meta, setMeta] = useState<ChatState | null>(null)
   const [width, setWidth] = useState(380)
   const [confirmClear, setConfirmClear] = useState(false)
@@ -209,6 +226,7 @@ export default function ChatDrawer({
       setNote(null)
       setConfirmClear(false)
       setInput('')
+      if (inputRef.current) inputRef.current.style.height = 'auto'
       setMessages((m) => [...m, { role: 'user', text }, { role: 'assistant', text: '' }])
       setStage('context')
       setStreamingBoth(true)
@@ -493,9 +511,16 @@ export default function ChatDrawer({
           <textarea
             ref={inputRef}
             value={input}
-            rows={Math.min(6, Math.max(1, input.split('\n').length))}
+            rows={1}
             placeholder="ask anything…"
-            className="min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-[13px] text-ink placeholder:text-ink-faint focus:outline-none"
+            className="max-h-40 min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-[13px] text-ink placeholder:text-ink-faint focus:outline-none"
+            // grow with CONTENT, not just newlines — a long soft-wrapped
+            // question scrolled invisibly inside a two-line box (QA)
+            onInput={(e) => {
+              const el = e.currentTarget
+              el.style.height = 'auto'
+              el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+            }}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {

@@ -354,6 +354,9 @@ export interface SignoffRecord {
 export interface LibraryChapter {
   problem: string
   bridged_at: string | null
+  /** the problem's root statement — what the bridge gate re-proves
+   * from these modules alone; the chapter opens with it */
+  root?: { slug: string; statement: string } | null
   files: LibraryChapterFile[]
   signoff?: SignoffRecord | null
   /** the gates' recorded guarantees — sorry-free, axioms whitelist */

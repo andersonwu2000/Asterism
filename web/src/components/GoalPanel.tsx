@@ -81,6 +81,20 @@ export default function GoalPanel({
   const [openRoutes, setOpenRoutes] = useState<Set<number>>(new Set())
   // a lit star must not outlive the panel (or the hovered row)
   useEffect(() => () => onHoverGoals?.(null), [onHoverGoals])
+  // Esc closes — every other panel honors it and QA tripped over the
+  // one that didn't. Keystrokes inside inputs/the chat drawer are
+  // theirs, not ours.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      const t = e.target as Element | null
+      if (t?.closest('input, textarea, [contenteditable], aside[aria-label="explainer chat"]'))
+        return
+      onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
 
   return (
     <div className="rise-in flex h-full w-96 shrink-0 flex-col border-l border-edge bg-surface">

@@ -708,6 +708,26 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
               {' — definitions first, then what they carry.'}
             </p>
           )}
+          {/* the chapter OPENS with its theorem (first-time QA: a
+              mathematician searched this chapter and never met the
+              main statement — old harvests lost their claim flags and
+              Highlights was all vocabulary + plumbing) */}
+          {data.root && (
+            <div className="mt-5">
+              <div className="flex items-baseline gap-2 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
+                the theorem
+                <span
+                  className="font-normal tracking-normal normal-case"
+                  title="the problem's root statement — the bridge gate re-proves exactly this from the chapter's modules alone before anything enters the Library"
+                >
+                  what this chapter proves
+                </span>
+              </div>
+              <div className="mt-2 overflow-x-auto rounded-xl border border-edge-strong bg-white/[0.02] px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink">
+                <Lean code={data.root.statement} />
+              </div>
+            </div>
+          )}
           <HighlightSection
             title="vocabulary"
             hint={
@@ -723,7 +743,7 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
             hint={
               leadIsVouched
                 ? 'the results a human vouched for at sign-off'
-                : 'no result here carries a sign-off mark — these are the ones the other modules reach for'
+                : 'the supporting lemmas the other modules reach for most'
             }
             hintTitle={
               leadIsVouched

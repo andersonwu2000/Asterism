@@ -4,6 +4,7 @@ import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { renderProse } from '../lib/prose'
+import { splitSignature } from '../lib/leanSig'
 import { onChatGoalHover, onChatGoalOpen, takePendingGoalOpen } from '../lib/chatFocus'
 import { goalStatusLabel } from '../lib/vocab'
 import { Button, ErrorState, StatusBadge, TabNav } from '../components/ui'
@@ -48,8 +49,10 @@ function ProgrammePanel({ problem }: { problem: string }) {
         >
           rev {cur.rev}
         </span>
-        <span title="how many criticism rounds this revision survived before the reviewer let it pass">
-          {cur.rounds === 0 ? 'passed unchallenged' : `passed after ${cur.rounds} round${cur.rounds === 1 ? '' : 's'} of review`}
+        <span title="how many criticism rounds this revision survived before the adversarial reviewer let it pass">
+          {cur.rounds === 0
+            ? 'passed adversarial review unchallenged'
+            : `passed after ${cur.rounds} round${cur.rounds === 1 ? '' : 's'} of adversarial review`}
         </span>
         <span>{relTime(cur.created_at)}</span>
         {rejected > 0 && (
@@ -242,18 +245,23 @@ function GoalsList({
             </td>
             <td
               className="max-w-md truncate py-2 pr-4 text-[12px] text-ink-dim"
-              title={g.statement}
+              title={(g.signature ?? g.statement) + (g.doc ? `\n\n${g.doc}` : '')}
             >
-              {/* the birth annotation reads; the full type is one
-                  click away (and on hover) — a binder wall truncated
-                  at 60 chars said nothing */}
-              {g.doc ? (
-                g.doc
-              ) : (
-                <span className="font-mono text-[11px]">
-                  <Lean code={stripBinders(g.statement)} />
-                </span>
-              )}
+              {/* a column named "statement" must show the statement
+                  (first-time QA: the old doc-first rule filled it with
+                  duplicated plan prose and mid-sentence fragments).
+                  Conclusion-first keeps it readable at any width — the
+                  binder wall and the birth annotation live in the
+                  tooltip and one click away */}
+              <span className="font-mono text-[11px]">
+                <Lean
+                  code={(() => {
+                    const src = g.signature ?? g.statement
+                    const sig = splitSignature(src)
+                    return sig !== null ? '⊢ ' + sig.conclusion : stripBinders(g.statement)
+                  })()}
+                />
+              </span>
             </td>
             <td className="py-2 pr-4 text-right text-xs text-ink-faint">
               {g.attempts > 0 ? g.attempts : null}
@@ -331,7 +339,14 @@ function RunStrip({
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ok" />
         {phase}
       </span>
-      {wall && <span className="tnum font-mono text-[12px] text-ink-dim">{wall}</span>}
+      {wall && (
+        <span
+          className="tnum font-mono text-[12px] text-ink-dim"
+          title="how long this run has been going (wall clock)"
+        >
+          {wall}
+        </span>
+      )}
       {goals.length > 0 && (
         <span className="tnum text-ink-faint">
           {tallies

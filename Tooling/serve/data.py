@@ -1264,9 +1264,32 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
                   else list(_mfst.FRAMEWORK_DEFAULT_AXIOMS))
     except Exception:  # noqa: BLE001 — a colophon must never 500 the page
         axioms = []
+    # The theorem itself: the problem's root statement — Gate B
+    # re-derives exactly this from the Library modules alone, so it IS
+    # what the chapter proves. Surfaced so the chapter can OPEN with
+    # its main result (first-time QA, 2026-07-20: a mathematician
+    # searched the stokes chapter and never found Stokes' theorem —
+    # old harvests lost their claim flags, leaving Highlights all
+    # vocabulary and keystones).
+    root = None
+    try:
+        rrow = conn.execute(
+            "SELECT slug, statement, lean_path FROM goals"
+            " WHERE problem = ? AND origin = 'root'"
+            " ORDER BY id LIMIT 1", (problem,)).fetchone()
+        if rrow is not None:
+            root = {
+                "slug": str(rrow["slug"]),
+                "statement": _goal_signature(
+                    workspace, str(rrow["slug"]), rrow["lean_path"],
+                    rrow["statement"]) or str(rrow["statement"]),
+            }
+    except sqlite3.OperationalError:
+        pass
     return {
         "problem": problem,
         "bridged_at": rows[0]["library_bridged_at"],
+        "root": root,
         "files": files,
         "colophon": {
             "decls": sum(len(f["decls"]) for f in files),
