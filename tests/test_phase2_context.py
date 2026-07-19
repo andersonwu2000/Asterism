@@ -1105,3 +1105,45 @@ def test_inject_batch_done_flags_retargeted_delivery(
     assert "RETARGETED" in text
     # step 1: briefed name == landed name -> exactly one flag in total
     assert text.count("RETARGETED") == 1
+
+
+def test_batch_scoreboard_surfaces_recent_declines(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, tmp_path: Path,
+) -> None:
+    """2026-07-19 (b6_1 growth_exponent re-mint): a decline's math
+    reasoning lived only in per-goal surfaces and a cousin branch
+    re-invented the refuted statement. Declines newer than the last
+    strategist decision now ride the batch scoreboard; the decline's
+    proposal_md (the math) is the rendered text."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    _seed_inject_batch_done(
+        conn, batch_id="batch-dcl", briefs=["b"], outcomes=["success"])
+    gid = db.insert_goal(
+        conn, problem="p", slug="growth_exp_flawed",
+        lean_path="Problems/p/proofs/L_growth_exp_flawed.lean",
+        statement="1 <= liminf ...", origin="backward", status="dead")
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at, finished_at) VALUES ('pid-dcl', 'Backward',"
+        " ?, 'Goal', 'failed', 'agent_declined', ?, ?)",
+        (str(gid), db.now(), db.now()))
+    conn.commit()
+    db.record_dead_attempt(
+        conn, target_id=gid, target_kind="Goal", pipeline_id="pid-dcl",
+        failure_reason="parent_needs_fix",
+        failure_detail="backward declined: return_to_parent",
+        proposal_md="-- decline: return_to_parent -- statement FALSE "
+                    "without the gap hypothesis; counterexample g = 2^n")
+    attempts_dir = tmp_path / "_attempts_dcl"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="routine",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        pending_review_id=None,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "Worker declines since your last wake" in text
+    assert "counterexample g = 2^n" in text
+    assert "growth_exp_flawed" in text

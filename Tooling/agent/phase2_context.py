@@ -374,9 +374,17 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     an earlier docstring claimed attribution was impossible, which
     predates the `produced_goal_id` column.
     """
+    # Worker declines since the last wake (user call 2026-07-19): the
+    # mathematical WHY of a mid-flight decline (parent_needs_fix
+    # counterexamples, no_progress / circularity analyses) lived only in
+    # per-goal surfaces, so a cousin branch re-invented a refuted
+    # statement before any steering surface ever showed it (b6_1
+    # growth_exponent re-mint). Rendered on the batch scoreboard — the
+    # one wall the strategist already reads — bounded to 5 entries.
+    decline_lines = _recent_decline_lines(conn, problem)
     batch_ids = db.unacknowledged_inject_batches(conn, problem)
     if not batch_ids:
-        return []
+        return decline_lines
     out = ["## Completed Inject batches (newest first)", ""]
     placeholders = ",".join("?" * len(batch_ids))
     # Inject rows only: every wake's decisions share the batch_id, so
@@ -491,6 +499,57 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                     detail = detail[:1200].rstrip() + "…"
                 out.append(f"  why: {detail}")
         out.append("")
+    out.extend(decline_lines)
+    return out
+
+
+_DECLINE_REASONS_SURFACED = (
+    "parent_needs_fix", "agent_declined", "no_progress",
+    "circular_decomposition",
+)
+
+
+def _recent_decline_lines(conn: sqlite3.Connection,
+                          problem: str, k: int = 5) -> list[str]:
+    """`### Worker declines since your last wake` — goal slug + the
+    decline's own reasoning (proposal_md carries the math; the
+    failure_detail for a decline is just the routing enum). Windowed to
+    dead_attempts newer than the problem's last strategist decision
+    (first wake: last 24h of rows), capped at `k`."""
+    try:
+        since = conn.execute(
+            "SELECT MAX(created_at) FROM strategist_decisions"
+            " WHERE problem = ?", (problem,)).fetchone()[0]
+        marks = ",".join("?" * len(_DECLINE_REASONS_SURFACED))
+        sql = (f"SELECT da.failure_reason, da.failure_detail,"
+               f" da.proposal_md, g.slug"
+               f" FROM dead_attempts da JOIN goals g ON g.id = da.target_id"
+               f" WHERE da.target_kind = 'Goal' AND g.problem = ?"
+               f"   AND da.failure_reason IN ({marks})")
+        args: list = [problem, *_DECLINE_REASONS_SURFACED]
+        if since:
+            # >= not >: a decline landing the same clock tick as the
+            # wake's own commit must not vanish (Windows timestamp
+            # granularity); an exact-boundary repeat is harmless.
+            sql += " AND da.ts >= ?"
+            args.append(since)
+        rows = conn.execute(
+            sql + " ORDER BY da.id DESC LIMIT ?", (*args, k)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    if not rows:
+        return []
+    out = ["### Worker declines since your last wake",
+           "_A decline's reasoning is evidence about statements in your"
+           " roadmap — a refuted formulation stays refuted under a new"
+           " slug._", ""]
+    for r in rows:
+        why = " ".join((r["proposal_md"] or r["failure_detail"] or "")
+                       .replace("--", " ").split())
+        if len(why) > 250:
+            why = why[:250].rstrip() + "…"
+        out.append(f"- `{r['slug']}` [{r['failure_reason']}]: {why}")
+    out.append("")
     return out
 
 
