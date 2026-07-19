@@ -94,6 +94,15 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     manifest = problem_dir / "Manifest.md"
     if manifest.exists():
         shutil.copyfile(manifest, proj / "Manifest.md")
+    # Formal ground truth (user call 07-19): proposal claims cite the
+    # actual Lean statement; without read-only copies the judge could
+    # only check them against the Manifest's prose (07-19 feedback ×7
+    # — permission-denied on every Root/Defs read attempt). Isolation
+    # unchanged: copies into the projection, no sandbox widening.
+    for fname in ("Root.lean", "Defs.lean"):
+        src = problem_dir / fname
+        if src.exists():
+            shutil.copyfile(src, proj / fname)
     # CATALOG.md is lazily machine-generated per assembly and never
     # lives in problem_dir — generate it into the projection directly
     # (the old problem_dir copy was dead code: the judge could never

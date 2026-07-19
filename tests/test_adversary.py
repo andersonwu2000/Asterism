@@ -328,6 +328,10 @@ def test_projection_contents(
         lean_path="Problems/p/proofs/L_brick_a.lean",
         statement="theorem brick_a : 1 + 1 = 2", origin="forward",
         depth=1, status="proved")
+    # formal ground truth rides along read-only (user call 07-19)
+    (pdir / "Root.lean").write_text("theorem main : T := by sorry\n",
+                                    encoding="utf-8")
+    (pdir / "Defs.lean").write_text("def f := 1\n", encoding="utf-8")
 
     proj = adversary.build_projection(
         round_no=2, attempts_dir=attempts, problem_dir=pdir,
@@ -341,6 +345,8 @@ def test_projection_contents(
     assert (proj / "Manifest.md").exists()
     cat = (proj / "CATALOG.md").read_text(encoding="utf-8")
     assert "brick_a" in cat and "Proved catalog" in cat
+    assert (proj / "Root.lean").exists()
+    assert (proj / "Defs.lean").exists()
     # PROGRAMME.md = current rev (bootstrap placeholder here) + its
     # execution record, welded into one file.
     prog = (proj / "PROGRAMME.md").read_text(encoding="utf-8")
