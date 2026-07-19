@@ -109,6 +109,19 @@ def test_reset_clears_db_rows_for_problem(
     sid = _seed_strategy(conn, gid)
     _seed_dead_attempt(conn, gid, "Goal")
     _seed_dead_attempt(conn, sid, "Strategy")
+    # A pending Problem-targeted Forward row with a decision_id FK: the
+    # goal/strategy-keyed queue passes miss it, and it blocked the
+    # strategist_decisions DELETE (2026-07-19 force-stopped-run reset).
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, brief, created_at, updated_at)"
+        " VALUES ('wilson', 0, 'routine', 'Inject', 'b', ?, ?)",
+        (db.now(), db.now()))
+    conn.execute(
+        "INSERT INTO queue (kind, target_id, target_kind, priority,"
+        " problem, decision_id, created_at) VALUES ('Forward', 'wilson',"
+        " 'Problem', 0, 'wilson', ?, ?)", (cur.lastrowid, db.now()))
+    conn.commit()
 
     rc = cmd_reset(argparse.Namespace(problem="wilson"))
     assert rc == 0
@@ -131,6 +144,12 @@ def test_reset_clears_db_rows_for_problem(
     # ghost target_ids that no longer resolve to a goal/strategy.
     assert conn.execute(
         "SELECT count(*) FROM pipelines"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM queue WHERE problem='wilson'"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM strategist_decisions WHERE problem='wilson'"
     ).fetchone()[0] == 0
 
 

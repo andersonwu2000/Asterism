@@ -843,6 +843,13 @@ def wipe_problem_rows(conn, problem: str) -> "tuple[int, int]":
         "DELETE FROM pipelines WHERE target_kind='Problem' AND target_id = ?",
         (problem,),
     )
+    # Catch-all queue sweep BY PROBLEM: the goal/strategy-targeted
+    # passes above miss Problem-targeted rows (a Forward Inject queues
+    # as target_kind='Problem' carrying a decision_id FK), and a
+    # surviving one blocks the strategist_decisions DELETE below —
+    # 2026-07-19: a force-stopped run left 2 pending Forward rows and
+    # the reset died on the FK.
+    conn.execute("DELETE FROM queue WHERE problem = ?", (problem,))
     conn.execute(
         "DELETE FROM strategist_decisions WHERE problem = ?", (problem,),
     )
