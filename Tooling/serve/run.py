@@ -272,8 +272,40 @@ def _proposal_cycle(workarea: Path) -> "dict | None":
             "_tail_path": str(rdir / "proposal.md")}
 
 
+def _resolve_focus(conn: sqlite3.Connection, scope: "str | None",
+                   live_pid: "int | None",
+                   override: "str | None") -> "tuple[str | None, list[str]]":
+    """(focus, candidates). A pattern scope (`PutnamCmp.%`) runs
+    several problems in one daemon — the console's lens must land on
+    REAL problem names, not the raw pattern (which 404'd the detail
+    fetch and blanked the sky; owner report, 2026-07-19). Candidates:
+    live-leased problems first (most recent lease first), then other
+    pattern matches by recency; `override` is the UI's picker choice."""
+    candidates: "list[str]" = []
+    if live_pid is not None:
+        for r in conn.execute(
+                "SELECT problem, MAX(leased_at) AS m FROM queue"
+                " WHERE owner_pid = ? AND problem IS NOT NULL"
+                " GROUP BY problem ORDER BY m DESC", (live_pid,)):
+            candidates.append(str(r["problem"]))
+    if scope:
+        if "%" in scope:
+            for r in conn.execute(
+                    "SELECT name FROM problems WHERE name LIKE ?"
+                    " ORDER BY last_strategist_at IS NULL,"
+                    " last_strategist_at DESC LIMIT 12", (scope,)):
+                if str(r["name"]) not in candidates:
+                    candidates.append(str(r["name"]))
+        elif scope not in candidates:
+            candidates.append(scope)
+    if override and override in candidates:
+        return override, candidates
+    return (candidates[0] if candidates else None), candidates
+
+
 def run_status(conn: sqlite3.Connection, workspace: Path,
-               daemon: "dict | None") -> dict:
+               daemon: "dict | None",
+               focus_override: "str | None" = None) -> dict:
     d = daemon or {}
     running = bool(d.get("running"))
     scope = d.get("scope") or None
@@ -282,6 +314,7 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
     out: dict = {
         "daemon": d,
         "problem": scope,
+        "problems": [],
         "goals": None,
         "workers": [],
         "burn_run": None,
@@ -300,8 +333,12 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
         out["burn_run"] = _data.telemetry_usage(conn, since=str(started))
 
     # the problem under the lens: the live scope, or the last run's
-    # scope when idle (the console keeps telling the last story)
-    focus = scope or ((d.get("last_exit") or {}).get("scope"))
+    # scope when idle (the console keeps telling the last story) —
+    # resolved through pattern scopes to a real problem name
+    live_pid_early = _data._live_daemon_pid(d)
+    raw_focus = scope or ((d.get("last_exit") or {}).get("scope"))
+    focus, out["problems"] = _resolve_focus(
+        conn, raw_focus, live_pid_early, focus_override)
     if focus:
         counts: dict[str, int] = {}
         for r in conn.execute(
@@ -349,6 +386,9 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
             lane: dict = {
                 "kind": str(r["kind"]),
                 "slug": r["slug"] if r["slug"] is not None else str(r["tid"]),
+                # which problem this agent is on — a pattern scope runs
+                # several at once and the cards were ambiguous
+                "problem": str(r["problem"]) if r["problem"] else None,
                 "statement": sig if sig is not None else r["statement"],
                 "leased_at": r["leased_at"],
                 "file": None,
@@ -469,12 +509,15 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
     borrowed so this module inherits the same 404/503 semantics."""
 
     @app.get("/api/run")
-    def run() -> dict:
+    def run(problem: "str | None" = None) -> dict:
+        """`problem` = the UI's lens pick when a pattern scope runs
+        several problems at once (ignored unless it's a live
+        candidate)."""
         from ..core.cli import daemon_status
         d = daemon_status(workspace)
         if not (workspace / "asterism.db").exists():
-            return {"daemon": d, "problem": None, "goals": None,
-                    "workers": [], "burn_run": None, "burn_5h": None,
-                    "quota": quota(), "recent": []}
+            return {"daemon": d, "problem": None, "problems": [],
+                    "goals": None, "workers": [], "burn_run": None,
+                    "burn_5h": None, "quota": quota(), "recent": []}
         with ro(workspace) as conn:
-            return run_status(conn, workspace, d)
+            return run_status(conn, workspace, d, focus_override=problem)

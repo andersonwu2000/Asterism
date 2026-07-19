@@ -386,3 +386,31 @@ def test_context_preamble_extraction() -> None:
     assert "namespace" not in ctx                     # ns handled by seed
     _, docs, _, ctx2 = _scan_library_file(text)
     assert ctx2 == ctx and "foo" in docs
+
+
+def test_pattern_scope_resolves_to_real_problems(
+        workspace: Path, monkeypatch) -> None:
+    """A wildcard scope must never reach the UI as the focus problem —
+    it 404s the detail fetch and blanks the sky. Candidates: leased
+    problems first, then pattern matches; ?problem= picks the lens."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "Cmp.a")
+    _add_problem(conn, "Cmp.b")
+    ga = db.insert_goal(conn, problem="Cmp.a", slug="g_a",
+                        lean_path="Problems/Cmp/a/proofs/L_g_a.lean",
+                        statement="a", origin="root")
+    db.enqueue(conn, kind="Builder", target_id=str(ga),
+               target_kind="Goal", problem="Cmp.a")
+    conn.execute("UPDATE queue SET owner_pid = 4321, leased_at = ?"
+                 " WHERE target_id = ?", (db.now(), str(ga)))
+    conn.commit()
+    conn.close()
+    _fake_daemon(monkeypatch, running=True, pid=4321, scope="Cmp.%")
+    body = _client(workspace).get("/api/run").json()
+    assert body["problem"] == "Cmp.a"           # leased problem wins
+    assert set(body["problems"]) == {"Cmp.a", "Cmp.b"}
+    assert body["workers"][0]["problem"] == "Cmp.a"
+    picked = _client(workspace).get("/api/run?problem=Cmp.b").json()
+    assert picked["problem"] == "Cmp.b"
+    bogus = _client(workspace).get("/api/run?problem=No.such").json()
+    assert bogus["problem"] == "Cmp.a"          # bad pick falls back

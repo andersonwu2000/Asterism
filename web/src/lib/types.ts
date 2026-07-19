@@ -247,6 +247,8 @@ export interface UsageProblem {
 export interface RunWorker {
   kind: string
   slug: string
+  /** which problem this agent is on — a pattern scope runs several */
+  problem?: string | null
   statement: string | null
   leased_at: string | null
   /** Strategist only: why it woke (trigger_kind) — names the mode of
@@ -276,6 +278,9 @@ export interface QuotaWindow {
 export interface RunStatus {
   daemon: DaemonStatus
   problem: string | null
+  /** every problem under the run's lens — more than one when the
+   * scope is a pattern; `problem` is the resolved pick */
+  problems?: string[]
   goals: { open: number; attempting: number; proved: number; total: number } | null
   workers: RunWorker[]
   burn_run: { problems: UsageProblem[] } | null

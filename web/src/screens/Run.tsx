@@ -143,22 +143,33 @@ function CycleLine({ cycle }: { cycle: NonNullable<RunWorker['cycle']> }) {
 }
 
 /** One agent, one lane: what it is, what it's on, what it's writing. */
-function Lane({ w, problem }: { w: RunWorker; problem: string | null }) {
+function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; multi?: boolean }) {
   const quiet = w.file?.quiet_sec ?? null
+  // the lane's OWN problem outranks the console's lens — a pattern
+  // scope runs agents across several problems at once
+  const laneProblem = w.problem ?? problem
   return (
     <div className="rounded-xl border border-edge bg-surface p-3">
       <div className="flex items-baseline gap-2.5">
         <span className="text-xs font-medium text-ink">{w.kind.toLowerCase()}</span>
-        {problem ? (
+        {laneProblem ? (
           <Link
-            to={`/problems/${encodeURIComponent(problem)}`}
+            to={`/problems/${encodeURIComponent(laneProblem)}`}
             className="max-w-72 truncate font-mono text-xs text-ink-dim transition-colors hover:text-ink"
-            title={`${w.slug} — open the problem`}
+            title={`${w.slug} — open ${laneProblem}`}
           >
             {w.slug}
           </Link>
         ) : (
           <span className="max-w-72 truncate font-mono text-xs text-ink-dim">{w.slug}</span>
+        )}
+        {multi && w.problem && (
+          <span
+            className="truncate font-mono text-[10px] text-ink-faint"
+            title={w.problem}
+          >
+            {w.problem.split('.').pop()}
+          </span>
         )}
         <span
           className="tnum ml-auto text-[11px] text-ink-faint"
@@ -269,7 +280,15 @@ function QuotaMeter({
 }
 
 export default function Run() {
-  const { data, refresh } = usePoll<RunStatus>('/api/run', 2000)
+  // lens pick: a pattern scope runs several problems in one daemon —
+  // the raw scope ("PutnamCmp.%") used to reach the UI as a problem
+  // name, 404 the detail fetch and blank the sky (owner, 2026-07-19).
+  // The server resolves candidates; this picks among them.
+  const [lens, setLens] = useState<string | null>(null)
+  const { data, refresh } = usePoll<RunStatus>(
+    lens ? `/api/run?problem=${encodeURIComponent(lens)}` : '/api/run',
+    2000,
+  )
   const { data: cfg } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
   // the sky rides along (owner: the console shows the constellation):
   // full problem detail only when a problem is in focus
@@ -502,11 +521,35 @@ export default function Run() {
         {phaseHint[phase]}
         {running && !d.stopping && (
           // users assumed closing the tab stops the run (owner) — say
-          // the truth where the run is watched; the beforeunload prompt
-          // in App.tsx is the speed bump, this line is the explanation
+          // the truth where the run is watched
           <span> · closing this page does NOT stop it — only Stop does</span>
         )}
       </div>
+
+      {/* lens pills: a pattern scope works several problems at once —
+          the tallies, sky and recent feed below follow the picked one */}
+      {(data.problems?.length ?? 0) > 1 && (
+        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+          {data.problems!.map((p) => {
+            const leaf = p.split('.').pop() ?? p
+            const active = p === data.problem
+            return (
+              <button
+                key={p}
+                className={`cursor-pointer rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors ${
+                  active
+                    ? 'border-star/60 bg-star/10 text-star'
+                    : 'border-edge text-ink-faint hover:text-ink'
+                }`}
+                onClick={() => setLens(p)}
+                title={`${p} — focus the console on it`}
+              >
+                {leaf}
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       {g && g.total > 0 && (
         <div className="mt-4 flex items-center gap-3">
@@ -618,7 +661,11 @@ export default function Run() {
                           }
                           onMouseLeave={() => setLaneHover(null)}
                         >
-                          <Lane w={w} problem={data.problem} />
+                          <Lane
+                            w={w}
+                            problem={data.problem}
+                            multi={(data.problems?.length ?? 0) > 1}
+                          />
                         </div>
                       )
                     })}
