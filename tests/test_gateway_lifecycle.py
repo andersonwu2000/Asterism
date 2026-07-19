@@ -341,8 +341,10 @@ def test_ram_clamped_pool(monkeypatch: pytest.MonkeyPatch) -> None:
     assert eff == 1 and msg is not None
     # pool already 1 → nothing to downsize, no message even on tiny RAM
     assert clamp(1, 1, budget_gb=2.0) == (1, None)
-    # mid case: 16 GB budget, 3.5/worker → 4 slots, 1 interactive → 3
-    eff, msg = clamp(4, 1, budget_gb=16.0)
+    # mid case (shared-base model, 2026-07-19: 3 GB shared olean map +
+    # 1.5 GB marginal): 9 GB budget → (9−3)/1.5 = 4 slots, 1
+    # interactive → 3
+    eff, msg = clamp(4, 1, budget_gb=9.0)
     assert eff == 3 and msg is not None
     # never raises
     assert clamp(2, 1, budget_gb=64.0) == (2, None)

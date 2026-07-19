@@ -280,10 +280,17 @@ def _interactive_slots(workspace: Path) -> int:
         return 1
 
 
-# Peak RSS of one warm worker holding the full Mathlib env, empirical
-# (dev workstation ~2.5-3 GB steady, higher during elaboration). Used
-# only to DOWNSIZE an unaffordable pool — never to grow it.
-_WORKER_RAM_GB = 3.5
+# Warm-worker memory model, measured 2026-07-19 (5 live slots on the
+# 32 GB workstation): Working Set ~3.0 GB each but Private only
+# ~0.65 GB — the bulk is the mmap'd Mathlib .olean pages, SHARED across
+# every worker. Charging 3.5 GB per worker quintuple-counted the shared
+# mapping and clamped a 32 GB box to 4 workers (user historically ran
+# 16 under the per-spawn architecture). Model: one shared base + a
+# per-worker marginal (private heap + headroom for elaboration
+# spikes). Used only to DOWNSIZE an unaffordable pool — never to grow
+# it; an 8 GB laptop still clamps to 1 ((4.8−3)/1.5).
+_SHARED_MATHLIB_GB = 3.0
+_WORKER_MARGINAL_GB = 1.5
 
 
 def physical_ram_gb() -> "tuple[float, float] | None":
@@ -353,13 +360,15 @@ def ram_clamped_pool(configured: int, n_interactive: int,
         budget_gb = _ram_budget_gb()
     if budget_gb is None or configured <= 1:
         return configured, None
-    affordable = int(budget_gb // _WORKER_RAM_GB)
+    affordable = int((budget_gb - _SHARED_MATHLIB_GB)
+                     // _WORKER_MARGINAL_GB)
     effective = max(1, min(configured, affordable - n_interactive))
     if effective >= configured:
         return configured, None
     return effective, (
         f"RAM budget {budget_gb:.1f} GB affords ~{max(affordable, 0)} "
-        f"Mathlib workers at {_WORKER_RAM_GB} GB each — pool "
+        f"Mathlib workers ({_SHARED_MATHLIB_GB} GB shared olean map + "
+        f"{_WORKER_MARGINAL_GB} GB each) — pool "
         f"{configured} → {effective} (+{n_interactive} interactive); "
         f"raise dispatch.pool only with more memory")
 
