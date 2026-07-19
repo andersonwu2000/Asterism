@@ -554,3 +554,40 @@ def test_borrow_order_all_claimed_falls_back_to_lru() -> None:
     b = S(claimed_by="p2", last_used_ts=3.0)
     order = _borrow_order([a, b])
     assert order == [b, a]     # liveness: claimed slots still reachable
+
+
+def test_kill_stale_gateway_needs_consecutive_dead_pings(monkeypatch):
+    """2026-07-19 00:24 rc2: one missed 1s /health window was read as
+    "port free", the fresh launch raced the still-alive zombie and lost
+    the bind. The wait must demand 3 consecutive dead pings AND a
+    refused TCP connect."""
+    from Tooling.lsp import lifecycle as gwl
+    pings = iter([None,            # transient miss — zombie busy
+                  {"backend_ready": True},   # zombie answers again
+                  None, None, None])         # actually dead now
+    monkeypatch.setattr(gwl, "_ping_health",
+                        lambda timeout=1.0: next(pings, None))
+    connects = iter([True,   # listener still held at first dead streak?
+                     False])  # then released
+    monkeypatch.setattr(gwl, "_port_accepts_connect",
+                        lambda: next(connects, False))
+    monkeypatch.setattr(gwl.time, "sleep", lambda s: None)
+    monkeypatch.setattr(gwl.os, "kill",
+                        lambda pid, sig: None)
+    gwl._kill_stale_gateway(4242)  # returns without raising
+
+
+def test_kill_stale_gateway_raises_when_zombie_immortal(monkeypatch):
+    from Tooling.lsp import lifecycle as gwl
+    monkeypatch.setattr(gwl, "_ping_health",
+                        lambda timeout=1.0: {"backend_ready": True})
+    monkeypatch.setattr(gwl.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(gwl.time, "sleep", lambda s: None)
+    t = {"now": 0.0}
+
+    def fake_monotonic():
+        t["now"] += 5.0
+        return t["now"]
+    monkeypatch.setattr(gwl.time, "monotonic", fake_monotonic)
+    with pytest.raises(RuntimeError, match="did not release port"):
+        gwl._kill_stale_gateway(4242)

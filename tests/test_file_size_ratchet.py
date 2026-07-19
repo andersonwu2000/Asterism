@@ -189,7 +189,10 @@ _WATERMARKS = {
     # 2490→2510 (2026-07-18): config drift joins the code-drift handoff
     # (settings apply to a live run via graceful handoff) — conscious
     # bump; the fingerprints themselves live in lsp/lifecycle.py.
-    "Tooling/core/dispatcher.py": 2510,
+    # 2510→2520 (2026-07-19): dispatcher pool applies the gateway's
+    # ram_clamped_pool formula (over-dispatch vs clamped slots read as
+    # gateway death) — conscious bump.
+    "Tooling/core/dispatcher.py": 2520,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

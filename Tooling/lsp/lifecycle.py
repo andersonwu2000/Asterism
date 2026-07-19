@@ -378,14 +378,37 @@ def _kill_stale_gateway(pid) -> None:
     except (ProcessLookupError, OSError) as e:
         print(f"[gateway] kill stale gateway pid={pid}: {e} "
               "(already gone?)", flush=True)
-    deadline = time.monotonic() + 30.0
+    # "Port free" needs proof, not one missed ping: a busy dying gateway
+    # that skipped a single 1s /health window was declared dead, the
+    # fresh launch raced it, lost the bind, and the zombie's later 200s
+    # were mistaken for the new gateway (2026-07-19 00:24 rc2). Require
+    # consecutive dead pings AND a refused TCP connect.
+    deadline = time.monotonic() + 45.0
+    dead_pings = 0
     while time.monotonic() < deadline:
         if _ping_health(timeout=1.0) is None:
-            return
+            dead_pings += 1
+            if dead_pings >= 3 and not _port_accepts_connect():
+                return
+        else:
+            dead_pings = 0
         time.sleep(0.5)
     raise RuntimeError(
         f"stale gateway pid={pid} did not release port "
-        f"{_gateway_port()} within 30s")
+        f"{_gateway_port()} within 45s")
+
+
+def _port_accepts_connect() -> bool:
+    """True while ANYTHING still accepts a TCP connect on the gateway
+    port — the socket-level half of the port-free proof (an HTTP-silent
+    process can still hold the listener)."""
+    import socket
+    try:
+        with socket.create_connection(
+                ("127.0.0.1", _gateway_port()), timeout=1.0):
+            return True
+    except OSError:
+        return False
 
 
 def kill_current_gateway() -> None:
@@ -600,7 +623,14 @@ def start_gateway(workspace: Path,
 
     # Poll /health. Gateway only opens HTTP after backend pre-warm,
     # so any successful response means backend_ready=true (we still
-    # check explicitly to be defensive).
+    # check explicitly to be defensive). The response must ALSO carry
+    # OUR code fingerprint: after a stale-kill, a not-quite-dead zombie
+    # can keep answering 200 while the fresh launch dies on the port
+    # bind — accepting the zombie's ready reported success on stale
+    # code and every register then 500'd (2026-07-19 00:24 rc2). With
+    # the fp gate the zombie is never mistaken for ours, and the bind
+    # crash surfaces through proc.poll() as the real error.
+    cur_fp = code_fingerprint()
     deadline = time.monotonic() + ready_timeout
     last_status = None
     while time.monotonic() < deadline:
@@ -612,9 +642,13 @@ def start_gateway(workspace: Path,
                 + _gateway_log_tail(gateway_log))
         status = _ping_health(timeout=2.0)
         if status is not None and status.get("backend_ready"):
-            elapsed = ready_timeout - (deadline - time.monotonic())
-            print(f"[gateway] ready after {elapsed:.0f}s", flush=True)
-            return proc
+            if status.get("code_fingerprint") == cur_fp:
+                elapsed = ready_timeout - (deadline - time.monotonic())
+                print(f"[gateway] ready after {elapsed:.0f}s", flush=True)
+                return proc
+            print(f"[gateway] a stale process (fingerprint "
+                  f"{str(status.get('code_fingerprint'))[:12]!r}) still "
+                  f"answers the port — waiting it out", flush=True)
         last_status = status
         time.sleep(2.0)
     proc.terminate()

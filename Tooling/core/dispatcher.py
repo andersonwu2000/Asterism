@@ -1683,6 +1683,16 @@ def run(workspace: Path, *, once: bool = False,
     pool_size = config.get(
         "dispatch.pool", default=4,
         env_var="ASTERISM_POOL", cast=int, workspace=workspace)
+    # The gateway RAM-clamps ITS worker pool with this same formula; a
+    # daemon dispatching the un-clamped yaml value floods the smaller
+    # slot pool and the register 500s read as gateway death (2026-07-19
+    # 00:39 rc2: pool=6 vs 4 clamped slots → breaker exit). One formula,
+    # both sides.
+    _clamped, _clamp_msg = _gwl.ram_clamped_pool(
+        pool_size, _gwl._interactive_slots(workspace))
+    if _clamp_msg:
+        print(f"[dispatcher] {_clamp_msg}", flush=True)
+        pool_size = _clamped
     budget_sec = config.get(
         "dispatch.budget_sec", default=1800,
         env_var="ASTERISM_BUDGET_SEC", cast=int, workspace=workspace)
