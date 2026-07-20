@@ -82,6 +82,14 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-19
+Programme revisions and worker declines now appear on the project's timeline and console, which previously left parts of the reasoning invisible.
+
+- The adversary component was given read-only access to a problem's root definitions and shown their names, so its critiques can reference the actual objects in play.
+- The web console gained the ability to resolve search patterns to concrete problems and survived crashes caused by cycles in the strategy hierarchy.
+- The reset routine was hardened to sweep leftover plan and route files, so a fresh run no longer inherits stale state from a previous attempt.
+- Memory accounting was corrected to stop double-counting a shared library cache, alongside a batch of smaller prompt and pipeline fixes.
+
 ### 2026-07-18
 - Configuration changes can now be handed off to a run already in progress, and waiting for quota windows became an explicit opt-in rather than the default.
 - The web interface gained an explainer chat that cites its claims back to the visualization, a unified prose renderer, and a set of layout and navigation fixes.
@@ -217,10 +225,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Added automated tidying of code style — normalizing whitespace and blank lines — in the generated proof library, with fixes so that recompiling a file never left its compiled output missing or stale.
 - Strengthened the safety checks that move lemmas between files so they now reject any change that would create a circular dependency among imports.
 - Fixed the per-declaration compilation checks to faithfully reproduce each file's namespace (`open`) context, and protected core definitions from being modified during cleanup.
-
-### 2026-06-19
-- Expanded the automated cleanup of finished proofs, adding a pass that renames unused hypotheses with a leading underscore and moving the validation checks into an already-loaded Lean environment for speed, though the type-checking check was rolled back after it caused repeated spurious rework.
-- Added a way to categorize the feedback returned during proof attempts alongside a separate diagnostic channel, and fixed a model reasoning-budget setting that had fallen below the API's minimum.
 
 <!-- ASTERISM-PROGRESS:END -->
 
