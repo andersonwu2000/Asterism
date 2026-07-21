@@ -82,6 +82,11 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-20
+- Polished the web interface with a round of QA fixes, including chat improvements, keyboard-shortcut behavior, and having each chapter open to its corresponding theorem.
+- Fixed an off-by-one line-counting error in the interactive synchronization.
+- Reduced the worker pool from six to four to run one problem on its own and restore parity with the baseline setup.
+
 ### 2026-07-19
 Programme revisions and worker declines now appear on the project's timeline and console, which previously left parts of the reasoning invisible.
 
@@ -220,11 +225,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Improved how newly proved results are filed into the reusable library, computing each result's precise dependencies and ordering them consistently.
 - Dropped the catch-all Mathlib import when existing library files already supplied what a result needed, and kept definitions' original namespaces intact during the move.
 - Reorganized the archiving code into a cleaner structure and removed dead code.
-
-### 2026-06-20
-- Added automated tidying of code style — normalizing whitespace and blank lines — in the generated proof library, with fixes so that recompiling a file never left its compiled output missing or stale.
-- Strengthened the safety checks that move lemmas between files so they now reject any change that would create a circular dependency among imports.
-- Fixed the per-declaration compilation checks to faithfully reproduce each file's namespace (`open`) context, and protected core definitions from being modified during cleanup.
 
 <!-- ASTERISM-PROGRESS:END -->
 
