@@ -40,6 +40,33 @@ def test_add_text_paper_identity_and_idempotence(tmp_path: Path) -> None:
     assert again.id == meta.id
 
 
+def test_add_paper_provenance_first_add_wins(tmp_path: Path) -> None:
+    """`added_by` records who brought the paper in; a later re-shelve
+    of the same bytes (any caller) never rewrites it."""
+    src = tmp_path / "notes.md"
+    src.write_text("body\n", encoding="utf-8")
+    meta = shelf.add_paper(tmp_path, src, added_by="fetched")
+    assert meta.added_by == "fetched"
+    again = shelf.add_paper(tmp_path, src, added_by="user")
+    assert again.added_by == "fetched"
+    # persisted, not just returned
+    assert shelf.load_meta(tmp_path, meta.id).added_by == "fetched"
+
+
+def test_force_reextract_keeps_title_and_provenance(tmp_path: Path) -> None:
+    """`--force` rebuilds meta.json from a fresh extraction — it must
+    carry the slot's display/provenance fields, or a re-extract wipes
+    the owner's rename (live class of bug: force path built PaperMeta
+    from scratch)."""
+    src = tmp_path / "notes.md"
+    src.write_text("body\n", encoding="utf-8")
+    meta = shelf.add_paper(tmp_path, src, added_by="user")
+    shelf.set_title(tmp_path, meta.id, "Residues, applied")
+    meta2 = shelf.add_paper(tmp_path, src, force=True)
+    assert meta2.title == "Residues, applied"
+    assert meta2.added_by == "user"
+
+
 def test_add_paper_rejects_unknown_format(tmp_path: Path) -> None:
     src = tmp_path / "paper.docx"
     src.write_bytes(b"not a pdf")

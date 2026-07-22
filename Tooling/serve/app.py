@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -30,6 +30,11 @@ from . import data as _data
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 WEB_DIST = REPO_ROOT / "web" / "dist"
+
+# Paper upload guard: bodies are read whole into memory (papers are
+# tens of MB at most; the Scholar fetch cap is 50MB) — an accidental
+# drop of something huge should bounce, not balloon the serve process.
+_MAX_UPLOAD_BYTES = 100 * 2**20
 
 
 @contextlib.contextmanager
@@ -98,10 +103,6 @@ class ProblemCreateBody(BaseModel):
     root: str | None = None
     # shelf ids to cite (Papers/<id> — bound with origin='user')
     papers: list[str] | None = None
-
-
-class PaperAddBody(BaseModel):
-    path: str
 
 
 class PaperRenameBody(BaseModel):
@@ -718,22 +719,45 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                             filename=f"{pid}{original.suffix}",
                             content_disposition_type="inline")
 
-    @app.post("/api/papers/add")
-    def paper_add(body: PaperAddBody) -> dict:
-        """Shelve a local file by path (the CLI paper-add chokepoint).
-        Content-hash identity: re-adding the same document is a no-op
-        that returns the existing slot."""
+    @app.post("/api/papers/upload")
+    async def paper_upload(request: Request, filename: str) -> dict:
+        """Shelve a document dropped or picked in the browser. The body
+        is the RAW file bytes (no multipart — keeps the install free of
+        a parser dependency); the source filename rides the query
+        string. Content-hash identity: re-dropping the same document is
+        a no-op returning the existing slot, and `already_shelved`
+        tells the UI which happened."""
+        import tempfile
         from ..papers import shelf as _shelf
-        src = Path(body.path).expanduser()
-        if not src.is_file():
-            raise HTTPException(status_code=404,
-                                detail=f"no such file: {src}")
-        try:
-            meta = _shelf.add_paper(workspace, src)
-        except (_shelf.ScannedPdfError, ValueError) as e:
-            raise HTTPException(status_code=422, detail=str(e)) from e
+        # The wire filename is client data: strip path components and
+        # the characters Windows refuses so the temp write can't fail
+        # or escape (identity never depends on the name anyway).
+        name = re.sub(r'[<>:"|?*\x00-\x1f]', "_",
+                      Path(filename.replace("\\", "/")).name).strip()
+        if name.strip(". ") == "":
+            raise HTTPException(status_code=422,
+                                detail=f"unusable filename {filename!r}")
+        data = await request.body()
+        if not data:
+            raise HTTPException(status_code=422,
+                                detail=f"{name}: empty file")
+        if len(data) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{name}: {len(data) // 2**20}MB exceeds the "
+                       f"{_MAX_UPLOAD_BYTES // 2**20}MB upload cap")
+        already = _shelf.load_meta(workspace,
+                                   _shelf.content_id(data)) is not None
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td) / name
+            tmp.write_bytes(data)
+            try:
+                meta = _shelf.add_paper(workspace, tmp, added_by="user")
+            except (_shelf.ScannedPdfError, ValueError) as e:
+                raise HTTPException(status_code=422, detail=str(e)) from e
         return {"id": meta.id, "source_name": meta.source_name,
-                "pages": meta.pages, "chars": meta.chars}
+                "pages": meta.pages, "chars": meta.chars,
+                "already_shelved": already}
 
     @app.post("/api/papers/{pid}/rename")
     def paper_rename(pid: str, body: PaperRenameBody) -> dict:

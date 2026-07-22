@@ -47,6 +47,12 @@ export function apiDelete<T>(path: string): Promise<T> {
   return request<T>(path, { method: 'DELETE' })
 }
 
+/** POST a file's raw bytes as the whole body (the server reads it
+ * verbatim — no multipart, so no parser dependency server-side). */
+export function apiUpload<T>(path: string, file: Blob): Promise<T> {
+  return request<T>(path, { method: 'POST', body: file })
+}
+
 export interface PollState<T> {
   data: T | null
   error: ApiError | Error | null

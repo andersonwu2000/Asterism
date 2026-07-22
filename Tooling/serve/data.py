@@ -1380,6 +1380,8 @@ def papers_list(conn: "sqlite3.Connection | None",
                 "source_name": meta.source_name,
                 # owner-editable display title; null = filename stands in
                 "title": meta.title,
+                # provenance: 'user' | 'fetched' | null (pre-provenance)
+                "added_by": meta.added_by,
                 "pages": meta.pages,
                 "chars": meta.chars,
                 "original": original,

@@ -375,6 +375,9 @@ export interface PaperShelfItem {
   source_name: string
   /** owner-editable display title; null = the filename stands in */
   title: string | null
+  /** who shelved it: 'user' (upload/CLI) or 'fetched' (the Scholar
+   * agent during a run); null = shelved before provenance existed */
+  added_by: string | null
   pages: number
   chars: number
   original: string

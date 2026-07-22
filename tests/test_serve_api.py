@@ -1047,29 +1047,33 @@ def test_citation_edges_from_strategy_scratch(workspace: Path) -> None:
 
 
 def test_papers_bookshelf_flow(workspace: Path) -> None:
-    """Top-level bookshelf: add by path (content-hash idempotent),
-    list with bindings, read text + original, delete guarded by
-    citations (unbind first)."""
+    """Top-level bookshelf: browser upload (raw bytes, content-hash
+    idempotent), list with bindings, read text + original, delete
+    guarded by citations (unbind first)."""
     conn = _open_db(workspace)
     _add_problem(conn, "p")
     conn.close()
     c = _client(workspace)
     assert c.get("/api/papers").json() == {"papers": []}
-    src = workspace / "notes.md"
-    src.write_text("# Paper\n\nsome text", encoding="utf-8")
-    r = c.post("/api/papers/add", json={"path": str(src)})
+    body = b"# Paper\n\nsome text"
+    r = c.post("/api/papers/upload", params={"filename": "notes.md"},
+               content=body)
     assert r.status_code == 200
     pid = r.json()["id"]
-    assert c.post("/api/papers/add",
-                  json={"path": str(src)}).json()["id"] == pid
+    assert r.json()["already_shelved"] is False
+    again = c.post("/api/papers/upload", params={"filename": "other.md"},
+                   content=body).json()
+    assert again["id"] == pid and again["already_shelved"] is True
     papers = c.get("/api/papers").json()["papers"]
     assert [p["id"] for p in papers] == [pid]
     assert papers[0]["bound"] == []
     assert "some text" in c.get(f"/api/papers/{pid}/text").json()["text"]
     assert c.get(f"/api/papers/{pid}/file").status_code == 200
-    assert c.post("/api/papers/add",
-                  json={"path": str(workspace / "nope.md")}
-                  ).status_code == 404
+    # server owns format/emptiness validation (one validator, one wording)
+    assert c.post("/api/papers/upload", params={"filename": "x.docx"},
+                  content=b"zz").status_code == 422
+    assert c.post("/api/papers/upload", params={"filename": "empty.md"},
+                  content=b"").status_code == 422
 
     assert c.post("/api/problems/p/papers",
                   json={"paper_id": pid}).status_code == 200
@@ -1087,15 +1091,32 @@ def test_papers_bookshelf_flow(workspace: Path) -> None:
     assert c.get("/api/papers").json() == {"papers": []}
 
 
+def test_paper_upload_provenance_and_filename_hygiene(
+        workspace: Path) -> None:
+    """Browser uploads record added_by='user' (the shelf's provenance
+    tag — Scholar fetches record 'fetched') and the wire filename is
+    reduced to a safe basename: the shelf must never mirror client
+    paths, and identity never depends on the name anyway."""
+    c = _client(workspace)
+    r = c.post("/api/papers/upload",
+               params={"filename": "C:\\Users\\me\\Desktop\\no:tes.md"},
+               content=b"hello world")
+    assert r.status_code == 200
+    assert r.json()["source_name"] == "no_tes.md"
+    got = c.get("/api/papers").json()["papers"][0]
+    assert got["added_by"] == "user"
+    assert c.post("/api/papers/upload", params={"filename": "..."},
+                  content=b"x").status_code == 422
+
+
 def test_paper_rename_display_title(workspace: Path) -> None:
     """The display title is owner-editable and display-ONLY: identity
     (content hash) and the source filename survive; empty clears back
     to the filename; old meta.json files without the field keep
     loading (dataclass default)."""
     c = _client(workspace)
-    src = workspace / "notes.md"
-    src.write_text("# Paper\n\nsome text", encoding="utf-8")
-    pid = c.post("/api/papers/add", json={"path": str(src)}).json()["id"]
+    pid = c.post("/api/papers/upload", params={"filename": "notes.md"},
+                 content=b"# Paper\n\nsome text").json()["id"]
     assert c.get("/api/papers").json()["papers"][0]["title"] is None
     r = c.post(f"/api/papers/{pid}/rename",
                json={"title": "Residues and their applications"})
@@ -1118,9 +1139,8 @@ def test_create_settings_and_papers_are_authoritative(
     papers bind with origin='user'."""
     _open_db(workspace).close()
     c = _client(workspace)
-    src = workspace / "ref.md"
-    src.write_text("# Ref\n\nbody", encoding="utf-8")
-    pid = c.post("/api/papers/add", json={"path": str(src)}).json()["id"]
+    pid = c.post("/api/papers/upload", params={"filename": "ref.md"},
+                 content=b"# Ref\n\nbody").json()["id"]
     r = c.post("/api/problems/create", json={
         "name": "Test.cite", "body": "prove the thing",
         "settings": {"forbidden_lemmas": ["bad*"], "library": False},

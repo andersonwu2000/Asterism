@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ApiError, apiDelete, apiPost, usePoll } from '../lib/api'
+import { ApiError, apiDelete, apiPost, apiUpload, usePoll } from '../lib/api'
 import { Link } from '../lib/router'
 import { Button, EmptyState, ErrorState } from '../components/ui'
 import type { PaperShelfItem } from '../lib/types'
@@ -88,6 +88,17 @@ function ShelfRow({ p, onChanged }: { p: PaperShelfItem; onChanged: () => void }
               >
                 {p.title ?? p.source_name}
               </Link>
+              {/* provenance: the default case (user upload) stays
+                  unmarked; only the exception — the Scholar agent
+                  fetching mid-run — wears a tag */}
+              {p.added_by === 'fetched' && (
+                <span
+                  className="shrink-0 rounded-md border border-edge px-1 py-px text-[10px] text-ink-faint"
+                  title="fetched by the Scholar agent during a run"
+                >
+                  fetched
+                </span>
+              )}
               {/* a human name for "paper.pdf" (owner, 2026-07-13) —
                   display only; identity stays the content hash */}
               <button
@@ -168,36 +179,90 @@ function ShelfRow({ p, onChanged }: { p: PaperShelfItem; onChanged: () => void }
   )
 }
 
+/** One file's journey through the upload strip. Keyed by a sequence
+ * number, not the filename — the same name can be dropped twice. */
+interface UploadItem {
+  key: number
+  name: string
+  status: 'uploading' | 'shelved' | 'already' | 'error'
+  detail?: string
+}
+
 export default function Papers() {
   const { data, error, loading, refresh } = usePoll<{ papers: PaperShelfItem[] }>(
     '/api/papers',
     15000,
   )
-  const [path, setPath] = useState('')
-  const [adding, setAdding] = useState(false)
-  const [addErr, setAddErr] = useState<string | null>(null)
+  const [uploads, setUploads] = useState<UploadItem[]>([])
+  const seq = useRef(0)
+  const fileInput = useRef<HTMLInputElement>(null)
+  // Counter, not boolean: dragging over child elements fires
+  // leave/enter pairs that a boolean would read as "left the page".
+  const [dragDepth, setDragDepth] = useState(0)
 
-  const add = async () => {
-    const p = path.trim()
-    if (p === '' || adding) return
-    setAdding(true)
-    setAddErr(null)
-    try {
-      await apiPost('/api/papers/add', { path: p })
-      setPath('')
-      refresh()
-    } catch (e) {
-      setAddErr(errText(e))
-    } finally {
-      setAdding(false)
+  const settle = (key: number, patch: Partial<UploadItem>) => {
+    setUploads((u) => u.map((x) => (x.key === key ? { ...x, ...patch } : x)))
+    // successes clear themselves after a beat; errors stay until dismissed
+    if (patch.status !== 'error')
+      window.setTimeout(
+        () => setUploads((u) => u.filter((x) => x.key !== key)),
+        4000,
+      )
+  }
+
+  /** Sequential on purpose: PDF extraction is real server work, and a
+   * strip that fills top-to-bottom reads as progress. Suffix checking
+   * stays server-side — one validator, one wording. */
+  const uploadFiles = async (files: File[]) => {
+    for (const f of files) {
+      const key = ++seq.current
+      setUploads((u) => [...u, { key, name: f.name, status: 'uploading' }])
+      try {
+        const r = await apiUpload<{ id: string; already_shelved: boolean }>(
+          `/api/papers/upload?filename=${encodeURIComponent(f.name)}`,
+          f,
+        )
+        settle(key, { status: r.already_shelved ? 'already' : 'shelved' })
+        refresh()
+      } catch (e) {
+        settle(key, { status: 'error', detail: errText(e) })
+      }
     }
   }
 
+  const hasFiles = (e: React.DragEvent) => e.dataTransfer.types.includes('Files')
+
   const papers = data?.papers ?? []
   return (
-    <div className="mx-auto max-w-6xl px-6 py-6">
-      {/* the add box stays above whatever the list area shows — adding
-          a first paper IS the empty state's call to action */}
+    <div
+      className="relative min-h-full"
+      onDragEnter={(e) => {
+        if (!hasFiles(e)) return
+        e.preventDefault()
+        setDragDepth((d) => d + 1)
+      }}
+      onDragOver={(e) => {
+        if (hasFiles(e)) e.preventDefault()
+      }}
+      onDragLeave={(e) => {
+        if (hasFiles(e)) setDragDepth((d) => Math.max(0, d - 1))
+      }}
+      onDrop={(e) => {
+        if (!hasFiles(e)) return
+        e.preventDefault()
+        setDragDepth(0)
+        void uploadFiles([...e.dataTransfer.files])
+      }}
+    >
+      {dragDepth > 0 && (
+        <div className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-ink-faint bg-bg/85">
+          <div className="text-center">
+            <div className="font-display text-[18px] text-ink">Drop to shelve</div>
+            <div className="mt-1 text-xs text-ink-faint">.pdf · .md · .txt · .tex</div>
+          </div>
+        </div>
+      )}
+      <div className="mx-auto max-w-6xl px-6 py-6">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div className="flex items-baseline gap-3">
           <h1 className="font-display text-[22px] font-medium text-ink">Papers</h1>
@@ -205,29 +270,59 @@ export default function Papers() {
             <span className="tnum text-xs text-ink-faint">{papers.length}</span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-baseline gap-3">
+          <span className="text-xs text-ink-faint">or drop files anywhere on this page</span>
           <input
-            className="w-96 rounded-lg border border-edge bg-surface px-2.5 py-1.5 font-mono text-xs text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
-            placeholder={'C:\\path\\to\\paper.pdf — or .md/.txt/.tex'}
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void add()
+            ref={fileInput}
+            type="file"
+            multiple
+            accept=".pdf,.md,.txt,.tex"
+            className="hidden"
+            onChange={(e) => {
+              const files = [...(e.target.files ?? [])]
+              e.target.value = '' // re-picking the same file must re-fire
+              void uploadFiles(files)
             }}
-            spellCheck={false}
           />
-          <Button
-            variant="primary"
-            disabled={adding || path.trim() === ''}
-            onClick={() => void add()}
-          >
-            {adding ? 'Adding…' : 'Add'}
+          <Button variant="primary" onClick={() => fileInput.current?.click()}>
+            Add papers
           </Button>
         </div>
       </div>
-      {/* 404/422 details are written for humans — show them whole */}
-      {addErr && (
-        <div className="mb-3 text-[11px] whitespace-pre-wrap text-danger">{addErr}</div>
+      {/* upload strip: one line per in-flight/settled file; 422 details
+          are written for humans — show them whole */}
+      {uploads.length > 0 && (
+        <div className="mb-3 space-y-1">
+          {uploads.map((u) => (
+            <div key={u.key} className="flex items-baseline gap-2 text-[12px]">
+              <span className="shrink-0 font-mono text-ink-dim">{u.name}</span>
+              {u.status === 'uploading' && (
+                <span className="text-ink-faint">uploading…</span>
+              )}
+              {u.status === 'shelved' && <span className="text-ink-faint">shelved</span>}
+              {u.status === 'already' && (
+                <span className="text-ink-faint">
+                  already on the shelf (same content)
+                </span>
+              )}
+              {u.status === 'error' && (
+                <>
+                  <span className="min-w-0 whitespace-pre-wrap text-danger">
+                    {u.detail}
+                  </span>
+                  <button
+                    className="shrink-0 text-[11px] text-ink-faint transition-colors hover:text-ink"
+                    onClick={() =>
+                      setUploads((list) => list.filter((x) => x.key !== u.key))
+                    }
+                  >
+                    dismiss
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
       )}
       {loading ? (
         <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>
@@ -235,8 +330,8 @@ export default function Papers() {
         <ErrorState error={error} />
       ) : papers.length === 0 ? (
         <EmptyState title="The shelf is empty">
-          Papers ground the engine's citations — add a PDF (or .md/.tex) by its path above;
-          the Scholar pipeline can also fetch cited papers on its own during a run.
+          Papers ground the engine's citations — drop a PDF (or .md/.tex) anywhere on this
+          page; the Scholar pipeline can also fetch cited papers on its own during a run.
         </EmptyState>
       ) : (
         <table className="w-full table-fixed border-collapse text-left">
@@ -261,6 +356,7 @@ export default function Papers() {
           </tbody>
         </table>
       )}
+      </div>
     </div>
   )
 }

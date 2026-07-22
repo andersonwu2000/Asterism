@@ -88,7 +88,7 @@ def fetch_and_shelve(workspace: Path, target: str, *,
         tmp.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_bytes(data)
         try:
-            meta = shelf.add_paper(workspace, tmp)
+            meta = shelf.add_paper(workspace, tmp, added_by="fetched")
         finally:
             try:
                 tmp.unlink()

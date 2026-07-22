@@ -2568,7 +2568,7 @@ def cmd_paper_add(args: argparse.Namespace) -> int:
         print(f"ERROR: no such file: {src}")
         return 1
     try:
-        meta = shelf.add_paper(Path.cwd(), src,
+        meta = shelf.add_paper(Path.cwd(), src, added_by="user",
                                force=bool(getattr(args, "force", False)))
     except (shelf.ScannedPdfError, ValueError) as e:
         print(f"ERROR: {e}")

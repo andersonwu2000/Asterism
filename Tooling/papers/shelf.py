@@ -49,6 +49,11 @@ class PaperMeta:
     # names nothing on a shelf. Optional + defaulted so every existing
     # meta.json keeps loading; identity stays the content hash.
     title: "str | None" = None
+    # Provenance: 'user' (CLI paper-add / web upload) or 'fetched'
+    # (Scholar download). Optional + defaulted for pre-provenance
+    # slots; the first add wins — a re-shelve of the same bytes never
+    # rewrites who brought the paper in.
+    added_by: "str | None" = None
 
 
 def set_title(workspace: Path, pid: str, title: "str | None") -> "PaperMeta | None":
@@ -82,6 +87,13 @@ def map_path(workspace: Path, pid: str) -> Path:
 
 def _sha12(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:12]
+
+
+def content_id(data: bytes) -> str:
+    """Shelf identity for a would-be paper's raw bytes (D7) — lets a
+    caller ask "is this already shelved?" without duplicating the
+    hash rule."""
+    return _sha12(data)
 
 
 def load_meta(workspace: Path, pid: str) -> PaperMeta | None:
@@ -121,11 +133,14 @@ def _extract_pdf(src: Path) -> tuple[str, int]:
 
 
 def add_paper(workspace: Path, src: Path, *,
-              force: bool = False) -> PaperMeta:
+              force: bool = False,
+              added_by: "str | None" = None) -> PaperMeta:
     """Add `src` to the shelf (idempotent by content hash). PDF →
     extracted page-anchored text; .md/.txt/.tex → passthrough.
     `force` re-runs extraction over an existing slot (extractor
-    improved); the map's text_sha binding then flags itself stale."""
+    improved); the map's text_sha binding then flags itself stale.
+    `added_by` records provenance ('user' / 'fetched') on a NEW slot;
+    an existing slot keeps its own."""
     data = src.read_bytes()
     pid = _sha12(data)
     pdir = paper_dir(workspace, pid)
@@ -149,9 +164,14 @@ def add_paper(workspace: Path, src: Path, *,
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / f"paper{suffix}").write_bytes(data)
     text_path(workspace, pid).write_text(text, encoding="utf-8")
+    # A `force` re-extraction rebuilds meta.json — it must carry the
+    # display/provenance fields of the slot it overwrites, or a
+    # re-extract silently wipes the owner's rename.
     meta = PaperMeta(
         id=pid, source_name=src.name, pages=pages, chars=len(text),
-        text_sha=_sha12(text.encode("utf-8")))
+        text_sha=_sha12(text.encode("utf-8")),
+        title=existing.title if existing else None,
+        added_by=(existing.added_by if existing else None) or added_by)
     (pdir / "meta.json").write_text(
         json.dumps(asdict(meta), indent=2), encoding="utf-8")
     print(f"[papers] shelved {src.name} → Papers/{pid} "
