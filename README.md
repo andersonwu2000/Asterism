@@ -221,11 +221,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Improved handling of incomplete proofs, letting the prover read the goal at an unsolved `sorry`, carry variable declarations into generated proof skeletons, and validate its own output.
 - Made the system more resilient by recovering the minimal set of library imports when import-trimming times out and by reliably cleaning up spawned helper processes.
 
-### 2026-06-21
-- Improved how newly proved results are filed into the reusable library, computing each result's precise dependencies and ordering them consistently.
-- Dropped the catch-all Mathlib import when existing library files already supplied what a result needed, and kept definitions' original namespaces intact during the move.
-- Reorganized the archiving code into a cleaner structure and removed dead code.
-
 <!-- ASTERISM-PROGRESS:END -->
 
 
