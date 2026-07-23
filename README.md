@@ -82,6 +82,9 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-22
+- Made uploading papers easier by replacing the manual file-path field with drag-and-drop in the browser.
+
 ### 2026-07-20
 - Polished the web interface with a round of QA fixes, including chat improvements, keyboard-shortcut behavior, and having each chapter open to its corresponding theorem.
 - Fixed an off-by-one line-counting error in the interactive synchronization.
@@ -215,11 +218,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 ### 2026-06-23
 - Enabled the system to retract or correct its own earlier guidance once a proof attempt shows that guidance to be false.
 - Gave the proving agent more local context, surfacing relevant definitions' signatures, clashing names, and the lines around its most recent edit.
-
-### 2026-06-22
-- Tightened internal bookkeeping so the database and on-disk proof files can no longer drift apart, routing every proof-file change through a single consistency checkpoint and all proof-state changes through one guarded gateway.
-- Improved handling of incomplete proofs, letting the prover read the goal at an unsolved `sorry`, carry variable declarations into generated proof skeletons, and validate its own output.
-- Made the system more resilient by recovering the minimal set of library imports when import-trimming times out and by reliably cleaning up spawned helper processes.
 
 <!-- ASTERISM-PROGRESS:END -->
 
