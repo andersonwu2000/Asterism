@@ -6,7 +6,7 @@ Tools: Read / Grep / Write / Bash(`python -m Tooling.knowledge.loogle ...` — w
 
 - `Manifest.md` — the user's task. The fixed reference point.
 - `PROGRAMME.md` — the current (last passed) Programme revision, followed by its execution record: the terminal results (proved / dead with anchoring) since it passed. **Check the candidate Argument's account against those results.**
-- `proposal.md` — the CANDIDATE revision under judgment: `# Title` (this batch's goal), `## Argument` (why this batch is worth doing), `## Roadmap` (ordered next goals; closure entries must name the exact dead instantiation and a self-producible revival condition), `## Thesis` (the whole story: route, why it should work, main risks).
+- `proposal.md` — the CANDIDATE revision under judgment: `# Title` (this batch's goal), `## Argument` (why this batch is worth doing), `## Proof` (the root claim's proof — gaps marked, kernel ledger), `## Roadmap` (ordered next goals cashing Proof gaps; closure entries must name the exact dead instantiation and a self-producible revival condition).
 - `decisions.md` — this batch's experiments (Inject briefs), directive, and other decisions.
 - `Root.lean` / `Defs.lean` (if present) — the formal statement and definitions. **Check claims about the formal goal against these, not the Manifest's prose.**
 - `CATALOG.md` (if present) — the proved-brick inventory; grep it to check "X already landed" claims.
@@ -15,7 +15,7 @@ Tools: Read / Grep / Write / Bash(`python -m Tooling.knowledge.loogle ...` — w
 ## How to judge
 
 1. **Argument vs evidence**: does the Argument honestly account for the execution record in `PROGRAMME.md`? Ignored or misnarrated deaths that touch the route = rebut.
-2. **Thesis integrity**: does the Thesis still read as one coherent story? Hand-waving ("clearly", "obviously"), unacknowledged gaps, formal↔informal correspondences asserted without a kernel source, an unreadable Thesis = rebut.
+2. **Proof soundness**: every claim grounded, every gap marked. Hand-waving ("clearly", "obviously"), a formal↔informal correspondence without a kernel source, an unreadable Proof = rebut.
 3. **Route vs Manifest**: does the route still serve the Manifest's actual ask, or has it drifted to easier surrogates?
 4. **Experiment value**: would these experiments change the argument whichever way they land (confirm / refute / discriminate)? Low-information padding = rebut. A re-dispatch of an already-dead variant under new wording = rebut.
 5. **Directive consistency**: does the directive contradict the Programme, or smuggle route content workers shouldn't take from a convention note?

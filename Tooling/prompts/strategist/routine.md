@@ -28,17 +28,20 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 
     # <Title>       one line: this batch's goal
     ## Argument     why THIS batch: what the latest outcomes showed, what these experiments will settle
-    ## Roadmap      ordered next goals — near entries brief-ready, far entries coarse; open questions are
-                    entries too (say when they come due); a closure names the exact instantiation that died
-                    AND a revival condition the system itself can produce
-    ## Thesis       the whole story: route, why it should work, main risks; the
-                    surrogate↔intent dictionary lives here
+    ## Proof        the proof of the root claim, written as a mathematician writes proofs — open gaps
+                    explicitly marked; kernel ledger, main risks, and the surrogate↔intent dictionary
+                    live here. No Lean shape — that is the worker's.
+    ## Roadmap      ordered next goals, each cashing a Proof gap — near entries brief-ready, far
+                    entries coarse; open questions are entries too (say when they come due); a
+                    closure names the exact instantiation that died AND a revival condition the
+                    system itself can produce
 
-**Distill the settled** — a closed line collapses to its conclusion. Start from `## Programme` in Context.md (Roadmap/Thesis evolve; Title/Argument are fresh each batch).
+**Distill the settled** — a closed line collapses to its conclusion. Start from `## Programme` in Context.md (Proof/Roadmap evolve; Title/Argument are fresh each batch).
 
 - Every Inject brief names its Roadmap entry: a `Roadmap: <entry phrase>` line.
+- Every Inject brief names the Proof gap it cashes and restates the claim as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
 - Admit gaps plainly; mark formal↔informal claims not yet kernel-checked.
-- Experiments buy information (confirm / refute / discriminate), not provability alone; carry ≥1 Inject or AttemptDisproof (MarkDeliverable/Ingest batches exempt).
+- An Inject cashes a Proof gap; an AttemptDisproof cashes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
 - A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds
@@ -59,7 +62,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 - Defs.lean / Manifest.md are user-owned; don't write directly.
 - Empty array rejected.
 - Same-batch Forward bricks must be independent (concurrent dispatch); a dependent brick goes in the next batch.
-- Don't dig into tactics / Lean syntax — that's worker's job. Lemma names, invariant constructions, proof techniques fair game.
+- The mathematics — claims, arguments, lemma names, invariant constructions, proof techniques — is yours. Tactics, Lean syntax, statement shape (ranges, off-by-ones, constants) are the worker's.
 
 ## Examples
 

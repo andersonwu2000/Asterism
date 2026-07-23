@@ -181,8 +181,8 @@ def test_e2e_root_proved_through_dispatcher(
             # reviewed) — the e2e covers the endgame package path.
             (attempts / "proposal.md").write_text(
                 "# Close out\n## Argument\nRoot proved by Builder.\n"
-                "## Roadmap\n1. Ingest.\n## Thesis\nManifest satisfied "
-                "by the proved root.\n",
+                "## Proof\nManifest satisfied by the proved root.\n"
+                "## Roadmap\n1. Ingest.\n",
                 encoding="utf-8")
         elif kind == "adversary":
             import json as _json

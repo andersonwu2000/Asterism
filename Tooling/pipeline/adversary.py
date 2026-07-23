@@ -81,7 +81,7 @@ def build_projection(*, round_no: int, attempts_dir: Path,
                      problem_dir: Path, conn: sqlite3.Connection,
                      problem: str, proposal_body: str, decisions,
                      dialogue: list[dict[str, Any]],
-                     thesis_warn: Optional[str]) -> Path:
+                     proof_warn: Optional[str]) -> Path:
     """Assemble the whitelist verbatim into an isolated working dir."""
     from ..agent.phase2_context import _section_inject_batch_outcomes
     from ..state import programme
@@ -136,8 +136,8 @@ def build_projection(*, round_no: int, attempts_dir: Path,
         + "\n", encoding="utf-8")
 
     head = ""
-    if thesis_warn:
-        head = thesis_warn + "\n\n"
+    if proof_warn:
+        head = proof_warn + "\n\n"
     (proj / "proposal.md").write_text(head + proposal_body + "\n",
                                       encoding="utf-8")
     (proj / "decisions.md").write_text(_decisions_digest(decisions),
@@ -175,7 +175,7 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
 def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
            conn: sqlite3.Connection, problem: str, proposal_body: str,
            decisions, dialogue: list[dict[str, Any]],
-           thesis_warn: Optional[str]) -> tuple[
+           proof_warn: Optional[str]) -> tuple[
                Optional[dict[str, Any]], str, int]:
     """One adversarial round: fresh judge, projection-isolated.
 
@@ -196,7 +196,7 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
         round_no=round_no, attempts_dir=attempts_dir,
         problem_dir=problem_dir, conn=conn, problem=problem,
         proposal_body=proposal_body, decisions=decisions,
-        dialogue=dialogue, thesis_warn=thesis_warn)
+        dialogue=dialogue, proof_warn=proof_warn)
     prompt_path = PROMPT_DIR / "adversary" / "adversary.md"
 
     # One re-spawn on a missing/malformed verdict (cheap; a judge that

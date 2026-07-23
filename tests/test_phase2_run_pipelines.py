@@ -120,7 +120,7 @@ def test_run_strategist_inject_enqueues_forward(
             encoding="utf-8")
         (kw["attempts_dir"] / "proposal.md").write_text(
             "# Contour step\n## Argument\nNeed the lemma.\n"
-            "## Roadmap\n1. contour lemma\n## Thesis\nRoute holds.\n",
+            "## Proof\nRoute holds.\n## Roadmap\n1. contour lemma\n",
             encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)

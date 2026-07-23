@@ -68,7 +68,7 @@ def _d(kind: str, **kw) -> SimpleNamespace:
 
 
 _PROPOSAL = ("# Step\n## Argument\nWhy this batch.\n"
-             "## Roadmap\n1. the brick\n## Thesis\nThe route holds.\n")
+             "## Proof\nThe route holds.\n## Roadmap\n1. the brick\n")
 
 
 # -------------------------------------------------------------- gate
@@ -292,7 +292,7 @@ def test_context_surfaces(workspace: Path, conn: sqlite3.Connection):
         {"verdict": "pass", "reservations": ["watch the sign"]},
         [], 1, "b1")
     s = "\n".join(phase2_context._section_programme_strategist(conn, "p"))
-    assert "rev 1" in s and "## Thesis" in s and "watch the sign" in s
+    assert "rev 1" in s and "## Proof" in s and "watch the sign" in s
     w = "\n".join(wctx._section_programme_worker(conn, "p", None))
     assert "PROGRAMME.md" in w and "watch the sign" in w
 
@@ -339,7 +339,7 @@ def test_projection_contents(
         decisions=[_d("Inject", pipeline="Forward", brief="## Need\nx")],
         dialogue=[{"round": 1, "role": "adversary",
                    "criticisms": ["too vague"], "proposal": "# old"}],
-        thesis_warn="WARN: long thesis")
+        proof_warn="WARN: long proof")
 
     assert proj == attempts / "adversary" / "r2"
     assert (proj / "Manifest.md").exists()
@@ -353,7 +353,7 @@ def test_projection_contents(
     assert "rev 1" in prog
     assert "Completed Inject batches" in prog
     assert not (proj / "outcomes.md").exists()
-    assert "WARN: long thesis" in (proj / "proposal.md").read_text(
+    assert "WARN: long proof" in (proj / "proposal.md").read_text(
         encoding="utf-8")
     assert "Inject(Forward)" in (proj / "decisions.md").read_text(
         encoding="utf-8")

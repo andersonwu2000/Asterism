@@ -100,7 +100,7 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
             "this batch moves the route, so it must carry a Programme "
             f"proposal: Write `{PROPOSAL_BASENAME}` (bare filename, in "
             "your attempts dir) with the four sections `# <Title>`, "
-            "`## Argument`, `## Roadmap`, `## Thesis`. Then re-emit "
+            "`## Argument`, `## Proof`, `## Roadmap`. Then re-emit "
             "decision.json (unchanged if it was already right).")
     try:
         body = path.read_text(encoding="utf-8")
@@ -1927,16 +1927,16 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             proposal_body, sections, err = verify_proposal_package(
                 decisions, attempts_dir)
             if not err:
-                thesis_warn = _programme.thesis_warning(sections)
-                if thesis_warn:
-                    print(f"[strategist] {problem}: {thesis_warn}",
+                proof_warn = _programme.proof_warning(sections)
+                if proof_warn:
+                    print(f"[strategist] {problem}: {proof_warn}",
                           flush=True)
                 verdict, aerr, arc = _adversary.review(
                     round_no=rounds_used + 1,
                     attempts_dir=attempts_dir, problem_dir=problem_dir,
                     conn=conn, problem=problem,
                     proposal_body=proposal_body, decisions=decisions,
-                    dialogue=dialogue, thesis_warn=thesis_warn)
+                    dialogue=dialogue, proof_warn=proof_warn)
                 if arc != 0:
                     return PipelineResult(
                         outcome="failed",

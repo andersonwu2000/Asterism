@@ -36,9 +36,9 @@ def _add_problem(conn: sqlite3.Connection, name: str = "Test.rm") -> None:
 
 
 _BODY_V1 = ("# Prove the toy bound\n\n## Argument\nA.\n\n"
-            "## Roadmap\nR.\n\n## Thesis\nT.")
+            "## Proof\nT.\n\n## Roadmap\nR.")
 _BODY_V2 = ("# Prove the toy bound, sharpened\n\n## Argument\nA2.\n\n"
-            "## Roadmap\nR2.\n\n## Thesis\nT2.")
+            "## Proof\nT2.\n\n## Roadmap\nR2.")
 
 
 def test_programme_unknown_problem_404(workspace: Path) -> None:

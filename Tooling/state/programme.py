@@ -11,7 +11,9 @@ write-denied on it and the only writers are `record_pass` /
 
 Proposal body contract (four sections, prose discipline — no schema
 beyond the headers): a `# <Title>` line, then `## Argument`,
-`## Roadmap`, `## Thesis` in that order.
+`## Proof`, `## Roadmap` in that order (2026-07-23, user call: Thesis
+renamed Proof — the section IS the root claim's proof, judged as one —
+and moved before Roadmap, whose entries cash its gaps).
 """
 from __future__ import annotations
 
@@ -24,11 +26,11 @@ from .db import now
 
 PROGRAMME_BASENAME = "PROGRAMME.md"
 
-# Prominent-warning threshold for the Thesis section (design §2: the
-# whole story must stay readable; warn loudly, never hard-block).
-THESIS_WARN_CHARS = 10_000
+# Prominent-warning threshold for the Proof section (design §2: the
+# proof must stay readable; warn loudly, never hard-block).
+PROOF_WARN_CHARS = 10_000
 
-_SECTION_ORDER = ("## Argument", "## Roadmap", "## Thesis")
+_SECTION_ORDER = ("## Argument", "## Proof", "## Roadmap")
 
 
 # ---------------------------------------------------------------------
@@ -39,13 +41,13 @@ def parse_proposal(body: str) -> tuple[Optional[dict[str, str]], Optional[str]]:
     """Validate a proposal body against the four-section contract.
 
     Returns (sections, None) on success — sections maps
-    {'title', 'argument', 'roadmap', 'thesis'} to their text — or
+    {'title', 'argument', 'proof', 'roadmap'} to their text — or
     (None, teaching_error) on a contract violation.
     """
     if not isinstance(body, str) or not body.strip():
         return None, ("programme proposal is empty; deliver the four "
                       "sections: `# <Title>`, `## Argument`, "
-                      "`## Roadmap`, `## Thesis`")
+                      "`## Proof`, `## Roadmap`")
     lines = body.splitlines()
     first = next((ln for ln in lines if ln.strip()), "")
     if not (first.startswith("# ") and not first.startswith("## ")):
@@ -62,7 +64,7 @@ def parse_proposal(body: str) -> tuple[Optional[dict[str, str]], Optional[str]]:
         if stripped in _SECTION_ORDER:
             if stripped in positions:
                 return None, (f"duplicate `{stripped}` section; each of "
-                              "Argument/Roadmap/Thesis appears exactly once")
+                              "Argument/Proof/Roadmap appears exactly once")
             positions[stripped] = idx
     missing = [h for h in _SECTION_ORDER if h not in positions]
     if missing:
@@ -71,31 +73,31 @@ def parse_proposal(body: str) -> tuple[Optional[dict[str, str]], Optional[str]]:
     idxs = [positions[h] for h in _SECTION_ORDER]
     if idxs != sorted(idxs):
         return None, ("programme sections out of order; required order is "
-                      "`## Argument`, `## Roadmap`, `## Thesis`")
+                      "`## Argument`, `## Proof`, `## Roadmap`")
 
     bounds = idxs + [len(lines)]
     sections = {"title": title}
-    for name, start, end in zip(("argument", "roadmap", "thesis"),
+    for name, start, end in zip(("argument", "proof", "roadmap"),
                                 bounds[:-1], bounds[1:]):
         text = "\n".join(lines[start + 1:end]).strip()
         if not text:
-            header = _SECTION_ORDER[("argument", "roadmap",
-                                     "thesis").index(name)]
+            header = _SECTION_ORDER[("argument", "proof",
+                                     "roadmap").index(name)]
             return None, f"programme `{header}` section is empty"
         sections[name] = text
     return sections, None
 
 
-def thesis_warning(sections: dict[str, str]) -> Optional[str]:
-    """Prominent over-length warning for the Thesis (never a block)."""
-    n = len(sections.get("thesis", ""))
-    if n <= THESIS_WARN_CHARS:
+def proof_warning(sections: dict[str, str]) -> Optional[str]:
+    """Prominent over-length warning for the Proof (never a block)."""
+    n = len(sections.get("proof", ""))
+    if n <= PROOF_WARN_CHARS:
         return None
-    return (f"⚠ THESIS LENGTH WARNING: {n} chars (threshold "
-            f"{THESIS_WARN_CHARS}). The Thesis must stay a readable "
-            "whole story — an unreadable Thesis is itself rebuttable. "
-            "Condense: superseded branches belong in Roadmap closure "
-            "entries, not the Thesis.")
+    return (f"⚠ PROOF LENGTH WARNING: {n} chars (threshold "
+            f"{PROOF_WARN_CHARS}). The Proof must stay readable — an "
+            "unreadable Proof is itself rebuttable. Condense: "
+            "superseded branches belong in Roadmap closure entries, "
+            "not the Proof.")
 
 
 # ---------------------------------------------------------------------

@@ -174,7 +174,7 @@ def test_reset_clears_problem_settings_and_paper_bindings(
     # b6 run-2 reset died on the user_file_history FK (2026-07-18).
     _programme.record_pass(
         conn, "wilson",
-        "# T\n## Argument\na\n## Roadmap\nr\n## Thesis\nt\n",
+        "# T\n## Argument\na\n## Proof\np\n## Roadmap\nr\n",
         {"verdict": "pass", "reservations": []}, [], 0, "b1")
     conn.execute(
         "INSERT INTO user_file_history"

@@ -1,7 +1,7 @@
 """state.programme — Programme store contract (research mode P1).
 
 Guards: v30 table exists on fresh DBs; four-section proposal contract
-(teaching rejections); Thesis over-length warning (warn, never block);
+(teaching rejections); Proof over-length warning (warn, never block);
 revision chain semantics (passed rows advance rev, rejected rows keep
 the candidate number + dialogue); rejection notice surfaces only while
 the latest resolved row is a rejection; PROGRAMME.md render carries
@@ -22,11 +22,11 @@ def _fresh(tmp_path):
     return c
 
 
-def _body(thesis="The route holds because of X."):
+def _body(proof="The route holds because of X."):
     return ("# Close the gcd gap\n"
             "## Argument\nBrick A unblocks the named vector.\n"
-            "## Roadmap\n1. Re-prove s23259 without the exists.\n"
-            "## Thesis\n" + thesis + "\n")
+            "## Proof\n" + proof + "\n"
+            "## Roadmap\n1. Re-prove s23259 without the exists.\n")
 
 
 # ---------------------------------------------------------------- parse
@@ -36,46 +36,46 @@ def test_parse_ok():
     assert err is None
     assert sections["title"] == "Close the gcd gap"
     assert "named vector" in sections["argument"]
-    assert sections["thesis"].startswith("The route holds")
+    assert sections["proof"].startswith("The route holds")
 
 
 def test_parse_missing_section_teaches():
-    body = "# T\n## Argument\na\n## Thesis\nt\n"
+    body = "# T\n## Argument\na\n## Roadmap\nr\n"
     sections, err = programme.parse_proposal(body)
-    assert sections is None and "## Roadmap" in err
+    assert sections is None and "## Proof" in err
 
 
 def test_parse_requires_title_line():
-    body = "## Argument\na\n## Roadmap\nr\n## Thesis\nt\n"
+    body = "## Argument\na\n## Proof\np\n## Roadmap\nr\n"
     sections, err = programme.parse_proposal(body)
     assert sections is None and "# <Title>" in err
 
 
 def test_parse_out_of_order_rejected():
-    body = "# T\n## Thesis\nt\n## Argument\na\n## Roadmap\nr\n"
+    body = "# T\n## Proof\np\n## Argument\na\n## Roadmap\nr\n"
     sections, err = programme.parse_proposal(body)
     assert sections is None and "order" in err
 
 
 def test_parse_duplicate_section_rejected():
-    body = _body() + "## Thesis\nagain\n"
+    body = _body() + "## Roadmap\nagain\n"
     sections, err = programme.parse_proposal(body)
     assert sections is None and "duplicate" in err
 
 
 def test_parse_empty_section_rejected():
-    body = "# T\n## Argument\na\n## Roadmap\n## Thesis\nt\n"
+    body = "# T\n## Argument\na\n## Proof\n## Roadmap\nr\n"
     sections, err = programme.parse_proposal(body)
-    assert sections is None and "## Roadmap" in err and "empty" in err
+    assert sections is None and "## Proof" in err and "empty" in err
 
 
-def test_thesis_warning_thresholds():
+def test_proof_warning_thresholds():
     ok, _ = programme.parse_proposal(_body())
-    assert programme.thesis_warning(ok) is None
+    assert programme.proof_warning(ok) is None
     long_sections, _ = programme.parse_proposal(
-        _body(thesis="x" * (programme.THESIS_WARN_CHARS + 1)))
-    warn = programme.thesis_warning(long_sections)
-    assert warn and "THESIS LENGTH WARNING" in warn
+        _body(proof="x" * (programme.PROOF_WARN_CHARS + 1)))
+    warn = programme.proof_warning(long_sections)
+    assert warn and "PROOF LENGTH WARNING" in warn
 
 
 # ---------------------------------------------------------------- store
