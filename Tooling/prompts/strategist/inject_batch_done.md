@@ -6,6 +6,7 @@ Tools: Read / Write / Edit / Grep / Bash(`python -m Tooling.knowledge.loogle ...
 
 1. **Read Context.md** (`## Completed Inject batches`, `## Pending reopen-promises`, active goals, TREE).
 
+<!-- #if has_history -->
 2. **Meta-analysis first.** Reflect on your own prior decisions:
    - If the batch has failed decisions (agent disproved a statement, Forward brick was mis-specified, proof direction was wrong, etc.) → change the proof structure or brief writing.
    - A declined Forward shows its reason as `why:` in `## Completed Inject batches`. If it says your brief was under-specified (e.g. called a step "trivial" but named no lemma), name the specific lemma / state the obligation shape concretely in the re-Inject — don't just rephrase the same vague brief.
@@ -16,6 +17,7 @@ Tools: Read / Write / Edit / Grep / Bash(`python -m Tooling.knowledge.loogle ...
    - Brick landed but gap remains → `Inject` a new brick + `ConfirmShelve` to keep parked
    - Brick didn't land / proof direction was wrong → `ConfirmShelve` this goal + `Inject` a reframed angle on its upper goal
    - Permanently superseded → standalone `ConfirmShelve` (no paired Inject)
+<!-- #endif -->
 
 4. **Edge case**: if Context.md also has `## Framework stalled` (tree has nothing dispatchable and no in-flight worker) → emit at least one `Inject`, else framework idles until the next routine tick. A stall is a research moment, not a dead end: think deeply, explore genuinely different angles — the dead attempts' shared assumption is the dimension to vary; a missing tool is a Forward brick to build.
 

@@ -164,7 +164,8 @@ class GeminiCliProvider:
             body = f"(prompt file unavailable: {e})"
         else:
             body = render_prompt_template(
-                body, is_postmortem=req.is_postmortem)
+                body, is_postmortem=req.is_postmortem,
+                flags=req.prompt_flags)
         prompt = (
             f"You are running a {req.kind} task. Follow the instructions "
             f"below exactly.\n\nAfter reading them, read context at "

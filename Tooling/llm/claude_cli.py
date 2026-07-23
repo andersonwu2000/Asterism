@@ -578,7 +578,8 @@ def _load_prompt(req: LLMRequest) -> str:
         text = req.prompt_path.read_text(encoding="utf-8")
     except OSError as e:
         return f"(prompt file unavailable: {e})"
-    return render_prompt_template(text, is_postmortem=req.is_postmortem)
+    return render_prompt_template(text, is_postmortem=req.is_postmortem,
+                                  flags=req.prompt_flags)
 
 
 def _build_cold_prompt(req: LLMRequest) -> str:

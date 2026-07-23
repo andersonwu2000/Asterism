@@ -7,6 +7,7 @@ into `Tooling.llm`. Callers needing `compile_context` or the
 """
 from __future__ import annotations
 
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -31,7 +32,13 @@ WORKER_TIMEOUT_SEC = 900  # 15 min. Phase 2 LSP cantor_xi had 6
 POSTMORTEM_TIMEOUT_SEC = 180
 
 
-def render_prompt_template(text: str, *, is_postmortem: bool = False) -> str:
+_PROMPT_COND_RE = re.compile(
+    r"[ \t]*<!-- #if (\w+) -->[ \t]*\n(.*?)[ \t]*<!-- #endif -->[ \t]*\n?",
+    re.DOTALL)
+
+
+def render_prompt_template(text: str, *, is_postmortem: bool = False,
+                           flags: "dict[str, bool] | None" = None) -> str:
     """Substitute prompt template placeholders against live config.
 
     Replacements:
@@ -41,7 +48,18 @@ def render_prompt_template(text: str, *, is_postmortem: bool = False) -> str:
         `strategist.interval_min` config knob). Only the strategist
         prompts (`strategist/*.md`) use this placeholder today; the
         substitution is a no-op for other prompts.
+      - `<!-- #if name -->…<!-- #endif -->` — conditional block (D8
+        2026-07-24: fresh-problem wakes drop the not-yet-applicable
+        paragraphs without wording changes). The block stays when
+        `flags` is None or the name is absent (fail-open); it is
+        dropped only on an explicit falsy flag. Marker lines are
+        always stripped.
     """
+    def _cond(m: "re.Match[str]") -> str:
+        if flags is None or flags.get(m.group(1), True):
+            return m.group(2)
+        return ""
+    text = _PROMPT_COND_RE.sub(_cond, text)
     timeout_sec = (POSTMORTEM_TIMEOUT_SEC if is_postmortem
                    else WORKER_TIMEOUT_SEC)
     interval_min = config.get(
@@ -121,7 +139,8 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
               trap_check_sec_override: int | None = None,
               usage_workspace: Path | None = None,
               usage_problem: str | None = None,
-              usage_pipeline_id: str | None = None) -> int:
+              usage_pipeline_id: str | None = None,
+              prompt_flags: "dict[str, bool] | None" = None) -> int:
     """Dispatch to the configured LLM provider for one agent invocation.
 
     Provider is resolved per-kind: `ASTERISM_<KIND>_PROVIDER` →
@@ -192,6 +211,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
         is_postmortem=is_postmortem,
         mcp_config_path=mcp_config_path,
         inline_prompt=inline_prompt,
+        prompt_flags=prompt_flags,
     ))
     _record_spawn_usage(kind=kind, attempts_dir=attempts_dir,
                         problem_dir=problem_dir,

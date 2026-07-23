@@ -972,6 +972,7 @@ class SchedulerState:
     quota_wait_until: float = 0.0
     quota_wait_entered: float = 0.0
     quota_wait_logged_at: float = 0.0
+    quota_wait_rechecked_at: float = 0.0  # early-recovery probe cadence
     quota_wait_paused: float = 0.0  # cumulative, excluded from budget
     # Global consecutive spawn_fast_fail counter; breaker exits the daemon
     # at CONSEC_SPAWN_FAIL_LIMIT (claude.exe persistently broken).

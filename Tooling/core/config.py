@@ -83,16 +83,18 @@ CONFIG_SPEC: "dict[str, str]" = {
 # every dispatcher tick reads thresholds). Tests reset via _reset_cache.
 _cache: dict[str, Any] | None = None
 _cache_workspace: Path | None = None
+_load_error: str | None = None
 
 
 def _reset_cache() -> None:
     """Test helper — invalidate the in-process cache so the next
     `load()` re-reads the file. Safe to call between test cases."""
-    global _cache, _cache_workspace, _dotenv, _dotenv_workspace
+    global _cache, _cache_workspace, _dotenv, _dotenv_workspace, _load_error
     _cache = None
     _cache_workspace = None
     _dotenv = None
     _dotenv_workspace = None
+    _load_error = None
 
 
 def load(workspace: Path | None = None) -> dict[str, Any]:
@@ -100,12 +102,14 @@ def load(workspace: Path | None = None) -> dict[str, Any]:
     when the file is missing or unparseable (a warning is emitted on
     parse failure but the daemon continues — env+default chain still
     works)."""
-    global _cache, _cache_workspace
+    global _cache, _cache_workspace, _load_error
     workspace = workspace or Path.cwd()
     if _cache is not None and _cache_workspace == workspace:
         return _cache
+    _load_error = None
 
     def _read_one(path: Path) -> "dict[str, Any]":
+        global _load_error
         if not path.exists():
             return {}
         try:
@@ -113,9 +117,10 @@ def load(workspace: Path | None = None) -> dict[str, Any]:
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {}
         except Exception as exc:
-            # Don't crash the daemon over a malformed config — warn and
-            # fall back to env+default. This matches manifest.parse's
-            # lenient-parse policy.
+            # Don't crash read-only commands over a malformed config —
+            # warn and fall back to env+default. State-changing commands
+            # must consult `load_error` and refuse instead (B4).
+            _load_error = f"{path}: {exc}"
             print(f"[config] WARNING: {path} unparseable ({exc}); "
                   f"skipping it", flush=True)
             return {}
@@ -123,6 +128,15 @@ def load(workspace: Path | None = None) -> dict[str, Any]:
     _cache = _read_one(workspace / _CONFIG_FILENAME)
     _cache_workspace = workspace
     return _cache
+
+
+def load_error(workspace: Path | None = None) -> "str | None":
+    """The parse error from the config read, or None. A present-but-
+    unparseable config must hard-block state-changing commands (daemon
+    start / run) instead of silently running on defaults — a timed
+    run's entire settings would evaporate (2026-07-19)."""
+    load(workspace)
+    return _load_error
 
 
 # ── .env — file-form env vars (task #13; user design call: no extra

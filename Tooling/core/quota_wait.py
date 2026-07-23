@@ -24,6 +24,13 @@ from . import usage_quota
 QUOTA_WAIT_JITTER_SEC = 120.0
 QUOTA_WAIT_FALLBACK_SEC = 1800.0
 QUOTA_WAIT_LOG_EVERY_SEC = 600.0
+# Early-recovery re-probe cadence while paused (B5, 2026-07-24): the
+# sleep target is the OLD window's resets_at — an account switch (or a
+# plan change) makes quota available early and a blind sleep misses it
+# (26 min lost to a manual restart, 2026-07-20). Only a positive
+# "not exhausted" from the endpoint resumes early; unreachable keeps
+# sleeping (symmetric with the entry discipline).
+QUOTA_WAIT_RECHECK_SEC = 300.0
 
 
 def _fmt_epoch(t: float) -> str:
@@ -49,6 +56,17 @@ def confirmed_quota_deadline(now: float) -> "float | None":
     return deadline + QUOTA_WAIT_JITTER_SEC
 
 
+def _confirmed_available() -> bool:
+    """True only on a positive endpoint answer that no window is
+    exhausted. Unreachable/unparseable ≠ recovered — keep sleeping."""
+    try:
+        raw = usage_quota.fetch_usage()
+    except Exception:  # noqa: BLE001
+        return False
+    exhausted, _ = usage_quota.exhausted_until(raw)
+    return not exhausted
+
+
 def maybe_enter(st, *, enabled: bool, source: str) -> bool:
     """Enter (or extend) the global quota-wait if the usage endpoint
     confirms exhaustion. True = caller should treat the failure as
@@ -62,6 +80,7 @@ def maybe_enter(st, *, enabled: bool, source: str) -> bool:
         return False
     if st.quota_wait_until <= now:
         st.quota_wait_entered = now  # opening a fresh pause window
+        st.quota_wait_rechecked_at = now
     st.quota_wait_until = max(st.quota_wait_until, deadline)
     print(f"[quota-wait] {source} — usage endpoint confirms the "
           f"subscription window is exhausted; all dispatch paused "
@@ -80,6 +99,19 @@ def tick(st, now: float, *, enabled: bool) -> bool:
     if st.quota_wait_until <= 0.0:
         return False
     if now < st.quota_wait_until:
+        if now - st.quota_wait_rechecked_at >= QUOTA_WAIT_RECHECK_SEC:
+            st.quota_wait_rechecked_at = now
+            if _confirmed_available():
+                st.quota_wait_paused += now - st.quota_wait_entered
+                st.quota_wait_until = 0.0
+                st.quota_wait_logged_at = 0.0
+                st.consec_quota_per_kind.clear()
+                st.quota_cooldown_kind.clear()
+                print("[quota-wait] usage endpoint reports quota "
+                      "available before the sleep target (account "
+                      "switch / window change) — resuming dispatch "
+                      "early", flush=True)
+                return False
         if now - st.quota_wait_logged_at >= QUOTA_WAIT_LOG_EVERY_SEC:
             st.quota_wait_logged_at = now
             print(f"[quota-wait] dispatch paused — "

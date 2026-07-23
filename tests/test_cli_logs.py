@@ -34,10 +34,11 @@ def test_log_filename_format(
     # No DB → 'daemon' fallback
     assert name.startswith("daemon_claude-sonnet-4-6_")
     assert name.endswith(".log")
-    # ts portion is 15 chars: 8 date + '-' + 6 time
+    # ts portion is 16 chars: 8 date + '-' + 6 time + 'Z' (UTC,
+    # self-documented — E fix 2026-07-24)
     ts = name.removesuffix(".log").rsplit("_", 1)[1]
-    assert len(ts) == 15 and ts[8] == "-"
-    assert ts[:8].isdigit() and ts[9:].isdigit()
+    assert len(ts) == 16 and ts[8] == "-" and ts.endswith("Z")
+    assert ts[:8].isdigit() and ts[9:15].isdigit()
 
 
 def test_log_filename_reflects_mixed_models(

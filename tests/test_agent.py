@@ -697,3 +697,23 @@ def test_stream_parser_accumulates_usage():
     assert u["cache_creation_input_tokens"] == 20
     assert u["output_tokens"] == 95               # 90 final + 5 in-flight
     assert u["turns"] == 1
+
+
+def test_render_prompt_conditional_blocks():
+    """D8 (2026-07-24): `<!-- #if name -->` blocks drop only on an
+    explicit falsy flag; absent flag / None flags keep them (fail-open);
+    marker lines never reach the agent."""
+    from Tooling.agent.runtime import render_prompt_template
+    text = ("head\n"
+            "<!-- #if has_history -->\n"
+            "2. Meta-analysis.\n"
+            "3. Reopen-promises.\n"
+            "<!-- #endif -->\n"
+            "tail\n")
+    off = render_prompt_template(text, flags={"has_history": False})
+    assert "Meta-analysis" not in off and "#if" not in off
+    assert "head" in off and "tail" in off
+    on = render_prompt_template(text, flags={"has_history": True})
+    assert "Meta-analysis" in on and "#if" not in on
+    default = render_prompt_template(text)
+    assert "Meta-analysis" in default and "#if" not in default

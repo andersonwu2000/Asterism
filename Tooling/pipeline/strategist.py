@@ -1852,10 +1852,17 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
         env_var="ASTERISM_STRATEGIST_TIMEOUT_SEC", cast=int,
     )
     sid = str(uuid.uuid4())
+    # D8 (2026-07-24): a fresh problem has no prior batches — the
+    # meta-analysis / reopen-promise paragraphs render only once
+    # history exists (conditional blocks, wording untouched).
+    has_history = conn.execute(
+        "SELECT 1 FROM strategist_decisions WHERE problem = ? LIMIT 1",
+        (problem,)).fetchone() is not None
     rc = agent.spawn_llm(
         kind="strategist", prompt_path=prompt_path,
         problem_dir=problem_dir, attempts_dir=attempts_dir,
         session_id=sid, timeout_sec=strategist_timeout,
+        prompt_flags={"has_history": has_history},
     )
     # Persist the plan note BEFORE any outcome branching: the note is the
     # agent's memory of its own thinking — worth keeping even when the

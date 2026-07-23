@@ -132,6 +132,10 @@ class LLMRequest:
     is_postmortem: bool = False
     mcp_config_path: Path | None = None
     inline_prompt: str | None = None
+    # Conditional-block flags for the prompt template (D8 2026-07-24):
+    # `<!-- #if name -->…<!-- #endif -->` blocks render only when
+    # flags[name] is truthy; absent flag (or None) keeps the block.
+    prompt_flags: "dict[str, bool] | None" = None
 
 
 class Provider(Protocol):

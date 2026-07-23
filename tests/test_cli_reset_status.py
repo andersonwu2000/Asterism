@@ -899,3 +899,17 @@ def test_daemon_start_spawns_detached_and_writes_log_pointer(
     pointer = tmp_path / ".asterism" / "logs" / "daemon-current.txt"
     assert pointer.exists()
     assert "4242" in capsys.readouterr().out
+
+
+def test_utc_log_stamp_is_utc_and_z_suffixed():
+    """E (2026-07-24): log filenames carry UTC + Z so they never
+    mis-pair with the DB's UTC timestamps (5h15m outage misread as
+    14.7 min on 2026-07-19)."""
+    from datetime import datetime, timezone
+    from Tooling.core.cli import _utc_log_stamp
+    s = _utc_log_stamp()
+    assert s.endswith("Z")
+    parsed = datetime.strptime(s[:-1], "%Y%m%d-%H%M%S").replace(
+        tzinfo=timezone.utc)
+    delta = abs((datetime.now(timezone.utc) - parsed).total_seconds())
+    assert delta < 120

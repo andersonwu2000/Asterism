@@ -93,8 +93,14 @@ def _log_filename(workspace: Path) -> str:
         model = os.environ.get("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
     # Strip path-unsafe chars from model (just in case env carries them)
     model = re.sub(r"[^\w.+-]", "_", model)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return f"{problem}_{model}_{ts}.log"
+    return f"{problem}_{model}_{_utc_log_stamp()}.log"
+
+
+def _utc_log_stamp() -> str:
+    """UTC timestamp for log filenames, `Z`-suffixed. Local-time names
+    beside UTC DB timestamps mis-billed a 5h15m outage as 14.7 min
+    (2026-07-19) — one clock, self-documented."""
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "Z"
 
 
 def _open_run_log(workspace: Path) -> Path:
@@ -413,6 +419,13 @@ def _hard_exit_after_fatal(rc: int) -> None:
 
 def cmd_run(args: argparse.Namespace) -> int:
     workspace = Path.cwd()
+    from . import config as _cfg
+    _cfg_err = _cfg.load_error(workspace)
+    if _cfg_err:
+        print(f"[cli] REFUSING to run: config unparseable — running on "
+              f"defaults would evaporate the run's settings: {_cfg_err}",
+              flush=True)
+        return 1
     # Scope safety gate: a no-`--scope` run is workspace-wide — it
     # dispatches AND runs the recovery orphan-sweep across EVERY problem.
     # That is rarely intended and high-blast-radius (a stokes-scoped
@@ -1734,7 +1747,15 @@ def daemon_start(workspace: Path, *, scope: "str | None" = None,
     moment the lock frees."""
     import subprocess
     import time as _time
+    from . import config as _cfg
     from . import dispatcher as _disp
+    # B4 (2026-07-24): a present-but-unparseable config must refuse the
+    # start — silently running on defaults evaporates the run's settings.
+    _cfg_err = _cfg.load_error(workspace)
+    if _cfg_err:
+        return 1, (f"config unparseable — refusing to start on defaults: "
+                   f"{_cfg_err}. Fix Asterism.yaml (or the python env) "
+                   "and retry.")
     deadline = _time.time() + wait_lock_sec
     while True:
         refusal: "str | None" = None
@@ -1777,8 +1798,7 @@ def daemon_start(workspace: Path, *, scope: "str | None" = None,
         if _time.time() >= deadline:
             return 1, refusal
         _time.sleep(1.0)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_path = logs / f"daemon_{stamp}.log"
+    log_path = logs / f"daemon_{_utc_log_stamp()}.log"
     argv = [sys.executable, "-m", "Tooling.core.cli", "run"]
     if once:
         argv.append("--once")

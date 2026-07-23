@@ -474,3 +474,45 @@ def test_resolve_workspace_errors_are_actionable(tmp_path, monkeypatch):
         config.resolve_workspace()
     with pytest.raises(FileNotFoundError, match="does not exist"):
         config.resolve_workspace(tmp_path / "nope")
+
+
+def test_load_error_set_on_unparseable_yaml(tmp_path, monkeypatch):
+    """B4 (2026-07-24): a present-but-unparseable config must be
+    detectable so state-changing commands refuse instead of silently
+    running on defaults."""
+    from Tooling.core import config as cfg
+    cfg._reset_cache()
+    (tmp_path / "Asterism.yaml").write_text(
+        "dispatch:\n  pool: [unclosed", encoding="utf-8")
+    try:
+        assert cfg.load(tmp_path) == {}
+        err = cfg.load_error(tmp_path)
+        assert err and "Asterism.yaml" in err
+    finally:
+        cfg._reset_cache()
+
+
+def test_load_error_none_on_good_or_missing_yaml(tmp_path):
+    from Tooling.core import config as cfg
+    cfg._reset_cache()
+    try:
+        assert cfg.load_error(tmp_path) is None  # missing file
+        (tmp_path / "Asterism.yaml").write_text(
+            "dispatch:\n  pool: 4\n", encoding="utf-8")
+        cfg._reset_cache()
+        assert cfg.load_error(tmp_path) is None
+    finally:
+        cfg._reset_cache()
+
+
+def test_daemon_start_refuses_on_unparseable_config(tmp_path):
+    from Tooling.core import cli as _cli
+    from Tooling.core import config as cfg
+    cfg._reset_cache()
+    (tmp_path / "Asterism.yaml").write_text(
+        "dispatch:\n  pool: [unclosed", encoding="utf-8")
+    try:
+        code, msg = _cli.daemon_start(tmp_path)
+        assert code == 1 and "unparseable" in msg
+    finally:
+        cfg._reset_cache()

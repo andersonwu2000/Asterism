@@ -250,3 +250,51 @@ def test_serve_meter_delegates_to_shared_fetch():
     assert serve_run._fetch_oauth_usage.__module__ == "Tooling.serve.run"
     src = inspect.getsource(serve_run._fetch_oauth_usage)
     assert "usage_quota.fetch_usage" in src
+
+
+def test_tick_early_recovery_resumes(monkeypatch):
+    """B5 (2026-07-24): quota came back before the sleep target (account
+    switch) -- a positive endpoint answer resumes early and closes the
+    budget-clock pause; the 2026-07-20 incident cost 26 min + a manual
+    restart."""
+    monkeypatch.setattr(usage_quota, "fetch_usage", lambda: {
+        "five_hour": {"utilization": 10.0, "resets_at": None}})
+    st = SchedulerState()
+    st.quota_wait_until = 5000.0
+    st.quota_wait_entered = 1000.0
+    st.quota_wait_rechecked_at = 1000.0
+    st.consec_quota_per_kind["backward"] = 3
+    now = 1000.0 + quota_wait.QUOTA_WAIT_RECHECK_SEC
+    assert quota_wait.tick(st, now, enabled=True) is False
+    assert st.quota_wait_until == 0.0
+    assert abs(st.quota_wait_paused - (now - 1000.0)) < 1e-6
+    assert st.consec_quota_per_kind == {}
+
+
+def test_tick_early_recovery_needs_positive_answer(monkeypatch):
+    """Unreachable endpoint != recovered -- keep sleeping (symmetric
+    with the entry discipline)."""
+    def down():
+        raise OSError("endpoint down")
+    monkeypatch.setattr(usage_quota, "fetch_usage", down)
+    st = SchedulerState()
+    st.quota_wait_until = 5000.0
+    st.quota_wait_entered = 1000.0
+    st.quota_wait_rechecked_at = 1000.0
+    now = 1000.0 + quota_wait.QUOTA_WAIT_RECHECK_SEC
+    assert quota_wait.tick(st, now, enabled=True) is True
+    assert st.quota_wait_until == 5000.0
+
+
+def test_tick_recheck_respects_cadence(monkeypatch):
+    """No probe before QUOTA_WAIT_RECHECK_SEC has elapsed."""
+    def forbidden():
+        raise AssertionError("probe fired before the recheck cadence")
+    monkeypatch.setattr(usage_quota, "fetch_usage", forbidden)
+    st = SchedulerState()
+    st.quota_wait_until = 5000.0
+    st.quota_wait_entered = 1000.0
+    st.quota_wait_rechecked_at = 1000.0
+    assert quota_wait.tick(
+        st, 1000.0 + quota_wait.QUOTA_WAIT_RECHECK_SEC - 1.0,
+        enabled=True) is True
