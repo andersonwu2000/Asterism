@@ -33,20 +33,21 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 
     # <Title>       one line: this batch's goal
     ## Argument     why THIS batch: what the latest outcomes showed, what these experiments will settle
-    ## Proof        the proof of the root claim, written as a mathematician writes proofs — open gaps
-                    explicitly marked; kernel ledger, main risks, and the surrogate↔intent dictionary
-                    live here. No Lean shape — that is the worker's.
-    ## Roadmap      ordered next goals, each cashing a Proof gap — near entries brief-ready, far
-                    entries coarse; open questions are entries too (say when they come due); a
-                    closure names the exact instantiation that died AND a revival condition the
-                    system itself can produce
+    ## Proof        the proof of the root claim, written as a mathematician writes proofs — steps
+                    not yet proven are marked open and are yours to close in revisions; kernel
+                    ledger, main risks, and the surrogate↔intent dictionary live here. The
+                    worker's only share is the Lean shape.
+    ## Roadmap      ordered next goals, each formalizing a step the Proof has settled — near
+                    entries brief-ready, far entries coarse; open questions are entries too (say
+                    when they come due); a closure names the exact instantiation that died AND a
+                    revival condition the system itself can produce
 
 **Distill the settled** — a closed line collapses to its conclusion. Start from `## Programme` in Context.md (Proof/Roadmap evolve; Title/Argument are fresh each batch).
 
 - Every Inject brief names its Roadmap entry: a `Roadmap: <entry phrase>` line.
-- Every Inject brief names the Proof gap it cashes and restates the claim as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
+- Every Inject brief names the Proof step it formalizes and restates the claim as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
 - Admit gaps plainly; mark formal↔informal claims not yet kernel-checked.
-- An Inject cashes a Proof gap; an AttemptDisproof cashes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
+- An Inject formalizes a settled Proof step; an AttemptDisproof probes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
 - A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds
