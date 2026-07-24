@@ -82,6 +82,9 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-23
+- Began shifting the system's internal proof drafts toward plain natural-language writing: the structured "thesis" summary was replaced by a prose proof section, and the accompanying briefs now explicitly flag gaps in the argument, using wording reviewed and approved by the maintainer.
+
 ### 2026-07-22
 - Made uploading papers easier by replacing the manual file-path field with drag-and-drop in the browser.
 
@@ -214,10 +217,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 ### 2026-06-26
 - Added a knowledge base that records lessons and recurring failure patterns from past proof attempts, and started feeding them into the context assembled for new proofs.
 - Fixed the guidance for searching previously proved related results so it matches the actual proof files.
-
-### 2026-06-23
-- Enabled the system to retract or correct its own earlier guidance once a proof attempt shows that guidance to be false.
-- Gave the proving agent more local context, surfacing relevant definitions' signatures, clashing names, and the lines around its most recent edit.
 
 <!-- ASTERISM-PROGRESS:END -->
 
