@@ -34,22 +34,22 @@ Before committing, `Grep` mathlib briefly for any concept the agent claims is mi
 Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelve / MarkDeliverable / Ingest / EmitDirective) ships a Programme revision: Write `proposal.md` (bare filename, in your attempts dir) —
 
     # <Title>       one line: this batch's goal
-    ## Argument     why THIS batch: what the latest outcomes showed, what these experiments will settle
-    ## Proof        the proof of the root claim, the full argument, written as a mathematician writes proofs — steps
-                    not yet proven are marked open and are yours to close in revisions; kernel
-                    ledger, main risks, and the surrogate↔intent dictionary live here. The
-                    worker's only share is the Lean shape.
-    ## Roadmap      ordered next goals, each formalizing a Proof step argued to logical closure — near
-                    entries brief-ready, far entries coarse; open questions are entries too (say
-                    when they come due); a closure names the exact instantiation that died AND a
-                    revival condition the system itself can produce
+    ## Argument     why THIS batch: what the latest outcomes showed, why these experiments advance the Roadmap
+    ## Proof        this batch's mathematics, written as a mathematician writes proofs: a complete
+                    argument for every claim this batch dispatches. No gaps here — an unclosed
+                    claim belongs in the Roadmap, not the Proof. The worker's only share is the
+                    Lean shape.
+    ## Roadmap      the route, and the ONLY home for gaps: ordered next goals and open questions
+                    with their status and the plan to close them — near entries brief-ready, far
+                    entries coarse; a closure names the exact instantiation that died AND a
+                    restart condition the system itself can produce
 
-**Distill the settled** — a closed line collapses to its conclusion. Start from `## Programme` in Context.md (Proof/Roadmap evolve; Title/Argument are fresh each batch).
+**Distill the settled** — a closed line collapses to its conclusion. Start from `## Programme` in Context.md (the Roadmap evolves; Title/Argument/Proof serve this batch).
 
 - Every Inject brief names its Roadmap entry: a `Roadmap: <entry phrase>` line.
-- Every Inject brief names the Proof step it formalizes and restates the claim as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
-- Admit gaps plainly; mark formal↔informal claims not yet kernel-checked.
-- An Inject formalizes a Proof step argued to logical closure — a step with a gap waits in the Proof for a later batch; an AttemptDisproof probes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
+- Every Inject is proven in the Proof: the brief names that claim, restated as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
+- Mark formal↔informal claims not yet kernel-checked in the Roadmap.
+- An unproven claim never enters formalization — it goes to the Roadmap, and a later batch closes it; an AttemptDisproof probes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
 - A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds

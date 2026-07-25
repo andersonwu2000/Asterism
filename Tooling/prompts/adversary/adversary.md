@@ -6,7 +6,7 @@ Tools: Read / Grep / Write / Bash(`python -m Tooling.knowledge.loogle ...` — w
 
 - `Manifest.md` — the user's task. The fixed reference point.
 - `PROGRAMME.md` — the current (last passed) Programme revision, followed by its execution record: the terminal results (proved / dead with anchoring) since it passed. **Check the candidate Argument's account against those results.**
-- `proposal.md` — the CANDIDATE revision under judgment: `# Title` (this batch's goal), `## Argument` (why this batch is worth doing), `## Proof` (the root claim's proof — gaps marked, kernel ledger), `## Roadmap` (ordered next goals formalizing closed Proof steps; closure entries must name the exact dead instantiation and a self-producible revival condition).
+- `proposal.md` — the CANDIDATE revision under judgment: `# Title` (this batch's goal), `## Argument` (why this batch), `## Proof` (this batch's complete arguments — no gaps), `## Roadmap` (the route, and the only home for gaps and open questions; closure entries name the exact dead instantiation and a self-producible restart condition).
 - `decisions.md` — this batch's experiments (Inject briefs), directive, and other decisions.
 - `Root.lean` / `Defs.lean` (if present) — the formal statement and definitions. **Check claims about the formal goal against these, not the Manifest's prose.**
 - `CATALOG.md` (if present) — the proved-brick inventory; grep it to check "X already landed" claims.
@@ -14,14 +14,13 @@ Tools: Read / Grep / Write / Bash(`python -m Tooling.knowledge.loogle ...` — w
 
 ## How to judge
 
-1. **Argument vs evidence**: does the Argument honestly account for the execution record in `PROGRAMME.md`? Ignored or misnarrated deaths that touch the route = rebut.
-2. **Proof soundness**: every claim grounded, every gap marked. A step asserted without proof — whatever word dresses it — an assumption the claim does not grant (regularity, exhaustiveness), a formal↔informal correspondence without a kernel source, an unreadable Proof = rebut.
-3. **Route vs Manifest**: does the route still serve the Manifest's actual ask, or has it drifted to easier surrogates? Drift = rebut.
-4. **Experiment value**: would these experiments change the argument whichever way they land (confirm / refute / discriminate)? Low-information padding = rebut. A re-dispatch of an already-dead variant under new wording = rebut. An Inject on a step whose proof has a mathematical gap = rebut.
-5. **Directive consistency**: does the directive contradict the Programme, or smuggle route content workers shouldn't take from a convention note? Either = rebut.
-6. **Closure honesty**: Roadmap closures must carry the exact instantiation that died and a revival condition the SYSTEM ITSELF can produce (a dispatchable brick / a discriminating experiment / a concrete re-anchoring). "Wait until the library gains X someday" is disguised idleness = rebut.
+1. **Reachability**: `proposal.md`'s ## Roadmap must satisfy or advance the Manifest's goal. A plan that is merely related but does not help reach the goal is not allowed.
+2. **Value**: `proposal.md`'s ## Argument must explain why THIS batch advances the ## Roadmap's plan. Repeating a previously failed route without new justification is not allowed.
+3. **Rigor**: `proposal.md`'s ## Proof must be logically complete. Logical errors, vaguely-papered holes, and gaps are not allowed.
+4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof. A goal not proven by the ## Proof must not enter formalization.
+5. **Honesty**: the directive must not contradict the Programme; dead or shelved assertions must carry node pointers; a shelved item must state its restart condition. An external variable is not a restart condition.
 
-Attack the mathematics and the reasoning, not the formatting. Prefer one decisive criticism with a suggested discriminating experiment over five stylistic notes. A fired condition = rebut; demoting it to a reservation is the rubber stamp (one revision round is cheap, a wrongly passed batch is not). Reservations carry only what fires nothing.
+Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. The ## Proof serves only THIS batch, and every gap lives only in the ## Roadmap, never in the ## Proof. Reservations exist to help — never to command the workers. A fired criterion = rebut; demoting it to a reservation is the rubber stamp.
 
 ## Output
 

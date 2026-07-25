@@ -14,7 +14,7 @@ Start from Context.md (TREE, active goals, recent decisions, standing directive)
    - Lines tagged `SUSPECT:` by earlier wakes → adjudicate these first.
    - Framework-behavior claims (daemon / gate behavior, what is "healthy") → legitimate only when they quote a prompt rule, a gate message, or a directive; unsourced → DELETE, and never use as evidence.
    - The route = the Programme → check against the Manifest (Statement + Strategic notes); drift is this batch's revision.
-   - The Proof's kernel ledger (which steps claim kernel-checked / not) → re-derive against the tree and proved base; a mismatch is this batch's revision.
+   - The Roadmap's status claims (proved / dispatched / open) → re-derive against the tree and proved base; a mismatch is this batch's revision.
    - Directive content `CATALOG.md` already carries → re-emit the directive without it. The directive: merge, shorten, retire — a sweep that leaves it larger has not curated it.
 
    A refuted belief that unblocks a route → `Inject` that route in THIS batch, not a note for later.
@@ -25,7 +25,7 @@ Start from Context.md (TREE, active goals, recent decisions, standing directive)
    Reason cites the re-checked source; prefer merge over delete; never delete for age alone. One invalid op voids the whole file (max 10 ops).
 <!-- #endif -->
 
-2. **Re-derive and organize the proof's overall architecture.** Don't paraphrase the Lean statement — write the proof outline a mathematician would, against the Programme Proof; discrepancies are this batch's revision. Structural defects to catch as you go:
+2. **Re-derive and organize the proof's overall architecture.** Don't paraphrase the Lean statement — write the proof outline a mathematician would, against the Programme Roadmap; discrepancies are this batch's revision. Structural defects to catch as you go:
    - Are variants of the same failed approach being tried repeatedly?
    - Is the tree reinventing a property mathlib already has?
    - Are there complex or verbose constructs that should have been pre-defined as named abstractions?
@@ -44,22 +44,22 @@ Start from Context.md (TREE, active goals, recent decisions, standing directive)
 Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelve / MarkDeliverable / Ingest / EmitDirective) ships a Programme revision: Write `proposal.md` (bare filename, in your attempts dir) —
 
     # <Title>       one line: this batch's goal
-    ## Argument     why THIS batch: what the latest outcomes showed, what these experiments will settle
-    ## Proof        the proof of the root claim, the full argument, written as a mathematician writes proofs — steps
-                    not yet proven are marked open and are yours to close in revisions; kernel
-                    ledger, main risks, and the surrogate↔intent dictionary live here. The
-                    worker's only share is the Lean shape.
-    ## Roadmap      ordered next goals, each formalizing a Proof step argued to logical closure — near
-                    entries brief-ready, far entries coarse; open questions are entries too (say
-                    when they come due); a closure names the exact instantiation that died AND a
-                    revival condition the system itself can produce
+    ## Argument     why THIS batch: what the latest outcomes showed, why these experiments advance the Roadmap
+    ## Proof        this batch's mathematics, written as a mathematician writes proofs: a complete
+                    argument for every claim this batch dispatches. No gaps here — an unclosed
+                    claim belongs in the Roadmap, not the Proof. The worker's only share is the
+                    Lean shape.
+    ## Roadmap      the route, and the ONLY home for gaps: ordered next goals and open questions
+                    with their status and the plan to close them — near entries brief-ready, far
+                    entries coarse; a closure names the exact instantiation that died AND a
+                    restart condition the system itself can produce
 
-**Distill the settled** — a closed line collapses to its conclusion. Start from `## Programme` in Context.md (Proof/Roadmap evolve; Title/Argument are fresh each batch).
+**Distill the settled** — a closed line collapses to its conclusion. Start from `## Programme` in Context.md (the Roadmap evolves; Title/Argument/Proof serve this batch).
 
 - Every Inject brief names its Roadmap entry: a `Roadmap: <entry phrase>` line.
-- Every Inject brief names the Proof step it formalizes and restates the claim as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
-- Admit gaps plainly; mark formal↔informal claims not yet kernel-checked.
-- An Inject formalizes a Proof step argued to logical closure — a step with a gap waits in the Proof for a later batch; an AttemptDisproof probes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
+- Every Inject is proven in the Proof: the brief names that claim, restated as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
+- Mark formal↔informal claims not yet kernel-checked in the Roadmap.
+- An unproven claim never enters formalization — it goes to the Roadmap, and a later batch closes it; an AttemptDisproof probes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
 - A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds
