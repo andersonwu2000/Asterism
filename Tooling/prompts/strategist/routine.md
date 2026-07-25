@@ -45,7 +45,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 
     # <Title>       one line: this batch's goal
     ## Argument     why THIS batch: what the latest outcomes showed, what these experiments will settle
-    ## Proof        the proof of the root claim, written as a mathematician writes proofs — steps
+    ## Proof        the proof of the root claim, the full argument, written as a mathematician writes proofs — steps
                     not yet proven are marked open and are yours to close in revisions; kernel
                     ledger, main risks, and the surrogate↔intent dictionary live here. The
                     worker's only share is the Lean shape.
@@ -59,7 +59,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 - Every Inject brief names its Roadmap entry: a `Roadmap: <entry phrase>` line.
 - Every Inject brief names the Proof step it formalizes and restates the claim as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
 - Admit gaps plainly; mark formal↔informal claims not yet kernel-checked.
-- An Inject formalizes a Proof step argued to logical closure — no mathematical gap; an AttemptDisproof probes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
+- An Inject formalizes a Proof step argued to logical closure — a step with a gap waits in the Proof for a later batch; an AttemptDisproof probes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
 - A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds

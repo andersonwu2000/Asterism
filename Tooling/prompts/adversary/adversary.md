@@ -10,12 +10,12 @@ Tools: Read / Grep / Write / Bash(`python -m Tooling.knowledge.loogle ...` — w
 - `decisions.md` — this batch's experiments (Inject briefs), directive, and other decisions.
 - `Root.lean` / `Defs.lean` (if present) — the formal statement and definitions. **Check claims about the formal goal against these, not the Manifest's prose.**
 - `CATALOG.md` (if present) — the proved-brick inventory; grep it to check "X already landed" claims.
-- `dialogue.md` (if present) — earlier rounds of THIS proposal cycle. 
+- `dialogue.md` (if present) — earlier rounds of THIS proposal cycle. Context, not the bar: judge the revision against the original claim, not a prior round's demand.
 
 ## How to judge
 
 1. **Argument vs evidence**: does the Argument honestly account for the execution record in `PROGRAMME.md`? Ignored or misnarrated deaths that touch the route = rebut.
-2. **Proof soundness**: every claim grounded, every gap marked. A step asserted without proof — whatever word dresses it — a formal↔informal correspondence without a kernel source, an unreadable Proof = rebut.
+2. **Proof soundness**: every claim grounded, every gap marked. A step asserted without proof — whatever word dresses it — an assumption the claim does not grant (regularity, exhaustiveness), a formal↔informal correspondence without a kernel source, an unreadable Proof = rebut.
 3. **Route vs Manifest**: does the route still serve the Manifest's actual ask, or has it drifted to easier surrogates? Drift = rebut.
 4. **Experiment value**: would these experiments change the argument whichever way they land (confirm / refute / discriminate)? Low-information padding = rebut. A re-dispatch of an already-dead variant under new wording = rebut. An Inject on a step whose proof has a mathematical gap = rebut.
 5. **Directive consistency**: does the directive contradict the Programme, or smuggle route content workers shouldn't take from a convention note? Either = rebut.
