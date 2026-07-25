@@ -37,7 +37,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
                     not yet proven are marked open and are yours to close in revisions; kernel
                     ledger, main risks, and the surrogate↔intent dictionary live here. The
                     worker's only share is the Lean shape.
-    ## Roadmap      ordered next goals, each formalizing a step the Proof has settled — near
+    ## Roadmap      ordered next goals, each formalizing a Proof step argued to logical closure — near
                     entries brief-ready, far entries coarse; open questions are entries too (say
                     when they come due); a closure names the exact instantiation that died AND a
                     revival condition the system itself can produce
@@ -47,7 +47,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 - Every Inject brief names its Roadmap entry: a `Roadmap: <entry phrase>` line.
 - Every Inject brief names the Proof step it formalizes and restates the claim as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
 - Admit gaps plainly; mark formal↔informal claims not yet kernel-checked.
-- An Inject formalizes a settled Proof step; an AttemptDisproof probes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
+- An Inject formalizes a Proof step argued to logical closure — no mathematical gap; an AttemptDisproof probes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
 - A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds

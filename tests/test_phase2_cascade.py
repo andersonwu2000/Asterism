@@ -1423,3 +1423,26 @@ def test_cascade_forward_infra_with_produced_goal_no_re_enqueue(
         "SELECT outcome FROM strategist_decisions WHERE id = ?",
         (rid,)).fetchone()
     assert r["outcome"] is None
+
+
+def test_no_nl_correspondence_routes_to_review(
+    conn: sqlite3.Connection,
+) -> None:
+    """NL-first (2026-07-25): a worker declining `no_nl_correspondence`
+    (goal traces to no Programme Proof step) routes the goal to
+    pending_strategist_review — the claim's justification is the
+    Strategist's debt, not a death. Mirrors the agent_shelved path:
+    attempts++ once, upward chain stays alive, Strategist enqueued."""
+    _insert_goal(conn, slug="main", origin="root")
+    g = _insert_goal(conn, slug="unbacked_claim", status="attempting")
+    cascade_one(
+        conn, pipeline_id="pid-nonl", kind="Backward",
+        target_id=str(g), target_kind="Goal",
+        outcome="failed", failure_reason="no_nl_correspondence",
+    )
+    gg = db.get_goal(conn, g)
+    assert gg["status"] == "pending_strategist_review"
+    assert gg["attempts"] == 1
+    row = conn.execute(
+        "SELECT COUNT(*) FROM queue WHERE kind = 'Strategist'").fetchone()
+    assert row[0] == 1

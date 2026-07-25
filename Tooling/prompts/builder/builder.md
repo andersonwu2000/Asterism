@@ -53,6 +53,7 @@ Place the directive immediately above the theorem, keep `:= by sorry`. Pick one:
   accompanying theorems about that new vocabulary in the same description
   (helpful, not separately requested).
 - `needs_decomposition` — too coarse for one Builder pass. Description hints at decomposition shape if you have one.
+- `no_nl_correspondence` — this goal traces to no Programme Proof step. Don't invent the mathematics — name what's unbacked; the Strategist argues it to closure or retires it.
 
 ```lean
 namespace ...

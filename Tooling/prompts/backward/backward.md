@@ -85,6 +85,7 @@ Place the directive immediately above the theorem in `patch.lean`, keep `:= by s
   - Goal embeds a large concrete data structure (matrix literal, case-lambda, polynomial) that would replicate across every sub-goal. Propose a `def` factoring it out + the signature.
 
   In doubt vs `return_to_parent`, pick `shelve`.
+- `no_nl_correspondence` — this goal (or a sub-goal you would have to invent to close it) traces to no Programme Proof step. Don't invent the mathematics — name what's unbacked; the Strategist argues it to closure or retires it.
 
 ```lean
 namespace ...

@@ -94,6 +94,10 @@ REGISTRY: "dict[str, FailureTraits]" = {
     "same_as_disproved": _T(terminal_in_loop=True),
     "same_as_dead_unchanged": _T(terminal_in_loop=True),
     "duplicate_strategy": _T(terminal_in_loop=True),
+    # NL-first (2026-07-25): goal has no Programme Proof correspondence
+    # — routes to pending_strategist_review (mirror of agent_shelved;
+    # the claim's justification is the Strategist's debt, not a death).
+    "no_nl_correspondence": _T(terminal_in_loop=True, agent_visible=False),
 
     # --- race (parallel cascade settled the target mid-run) -------------
     "goal_no_longer_open": _T("race", terminal_in_loop=True,

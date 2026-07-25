@@ -1347,6 +1347,15 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 db.increment_goal_attempts(conn, int(target_id))
                 _enqueue_strategist_review(conn, int(target_id))
                 return
+            # no_nl_correspondence (NL-first, 2026-07-25): the worker
+            # found no Programme Proof step backing this goal — same
+            # review routing as agent_shelved (transitional, chain
+            # stays alive); the Strategist either argues the claim to
+            # closure in the Proof or retires it.
+            if failure_reason == "no_nl_correspondence":
+                db.increment_goal_attempts(conn, int(target_id))
+                _enqueue_strategist_review(conn, int(target_id))
+                return
             # `needs_decomposition` directive (legacy `too_hard`):
             # Builder says "this goal needs decomposition first". Route
             # next dispatch to Backward via entry_kind switch instead
@@ -1498,6 +1507,12 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             _propagate_dead(conn, int(target_id))
             return
         if failure_reason == "agent_shelved":
+            db.increment_goal_attempts(conn, int(target_id))
+            _enqueue_strategist_review(conn, int(target_id))
+            return
+        # no_nl_correspondence (NL-first, 2026-07-25): same review
+        # routing as agent_shelved — see the Builder branch above.
+        if failure_reason == "no_nl_correspondence":
             db.increment_goal_attempts(conn, int(target_id))
             _enqueue_strategist_review(conn, int(target_id))
             return
