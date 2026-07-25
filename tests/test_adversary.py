@@ -290,8 +290,12 @@ def test_context_surfaces(workspace: Path, conn: sqlite3.Connection):
         [], 1, "b1")
     s = "\n".join(phase2_context._section_programme_strategist(conn, "p"))
     assert "rev 1" in s and "## Proof" in s and "watch the sign" in s
+    # NL-first worker premise (2026-07-25): the worker's share is the
+    # full ## Proof + one pointer; reservations live behind the pointer
+    # (PROGRAMME.md header), no longer inline.
     w = "\n".join(wctx._section_programme_worker(conn, "p", None))
-    assert "PROGRAMME.md" in w and "watch the sign" in w
+    assert "## Proof" in w and "The route holds." in w
+    assert "PROGRAMME.md" in w and "watch the sign" not in w
 
     # After a discarded cycle the strategist gets the one-line record.
     programme.record_rejection(conn, "p", _PROPOSAL, [], 3)

@@ -1004,14 +1004,12 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
                               decision_id: "int | None",
                               problem_dir: "Path | None" = None
                               ) -> list[str]:
-    """Research mode (research_mode_design.md §2): the worker's slice
-    of the Programme — the Adversary's advisory reservations on the
-    current rev (attributed voice, distinct from the Strategist's
-    directive) + the Roadmap entry the brief cites (matched via the
-    brief's `Roadmap:` tag) + a pointer to the full render. The pointer
-    resolves: PROGRAMME.md sits in the problem dir (spawn cwd, inside
-    the Read allowlist)."""
-    import json as _json
+    """NL-first worker premise (2026-07-25, user call — b6_1 leg 7:
+    workers minted a d5-d13 variant mill because they could not SEE the
+    argued mathematics): the worker's share of the Programme is the
+    `## Proof` itself, in full — batch-scoped, so it stays small. One
+    pointer covers the rest; it resolves because PROGRAMME.md sits in
+    the problem dir (spawn cwd, inside the Read allowlist)."""
     from ..state import programme as _programme
     try:
         row = _programme.current_rev(conn, problem)
@@ -1029,39 +1027,14 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
             _programme.render(conn, problem, problem_dir)
         except OSError:
             pass
-    out = [f"## Programme (rev {row['rev']})", "",
-           "This batch executes the research Programme. Full text: "
-           "`PROGRAMME.md` beside the problem files — read it when your "
-           "brief's purpose is unclear.", ""]
-    try:
-        verdict = _json.loads(row["verdict"] or "{}")
-    except ValueError:
-        verdict = {}
-    reservations = verdict.get("reservations") or []
-    if reservations:
-        out += ["Adversary reservations (advisory, on this rev):"]
-        out += [f"- {r}" for r in reservations]
-        out.append("")
-    # Roadmap excerpt for THIS worker's entry (brief's `Roadmap:` tag).
-    tag = ""
-    if decision_id is not None:
-        try:
-            brow = conn.execute(
-                "SELECT brief FROM strategist_decisions WHERE id = ?",
-                (int(decision_id),)).fetchone()
-        except sqlite3.OperationalError:
-            brow = None
-        for line in str((brow and brow["brief"]) or "").splitlines():
-            if line.strip().lower().startswith("roadmap:"):
-                tag = line.split(":", 1)[1].strip()
-                break
-    if tag:
-        matches = [ln for ln in str(row["body"]).splitlines()
-                   if tag.lower() in ln.lower()][:3]
-        if matches:
-            out += ["Your Roadmap entry:"]
-            out += [f"> {m.strip()}" for m in matches]
-            out.append("")
+    sections, _err = _programme.parse_proposal(str(row["body"] or ""))
+    proof = ((sections or {}).get("proof") or "").strip()
+    out = [f"## Proof (Programme rev {row['rev']})", ""]
+    if proof:
+        out += [proof, ""]
+    out += ["Full Programme (Argument / Roadmap / adversary "
+            "reservations): `PROGRAMME.md` beside the problem files.",
+            ""]
     return out
 
 
