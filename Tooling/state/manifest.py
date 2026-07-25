@@ -46,7 +46,7 @@ class Manifest:
     # human gate. The Library decision itself stays with `library`
     # (standing default) / the signature (frontend).
     signoff: bool = True
-    # Paper pipeline (docs/internal/paper_pipeline_design.md): shelf id
+    # Paper pipeline (docs/internal/archive/paper_pipeline_design.md): shelf id
     # of the source paper (`Papers/<id>/`). Empty = no paper. Drives the
     # Context paper-index section + provenance; never consumed by gates.
     # DEPRECATED as a frontmatter field (2026-07-07): bindings live in

@@ -1,5 +1,5 @@
 """Anchor closure probe (`Tooling/pipeline/_constants.py`) — the
-anchor+claim architecture's TCB (`docs/internal/anchor_claim_design.md`
+anchor+claim architecture's TCB (`docs/internal/archive/anchor_claim_design.md`
 §4).
 
 Two layers:

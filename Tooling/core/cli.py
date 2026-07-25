@@ -1502,7 +1502,7 @@ def cmd_library_verify(args: argparse.Namespace) -> int:
 
 
 def cmd_review(args: argparse.Namespace) -> int:
-    """anchor+claim review surface (docs/internal/anchor_claim_design.md).
+    """anchor+claim review surface (docs/internal/archive/anchor_claim_design.md).
 
     For every goal the Strategist marked `is_deliverable=1` (optionally
     scoped by `problem`), compute its kernel anchor closure and present
@@ -2033,7 +2033,7 @@ def _find_reject_victims(conn, workspace, *, reject_gid, problem, fqn,
 
 
 def cmd_reject(args: argparse.Namespace) -> int:
-    """anchor+claim reject (docs/internal/anchor_claim_design.md §2.5).
+    """anchor+claim reject (docs/internal/archive/anchor_claim_design.md §2.5).
 
     Kill a rejected framework-generated node AND every deliverable whose
     STATEMENT's meaning depends on it — computed by inverting the Phase-1

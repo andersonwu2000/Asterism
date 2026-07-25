@@ -1,4 +1,4 @@
-"""Paper pipeline Phase 1 (docs/internal/paper_pipeline_design.md):
+"""Paper pipeline Phase 1 (docs/internal/archive/paper_pipeline_design.md):
 shelf identity/extraction, index staleness binding, small-doc
 exemption, Manifest `paper:` field, Context paper-index section."""
 from __future__ import annotations

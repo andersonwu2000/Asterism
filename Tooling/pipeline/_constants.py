@@ -5,7 +5,7 @@ delivered def), returns its **pending-anchor closure**: the constants
 its statement's meaning rests on that are NOT in the trust base
 (Mathlib ∪ Library ∪ Lean/Std/Init core). Those are exactly the defs
 the framework itself generated that a human must vouch for
-(`docs/internal/anchor_claim_design.md` §4).
+(`docs/internal/archive/anchor_claim_design.md` §4).
 
 Complement to `_axiom.py`: `axiom_probe` gates the *proof*'s trust base
 (no rogue axioms / transitive sorry); `anchor_closure` gates the
