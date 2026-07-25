@@ -87,6 +87,12 @@ context 的主 hint 通道已是自動生成的 `## Candidate lemmas`。
 閉包）、`asterism reject`（反向閉包 cascade 作廢）、`approve-ingest` / `reject-ingest`
 （harvest 前的 sign-off 閘）。
 
+**Problem 佈局**：`<Domain>.<slug>` → `Problems/<Domain>/<slug>/`；Domain 對齊 mathlib
+（`Topology`/`Algebra`/`Analysis`/`Geometry`/`NumberTheory`/`Logic`/`Probability`/
+`Combinatorics`/`Minif2f`）。舊 problem 不能純 `git mv` 搬移——Lean module path =
+檔案路徑，會壞 build。`Defs.lean` / `Root.lean` 皆 optional（pure-NL 可全缺）；
+手改 Root statement 後要重 `init` 或同步 `goals.statement`。
+
 ---
 
 ## 5. Root.lean 三態

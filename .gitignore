@@ -2,6 +2,10 @@
 .lake/
 build/
 
+# Dev-session loader for docs/internal/CLAUDE.md (content lives in the
+# nested private repo; workers never load CLAUDE.md — --setting-sources "")
+/CLAUDE.md
+
 # Asterism runtime
 .attempts/
 asterism.db
