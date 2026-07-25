@@ -1,7 +1,7 @@
 """Research mode P1 — the proposal-package gate + Adversary cycle
 (research_mode_design.md §1/§3).
 
-Covers: gate shape (exempt kinds / audit trigger / experiment rule),
+Covers: gate shape (exempt kinds / experiment rule),
 the rebut→revise→pass round trip (dialogue recorded, rev advances,
 fresh judge per round), exhaustion → strategist_proposal_rejected with
 the discarded proposal + criticisms in programme_revisions, and the
@@ -84,9 +84,6 @@ def test_gate_shape():
                  "MarkDeliverable", "Ingest", "EmitDirective"):
         assert strategist.package_gate_applies(
             [_d(kind), _d("Noop")], "routine"), kind
-    # Audit wakes sit wholly outside the gate.
-    assert not strategist.package_gate_applies(
-        [_d("EmitDirective")], "audit")
 
 
 def test_package_requires_file_and_experiment(tmp_path: Path):

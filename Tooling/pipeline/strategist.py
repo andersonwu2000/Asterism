@@ -59,22 +59,19 @@ def _as_bool(v: Any) -> bool:
 
 # Trigger kinds (mirrors strategist_decisions.trigger_kind CHECK enum).
 TRIGGER_KINDS: frozenset[str] = frozenset({
-    # Phase 6: "first_launch" retired (fresh problem = initial stall →
-    # inject_batch_done wake); the DB CHECK keeps the value for old rows.
+    # Retired at runtime — the DB CHECK keeps the values for old rows:
+    # "first_launch" (Phase 6: fresh problem = initial stall →
+    # inject_batch_done wake); "audit" (2026-07-25: the v26 epistemic
+    # auditor's belief sweep is now phase 1 of the routine wake).
     "pending_review", "routine",
     "inject_batch_done",
-    # v26: the wall-clock epistemic auditor (default 180 min) — full-
-    # budget sweep of the plan note / directive / lever annotations
-    # against sources, with direct note curation.
-    "audit",
 })
 
 # Research mode (research_mode_design.md §1) — the proposal-package
 # gate keys on decision SHAPE: a batch wholly within the exempt kinds
-# moves no route (literature intake / hand-back / no-op), and audit
-# wakes sit outside the gate entirely (the auditor checks books, it
-# does not propose). Any other batch must carry a Programme proposal
-# (four sections in `proposal.md`) and pass the Adversary.
+# moves no route (literature intake / hand-back / no-op). Any other
+# batch must carry a Programme proposal (four sections in
+# `proposal.md`) and pass the Adversary.
 _PACKAGE_EXEMPT_KINDS: frozenset[str] = frozenset(
     {"FetchPaper", "RequestUserAmend", "Noop"})
 _ENDGAME_KINDS: frozenset[str] = frozenset({"MarkDeliverable", "Ingest"})
@@ -83,8 +80,6 @@ PROPOSAL_BASENAME = "proposal.md"
 
 
 def package_gate_applies(decisions, trigger_kind: str | None) -> bool:
-    if trigger_kind == "audit":
-        return False
     return any(d.kind not in _PACKAGE_EXEMPT_KINDS for d in decisions)
 
 
@@ -841,14 +836,14 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # the notes-only batch, not the note. Exempt: Ingest (terminal exit —
     # queued Strategists are dropped after it) and RequestUserAmend (the
     # awaiting_human gate pauses the wake pump itself).
-    # Scope (2026-07-12, periodic wakes outrank events): a routine/audit
+    # Scope (2026-07-12, periodic wakes outrank events): a routine
     # wake may now legally fire WHILE goals await review — discharging
     # them is the frontier wakes' job (the pending_review pressure keeps
     # re-arming until the set empties), not the periodic survey's.
     # Forcing the discharge here would bounce every periodic wake on a
     # busy tree (the parse-fail pump shape, e1ecc5c).
     pending_review_ids: set[int] = set()
-    if trigger_kind not in ("routine", "audit"):
+    if trigger_kind != "routine":
         pending_review_ids = {
             int(r["id"]) for r in conn.execute(
                 "SELECT id FROM goals WHERE problem = ?"
@@ -1858,11 +1853,15 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     has_history = conn.execute(
         "SELECT 1 FROM strategist_decisions WHERE problem = ? LIMIT 1",
         (problem,)).fetchone() is not None
+    # has_kb gates the routine wake's lesson-KB curation block — an
+    # empty KB renders neither the Context surface nor the instruction.
+    from ..state import kb as _kb
+    has_kb = bool(_kb.global_lessons(conn, problem))
     rc = agent.spawn_llm(
         kind="strategist", prompt_path=prompt_path,
         problem_dir=problem_dir, attempts_dir=attempts_dir,
         session_id=sid, timeout_sec=strategist_timeout,
-        prompt_flags={"has_history": has_history},
+        prompt_flags={"has_history": has_history, "has_kb": has_kb},
     )
     # Persist the plan note BEFORE any outcome branching: the note is the
     # agent's memory of its own thinking — worth keeping even when the
@@ -2047,7 +2046,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 failure_reason="strategist_schema_invalid",
                 failure_detail=f"commit raised: {type(e).__name__}: {e}",
             )
-        if trigger_kind == "audit":
+        if trigger_kind == "routine":
             _apply_kb_curation(conn, problem=problem,
                                attempts_dir=attempts_dir)
         return PipelineResult(
@@ -2089,7 +2088,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             print(f"[strategist] PROGRAMME.md render failed: {e}",
                   flush=True)
 
-    if trigger_kind == "audit":
+    if trigger_kind == "routine":
         # Curation applies only after the wake's decisions committed —
         # a rejected batch (retry loop above) must not half-apply a
         # sidecar the agent may still rewrite.
@@ -2121,9 +2120,10 @@ _KB_CURATION_MAX_OPS = 10
 
 def _apply_kb_curation(conn: "Any", *, problem: str,
                        attempts_dir: Path) -> None:
-    """Audit-wake KB curation (2026-07-13, user call): apply the
-    optional `kb_curation.json` sidecar the audit agent may drop next
-    to decision.json. Ops:
+    """Routine-wake KB curation (2026-07-13, user call; moved from the
+    retired audit wake 2026-07-25): apply the optional
+    `kb_curation.json` sidecar the agent may drop next to
+    decision.json. Ops:
 
       {"op": "delete", "id": N, "reason": "..."}
       {"op": "merge", "keep_id": N, "absorb_ids": [..],
@@ -2133,8 +2133,8 @@ def _apply_kb_curation(conn: "Any", *, problem: str,
     belief-store maintenance (same class as the direct `_plan.md`
     curation), never problem-state advance — keeping it out of
     decision.json means it can never satisfy the stall-advance delta
-    gate, and no DB CHECK migration is needed. Only the audit runner
-    calls this, so the power is structurally audit-only.
+    gate, and no DB CHECK migration is needed. Only the routine runner
+    calls this, so the power is structurally routine-only.
 
     Strict all-or-nothing: any invalid op rejects the whole file with
     a loud `[kb-curation]` line and nothing is applied — but the wake

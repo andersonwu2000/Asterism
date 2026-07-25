@@ -285,7 +285,7 @@ CREATE TABLE IF NOT EXISTS goals (
     -- superseded strategy) survives long enough for the eventual root
     -- lake build to find its file. NULL for non-alias goals.
     alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
-    -- anchor+claim architecture (docs/internal/anchor_claim_design.md):
+    -- anchor+claim architecture (docs/internal/archive/anchor_claim_design.md):
     -- set to 1 when the Strategist marks this node a top-level
     -- *deliverable* (a claim or a delivered def). `asterism review`
     -- computes each deliverable's kernel anchor closure and presents
@@ -340,7 +340,7 @@ CREATE TABLE IF NOT EXISTS strategy_subgoals (
 -- Forward target_id = problem_name (TEXT NOT NULL preserved; see
 -- migration_plan §C option 1). Strategist target = problem.root.id (Goal).
 -- v23 — `kind` adds 'Scholar' (paper pipeline v2: citation resolution +
--- fetch worker; docs/internal/paper_pipeline_design.md D11).
+-- fetch worker; docs/internal/archive/paper_pipeline_design.md D11).
 CREATE TABLE IF NOT EXISTS pipelines (
     id          TEXT PRIMARY KEY,
     kind        TEXT NOT NULL
@@ -468,8 +468,9 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
     problem             TEXT NOT NULL REFERENCES problems(name),
     triggered_at_tick   INTEGER NOT NULL,
     trigger_kind        TEXT NOT NULL
-                            -- 'audit' (v26): the 180-min epistemic auditor wake
-                            -- (re-derive plan-note claims against sources).
+                            -- 'first_launch' + 'audit': retired at runtime
+                            -- (audit merged into routine 2026-07-25); kept in
+                            -- the CHECK for old rows.
                             CHECK(trigger_kind IN
                                   ('first_launch','pending_review','routine',
                                    'inject_batch_done','audit')),

@@ -1035,12 +1035,13 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_paper_index_strategist(mfst, workspace, conn,
                                         attempts_dir=attempts_dir),
     ]
-    if trigger_kind == "audit":
+    if trigger_kind == "routine":
         # Curation surface for the kb_curation.json sidecar — only the
-        # auditor gets it (the power is structurally audit-only).
+        # routine wake gets it (the power is structurally routine-only;
+        # moved from the retired audit wake 2026-07-25).
         section_names.append("kb_lessons")
         sections.append(
-            _section_kb_lessons_audit(conn, problem, attempts_dir))
+            _section_kb_lessons_curation(conn, problem, attempts_dir))
     parts: list[str] = [f"# Strategist context — {problem}", ""]
     for sect in sections:
         parts.extend(sect)
@@ -1126,14 +1127,15 @@ def _section_catalog_index_strategist(conn: sqlite3.Connection,
     return out
 
 
-def _section_kb_lessons_audit(conn: sqlite3.Connection, problem: str,
-                              attempts_dir: Path) -> list[str]:
-    """Audit-wake curation surface (2026-07-13): the problem's GLOBAL
-    lesson index — the same `[id-N] title` cue lines every worker sees
-    — with full bodies in the `LESSONS.md` companion so the auditor
-    can adjudicate broken / superseded / duplicate entries and emit
-    `kb_curation.json`. Lessons only: antipatterns are node-scoped and
-    mechanically captured, outside the curation mandate."""
+def _section_kb_lessons_curation(conn: sqlite3.Connection, problem: str,
+                                 attempts_dir: Path) -> list[str]:
+    """Routine-wake curation surface (2026-07-13; audit wake retired
+    into routine 2026-07-25): the problem's GLOBAL lesson index — the
+    same `[id-N] title` cue lines every worker sees — with full bodies
+    in the `LESSONS.md` companion so the wake can adjudicate broken /
+    superseded / duplicate entries and emit `kb_curation.json`.
+    Lessons only: antipatterns are node-scoped and mechanically
+    captured, outside the curation mandate."""
     from ..state import kb
     rows = kb.global_lessons(conn, problem)
     if not rows:

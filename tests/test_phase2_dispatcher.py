@@ -1049,83 +1049,43 @@ def _insert_decision(conn, problem: str, *, trigger: str = "routine",
     conn.commit()
 
 
-def test_derive_trigger_audit_due_beats_stall(
+def test_derive_trigger_routine_beats_pending_review(
     conn: sqlite3.Connection,
 ) -> None:
-    """v26 auditor: on a STALLED problem whose decision history is older
-    than the audit interval, the wake classifies as 'audit' — above the
-    stall reclassification on purpose (a walled problem fires stall
-    wakes continuously; the wall is where beliefs fossilize)."""
-    _insert_problem(conn, name="alpha", bootstrap_done=1)
-    _insert_root(conn, "alpha", status="frozen")   # structurally stalled
-    _insert_decision(conn, "alpha")                # old history → due
-
-    trigger, pending = _derive_strategist_trigger(
-        conn, "alpha", audit_interval_min=180.0)
-    assert trigger == "audit"
-    assert pending is None
-    # Auditor disabled (default 0) → the stall reading is back.
-    trigger2, _ = _derive_strategist_trigger(conn, "alpha")
-    assert trigger2 == "inject_batch_done"
-
-
-def test_derive_trigger_audit_needs_history_and_interval(
-    conn: sqlite3.Connection,
-) -> None:
-    """No decision history → never audit (young problems have no belief
-    corpus); a RECENT audit-trigger decision re-anchors the clock."""
-    _insert_problem(conn, name="alpha", bootstrap_done=1)
-    _insert_root(conn, "alpha", status="frozen")
-
-    trigger, _ = _derive_strategist_trigger(
-        conn, "alpha", audit_interval_min=180.0)
-    assert trigger == "inject_batch_done"   # no history → stall reading
-
-    _insert_decision(conn, "alpha")  # old birth → due
-    _insert_decision(conn, "alpha", trigger="audit", created_at=db.now())
-    trigger2, _ = _derive_strategist_trigger(
-        conn, "alpha", audit_interval_min=180.0)
-    assert trigger2 == "inject_batch_done"  # fresh audit → not due
-
-
-def test_derive_trigger_audit_beats_pending_review(
-    conn: sqlite3.Connection,
-) -> None:
-    """Periodic wakes outrank events (user ruling 2026-07-12): a due
-    audit fires even while a goal awaits review — the pending goal is
-    persistent state, its seat re-arms every tick, so it is delayed by
-    exactly one wake; the audit that fixes the belief corpus first
-    makes the verdict after it a better verdict. pending_id still rides
-    along for context."""
-    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    """The periodic wake outranks events (user ruling 2026-07-12): a due
+    routine clock fires even while a goal awaits review — the pending
+    goal is persistent state, its seat re-arms every tick, so it is
+    delayed by exactly one wake; the belief sweep (phase 1 of the
+    routine wake since 2026-07-25) makes the verdict after it a better
+    verdict. pending_id still rides along for context."""
+    ts = "2026-01-01T00:00:00+00:00"
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_strategist_at=ts, last_routine_at=ts)
     _insert_root(conn, "alpha", status="attempting")
     sub = _insert_sub(conn, "alpha", "sub_a",
                       status="pending_strategist_review")
-    _insert_decision(conn, "alpha")
 
     trigger, pending = _derive_strategist_trigger(
-        conn, "alpha", audit_interval_min=180.0)
-    assert trigger == "audit"
+        conn, "alpha", routine_interval_min=60.0)
+    assert trigger == "routine"
     assert pending == sub
-    # Auditor disabled → the pending verdict is back in front.
+    # Clock disabled → the pending verdict is back in front.
     trigger2, pending2 = _derive_strategist_trigger(conn, "alpha")
     assert trigger2 == "pending_review"
     assert pending2 == sub
 
 
-def test_derive_trigger_routine_due_beats_batch_done_and_audit(
+def test_derive_trigger_routine_due_beats_batch_done(
     conn: sqlite3.Connection,
 ) -> None:
-    """Routine is the same periodic mechanism as audit up to period
-    (user ruling 2026-07-12) and sits on top: with the routine clock
-    overdue, the wake classifies routine even over an unacknowledged
-    batch or a due audit. since_iso (daemon start) excludes down-time:
+    """The periodic clock sits on top (user ruling 2026-07-12): with
+    the routine clock overdue, the wake classifies routine even over an
+    unacknowledged batch. since_iso (daemon start) excludes down-time:
     a start newer than the stale clock re-arms it."""
     ts = "2026-01-01T00:00:00+00:00"
     _insert_problem(conn, name="alpha", bootstrap_done=1,
                     last_strategist_at=ts, last_routine_at=ts)
     _insert_root(conn, "alpha", status="attempting")
-    _insert_decision(conn, "alpha")   # old history → audit due too
     # Unacknowledged resolved batch (would classify inject_batch_done).
     conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
@@ -1137,90 +1097,13 @@ def test_derive_trigger_routine_due_beats_batch_done_and_audit(
     conn.commit()
 
     trigger, _ = _derive_strategist_trigger(
-        conn, "alpha", audit_interval_min=180.0,
-        routine_interval_min=60.0)
+        conn, "alpha", routine_interval_min=60.0)
     assert trigger == "routine"
-    # Daemon started NOW → running time ≈ 0 → routine re-armed; audit
-    # (also since_iso-gated) re-armed too; the batch is back in front.
+    # Daemon started NOW → running time ≈ 0 → routine re-armed; the
+    # batch is back in front.
     trigger2, _ = _derive_strategist_trigger(
-        conn, "alpha", audit_interval_min=180.0,
-        routine_interval_min=60.0, since_iso=db.now())
+        conn, "alpha", routine_interval_min=60.0, since_iso=db.now())
     assert trigger2 == "inject_batch_done"
-
-
-def test_t15_audit_enqueue_is_a_seat_source(
-    conn: sqlite3.Connection, capsys,
-) -> None:
-    """T1.5 (user call 2026-07-11): a due audit ENQUEUES its own
-    Strategist seat instead of riding seats other events open. Isolated
-    from T1/T4: dispatchable open root (no stall) + fresh routine clock."""
-    _insert_problem(conn, name="alpha", bootstrap_done=1,
-                    last_routine_at=db.now())
-    _insert_root(conn, "alpha")            # open → not stalled
-    _insert_decision(conn, "alpha")        # old history → audit due
-
-    strategist_triggers(conn, running=set(), audit_interval_min=180.0)
-
-    q = conn.execute(
-        "SELECT target_id, target_kind, priority FROM queue"
-        " WHERE kind='Strategist'").fetchall()
-    assert len(q) == 1
-    assert q[0]["target_id"] == "alpha" and q[0]["target_kind"] == "Problem"
-    assert "[audit-wake]" in capsys.readouterr().out
-    # Re-run: in-flight dedup (queued row) → no pileup.
-    strategist_triggers(conn, running=set(), audit_interval_min=180.0)
-    n = conn.execute("SELECT COUNT(*) AS n FROM queue"
-                     " WHERE kind='Strategist'").fetchone()
-    assert n["n"] == 1
-
-
-def test_t15_audit_enqueue_gates(conn: sqlite3.Connection) -> None:
-    """T1.5 stays quiet when: disabled (interval 0, the default), not due
-    (fresh audit re-anchors), or the problem is ingested."""
-    _insert_problem(conn, name="alpha", bootstrap_done=1,
-                    last_routine_at=db.now())
-    _insert_root(conn, "alpha")
-    _insert_decision(conn, "alpha")
-
-    strategist_triggers(conn, running=set())          # default: disabled
-    assert conn.execute("SELECT COUNT(*) AS n FROM queue"
-                        " WHERE kind='Strategist'").fetchone()["n"] == 0
-
-    _insert_decision(conn, "alpha", trigger="audit", created_at=db.now())
-    strategist_triggers(conn, running=set(), audit_interval_min=180.0)
-    assert conn.execute("SELECT COUNT(*) AS n FROM queue"
-                        " WHERE kind='Strategist'").fetchone()["n"] == 0
-
-    conn.execute("UPDATE strategist_decisions SET created_at ="
-                 " '2026-01-01T00:00:00+00:00', updated_at ="
-                 " '2026-01-01T00:00:00+00:00'")   # due again…
-    conn.execute("UPDATE problems SET ingested_at = ? WHERE name='alpha'",
-                 (db.now(),))                      # …but ingested
-    conn.commit()
-    strategist_triggers(conn, running=set(), audit_interval_min=180.0)
-    assert conn.execute("SELECT COUNT(*) AS n FROM queue"
-                        " WHERE kind='Strategist'").fetchone()["n"] == 0
-
-
-def test_t15_audit_enqueue_awaiting_human_gate(
-    conn: sqlite3.Connection,
-) -> None:
-    """An outstanding RequestUserAmend gates T1.5 like every other seat."""
-    _insert_problem(conn, name="alpha", bootstrap_done=1,
-                    last_routine_at=db.now())
-    _insert_root(conn, "alpha")
-    _insert_decision(conn, "alpha")
-    conn.execute(
-        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
-        " trigger_kind, decision_kind, payload, outcome, created_at,"
-        " updated_at)"
-        " VALUES ('alpha', 1, 'routine', 'RequestUserAmend',"
-        " '{}', 'awaiting_human', ?, ?)", (db.now(), db.now()))
-    conn.commit()
-
-    strategist_triggers(conn, running=set(), audit_interval_min=180.0)
-    assert conn.execute("SELECT COUNT(*) AS n FROM queue"
-                        " WHERE kind='Strategist'").fetchone()["n"] == 0
 
 
 def test_consecutive_strategist_probe(

@@ -159,7 +159,7 @@ def test_wake_legality_matrix_covers_all_states():
     accepts wakes, and its row is exactly the trigger vocabulary."""
     assert set(transitions.WAKE_LEGALITY) == set(transitions.PROBLEM_STATES)
     assert transitions.WAKE_LEGALITY["active"] == frozenset(
-        {"routine", "audit", "inject_batch_done", "pending_review"})
+        {"routine", "inject_batch_done", "pending_review"})
     for st, allowed in transitions.WAKE_LEGALITY.items():
         if st != "active":
             assert allowed == frozenset(), st
@@ -167,7 +167,9 @@ def test_wake_legality_matrix_covers_all_states():
 
 def test_problem_accepts_wake_reads_state(conn: sqlite3.Connection):
     assert transitions.problem_accepts_wake(conn, "p") is True
-    assert transitions.problem_accepts_wake(conn, "p", "audit") is True
+    assert transitions.problem_accepts_wake(conn, "p", "routine") is True
+    # Retired trigger kinds are no longer legal anywhere.
+    assert transitions.problem_accepts_wake(conn, "p", "audit") is False
     conn.execute("UPDATE problems SET state='revoked' WHERE name='p'")
     conn.commit()
     assert transitions.problem_accepts_wake(conn, "p") is False
@@ -199,14 +201,14 @@ def test_seat_sources_respect_state_over_carriers(
         " 'root', 'frozen', 0, 0, 'Backward', 0, 0, ?, ?)",
         (db.now(), db.now()))
     c.commit()
-    strategist_triggers(c, running=set(), audit_interval_min=180.0)
+    strategist_triggers(c, running=set())
     n = c.execute("SELECT COUNT(*) AS n FROM queue"
                   " WHERE kind='Strategist'").fetchone()["n"]
     assert n == 0
     # Revive → seats flow again.
     c.execute("UPDATE problems SET state='active' WHERE name='p'")
     c.commit()
-    strategist_triggers(c, running=set(), audit_interval_min=180.0)
+    strategist_triggers(c, running=set())
     n2 = c.execute("SELECT COUNT(*) AS n FROM queue"
                    " WHERE kind='Strategist'").fetchone()["n"]
     assert n2 == 1
@@ -511,14 +513,14 @@ def test_decision_kinds_runtime_subset_of_schema(conn: sqlite3.Connection):
 
 
 def test_trigger_kinds_match_schema(conn: sqlite3.Connection):
-    # Phase 6: 'first_launch' retired at runtime (fresh problem = initial
-    # stall → inject_batch_done wake); the CHECK keeps it for old rows —
-    # same pattern as the legacy decision kinds above.
+    # Retired at runtime, kept in the CHECK for old rows (same pattern
+    # as the legacy decision kinds above): 'first_launch' (Phase 6) and
+    # 'audit' (2026-07-25 — belief sweep merged into the routine wake).
     from Tooling.pipeline import strategist
     schema = _check_values(conn, "strategist_decisions", "trigger_kind")
     runtime = set(strategist.TRIGGER_KINDS)
     assert runtime <= schema, f"runtime trigger_kinds not in schema: {runtime - schema}"
-    assert schema - runtime == {"first_launch"}
+    assert schema - runtime == {"first_launch", "audit"}
 
 
 # --------------------------------------------------------------------------- #

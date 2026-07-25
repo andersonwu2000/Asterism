@@ -585,13 +585,17 @@ def strategist_triggers(conn: sqlite3.Connection,
                         running: set[tuple[str, str]],
                         *,
                         scope: str | None = None,
-                        interval_min: float = 60.0,
+                        interval_min: float = 120.0,
                         daemon_start_iso: str | None = None,
-                        audit_interval_min: float = 0.0,
                         ) -> None:
-    """T1 (routine) + T1.5 (audit) + T4 (stall) enqueues for the
-    Strategist pipeline. T2 (pending_review) is handled by
-    `_enqueue_strategist_review` at cascade-time, not here.
+    """T1 (routine) + T4 (stall) enqueues for the Strategist pipeline.
+    T2 (pending_review) is handled by `_enqueue_strategist_review` at
+    cascade-time, not here.
+
+    T1.5 (the separate epistemic-audit wake, v26) is RETIRED (user call
+    2026-07-25): its belief-sweep duties are now phase 1 of every
+    routine wake, so the routine clock is the only periodic seat
+    source. Historic 'audit' trigger rows stay valid in the DB CHECK.
 
     Phase 6 — T0 (first_launch) is RETIRED: a fresh problem has no
     dispatchable work and no committed Ingest, so it is structurally
@@ -621,7 +625,7 @@ def strategist_triggers(conn: sqlite3.Connection,
     # dual-write window.
     from ..state import transitions as _transitions
 
-    # T1 — routine audit (own running-time cadence; see problems_needing_t1)
+    # T1 — routine wake (own running-time cadence; see problems_needing_t1)
     for prob in db.problems_needing_t1(
         conn, scope=scope, max_age_sec=max_age_sec,
         since_iso=daemon_start_iso,
@@ -634,38 +638,6 @@ def strategist_triggers(conn: sqlite3.Connection,
             continue
         db.enqueue(conn, kind="Strategist", target_id=prob,
                    target_kind="Problem", priority=10, problem=prob)
-
-    # T1.5 — epistemic audit: a SEAT SOURCE mirroring T1, not just a
-    # derivation flavor (user call 2026-07-11: derivation-only meant the
-    # audit rode seats other events happened to open, was preempted by
-    # batch-done / pending_review on busy problems, and never fired in
-    # --once runs where T1's running-time clock barely advances). Own
-    # wall-clock cadence anchored in decision history (`_audit_due`) —
-    # the same SoT the spawn-side derivation reads, so an enqueued seat
-    # classifies as 'audit' unless a higher-priority trigger appeared
-    # meanwhile (then the anchor doesn't move and this re-fires next
-    # tick — persistent pressure, deduped by the in-flight check).
-    if audit_interval_min and audit_interval_min > 0:
-        sql = "SELECT name FROM problems WHERE ingested_at IS NULL"
-        args: list = []
-        if scope is not None:
-            sql += " AND name LIKE ?"
-            args.append(scope)
-        for row in conn.execute(sql, tuple(args)):
-            prob = str(row["name"])
-            if not _transitions.problem_accepts_wake(conn, prob, "audit"):
-                continue
-            if not _audit_due(conn, prob, audit_interval_min,
-                              since_iso=daemon_start_iso):
-                continue
-            if db.problem_has_awaiting_human(conn, prob):
-                continue
-            if _strategist_inflight(conn, prob, running):
-                continue
-            print(f"[audit-wake] T1.5 enqueued Strategist for {prob} "
-                  f"(audit due)", flush=True)
-            db.enqueue(conn, kind="Strategist", target_id=prob,
-                       target_kind="Problem", priority=10, problem=prob)
 
     # T4 — structural stall trigger.
     # Fires when a problem has no open goals (BFS has nothing to
@@ -706,50 +678,13 @@ def strategist_triggers(conn: sqlite3.Connection,
 # Worker thread body
 # ---------------------------------------------------------------------
 
-def _audit_due(conn: sqlite3.Connection, problem: str,
-               interval_min: float,
-               since_iso: "str | None" = None) -> bool:
-    """True iff the epistemic-auditor wake is due: `interval_min` has
-    elapsed since the later of (last committed audit-trigger decision,
-    the problem's FIRST decision ever, `since_iso`). A problem with no
-    decision history is never audited (the auditor exists for LONG runs
-    — young problems have no belief corpus to fossilize). Derived
-    entirely from decision history: zero new state, restart-immune.
-
-    `since_iso` (daemon start) mirrors the T1 routine clock's semantics:
-    down-time does not count toward the interval, so a long pause does
-    not fire an audit on every live problem at once on restart (the
-    270-problem full-batch ignition would otherwise open with 270
-    audits)."""
-    if not interval_min or interval_min <= 0:
-        return False
-    row = conn.execute(
-        "SELECT MAX(CASE WHEN trigger_kind = 'audit' THEN created_at END)"
-        "         AS last_audit,"
-        "       MIN(created_at) AS birth"
-        " FROM strategist_decisions WHERE problem = ?",
-        (problem,),
-    ).fetchone()
-    anchor = row["last_audit"] or row["birth"]
-    if not anchor:
-        return False
-    if since_iso and str(since_iso) > str(anchor):
-        anchor = since_iso
-    try:
-        anchor_dt = datetime.fromisoformat(str(anchor))
-        now_dt = datetime.fromisoformat(db.now())
-    except ValueError:
-        return False
-    return (now_dt - anchor_dt).total_seconds() >= interval_min * 60.0
-
-
 def _routine_due(conn: sqlite3.Connection, problem: str,
                  interval_min: float,
                  since_iso: "str | None" = None) -> bool:
     """Per-problem mirror of `db.problems_needing_t1`'s clock (the
     derivation-side twin the routine trigger never had — user ruling
-    2026-07-12: routine and audit are the same mechanism up to period,
-    and both outrank event classification). Anchor = the later of
+    2026-07-12: the periodic wake outranks event classification).
+    Anchor = the later of
     `problems.last_routine_at` (bumped only by a routine commit) and
     `since_iso` (daemon start — down-time excluded); NULL anchor with a
     running daemon means "never routine'd", due `interval_min` after
@@ -815,7 +750,6 @@ def _warn_consecutive_strategist(conn: sqlite3.Connection, problem: str,
 
 def _derive_strategist_trigger(conn: sqlite3.Connection,
                                 problem: str, *,
-                                audit_interval_min: float = 0.0,
                                 routine_interval_min: float = 0.0,
                                 since_iso: "str | None" = None,
                                 ) -> tuple[str, int | None]:
@@ -823,31 +757,30 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
     `(trigger, pending_review_id)` where pending_review_id is non-None
     iff a goal awaits review (regardless of the returned trigger).
 
-    Priority order (user ruling 2026-07-12 — PERIODIC wakes outrank
-    events): the original design intent for routine/audit is
-    unconditional periodic dispatch; classifying them below the event
-    conditions let a busy problem starve them indefinitely (stokes
-    2026-06-12: 0 routine over 5h; b6 2026-07-12: a self-sustaining
-    inject→reject→batch-done loop kept a 20h-due audit out forever —
-    the wake that would have fixed the loop's beliefs). Event
-    conditions are PERSISTENT state (an unacknowledged batch / a
-    pending goal does not evaporate), so losing one seat to a periodic
-    wake only delays the event by one wake; both clocks re-arm only on
-    their own commit, so a stolen seat re-fires the timer next tick.
+    Priority order (user ruling 2026-07-12 — the PERIODIC wake outranks
+    events): the design intent for routine is unconditional periodic
+    dispatch; classifying it below the event conditions let a busy
+    problem starve it indefinitely (stokes 2026-06-12: 0 routine over
+    5h; b6 2026-07-12: a self-sustaining inject→reject→batch-done loop
+    kept the belief-fixing wake out forever). Event conditions are
+    PERSISTENT state (an unacknowledged batch / a pending goal does not
+    evaporate), so losing one seat to the periodic wake only delays the
+    event by one wake; the clock re-arms only on a routine commit, so a
+    stolen seat re-fires the timer next tick. (The separate 'audit'
+    trigger is retired 2026-07-25 — its belief sweep is phase 1 of the
+    routine wake.)
 
       1. `routine` — the routine clock is due (`routine_interval_min`
          of RUNNING time since last routine commit; `since_iso`
          excludes down-time).
-      2. `audit` — the epistemic auditor is due (same clock semantics,
-         anchored at the last audit-trigger decision / first decision).
-      3. `inject_batch_done` — unacknowledged Inject batch resolved.
-      4. `pending_review` — a goal awaits a verdict.
-      5. `inject_batch_done` again, on a structural STALL — the "empty
+      2. `inject_batch_done` — unacknowledged Inject batch resolved.
+      3. `pending_review` — a goal awaits a verdict.
+      4. `inject_batch_done` again, on a structural STALL — the "empty
          batch done" reading (Phase 6, first_launch's replacement):
          only inject_batch_done.md carries the mandatory-advance rule,
          so classifying these wakes as routine invites a Noop →
          re-stall → re-wake livelock (P13 2026-06-13 shape).
-      6. `routine` — residual (a seat whose reason resolved meanwhile).
+      5. `routine` — residual (a seat whose reason resolved meanwhile).
     """
     pending_row = conn.execute(
         "SELECT id FROM goals WHERE problem = ?"
@@ -859,8 +792,6 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
     if _routine_due(conn, problem, routine_interval_min,
                     since_iso=since_iso):
         return ("routine", pending_id)
-    if _audit_due(conn, problem, audit_interval_min, since_iso=since_iso):
-        return ("audit", pending_id)
     unack_batches = db.unacknowledged_inject_batches(conn, problem)
     if unack_batches:
         return ("inject_batch_done", pending_id)
@@ -899,8 +830,8 @@ def _strategist_row_is_stale(conn: sqlite3.Connection,
 SPAWN_COOLDOWN_SEC = 30.0
 
 # Daemon start (ISO) — set once by run(); worker threads read it so the
-# periodic clocks (`_routine_due` / `_audit_due`) exclude down-time in
-# the trigger derivation exactly as the T1/T1.5 enqueue side does.
+# periodic clock (`_routine_due`) excludes down-time in the trigger
+# derivation exactly as the T1 enqueue side does.
 DAEMON_START_ISO: "str | None" = None
 
 # v17 queue lease TTL: a lease older than this whose owner PID is dead OR
@@ -1064,12 +995,8 @@ def _run_pipeline(workspace: Path,
                 mfst = manifests[problem]
                 trigger, pending_id = _derive_strategist_trigger(
                     conn, problem,
-                    audit_interval_min=config.get(
-                        "strategist.audit_interval_min", default=180.0,
-                        env_var="ASTERISM_AUDIT_INTERVAL_MIN", cast=float,
-                        workspace=workspace),
                     routine_interval_min=config.get(
-                        "strategist.interval_min", default=60.0,
+                        "strategist.interval_min", default=120.0,
                         env_var="ASTERISM_STRATEGIST_INTERVAL_MIN",
                         cast=float, workspace=workspace),
                     since_iso=DAEMON_START_ISO)
@@ -1732,15 +1659,8 @@ def run(workspace: Path, *, once: bool = False,
     # per `docs/archive/design/phase2/pipelines.md` §5. Picked by `strategist_triggers`
     # each tick. Override via env var or Asterism.yaml for calibration.
     strategist_interval_min = config.get(
-        "strategist.interval_min", default=60.0,
+        "strategist.interval_min", default=120.0,
         env_var="ASTERISM_STRATEGIST_INTERVAL_MIN", cast=float,
-        workspace=workspace,
-    )
-    # T1.5 audit cadence — same key the spawn-side trigger derivation
-    # reads, so the seat source and the classifier never disagree.
-    audit_interval_min = config.get(
-        "strategist.audit_interval_min", default=180.0,
-        env_var="ASTERISM_AUDIT_INTERVAL_MIN", cast=float,
         workspace=workspace,
     )
     if thresholds.SHELVE_THRESHOLD <= thresholds.BUILDER_THRESHOLD:
@@ -2281,11 +2201,10 @@ def run(workspace: Path, *, once: bool = False,
         # Phase 2 — Strategist T0/T1 triggers (T2 pending_review fires at
         # cascade time in `cascade_one` as the fast path). Skipped under
         # awaiting_human gate per-problem inside `strategist_triggers`.
-        # Defaults to 60-min routine (`strategist.interval_min`).
+        # Defaults to 120-min routine (`strategist.interval_min`).
         strategist_triggers(conn, running, scope=scope,
                             interval_min=strategist_interval_min,
-                            daemon_start_iso=daemon_start_iso,
-                            audit_interval_min=audit_interval_min)
+                            daemon_start_iso=daemon_start_iso)
 
         # Per-tick stuck-state reconciler: the safety net for the two
         # mid-run-reachable stuck states the cascade fast paths can drop —

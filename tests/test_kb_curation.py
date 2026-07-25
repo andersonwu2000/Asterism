@@ -1,9 +1,10 @@
-"""Audit-wake KB curation (2026-07-13, user call): delete/merge of
-GLOBAL lessons via the `kb_curation.json` sidecar.
+"""Routine-wake KB curation (2026-07-13, user call; moved from the
+retired audit wake 2026-07-25): delete/merge of GLOBAL lessons via
+the `kb_curation.json` sidecar.
 
 Design pins: the sidecar is NOT a decision kind — curation is
 belief-store maintenance and must never satisfy the stall-advance
-delta gate; the apply is audit-runner-only and strictly
+delta gate; the apply is routine-runner-only and strictly
 all-or-nothing on any invalid op."""
 import json
 import sqlite3
@@ -152,29 +153,29 @@ def test_sidecar_absent_is_silent_noop(conn, tmp_path, capsys):
     assert "[kb-curation]" not in capsys.readouterr().out
 
 
-# ---------- audit context surface ----------
+# ---------- routine context surface ----------
 
-def test_audit_context_gets_curation_surface(conn, tmp_path):
-    """The lesson index + LESSONS.md companion appear on audit wakes
-    ONLY — the curation power is structurally audit-only, so no other
+def test_routine_context_gets_curation_surface(conn, tmp_path):
+    """The lesson index + LESSONS.md companion appear on routine wakes
+    ONLY — the curation power is structurally routine-only, so no other
     trigger should even advertise the surface."""
-    from Tooling.agent.phase2_context import _section_kb_lessons_audit
+    from Tooling.agent.phase2_context import _section_kb_lessons_curation
     a = _lesson(conn, "some recipe")
-    lines = _section_kb_lessons_audit(conn, "P", tmp_path)
+    lines = _section_kb_lessons_curation(conn, "P", tmp_path)
     text = "\n".join(lines)
     assert "curation surface" in text and f"[id-{a}]" in text
     companion = (tmp_path / "LESSONS.md").read_text(encoding="utf-8")
     assert "body some recipe" in companion
     # empty KB → no section at all
     kb.delete_global_lesson(conn, entry_id=a, problem="P")
-    assert _section_kb_lessons_audit(conn, "P", tmp_path) == []
-    # wiring pin: compile gates the section on the audit trigger, and
+    assert _section_kb_lessons_curation(conn, "P", tmp_path) == []
+    # wiring pin: compile gates the section on the routine trigger, and
     # the runner applies the sidecar from both commit branches
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
     ctx_src = (root / "Tooling" / "agent" / "phase2_context.py").read_text(
         encoding="utf-8")
-    assert 'if trigger_kind == "audit":' in ctx_src
+    assert 'if trigger_kind == "routine":' in ctx_src
     strat_src = (root / "Tooling" / "pipeline" / "strategist.py").read_text(
         encoding="utf-8")
     assert strat_src.count("_apply_kb_curation(conn, problem=problem,") == 2

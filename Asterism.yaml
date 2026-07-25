@@ -107,7 +107,7 @@ strategist:
                                # (2026-07-02, CLI-verified). Lowest-volume
                                # pipeline, so cost is negligible regardless.
                                # (InitializeDefs / RequestUserAmend / Inject.)
-  interval_min: 120.0          # T1 routine cadence (default 60min)
+  interval_min: 120.0          # T1 routine cadence (default 120min; belief audit rides every routine wake)
 #  inject_batch_max: 10        # Phase 2.5 — upper bound on
                                # Inject(briefs=[...]) length. Each
                                # brief becomes a Forward dispatch; >cap

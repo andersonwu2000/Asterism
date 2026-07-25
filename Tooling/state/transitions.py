@@ -457,7 +457,7 @@ def apply_strategy_transition(conn: sqlite3.Connection, strategy_id: int,
 # other state is human-owned (awaiting_human / ingest_signoff /
 # revoked) or terminal (ingested).
 WAKE_LEGALITY: "dict[str, frozenset[str]]" = {
-    "active": frozenset({"routine", "audit", "inject_batch_done",
+    "active": frozenset({"routine", "inject_batch_done",
                          "pending_review"}),
     "awaiting_human": frozenset(),
     "ingest_signoff": frozenset(),

@@ -875,9 +875,10 @@ def test_cmd_review_snapshot_path_never_touches_gateway(tmp_path,
 
 
 def test_v26_trigger_kind_accepts_audit(tmp_path, monkeypatch):
-    """v26 — strategist_decisions.trigger_kind CHECK includes 'audit'
-    (the wall-clock epistemic-auditor wake). Fresh SCHEMA and the
-    rebuild migration must both accept the value."""
+    """v26 — strategist_decisions.trigger_kind CHECK includes 'audit'.
+    The trigger is retired at runtime (2026-07-25, merged into
+    routine), but historic rows keep the value, so fresh SCHEMA and
+    the rebuild migration must both still accept it."""
     monkeypatch.chdir(tmp_path)
     conn = db.connect()
     db.init_schema(conn)

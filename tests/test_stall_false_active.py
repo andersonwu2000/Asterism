@@ -433,9 +433,9 @@ def test_stall_advance_gate_rejects_zero_delta(tmp_path: Path) -> None:
         ds3, conn, problem=P, trigger_kind="inject_batch_done")
     assert "changes nothing" not in err3
 
-    # Periodic wakes keep their curation-legal exemption.
+    # The periodic wake keeps its curation-legal exemption.
     err4 = strategist.verify_decisions(
-        ds, conn, problem=P, trigger_kind="audit")
+        ds, conn, problem=P, trigger_kind="routine")
     assert "changes nothing" not in err4
 
     # A live in-flight inject → not stalled → rule inert.
@@ -498,7 +498,7 @@ def test_amend_identical_rerequest_rejected(tmp_path: Path) -> None:
 
 
 def test_review_discharge_exempts_periodic_wakes(tmp_path: Path) -> None:
-    """Periodic wakes outrank events (2026-07-12): a routine/audit wake
+    """The periodic wake outranks events (2026-07-12): a routine wake
     may fire while goals await review, and its curation/notes batch must
     NOT be bounced by the discharge rule — disposal belongs to the
     frontier wakes, whose pressure re-arms every tick. Frontier trigger
@@ -511,10 +511,9 @@ def test_review_discharge_exempts_periodic_wakes(tmp_path: Path) -> None:
         {"kind": "EmitDirective", "scope": f"problem:{P}",
          "body": "audit summary", "reason": "clean audit"},
     ]))
-    for kind in ("routine", "audit"):
-        err = strategist.verify_decisions(ds, conn, problem=P,
-                                          trigger_kind=kind)
-        assert "review not discharged" not in err, kind
+    err = strategist.verify_decisions(ds, conn, problem=P,
+                                      trigger_kind="routine")
+    assert "review not discharged" not in err
     for kind in ("pending_review", "inject_batch_done", ""):
         err = strategist.verify_decisions(ds, conn, problem=P,
                                           trigger_kind=kind)

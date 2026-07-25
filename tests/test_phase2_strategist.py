@@ -986,14 +986,9 @@ def test_strategist_prompts_share_decision_kind_vocabulary() -> None:
     # never a legal answer — same retirement pattern as Reopen.
     expected_kinds = {
         "routine": {"Inject", "ConfirmShelve", "EmitDirective",
-                    "RequestUserAmend", "Noop"},
+                    "AttemptDisproof", "RequestUserAmend", "Noop"},
         "pending_review": {"Inject", "ConfirmShelve"},
         "inject_batch_done": {"Inject", "ConfirmShelve"},
-        # v26 auditor: full corrective vocabulary, but NOT
-        # MarkDeliverable/Ingest (deliverable flow belongs to
-        # batch-done/routine wakes).
-        "audit": {"Inject", "ConfirmShelve", "EmitDirective",
-                  "AttemptDisproof", "RequestUserAmend", "Noop"},
     }
     prompt_dir = PROMPT_DIR / "strategist"
     for tk, kinds in expected_kinds.items():

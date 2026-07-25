@@ -63,7 +63,7 @@ def render_prompt_template(text: str, *, is_postmortem: bool = False,
     timeout_sec = (POSTMORTEM_TIMEOUT_SEC if is_postmortem
                    else WORKER_TIMEOUT_SEC)
     interval_min = config.get(
-        "strategist.interval_min", default=60.0,
+        "strategist.interval_min", default=120.0,
         env_var="ASTERISM_STRATEGIST_INTERVAL_MIN", cast=float,
     )
     return (text
