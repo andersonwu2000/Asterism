@@ -82,6 +82,11 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-24
+- Tightened the reviewing agent's rules so a proof step can only be rejected with an explicit counter-argument, never demoted on a mere reservation.
+- Clarified the division of labor for proof gaps: the proving agent must close its own gaps rather than hand them off, with formalization reserved for steps already settled.
+- Landed a batch of small robustness fixes, including hard failures on bad configuration, earlier recovery from exhausted API quotas, and UTC-based log file naming.
+
 ### 2026-07-23
 - Began shifting the system's internal proof drafts toward plain natural-language writing: the structured "thesis" summary was replaced by a prose proof section, and the accompanying briefs now explicitly flag gaps in the argument, using wording reviewed and approved by the maintainer.
 
