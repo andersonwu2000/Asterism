@@ -6,6 +6,7 @@ import { duration } from '../lib/format'
 import { goalStatusLabel } from '../lib/vocab'
 import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
+import { renderInline, renderProse } from '../lib/prose'
 import { Link } from '../lib/router'
 import { Button } from '../components/ui'
 import Constellation from '../components/Constellation'
@@ -132,7 +133,7 @@ function CycleLine({ cycle }: { cycle: NonNullable<RunWorker['cycle']> }) {
           <ul className="mt-1 space-y-1 pl-4 text-[11px] text-ink-faint">
             {cycle.objections.map((o, i) => (
               <li key={i} className="list-disc marker:text-ink-faint/60">
-                {o}
+                {renderInline(o, `obj${i}`)}
               </li>
             ))}
           </ul>
@@ -140,6 +141,27 @@ function CycleLine({ cycle }: { cycle: NonNullable<RunWorker['cycle']> }) {
       )}
     </div>
   )
+}
+
+/** serve's tail window (run.py _TAIL_BYTES) — under this size the tail
+ * is the whole file and needs no window repair. */
+const TAIL_WINDOW_BYTES = 32768
+
+/** A truncated tail can open INSIDE a code fence; the first ``` below
+ * is then a CLOSER, and a naive prose render inverts code/prose for
+ * the whole tail. Heuristic repair: truncated + odd fence count + the
+ * first fence line is bare (openers usually carry a language tag) ⇒
+ * drop the orphaned fence body. A trailing fence the agent is still
+ * writing renders as code-in-progress, which is honest. */
+function stableMdTail(tail: string, size: number): string {
+  if (size <= TAIL_WINDOW_BYTES) return tail
+  const lines = tail.split('\n')
+  const fenceIdx = lines.findIndex((l) => l.trimStart().startsWith('```'))
+  if (fenceIdx < 0) return tail
+  const fences = lines.filter((l) => l.trimStart().startsWith('```')).length
+  if (fences % 2 === 1 && lines[fenceIdx].trim() === '```')
+    return lines.slice(fenceIdx + 1).join('\n')
+  return tail
 }
 
 /** One agent, one lane: what it is, what it's on, what it's writing. */
@@ -220,9 +242,20 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
               </span>
             )}
           </summary>
-          <pre className="mt-1.5 max-h-96 overflow-y-auto rounded-lg border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
-            <Lean code={w.file.tail} />
-          </pre>
+          {w.path?.endsWith('.md') ? (
+            // prose the agent writes FOR humans (proposal, plan note)
+            // reads as prose — headings, lists, $TeX$ typeset; the Lean
+            // tokenizer was colouring `have` red mid-sentence (owner
+            // screenshot, 2026-07-25). Unbalanced $ mid-write simply
+            // stays raw (withMath needs the closing $).
+            <div className="mt-1.5 max-h-96 overflow-y-auto rounded-lg border border-edge bg-bg px-3.5 py-2.5 text-[12.5px] leading-relaxed text-ink-dim">
+              {renderProse(stableMdTail(w.file.tail, w.file.size), { mode: 'document' })}
+            </div>
+          ) : (
+            <pre className="mt-1.5 max-h-96 overflow-y-auto rounded-lg border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
+              <Lean code={w.file.tail} />
+            </pre>
+          )}
         </details>
       ) : (
         <div className="mt-2 text-[11px] text-ink-faint">

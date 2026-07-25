@@ -23,8 +23,10 @@ export function TeX({ math, display = false }: { math: string; display?: boolean
       return null
     }
   }, [math, display])
-  if (html === null) return <span className="font-mono text-[0.9em]">${math}$</span>
-  return <span dangerouslySetInnerHTML={{ __html: html }} />
+  // normal-case: math must survive an uppercase ancestor (eyebrow
+  // headings) — case is semantic in math, g(n) ≠ G(N)
+  if (html === null) return <span className="font-mono text-[0.9em] normal-case">${math}$</span>
+  return <span className="normal-case" dangerouslySetInnerHTML={{ __html: html }} />
 }
 
 const MATH_SPLIT_RE = /(\$\$[^$]+\$\$|\$[^$\n]+\$)/

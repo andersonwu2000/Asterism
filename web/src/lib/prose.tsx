@@ -91,8 +91,10 @@ export function renderInline(text: string, keyBase: string): ReactNode[] {
   const out: ReactNode[] = []
   text.split(/(`[^`\n]+`)/).forEach((part, i) => {
     if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+      // normal-case: code must survive an uppercase ancestor —
+      // identifier case is semantic
       out.push(
-        <code key={`${keyBase}i${i}`} className="rounded-md bg-surface-2 px-1 font-mono text-[0.92em] text-ink">
+        <code key={`${keyBase}i${i}`} className="rounded-md bg-surface-2 px-1 font-mono text-[0.92em] normal-case text-ink">
           <Lean code={part.slice(1, -1)} />
         </code>,
       )
@@ -325,8 +327,12 @@ export function renderProse(
                     {renderInline(h[2], `${key}h`)}
                   </h4>
                 ) : (
+                  // renderInline, not the raw string: eyebrows carry
+                  // $TeX$/`code` too — and those runs wear normal-case
+                  // so the uppercase voice can't flip math letters
+                  // (g(n) vs G(N) is a different statement)
                   <h5 className="pt-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
-                    {h[2]}
+                    {renderInline(h[2], `${key}h`)}
                   </h5>
                 )}
                 {restRuns}

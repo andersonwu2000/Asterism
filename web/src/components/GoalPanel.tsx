@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
+import { renderProse } from '../lib/prose'
 import {
   DETACHED_LABEL,
   DETACHED_TITLE,
@@ -40,9 +41,11 @@ function Attempt({ a }: { a: DeadAttempt }) {
           {a.proposal_md && (
             <>
               <SectionLabel>postmortem</SectionLabel>
-              <pre className="font-mono text-[11px] leading-snug whitespace-pre-wrap text-ink-dim">
-                {a.proposal_md}
-              </pre>
+              {/* working markdown with $TeX$ and Lean fences — read it
+                  as prose, not a mono dump (class fix, 2026-07-25) */}
+              <div className="text-[12px] leading-relaxed text-ink-dim">
+                {renderProse(a.proposal_md, { mode: 'document' })}
+              </div>
             </>
           )}
           {!a.failure_detail && !a.proposal_md && (

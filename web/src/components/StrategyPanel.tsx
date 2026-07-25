@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { usePoll } from '../lib/api'
 import { relTime } from '../lib/format'
+import { renderProse } from '../lib/prose'
 import { GOAL_STATUS_CLS, goalStatusLabel, strategyStatusLabel } from '../lib/vocab'
 import { SectionLabel } from './ui'
 
@@ -127,9 +128,11 @@ export default function StrategyPanel({
             )}
             <SectionLabel>proposal</SectionLabel>
             {data.proposal_md ? (
-              <pre className="font-mono text-[11px] leading-snug break-words whitespace-pre-wrap text-ink-dim">
-                {data.proposal_md}
-              </pre>
+              // working markdown with $TeX$ and Lean fences — read it
+              // as prose, not a mono dump (class fix, 2026-07-25)
+              <div className="text-[12px] leading-relaxed text-ink-dim">
+                {renderProse(data.proposal_md, { mode: 'document' })}
+              </div>
             ) : (
               <div className="text-xs text-ink-faint">No proposal recorded.</div>
             )}
