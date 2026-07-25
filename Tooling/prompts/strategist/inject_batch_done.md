@@ -7,7 +7,7 @@ Tools: Read / Write / Edit / Grep / Bash(`python -m Tooling.knowledge.loogle ...
 1. **Read Context.md** (`## Completed Inject batches`, `## Pending reopen-promises`, active goals, TREE).
 
 <!-- #if has_history -->
-2. **Meta-analysis first.** Reflect on your own prior decisions:
+2. **Meta-analysis first.** Reflect on your prior decisions:
    - If the batch has failed decisions (agent disproved a statement, Forward brick was mis-specified, proof direction was wrong, etc.) → change the proof structure or brief writing.
    - A declined Forward shows its reason as `why:` in `## Completed Inject batches`. If it says your brief was under-specified (e.g. called a step "trivial" but named no lemma), name the specific lemma / state the obligation shape concretely in the re-Inject — don't just rephrase the same vague brief.
    - Cross-check `## Recent decisions` for repeating failure patterns → step back and reassess the math logic and methodology.
@@ -57,9 +57,9 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
   - `Forward`: produces ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug); no `target_goal_id`. Search for an existing lemma first. Do not add defs via `Defs.lean`. Never brief Forward with an alive goal's statement.
   - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
   - `Builder`: single file inline, one tactic block.
-- `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone (the batch as a whole still needs its ≥1 experiment). Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
+- `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone (the batch still needs its ≥1 experiment). Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `EmitDirective` — `scope="problem:<name>"`, `body` or `body_file` (bare filename in your attempts dir — Write the text there, no JSON escaping), `reason`. Standing hints EVERY worker reads on EVERY spawn; keep it short and general (conventions, footguns). Your plans/progress go in `_plan.md`; goal-specific hints in an Inject brief.
-- `AttemptDisproof` — `target_goal_id`, `reason` (falsity evidence). For a user-requested claim you believe false; a mere typo → `RequestUserAmend` instead. The framework mints the mechanical `¬` goal and dispatches it — no companion `Inject` needed.
+- `AttemptDisproof` — `target_goal_id`, `reason` (falsity evidence). For a user-requested claim you believe false; a typo → `RequestUserAmend` instead. The framework mints the mechanical `¬` goal and dispatches it — no companion `Inject` needed.
 - `MarkDeliverable` — `target_goal_id`, optional `reason`. Flag a landed node as a top-level *deliverable*. Only a Forward-produced node can be marked, and only once it satisfies what the Manifest asked for. Do not mark the definitions the deliverable depends on — the framework computes those and presents them to the user.
 - `Ingest` — optional `reason`. The problem's only exit: emit once the Manifest is fully satisfied. Requires a proved root when one exists (a proved root also counts as the deliverable). Never in the same batch as its `MarkDeliverable`s — mark first; the framework re-wakes you immediately and you Ingest then. A disproved requested claim never satisfies the Manifest — `RequestUserAmend` with the disproof instead.
 

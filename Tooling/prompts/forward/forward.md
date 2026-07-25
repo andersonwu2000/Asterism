@@ -53,7 +53,7 @@ end Problems.<problem>
   - `Backward` — non-trivial new lemma needing decomposition or Mathlib chaining
   - `Builder` — leaf-level: trivially closable by `linarith` / `exact?` / direct Mathlib citation
 
-The seeded imports are already present — keep them; add `import` lines only to cite proved siblings or Library modules.
+Keep the seeded imports; add `import` lines only to cite proved siblings or Library modules.
 
 ## Decline
 
@@ -86,13 +86,13 @@ Ship as `:= by sorry` the moment you catch yourself:
 - Picking specific values, arithmetic, or case orderings
 - Pivoting statement shape a 3rd time
 
-Type-check the statement via `validate_file` and exit. Wrong types compile-fail in seconds.
+Type-check the statement via `validate_file` and exit.
 
 ## Rules
 
 - One lemma per invocation. Edit only `new_forward.lean` — do NOT create other `new_*.lean` files.
 - Do NOT use any name in FORBIDDEN_LEMMAS (Context.md lists them).
-- Verify lemma references before citing (names drift): Grep by name/symbol, loogle by type pattern.
+- Verify lemma references before citing: Grep by name/symbol, loogle by type pattern.
 - A statement matching an alive in-problem Goal (listed under `## Alive goals` in `CATALOG.md`) never lands (Inject repointed, file discarded): decline and name the goal.
 - When the problem ships `Defs.lean`: `def` / `structure` / `class` slugs must NOT match a symbol referenced in the user's Manifest statement (e.g. if Manifest uses `Complex.windingNumber`, Forward cannot define `windingNumber`). Statement-vocabulary belongs in user-owned `Defs.lean`. Framework rejects with `forward_no_new_goal` if violated.
 - Proof body is optional. If you include one, it must be sorry-free and `validate_file`-clean.

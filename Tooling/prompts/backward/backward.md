@@ -6,14 +6,14 @@ Time budget: {timeout_min} minutes.
 
 ## Validating decomposition via LSP (recommended)
 
-You have four MCP tools backed by a live Lean server holding **your `patch.lean`** (pre-seeded with imports + `theorem s<id> ... := by sorry` matching the parent's signature):
+Four MCP tools backed by a live Lean server holding **your `patch.lean`** (pre-seeded with imports + `theorem s<id> ... := by sorry` matching the parent's signature):
 
 - `mcp__lsp__apply_edit(start_line, end_line, new_text)` / `goal_at(line, col)` / `errors_at(line=None)` — edit a 1-indexed inclusive line range of `patch.lean` (returns post-edit goal + diagnostics), read a goal, or list diagnostics.
 - `mcp__lsp__validate_file(content)` — elaborate a *standalone* candidate (auto-prepends Mathlib + Defs + your patch's `open`s). Use after each `new_<slug>.lean` stub to catch errors the in-`patch` `have` check missed. Beyond Lean `diagnostics` it returns a `submission` block mirroring the commit gates — `submission.citation` (a cited `L_<slug>` that isn't `proved`) and `submission.annotation` (a final patch needs a leading `--` comment). Treat a `submission` error as a commit blocker even when `ok:true`.
 
 Workflow:
 
-1. **Read**: `Read patch.lean` for the skeleton (imports + `theorem s<id> ... := by sorry`) and line numbers.
+1. **Read**: `Read patch.lean` for the skeleton and line numbers.
 2. **Sketch**: apply_edit `patch.lean`'s body to insert a candidate skeleton:
    ```
      intro ...
@@ -27,7 +27,7 @@ Workflow:
 6. **Stub**: for each remaining sub-claim, write `new_<slug>.lean` stub in attempts_dir (`:= by sorry` + `entry_kind` directive) and `validate_file` each.
 7. **Link**: final apply_edit on `patch.lean` — once a stub's `new_<slug>.lean` is on disk, reference `<slug> <args>` directly (live tools resolve it; Unknown identifier means the stub isn't written yet). A `have h_<slug> := by sorry` placeholder is for the pre-stub Sketch step only (verifying the skeleton composes before stubs exist) — replace any you used. Without this, patch.lean ships sorry → main inherits sorryAx.
 
-`patch.lean` lives in attempts_dir and is sandboxed — your exploratory edits never touch the parent's source file. Outputs (patch.lean + new_*.lean) in attempts_dir are what the framework commits.
+`patch.lean` lives in attempts_dir and is sandboxed — your edits never touch the parent's source file. Outputs (patch.lean + new_*.lean) in attempts_dir are what the framework commits.
 
 ## Output
 
@@ -55,7 +55,7 @@ Sub-goals can be parallel (`exact <combinator> h1 h2`) or sequential (one feeds 
 
 Pick `<slug>` per sub-goal as a short descriptive identifier (e.g. `cross_sq_add_inner_sq`, `triangle_inequality_metric`). Charset `[a-z][a-z0-9_]*`, length ≤ 60. Framework auto-suffixes on collision — don't worry about uniqueness.
 
-Stub only — `:= by sorry` plus an `entry_kind` directive. The sub-goal's annotation gets written when whoever closes it proves it (Builder writes its proof sketch / a deeper Backward propagates its strategy rationale via Verify); don't pre-fill it.
+Stub only — `:= by sorry` plus an `entry_kind` directive. The sub-goal's annotation is written by whoever closes it (Builder writes its proof sketch / a deeper Backward propagates its strategy rationale via Verify); don't pre-fill it.
 
 ```lean
 namespace Problems.<problem>

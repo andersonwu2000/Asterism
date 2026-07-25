@@ -25,7 +25,7 @@ Read/Write/Edit/Grep/Bash also available.
 
 ## Output: patch.lean
 
-Replace `:= by sorry` with a tactic block. Add an annotation comment block above the theorem — above or below its `set_option ... in` lines, both are read (Mathlib doc-style) — first non-blank line is the one-line summary (key lemma family + why it closes the goal). While writing the annotation, fix any remaining warnings (e.g. lines >100 chars).
+Replace `:= by sorry` with a tactic block. Add an annotation block above the theorem — above or below its `set_option ... in` lines, both are read (Mathlib doc-style) — first non-blank line is the one-line summary (key lemma family + why it closes the goal). While writing the annotation, fix any remaining warnings (e.g. lines >100 chars).
 
 ```lean
 import Mathlib
@@ -38,7 +38,7 @@ theorem <slug> : ... := by <tactic block>
 end Problems.<problem>
 ```
 
-Framework checks: forbidden-lemma grep + `patch.lean` elaborates clean (framework verify) + citations name `proved` siblings only + non-empty `--` annotation present anywhere before the theorem. All four pass → proved.
+Framework checks: forbidden-lemma grep + `patch.lean` elaborates clean (framework verify) + citations name `proved` siblings only + non-empty `--` annotation anywhere before the theorem. All four pass → proved.
 
 ## Decline
 
@@ -82,7 +82,7 @@ Examples:
 
 ## Lemma discovery
 
-Pre-searched, `#check`-verified candidates are already in `## Candidate lemmas` (Context) — check there first. To find more:
+Pre-searched, `#check`-verified candidates are in `## Candidate lemmas` (Context) — check there first. To find more:
 
 Mathlib at `.lake/packages/mathlib/Mathlib/`. Pick by what you have — names drift across versions (`pow_le_pow_left` → `pow_le_pow_left₀`), so verify before citing:
 
