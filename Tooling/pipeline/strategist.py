@@ -1103,7 +1103,6 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
         target_kind="Problem", priority=10,
         decision_id=row_id, problem=problem,
     )
-    db.update_problem_last_strategist_at(conn, problem)
     conn.commit()
     return CommitOutcome(
         decision_row_id=row_id,
@@ -1208,7 +1207,6 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
         target_kind="Goal", priority=10,
         decision_id=row_id, problem=problem,
     )
-    db.update_problem_last_strategist_at(conn, problem)
     conn.commit()
     return CommitOutcome(
         decision_row_id=row_id,
@@ -1260,6 +1258,19 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
             trigger_kind=trigger_kind, workspace=workspace,
             inject_batch_id=inject_batch_id,
             inject_step_index=idx, inject_batch_size=n_inject))
+    # Wake-clock touch — ONE point for the whole batch (task #119).
+    # When each per-kind path touched last_strategist_at itself, the
+    # early-return paths (Inject / FetchPaper / AttemptDisproof) never
+    # learned about the ROUTINE clock: a pure-Inject routine batch left
+    # last_routine_at NULL, T1 read "never routine'd", and a fresh
+    # routine wake was enqueued the instant the previous one finished —
+    # a strategist pump (b6_1 leg 6, 2026-07-25). A mid-batch raise
+    # skips the touch: an un-acknowledged batch must not advance either
+    # clock.
+    db.update_problem_last_strategist_at(conn, problem)
+    if trigger_kind == "routine":
+        db.update_problem_last_routine_at(conn, problem)
+    conn.commit()
     return out
 
 
@@ -1304,7 +1315,6 @@ def _commit_fetch_paper(decision: Decision, conn: sqlite3.Connection,
         target_kind="Problem", priority=3,
         decision_id=row_id, problem=problem,
         payload={"query": query, "reason": str(decision.reason or "")})
-    db.update_problem_last_strategist_at(conn, problem)
     conn.commit()
     return CommitOutcome(
         decision_row_id=row_id,
@@ -1411,7 +1421,6 @@ def _commit_attempt_disproof(decision: Decision, conn: sqlite3.Connection,
          neg_gid, ts, ts),
     )
     row_id = int(cur.lastrowid)
-    db.update_problem_last_strategist_at(conn, problem)
     conn.commit()
     print(f"[strategist] AttemptDisproof(g{gid}) → minted {slug} "
           f"(g{neg_gid}): {neg[:100]}", flush=True)
@@ -1754,14 +1763,10 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         _transitions.apply_problem_transition(
             conn, problem, "awaiting_human", event="amend_requested")
 
-    # Touch last_strategist_at. (Phase 6: bootstrap_done is vestigial —
-    # T0/first_launch retired; the column stays, nothing reads it.) The
-    # ROUTINE clock (last_routine_at, which drives T1) is touched ONLY on
-    # a routine commit so event-driven triggers don't reset the routine
-    # audit's cadence.
-    db.update_problem_last_strategist_at(conn, problem)
-    if trigger_kind == "routine":
-        db.update_problem_last_routine_at(conn, problem)
+    # Wake clocks (last_strategist_at + the routine-only last_routine_at)
+    # are touched ONCE per batch in `commit_decisions` — not here (task
+    # #119: per-path touches let the early-return kinds miss the routine
+    # clock).
     conn.commit()
 
     return CommitOutcome(

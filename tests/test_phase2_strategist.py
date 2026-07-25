@@ -652,6 +652,52 @@ def test_commit_noop_inserts_audit_row(
     assert p["last_strategist_at"] is not None
 
 
+def test_pure_inject_routine_batch_bumps_routine_clock(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Task #119 (b6_1 leg 6, 2026-07-25): the Inject commit paths
+    return early and used to skip the shared clock tail — a pure-Inject
+    routine batch left `last_routine_at` NULL, so T1 read "never
+    routine'd" and pumped a fresh routine wake the instant the previous
+    one finished. Clocks are now touched once per batch in
+    `commit_decisions`."""
+    root = _insert_root(conn)
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": root, "brief": "re-attack with new plan",
+    }))
+    strategist.commit_decision(
+        d, conn, problem="p", tick=1, trigger_kind="routine",
+        workspace=workspace,
+    )
+    p = conn.execute(
+        "SELECT last_strategist_at, last_routine_at FROM problems"
+        " WHERE name='p'").fetchone()
+    assert p["last_strategist_at"] is not None
+    assert p["last_routine_at"] is not None
+
+
+def test_event_trigger_never_bumps_routine_clock(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The routine clock stays event-immune: a non-routine commit (any
+    kind) advances last_strategist_at only."""
+    root = _insert_root(conn)
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": root, "brief": "batch-done follow-up",
+    }))
+    strategist.commit_decision(
+        d, conn, problem="p", tick=1, trigger_kind="inject_batch_done",
+        workspace=workspace,
+    )
+    p = conn.execute(
+        "SELECT last_strategist_at, last_routine_at FROM problems"
+        " WHERE name='p'").fetchone()
+    assert p["last_strategist_at"] is not None
+    assert p["last_routine_at"] is None
+
+
 def test_commit_emitdirective_writes_problem_directive(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
