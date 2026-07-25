@@ -31,6 +31,14 @@ QUOTA_WAIT_LOG_EVERY_SEC = 600.0
 # "not exhausted" from the endpoint resumes early; unreachable keeps
 # sleeping (symmetric with the entry discipline).
 QUOTA_WAIT_RECHECK_SEC = 300.0
+# Breaker-path confirmation retries (#115, 2026-07-25): at the moment a
+# window dies every client hammers the usage endpoint, so its own 429
+# is EXPECTED congestion, not evidence of a broken exe — two daemon
+# exits were convicted on exactly this misread. Only fetch FAILURES
+# retry; a positive "not exhausted" answer is final (that IS the
+# broken-exe signal the breaker exists for).
+QUOTA_CONFIRM_ATTEMPTS = 4
+QUOTA_CONFIRM_RETRY_SEC = 30.0
 
 
 def _fmt_epoch(t: float) -> str:
@@ -39,21 +47,32 @@ def _fmt_epoch(t: float) -> str:
         "%Y-%m-%d %H:%M UTC")
 
 
-def confirmed_quota_deadline(now: float) -> "float | None":
+def confirmed_quota_deadline(now: float, *,
+                             attempts: int = 1) -> "float | None":
     """Probe the subscription usage endpoint; return the epoch to sleep
     until IFF a window is verifiably exhausted. None = not confirmably
     quota (offline, not logged in, or utilization below the bar) —
-    callers keep their old failure path."""
-    try:
-        raw = usage_quota.fetch_usage()
-    except Exception:  # noqa: BLE001 — unreachable endpoint ≠ quota
-        return None
-    exhausted, deadline = usage_quota.exhausted_until(raw)
-    if not exhausted:
-        return None
-    if deadline is None or deadline <= now:
-        return now + QUOTA_WAIT_FALLBACK_SEC
-    return deadline + QUOTA_WAIT_JITTER_SEC
+    callers keep their old failure path.
+
+    `attempts` > 1 retries ONLY fetch failures (429 / offline), spaced
+    `QUOTA_CONFIRM_RETRY_SEC` apart — the breaker call site uses this
+    so endpoint congestion at the moment quota dies cannot fake a
+    broken exe. A reachable endpoint's answer is final either way."""
+    for i in range(max(1, attempts)):
+        if i:
+            time.sleep(QUOTA_CONFIRM_RETRY_SEC)
+            now = time.time()
+        try:
+            raw = usage_quota.fetch_usage()
+        except Exception:  # noqa: BLE001 — transient: retry if budget left
+            continue
+        exhausted, deadline = usage_quota.exhausted_until(raw)
+        if not exhausted:
+            return None
+        if deadline is None or deadline <= now:
+            return now + QUOTA_WAIT_FALLBACK_SEC
+        return deadline + QUOTA_WAIT_JITTER_SEC
+    return None
 
 
 def _confirmed_available() -> bool:
@@ -67,15 +86,17 @@ def _confirmed_available() -> bool:
     return not exhausted
 
 
-def maybe_enter(st, *, enabled: bool, source: str) -> bool:
+def maybe_enter(st, *, enabled: bool, source: str,
+                probe_attempts: int = 1) -> bool:
     """Enter (or extend) the global quota-wait if the usage endpoint
     confirms exhaustion. True = caller should treat the failure as
     "waiting on quota" instead of escalating (breaker exit / blind
-    backoff only)."""
+    backoff only). `probe_attempts` forwards to the confirmation
+    probe's transient-failure retry budget."""
     if not enabled:
         return False
     now = time.time()
-    deadline = confirmed_quota_deadline(now)
+    deadline = confirmed_quota_deadline(now, attempts=probe_attempts)
     if deadline is None:
         return False
     if st.quota_wait_until <= now:

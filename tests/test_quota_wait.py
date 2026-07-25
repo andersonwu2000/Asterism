@@ -84,6 +84,67 @@ def test_confirmed_deadline_endpoint_error_is_none(monkeypatch):
     assert quota_wait.confirmed_quota_deadline(1000.0) is None
 
 
+def test_confirmed_deadline_retries_transient_fetch(monkeypatch):
+    """#115: fetch failures (the endpoint's own 429 at the moment quota
+    dies) retry within the attempts budget instead of reading as
+    'cannot confirm' — two daemon exits were convicted on that misread."""
+    calls = {"n": 0}
+    # Future epoch: a retry refreshes `now` to real wall time, so a
+    # past-epoch reset would fall into the fallback branch.
+    reset = float(round(time.time()) + 3600)
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise OSError("HTTP 429")
+        return {"five_hour": {"utilization": 100.0,
+                              "resets_at": _iso(reset)}}
+    monkeypatch.setattr(usage_quota, "fetch_usage", flaky)
+    monkeypatch.setattr(quota_wait.time, "sleep", lambda s: None)
+    assert quota_wait.confirmed_quota_deadline(
+        time.time(), attempts=4) == (
+        reset + quota_wait.QUOTA_WAIT_JITTER_SEC)
+    assert calls["n"] == 3
+
+
+def test_confirmed_deadline_healthy_answer_is_final(monkeypatch):
+    """A reachable endpoint saying 'not exhausted' ends the probe at
+    once — that IS the broken-exe signal the breaker exists for; the
+    retry budget covers only fetch failures."""
+    calls = {"n": 0}
+
+    def healthy():
+        calls["n"] += 1
+        return {"five_hour": {"utilization": 40.0,
+                              "resets_at": _iso(9000.0)}}
+    monkeypatch.setattr(usage_quota, "fetch_usage", healthy)
+    monkeypatch.setattr(quota_wait.time, "sleep", lambda s: None)
+    assert quota_wait.confirmed_quota_deadline(1000.0, attempts=4) is None
+    assert calls["n"] == 1
+
+
+def test_confirmed_deadline_exhausted_retry_budget(monkeypatch):
+    """All attempts failing still returns None — a genuinely dead
+    endpoint keeps the breaker's exit."""
+    calls = {"n": 0}
+
+    def down():
+        calls["n"] += 1
+        raise OSError("HTTP 429")
+    monkeypatch.setattr(usage_quota, "fetch_usage", down)
+    monkeypatch.setattr(quota_wait.time, "sleep", lambda s: None)
+    assert quota_wait.confirmed_quota_deadline(1000.0, attempts=4) is None
+    assert calls["n"] == 4
+
+
+def test_breaker_passes_probe_retry_budget():
+    src = inspect.getsource(dispatcher.run)
+    tail = src[src.index("CONSEC_SPAWN_FAIL_LIMIT"):]
+    assert "QUOTA_CONFIRM_ATTEMPTS" in tail.split("return 2")[0], (
+        "fast-fail breaker must give the quota probe its transient-"
+        "failure retry budget (#115)")
+
+
 def test_confirmed_deadline_healthy_is_none(monkeypatch):
     monkeypatch.setattr(usage_quota, "fetch_usage", lambda: {
         "five_hour": {"utilization": 40.0, "resets_at": _iso(2000.0)}})

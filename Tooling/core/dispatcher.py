@@ -1946,12 +1946,18 @@ def run(workspace: Path, *, once: bool = False,
                                 # rc=126 marker text. Ask the usage
                                 # endpoint before declaring the exe
                                 # broken — POSITIVE confirmation
-                                # converts the trip into a wait; an
-                                # unreachable endpoint or healthy quota
-                                # keeps the exit (the breaker's actual
-                                # job).
+                                # converts the trip into a wait; a
+                                # healthy-quota answer keeps the exit
+                                # (the breaker's actual job). Fetch
+                                # failures get a retry budget (#115):
+                                # the endpoint's own 429 at the moment
+                                # quota dies is congestion, not
+                                # evidence.
                                 if quota_wait.maybe_enter(
                                         st, enabled=quota_wait_enabled,
+                                        probe_attempts=(
+                                            quota_wait
+                                            .QUOTA_CONFIRM_ATTEMPTS),
                                         source=(f"{st.consec_fast_fails} "
                                                 f"consecutive "
                                                 f"spawn_fast_fails")):
