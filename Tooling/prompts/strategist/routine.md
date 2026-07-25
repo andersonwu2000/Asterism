@@ -6,7 +6,7 @@ Tools: Read / Write / Edit / Grep / Bash(`python -m Tooling.knowledge.loogle ...
 
 1. **Read Context.md** (TREE, active goals, recent decisions, standing directive).
 
-2. **Re-derive and organize the proof's overall architecture.** Don't paraphrase the Lean statement — write the proof outline a mathematician would.
+2. **Re-derive and organize the proof's overall architecture.** Don't paraphrase the Lean statement — write the proof outline a mathematician would, against the Programme Proof; discrepancies are this batch's revision.
 
 3. **Identify structural defects in the current state.** Answer each:
    - Are variants of the same failed approach being tried repeatedly?

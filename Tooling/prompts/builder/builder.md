@@ -13,7 +13,7 @@ Four MCP tools talk to a live Lean server holding **`patch.lean`** (in attempts_
 - `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range. Returns post-edit goal at line=start_line and the file's diagnostics. Persists to `patch.lean` (write-through).
 - `mcp__lsp__goal_at(line, col)` — read the proof goal at any position without editing.
 - `mcp__lsp__errors_at(line=None)` — list current diagnostics (optional line filter).
-- `mcp__lsp__validate_file(content)` — elaborate a *standalone* candidate (auto-prepends Mathlib + Defs + your patch's `open`s). Beyond Lean `diagnostics` it returns a `submission` block mirroring the commit gates — `submission.citation` (Builder may cite only `proved` siblings; any other `L_<slug>` is rejected) and `submission.annotation` (the final patch needs a leading `--` comment block). Run it before finishing: a `submission` error is a commit blocker even when `ok:true`.
+- `mcp__lsp__validate_file(content)` — elaborate a *standalone* candidate (auto-prepends Mathlib + Defs + your patch's `open`s). Beyond Lean `diagnostics` it returns a `submission` block mirroring the commit gates below. Run it before finishing: a `submission` error is a commit blocker even when `ok:true`.
 
 Workflow recommendation:
 1. `mcp__lsp__goal_at` near the `sorry` to see what you're proving.
@@ -25,7 +25,7 @@ Read/Write/Edit/Grep/Bash also available.
 
 ## Output: patch.lean
 
-Replace `:= by sorry` with a tactic block. Add an annotation comment block immediately above the theorem (Mathlib doc-style) — first non-blank line is the one-line summary (key lemma family + why it closes the goal). While writing the annotation, fix any remaining warnings (e.g. lines >100 chars).
+Replace `:= by sorry` with a tactic block. Add an annotation comment block above the theorem — above or below its `set_option ... in` lines, both are read (Mathlib doc-style) — first non-blank line is the one-line summary (key lemma family + why it closes the goal). While writing the annotation, fix any remaining warnings (e.g. lines >100 chars).
 
 ```lean
 import Mathlib
@@ -38,7 +38,7 @@ theorem <slug> : ... := by <tactic block>
 end Problems.<problem>
 ```
 
-Framework checks: forbidden-lemma grep + `patch.lean` elaborates clean (framework verify) + non-empty `--` annotation present anywhere before the theorem. All three pass → proved.
+Framework checks: forbidden-lemma grep + `patch.lean` elaborates clean (framework verify) + citations name `proved` siblings only + non-empty `--` annotation present anywhere before the theorem. All four pass → proved.
 
 ## Decline
 

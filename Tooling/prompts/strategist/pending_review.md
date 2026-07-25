@@ -14,12 +14,14 @@ Also check `## Recent decisions` for your prior decisions and their outcomes.
    - Structural — the decomposition above this goal is wrong; ancestor needs reframing
    - Ontological — the goal-as-stated is provably false / wrong abstraction; should not exist in this form
    - Missing prereq — needed vocabulary / theorem / abstraction is absent; needs Forward to build
+   - Unbacked — the goal traces to no Programme Proof step (worker sent `no_nl_correspondence`)
 
 4. **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
    - Tactical → `Inject(<pipeline>, brief=...)` back to the original goal pointing at the missed API or correct sub-path
    - Structural → `ConfirmShelve` this goal + `Inject` on ancestor with reframed angle
    - Ontological → `ConfirmShelve` + escalate upward (or `RequestUserAmend` if user file is wrong)
    - Missing prereq → `Inject(Forward)` to build the brick + `ConfirmShelve` to park
+   - Unbacked → argue the claim to closure in this batch's Proof then re-dispatch, or retire it (`ConfirmShelve`)
 
 5. **Rewrite `_plan.md`** (your private note): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY — the route and plans live in the Programme; do not maintain a second route document here. `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message); everything outside is unverified. A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
 
