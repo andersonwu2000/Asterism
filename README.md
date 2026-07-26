@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-25
+- Tightened the instructions given to the proving agents: proof-writing is now scoped to the current batch of steps, a step with unresolved gaps waits for a later batch, and several prompt files were corrected and trimmed.
+- Required that informal natural-language proof sketches be argued to full logical closure, and made a mismatch between a formal step and its informal justification a documented failure mode that is escalated for review.
+- Improved reliability by retrying transient network failures during rate-limit checks, and folded a separate periodic audit pass into the routine planning cycle.
+- Updated the web dashboard to render agents' written reasoning as formatted prose with mathematical notation.
+
 ### 2026-07-24
 - Tightened the reviewing agent's rules so a proof step can only be rejected with an explicit counter-argument, never demoted on a mere reservation.
 - Clarified the division of labor for proof gaps: the proving agent must close its own gaps rather than hand them off, with formalization reserved for steps already settled.
