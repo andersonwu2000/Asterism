@@ -187,7 +187,9 @@ def test_e2e_root_proved_through_dispatcher(
         elif kind == "adversary":
             import json as _json
             (attempts / "verdict.json").write_text(
-                _json.dumps({"verdict": "pass", "reservations": []}),
+                _json.dumps({"criteria": {str(i): "clear"
+                                          for i in range(1, 6)},
+                             "reservations": []}),
                 encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)

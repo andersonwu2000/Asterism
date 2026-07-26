@@ -119,17 +119,42 @@ def test_package_requires_file_and_experiment(tmp_path: Path):
 
 # ------------------------------------------------- verdict contract
 
+def _criteria(**fired: str) -> dict:
+    """All-clear criteria dict, with named criteria fired."""
+    c = {k: "clear" for k in adversary.CRITERIA_KEYS}
+    for k, reason in fired.items():
+        c[k.lstrip("c")] = f"fired: {reason}"
+    return c
+
+
+def test_parse_verdict_derives_ruling():
+    """2026-07-25: the verdict is DERIVED — any fired criterion = rebut,
+    all clear = pass. Five instances across three b6_1 legs of a judge
+    documenting a defect and passing anyway; the pass/rebut decision is
+    no longer the model's to write."""
+    v, err = adversary.parse_verdict(
+        json.dumps({"criteria": _criteria()}))
+    assert err == "" and v["verdict"] == "pass"
+    assert v["reservations"] == [] and v["criticisms"] == []
+
+    v, err = adversary.parse_verdict(json.dumps(
+        {"criteria": _criteria(c3="weak step 5"),
+         "reservations": ["note"]}))
+    assert err == "" and v["verdict"] == "rebut"
+    assert v["criticisms"] == ["[criterion 3] weak step 5"]
+    assert v["reservations"] == ["note"]
+
+
 def test_parse_verdict_contract():
-    v, err = adversary.parse_verdict(
-        json.dumps({"verdict": "pass"}))
-    assert err == "" and v["reservations"] == [] and v["criticisms"] == []
-    v, err = adversary.parse_verdict(
-        json.dumps({"verdict": "rebut", "criticisms": ["weak step 2"]}))
-    assert err == "" and v["criticisms"] == ["weak step 2"]
-    for bad in ("not json", json.dumps(["x"]),
-                json.dumps({"verdict": "maybe"}),
-                json.dumps({"verdict": "rebut"}),
-                json.dumps({"verdict": "pass", "reservations": [1]})):
+    for bad in (
+            "not json", json.dumps(["x"]),
+            json.dumps({"verdict": "pass"}),               # legacy shape
+            json.dumps({"criteria": "all clear"}),
+            json.dumps({"criteria": {k: "clear" for k in "1234"}}),
+            json.dumps({"criteria": {**_criteria(), "2": "fired:"}}),
+            json.dumps({"criteria": {**_criteria(), "3": "maybe"}}),
+            json.dumps({"criteria": _criteria(),
+                        "reservations": [1]})):
         v, err = adversary.parse_verdict(bad)
         assert v is None and err
 
@@ -149,11 +174,10 @@ def _spawn_script(rebuttals_before_pass: int):
             state["adversary_calls"] += 1
             state["adversary_sids"].append(kw.get("session_id"))
             if state["adversary_calls"] <= rebuttals_before_pass:
-                verdict = {"verdict": "rebut",
-                           "criticisms": [
-                               f"objection {state['adversary_calls']}"]}
+                verdict = {"criteria": _criteria(
+                    c2=f"objection {state['adversary_calls']}")}
             else:
-                verdict = {"verdict": "pass",
+                verdict = {"criteria": _criteria(),
                            "reservations": ["watch the sign"]}
             (kw["attempts_dir"] / "verdict.json").write_text(
                 json.dumps(verdict), encoding="utf-8")
@@ -199,7 +223,7 @@ def test_rebut_then_pass_advances_rev(
     verdict = json.loads(row["verdict"])
     assert verdict["reservations"] == ["watch the sign"]
     dialogue = json.loads(row["dialogue"])
-    assert dialogue[0]["criticisms"] == ["objection 1"]
+    assert dialogue[0]["criticisms"] == ["[criterion 2] objection 1"]
     assert "# Step v1" in dialogue[0]["proposal"]
     # Render landed beside the problem files.
     rendered = (workspace / "Problems" / "p" / "PROGRAMME.md")
@@ -230,7 +254,8 @@ def test_exhaustion_records_rejection(
     assert row is not None and row["rounds"] == 2
     dialogue = json.loads(row["dialogue"])
     assert [e["criticisms"] for e in dialogue] == [
-        ["objection 1"], ["objection 2"], ["objection 3"]]
+        ["[criterion 2] objection 1"], ["[criterion 2] objection 2"],
+        ["[criterion 2] objection 3"]]
     # Next wake gets the one-line record, never the draft.
     notice = programme.rejection_notice(conn, "p")
     assert notice and "rejected" in notice

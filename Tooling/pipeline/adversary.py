@@ -9,12 +9,17 @@ directive history sit outside the CLI's `cwd ∪ --add-dir` boundary
 per round: a resumed judge defends its own previous rebuttal, so each
 round's judge instead reads the cycle dialogue as documents.
 
-Verdict contract (`verdict.json` written by the judge into its cwd):
-    {"verdict": "pass" | "rebut",
-     "reservations": ["...", ...],   # pass: advisory notes, rendered
-                                     # attributed to workers + header
-     "criticisms":   ["...", ...]}   # rebut: returned verbatim to the
-                                     # strategist via the retry channel
+Verdict contract (`verdict.json` written by the judge into its cwd —
+per-criterion adjudication, 2026-07-25; five instances across three
+b6_1 legs of the judge naming a defect and passing anyway, so the
+pass/rebut decision is no longer the model's to write):
+    {"criteria": {"1": "clear" | "fired: <objection>", ..., "5": ...},
+     "reservations": ["...", ...]}   # advisory notes; legal only for
+                                     # concerns that fire no criterion
+The framework DERIVES the verdict: any `fired` → rebut (the fired
+lines go to the strategist via the retry channel), all `clear` → pass.
+`parse_verdict` synthesizes the legacy keys ("verdict"/"criticisms"/
+"reservations") so downstream consumers are unchanged.
 """
 from __future__ import annotations
 
@@ -148,28 +153,58 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     return proj
 
 
+CRITERIA_KEYS = ("1", "2", "3", "4", "5")
+
+
 def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
-    """Validate verdict.json. Returns (verdict, '') or (None, err)."""
+    """Validate the per-criterion verdict.json and DERIVE the ruling.
+
+    Each criterion line is `"clear"` or `"fired: <objection>"`; any
+    fired line makes the verdict a rebut. Returns a dict carrying the
+    synthesized legacy keys (`verdict` / `criticisms` / `reservations`)
+    plus the raw `criteria`, or (None, err) on a malformed file."""
     try:
         v = json.loads(text)
     except ValueError as e:
         return None, f"verdict.json is not valid JSON: {e}"
     if not isinstance(v, dict):
         return None, "verdict.json must be a JSON object"
-    verdict = v.get("verdict")
-    if verdict not in ("pass", "rebut"):
-        return None, ("verdict.json `verdict` must be \"pass\" or "
-                      f"\"rebut\" (got {verdict!r})")
-    for key in ("reservations", "criticisms"):
-        val = v.get(key, [])
-        if not (isinstance(val, list)
-                and all(isinstance(x, str) for x in val)):
-            return None, f"verdict.json `{key}` must be a list of strings"
-        v[key] = val
-    if verdict == "rebut" and not v["criticisms"]:
-        return None, ("a rebut verdict must carry at least one concrete "
-                      "criticism in `criticisms`")
-    return v, ""
+    criteria = v.get("criteria")
+    if not isinstance(criteria, dict):
+        return None, ("verdict.json needs a `criteria` object "
+                      "adjudicating every criterion \"1\"..\"5\"")
+    missing = [k for k in CRITERIA_KEYS if k not in criteria]
+    if missing:
+        return None, (f"verdict.json `criteria` missing criterion "
+                      f"{', '.join(missing)} — every criterion gets a "
+                      f"line, `\"clear\"` or `\"fired: <objection>\"`")
+    fired: list[str] = []
+    for k in CRITERIA_KEYS:
+        val = criteria[k]
+        if not isinstance(val, str):
+            return None, f"criterion {k} must be a string"
+        s = val.strip()
+        if s.lower() == "clear":
+            continue
+        if s.lower().startswith("fired"):
+            reason = s.split(":", 1)[1].strip() if ":" in s else ""
+            if not reason:
+                return None, (f"criterion {k} is fired but carries no "
+                              f"objection — `\"fired: <objection>\"`")
+            fired.append(f"[criterion {k}] {reason}")
+            continue
+        return None, (f"criterion {k} must be \"clear\" or "
+                      f"\"fired: <objection>\" (got {val!r})")
+    reservations = v.get("reservations", [])
+    if not (isinstance(reservations, list)
+            and all(isinstance(x, str) for x in reservations)):
+        return None, "verdict.json `reservations` must be a list of strings"
+    return {
+        "verdict": "rebut" if fired else "pass",
+        "criticisms": fired,
+        "reservations": reservations,
+        "criteria": {k: criteria[k] for k in CRITERIA_KEYS},
+    }, ""
 
 
 def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,

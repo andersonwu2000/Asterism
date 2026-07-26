@@ -24,22 +24,19 @@ Criticize the argumentation and the direction rigorously; raise structural, deep
 
 ## Output
 
-Write `verdict.json` in your working directory:
+Write `verdict.json` in your working directory — adjudicate EVERY criterion, one line each:
 
 ```json
-{"verdict": "rebut",
- "criticisms": ["<concrete, load-bearing objection — name the Argument step / brief / closure it targets, and where possible suggest the discriminating experiment>"]}
+{"criteria": {
+   "1": "clear",
+   "2": "fired: <concrete, load-bearing objection — name the step / brief / closure it targets, and where possible suggest the discriminating experiment>",
+   "3": "clear", "4": "clear", "5": "clear"},
+ "reservations": ["<advisory note — shown to the next Strategist wake; only for concerns that fire no criterion>"]}
 ```
 
-or
-
-```json
-{"verdict": "pass",
- "reservations": ["<advisory note — shown to the workers and the next Strategist wake; use for concerns that fire no condition above>"]}
-```
+The verdict is not yours to write: the framework derives it — any `fired` = rebut (your fired lines go verbatim to the Strategist), all `clear` = pass. A defect you can name belongs on its criterion's line, not in a reservation.
 
 Rules:
-- `rebut` requires ≥1 concrete criticism. `pass` may carry zero reservations.
-- Every criticism must be actionable — the Strategist will either revise or defend each one.
+- A `fired` line is concrete and actionable — the Strategist will revise or defend it.
 - Do not rewrite the proposal or the directive yourself; you judge, the author writes.
 - Before finishing, run `python -m json.tool verdict.json` to confirm it parses.
