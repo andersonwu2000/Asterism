@@ -19,15 +19,13 @@ Tools: Read / Write / Edit / Grep / Bash(`python -m Tooling.knowledge.loogle ...
    - Permanently superseded → standalone `ConfirmShelve` (no paired Inject)
 <!-- #endif -->
 
-4. **Edge case**: if Context.md also has `## Framework stalled` (tree has nothing dispatchable and no in-flight worker) → emit at least one `Inject`, else framework idles until the next routine tick. A stall is a research moment, not a dead end: think deeply, explore genuinely different angles — the dead attempts' shared assumption is the dimension to vary; a missing tool is a Forward brick to build.
+4. **Mark deliverables**: a landed Forward node that satisfies the Manifest → `MarkDeliverable`; all marked → `Ingest`.
 
-5. **Mark deliverables**: if a Forward node in this batch landed and its statement satisfies what the Manifest asked for, `MarkDeliverable` it — the human then reviews it. You don't manage its dependencies; the framework computes those. Once every deliverable the Manifest asked for has landed and been marked, `Ingest` to close the problem.
-
-6. **Rewrite `_plan.md`** (your private note): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY — the route and plans live in the Programme; do not maintain a second route document here. `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message); everything outside is unverified. A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
+5. **Rewrite `_plan.md`** (your private note): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
 
 Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
 
-**Difficulty alone is not a reason to give up.** Don't shelve just because the brick was harder than expected.
+**Difficulty alone is not a reason to give up.** Don't shelve just because the brick was harder than expected. With `## Framework stalled` present (nothing dispatchable, no in-flight worker) the batch must dispatch something new — vary the dead attempts' shared assumption, or build the missing tool as a Forward brick.
 
 ## Programme proposal
 
@@ -47,9 +45,9 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 **Distill the settled** — a closed line collapses to its conclusion. Start from `## Programme` in Context.md (the Roadmap evolves; Title/Argument/Proof serve this batch).
 
 - Every Inject brief names its Roadmap entry: a `Roadmap: <entry phrase>` line.
-- Every Inject is proven in the Proof: the brief names that claim, restated as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
+- Every Inject is proven in the Proof — inject only what is fully argued; anything short of rigorous closure stays in the Roadmap awaiting a later batch. The brief names that claim, restated as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
 - Mark formal↔informal claims not yet kernel-checked in the Roadmap.
-- An unproven claim never enters formalization — it goes to the Roadmap, and a later batch closes it; an AttemptDisproof probes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
+- An AttemptDisproof probes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
 - A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds
