@@ -78,3 +78,15 @@ def test_insert_goal_rejects_entry_kind_kwarg(conn: sqlite3.Connection) -> None:
             lean_path="Problems/p/Root.lean", statement="True",
             origin="root", entry_kind="Builder",  # type: ignore[call-arg]
         )
+
+
+def test_second_init_schema_does_not_resurrect_entry_kind(
+    conn: sqlite3.Connection,
+) -> None:
+    """Review 07-27 #4: the additive migration loop must not re-add the
+    column a later versioned migration dropped — every daemon start runs
+    apply(), so a bare guard means permanent schema drift."""
+    from Tooling.state import db_migrations
+    db_migrations.apply(conn)  # second startup
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+    assert "entry_kind" not in cols

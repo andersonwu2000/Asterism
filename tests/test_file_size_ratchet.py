@@ -210,7 +210,7 @@ _WATERMARKS = {
     # apply_problem_transition — conscious bump.
     # 1530→1580 (2026-07-12): FSM P3 — WAKE_LEGALITY matrix +
     # problem_accepts_wake — conscious bump.
-    "Tooling/state/transitions.py": 1580,
+    "Tooling/state/transitions.py": 1620,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.

@@ -237,8 +237,16 @@ def _record_spawn_usage(*, kind: str, attempts_dir: Path,
     negligible contention."""
     import json as _json
     try:
-        raw = (attempts_dir / "_parser_state.json").read_text(
-            encoding="utf-8")
+        state_path = attempts_dir / "_parser_state.json"
+        # Stale-file guard (review 07-27): early-return spawns (shutdown,
+        # missing CLI, postmortem/inline paths) never rewrite this file,
+        # so a PRIOR spawn's usage would be INSERTed a second time under
+        # this spawn's wall time. The file must be younger than this
+        # spawn (wall_sec is the spawn's duration; small clock-skew slack).
+        import time as _time
+        if state_path.stat().st_mtime < _time.time() - wall_sec - 30:
+            return
+        raw = state_path.read_text(encoding="utf-8")
         usage = (_json.loads(raw).get("usage") or {})
         if not (usage.get("turns") or usage.get("output_tokens")):
             return

@@ -2013,7 +2013,8 @@ def run(workspace: Path, *, once: bool = False,
                         # reopens for a fresh Backward (under
                         # threshold) or shelves (deferred terminal
                         # from earlier strong-signal cascades).
-                        if kind == "Backward" and tk == "Goal":
+                        if (kind in ("Backward", "Formalizer")
+                                and tk == "Goal"):
                             try:
                                 _reconcile_goal_after_strategy_loss(
                                     conn, int(tid))

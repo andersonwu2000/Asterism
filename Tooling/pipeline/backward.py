@@ -769,6 +769,18 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         except Exception as exc:  # noqa: BLE001 — pre-pass is best-effort
             print(f"[hint] g{goal_id} {goal['slug']}: tactic_try pre-pass "
                   f"errored, skipped ({exc})", flush=True)
+            # Residue sweep (review 07-27): a raise inside the commit
+            # attempt can leave an unowned proofs/_strategy_s<N>.lean
+            # (inert — never imported or citable — but drift noise).
+            try:
+                _row = conn.execute(
+                    "SELECT scratch_path FROM strategies WHERE id=?",
+                    (strategy_id,)).fetchone()
+                if _row is not None and not _row["scratch_path"]:
+                    (problem_dir / "proofs"
+                     / f"_strategy_{sid_token}.lean").unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
 
     # ── Intake stage (update_plan_2026_07 #1) ─────────────────────────
     # A short first turn on a fresh session judges the assignment against
@@ -801,7 +813,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                                 decision_id=decision_id)
         (attempts_dir / "patch.lean").write_text(skeleton, encoding="utf-8")
         intake = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=attempts_dir,
-                            problem_dir=problem_dir,
+                            problem_dir=problem_dir, workspace=workspace,
                             label=f"g{goal_id} {goal['slug']}")
         if intake.infra_rc is not None:
             _infra_map = {

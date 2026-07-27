@@ -1311,6 +1311,57 @@ def test_null_inject_redispatch_specs_applies_artifact_guards(
     assert specs[d_bwd]["target_id"] == str(tgt)
 
 
+def test_null_inject_redispatch_handles_formalizer_pipeline(
+    conn: sqlite3.Connection,
+) -> None:
+    """Review 07-27 #2: post-merge goal Injects write payload
+    pipeline='Formalizer'; the recovery spec derivation is shape-derived
+    (target present = goal redispatch) and must NOT silently drop them.
+    Mint rows without the legacy 'Forward' word also recover."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    tgt = _insert_sub(conn, "alpha", "tgt")
+    d_goal = _insert_null_inject(conn, problem="alpha",
+                                 pipeline="Formalizer", target_id=tgt)
+    d_mint = _insert_null_inject(conn, problem="alpha",
+                                 pipeline="Formalizer")
+    specs = {s["decision_id"]: s
+             for s in db.null_inject_redispatch_specs(conn)}
+    assert d_goal in specs and d_mint in specs
+    assert specs[d_goal]["kind"] == "Formalizer"
+    assert specs[d_goal]["target_kind"] == "Goal"
+    assert specs[d_mint]["kind"] == "Formalizer"
+    assert specs[d_mint]["target_kind"] == "Problem"
+
+
+def test_problem_quiet_counts_formalizer_inflight(
+    conn: sqlite3.Connection,
+) -> None:
+    """Review 07-27 #1: an in-flight Formalizer (goal job or mint) must
+    make problem_quiet False — an in-flight mint read as a structural
+    stall fired duplicate T4 wakes."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    gid = _insert_sub(conn, "alpha", "g1")
+    assert db.problem_quiet(conn, "alpha") is True
+    db.enqueue(conn, kind="Formalizer", target_id=str(gid),
+               target_kind="Goal", priority=2, decision_id=None,
+               problem="alpha")
+    assert db.problem_quiet(conn, "alpha") is False
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+    db.enqueue(conn, kind="Formalizer", target_id="alpha",
+               target_kind="Problem", priority=10, decision_id=None,
+               problem="alpha")
+    assert db.problem_quiet(conn, "alpha") is False
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+    # running-set forms: mint (problem name) and goal job (goal id)
+    assert db.problem_quiet(conn, "alpha",
+                            running={("alpha", "Formalizer")}) is False
+    assert db.problem_quiet(conn, "alpha",
+                            running={(str(gid), "Formalizer")}) is False
+    assert db.problem_quiet(conn, "alpha", running=set()) is True
+
+
 def test_null_inject_redispatch_skips_backward_with_parked_target(
     conn: sqlite3.Connection,
 ) -> None:

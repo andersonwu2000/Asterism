@@ -1286,11 +1286,14 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     if outcome == "moot":
         return
 
-    if kind == "Formalizer":
+    if kind in ("Formalizer", "Builder"):
         # Merged worker (update_plan_2026_07 #1): goal jobs ride the
         # Backward cascade arm (the strategy-frame engine — identical
-        # outcome shapes), mint jobs the Forward arm. Legacy
-        # Builder/Backward queue rows keep their original arms.
+        # outcome shapes), mint jobs the Forward arm. Legacy 'Builder'
+        # queue rows also dispatch to the merged engine now, so their
+        # results are Backward-shaped too — routing them to the old
+        # Builder arm dropped 'success' outcomes on the floor
+        # (review 07-27: cascade fall-through → duplicate dispatch).
         kind = "Backward" if target_kind == "Goal" else "Forward"
 
     if kind == "Builder":
@@ -1416,7 +1419,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 " WHERE id = ?", (decision_id,),
             ).fetchone()
             if row is not None and row["produced_goal_id"] is None:
-                db.enqueue(conn, kind="Forward", target_id=target_id,
+                db.enqueue(conn, kind="Formalizer", target_id=target_id,
                            target_kind=target_kind, priority=20,
                            decision_id=decision_id,
                            problem=_queue_problem_of(

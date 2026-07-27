@@ -16,4 +16,4 @@ or
  "note": "<what mathematics the assignment needs that the Proof does not argue>"}
 ```
 
-If you cannot find the assignment's backing in the Proof, decline — don't invent the mathematics. The framework runs lemma pre-search after intake; candidates arrive with your work turn.
+If you cannot find the assignment's backing in the Proof, decline — don't invent the mathematics. For goal assignments the framework runs lemma pre-search after intake; candidates arrive with the work turn.

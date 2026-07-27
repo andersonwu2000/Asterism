@@ -837,3 +837,77 @@ def test_retry_loop_handles_SpawnRC_SHUTDOWN(
     assert len(seen) == 1  # one spawn happened, returned SHUTDOWN
     assert parse_count[0] == 0  # parse never invoked
     assert r.pending_failures == []
+
+
+# ---------------------------------------------------------------------
+# initial_sid / continuation shape (Formalizer staged pipeline)
+# ---------------------------------------------------------------------
+
+def test_initial_sid_first_spawn_is_continuation(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """With initial_sid, the first spawn resumes the intake session as a
+    continuation (cold=False, continuation=True) — never a cold seed."""
+    gid = _seed_goal(conn)
+    seen, spawn_fn = _spawn_returning([0])
+    _, parse_fn = _parse_returning([PipelineResult(outcome="proved")])
+    _, pm_fn = _make_postmortem_recorder()
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-cont",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
+        initial_sid="intake-sid",
+    )
+    assert r.outcome == "proved"
+    assert (seen[0].sid, seen[0].cold, seen[0].continuation) == (
+        "intake-sid", False, True)
+
+
+def test_initial_sid_stale_session_remints_cold(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """STALE_SESSION on the continuation spawn re-mints a fresh sid and
+    goes COLD (cold_prep runs; continuation off)."""
+    from Tooling.llm.base import SpawnRC
+    gid = _seed_goal(conn)
+    seen, spawn_fn = _spawn_returning([SpawnRC.STALE_SESSION, 0])
+    _, parse_fn = _parse_returning([PipelineResult(outcome="proved")])
+    _, pm_fn = _make_postmortem_recorder()
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-cont-stale",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
+        initial_sid="intake-sid",
+    )
+    assert r.outcome == "proved"
+    assert (seen[0].cold, seen[0].continuation) == (False, True)
+    assert (seen[1].cold, seen[1].continuation) == (True, False)
+    assert seen[1].sid != "intake-sid"
+
+
+def test_initial_sid_warm_retry_is_plain_retry(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """After the continuation first attempt fails a parse, the next
+    iteration is a plain warm retry on the SAME sid (is_retry framing:
+    cold=False, continuation=False)."""
+    gid = _seed_goal(conn)
+    seen, spawn_fn = _spawn_returning([0, 0])
+    _, parse_fn = _parse_returning([
+        PipelineResult(outcome="failed", failure_reason="lake_build_error",
+                       failure_detail="boom"),
+        PipelineResult(outcome="proved"),
+    ])
+    _, pm_fn = _make_postmortem_recorder()
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-cont-retry",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
+        initial_sid="intake-sid",
+    )
+    assert r.outcome == "proved"
+    assert (seen[1].sid, seen[1].cold, seen[1].continuation) == (
+        "intake-sid", False, False)

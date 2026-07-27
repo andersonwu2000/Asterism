@@ -1382,7 +1382,7 @@ def test_cascade_forward_infra_failure_re_enqueues(
 
     rows = conn.execute(
         "SELECT target_id, target_kind, priority, decision_id FROM queue"
-        " WHERE kind='Forward'").fetchall()
+        " WHERE kind='Formalizer'").fetchall()
     assert len(rows) == 1
     assert rows[0]["target_id"] == "p"
     assert rows[0]["target_kind"] == "Problem"

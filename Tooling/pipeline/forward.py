@@ -1018,7 +1018,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         encoding="utf-8",
     )
     intake = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=attempts_dir,
-                        problem_dir=problem_dir,
+                        problem_dir=problem_dir, workspace=workspace,
                         label=f"mint inject{decision_id or '?'} {problem}")
     if intake.infra_rc is not None:
         _infra_map = {

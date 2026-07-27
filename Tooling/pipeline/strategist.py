@@ -43,7 +43,7 @@ from ..core import dispatcher as _dispatcher
 # Decision kinds Strategist may emit (subset of the DB CHECK enum —
 # the schema still accepts 'Reopen' for legacy rows from before
 # 2026-05-28, but the parser/verifier/commit handler no longer
-# recognise it; Inject(Backward|Builder) is the unified reactivation
+# recognise it; the goal-targeted Inject is the unified reactivation
 # mechanism).
 DECISION_KINDS: frozenset[str] = frozenset({
     "Inject", "ConfirmShelve", "EmitDirective",
@@ -334,7 +334,8 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
     Checks:
       - Required fields per decision kind
       - target_id exists in goals (when set)
-      - Inject.pipeline is currently restricted to 'Forward'
+      - Inject mode is shape-derived (target present = goal job,
+        absent = mint); legacy `pipeline` payload is ignored
       - Reopen ancestor safety walk (no `disproved` ancestor)
       - RequestUserAmend file ∈ {Defs.lean, Manifest.md}
       - RequestUserAmend dedup: no other awaiting_human row for this problem
@@ -664,7 +665,7 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
         if err:
             return (f"decision #{i}: {err}" if len(decisions) > 1 else err)
 
-    # Cross-decision: no ConfirmShelve(G) + Inject(Backward/Builder,
+    # Cross-decision: no ConfirmShelve(G) + goal-targeted Inject(
     # target=G) pair. The Inject force-reopens G (shelved /
     # pending_strategist_review / frozen → open in
     # `_commit_inject_redispatch`) and queues a retry; the
@@ -692,7 +693,7 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
             f"alive) or aim the Inject at a different goal."
         )
 
-    # Cross-decision: ConfirmShelve(ancestor) + Inject(Backward/Builder,
+    # Cross-decision: ConfirmShelve(ancestor) + goal-targeted Inject(
     # target=descendant) is also rejected. ConfirmShelve flips the
     # ancestor to 'shelved' and dispatcher._set_goal_terminal_and_
     # propagate cascades that shelve down through strategy_subgoals to
@@ -735,7 +736,7 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                 anc_id = next(iter(bad))
                 return (
                     f"batch contains ConfirmShelve(goal {anc_id}) and "
-                    f"Inject(Backward/Builder, target_goal_id={ij_target})"
+                    f"Inject(target_goal_id={ij_target})"
                     f" where target is a descendant of the ConfirmShelve"
                     f" target through strategy_subgoals. ConfirmShelve"
                     f" cascades shelve to all descendants (dispatcher._"
@@ -786,9 +787,9 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                 "and RequestUserAmend alone (user escalation) do not "
                 "count — they don't dispatch a fresh attempt or redirect "
                 "focus. Pair with one of:\n"
-                "  - Inject(Forward, brief=...) to build the missing "
+                "  - Inject(brief=..., no target) to mint the missing "
                 "tool the shelved goal needed.\n"
-                "  - Inject(Backward/Builder, target_goal_id=..., "
+                "  - Inject(target_goal_id=..., "
                 "brief=...) to redispatch another goal (typically the "
                 "parent of the shelved subgoal — its strategy will "
                 "otherwise stay 'proposed' with an unfeasible subgoal), "
@@ -850,7 +851,7 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                 f"paired with an Inject per the shelve rule (build the "
                 f"missing tool, or redirect focus elsewhere; a parked "
                 f"goal stays revivable), OR\n"
-                f"  - Inject(Backward/Builder, target_goal_id=...) — "
+                f"  - Inject(target_goal_id=...) — "
                 f"keep it alive and re-attack it with a fresh brief "
                 f"(force-reopens the goal), OR\n"
                 f"  - AttemptDisproof(target_goal_id=...) — if you now "
@@ -961,13 +962,13 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                     f"{rstat!r} root, so a Noop/EmitDirective-only batch "
                     f"leaves the daemon idle.{hint_for_pending}\n"
                     f"In most cases the right call is "
-                    f"`Inject(Backward, target_goal_id={rid}, brief=...)` "
+                    f"`Inject(target_goal_id={rid}, brief=...)` "
                     f"— re-engage BFS on the root subtree with whatever "
                     f"toolkit is now available. Alternatives:\n"
-                    f"  - Inject(Forward, brief=...) to build a missing "
+                    f"  - Inject(brief=..., no target) to mint a missing "
                     f"tool (root stays {rstat!r}; inject_batch_done "
                     f"will re-fire you), OR\n"
-                    f"  - Inject(Backward/Builder, target_goal_id=..., "
+                    f"  - Inject(target_goal_id=..., "
                     f"brief=...) to redispatch a non-root goal, OR\n"
                     f"  - RequestUserAmend(...) to escalate Defs.lean / "
                     f"Manifest.md."
@@ -987,7 +988,7 @@ class CommitOutcome:
     `decision_row_id`: id of the FIRST inserted strategist_decisions
       row in the batch (for callers that need a single canonical id).
       Full row id list in `batch_decision_row_ids`.
-    `enqueued_forward`: True iff the commit emitted >= 1 Inject(Forward)
+    `enqueued_forward`: True iff the commit emitted >= 1 mint Inject
       queue entry.
     `batch_id`: always non-None when the committed decision was Inject
       (every Inject — including N=1 — is a batch under the unified
@@ -1053,7 +1054,7 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
     """Forward variant — 1 brief → 1 row + 1 Forward enqueue.
 
     `batch_id_override` lets a multi-decision call share one batch_id
-    across all N Inject(Forward) decisions so cascade fires a single
+    across all N mint Inject decisions so cascade fires a single
     `inject_batch_done` once every produced lemma terminates. Solo
     (single-decision) calls leave it None and get a fresh batch_id.
     """
@@ -1688,7 +1689,7 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
     #
     # Pre-fix bug: this column wrote NULL for ConfirmShelve+friends.
     # Solo (batch_id=NULL) was harmless. Paired with Inject in same
-    # batch (e.g. ConfirmShelve(G) + Inject(Forward, prereq)), the
+    # batch (e.g. ConfirmShelve(G) + a mint Inject for the prereq), the
     # NULL outcome made `maybe_enqueue_inject_batch_done`'s pending
     # count never reach 0 (the batch stayed "incomplete" forever) and
     # the in-flight-inject suppression read the batch as live — so

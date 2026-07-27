@@ -60,12 +60,20 @@ def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p") -> int:
     )
 
 
-def test_cascade_builder_proved(conn: sqlite3.Connection) -> None:
+def test_cascade_legacy_builder_rides_backward_arm(
+    conn: sqlite3.Connection,
+) -> None:
+    """Post-merge, legacy 'Builder' queue rows dispatch to the merged
+    engine and produce Backward-shaped outcomes, so cascade normalizes
+    them onto the Backward arm. In particular the old trust-flip
+    (kind=Builder + outcome='proved' → goal proved on the pipeline's
+    say-so) is CLOSED: no live producer exists, and the Backward arm
+    never proved-flips from a pipeline outcome (review 07-27)."""
     gid = _seed_goal(conn)
     cascade_one(conn, pipeline_id="pid", kind="Builder",
                 target_id=str(gid), target_kind="Goal", outcome="proved")
     row = db.get_goal(conn, gid)
-    assert row["status"] == "proved"
+    assert row["status"] != "proved"
 
 
 def test_cascade_builder_failed_increments_attempts(conn: sqlite3.Connection) -> None:

@@ -51,15 +51,17 @@ class IntakeOutcome:
     infra_rc: "int | None" = None
 
 
-def intake_timeout_sec() -> int:
+def intake_timeout_sec(workspace: "Path | None" = None) -> int:
     from ..core import config
     return int(config.get(
         "dispatch.intake_timeout_sec", default=300,
-        env_var="ASTERISM_INTAKE_TIMEOUT_SEC", cast=int))
+        env_var="ASTERISM_INTAKE_TIMEOUT_SEC", cast=int,
+        workspace=workspace))
 
 
 def run_intake(*, prompt_dir: Path, attempts_dir: Path,
-               problem_dir: Path, label: str) -> IntakeOutcome:
+               problem_dir: Path, label: str,
+               workspace: "Path | None" = None) -> IntakeOutcome:
     """Spawn the intake turn and parse its sentinel. `label` is a short
     goal/brief identifier for log lines. Caller must have compiled
     Context.md into `attempts_dir` first (the cold-prompt wrapper
@@ -76,7 +78,7 @@ def run_intake(*, prompt_dir: Path, attempts_dir: Path,
         problem_dir=problem_dir,
         attempts_dir=attempts_dir,
         session_id=sid,
-        timeout_sec_override=intake_timeout_sec(),
+        timeout_sec_override=intake_timeout_sec(workspace),
     )
     if rc in INTAKE_INFRA_RCS:
         return IntakeOutcome(infra_rc=rc)

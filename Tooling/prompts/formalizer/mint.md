@@ -33,7 +33,7 @@ theorem <slug> : <type> := by sorry
 end Problems.<problem>
 ```
 
-- `<slug>`: `[a-z][a-z0-9_]*`, ≤ 60 chars, descriptive. Read from the declaration head, not the filename; framework auto-suffixes collisions.
+- `<slug>`: `[a-z][a-z0-9_]*`, ≤ 60 chars, descriptive. Read from the declaration head, not the filename. A slug colliding with an existing `proofs/L_*.lean` hard-fails the commit — pick a fresh name (Grep `proofs/` if unsure).
 - `Forward rationale:` is required — it ships in the brick's file header as the permanent record of why it exists.
 - Keep the seeded imports; add `import` lines only to cite proved siblings or Library modules.
 - Proof body optional; if included it must be sorry-free and `validate_file`-clean.
@@ -65,7 +65,7 @@ Ship as `:= by sorry` the moment a proof attempt doesn't close on the first try,
 
 ## Lemma discovery
 
-`## Candidate lemmas` (Context.md) first — pre-searched and `#check`-verified. To find more, Mathlib is at `.lake/packages/mathlib/Mathlib/`; names drift across versions (`pow_le_pow_left` → `pow_le_pow_left₀`), so verify before citing:
+Mathlib is at `.lake/packages/mathlib/Mathlib/`; names drift across versions (`pow_le_pow_left` → `pow_le_pow_left₀`), so verify before citing:
 
 - name / notation: Grep over `.lake/packages/mathlib/Mathlib/` (pattern `(theorem|lemma) <name>\b`)
 - type pattern: `python -m Tooling.knowledge.loogle '<pattern>'`

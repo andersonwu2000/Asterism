@@ -1599,18 +1599,25 @@ def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
             payload = json.loads(r["payload"] or "{}")
         except (json.JSONDecodeError, TypeError):
             payload = {}
+        # Shape-derived (Formalizer merge, review 07-27 #2): the mode
+        # lives in the decision's target shape, not the legacy payload
+        # `pipeline` word — a 'Formalizer' payload hit the old "unknown
+        # pipeline, skip silently" arm and goal-Inject recovery was
+        # dropped. target_id NULL = mint; present = goal redispatch.
+        # `pipeline` is kept ONLY to pick the legacy queue kind for
+        # pre-merge rows (cooldown/flush key coherence).
         pipeline = payload.get("pipeline")
-        if pipeline == "Forward":
+        if r["target_id"] is None:
             if r["produced_goal_id"] is not None:
                 continue  # lemma landed; outcome propagates from goal
             specs.append({
                 "decision_id": int(r["id"]), "problem": str(r["problem"]),
-                "kind": "Forward", "target_id": str(r["problem"]),
+                "kind": ("Forward" if pipeline == "Forward"
+                         else "Formalizer"),
+                "target_id": str(r["problem"]),
                 "target_kind": "Problem",
             })
-        elif pipeline in ("Backward", "Builder"):
-            if r["target_id"] is None:
-                continue  # malformed — no target_goal_id; skip not dispatch
+        else:
             # Superseded by a LATER inject on the same target: the Strategist
             # re-decided this goal (e.g. Builder #924 then Backward #926 on
             # 4284 — a Builder→Backward routing switch). Only the LATEST inject
@@ -1627,12 +1634,13 @@ def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
                 (int(r["target_id"]), int(r["id"])),
             ).fetchone() is not None:
                 continue
-            if pipeline == "Backward" and r["produced_strategy_id"] is not None:
+            if (pipeline in ("Backward", "Formalizer", None)
+                    and r["produced_strategy_id"] is not None):
                 continue  # strategy committed; outcome from strategy terminal
-            # NB: NO produced_goal_id guard for Builder — it proves in place,
-            # so produced_goal_id is a commit-time backlink (=target), not a
-            # work-done artifact (see docstring). Builder is judged solely by
-            # its target's status, immediately below.
+            # NB: NO produced_goal_id guard for legacy Builder — it proves
+            # in place, so produced_goal_id is a commit-time backlink
+            # (=target), not a work-done artifact (see docstring); those
+            # rows are judged solely by the target's status below.
             # Target no longer awaiting a worker (parked / terminal): the
             # worker already RAN and parked it (e.g. a Backward
             # return_to_parent that committed no strategy → target shelved,
@@ -1650,15 +1658,16 @@ def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
                 continue
             specs.append({
                 "decision_id": int(r["id"]), "problem": str(r["problem"]),
-                "kind": pipeline, "target_id": str(int(r["target_id"])),
+                "kind": (pipeline if pipeline in ("Backward", "Builder")
+                         else "Formalizer"),
+                "target_id": str(int(r["target_id"])),
                 "target_kind": "Goal",
             })
-        # Unknown pipeline (legacy / malformed) — skip silently.
 
-    # Per target, the Backward/Builder branch above already kept only the
-    # LATEST inject (older ones — any kind — were skipped as superseded), so
-    # `specs` carries at most one goal-targeted redispatch per goal plus the
-    # per-lemma Forward specs. This subsumes the earlier per-(target,kind)
+    # Per target, the goal branch above already kept only the LATEST
+    # inject (older ones — any kind — were skipped as superseded), so
+    # `specs` carries at most one goal-targeted redispatch per goal plus
+    # the per-lemma mint specs. This subsumes the earlier per-(target,kind)
     # collapse and additionally handles cross-kind supersession (Builder→
     # Backward), which that collapse missed (P13 4284 double-dispatch,
     # 2026-06-15). Superseded NULL rows stay NULL here, harmlessly —
@@ -1978,29 +1987,36 @@ def is_problem_stalled(conn: sqlite3.Connection, problem: str, *,
 def problem_quiet(conn: sqlite3.Connection, problem: str, *,
                   running: "set[tuple] | None" = None) -> bool:
     """Derived guard #2 of the problem FSM (design §4, formalized in
-    P3 by operator ruling): True iff NO Backward / Builder / Forward
-    worker is in flight for `problem` (queue rows + the dispatcher's
-    optional in-memory `running` set). This is `is_problem_stalled`'s
-    condition 3, extracted verbatim so the wake-legality machinery and
-    future readers name the same predicate instead of re-inlining the
-    four-part in-flight scan."""
+    P3 by operator ruling): True iff NO worker is in flight for
+    `problem` (queue rows + the dispatcher's optional in-memory
+    `running` set). This is `is_problem_stalled`'s condition 3,
+    extracted so the wake-legality machinery and future readers name
+    the same predicate. Formalizer merge: goal jobs ride kind
+    'Formalizer' (target=goal id), mint jobs kind 'Formalizer' with
+    target=problem name — both must count as in-flight (an in-flight
+    mint read as a stall fired duplicate T4 wakes; review 07-27 #1).
+    Legacy 'Backward'/'Builder'/'Forward' rows stay covered."""
     if conn.execute(
         "SELECT 1 FROM queue q"
         " JOIN goals g ON g.id = CAST(q.target_id AS INTEGER)"
-        " WHERE g.problem = ? AND q.kind IN ('Backward','Builder') LIMIT 1",
+        " WHERE g.problem = ? AND q.target_kind = 'Goal'"
+        " AND q.kind IN ('Backward','Builder','Formalizer') LIMIT 1",
         (problem,),
     ).fetchone() is not None:
         return False
     if conn.execute(
-        "SELECT 1 FROM queue WHERE target_id = ? AND kind = 'Forward' LIMIT 1",
+        "SELECT 1 FROM queue WHERE target_id = ?"
+        " AND kind IN ('Forward','Formalizer') LIMIT 1",
         (problem,),
     ).fetchone() is not None:
         return False
     run = running or set()
-    if any(len(t) >= 2 and t[1] == "Forward" and t[0] == problem for t in run):
+    if any(len(t) >= 2 and t[1] in ("Forward", "Formalizer")
+           and t[0] == problem for t in run):
         return False
     bw_bu_ids = {t[0] for t in run
-                 if len(t) >= 2 and t[1] in ("Backward", "Builder")}
+                 if len(t) >= 2 and t[1] in ("Backward", "Builder",
+                                             "Formalizer")}
     if bw_bu_ids:
         placeholders = ",".join("?" * len(bw_bu_ids))
         if conn.execute(
