@@ -467,6 +467,166 @@ def test_gate_root_file_baseline_pin(
     assert row["integrity_verified"] == 1
 
 
+def _seed_pinned_root_stub(conn, tmp_path, stmt="True"):
+    """Proved root + on-disk Root.lean stub + first-load baseline row.
+    Shared setup for the task-#120 statement-pin cases."""
+    gid = _seed_proved_root(conn)
+    conn.execute("UPDATE goals SET statement = ? WHERE id = ?",
+                 (stmt, gid))
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    root = pdir / "Root.lean"
+    root.write_text(f"theorem main : {stmt} := by sorry\n",
+                    encoding="utf-8")
+    body = root.read_text(encoding="utf-8")
+    conn.execute(
+        "INSERT INTO user_file_history"
+        " (problem, file, sha, body, seen_at, source)"
+        " VALUES ('p', 'Root.lean', ?, ?, ?, 'observed')",
+        (manifest._content_sha(body), body, db.now()))
+    conn.commit()
+    return gid, root
+
+
+def test_gate_statement_pin_accepts_root_proof_body_rewrite(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Task #120: the framework's own root-proof landing (Builder
+    assembly writes the proof into Root.lean) changes the file bytes
+    but NOT the statement — the pin must accept it. Baseline stub +
+    rewritten file carrying the byte-identical `theorem main : <stmt>`
+    → gate proceeds to the (conftest-stubbed, clean) axiom probe and
+    verifies the root."""
+    gid, root = _seed_pinned_root_stub(conn, tmp_path)
+    root.write_text(
+        "import Mathlib\n"
+        "import Problems.p.proofs.L_left\n\n"
+        "-- assembled by Builder\n"
+        "theorem main : True := by\n  trivial\n",
+        encoding="utf-8")
+    mfst = manifest.Manifest(problem="p", statement="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    row = conn.execute(
+        "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
+    ).fetchone()
+    assert row["integrity_verified"] == 1
+
+
+def test_gate_statement_pin_rejects_edited_statement_in_proof_body(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A proof-body-style rewrite whose statement TEXT drifted from the
+    pin is still a violation — probe must not run."""
+    gid, root = _seed_pinned_root_stub(conn, tmp_path)
+    root.write_text("theorem main : 1 = 1 := by\n  rfl\n",
+                    encoding="utf-8")
+    monkeypatch.setattr(
+        "Tooling.pipeline._axiom.axiom_probe",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("axiom_probe ran on a statement-drifted root")))
+    mfst = manifest.Manifest(problem="p", statement="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    row = conn.execute(
+        "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
+    ).fetchone()
+    assert row["integrity_verified"] == 0
+
+
+def test_gate_statement_pin_def_alias_own_strategy_passes(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Verify-promote / prune-reconcile write the def-alias form
+    (`def main := @Problems.p.s<N>`), which erases the statement text.
+    Accepted iff s<N> is this root's own 'succeeded' strategy — its
+    decl signature was locked to goals.statement at commit."""
+    gid, root = _seed_pinned_root_stub(conn, tmp_path)
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, scratch_path,"
+        " status, created_by, created_at)"
+        " VALUES (?, 'Problems/p/Root.lean',"
+        " 'Problems/p/proofs/_strategy_s1.lean', 'succeeded',"
+        " 'test', ?)", (gid, db.now()))
+    sid = cur.lastrowid
+    root.write_text(
+        "import Mathlib\nimport Problems.p.proofs._strategy_s1\n\n"
+        "namespace Problems.p\n\n"
+        f"def main := @Problems.p.s{sid}\n\n"
+        "end Problems.p\n",
+        encoding="utf-8")
+    mfst = manifest.Manifest(problem="p", statement="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    row = conn.execute(
+        "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
+    ).fetchone()
+    assert row["integrity_verified"] == 1
+
+
+def test_gate_statement_pin_def_alias_foreign_strategy_blocked(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A def-alias citing a strategy that is NOT this root's succeeded
+    strategy proves an unpinned type — violation, probe must not run."""
+    gid, root = _seed_pinned_root_stub(conn, tmp_path)
+    other = db.insert_goal(
+        conn, problem="p", slug="other",
+        lean_path="Problems/p/proofs/L_other.lean",
+        statement="False", origin="backward", depth=1)
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, scratch_path,"
+        " status, created_by, created_at)"
+        " VALUES (?, 'Problems/p/proofs/L_other.lean',"
+        " 'Problems/p/proofs/_strategy_s9.lean', 'succeeded',"
+        " 'test', ?)", (other, db.now()))
+    sid = cur.lastrowid
+    root.write_text(
+        f"namespace Problems.p\n\ndef main := @Problems.p.s{sid}\n\n"
+        "end Problems.p\n",
+        encoding="utf-8")
+    monkeypatch.setattr(
+        "Tooling.pipeline._axiom.axiom_probe",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("axiom_probe ran on a foreign-alias root")))
+    mfst = manifest.Manifest(problem="p", statement="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    row = conn.execute(
+        "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
+    ).fetchone()
+    assert row["integrity_verified"] == 0
+
+
+def test_gate_statement_pin_defs_lean_still_whole_file(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defs.lean has no sanctioned framework writer — vocabulary drift
+    changes the statement's MEANING with identical statement text, so
+    it keeps the whole-file pin. Root.lean untouched + Defs.lean edited
+    → blocked before the probe."""
+    gid, _root = _seed_pinned_root_stub(conn, tmp_path)
+    defs = tmp_path / "Problems" / "p" / "Defs.lean"
+    defs.write_text("def f := 1\n", encoding="utf-8")
+    body = defs.read_text(encoding="utf-8")
+    conn.execute(
+        "INSERT INTO user_file_history"
+        " (problem, file, sha, body, seen_at, source)"
+        " VALUES ('p', 'Defs.lean', ?, ?, ?, 'observed')",
+        (manifest._content_sha(body), body, db.now()))
+    conn.commit()
+    defs.write_text("def f := 2\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "Tooling.pipeline._axiom.axiom_probe",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("axiom_probe ran on vocabulary drift")))
+    mfst = manifest.Manifest(problem="p", statement="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    row = conn.execute(
+        "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
+    ).fetchone()
+    assert row["integrity_verified"] == 0
+
+
 # ---------------------------------------------------------------------
 # Builder — rejects axiom-violation in both Phase 1 and Phase 2
 # ---------------------------------------------------------------------

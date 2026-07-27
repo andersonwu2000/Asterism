@@ -118,23 +118,51 @@ def _content_sha(body: str) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
 
 
-def user_file_baseline(conn, problem: str, file: str) -> "str | None":
-    """The sha a user file must still match for the problem's proved
-    root to verify: the latest operator `repin` row if any (the
-    sanctioned change acknowledgment, `asterism repin`), else the
-    first-load baseline. None = never recorded (pre-v28 run) — gate
-    treats as no-pin, fail-open with a warning."""
+def user_file_baseline_row(conn, problem: str, file: str):
+    """The baseline row (sha + body) a user file is pinned to: the
+    latest `repin`-source row if any (sanctioned change acks — operator
+    `asterism repin` AND accepted amendments, which record the same
+    source; the CHECK constraint only admits 'observed'/'repin'), else
+    the first-load observation. None = never recorded (pre-v28 run)."""
     row = conn.execute(
-        "SELECT sha FROM user_file_history"
+        "SELECT sha, body FROM user_file_history"
         " WHERE problem = ? AND file = ? AND source = 'repin'"
         " ORDER BY id DESC LIMIT 1", (problem, file)).fetchone()
     if row is not None:
-        return str(row["sha"])
-    row = conn.execute(
-        "SELECT sha FROM user_file_history"
+        return row
+    return conn.execute(
+        "SELECT sha, body FROM user_file_history"
         " WHERE problem = ? AND file = ?"
         " ORDER BY id ASC LIMIT 1", (problem, file)).fetchone()
+
+
+def user_file_baseline(conn, problem: str, file: str) -> "str | None":
+    """The sha a user file must still match for the problem's proved
+    root to verify (see `user_file_baseline_row`). None = never
+    recorded (pre-v28 run) — gate treats as no-pin, fail-open with a
+    warning."""
+    row = user_file_baseline_row(conn, problem, file)
     return None if row is None else str(row["sha"])
+
+
+#: `theorem main : <stmt> := by sorry` — the hand-authored Root.lean
+#: contract shape. Single SoT for statement extraction: cmd_init
+#: (goals.statement), amend (statement sync), and the root gate's
+#: statement pin (task #120) must all read the same bytes. Lazy match
+#: is safe here because `:= by sorry` anchors the end of the type
+#: expression; a leading `@[instance]`/attribute sits outside the match.
+ROOT_STMT_STUB_RE = re.compile(
+    r"theorem\s+main\s*:\s*(.+?)\s*:=\s*by\s+sorry\b",
+    re.DOTALL,
+)
+
+
+def extract_root_statement(text: str) -> "str | None":
+    """Return the type-expression string from Root.lean's
+    `theorem main : <stmt> := by sorry`, stripped of surrounding
+    whitespace. Returns None if no matching declaration is present."""
+    m = ROOT_STMT_STUB_RE.search(text)
+    return None if m is None else m.group(1).strip()
 
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)

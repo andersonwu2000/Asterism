@@ -132,6 +132,18 @@ def resolve_amend(conn: sqlite3.Connection, workspace: Path,
         if not final_body.strip():
             raise ValueError("accept with empty body")
         _atomic_write(pdir / file, final_body)
+        # An accepted amendment IS the sanctioned user-file change — move
+        # the baseline pin with it (task #120 class sweep: without this
+        # row, `root_integrity_gate` would flag the amended file as
+        # tampered after the re-prove). Recorded as source='repin' (the
+        # schema's sanctioned-ack source; CHECK admits observed/repin).
+        from . import manifest as _mfst
+        conn.execute(
+            "INSERT INTO user_file_history"
+            " (problem, file, sha, body, seen_at, source)"
+            " VALUES (?, ?, ?, ?, ?, 'repin')",
+            (problem, file, _mfst._content_sha(final_body), final_body,
+             db.now()))
         # Root.lean amendment changes the problem's canonical statement:
         # sync goals.statement (the CLAUDE.md file-table rule — "改 Root
         # statement 後重 init 或 sync goals.statement"). The root also

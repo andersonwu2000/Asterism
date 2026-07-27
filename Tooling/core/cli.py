@@ -141,10 +141,16 @@ def _retain_recent_logs(log_dir: Path, *, keep: int) -> list[Path]:
 #                  Props, never emits unverifiable data.
 #  during run    — framework writes proofs/_strategy_sNN.lean files;
 #                  Root.lean unchanged.
-#  on root proved — `prune.reconcile_proved_goals` rewrites Root.lean to the
-#                   def-alias form: `import Problems.X.proofs._strategy_sNN`
-#                   then `def main := @Problems.X.sNN` (any leading
-#                   `@[instance]` is preserved → `@[instance] def main := …`).
+#  on root proved — the proof lands IN Root.lean via one of two sanctioned
+#                   writers: a Builder assembly commits the full
+#                   `theorem main : <stmt> := by …` (statement preserved
+#                   byte-for-byte), or Verify promote / `prune.
+#                   reconcile_proved_goals` write the def-alias form:
+#                   `import Problems.X.proofs._strategy_sNN` then
+#                   `def main := @Problems.X.sNN` (any leading
+#                   `@[instance]` is preserved). Both shapes are accepted
+#                   by `verify._root_statement_pin_ok` (task #120) —
+#                   the user-file pin guards the STATEMENT, not the bytes.
 #  Manual editing of Root.lean is not expected.
 
 # Lazy match between `theorem main` and the first `:=` so statements
@@ -158,24 +164,12 @@ _SORRY_BODY_RE = re.compile(
 _WRAP_BODY_RE = re.compile(
     r"theorem\s+main\b.*?:=\s*s\d+\b", re.DOTALL)
 
-# Capture the `<stmt>` part of `theorem main : <stmt> := by sorry`.
-# Used by `cmd_init` to pull goals.statement out of the hand-written
-# Root.lean (the canonical source of truth — Manifest's `## Statement`
-# section is no longer consumed by the framework).
-_ROOT_STATEMENT_RE = re.compile(
-    r"theorem\s+main\s*:\s*(.+?)\s*:=\s*by\s+sorry\b",
-    re.DOTALL,
-)
-
-
-def _extract_root_statement(text: str) -> str | None:
-    """Return the type-expression string from Root.lean's
-    `theorem main : <stmt> := by sorry`, stripped of surrounding
-    whitespace. Returns None if no matching declaration is present."""
-    m = _ROOT_STATEMENT_RE.search(text)
-    if m is None:
-        return None
-    return m.group(1).strip()
+# Statement extraction (`theorem main : <stmt> := by sorry` → `<stmt>`)
+# moved to state/manifest.py (task #120: the root gate's statement pin
+# must read the exact same bytes cmd_init/amend extract). Re-exported
+# under the old names for the existing importers (amend, tests).
+_ROOT_STATEMENT_RE = manifest.ROOT_STMT_STUB_RE
+_extract_root_statement = manifest.extract_root_statement
 
 
 def _classify_root_body(text: str) -> str:

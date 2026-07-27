@@ -32,6 +32,7 @@ the actual failure rate without paying per-level Lean elaboration cost.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -603,6 +604,60 @@ def cleanup_cascade_backups(
 FRAMEWORK_DEFAULT_AXIOMS = manifest.FRAMEWORK_DEFAULT_AXIOMS
 
 
+def _root_statement_pin_ok(
+    conn: sqlite3.Connection, problem: str, root_row,
+    current: str, base_body: str,
+) -> tuple[bool, str]:
+    """Task #120: Root.lean legitimately changes when the framework
+    lands the root proof — Builder writes the assembled proof onto the
+    root's lean_path, Verify promote / prune reconcile write the
+    def-alias form. The USER contract is the `theorem main` statement,
+    not the file bytes, so a changed Root.lean is accepted iff the
+    pinned statement provably still governs what was proved:
+
+      1. the pinned baseline parses as the hand-authored stub shape and
+         `goals.statement` (the text every prover commit gate locked
+         signatures against) still equals its statement; AND
+      2. the current file is one of the sanctioned proof shapes bound
+         to that statement — a `theorem main : <pinned stmt> :=`
+         declaration carrying the statement byte-for-byte, or a
+         def-alias `def main := @Problems.<p>.s<N>` whose s<N> is this
+         root's own 'succeeded' strategy (its decl signature was locked
+         to goals.statement at commit, so the alias copies exactly that
+         type at elaboration).
+
+    Everything else — statement text edited, an alias citing a foreign
+    strategy, a sketch baseline — stays a violation (fail-closed; the
+    operator escape hatch remains `asterism repin`). Defs.lean has no
+    sanctioned framework writer and keeps the whole-file pin."""
+    base_stmt = manifest.extract_root_statement(base_body)
+    if base_stmt is None:
+        return False, ("baseline is not the `theorem main : <stmt> := "
+                       "by sorry` shape, so only byte-identity can "
+                       "certify it")
+    if str(root_row["statement"]).strip() != base_stmt:
+        return False, ("goals.statement no longer matches the pinned "
+                       "baseline statement")
+    if re.search(r"theorem\s+main\s*:\s*" + re.escape(base_stmt)
+                 + r"\s*:=", current):
+        return True, ""
+    m = re.search(r"def\s+main\s*:=\s*@Problems\." + re.escape(problem)
+                  + r"\.s(\d+)\b", current)
+    if m:
+        sid = int(m.group(1))
+        srow = conn.execute(
+            "SELECT goal_id, status FROM strategies WHERE id = ?",
+            (sid,)).fetchone()
+        if (srow is not None
+                and int(srow["goal_id"]) == int(root_row["id"])
+                and str(srow["status"]) == "succeeded"):
+            return True, ""
+        return False, (f"def-alias cites s{sid}, which is not this "
+                       f"root's succeeded strategy")
+    return False, ("the rewritten file carries neither the pinned "
+                   "statement nor a sanctioned def-alias")
+
+
 def root_integrity_gate(
     conn: sqlite3.Connection, workspace: Path, problem: str,
     mfst: manifest.Manifest,
@@ -630,7 +685,7 @@ def root_integrity_gate(
     """
     from ..pipeline._axiom import axiom_probe
     row = conn.execute(
-        "SELECT statement FROM goals "
+        "SELECT id, statement FROM goals "
         "WHERE problem = ? AND origin = 'root' AND status = 'proved' "
         "LIMIT 1",
         (problem,),
@@ -645,33 +700,43 @@ def root_integrity_gate(
     # other channel (Bash, operator forgetting to re-init after an
     # edit). Cheap sha compare, runs BEFORE the 15-min axiom probe, so a
     # tampered root re-warns each tick at near-zero cost and never
-    # flips integrity_verified.
+    # flips integrity_verified. Root.lean additionally gets the task-#120
+    # statement pin (`_root_statement_pin_ok`): the framework's own
+    # proof-landing writers rewrite the proof BODY of the root file, and
+    # the user contract is the statement, not the file bytes.
     pdir = db.problem_dir(workspace, problem)
     for fname in ("Root.lean", "Defs.lean"):
         fpath = pdir / fname
         if not fpath.is_file():
             continue
-        pin = manifest.user_file_baseline(conn, problem, fname)
-        if pin is None:
+        base = manifest.user_file_baseline_row(conn, problem, fname)
+        if base is None:
             print(f"[integrity] {problem}: no baseline recorded for "
                   f"{fname} (pre-v28 run) — statement pin skipped",
                   flush=True)
             continue
+        pin = str(base["sha"])
         try:
-            cur = manifest._content_sha(
-                fpath.read_text(encoding="utf-8"))
+            text = fpath.read_text(encoding="utf-8")
         except OSError as e:
             print(f"[integrity] {problem}: {fname} unreadable ({e}) — "
                   f"root NOT verified", flush=True, file=sys.stderr)
             return
-        if cur != pin:
-            print(f"[integrity] {problem}: {fname} content differs from "
-                  f"its baseline (pin {pin}, now {cur}) — the proved "
-                  f"root does not certify the original statement. Root "
-                  f"stays UNVERIFIED. If the change is yours: re-init, "
-                  f"or acknowledge with `asterism repin {problem}`.",
-                  flush=True, file=sys.stderr)
-            return
+        cur = manifest._content_sha(text)
+        if cur == pin:
+            continue
+        why = "the proved root does not certify the original statement"
+        if fname == "Root.lean":
+            ok, why = _root_statement_pin_ok(
+                conn, problem, row, text, str(base["body"]))
+            if ok:
+                continue
+        print(f"[integrity] {problem}: {fname} content differs from "
+              f"its baseline (pin {pin}, now {cur}) — {why}. Root "
+              f"stays UNVERIFIED. If the change is yours: re-init, "
+              f"or acknowledge with `asterism repin {problem}`.",
+              flush=True, file=sys.stderr)
+        return
     whitelist = manifest.effective_axioms(mfst, problem=problem)
     try:
         # 900s (15min) budget. Root.lean's transitive import chain can

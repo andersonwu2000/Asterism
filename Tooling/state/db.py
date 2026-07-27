@@ -441,8 +441,10 @@ CREATE TABLE IF NOT EXISTS problem_settings (
 -- Ingest sign-off seal covers the Manifest text; root_integrity_gate
 -- requires Root.lean/Defs.lean to still match their baseline before a
 -- proved root verifies (benchmark comparability = adapter pins upstream
--- == init, this pins init == proved). source='repin' rows are operator
--- re-baselines (`asterism repin`) — the sanctioned change ack.
+-- == init, this pins init == proved; Root.lean's pin is statement-level
+-- — the framework's own proof-landing rewrites the proof body, task
+-- #120). source='repin' rows are the sanctioned change acks: operator
+-- re-baselines (`asterism repin`) and accepted amendments.
 CREATE TABLE IF NOT EXISTS user_file_history (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     problem TEXT NOT NULL REFERENCES problems(name),

@@ -214,6 +214,15 @@ def test_amend_accepts_root_lean_and_syncs_statement(
     assert g["statement"] == "∀ n : ℕ, 0 ≤ n"
     assert g["status"] == "frozen" and g["attempts"] == 0
     assert "0 ≤ n" in (pdir / "Root.lean").read_text(encoding="utf-8")
+    # Task #120 class sweep: the accepted amendment IS the sanctioned
+    # user-file change — the baseline pin moves with it (source='repin'),
+    # so root_integrity_gate accepts the amended file after the re-prove.
+    pin = conn.execute(
+        "SELECT body, source FROM user_file_history"
+        " WHERE problem='Test.px' AND file='Root.lean'"
+        " ORDER BY id DESC LIMIT 1").fetchone()
+    assert pin is not None and pin["source"] == "repin"
+    assert "0 ≤ n" in pin["body"]
     conn.close()
 
 
