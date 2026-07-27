@@ -2267,10 +2267,10 @@ def open_goals(conn: sqlite3.Connection,
         "JOIN problems p ON p.name = g.problem "
         "WHERE g.status = 'open' AND g.id IN alive "
         # Curry-Howard unified — any kind whose body carries `sorry`
-        # is a deferred obligation and enters BFS. Forward commits
+        # is a deferred obligation and enters BFS. Mint commits
         # sorry-free outputs as 'proved' directly; sorry-bearing
-        # outputs land here regardless of kind. `next_worker_kind`
-        # returns Builder/Backward; `_skeleton.build_strategy_skeleton`
+        # outputs land here regardless of kind and dispatch as
+        # Formalizer; `_skeleton.build_strategy_skeleton`
         # preserves the original `theorem|def|structure|class` keyword
         # in the strategy patch so the elaborator sees a matching
         # declaration head. Pre-unification this filter was

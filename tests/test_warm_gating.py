@@ -4,6 +4,7 @@ kinds stay queued WITHOUT losing their queue position (no lease, no
 discard). Guards: pop_queue's exclude_kinds filter and the
 LEAN_QUEUE_KINDS partition against the queue-kind enum.
 """
+import re
 from pathlib import Path
 
 import pytest
@@ -11,18 +12,7 @@ import pytest
 from Tooling.core import dispatcher
 from Tooling.state import db
 
-
-# The queue table's CHECK enum (state/db.py SCHEMA). A new queue kind
-# must pick a side of the partition — this pin forces the choice.
-_QUEUE_KIND_ENUM = {"Builder", "Backward", "Verify", "Strategist",
-                    "Forward", "Librarian", "Scholar"}
 _NL_KINDS = {"Strategist", "Scholar"}
-
-
-def test_lean_kind_partition_pinned():
-    lean = set(dispatcher.LEAN_QUEUE_KINDS)
-    assert lean | _NL_KINDS == _QUEUE_KIND_ENUM
-    assert lean & _NL_KINDS == set()
 
 
 @pytest.fixture
@@ -34,6 +24,24 @@ def conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
               " bootstrap_done) VALUES ('p','',?,1)", (db.now(),))
     c.commit()
     return c
+
+
+def test_lean_kind_partition_pinned(conn):
+    """Every queue kind must pick a side of the warm partition. The
+    enum is READ FROM THE LIVE SCHEMA, not hand-copied: the 07-27
+    Formalizer merge slipped past a stale copy (both the copy and
+    LEAN_QUEUE_KINDS missed the new kind, so the pin passed vacuously
+    and Formalizer rows dispatched against a cold gateway)."""
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table'"
+        " AND name='queue'").fetchone()[0]
+    m = re.search(r"CHECK\s*\(\s*kind\s+IN\s*\(([^)]*)\)", sql)
+    assert m, "queue.kind CHECK not found — schema shape changed"
+    enum = {s.strip().strip("'")
+            for s in m.group(1).split(",") if s.strip()}
+    lean = set(dispatcher.LEAN_QUEUE_KINDS)
+    assert lean | _NL_KINDS == enum
+    assert lean & _NL_KINDS == set()
 
 
 def _enqueue(c, kind: str, priority: int, target: str) -> None:

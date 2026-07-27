@@ -224,50 +224,22 @@ def test_get_cast_applies_to_env_string(
 # Wired-in callers — smoke that dispatcher + providers honor the chain
 # ---------------------------------------------------------------------
 
-def test_dispatcher_thresholds_via_yaml(
+def test_dispatcher_shelve_threshold_via_yaml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F47 — canonical placement: builder.threshold sits next to the
-    Builder model it's sized for; shelve_threshold stays under
-    dispatch.* (it's a goal-level cap spanning Builder + Backward)."""
-    monkeypatch.delenv("ASTERISM_BUILDER_THRESHOLD", raising=False)
+    """shelve_threshold lives under dispatch.* (goal-level cap). The
+    builder.threshold / dispatch.builder_threshold keys are retired
+    with the Formalizer merge — no worker escalation to size for."""
     monkeypatch.delenv("ASTERISM_SHELVE_THRESHOLD", raising=False)
     (tmp_path / "Asterism.yaml").write_text(
-        "builder:\n"
-        "  threshold: 5\n"
         "dispatch:\n"
         "  shelve_threshold: 10\n",
         encoding="utf-8",
     )
-    bt = config.get("builder.threshold", default=3,
-                    env_var="ASTERISM_BUILDER_THRESHOLD",
-                    cast=int, workspace=tmp_path)
     st = config.get("dispatch.shelve_threshold", default=8,
                     env_var="ASTERISM_SHELVE_THRESHOLD",
                     cast=int, workspace=tmp_path)
-    assert (bt, st) == (5, 10)
-
-
-def test_dispatcher_threshold_legacy_yaml_key(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """F47 — projects that wrote `dispatch.builder_threshold` (the
-    pre-F47 layout) must keep working. Resolution goes builder.threshold
-    first; falls back to the old key when the new one is absent."""
-    monkeypatch.delenv("ASTERISM_BUILDER_THRESHOLD", raising=False)
-    (tmp_path / "Asterism.yaml").write_text(
-        "dispatch:\n"
-        "  builder_threshold: 5\n",
-        encoding="utf-8",
-    )
-    # Mirror the dispatcher's two-step lookup
-    bt = config.get("builder.threshold", default=None,
-                    env_var="ASTERISM_BUILDER_THRESHOLD",
-                    cast=int, workspace=tmp_path)
-    if bt is None:
-        bt = config.get("dispatch.builder_threshold", default=3,
-                        cast=int, workspace=tmp_path)
-    assert bt == 5
+    assert st == 10
 
 
 def test_provider_resolution_via_yaml(

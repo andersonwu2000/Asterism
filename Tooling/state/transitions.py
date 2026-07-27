@@ -1318,10 +1318,9 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             n = int(cur["attempts"]) if cur else 0
             if n >= _shelve_threshold():
                 _enqueue_strategist_review(conn, int(target_id))
-            # If n is at/over BUILDER_THRESHOLD but under SHELVE, the
-            # next bfs_refill picks Backward via next_worker_kind
-            # — no extra cascade work needed (no session_id column to
-            # clear post Phase 7-D).
+            # Under SHELVE the goal stays open and the next bfs_refill
+            # re-enqueues it for the Formalizer — no extra cascade work
+            # needed (no session_id column to clear post Phase 7-D).
             return
         if outcome == "failed":
             if is_infra:

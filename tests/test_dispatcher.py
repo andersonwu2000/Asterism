@@ -30,11 +30,9 @@ def test_next_worker_kind_is_retired() -> None:
 
 # ---------------------------------------------------------------------
 # Threshold defaults — single (3, 8) baseline.
-# F31's haiku-substring tier was retired alongside the Asterism.yaml
-# config introduction: weak-tier users now write `builder.threshold:
-# 5` + `dispatch.shelve_threshold: 10` explicitly. F47 moved
-# builder_threshold from dispatch.* to builder.* (kind-local); the
-# legacy yaml key stays honored as a fallback. Tested via test_config.
+# The builder.threshold / dispatch.builder_threshold config keys are
+# retired with the Formalizer merge (no worker escalation left to
+# size); only dispatch.shelve_threshold remains configurable.
 # ---------------------------------------------------------------------
 
 def test_threshold_defaults_are_strong_tier() -> None:

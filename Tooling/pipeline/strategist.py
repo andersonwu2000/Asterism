@@ -1051,7 +1051,8 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
                            batch_id_override: str | None = None,
                            step_index: int = 0,
                            batch_size: int = 1) -> CommitOutcome:
-    """Forward variant — 1 brief → 1 row + 1 Forward enqueue.
+    """Mint variant — 1 brief → 1 row + 1 Formalizer enqueue
+    (target_kind=Problem).
 
     `batch_id_override` lets a multi-decision call share one batch_id
     across all N mint Inject decisions so cascade fires a single
@@ -1062,7 +1063,7 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
     batch_id = batch_id_override or uuid.uuid4().hex
     ts = db.now()
     row_payload = {
-        "pipeline": "Forward",
+        "pipeline": "Formalizer",
         "step_index": step_index,
         "batch_size": batch_size,
     }
