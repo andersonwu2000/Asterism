@@ -22,6 +22,19 @@ from Tooling.llm.base import SpawnRC
 
 
 @pytest.fixture(autouse=True)
+def _intake_degraded(monkeypatch):
+    """Formalizer intake is exercised by its own tests (test_intake.py);
+    these tests pin the DEGRADED path (intake unusable -> classic cold
+    flow, sid=None) so their spawn-order harnesses keep meaning."""
+    from Tooling.pipeline import _intake
+    monkeypatch.setattr(
+        _intake, "run_intake",
+        lambda **kw: _intake.IntakeOutcome(sid=None))
+
+
+
+
+@pytest.fixture(autouse=True)
 def _stub_verify_in_session(monkeypatch: pytest.MonkeyPatch):
     """Backward's commit verifies freshly-placed files on the pipeline's OWN
     session slot (`verify_in_session`), not by borrowing. File-scoped clean

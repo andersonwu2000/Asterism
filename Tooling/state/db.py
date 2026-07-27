@@ -239,18 +239,10 @@ CREATE TABLE IF NOT EXISTS goals (
                                      'frozen','dead')),
     depth       INTEGER NOT NULL DEFAULT 0,
     attempts    INTEGER NOT NULL DEFAULT 0,
-    -- Routing directive: which worker dispatches on the first attempt.
-    -- 'Builder' = tactic_try + one-shot LLM patch; 'Backward' = skip
-    -- Builder, decompose immediately. Set at goal creation:
-    --   - cli init: from Manifest's `## Entry kind` section.
-    --   - Backward agent: per sub-goal, via `-- entry_kind:` annotation
-    --     in `new_<slug>.lean`.
-    -- next_worker_kind honors this while attempts < BUILDER_THRESHOLD;
-    -- once the threshold is reached escalation to Backward is forced
-    -- regardless (safety net for an entry_kind=Builder directive that
-    -- turns out wrong).
-    entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
-                    CHECK(entry_kind IN ('Builder','Backward')),
+    -- (`entry_kind` routing column removed in v33 — the Formalizer
+    -- merge, update_plan_2026_07 #1: the worker decides prove-vs-split
+    -- itself, so pre-dispatch routing no longer exists. Predecessor
+    -- `difficulty` died the same death.)
     -- Set to 1 by `verify.root_integrity_gate` after a root goal's
     -- axiom_probe passes; reset to 0 by `update_goal_status` whenever
     -- the goal leaves 'proved' (cascade rollback, manual reset). The
@@ -341,12 +333,15 @@ CREATE TABLE IF NOT EXISTS strategy_subgoals (
 -- migration_plan §C option 1). Strategist target = problem.root.id (Goal).
 -- v23 — `kind` adds 'Scholar' (paper pipeline v2: citation resolution +
 -- fetch worker; docs/internal/archive/paper_pipeline_design.md D11).
+-- v33 — `kind` adds 'Formalizer' (merged worker, update_plan_2026_07 #1).
+-- 'Builder'/'Backward'/'Forward' stay VALID for historical rows — never
+-- rewrite history; archaeology keys on these strings.
 CREATE TABLE IF NOT EXISTS pipelines (
     id          TEXT PRIMARY KEY,
     kind        TEXT NOT NULL
                     CHECK(kind IN ('Builder','Backward','Verify',
                                    'Strategist','Forward','Librarian',
-                                   'Scholar')),
+                                   'Scholar','Formalizer')),
     target_id   TEXT NOT NULL,
     target_kind TEXT NOT NULL
                     CHECK(target_kind IN ('Goal','Strategy','Problem')),
@@ -382,7 +377,7 @@ CREATE TABLE IF NOT EXISTS queue (
     kind        TEXT NOT NULL
                     CHECK(kind IN ('Builder','Backward','Verify',
                                    'Strategist','Forward','Librarian',
-                                   'Scholar')),
+                                   'Scholar','Formalizer')),
     target_id   TEXT NOT NULL,
     target_kind TEXT NOT NULL DEFAULT 'Goal'
                     CHECK(target_kind IN ('Goal','Strategy','Problem')),
@@ -656,7 +651,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 32
+_CURRENT_USER_VERSION = 33
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -791,7 +786,6 @@ def insert_goal(conn: sqlite3.Connection, *, problem: str, slug: str,
                 lean_path: str, statement: str, origin: str,
                 depth: int = 0,
                 kind: str = 'theorem',
-                entry_kind: str = 'Builder',
                 status: str = 'open') -> int:
     ts = now()
     # origin='forward' goals have no parent strategy edge; they are alive
@@ -805,11 +799,11 @@ def insert_goal(conn: sqlite3.Connection, *, problem: str, slug: str,
     detached = 1 if origin == "forward" else 0
     cur = conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement,"
-        " kind, origin, status, depth, attempts, entry_kind, detached,"
+        " kind, origin, status, depth, attempts, detached,"
         " created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
         (problem, slug, lean_path, statement,
-         kind, origin, status, depth, entry_kind, detached, ts, ts),
+         kind, origin, status, depth, detached, ts, ts),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -2132,19 +2126,6 @@ def dispatchable_open_goals(conn: sqlite3.Connection,
     if not paused:
         return goals
     return [g for g in goals if str(g["problem"]) not in paused]
-
-
-def update_goal_entry_kind(conn: sqlite3.Connection, goal_id: int,
-                           entry_kind: str) -> None:
-    """Persist the dispatch-routing directive on a goal. Used by
-    cascade for agent_declined (Builder) to flip routing to Backward
-    without inflating attempts (Phase 7 — decision 5: attempts is
-    LLM-call failure count, not a routing inflation knob)."""
-    conn.execute(
-        "UPDATE goals SET entry_kind = ?, updated_at = ? WHERE id = ?",
-        (entry_kind, now(), goal_id),
-    )
-    conn.commit()
 
 
 def increment_goal_attempts(conn: sqlite3.Connection, goal_id: int) -> int:

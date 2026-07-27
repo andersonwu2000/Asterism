@@ -293,7 +293,7 @@ _WATERMARKS = {
     # conscious bump.
     # 1815→1840 (2026-07-18): v32 produced_kind attribution column —
     # conscious bump.
-    "Tooling/state/db_migrations.py": 1840,
+    "Tooling/state/db_migrations.py": 1950,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

@@ -76,3 +76,15 @@ Ship the moment you catch yourself:
 - Edit only the body of `patch.lean` — signature changes are rejected as `patch_signature_mismatch`. Framework auto-prepends `import Mathlib` + `Defs` and auto-appends sub-goal imports; the ONE import you write yourself is a cited existing sibling's.
 - **Citing an existing sibling** (Path B may cite any status; Path A proved only). Framework classifies by status: **proved** → used directly; **open / attempting / pending_review** → auto-linked, your strategy waits for it; **shelved** → auto-revived + linked; **dead / disproved** → rejected — re-declare the statement fresh as your own `new_<slug>.lean` instead.
 - A redundant sub-goal file must be deleted from attempts_dir, not commented out.
+
+## Lemma discovery
+
+`## Candidate lemmas` (Context.md) first — pre-searched and `#check`-verified. To find more, Mathlib is at `.lake/packages/mathlib/Mathlib/`; names drift across versions (`pow_le_pow_left` → `pow_le_pow_left₀`), so verify before citing:
+
+- name / notation: Grep over `.lake/packages/mathlib/Mathlib/` (pattern `(theorem|lemma) <name>\b`)
+- type pattern: `python -m Tooling.knowledge.loogle '<pattern>'`
+
+## Hard rules
+
+- Do NOT use any name in FORBIDDEN_LEMMAS — anywhere.
+- Verify every lemma reference before citing: Grep by name/symbol, loogle by type pattern.

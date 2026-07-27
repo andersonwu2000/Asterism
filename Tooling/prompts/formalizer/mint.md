@@ -62,3 +62,15 @@ Ship as `:= by sorry` the moment a proof attempt doesn't close on the first try,
 - One brick per invocation. Edit only `new_forward.lean` — do NOT create other `new_*.lean` files.
 - A statement matching an alive in-problem Goal (`## Alive goals` in `CATALOG.md`) never lands: decline and name the goal.
 - When the problem ships `Defs.lean`: `def` / `structure` / `class` slugs must NOT match a symbol referenced in the user's Manifest statement — statement-vocabulary belongs in user-owned `Defs.lean`.
+
+## Lemma discovery
+
+`## Candidate lemmas` (Context.md) first — pre-searched and `#check`-verified. To find more, Mathlib is at `.lake/packages/mathlib/Mathlib/`; names drift across versions (`pow_le_pow_left` → `pow_le_pow_left₀`), so verify before citing:
+
+- name / notation: Grep over `.lake/packages/mathlib/Mathlib/` (pattern `(theorem|lemma) <name>\b`)
+- type pattern: `python -m Tooling.knowledge.loogle '<pattern>'`
+
+## Hard rules
+
+- Do NOT use any name in FORBIDDEN_LEMMAS — anywhere.
+- Verify every lemma reference before citing: Grep by name/symbol, loogle by type pattern.

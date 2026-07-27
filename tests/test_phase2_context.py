@@ -42,7 +42,7 @@ def _insert_problem(conn: sqlite3.Connection, name: str = "p") -> None:
 def _insert_root(conn: sqlite3.Connection, slug: str = "main") -> int:
     return db.insert_goal(
         conn, problem="p", slug=slug, lean_path=f"P/{slug}.lean",
-        statement="T", origin="root", depth=0, entry_kind="Backward",
+        statement="T", origin="root", depth=0,
     )
 
 

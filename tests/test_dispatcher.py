@@ -1,4 +1,9 @@
-"""dispatcher.next_worker_kind + cascade_one state transitions."""
+"""dispatcher cascade_one state transitions (+ retired-routing invariants).
+
+`next_worker_kind` / entry_kind routing retired with the Formalizer
+merge (update_plan_2026_07 #1) — every open goal dispatches as
+'Formalizer'; the worker decides prove-vs-split itself.
+"""
 from __future__ import annotations
 
 import sqlite3
@@ -9,67 +14,18 @@ import pytest
 
 from Tooling.state import db
 from Tooling.core import dispatcher as _dispatcher
-from Tooling.core.dispatcher import next_worker_kind, cascade_one, SHELVE_THRESHOLD
+from Tooling.core.dispatcher import cascade_one, SHELVE_THRESHOLD
 
 
 # ---------------------------------------------------------------------
-# next_worker_kind
+# Routing retirement invariants
 # ---------------------------------------------------------------------
 
-def _fake_goal(*, attempts: int, entry_kind: str = "Builder") -> dict:
-    return {"attempts": attempts, "entry_kind": entry_kind}
-
-
-def test_next_worker_kind_honors_entry_kind_builder() -> None:
-    """entry_kind='Builder' on a fresh goal routes to Builder regardless
-    of any other signal — there's no longer a numeric `difficulty` gate
-    that would override the directive."""
-    assert next_worker_kind(
-        _fake_goal(attempts=0, entry_kind="Builder")
-    ) == "Builder"
-
-
-def test_next_worker_kind_honors_entry_kind_backward() -> None:
-    """entry_kind='Backward' on a fresh goal skips Builder entirely."""
-    assert next_worker_kind(
-        _fake_goal(attempts=0, entry_kind="Backward")
-    ) == "Backward"
-
-
-def test_next_worker_kind_easy_first_attempts() -> None:
-    assert next_worker_kind(
-        _fake_goal(attempts=0)) == "Builder"
-    assert next_worker_kind(
-        _fake_goal(attempts=2)) == "Builder"
-
-
-def test_next_worker_kind_boundary_at_builder_threshold() -> None:
-    """attempts >= BUILDER_THRESHOLD overrides entry_kind=Builder
-    (safety net): the Backward agent's directive can be wrong, but
-    after N consecutive Builder failures we escalate regardless."""
-    bt = _dispatcher.BUILDER_THRESHOLD
-    assert next_worker_kind(
-        _fake_goal(attempts=bt - 1)) == "Builder"
-    assert next_worker_kind(
-        _fake_goal(attempts=bt)) == "Backward"
-    # Even with entry_kind=Builder, attempts threshold wins
-    assert next_worker_kind(
-        _fake_goal(attempts=bt, entry_kind="Builder")
-    ) == "Backward"
-
-
-def test_next_worker_kind_respects_runtime_threshold(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """F18 (task #10(d) home move): the live threshold now lives in
-    `state.thresholds` (leaf) — runtime override lands there; the
-    dispatcher exposes read-only aliases via module __getattr__."""
-    from Tooling.state import thresholds as _thr
-    monkeypatch.setattr(_thr, "BUILDER_THRESHOLD", 3)
-    assert next_worker_kind(
-        _fake_goal(attempts=2)) == "Builder"
-    assert next_worker_kind(
-        _fake_goal(attempts=3)) == "Backward"
+def test_next_worker_kind_is_retired() -> None:
+    """The routing function must NOT come back — the merged worker owns
+    the prove-vs-split call (its predecessor `difficulty` died for the
+    same reason: upfront tractability estimates are unreliable)."""
+    assert not hasattr(_dispatcher, "next_worker_kind")
 
 
 # ---------------------------------------------------------------------
@@ -82,7 +38,9 @@ def test_next_worker_kind_respects_runtime_threshold(
 # ---------------------------------------------------------------------
 
 def test_threshold_defaults_are_strong_tier() -> None:
-    """Module-level constants reflect the post-substring-removal default."""
+    """Module-level constants reflect the post-substring-removal default.
+    BUILDER_THRESHOLD survives only as an internal retry-budget constant
+    (librarian hole-fill + legacy builder module) — no config key."""
     assert _dispatcher.BUILDER_THRESHOLD == 3
     assert _dispatcher.SHELVE_THRESHOLD == 8
 
@@ -1582,26 +1540,24 @@ def test_queue_count_helper(conn: sqlite3.Connection) -> None:
     assert db.queue_count(conn, target_id="99", kind="Backward") == 0
 
 
-def test_bfs_refill_backward_capped_at_one(conn: sqlite3.Connection) -> None:
-    """F37 — for an open goal whose next worker is Backward, bfs_refill
-    enqueues exactly one entry (passive trigger; sequential expansion)."""
-    from Tooling.core.dispatcher import bfs_refill, BUILDER_THRESHOLD
+def test_bfs_refill_mid_attempts_capped_at_one(conn: sqlite3.Connection) -> None:
+    """F37 — one entry per open goal regardless of attempts count
+    (single-kind world: no threshold escalation exists to change the
+    enqueued kind)."""
+    from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn)
-    # Bump attempts past BUILDER_THRESHOLD so next_worker_kind escalates
-    # to Backward (the entry_kind=Builder default would otherwise route
-    # to Builder; threshold is the safety-net escalation).
-    for _ in range(BUILDER_THRESHOLD):
+    for _ in range(3):
         db.increment_goal_attempts(conn, gid)
     bfs_refill(conn, running=set())
-    assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 1
+    assert db.queue_count(conn, target_id=str(gid), kind="Formalizer") == 1
 
 
 def test_bfs_refill_builder_capped_at_one(conn: sqlite3.Connection) -> None:
     """F37 — Builder is also single-attempt-per-goal."""
     from Tooling.core.dispatcher import bfs_refill
-    gid = _seed_goal(conn)  # default entry_kind=Builder, attempts=0 → Builder
+    gid = _seed_goal(conn)
     bfs_refill(conn, running=set())
-    assert db.queue_count(conn, target_id=str(gid), kind="Builder") == 1
+    assert db.queue_count(conn, target_id=str(gid), kind="Formalizer") == 1
 
 
 def test_bfs_refill_no_duplicate_when_already_running(
@@ -1611,8 +1567,8 @@ def test_bfs_refill_no_duplicate_when_already_running(
     (target_id, kind) is already in flight (in `running` set)."""
     from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn)
-    bfs_refill(conn, running={(str(gid), "Backward")})
-    assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 0
+    bfs_refill(conn, running={(str(gid), "Formalizer")})
+    assert db.queue_count(conn, target_id=str(gid), kind="Formalizer") == 0
 
 
 def test_bfs_refill_skips_goal_with_any_kind_in_flight(
@@ -1625,14 +1581,12 @@ def test_bfs_refill_skips_goal_with_any_kind_in_flight(
     (LU lu_step_assembly 2026-05-28 regression.)"""
     from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn)
-    db.update_goal_entry_kind(conn, gid, "Backward")
-    # Simulate Strategist Inject(Builder) sitting in queue.
-    db.enqueue(conn, kind="Builder", target_id=str(gid), priority=10,
+    # Simulate a Strategist goal-Inject sitting in queue.
+    db.enqueue(conn, kind="Formalizer", target_id=str(gid), priority=10,
                decision_id=None, problem="p")
     bfs_refill(conn, running=set())
-    # No additional Backward should be enqueued.
-    assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 0
-    assert db.queue_count(conn, target_id=str(gid), kind="Builder") == 1
+    # No additional Formalizer should be enqueued.
+    assert db.queue_count(conn, target_id=str(gid), kind="Formalizer") == 1
 
 
 def test_bfs_refill_skips_goal_with_any_kind_running(
@@ -1643,9 +1597,8 @@ def test_bfs_refill_skips_goal_with_any_kind_running(
     its own."""
     from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn)
-    db.update_goal_entry_kind(conn, gid, "Backward")
-    bfs_refill(conn, running={(str(gid), "Builder", None)})
-    assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 0
+    bfs_refill(conn, running={(str(gid), "Formalizer", None)})
+    assert db.queue_count(conn, target_id=str(gid), kind="Formalizer") == 0
 
 
 def test_bfs_refill_scope_filters_by_problem(
@@ -1672,9 +1625,10 @@ def test_bfs_refill_scope_filters_by_problem(
 
     # Scope to minif2f only → only benchmark goal queues
     bfs_refill(conn, running=set(), scope="minif2f_%")
-    assert db.queue_count(conn, target_id=str(gid_bench), kind="Builder") == 1
+    assert db.queue_count(conn, target_id=str(gid_bench),
+                          kind="Formalizer") == 1
     assert db.queue_count(conn,
-                          target_id=str(gid_research), kind="Builder") == 0
+                          target_id=str(gid_research), kind="Formalizer") == 0
 
 
 def test_bfs_refill_no_scope_dispatches_all(
@@ -1694,8 +1648,8 @@ def test_bfs_refill_no_scope_dispatches_all(
         statement="T", origin="root",
     )
     bfs_refill(conn, running=set())  # no scope
-    assert db.queue_count(conn, target_id=str(gid1), kind="Builder") == 1
-    assert db.queue_count(conn, target_id=str(gid2), kind="Builder") == 1
+    assert db.queue_count(conn, target_id=str(gid1), kind="Formalizer") == 1
+    assert db.queue_count(conn, target_id=str(gid2), kind="Formalizer") == 1
 
 
 def test_bfs_refill_kind_cooldown_blocks_enqueue(
@@ -1705,8 +1659,8 @@ def test_bfs_refill_kind_cooldown_blocks_enqueue(
     target of that kind even if no per-target cooldown is set."""
     import time
     from Tooling.core.dispatcher import bfs_refill
-    _seed_goal(conn, problem="sg")  # default attempts=0 → Builder
-    qcd = {"Builder": time.time() + 60.0}
+    _seed_goal(conn, problem="sg")
+    qcd = {"Formalizer": time.time() + 60.0}
     bfs_refill(conn, running=set(), quota_cooldown_kind=qcd)
     assert db.queue_size(conn) == 0
 
@@ -1714,27 +1668,14 @@ def test_bfs_refill_kind_cooldown_blocks_enqueue(
 def test_bfs_refill_kind_cooldown_only_affects_matching_kind(
     conn: sqlite3.Connection,
 ) -> None:
-    """#103 — cooling Backward does not block Builder targets, and
-    vice versa. Per-kind isolation."""
+    """#103 — cooling an unrelated kind (e.g. Librarian) does not block
+    Formalizer targets. Per-kind isolation."""
     import time
-    from Tooling.core.dispatcher import bfs_refill, BUILDER_THRESHOLD
-    gid_b = _seed_goal(conn, problem="sg")  # entry=Builder, attempts=0
-    conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        ("pn", "Problems/pn/Manifest.md", db.now()),
-    )
-    gid_bw = db.insert_goal(
-        conn, problem="pn", slug="main",
-        lean_path="Problems/pn/Root.lean",
-        statement="T", origin="root",
-    )
-    for _ in range(BUILDER_THRESHOLD):
-        db.increment_goal_attempts(conn, gid_bw)  # escalate to Backward
+    from Tooling.core.dispatcher import bfs_refill
+    gid = _seed_goal(conn, problem="sg")
     bfs_refill(conn, running=set(),
-               quota_cooldown_kind={"Backward": time.time() + 60.0})
-    assert db.queue_count(conn, target_id=str(gid_b), kind="Builder") == 1
-    assert db.queue_count(conn, target_id=str(gid_bw), kind="Backward") == 0
+               quota_cooldown_kind={"Librarian": time.time() + 60.0})
+    assert db.queue_count(conn, target_id=str(gid), kind="Formalizer") == 1
 
 
 def test_bfs_refill_expired_kind_cooldown_no_block(
@@ -1745,8 +1686,8 @@ def test_bfs_refill_expired_kind_cooldown_no_block(
     from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn, problem="sg")
     bfs_refill(conn, running=set(),
-               quota_cooldown_kind={"Builder": time.time() - 60.0})
-    assert db.queue_count(conn, target_id=str(gid), kind="Builder") == 1
+               quota_cooldown_kind={"Formalizer": time.time() - 60.0})
+    assert db.queue_count(conn, target_id=str(gid), kind="Formalizer") == 1
 
 
 def test_flush_queue_kind_drops_only_matching(
@@ -1766,17 +1707,17 @@ def test_flush_queue_kind_drops_only_matching(
         lean_path="Problems/pn/Root.lean",
         statement="T", origin="root",
     )
-    from Tooling.core.dispatcher import bfs_refill, BUILDER_THRESHOLD
-    for _ in range(BUILDER_THRESHOLD):
-        db.increment_goal_attempts(conn, gid_bw)
-    bfs_refill(conn, running=set())  # enqueues 1 Builder + 1 Backward
-    assert db.queue_size(conn) == 2
+    from Tooling.core.dispatcher import bfs_refill
+    bfs_refill(conn, running=set())  # enqueues 2 Formalizer rows
+    db.enqueue(conn, kind="Librarian", target_id="pn", target_kind="Problem",
+               priority=0, decision_id=None, problem="pn")
+    assert db.queue_size(conn) == 3
 
-    n = db.flush_queue_kind(conn, kind="Backward")
-    assert n == 1
+    n = db.flush_queue_kind(conn, kind="Formalizer")
+    assert n == 2
     assert db.queue_size(conn) == 1
     rest = db.pop_queue(conn)
-    assert rest is not None and rest["kind"] == "Builder"
+    assert rest is not None and rest["kind"] == "Librarian"
 
 
 def test_open_goals_excludes_frozen_root(

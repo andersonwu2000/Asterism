@@ -42,9 +42,9 @@ def _insert_goal(conn: sqlite3.Connection, *, status: str = "open",
                  slug: str = "g") -> int:
     cur = conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement, kind, origin,"
-        " status, depth, attempts, entry_kind, integrity_verified, detached,"
+        " status, depth, attempts, integrity_verified, detached,"
         " created_at, updated_at)"
-        " VALUES ('p', ?, ?, 'T', 'theorem', 'backward', ?, 0, 0, 'Builder',"
+        " VALUES ('p', ?, ?, 'T', 'theorem', 'backward', ?, 0, 0,"
         " 0, 0, ?, ?)",
         (slug, f"Problems/p/proofs/L_{slug}.lean", status, db.now(), db.now()),
     )
@@ -195,10 +195,10 @@ def test_seat_sources_respect_state_over_carriers(
         (db.now(),))
     c.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement, kind,"
-        " origin, status, depth, attempts, entry_kind,"
+        " origin, status, depth, attempts,"
         " integrity_verified, detached, created_at, updated_at)"
         " VALUES ('p', 'main', 'Problems/p/Root.lean', 'T', 'theorem',"
-        " 'root', 'frozen', 0, 0, 'Backward', 0, 0, ?, ?)",
+        " 'root', 'frozen', 0, 0, 0, 0, ?, ?)",
         (db.now(), db.now()))
     c.commit()
     strategist_triggers(c, running=set())

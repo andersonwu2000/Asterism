@@ -37,9 +37,6 @@ def _seed_workspace(tmp_path: Path) -> Path:
     """Build the minimum workspace shape `cmd_init` requires."""
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    # Phase 2: Manifest no longer carries `## Entry kind`. cli init
-    # hardwires root.entry_kind='Backward'; this test overrides to
-    # 'Builder' below to exercise Builder's leaf-bypass directly.
     (pdir / "Manifest.md").write_text(
         "---\nproblem: p\n---\n\n"
         "# p\n\n## Statement\nTrue\n",
@@ -92,12 +89,6 @@ def test_e2e_root_proved_through_dispatcher(
     rc = cli.cmd_init(cli_args)
     assert rc == 0
     conn = db.connect()
-    # Phase 2 — cli init hardwires root.entry_kind='Backward'. This e2e
-    # test exercises Builder's leaf-bypass on `True := by trivial`;
-    # override entry_kind back to 'Builder' so dispatcher routes to
-    # Builder first (pre-Phase 2 default for this fixture).
-    conn.execute("UPDATE goals SET entry_kind='Builder' WHERE problem='p'")
-    conn.commit()
     root = conn.execute(
         "SELECT id, status FROM goals WHERE problem='p'").fetchone()
     # Phase 5: cli init creates roots as 'frozen'. This e2e test bypasses
@@ -220,8 +211,10 @@ def test_e2e_root_proved_through_dispatcher(
     from Tooling.llm import claude_cli
     claude_cli._reset_shutdown_for_tests()
 
-    # Assert root proved + a Builder pipeline finished + no spurious
-    # dead_attempts (cascade should be clean).
+    # Assert root proved + a Formalizer pipeline finished + no spurious
+    # dead_attempts (cascade should be clean). The merged worker closes
+    # via the strategy frame (leaf-bypass / hint), so the pipeline row's
+    # outcome is 'success' (strategy committed), not Builder's 'proved'.
     conn2 = db.connect()
     final = conn2.execute(
         "SELECT status FROM goals WHERE problem='p'").fetchone()
@@ -229,7 +222,8 @@ def test_e2e_root_proved_through_dispatcher(
         f"expected proved, got {final['status']}")
     finished = conn2.execute(
         "SELECT COUNT(*) AS n FROM pipelines "
-        "WHERE outcome='proved' AND kind='Builder'").fetchone()
+        "WHERE outcome IN ('proved','success')"
+        " AND kind='Formalizer'").fetchone()
     assert finished["n"] >= 1
     # Phase 2 — Strategist T0 trigger fires on bootstrap_done=0; the
     # fake_spawn shipped a Noop decision, which commits cleanly but

@@ -63,14 +63,13 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 - A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds
-- `Inject` — `target_goal_id`, `brief` or `brief_file` (bare filename in your attempts dir — Write the brief there, no JSON escaping). `pipeline`:
-  - `Forward`: produces ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug); no `target_goal_id`. Search for an existing lemma first. Do not add defs via `Defs.lean`. Never brief Forward with an alive goal's statement.
-  - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
-  - `Builder`: single file inline, one tactic block.
+- `Inject` — `brief` or `brief_file` (bare filename in your attempts dir — Write the brief there, no JSON escaping). Two shapes:
+  - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself — steer with the brief's mathematics, not a mode.
+  - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never brief a mint with an alive goal's statement.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone (the batch still needs its ≥1 experiment). Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `EmitDirective` — `scope="problem:<name>"`, `body` or `body_file` (bare filename in your attempts dir — Write the text there, no JSON escaping), `reason`. Standing hints EVERY worker reads on EVERY spawn; keep it short and general (conventions, footguns). Your plans/progress go in `_plan.md`; goal-specific hints in an Inject brief.
 - `AttemptDisproof` — `target_goal_id`, `reason` (falsity evidence). For a user-requested claim you believe false; a typo → `RequestUserAmend` instead. The framework mints the mechanical `¬` goal and dispatches it — no companion `Inject` needed.
-- `MarkDeliverable` — `target_goal_id`, optional `reason`. Flag a landed node as a top-level *deliverable*. Only a Forward-produced node can be marked, and only once it satisfies what the Manifest asked for. Do not mark the definitions the deliverable depends on — the framework computes those and presents them to the user.
+- `MarkDeliverable` — `target_goal_id`, optional `reason`. Flag a landed node as a top-level *deliverable*. Only a minted node (no-target Inject) can be marked, and only once it satisfies what the Manifest asked for. Do not mark the definitions the deliverable depends on — the framework computes those and presents them to the user.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md", "Root.lean"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong
 - `Noop` — `reason`. Only when work is genuinely in flight; rejected when the root is blocked or a goal awaits your review.
 
@@ -79,7 +78,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 ## Rules
 - Defs.lean / Manifest.md are user-owned; don't write directly.
 - Empty array rejected.
-- Same-batch Forward bricks must be independent (concurrent dispatch); a dependent brick goes in the next batch.
+- Same-batch mints must be independent (concurrent dispatch); a dependent brick goes in the next batch.
 - The mathematics — claims, arguments, lemma names, invariant constructions, proof techniques — is yours. Tactics, Lean syntax, statement shape (ranges, off-by-ones, constants) are the worker's.
 
 ## Examples
@@ -87,13 +86,13 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 ```json
 [{"kind": "ConfirmShelve", "target_goal_id": "family_card_eq_finrank",
   "reason": "Branch reinvents Module.finrank_eq_card_basis (mathlib has)."},
- {"kind": "Inject", "pipeline": "Backward", "target_goal_id": "extended_jordan_family",
+ {"kind": "Inject", "target_goal_id": "extended_jordan_family",
   "brief": "Roadmap: jordan family assembly\nSkip the card-decomposition chain; cite `Module.finrank_eq_card_basis` directly. See current directive entry on finrank/Basis API for signature."}]
 ```
 
 ```json
 [{"kind": "ConfirmShelve", "target_goal_id": "lu_step_assembly",
-  "reason": "Six dead Backward strategies all shelved with the same structural complaint: the four conjuncts bind to the same `Matrix.reindex (Matrix.fromBlocks …)` witness, which replicates verbatim across each sub-goal signature."},
- {"kind": "Inject", "pipeline": "Forward",
-  "brief": "Roadmap: LU witness packaging\n## Need\nA `noncomputable def lu_assembled_lower` packaging `Matrix.reindex e e (Matrix.fromBlocks 1 0 w L')` so Backward sub-goals can cite the witness by name instead of replicating it. (Grep + Loogle confirmed no mathlib analogue.)"}]
+  "reason": "Six dead decomposition strategies all shelved with the same structural complaint: the four conjuncts bind to the same `Matrix.reindex (Matrix.fromBlocks …)` witness, which replicates verbatim across each sub-goal signature."},
+ {"kind": "Inject",
+  "brief": "Roadmap: LU witness packaging\n## Need\nA `noncomputable def lu_assembled_lower` packaging `Matrix.reindex e e (Matrix.fromBlocks 1 0 w L')` so decomposition sub-goals can cite the witness by name instead of replicating it. (Grep + Loogle confirmed no mathlib analogue.)"}]
 ```

@@ -163,10 +163,9 @@ def test_cascade_infeasible_propagates_to_parent_strategy(
 # ---------------------------------------------------------------------
 
 def test_cascade_decline_path_unaffected(conn: sqlite3.Connection) -> None:
-    """Defense: `agent_declined` still routes to Backward — the
-    infeasible branch must not intercept decline traffic. Phase 7 —
-    routing now via `entry_kind='Backward'` instead of attempts
-    inflation, attempts increments by 1 (the declining LLM call)."""
+    """Defense: the infeasible branch must not intercept decline
+    traffic — `agent_declined` counts one attempt (the declining LLM
+    call) and leaves the goal open (entry_kind routing retired v33)."""
     gid = _seed_goal(conn)
     pid = "decline-1"
     _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
@@ -177,7 +176,6 @@ def test_cascade_decline_path_unaffected(conn: sqlite3.Connection) -> None:
     row = db.get_goal(conn, gid)
     assert row["status"] == "open"  # NOT shelved
     assert row["attempts"] == 1
-    assert row["entry_kind"] == "Backward"
 
 
 # ---------------------------------------------------------------------

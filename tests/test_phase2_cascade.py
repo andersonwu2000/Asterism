@@ -56,9 +56,9 @@ def _insert_goal(conn: sqlite3.Connection, *, slug: str,
                  problem: str = "p") -> int:
     cur = conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement,"
-        " kind, origin, status, depth, attempts, entry_kind,"
+        " kind, origin, status, depth, attempts,"
         " integrity_verified, detached, created_at, updated_at)"
-        " VALUES (?, ?, ?, 'T', 'theorem', ?, ?, 0, 0, 'Builder', 0, 0, ?, ?)",
+        " VALUES (?, ?, ?, 'T', 'theorem', ?, ?, 0, 0, 0, 0, ?, ?)",
         (problem, slug, f"Problems/{problem}/proofs/L_{slug}.lean",
          origin, status, db.now(), db.now()),
     )

@@ -439,7 +439,7 @@ def test_bfs_refill_skips_cooled_target(
     import time
     from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn)
-    cooldown_until = {(str(gid), "Builder"): time.time() + 60.0}
+    cooldown_until = {(str(gid), "Formalizer"): time.time() + 60.0}
     bfs_refill(conn, set(), cooldown_until)
     assert db.queue_size(conn) == 0
 

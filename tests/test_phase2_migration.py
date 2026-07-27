@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 32
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 33
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -265,11 +265,11 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     # New CHECK values accepted on goals
     conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement,"
-        " kind, origin, status, depth, attempts, entry_kind,"
+        " kind, origin, status, depth, attempts,"
         " integrity_verified, created_at, updated_at)"
         " VALUES ('alpha', 'fwd_lemma',"
         " 'Problems/alpha/proofs/L_fwd_lemma.lean', 'T',"
-        " 'theorem', 'forward', 'open', 0, 0, 'Backward', 0,"
+        " 'theorem', 'forward', 'open', 0, 0, 0,"
         " '2026-05-18T00:00:00+00:00', '2026-05-18T00:00:00+00:00')")
     conn.execute(
         "UPDATE goals SET status='pending_strategist_review' WHERE slug='sub_open'")
@@ -366,7 +366,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 32
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 33
     conn.close()
 
 
@@ -402,11 +402,11 @@ def test_v19_widens_goals_kind_to_inductive(tmp_path: Path) -> None:
     # New kind accepted end-to-end.
     conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement,"
-        " kind, origin, status, depth, attempts, entry_kind,"
+        " kind, origin, status, depth, attempts,"
         " integrity_verified, created_at, updated_at)"
         " VALUES ('alpha', 'fwd_ind',"
         " 'Problems/alpha/proofs/L_fwd_ind.lean', 'Type',"
-        " 'inductive', 'forward', 'proved', 0, 0, 'Backward', 0,"
+        " 'inductive', 'forward', 'proved', 0, 0, 0,"
         " '2026-07-05T00:00:00+00:00', '2026-07-05T00:00:00+00:00')")
     conn.commit()
 
@@ -414,11 +414,11 @@ def test_v19_widens_goals_kind_to_inductive(tmp_path: Path) -> None:
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             "INSERT INTO goals (problem, slug, lean_path, statement,"
-            " kind, origin, status, depth, attempts, entry_kind,"
+            " kind, origin, status, depth, attempts,"
             " integrity_verified, created_at, updated_at)"
             " VALUES ('alpha', 'fwd_bogus',"
             " 'Problems/alpha/proofs/L_fwd_bogus.lean', 'T',"
-            " 'axiom', 'forward', 'open', 0, 0, 'Backward', 0,"
+            " 'axiom', 'forward', 'open', 0, 0, 0,"
             " '2026-07-05T00:00:00+00:00', '2026-07-05T00:00:00+00:00')")
 
     fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
@@ -442,11 +442,11 @@ def test_v20_widens_goals_kind_to_instance(tmp_path: Path) -> None:
 
     conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement,"
-        " kind, origin, status, depth, attempts, entry_kind,"
+        " kind, origin, status, depth, attempts,"
         " integrity_verified, created_at, updated_at)"
         " VALUES ('alpha', 'fwd_inst',"
         " 'Problems/alpha/proofs/L_fwd_inst.lean', 'Monoid Bar',"
-        " 'instance', 'forward', 'proved', 0, 0, 'Backward', 0,"
+        " 'instance', 'forward', 'proved', 0, 0, 0,"
         " '2026-07-05T00:00:00+00:00', '2026-07-05T00:00:00+00:00')")
     conn.commit()
     fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
@@ -506,7 +506,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 32
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 33
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -546,7 +546,7 @@ def test_v28_manifest_history_carryover(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 32
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 33
     rows = conn.execute(
         "SELECT problem, file, sha, body, source FROM user_file_history"
     ).fetchall()
@@ -593,7 +593,7 @@ def test_v29_problem_state_backfill(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 32
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 33
     states = {str(r["name"]): str(r["state"]) for r in conn.execute(
         "SELECT name, state FROM problems")}
     assert states == {"p_active": "active", "p_await": "awaiting_human",

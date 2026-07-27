@@ -221,7 +221,7 @@ def _seed_goal(conn: sqlite3.Connection, slug: str) -> int:
         conn, problem="p", slug=slug,
         lean_path=f"Problems/p/proofs/L_{slug}.lean",
         statement="T", origin="backward",
-        depth=1, entry_kind="Builder",
+        depth=1,
     )
 
 

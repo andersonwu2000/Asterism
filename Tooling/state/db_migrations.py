@@ -634,6 +634,89 @@ def apply(conn: sqlite3.Connection) -> None:
                 " ADD COLUMN produced_kind TEXT NULL")
         conn.execute("PRAGMA user_version = 32")
         conn.commit()
+    if v < 33:
+        # v33 — Formalizer merge (update_plan_2026_07 #1):
+        #   1. goals.entry_kind dropped — the merged worker decides
+        #      prove-vs-split itself; pre-dispatch routing no longer
+        #      exists (predecessor `difficulty` died the same death).
+        #      Plain DROP COLUMN: SQLite ≥3.35 drops a column together
+        #      with its column-level CHECK (verified on 3.42).
+        #   2. queue + pipelines kind CHECK gains 'Formalizer'. Rebuild
+        #      required (CHECKs are immutable in place). Old kind values
+        #      stay VALID — historical rows are never rewritten.
+        gcols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+        if "entry_kind" in gcols:
+            conn.execute("ALTER TABLE goals DROP COLUMN entry_kind")
+        pl_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table'"
+            " AND name='pipelines'").fetchone()
+        if pl_sql and "'Formalizer'" not in (pl_sql[0] or ""):
+            conn.execute("PRAGMA foreign_keys = OFF")
+            try:
+                conn.executescript("""
+                    CREATE TABLE _new_pipelines (
+                        id          TEXT PRIMARY KEY,
+                        kind        TEXT NOT NULL
+                                        CHECK(kind IN ('Builder','Backward',
+                                                       'Verify','Strategist',
+                                                       'Forward','Librarian',
+                                                       'Scholar','Formalizer')),
+                        target_id   TEXT NOT NULL,
+                        target_kind TEXT NOT NULL
+                                        CHECK(target_kind IN
+                                              ('Goal','Strategy','Problem')),
+                        status      TEXT NOT NULL
+                                        CHECK(status IN ('succeeded','failed')),
+                        outcome     TEXT NOT NULL,
+                        started_at  TEXT NOT NULL,
+                        finished_at TEXT NOT NULL
+                    );
+                    INSERT INTO _new_pipelines SELECT * FROM pipelines;
+                    DROP TABLE pipelines;
+                    ALTER TABLE _new_pipelines RENAME TO pipelines;
+                    CREATE INDEX IF NOT EXISTS idx_pipelines_status
+                        ON pipelines(status);
+
+                    CREATE TABLE _new_queue (
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        kind        TEXT NOT NULL
+                                        CHECK(kind IN ('Builder','Backward',
+                                                       'Verify','Strategist',
+                                                       'Forward','Librarian',
+                                                       'Scholar','Formalizer')),
+                        target_id   TEXT NOT NULL,
+                        target_kind TEXT NOT NULL DEFAULT 'Goal'
+                                        CHECK(target_kind IN
+                                              ('Goal','Strategy','Problem')),
+                        priority    INTEGER NOT NULL DEFAULT 0,
+                        decision_id INTEGER NULL DEFAULT NULL
+                                        REFERENCES strategist_decisions(id),
+                        problem     TEXT NOT NULL DEFAULT '',
+                        payload     TEXT,
+                        owner_pid   INTEGER,
+                        leased_at   TEXT,
+                        created_at  TEXT NOT NULL
+                    );
+                    INSERT INTO _new_queue (id, kind, target_id, target_kind,
+                        priority, decision_id, problem, payload, owner_pid,
+                        leased_at, created_at)
+                    SELECT id, kind, target_id, target_kind, priority,
+                        decision_id, problem, payload, owner_pid,
+                        leased_at, created_at FROM queue;
+                    DROP TABLE queue;
+                    ALTER TABLE _new_queue RENAME TO queue;
+                    CREATE INDEX IF NOT EXISTS idx_queue_priority
+                        ON queue(priority DESC, id ASC);
+                """)
+                fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+                if fk_violations:
+                    raise RuntimeError(
+                        f"v33 migration left FK violations: "
+                        f"{fk_violations[:5]}")
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA user_version = 33")
+        conn.commit()
 
 
 def _migrate_to_v26(conn: sqlite3.Connection) -> None:

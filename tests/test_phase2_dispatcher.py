@@ -55,10 +55,10 @@ def _insert_root(conn: sqlite3.Connection, problem: str,
                  *, status: str = "open") -> int:
     cur = conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement,"
-        " kind, origin, status, depth, attempts, entry_kind,"
+        " kind, origin, status, depth, attempts,"
         " integrity_verified, detached, created_at, updated_at)"
         " VALUES (?, 'main', ?, 'T', 'theorem', 'root', ?,"
-        " 0, 0, 'Backward', 0, 0, ?, ?)",
+        " 0, 0, 0, 0, ?, ?)",
         (problem, f"Problems/{problem}/Root.lean", status,
          db.now(), db.now()),
     )
@@ -70,9 +70,9 @@ def _insert_sub(conn: sqlite3.Connection, problem: str, slug: str,
                 *, status: str = "open", detached: int = 0) -> int:
     cur = conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement,"
-        " kind, origin, status, depth, attempts, entry_kind,"
+        " kind, origin, status, depth, attempts,"
         " integrity_verified, detached, created_at, updated_at)"
-        " VALUES (?, ?, ?, 'T', 'theorem', 'backward', ?, 1, 0, 'Builder',"
+        " VALUES (?, ?, ?, 'T', 'theorem', 'backward', ?, 1, 0,"
         " 0, ?, ?, ?)",
         (problem, slug, f"Problems/{problem}/proofs/L_{slug}.lean",
          status, detached, db.now(), db.now()),

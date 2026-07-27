@@ -18,6 +18,19 @@ from Tooling.pipeline import strategist, forward
 from Tooling.state import db, manifest
 
 
+@pytest.fixture(autouse=True)
+def _intake_degraded(monkeypatch):
+    """Formalizer intake is exercised by its own tests (test_intake.py);
+    these tests pin the DEGRADED path (intake unusable -> classic cold
+    flow, sid=None) so their spawn-order harnesses keep meaning."""
+    from Tooling.pipeline import _intake
+    monkeypatch.setattr(
+        _intake, "run_intake",
+        lambda **kw: _intake.IntakeOutcome(sid=None))
+
+
+
+
 @pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
@@ -51,7 +64,7 @@ def _insert_root(conn: sqlite3.Connection) -> int:
     return db.insert_goal(
         conn, problem="p", slug="main",
         lean_path="Problems/p/Root.lean", statement="T",
-        origin="root", depth=0, entry_kind="Backward",
+        origin="root", depth=0,
     )
 
 
@@ -135,7 +148,7 @@ def test_run_strategist_inject_enqueues_forward(
     # Forward enqueued
     q = conn.execute(
         "SELECT kind, target_id, target_kind, decision_id FROM queue"
-        " WHERE kind='Forward'"
+        " WHERE kind='Formalizer'"
     ).fetchone()
     assert q is not None
     assert q["target_id"] == "p"
@@ -381,13 +394,12 @@ def test_run_forward_commits_new_lemma(
     assert r.outcome == "success"
     # New goal inserted
     g = conn.execute(
-        "SELECT origin, status, entry_kind, slug FROM goals"
+        "SELECT origin, status, slug FROM goals"
         " WHERE problem='p' AND origin='forward'"
     ).fetchone()
     assert g is not None
     assert g["origin"] == "forward"
     assert g["status"] == "open"
-    assert g["entry_kind"] == "Backward"
     assert g["slug"] == "my_lemma"
 
 
@@ -748,7 +760,6 @@ def _insert_proved_canonical(conn: sqlite3.Connection, workspace: Path, *,
     gid = db.insert_goal(
         conn, problem="p", slug=slug, lean_path=rel,
         statement=statement, origin="forward", depth=0,
-        entry_kind="Backward",
     )
     db.update_goal_status(conn, gid, "proved")
     conn.commit()
@@ -1006,7 +1017,7 @@ def test_run_forward_reuse_repoints_inject_to_open_goal(
     x = db.insert_goal(
         conn, problem="p", slug="existing_x",
         lean_path="Problems/p/proofs/L_existing_x.lean", statement="True",
-        origin="backward", depth=1, entry_kind="Builder")
+        origin="backward", depth=1)
     did = _insert_inject_decision(conn)
     _forward_dup_spawn(monkeypatch)
     monkeypatch.setattr(
@@ -1044,7 +1055,7 @@ def test_run_forward_reuse_revives_and_detaches_shelved_goal(
     x = db.insert_goal(
         conn, problem="p", slug="parked_x",
         lean_path="Problems/p/proofs/L_parked_x.lean", statement="True",
-        origin="backward", depth=1, entry_kind="Builder")
+        origin="backward", depth=1)
     db.update_goal_status(conn, x, "shelved")
     conn.commit()
     did = _insert_inject_decision(conn)
@@ -1082,7 +1093,7 @@ def test_run_forward_reuse_parks_alongside_confirmshelve_goal(
     x = db.insert_goal(
         conn, problem="p", slug="parked_cs",
         lean_path="Problems/p/proofs/L_parked_cs.lean", statement="True",
-        origin="backward", depth=1, entry_kind="Builder")
+        origin="backward", depth=1)
     db.update_goal_status(conn, x, "shelved")
     # Latest decision targeting x is a ConfirmShelve → parked (not cascade).
     conn.execute(

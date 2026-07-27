@@ -1286,6 +1286,13 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     if outcome == "moot":
         return
 
+    if kind == "Formalizer":
+        # Merged worker (update_plan_2026_07 #1): goal jobs ride the
+        # Backward cascade arm (the strategy-frame engine — identical
+        # outcome shapes), mint jobs the Forward arm. Legacy
+        # Builder/Backward queue rows keep their original arms.
+        kind = "Backward" if target_kind == "Goal" else "Forward"
+
     if kind == "Builder":
         if outcome == "proved":
             # Builder returns outcome='proved' only after its in-pipeline
@@ -1357,19 +1364,15 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 _enqueue_strategist_review(conn, int(target_id))
                 return
             # `needs_decomposition` directive (legacy `too_hard`):
-            # Builder says "this goal needs decomposition first". Route
-            # next dispatch to Backward via entry_kind switch instead
-            # of inflating attempts to BUILDER_THRESHOLD. Phase 7
-            # decision 5: attempts is LLM-call failure count, not a
-            # routing knob; entry_kind preserves the 1:1 invariant
-            # while still forcing the next dispatch to Backward.
+            # Legacy Builder `needs_decomposition` decline (the
+            # Formalizer splits in-session, so only pre-merge queue
+            # rows reach this): count the attempt; over-threshold goals
+            # go to strategist review. The old entry_kind flip is gone
+            # with the routing column (v33).
             if failure_reason == "agent_declined":
                 n = db.increment_goal_attempts(conn, int(target_id))
                 if n >= _shelve_threshold():
                     _enqueue_strategist_review(conn, int(target_id))
-                else:
-                    db.update_goal_entry_kind(conn, int(target_id),
-                                              "Backward")
                 return
             n = db.increment_goal_attempts(conn, int(target_id))
             if n >= _shelve_threshold():

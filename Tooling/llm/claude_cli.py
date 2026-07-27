@@ -916,6 +916,15 @@ class ClaudeCliProvider:
             session_flags = ["--resume", req.session_id]
             session_lifetime_flag = []
             prompt = _load_prompt(req)
+        # Staged-pipeline work turn (Formalizer): the intake turn opened
+        # this session; resume it and send the work-stage prompt file
+        # verbatim (rendered). Unlike is_postmortem this is a FULL work
+        # attempt — normal timeout and watchdog apply (the watchdog
+        # bucket below only exempts postmortem/inline spawns).
+        elif req.continuation and req.session_id:
+            session_flags = ["--resume", req.session_id]
+            session_lifetime_flag = []
+            prompt = _load_prompt(req)
         # In-pipeline retry path uses `--resume`, a short inline prompt
         # with the lake error embedded directly (no separate
         # RETRY_NOTE.md file → agent doesn't need a Read tool round-

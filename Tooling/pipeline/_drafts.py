@@ -328,7 +328,7 @@ def _resolve_goal_for_slug(conn: "_sqlite3.Connection",
     slug was framework-generated under a different name).
     """
     row = conn.execute(
-        "SELECT id, problem, entry_kind FROM goals WHERE slug = ?",
+        "SELECT id, problem FROM goals WHERE slug = ?",
         (slug,),
     ).fetchone()
     if row is None:

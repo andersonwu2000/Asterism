@@ -1678,7 +1678,7 @@ def _citation_submission(content: str, problem: str, workspace: "Path",
     # (`not _safe_glob(attempts_dir, "new_*.lean")`). A `sorry` anywhere
     # means this content isn't a submittable leaf proof, so keep the warn.
     leaf_bypass = (
-        (kind or "").lower() == "backward"
+        (kind or "").lower() in ("backward", "formalizer")
         and attempts_dir is not None
         and not re.search(r"\bsorry\b", content)
         and not next(attempts_dir.glob("new_*.lean"), None))

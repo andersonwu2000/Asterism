@@ -116,16 +116,13 @@ def _forward_seed_scaffold(*, problem: str, workspace: Path) -> str:
 SLUG_RE = assemble.SLUG_RE
 SLUG_MAX_LEN = assemble.SLUG_MAX_LEN
 
-# Leading-comment directives Forward agent writes:
+# Leading-comment directives the mint agent writes:
 #   `-- Forward rationale: <prose>`   required, 2-3 sentences
-#   `-- entry_kind: Backward|Builder` required, routes new goal's first dispatch
 #   `-- decline: library_sufficient`  agent decline (no lemma needed)
+# (`-- entry_kind:` retired v33 — routing no longer exists; a legacy
+# line is stripped at commit, never parsed.)
 _RATIONALE_RE = re.compile(
     r"^\s*--\s*Forward\s+rationale\s*:\s*(.+?)$", re.MULTILINE | re.IGNORECASE,
-)
-_ENTRY_KIND_RE = re.compile(
-    r"^\s*--\s*entry_kind\s*:\s*(Builder|Backward)\b",
-    re.MULTILINE | re.IGNORECASE,
 )
 _DECLINE_RE = re.compile(
     r"^\s*--\s*decline\s*:\s*([a-z_]+)\b",
@@ -170,10 +167,9 @@ _ANON_INSTANCE_RE = re.compile(
 @dataclass
 class ForwardMetadata:
     """Parsed leading-comment directives + declaration head from a
-    Forward agent's `new_<slug>.lean` output."""
+    mint agent's `new_<slug>.lean` output."""
     slug: str
     rationale: str
-    entry_kind: str  # 'Builder' or 'Backward' (only meaningful when kind=='theorem')
     sorry_free: bool  # True iff body has no `sorry` token
     kind: str = "theorem"  # 'theorem'|'def'|'structure'|'class'|'inductive'|'instance'
 
@@ -211,19 +207,6 @@ def extract_forward_metadata(text: str) -> tuple[ForwardMetadata | None, str]:
     rationale = rat_m.group(1).strip()
     if not rationale:
         return None, "Forward rationale comment is empty"
-    if kind == "theorem":
-        ek_m = _ENTRY_KIND_RE.search(text)
-        if ek_m is None:
-            entry_kind = "Backward"
-        else:
-            entry_kind = ek_m.group(1)
-            if entry_kind not in ("Builder", "Backward"):
-                entry_kind = "Backward"
-    else:
-        # Non-theorem kinds carry no proof obligation; entry_kind is
-        # ignored downstream but the column is NOT NULL, so default
-        # to 'Backward' to keep the DB happy.
-        entry_kind = "Backward"
     # sorry detection — any `sorry` token below the imports. For non-
     # theorem kinds this still tracks "did the agent leave a hole";
     # commit uses kind alone to decide initial status (`sorry_free`
@@ -238,7 +221,7 @@ def extract_forward_metadata(text: str) -> tuple[ForwardMetadata | None, str]:
         return None, ("`inductive` must be complete (no `sorry`): "
                       "emit the full constructor list or decline")
     return ForwardMetadata(
-        slug=slug, rationale=rationale, entry_kind=entry_kind,
+        slug=slug, rationale=rationale,
         sorry_free=sorry_free, kind=kind,
     ), ""
 
@@ -325,10 +308,8 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
                 f"no new_*.lean in {attempts_dir} for forward commit"
             )
         src = candidates[0]
-    # Strip the consumed `-- entry_kind:` routing directive (already parsed into
-    # the DB column) so it doesn't persist into the permanent proof file and
-    # propagate to the Library on migrate. Backward strips in commit_strategy;
-    # the Forward channel was the gap.
+    # Strip any legacy `-- entry_kind:` directive line (routing retired
+    # v33) so it doesn't persist into the permanent proof file.
     from .backward import _strip_entry_kind
     body = _strip_entry_kind(src.read_text(encoding="utf-8"))
 
@@ -418,7 +399,7 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
     goal_id = db.insert_goal(
         conn, problem=problem, slug=metadata.slug,
         lean_path=rel_lean_path, statement=statement,
-        origin="forward", depth=0, entry_kind=metadata.entry_kind,
+        origin="forward", depth=0,
         kind=metadata.kind,
     )
     # Forward-output goals have no parent strategy edge (Forward is a
@@ -467,8 +448,8 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
     from ._lake import lean_path_to_module
     from .backward import _strip_entry_kind
 
-    # The candidate body still carries its consumed `-- entry_kind:` directive;
-    # strip before it's prepended into the alias content (and the proof file).
+    # Strip any legacy `-- entry_kind:` directive line (routing retired
+    # v33) before it's prepended into the alias content.
     body = _strip_entry_kind(body)
 
     # Defense-in-depth (2026-07-03 mv_delta): only a SORRY-BEARING candidate
@@ -552,7 +533,7 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
     goal_id = db.insert_goal(
         conn, problem=problem, slug=metadata.slug,
         lean_path=rel_lean_path, statement=statement,
-        origin="forward", depth=0, entry_kind=metadata.entry_kind,
+        origin="forward", depth=0,
         kind=metadata.kind,
     )
     # Same proved bookkeeping as a sorry-free leaf-bypass Forward
@@ -1019,25 +1000,70 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
             problem_dir=problem_dir, attempts_dir=attempts_dir,
             workspace=workspace)
 
-    result = run_lsp_edit_loop(
-        conn=conn,
-        goal_id=None,   # Forward targets a problem, not a goal
-        pipeline_id=pipeline_id,
-        budget_threshold=dispatcher.FORWARD_RETRY_BUDGET,
-        shelve_threshold=0,   # unused when goal_id=None
-        attempts_dir=attempts_dir,
-        workspace=workspace,
-        problem=problem,
-        problem_dir=problem_dir,
-        kind="forward",
-        prompt_path=PROMPT_DIR / "forward" / "forward.md",
-        target=target,
-        cold_prep_fn=forward_cold_prep,
-        parse_fn=forward_parse,
-        postmortem_fn=forward_postmortem,
-        feedback_fn=forward_feedback,
-        decision_id=decision_id,
+    # ── Intake stage (update_plan_2026_07 #1, mint job) ──────────────
+    # Confirmation-shaped: the brief usually pins the Proof claim, but
+    # "the claim has no backing in the Proof" must be catchable before
+    # any Lean work. Same degrade-gracefully contract as the goal-job
+    # intake (a broken intake never blocks the mint).
+    from ._intake import run_intake
+    from ..llm.base import SpawnRC as _SpawnRC
+    intake_sid: "str | None" = None
+    result: "PipelineResult | None" = None
+    compile_forward_context(
+        conn, problem=problem, decision_id=decision_id,
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
     )
+    target.write_text(
+        _forward_seed_scaffold(problem=problem, workspace=workspace),
+        encoding="utf-8",
+    )
+    intake = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=attempts_dir,
+                        problem_dir=problem_dir,
+                        label=f"mint inject{decision_id or '?'} {problem}")
+    if intake.infra_rc is not None:
+        _infra_map = {
+            _SpawnRC.SHUTDOWN: ("daemon_shutdown", "intake spawn aborted"),
+            _SpawnRC.MISSING_DEP: ("missing_dep", "intake spawn: CLI missing"),
+            _SpawnRC.QUOTA_EXHAUSTED: ("quota_exhausted",
+                                       "intake spawn: quota / rate limit"),
+        }
+        reason, detail = _infra_map[intake.infra_rc]
+        result = PipelineResult(outcome="failed", failure_reason=reason,
+                                failure_detail=detail)
+    elif intake.declined is not None:
+        # Mint declines ride the existing Forward decline shape
+        # (`agent_declined` + the `agent declined (<kind>): why` detail
+        # format) so the Inject outcome stash below keeps working.
+        reason, note = intake.declined
+        result = PipelineResult(
+            outcome="failed", failure_reason="agent_declined",
+            failure_detail=f"agent declined ({reason}): {note}")
+        print(f"[intake] mint inject{decision_id or '?'} {problem}: "
+              f"declined ({reason}) — {note[:160]}", flush=True)
+    else:
+        intake_sid = intake.sid
+
+    if result is None:
+        result = run_lsp_edit_loop(
+            conn=conn,
+            goal_id=None,   # mint targets a problem, not a goal
+            pipeline_id=pipeline_id,
+            budget_threshold=dispatcher.FORWARD_RETRY_BUDGET,
+            shelve_threshold=0,   # unused when goal_id=None
+            attempts_dir=attempts_dir,
+            workspace=workspace,
+            problem=problem,
+            problem_dir=problem_dir,
+            kind="formalizer",
+            prompt_path=PROMPT_DIR / "formalizer" / "mint.md",
+            target=target,
+            cold_prep_fn=forward_cold_prep,
+            parse_fn=forward_parse,
+            postmortem_fn=forward_postmortem,
+            feedback_fn=forward_feedback,
+            decision_id=decision_id,
+            initial_sid=intake_sid,
+        )
     # #4 — surface a Forward decline's `## Why` to the originating Inject
     # decision so its next inject_batch_done wake reads WHY the brief was
     # declined, not just `failed:agent_declined`. Stashed pre-cascade;

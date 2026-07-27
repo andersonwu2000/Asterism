@@ -360,38 +360,20 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         decision.target_id = int(row["id"])
 
     if k == "Inject":
-        pipeline = decision.payload.get("pipeline")
-        if pipeline not in ("Forward", "Backward", "Builder"):
-            return (f"Inject.pipeline must be one of "
-                    f"'Forward'/'Backward'/'Builder' (got {pipeline!r})")
-        # Phase 6 unified — one Inject = one decision = one pipeline
-        # dispatch. `brief` is the agent-facing text payload across all
-        # three variants:
-        #   - Forward: lemma description (what to produce on a new goal)
-        #   - Backward / Builder: directive (how to redispatch on an
-        #     existing goal — "try this angle"). Used for the change-
-        #     direction workflow on pending_review.
-        # Multi-Inject in one Strategist call lands later via the
-        # multi-decision schema, where each Inject is its own decision.
+        # Shape-derived mode (update_plan_2026_07 #1): `target_goal_id`
+        # present → work that goal (the Formalizer decides prove-vs-
+        # split itself — steer with the brief's mathematics, not a
+        # mode); absent → mint ONE new brick from the brief. The legacy
+        # `pipeline` payload field is ignored when present.
         if not isinstance(decision.brief, str) or not decision.brief.strip():
-            return f"Inject({pipeline}) requires non-empty `brief` (string)"
+            return "Inject requires non-empty `brief` (string)"
         if decision.payload.get("briefs") or decision.payload.get("directive"):
             return (f"Inject schema uses top-level `brief: str`; "
                     f"`briefs` / `directive` payload fields are legacy "
                     f"— remove them and put your text in `brief`")
-        if pipeline == "Forward":
-            if decision.target_id is not None:
-                return ("Inject(Forward) targets the problem (no goal yet "
-                        "produced); `target_goal_id` must be null. Use "
-                        "Inject(Backward, target_goal_id=...) for "
-                        "redispatch on an existing goal.")
-            return ""
-        # Backward / Builder
         target = decision.target_id
         if target is None:
-            return (f"Inject({pipeline}) requires `target_goal_id` "
-                    f"(integer id or slug shown in Context.md's "
-                    f"active goal list)")
+            return ""          # mint shape — brief is the whole payload
         g = db.get_goal(conn, int(target))
         if g is None:
             return f"target_goal_id={target} not found"
@@ -400,11 +382,11 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                     f"{g['problem']!r}, not {problem!r}")
         if str(g["status"]) in ("proved", "disproved", "dead"):
             return (f"target_goal_id={target} is {g['status']!r}; "
-                    f"Inject({pipeline}) cannot redispatch a terminal "
-                    f"goal. proved/disproved/dead are hard terminals; "
+                    f"Inject cannot redispatch a terminal goal. "
+                    f"proved/disproved/dead are hard terminals; "
                     f"open a different angle on a different goal instead.")
         # Ancestor safety walk (was Reopen's responsibility pre-2026-05-28;
-        # now Inject(Backward|Builder) takes over as the unified
+        # now the goal-targeted Inject takes over as the unified
         # reactivation mechanism). disproved ancestor = counterexample
         # already shown for a parent statement; descendant is moot. dead
         # ancestor is also a hard terminal (parent strategy was wrong);
@@ -414,15 +396,15 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         if bad:
             if anc_kind == "disproved":
                 return (
-                    f"Inject({pipeline}) rejected: goal {target} has a "
+                    f"Inject rejected: goal {target} has a "
                     f"'disproved' ancestor (counterexample already shown). "
                     f"Use ConfirmShelve."
                 )
             return (
-                f"Inject({pipeline}) rejected: goal {target} has a "
+                f"Inject rejected: goal {target} has a "
                 f"'dead' ancestor (parent strategy was wrong; this "
                 f"descendant exists only in that abandoned context). "
-                f"Inject(Backward, target=<parent-goal>) to try a "
+                f"Inject(target=<parent-goal>) to try a "
                 f"different decomposition instead."
             )
         return ""
@@ -696,16 +678,14 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     }
     inject_bb_targets: set[int] = {
         int(d.target_id) for d in decisions
-        if d.kind == "Inject"
-        and d.payload.get("pipeline") in ("Backward", "Builder")
-        and d.target_id is not None
+        if d.kind == "Inject" and d.target_id is not None
     }
     overlap_bb = confirm_targets & inject_bb_targets
     if overlap_bb:
         gid = next(iter(overlap_bb))
         return (
-            f"batch contains both ConfirmShelve and Inject(Backward/"
-            f"Builder) for goal {gid} — the Inject force-reopens the "
+            f"batch contains both ConfirmShelve and a goal-targeted "
+            f"Inject for goal {gid} — the Inject force-reopens the "
             f"target, the ConfirmShelve then shelves it; the queued "
             f"retry would dispatch on a shelved goal. Drop the "
             f"ConfirmShelve (the redispatch already keeps the goal "
@@ -1050,21 +1030,18 @@ def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
     across the whole batch — including across pipeline kinds — so a
     single wake-up coalesces all completions.
     """
-    pipeline = decision.payload.get("pipeline")
-    if pipeline == "Forward":
+    # Shape-derived (update_plan_2026_07 #1): no target → mint a new
+    # brick; target present → redispatch the goal to the Formalizer.
+    if decision.target_id is None:
         return _commit_inject_forward(
             decision, conn, problem=problem, tick=tick,
             trigger_kind=trigger_kind, batch_id_override=inject_batch_id,
             step_index=step_index, batch_size=batch_size)
-    if pipeline in ("Backward", "Builder"):
-        return _commit_inject_redispatch(
-            decision, conn, problem=problem, tick=tick,
-            trigger_kind=trigger_kind, pipeline=pipeline,
-            batch_id_override=inject_batch_id,
-            step_index=step_index, batch_size=batch_size)
-    raise RuntimeError(
-        f"_commit_inject_batch: unhandled pipeline {pipeline!r} "
-        f"(verify_decision should have caught this)")
+    return _commit_inject_redispatch(
+        decision, conn, problem=problem, tick=tick,
+        trigger_kind=trigger_kind, pipeline="Formalizer",
+        batch_id_override=inject_batch_id,
+        step_index=step_index, batch_size=batch_size)
 
 
 def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
@@ -1099,7 +1076,7 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
     )
     row_id = int(cur.lastrowid)
     db.enqueue(
-        conn, kind="Forward", target_id=problem,
+        conn, kind="Formalizer", target_id=problem,
         target_kind="Problem", priority=10,
         decision_id=row_id, problem=problem,
     )
@@ -1192,16 +1169,10 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
             transitions.apply_strategy_transition(
                 conn, int(s["id"]), "proposed", event="strategist_unstall")
 
-    # Pin entry_kind to the requested pipeline so bfs_refill doesn't
-    # enqueue a parallel pipeline of the prior kind. Without this, an
-    # Inject(Builder) on an entry_kind='Backward' goal lets bfs_refill
-    # enqueue a Backward of its own on the same goal — both spawn in
-    # parallel under pool=2, the Backward's outcome dominates, and
-    # Strategist's redispatch intent is bypassed (LU lu_step_assembly
-    # 2026-05-28: 3 consecutive Backward shelves while Strategist
-    # explicitly Injected Builder).
-    db.update_goal_entry_kind(conn, target_id, pipeline)
-
+    # entry_kind pinning retired with the Formalizer merge: bfs_refill
+    # and Inject now enqueue the SAME kind, so the in_flight(gid, kind)
+    # guard structurally prevents the parallel-pipeline race the old
+    # pin worked around (LU lu_step_assembly 2026-05-28).
     db.enqueue(
         conn, kind=pipeline, target_id=str(target_id),
         target_kind="Goal", priority=10,
@@ -1361,10 +1332,9 @@ def _commit_attempt_disproof(decision: Decision, conn: sqlite3.Connection,
     zero schema — the pair lives in the decision row, and the Ingest
     gate / consistency alarm query it there).
 
-    The ¬P goal is a normal open goal (origin='forward', detached,
-    entry_kind='Builder' — push_neg + witness is often Builder-sized;
-    the threshold escalates to Backward as usual). BFS dispatches it
-    like anything else; no new pipeline."""
+    The ¬P goal is a normal open goal (origin='forward', detached).
+    BFS dispatches it to the Formalizer like anything else; no new
+    pipeline."""
     gid = int(decision.target_id)  # type: ignore[arg-type]
     g = db.get_goal(conn, gid)
     target_path = workspace / str(g["lean_path"])
@@ -1407,7 +1377,7 @@ def _commit_attempt_disproof(decision: Decision, conn: sqlite3.Connection,
         conn, problem=problem, slug=slug,
         lean_path=dest.relative_to(workspace).as_posix(),
         statement=neg, origin="forward", depth=0,
-        entry_kind="Builder", kind="theorem",
+        kind="theorem",
     )
     ts = db.now()
     cur = conn.execute(

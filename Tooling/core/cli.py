@@ -369,7 +369,7 @@ def init_problem(workspace: Path, problem: str, *,
             gid = db.insert_goal(
                 conn, problem=problem, slug="main",
                 lean_path=rel_root, statement=statement,
-                origin="root", depth=0, entry_kind="Backward",
+                origin="root", depth=0,
                 status="frozen",
             )
             msgs.append(f"OK: init {problem}, root goal id={gid}")
@@ -2494,13 +2494,7 @@ def cmd_config(args: argparse.Namespace) -> int:
         ("dispatch.shelve_threshold",
          _cfg.get("dispatch.shelve_threshold",
                   env_var="ASTERISM_SHELVE_THRESHOLD", default=8, cast=int)),
-        ("builder.threshold",
-         _cfg.get("builder.threshold",
-                  legacy_env=("ASTERISM_BUILDER_THRESHOLD",),
-                  default=_cfg.get("dispatch.builder_threshold", default=3, cast=int),
-                  cast=int)),
-        ("builder.model", _cc.resolve_model("builder")),
-        ("backward.model", _cc.resolve_model("backward")),
+        ("formalizer.model", _cc.resolve_model("formalizer")),
     ]
     for k, v in rows:
         print(f"  {k:<30} = {v}")

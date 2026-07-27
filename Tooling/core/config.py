@@ -47,8 +47,7 @@ _CONFIG_FILENAME = "Asterism.yaml"
 CONFIG_SPEC: "dict[str, str]" = {
     "dispatch.pool": "worker pool == gateway workers, 1:1 #118 (ASTERISM_POOL; 4)",
     "dispatch.budget_sec": "daemon wall budget (ASTERISM_BUDGET_SEC; 1800)",
-    "dispatch.builder_threshold": "attempts before Builder→Backward — legacy yaml key (3)",
-    "builder.threshold": "modern alias of dispatch.builder_threshold (ASTERISM_BUILDER_THRESHOLD; falls back to legacy key)",
+    "dispatch.intake_timeout_sec": "Formalizer intake turn spawn cap (ASTERISM_INTAKE_TIMEOUT_SEC; 300)",
     "dispatch.shelve_threshold": "attempts before shelve (ASTERISM_SHELVE_THRESHOLD; 8)",
     "dispatch.handoff_on_code_change": "daemon drains + hands off to a fresh daemon when the source tree OR Asterism.yaml/.env changes under it (ASTERISM_HANDOFF_ON_CODE_CHANGE; true)",
     "dispatch.quota_wait": "confirmed-exhausted subscription window pauses dispatch until resets_at instead of exiting (ASTERISM_QUOTA_WAIT; false — riding further windows is opt-in, user 2026-07-18)",
@@ -284,10 +283,11 @@ def resolve_workspace(explicit: "Path | str | None" = None) -> Path:
 
 #: dotted key -> (python type, human description)
 UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
-    "builder.model": (str, "model that writes proofs (bulk work)"),
-    "backward.model": (str, "model that decomposes goals"),
+    "formalizer.model": (str, "model that turns the argued proof into Lean (prove/split/mint)"),
+    "builder.model": (str, "legacy pre-merge key — unread post-v33; kept for old yaml files"),
+    "backward.model": (str, "legacy pre-merge key — unread post-v33; kept for old yaml files"),
     "strategist.model": (str, "model that plans the campaign"),
-    "forward.model": (str, "model that builds vocabulary and claims"),
+    "forward.model": (str, "legacy pre-merge key — unread post-v33; kept for old yaml files"),
     "presearch.model": (str, "model that scouts Mathlib before proving"),
     "librarian.model": (str, "model that curates the Library"),
     "scholar.model": (str, "model that searches and fetches cited papers"),

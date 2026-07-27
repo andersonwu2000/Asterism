@@ -70,15 +70,13 @@ def _record_dead_attempt(conn: sqlite3.Connection, *, pipeline_id: str,
     conn.commit()
 
 
-def test_cascade_decline_routes_to_backward_via_entry_kind(
+def test_cascade_decline_counts_one_attempt(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 7 — Builder decline increments attempts by exactly 1 (the
-    declining LLM call) and flips `entry_kind` to 'Backward' so the next
-    dispatch routes to Backward. Pre-Phase-7 inflated attempts to
-    BUILDER_THRESHOLD as a routing hack; that violated the 1:1 attempts
-    ↔ dead_attempts invariant (decision 5/6) by counting attempts that
-    never corresponded to LLM calls."""
+    """Legacy Builder decline (needs_decomposition) increments attempts
+    by exactly 1 (the declining LLM call) and leaves the goal open.
+    The old entry_kind flip is gone with the routing column (v33) —
+    the Formalizer splits in-session instead of declining for it."""
     gid = _seed_goal(conn)
     pid = "decline-1"
     _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
@@ -89,7 +87,6 @@ def test_cascade_decline_routes_to_backward_via_entry_kind(
                 failure_reason="agent_declined")
     row = db.get_goal(conn, gid)
     assert row["attempts"] == 1
-    assert row["entry_kind"] == "Backward"
     # Goal still open (1 < SHELVE_THRESHOLD)
     assert row["status"] == "open"
 

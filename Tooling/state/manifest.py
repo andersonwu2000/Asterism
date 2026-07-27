@@ -14,8 +14,9 @@ Format (see docs/architecture.md §4):
   ## Strategic notes
   <free-form>
 
-Phase 2: dropped `## Entry kind` section. `cli init` now hardwires
-root.entry_kind='Backward' (Strategist handles initialisation routing).
+Phase 2: dropped `## Entry kind` section; the root inits frozen and
+the Strategist handles initialisation (entry_kind routing itself
+retired v33 with the Formalizer merge).
 Existing Manifest.md files may still carry `## Entry kind` — parser
 silently ignores it (treated as unknown section, no warning).
 """
@@ -453,7 +454,7 @@ def parse(path: Path) -> Manifest:
     statement = sections.get('Statement', '').strip()
 
     # Phase 2: `## Entry kind` section removed. Strategist handles
-    # routing; cli init hardwires root.entry_kind='Backward'. Existing
+    # routing (entry_kind itself retired v33 with the Formalizer merge). Existing
     # Manifest files carrying `## Entry kind` are tolerated (section
     # silently ignored) — no warning to avoid noise on legacy files.
 

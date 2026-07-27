@@ -100,6 +100,12 @@ class LLMRequest:
                     asking the agent to summarize state + blockers into
                     `_progress.md` and exit). Mutually exclusive with
                     is_retry. Providers without session support skip.
+      continuation: staged-pipeline work turn (Formalizer): the intake
+                    turn opened this session; resume it and send the
+                    work-stage `prompt_path` verbatim (rendered). Unlike
+                    is_postmortem this is a FULL work attempt — normal
+                    timeout and watchdog apply. Mutually exclusive with
+                    is_retry / is_postmortem.
       mcp_config_path: Optional path to an MCP config JSON file. When
                     set and the provider supports it (claude CLI),
                     the spawn includes `--mcp-config <path>` so the
@@ -130,6 +136,7 @@ class LLMRequest:
     retry_context: str | None = None
     retry_reason: str | None = None
     is_postmortem: bool = False
+    continuation: bool = False
     mcp_config_path: Path | None = None
     inline_prompt: str | None = None
     # Conditional-block flags for the prompt template (D8 2026-07-24):

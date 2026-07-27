@@ -183,6 +183,12 @@ class SpawnCtx:
     # spawn callback can frame the retry honestly — a thinking-trap death
     # is rc=0, not a lake error. None on attempt 0 / non-retry spawns.
     retry_reason: str | None = None
+    # Staged-pipeline work turn (Formalizer): the intake turn already
+    # opened this sid; the spawn callback should resume it and send the
+    # work-stage prompt verbatim (spawn_llm continuation=True) instead
+    # of a cold prompt or a retry framing. cold=False on these; a
+    # STALE_SESSION on the continuation spawn re-mints cold as usual.
+    continuation: bool = False
 
 
 def _build_fresh_rescue_stage2_prompt(
@@ -558,8 +564,15 @@ def run_with_session_retries(
     feedback_fn: "ReflectionFn | None" = None,
     death_fn: "DeathFn | None" = None,
     decision_id: int | None = None,
+    initial_sid: str | None = None,
 ) -> PipelineResult:
     """Run a kind-agnostic in-pipeline retry loop.
+
+    `initial_sid` (staged pipeline, Formalizer): a session the caller
+    already opened (intake turn). The first spawn resumes it as a
+    continuation (SpawnCtx.continuation=True, cold=False — the caller
+    seeded Context.md / target before intake); warm retries and the
+    STALE_SESSION cold re-mint behave exactly as without it.
 
     Flow per iteration:
       1. cascade re-check (against `shelve_threshold`); bail with
@@ -640,7 +653,7 @@ def run_with_session_retries(
         # no prior attempts to subtract from.
         budget = budget_threshold
 
-    sid = str(uuid.uuid4())
+    sid = initial_sid or str(uuid.uuid4())
     last_reason: str = ""
     last_detail: str = ""
     pending_failures: list[dict] = []
@@ -761,12 +774,14 @@ def run_with_session_retries(
                       f"decision_id={decision_id}", flush=True)
             return attach(PipelineResult(outcome="moot"))
 
-        cold = (attempt == 0)
+        cold = (attempt == 0 and initial_sid is None)
+        continuation = (attempt == 0 and initial_sid is not None)
         spawn_t0 = time.monotonic()
         rc = spawn_fn(SpawnCtx(sid=sid, cold=cold,
                                retry_context=last_detail or None,
                                retry_reason=last_reason or None,
-                               attempts_dir=attempts_dir))
+                               attempts_dir=attempts_dir,
+                               continuation=continuation))
         spawn_dur = time.monotonic() - spawn_t0
 
         # Stale session fallback (decision 4): only meaningful on warm
@@ -1038,6 +1053,7 @@ def run_lsp_edit_loop(
     death_fn: "DeathFn | None" = None,
     decision_id: int | None = None,
     release_session_after: bool = False,
+    initial_sid: str | None = None,
 ) -> PipelineResult:
     """Shared LSP edit-mode spawn loop — the one place the cold-seed +
     `_write_mcp_config` + `spawn_llm` + `run_with_session_retries` +
@@ -1079,7 +1095,9 @@ def run_lsp_edit_loop(
         return agent.spawn_llm(
             kind=kind, prompt_path=prompt_path, problem_dir=problem_dir,
             attempts_dir=ctx.attempts_dir, session_id=ctx.sid,
-            is_retry=not ctx.cold, retry_context=ctx.retry_context,
+            is_retry=not ctx.cold and not ctx.continuation,
+            continuation=ctx.continuation,
+            retry_context=ctx.retry_context,
             retry_reason=ctx.retry_reason, mcp_config_path=mcp_config_path,
             inline_prompt=ctx.inline_prompt,
             timeout_sec_override=ctx.budget_override)
@@ -1091,7 +1109,8 @@ def run_lsp_edit_loop(
             attempts_dir=attempts_dir, spawn_fn=_spawn, parse_fn=parse_fn,
             postmortem_fn=postmortem_fn or (lambda _sid: None),
             workspace=workspace, reflection_fn=reflection_fn,
-            feedback_fn=feedback_fn, death_fn=death_fn, decision_id=decision_id)
+            feedback_fn=feedback_fn, death_fn=death_fn, decision_id=decision_id,
+            initial_sid=initial_sid)
     finally:
         if release_session_after:
             _release_session(attempts_dir)

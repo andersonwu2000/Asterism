@@ -47,7 +47,7 @@ def _insert_root(conn: sqlite3.Connection) -> int:
     return db.insert_goal(
         conn, problem="p", slug="main",
         lean_path="Problems/p/Root.lean", statement="T",
-        origin="root", depth=0, entry_kind="Backward",
+        origin="root", depth=0,
     )
 
 

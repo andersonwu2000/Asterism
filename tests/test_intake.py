@@ -1,0 +1,189 @@
+"""Formalizer intake stage (update_plan_2026_07 #1).
+
+Contract (user ruling 2026-07-27): intake is an ECONOMY gate, not a
+soundness gate — the only binding signal is the decline; every
+malfunction degrades to the classic cold flow and never blocks work.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from Tooling.pipeline import _intake
+from Tooling.pipeline._intake import IntakeOutcome, run_intake
+from Tooling.llm.base import SpawnRC
+from Tooling.state import db, manifest
+from Tooling import pipeline
+from Tooling import agent
+
+
+PROMPT_DIR = Path("Tooling/prompts")
+
+
+def _spawn_writing(sentinel_body: "str | None", rc: int = 0):
+    def fake_spawn(**kw):
+        if sentinel_body is not None:
+            (kw["attempts_dir"] / "intake.json").write_text(
+                sentinel_body, encoding="utf-8")
+        return rc
+    return fake_spawn
+
+
+# ---------------------------------------------------------------------
+# run_intake — sentinel parsing
+# ---------------------------------------------------------------------
+
+def test_intake_proceed_returns_sid(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(agent, "spawn_llm",
+                        _spawn_writing('{"verdict": "proceed"}'))
+    out = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=tmp_path,
+                     problem_dir=tmp_path, label="t")
+    assert out.sid is not None
+    assert out.declined is None and out.infra_rc is None
+
+
+def test_intake_decline_carries_reason_and_note(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(agent, "spawn_llm", _spawn_writing(json.dumps({
+        "verdict": "decline", "reason": "no_nl_correspondence",
+        "note": "the Proof argues nothing about λ-coupling"})))
+    out = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=tmp_path,
+                     problem_dir=tmp_path, label="t")
+    assert out.declined == ("no_nl_correspondence",
+                            "the Proof argues nothing about λ-coupling")
+
+
+def test_intake_missing_sentinel_fails_open(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(agent, "spawn_llm", _spawn_writing(None))
+    out = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=tmp_path,
+                     problem_dir=tmp_path, label="t")
+    assert out.sid is not None and out.declined is None
+
+
+def test_intake_malformed_sentinel_fails_open(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(agent, "spawn_llm", _spawn_writing("{not json"))
+    out = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=tmp_path,
+                     problem_dir=tmp_path, label="t")
+    assert out.sid is not None and out.declined is None
+
+
+def test_intake_unknown_verdict_fails_open(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(agent, "spawn_llm",
+                        _spawn_writing('{"verdict": "maybe"}'))
+    out = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=tmp_path,
+                     problem_dir=tmp_path, label="t")
+    assert out.sid is not None and out.declined is None
+
+
+def test_intake_unknown_decline_reason_normalized(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(agent, "spawn_llm", _spawn_writing(json.dumps({
+        "verdict": "decline", "reason": "made_up_reason", "note": "x"})))
+    out = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=tmp_path,
+                     problem_dir=tmp_path, label="t")
+    assert out.declined is not None
+    assert out.declined[0] == "no_nl_correspondence"
+
+
+def test_intake_quota_rc_surfaces_infra(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(agent, "spawn_llm",
+                        _spawn_writing(None, rc=SpawnRC.QUOTA_EXHAUSTED))
+    out = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=tmp_path,
+                     problem_dir=tmp_path, label="t")
+    assert out.infra_rc == SpawnRC.QUOTA_EXHAUSTED
+
+
+def test_intake_generic_error_degrades_to_cold(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(agent, "spawn_llm", _spawn_writing(None, rc=1))
+    out = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=tmp_path,
+                     problem_dir=tmp_path, label="t")
+    assert out.sid is None and out.declined is None and out.infra_rc is None
+
+
+# ---------------------------------------------------------------------
+# run_backward wiring
+# ---------------------------------------------------------------------
+
+def _seed_root_goal(tmp_path: Path, conn: sqlite3.Connection) -> int:
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    (pdir / "Manifest.md").write_text(
+        "---\nproblem: p\n---\n## Statement\nTrue\n", encoding="utf-8")
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at,"
+        " bootstrap_done) VALUES ('p', ?, ?, 1)",
+        (str(pdir / "Manifest.md"), db.now()))
+    conn.commit()
+    root = pdir / "Root.lean"
+    root.write_text(
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem main : True := by sorry\nend Problems.p\n",
+        encoding="utf-8")
+    return db.insert_goal(
+        conn, problem="p", slug="main",
+        lean_path=root.relative_to(tmp_path).as_posix(),
+        statement="True", origin="root", depth=0)
+
+
+@pytest.fixture(autouse=True)
+def _no_hint_prepass(monkeypatch):
+    """Pin the hint pre-pass OFF for the wiring tests (it would call the
+    gateway); intake behavior is what's under test here."""
+    from Tooling.pipeline import _axiom
+    monkeypatch.setattr(_axiom, "verify_on_own_slot",
+                        lambda *a, **k: {"ok": False, "error": "stub"})
+
+
+def test_backward_intake_decline_exits_before_work(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gid = _seed_root_goal(tmp_path, conn)
+    monkeypatch.setattr(
+        _intake, "run_intake",
+        lambda **kw: IntakeOutcome(
+            declined=("no_nl_correspondence", "unbacked λ-coupling")))
+    presearched = {"n": 0}
+    from Tooling.pipeline import _presearch
+    monkeypatch.setattr(
+        _presearch, "ensure_presearch",
+        lambda **kw: presearched.__setitem__("n", presearched["n"] + 1))
+
+    def _no_loop(**kw):
+        raise AssertionError("work loop must not run after intake decline")
+    monkeypatch.setattr("Tooling.pipeline._retry.run_lsp_edit_loop", _no_loop)
+
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-intake-decline")
+    assert r.failure_reason == "no_nl_correspondence"
+    assert "unbacked λ-coupling" in (r.failure_detail or "")
+    assert presearched["n"] == 0, "declined goal must not pay presearch"
+
+
+def test_backward_intake_sid_threads_to_work_loop(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gid = _seed_root_goal(tmp_path, conn)
+    monkeypatch.setattr(_intake, "run_intake",
+                        lambda **kw: IntakeOutcome(sid="intake-sid-42"))
+    from Tooling.pipeline import _presearch
+    monkeypatch.setattr(_presearch, "ensure_presearch", lambda **kw: None)
+    seen = {}
+
+    def fake_loop(**kw):
+        seen["initial_sid"] = kw.get("initial_sid")
+        return pipeline.PipelineResult(outcome="moot")
+    import Tooling.pipeline.backward as bw
+    monkeypatch.setattr(bw, "run_lsp_edit_loop", fake_loop, raising=False)
+    monkeypatch.setattr("Tooling.pipeline._retry.run_lsp_edit_loop",
+                        fake_loop)
+
+    pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-intake-sid")
+    assert seen.get("initial_sid") == "intake-sid-42"

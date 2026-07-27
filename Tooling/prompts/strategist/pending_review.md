@@ -13,14 +13,14 @@ Also check `## Recent decisions` for your prior decisions and their outcomes.
    - Tactical — goal is sound; agent missed mathlib API or picked a bad sub-path
    - Structural — the decomposition above this goal is wrong; ancestor needs reframing
    - Ontological — the goal-as-stated is provably false / wrong abstraction; should not exist in this form
-   - Missing prereq — needed vocabulary / theorem / abstraction is absent; needs Forward to build
+   - Missing prereq — needed vocabulary / theorem / abstraction is absent; needs a minted brick to build
    - Unbacked — the goal traces to no Programme Proof step (worker sent `no_nl_correspondence`)
 
 4. **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
-   - Tactical → `Inject(<pipeline>, brief=...)` back to the original goal pointing at the missed API or correct sub-path
+   - Tactical → `Inject(target_goal_id, brief=...)` back to the original goal pointing at the missed API or correct sub-path
    - Structural → `ConfirmShelve` this goal + `Inject` on ancestor with reframed angle
    - Ontological → `ConfirmShelve` + escalate upward (or `RequestUserAmend` if user file is wrong)
-   - Missing prereq → `Inject(Forward)` to build the brick + `ConfirmShelve` to park
+   - Missing prereq → a no-target `Inject` to mint the brick + `ConfirmShelve` to park
    - Unbacked → argue the claim to closure in this batch's Proof then re-dispatch, or retire it (`ConfirmShelve`)
 
 5. **Rewrite `_plan.md`** (your private note): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
@@ -53,10 +53,9 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 - A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds
-- `Inject` — `target_goal_id`, `brief` or `brief_file` (bare filename in your attempts dir — Write the brief there, no JSON escaping). `pipeline`:
-  - `Forward`: produces ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug); no `target_goal_id`. Search for an existing lemma first. Do not add defs via `Defs.lean`. Never brief Forward with an alive goal's statement.
-  - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
-  - `Builder`: single file inline, one tactic block.
+- `Inject` — `brief` or `brief_file` (bare filename in your attempts dir — Write the brief there, no JSON escaping). Two shapes:
+  - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself — steer with the brief's mathematics, not a mode.
+  - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never brief a mint with an alive goal's statement.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone (the batch still needs its ≥1 experiment). Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `EmitDirective` — `scope="problem:<name>"`, `body` or `body_file` (bare filename in your attempts dir — Write the text there, no JSON escaping), `reason`. Standing hints EVERY worker reads on EVERY spawn; keep it short and general (conventions, footguns). Your plans/progress go in `_plan.md`; goal-specific hints in an Inject brief.
 - `AttemptDisproof` — `target_goal_id`, `reason` (falsity evidence). For a user-requested claim you believe false; a typo → `RequestUserAmend` instead. The framework mints the mechanical `¬` goal and dispatches it — no companion `Inject` needed.
@@ -67,17 +66,17 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 ## Rules
 - Empty array rejected.
 - Dispose of the goal(s) under review: at least one decision must target a reviewed goal (ConfirmShelve / Inject / AttemptDisproof). A batch targeting none of them is rejected.
-- New lemmas enter the problem only through your Inject(Forward) — missing tools never land on their own.
-- The root's STATEMENT is immutable; the root goal itself is a legal Inject(Backward) target to re-engage its subtree.
-- Inject(Forward) carries no `target_goal_id`; Inject(Backward/Builder) requires one.
-- Same-batch Forward bricks must be independent (concurrent dispatch); a dependent brick goes in the next batch.
+- New lemmas enter the problem only through your no-target Inject — missing tools never land on their own.
+- The root's STATEMENT is immutable; the root goal itself is a legal Inject target to re-engage its subtree.
+- A mint Inject carries no `target_goal_id`; a goal Inject requires one.
+- Same-batch mints must be independent (concurrent dispatch); a dependent brick goes in the next batch.
 - The mathematics — claims, arguments, lemma names, invariant constructions, proof techniques — is yours. Tactics, Lean syntax, statement shape (ranges, off-by-ones, constants) are the worker's.
 
 ## Examples
 
 ```json
 // tactical — agent missed existing mathlib API
-[{"kind": "Inject", "pipeline": "Builder", "target_goal_id": "sub_lemma_X",
+[{"kind": "Inject", "target_goal_id": "sub_lemma_X",
   "brief": "Roadmap: sub-lemma X\nAgent shelved citing 'mathlib lacks X', but Grep confirmed `Module.End.X` exists. Cite it directly — don't reconstruct."}]
 ```
 
@@ -85,16 +84,16 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 // structural — agent's disproof correct; parent decomposition needs reframing
 [{"kind": "ConfirmShelve", "target_goal_id": "wagon_class0_head_b_nondiv_from_form",
   "reason": "Agent's disproof is correct: the statement isolates ¬3∣b from joint form alone, but h0/h1/h2 only constrain a/b/c via the column equality, not their individual mod-3 residues. Parent decomposition is asking the impossible."},
- {"kind": "Inject", "pipeline": "Backward", "target_goal_id": "wagon_class0_col0_three_invariant",
+ {"kind": "Inject", "target_goal_id": "wagon_class0_col0_three_invariant",
   "brief": "Roadmap: joint mod-3 invariant\nReframe parent: instead of decomposing into separate 'pure form + ¬3∣b', state a stronger joint invariant ∃ a b c : ℤ, M_ω·e_3 = (a,b,c)/3^|ω| ∧ 3 ∤ gcd(a,b,c). Induct on word length so the mod-3 constraint co-evolves with the integer triple — never extracted as a separate sub-goal that loses context."}]
 ```
 
 ```json
-// missing prereq(s) → Forward(s) + park (N Forward allowed per batch)
-[{"kind": "Inject", "pipeline": "Forward",
+// missing prereq(s) → mint(s) + park (N mints allowed per batch)
+[{"kind": "Inject",
   "brief": "Roadmap: equidecomp composition\n## Need\nA composition lemma for Equidecomp.trans over partial bijections... (Grep + Loogle confirmed missing)..."},
- {"kind": "Inject", "pipeline": "Forward",
+ {"kind": "Inject",
   "brief": "Roadmap: equidecomp composition\n## Need\nThe inverse lemma for Equidecomp.symm, independent of the above... (Grep + Loogle confirmed missing)..."},
  {"kind": "ConfirmShelve", "target_goal_id": 1743,
-  "reason": "Parked pending both Forward bricks; reassess after they land."}]
+  "reason": "Parked pending both minted bricks; reassess after they land."}]
 ```

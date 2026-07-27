@@ -154,39 +154,12 @@ from ..state.transitions import (  # noqa: E402,F401
 )
 
 
-def next_worker_kind(goal: sqlite3.Row) -> str:
-    """Pure-ish: input goal row → 'Builder' or 'Backward'.
-
-    Routing is `entry_kind`-driven with an attempts-threshold safety net.
-    While attempts < `BUILDER_THRESHOLD` we honor the `entry_kind`
-    directive (`'Builder'` | `'Backward'`); once attempts reach the
-    threshold, escalation to Backward is forced (safety net for an
-    entry_kind=Builder directive that turns out wrong).
-
-    `entry_kind` is set by:
-      - cli init for the root goal: hardcoded to `'Backward'`. A root
-        inits `frozen` and enters dispatch only after the Strategist's
-        first Inject(Backward) auto-reopens it (Phase 6 — the old
-        first_launch gate is retired); the `## Entry kind` Manifest
-        section was dropped in Phase 2 (see manifest.py module header).
-      - Backward agent for each sub-goal it generates, via the
-        `-- entry_kind: ...` directive in `new_<slug>.lean`'s docstring;
-        framework parses + persists at sub-goal insertion time.
-
-    Earlier iterations gated on a numeric `difficulty` (1-10): a hard
-    `>=4 → Backward` rule was unreliable because the agent's estimate
-    tracked conceptual complexity, not Builder-tractability. The boolean
-    directive is now the only routing signal — `difficulty` was removed
-    from both Manifest and the goals table.
-
-    `thresholds.BUILDER_THRESHOLD` is read at call time so test/env
-    overrides are visible without re-importing.
-    """
-    if int(goal["attempts"]) >= thresholds.BUILDER_THRESHOLD:
-        return "Backward"
-    if str(goal["entry_kind"]) == "Backward":
-        return "Backward"
-    return "Builder"
+# `next_worker_kind` retired (update_plan_2026_07 #1): every open goal
+# dispatches as 'Formalizer' — the merged worker decides prove-vs-split
+# itself, so pre-dispatch routing (entry_kind + the BUILDER_THRESHOLD
+# escalation net) no longer exists. Its predecessor, a numeric
+# `difficulty` (1-10), died for the same reason: upfront tractability
+# estimates track conceptual complexity, not provability.
 
 
 # ---------------------------------------------------------------------
@@ -478,12 +451,11 @@ def bfs_refill(conn: sqlite3.Connection,
                   flush=True)
             transitions._enqueue_strategist_review(conn, int(g["id"]))
             continue
-        kind = next_worker_kind(g)
+        kind = "Formalizer"
         if kind_cooled(kind):
             continue
         if in_flight(gid, kind) == 0 and not cooled(gid, kind):
-            priority = 5 if kind == "Builder" else 2
-            db.enqueue(conn, kind=kind, target_id=gid, priority=priority,
+            db.enqueue(conn, kind=kind, target_id=gid, priority=2,
                        problem=str(g["problem"]))
 
 
@@ -1037,8 +1009,11 @@ def _run_pipeline(workspace: Path,
                 return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                         r.outcome, str(r.failure_reason or ""))
 
-            if task_kind == "Forward":
-                # Forward target = problem name (TEXT); no goal lookup.
+            if (task_kind == "Forward"
+                    or (task_kind == "Formalizer"
+                        and target_kind == "Problem")):
+                # Mint job: target = problem name (TEXT); no goal lookup.
+                # 'Forward' = legacy queue rows (pre-merge recovery).
                 problem = target_id
                 if problem not in manifests:
                     db.record_pipeline(
@@ -1258,13 +1233,11 @@ def _run_pipeline(workspace: Path,
 
             mfst = manifests[goal["problem"]]
 
-            if task_kind == "Builder":
-                r = pipeline.run_builder(
-                    conn, goal_id=goal_id, workspace=workspace,
-                    mfst=mfst, pipeline_id=pipeline_id,
-                    decision_id=decision_id,
-                )
-            elif task_kind == "Backward":
+            if task_kind in ("Formalizer", "Backward", "Builder"):
+                # Merged worker (update_plan_2026_07 #1): every goal job
+                # runs the staged Formalizer engine (hint pre-pass →
+                # intake → work loop in the strategy frame). 'Backward' /
+                # 'Builder' = legacy queue rows from pre-merge recovery.
                 r = pipeline.run_backward(
                     conn, goal_id=goal_id, workspace=workspace,
                     mfst=mfst, pipeline_id=pipeline_id,
@@ -1637,20 +1610,13 @@ def run(workspace: Path, *, once: bool = False,
     # `--once` runs are operator-attended experiments — finishing (with
     # the quota failure visible) beats silently parking for hours.
     quota_wait_enabled = quota_wait_enabled and not once
-    # BUILDER_THRESHOLD semantically belongs to the Builder kind
-    # (controls Builder→Backward transition based on Builder model
-    # strength). Canonical key: `builder.threshold`. Old
-    # `dispatch.builder_threshold` is honored as a back-compat fallback
-    # so existing Asterism.yaml files keep working unchanged.
-    _builder_thr = config.get(
-        "builder.threshold", default=None,
-        env_var="ASTERISM_BUILDER_THRESHOLD", cast=int, workspace=workspace)
-    if _builder_thr is None:
-        _builder_thr = config.get(
-            "dispatch.builder_threshold", default=3,
-            cast=int, workspace=workspace)
+    # BUILDER_THRESHOLD routing retired with the Formalizer merge
+    # (update_plan_2026_07 #1) — no Builder→Backward escalation exists;
+    # `builder.threshold` / `dispatch.builder_threshold` config keys are
+    # no longer read. `thresholds.BUILDER_THRESHOLD` survives only as an
+    # internal small-retry-budget constant (librarian hole-fill + the
+    # undispatched legacy builder module).
     thresholds.set_thresholds(
-        builder=_builder_thr,
         shelve=config.get(
             "dispatch.shelve_threshold", default=8,
             env_var="ASTERISM_SHELVE_THRESHOLD", cast=int,
@@ -1663,13 +1629,6 @@ def run(workspace: Path, *, once: bool = False,
         env_var="ASTERISM_STRATEGIST_INTERVAL_MIN", cast=float,
         workspace=workspace,
     )
-    if thresholds.SHELVE_THRESHOLD <= thresholds.BUILDER_THRESHOLD:
-        # An invalid combo would mean Backward never gets a chance —
-        # fail loudly rather than silently degrade behavior.
-        raise ValueError(
-            f"shelve_threshold ({thresholds.SHELVE_THRESHOLD}) must exceed "
-            f"builder_threshold ({thresholds.BUILDER_THRESHOLD}); otherwise "
-            f"the goal shelves before any Backward attempt fires.")
     pool = ThreadPoolExecutor(max_workers=pool_size)
     # Background .olean warmer (#103): after verify_housekeeping promotes
     # a strategy (parent → alias rewrite), the alias spine needs a fresh

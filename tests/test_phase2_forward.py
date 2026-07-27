@@ -113,7 +113,6 @@ def test_extract_metadata_happy_path() -> None:
     assert err == ""
     assert md.slug == "contour_deformation_piecewise"
     assert "bridges Mathlib" in md.rationale
-    assert md.entry_kind == "Backward"
     assert md.sorry_free is False
 
 
@@ -148,7 +147,6 @@ def test_extract_metadata_modifier_does_not_relax_slug() -> None:
 def test_extract_metadata_builder_entry() -> None:
     md, err = forward.extract_forward_metadata(_NEW_LEAN_BUILDER_ENTRY)
     assert err == ""
-    assert md.entry_kind == "Builder"
 
 
 def test_extract_metadata_sorry_free() -> None:
@@ -311,12 +309,11 @@ def test_commit_writes_lean_file_and_inserts_goal(
     dest = workspace / "Problems" / "p" / "proofs" / \
         "L_contour_deformation_piecewise.lean"
     assert dest.exists()
-    # The consumed `-- entry_kind:` directive (parsed into the DB column below)
-    # must NOT persist into the permanent proof file — the Forward strip gap.
+    # A legacy `-- entry_kind:` directive line must NOT persist into
+    # the permanent proof file (routing retired v33; strip survives).
     assert "-- entry_kind:" not in dest.read_text(encoding="utf-8")
     g = db.get_goal(conn, outcome.goal_id)
     assert g["origin"] == "forward"
-    assert g["entry_kind"] == "Backward"
     assert g["status"] == "open"
 
 
@@ -493,7 +490,6 @@ def test_extract_metadata_def_kind() -> None:
     assert md.slug == "line_through"
     # entry_kind is irrelevant for non-theorem kinds; default kept for
     # NOT NULL column compatibility.
-    assert md.entry_kind == "Backward"
 
 
 def test_extract_metadata_structure_kind() -> None:

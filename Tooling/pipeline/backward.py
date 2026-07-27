@@ -23,7 +23,7 @@ written promote_to_alias alias. Backward's contract remains
 
 Public entry point: `run_backward`. Backward-specific helpers
 (`_ensure_imports_subgoal`, `_try_promote_sorry_free`,
-`_parse_entry_kind`, `_resolve_slug_collisions`) live here. Shared
+`_strip_entry_kind`, `_resolve_slug_collisions`) live here. Shared
 helpers (`_grep_forbidden`, `_attempt_postmortem`, `_spawn_failure`,
 `_safe_glob`, `_signature_prefix`, `_normalize_signature`,
 `_build_strategy_skeleton`, `_inject_imports_for_subs`,
@@ -426,43 +426,19 @@ def _try_promote_sorry_free(
     )
 
 
-# `entry_kind: Builder` or `entry_kind: Backward` directive — the
-# Backward agent annotates each `new_<slug>.lean` with this comment so
-# the framework knows whether to dispatch this sub-goal to Builder
-# (one-shot tactic + LLM patch) or skip straight to Backward
-# decomposition. Comment-form (not YAML frontmatter) so it sits next to
-# the theorem definition the agent is reasoning about.
-_ENTRY_KIND_RE = re.compile(
-    r"(?m)^\s*--\s*entry_kind\s*:\s*(Builder|Backward)\b"
-)
-
-# Line-level variant for stripping: consumes the whole directive line
-# (including any trailing text and the newline) so removal leaves no
-# blank residue. Anchored the same way as _ENTRY_KIND_RE.
+# Legacy `-- entry_kind:` directive line (routing retired v33 — the
+# Formalizer decides prove-vs-split itself). The strip survives so a
+# legacy-shaped stub's directive comment doesn't linger in proofs/ or
+# propagate into the curated Library on migrate.
 _ENTRY_KIND_LINE_RE = re.compile(
     r"(?m)^[ \t]*--[ \t]*entry_kind[ \t]*:[ \t]*(?:Builder|Backward)\b.*\r?\n?"
 )
 
 
-def _parse_entry_kind(lean_text: str) -> str:
-    """Extract the `-- entry_kind: ...` directive from a sub-goal lean
-    file. Returns 'Builder' or 'Backward' (capitalized as in the DB
-    enum); defaults to 'Builder' if the directive is absent or
-    unrecognized. The default mirrors the legacy attempts-only routing
-    so a missing directive doesn't change behavior."""
-    m = _ENTRY_KIND_RE.search(lean_text)
-    return m.group(1) if m else "Builder"
-
-
 def _strip_entry_kind(lean_text: str) -> str:
-    """Remove the `-- entry_kind:` directive line(s) once the framework
-    has consumed it into the DB `goals.entry_kind` column. That column is
-    the routing SoT thereafter, so the comment left in the permanent
-    `proofs/L_<slug>.lean` is dead residue — and it propagates into the
-    curated Library on migrate. Stripping at consume-time keeps the parse
-    channel (agent still writes it in `new_<slug>.lean`) intact while
-    keeping downstream files clean. Rationale comments below the
-    directive sit on their own `--` lines and are untouched."""
+    """Remove any legacy `-- entry_kind:` directive line(s) (dead
+    residue post-v33; rationale comments on their own `--` lines are
+    untouched)."""
     return _ENTRY_KIND_LINE_RE.sub("", lean_text)
 
 
@@ -747,32 +723,148 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     # the byte-identical private copy that outlived _infra.py's
     # centralization).
     from ..state.failures import PROVIDER_INFRA_REASONS as _INFRA_REASONS
+
+    # ── Phase 0: deterministic tactic_try (Builder Phase 1, ported) ──
+    # The `hint` pre-pass survives the Builder retirement: a zero-spawn
+    # close for register_hint-level goals, now riding the strategy frame
+    # so success goes through the SAME parse/commit gates (annotation,
+    # forbidden grep, leaf-bypass axiom probe) as every agent patch.
+    # First dispatch only — `hint`'s register_hint set is deterministic.
+    # Any failure in this block falls through to the staged flow.
+    if int(goal["attempts"]) == 0:
+        from . import _parse_hint_winner, _replace_proof_body
+        try:
+            probe_path = attempts_dir / "_hint_probe.lean"
+            probe_path.parent.mkdir(parents=True, exist_ok=True)
+            probe_path.write_text(
+                _replace_proof_body(skeleton, "hint"), encoding="utf-8")
+            pv = _axiom.verify_on_own_slot(
+                probe_path, workspace=workspace, attempts_dir=attempts_dir,
+                write_olean=False)
+            winner: "str | None" = None
+            if pv.get("ok") and not pv.get("error"):
+                for d in pv.get("diagnostics") or []:
+                    if d.get("severity") == "info":
+                        w = _parse_hint_winner(d.get("message", ""))
+                        if w:
+                            winner = w
+                            break
+            if winner is not None:
+                (attempts_dir / "patch.lean").write_text(
+                    f"-- hint: closed by deterministic tactic_try "
+                    f"(`{winner}`)\n"
+                    + _replace_proof_body(skeleton, winner),
+                    encoding="utf-8")
+                hint_result = _backward_parse_and_commit(
+                    conn=conn, goal=goal, goal_id=goal_id, mfst=mfst,
+                    workspace=workspace, attempts_dir=attempts_dir,
+                    strategy_id=strategy_id, sid_token=sid_token,
+                    skeleton_signature=skeleton_signature,
+                )
+                if hint_result.outcome in ("proved", "success"):
+                    print(f"[hint] g{goal_id} {goal['slug']}: closed by "
+                          f"`{winner}` — no spawn", flush=True)
+                    return hint_result
+                # Winner didn't survive the commit gates — fall through.
+        except Exception as exc:  # noqa: BLE001 — pre-pass is best-effort
+            print(f"[hint] g{goal_id} {goal['slug']}: tactic_try pre-pass "
+                  f"errored, skipped ({exc})", flush=True)
+
+    # ── Intake stage (update_plan_2026_07 #1) ─────────────────────────
+    # A short first turn on a fresh session judges the assignment against
+    # the Programme ## Proof before any Lean work. Its decline is the
+    # cheapest exit (no presearch, no work spawn); any intake malfunction
+    # degrades to the classic single-turn cold flow (initial_sid=None).
+    # Context for the intake turn deliberately predates presearch — a
+    # declined goal must not pay the search; after `proceed`, presearch
+    # runs and Context.md is recompiled with the candidate section.
+    from ._intake import run_intake
+    from ..llm.base import SpawnRC as _SpawnRC
+    intake_sid: "str | None" = None
+    result: "PipelineResult | None" = None
+    # Pre-intake moot guard: mirror the retry helper's pre-loop budget
+    # check so an over-budget goal (BFS dispatch race) exits before the
+    # intake spawn spends anything. Inject-driven dispatches carry a
+    # fresh budget (decision_id) and skip this.
+    if decision_id is None and (
+            thresholds.SHELVE_THRESHOLD - int(goal["attempts"])) <= 0:
+        print(f"[retry-moot] g{goal_id} pre-intake: attempts="
+              f"{int(goal['attempts'])} >= shelve_threshold="
+              f"{thresholds.SHELVE_THRESHOLD}; status={goal['status']}",
+              flush=True)
+        result = PipelineResult(outcome="moot")
+    if result is None:
+        context.compile_context(conn, goal=goal, mfst=mfst,
+                                attempts_dir=attempts_dir,
+                                strategy_id=strategy_id,
+                                kind="backward",
+                                decision_id=decision_id)
+        (attempts_dir / "patch.lean").write_text(skeleton, encoding="utf-8")
+        intake = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=attempts_dir,
+                            problem_dir=problem_dir,
+                            label=f"g{goal_id} {goal['slug']}")
+        if intake.infra_rc is not None:
+            _infra_map = {
+                _SpawnRC.SHUTDOWN: ("daemon_shutdown",
+                                    "intake spawn aborted"),
+                _SpawnRC.MISSING_DEP: ("missing_dep",
+                                       "intake spawn: CLI missing"),
+                _SpawnRC.QUOTA_EXHAUSTED: ("quota_exhausted",
+                                           "intake spawn: quota / rate limit"),
+            }
+            reason, detail = _infra_map[intake.infra_rc]
+            result = PipelineResult(outcome="failed", failure_reason=reason,
+                                    failure_detail=detail)
+        elif intake.declined is not None:
+            reason, note = intake.declined
+            result = PipelineResult(
+                outcome="failed",
+                failure_reason=DECLINE_TO_FAILURE_REASON.get(reason, reason),
+                failure_detail=f"intake decline: {note}")
+            print(f"[intake] g{goal_id} {goal['slug']}: declined "
+                  f"({reason}) — {note[:160]}", flush=True)
+        else:
+            intake_sid = intake.sid
+            _presearch.ensure_presearch(
+                goal=goal, workspace=workspace, problem_dir=problem_dir,
+                attempts_dir=attempts_dir, prompt_dir=PROMPT_DIR, conn=conn)
+            context.compile_context(conn, goal=goal, mfst=mfst,
+                                    attempts_dir=attempts_dir,
+                                    strategy_id=strategy_id,
+                                    kind="backward",
+                                    decision_id=decision_id)
+
     try:
         # Task #8: Backward was the last pipeline hand-rolling the spawn
         # ceremony (register + mcp-config + spawn_llm closure) that
         # run_lsp_edit_loop exists to own. Same semantics: cold spawns run
         # backward_cold_prep, the loop targets attempts_dir/patch.lean.
-        result = run_lsp_edit_loop(
-            conn=conn,
-            goal_id=goal_id,
-            pipeline_id=pipeline_id,
-            budget_threshold=thresholds.SHELVE_THRESHOLD,
-            shelve_threshold=thresholds.SHELVE_THRESHOLD,
-            attempts_dir=attempts_dir,
-            workspace=workspace,
-            problem=str(goal["problem"]),
-            problem_dir=problem_dir,
-            kind="backward",
-            prompt_path=PROMPT_DIR / "backward" / "backward.md",
-            target=attempts_dir / "patch.lean",
-            cold_prep_fn=backward_cold_prep,
-            parse_fn=backward_parse,
-            postmortem_fn=backward_postmortem,
-            reflection_fn=backward_reflection,
-            feedback_fn=backward_feedback,
-            death_fn=backward_death,
-            decision_id=decision_id,
-        )
+        # Formalizer: the first work spawn resumes the intake session
+        # (initial_sid) with the work-stage prompt; a stale/degraded
+        # intake session falls back to the classic cold path.
+        if result is None:
+            result = run_lsp_edit_loop(
+                conn=conn,
+                goal_id=goal_id,
+                pipeline_id=pipeline_id,
+                budget_threshold=thresholds.SHELVE_THRESHOLD,
+                shelve_threshold=thresholds.SHELVE_THRESHOLD,
+                attempts_dir=attempts_dir,
+                workspace=workspace,
+                problem=str(goal["problem"]),
+                problem_dir=problem_dir,
+                kind="formalizer",
+                prompt_path=PROMPT_DIR / "formalizer" / "formalize.md",
+                target=attempts_dir / "patch.lean",
+                cold_prep_fn=backward_cold_prep,
+                parse_fn=backward_parse,
+                postmortem_fn=backward_postmortem,
+                reflection_fn=backward_reflection,
+                feedback_fn=backward_feedback,
+                death_fn=backward_death,
+                decision_id=decision_id,
+                initial_sid=intake_sid,
+            )
     except BaseException:
         # Escaped exception — strategy row is still in placeholder state
         # if no commit ever happened. Delete to match _INFRA_REASONS
@@ -1810,12 +1902,9 @@ def _backward_parse_and_commit(
                     or _extract_statement_from_lean(dest))
             rel = dest.relative_to(workspace).as_posix()
             raw = dest.read_text(encoding="utf-8")
-            entry_kind = _parse_entry_kind(raw)
-            # Directive consumed → DB column is the routing SoT now.
-            # Strip the comment from the permanent file so it doesn't
-            # linger in proofs/ or propagate into the curated Library on
-            # migrate. (stmt already extracted above; downstream reads
-            # don't depend on this line.)
+            # entry_kind routing retired (v33). Legacy-shaped stubs may
+            # still carry the `-- entry_kind:` comment — strip it so it
+            # doesn't linger in proofs/ or propagate into the Library.
             cleaned = _strip_entry_kind(raw)
             if cleaned != raw:
                 _place_unowned(conn, workspace, dest, cleaned)
@@ -1823,7 +1912,6 @@ def _backward_parse_and_commit(
                 conn, problem=goal["problem"], slug=slug,
                 lean_path=rel, statement=stmt, origin="backward",
                 depth=goal["depth"] + 1,
-                entry_kind=entry_kind,
             )
             if match is not None:
                 # Past the same_as_disproved / no_progress early-returns →

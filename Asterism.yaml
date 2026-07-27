@@ -80,19 +80,12 @@ dispatch:
                                    # layout is the wrong shape, not a time issue)
 
 
-builder:
-  provider: claude
-  model: claude-sonnet-5      # next-gen sonnet upgrade of the bulk proving
-                              # worker (2026-07-02, CLI + stream-json verified).
-                              # Was claude-sonnet-4-6. HIGHEST-volume pipeline —
-                              # WATCH cost/latency; sonnet-5 pricing not yet
-                              # benchmarked here. Revert to sonnet-4-6 if it
-                              # regresses.
-  threshold: 2                # builder→backward escalation at 2 attempts
-                              # (was 3; tighter with the 900s spawn timeout
-                              # below)
-
-backward:
+# Formalizer — the merged worker (update_plan_2026_07 #1): one kind
+# covers prove / split / mint; the per-role model split (builder=cheap,
+# backward=strong) is gone with the routing, so this single knob prices
+# EVERY worker spawn. opus-5 = quality-first default (decomposition
+# shaping was the opus-tier job in A1); drop to sonnet-5 if cost bites.
+formalizer:
   provider: claude
   model: claude-opus-5
 
@@ -115,11 +108,8 @@ strategist:
                                # N=1 (single-Forward Inject) is always
                                # allowed regardless of cap.
 
-forward:
-  provider: claude
-  model: claude-sonnet-5       # writes one Mathlib-style lemma per
-                               # spawn; needs strong typing + library
-                               # knowledge.
+# (builder/backward/forward sections retired with the Formalizer merge —
+# mint jobs ride formalizer.model too.)
 
 # target-1 per-node pre-search: before each goal is dispatched, a lightweight
 # agent searches Mathlib (loogle) + Library + in-problem siblings for relevant
