@@ -82,6 +82,11 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-26
+- Reworked the automated critique step so proposed proofs are judged against each evaluation criterion separately, with the overall accept-or-reject decision now derived from those per-criterion verdicts.
+- Shifted the proving pipeline to be natural-language-first: only fully argued informal proofs are handed off, and the proof-writing agents now formalize that argued proof into Lean rather than starting from scratch.
+- Fixed a scheduling bug where internal timers were refreshed on every task instead of once per batch, eliminating a steady stream of unnecessary wake-ups.
+
 ### 2026-07-25
 - Tightened the instructions given to the proving agents: proof-writing is now scoped to the current batch of steps, a step with unresolved gaps waits for a later batch, and several prompt files were corrected and trimmed.
 - Required that informal natural-language proof sketches be argued to full logical closure, and made a mismatch between a formal step and its informal justification a documented failure mode that is escalated for review.
@@ -224,10 +229,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Built a mechanism for the prover to learn from its own failures, recording which approaches did not work, storing them in a searchable lessons file, and surfacing only those relevant to the goal currently being proved.
 - Enabled proofs to automatically reuse already-proved results from the same problem when they are cited, while blocking citations that reach into unrelated problems.
 - Fixed a crash when recording lessons for problems with qualified names and stripped leftover internal annotations from saved proof files.
-
-### 2026-06-26
-- Added a knowledge base that records lessons and recurring failure patterns from past proof attempts, and started feeding them into the context assembled for new proofs.
-- Fixed the guidance for searching previously proved related results so it matches the actual proof files.
 
 <!-- ASTERISM-PROGRESS:END -->
 
