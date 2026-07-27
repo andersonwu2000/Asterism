@@ -82,7 +82,7 @@ dispatch:
 
 builder:
   provider: claude
-  model: claude-opus-4-5-20251101      # next-gen sonnet upgrade of the bulk proving
+  model: claude-sonnet-5      # next-gen sonnet upgrade of the bulk proving
                               # worker (2026-07-02, CLI + stream-json verified).
                               # Was claude-sonnet-4-6. HIGHEST-volume pipeline —
                               # WATCH cost/latency; sonnet-5 pricing not yet
@@ -94,11 +94,11 @@ builder:
 
 backward:
   provider: claude
-  model: claude-opus-4-5-20251101
+  model: claude-opus-5
 
 strategist:
   provider: claude
-  model: claude-opus-4-5-20251101        # Planning is the highest-leverage spawn: one
+  model: claude-opus-5        # Planning is the highest-leverage spawn: one
                                # decomposition shapes the whole proof tree, so
                                # it gets the strongest available model. Fable 5
                                # (Mythos, ~2x Opus) was the intended planner;
@@ -117,7 +117,7 @@ strategist:
 
 forward:
   provider: claude
-  model: claude-opus-4-5-20251101       # writes one Mathlib-style lemma per
+  model: claude-sonnet-5       # writes one Mathlib-style lemma per
                                # spawn; needs strong typing + library
                                # knowledge.
 
@@ -129,7 +129,7 @@ forward:
 presearch:
   enabled: true                # off → skip pre-search (provers grep on their own)
   provider: claude
-  model: claude-opus-4-5-20251101      # A/B 2026-06-29: sonnet TIMED OUT at the 150s presearch
+  model: claude-sonnet-5      # A/B 2026-06-29: sonnet TIMED OUT at the 150s presearch
                                # budget (27 searches, still missed the Library lemma at the
                                # root) → strictly worse than haiku here. Reverted. The
                                # root-level Library miss is a coverage problem a bigger model
@@ -149,7 +149,7 @@ presearch:
 # entry.)
 librarian:
   provider: claude
-  model: claude-opus-4-5-20251101       # bulk, mechanical-ish per-file polish; the
+  model: claude-sonnet-5       # bulk, mechanical-ish per-file polish; the
                                # highest-volume librarian spawns. Upgraded from
                                # claude-sonnet-4-6 to next-gen sonnet-5
                                # (2026-07-02, CLI-verified). WATCH cost/latency
@@ -168,7 +168,7 @@ feedback:
   enabled: false               # off for the PutnamCmp timed run (user 2026-07-19) — the questionnaire resume adds ~15-30s per spawn; re-enable for dev sessions
 
 scholar:
-  model: claude-opus-4-5-20251101
+  model: claude-sonnet-5
 
 adversary:
-  model: claude-opus-4-5-20251101
+  model: claude-opus-5
