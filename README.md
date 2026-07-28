@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-27
+- Merged the three separate agents that translate informal mathematics into Lean into a single worker that proceeds through staged steps, and drafted a new set of prompts for it that is awaiting review before being switched on.
+- Fixed a batch of bugs in that translation component, found through a systematic code review and a follow-up cleanup sweep, including a resource leak and stale-metadata issues.
+- Corrected the verification safeguard so it checks that a theorem's statement is unchanged rather than comparing raw file contents, which had flagged harmless formatting edits.
+- Updated the framework's configuration to a newer generation of language models, based on results from a hand-off experiment.
+
 ### 2026-07-26
 - Reworked the automated critique step so proposed proofs are judged against each evaluation criterion separately, with the overall accept-or-reject decision now derived from those per-criterion verdicts.
 - Shifted the proving pipeline to be natural-language-first: only fully argued informal proofs are handed off, and the proof-writing agents now formalize that argued proof into Lean rather than starting from scratch.
@@ -224,11 +230,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Consolidated the system's accumulated "lessons" into a single global store, retiring the older per-step lessons and an obsolete seed file.
 - Hardened proof storage so every saved proof passes an ownership check and writes no longer leave stray backup files behind.
 - Tightened reliability with assorted fixes: crashes now log a full traceback before shutdown, resetting a problem cleans up its dependent records, and the test suite was made cleaner and more portable.
-
-### 2026-06-27
-- Built a mechanism for the prover to learn from its own failures, recording which approaches did not work, storing them in a searchable lessons file, and surfacing only those relevant to the goal currently being proved.
-- Enabled proofs to automatically reuse already-proved results from the same problem when they are cited, while blocking citations that reach into unrelated problems.
-- Fixed a crash when recording lessons for problems with qualified names and stripped leftover internal annotations from saved proof files.
 
 <!-- ASTERISM-PROGRESS:END -->
 
