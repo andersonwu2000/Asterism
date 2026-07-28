@@ -15,7 +15,7 @@ Four MCP tools talk to a live Lean server holding **your `patch.lean`** (sandbox
 
 ## Path A — direct proof
 
-Replace `:= by sorry` with a tactic block; ship `patch.lean` alone (no `new_*.lean`). Iterate with apply_edit/goal_at until 0 errors, 0 sorry. Citing a **proved** sibling is allowed — write its import yourself (`import Problems.<problem>.proofs.L_<slug>`); the submission is axiom-probed.
+Replace `:= by sorry` with a tactic block; ship `patch.lean` alone (no `new_*.lean`). Iterate with apply_edit/goal_at until 0 errors, 0 sorry. Write the import of any sibling you cite yourself (`import Problems.<problem>.proofs.L_<slug>`).
 
 ## Path B — decompose
 
@@ -74,7 +74,7 @@ Ship the moment you catch yourself:
 - Each sub-goal must be **strictly simpler** and as abstract as possible, and do real work — re-stating the parent, or a split one existing lemma closes in one step, does not count. Bundling adjacent steps into one intermediate lemma is fine. Routine expansion of the Proof's argument (algebra, casts, monotonicity, estimates) is yours; a sub-goal carrying mathematics the Proof does not argue is not.
 - Each sub-goal is a stand-alone Lean theorem — re-declare any parent binder its type uses or that its own sub-goals will thread. When unsure, keep — over-keeping is mild bloat, dropping a future-needed binder is a wasted attempt.
 - Edit only the body of `patch.lean` — signature changes are rejected as `patch_signature_mismatch`. Framework auto-prepends `import Mathlib` + `Defs` and auto-appends sub-goal imports; the ONE import you write yourself is a cited existing sibling's.
-- **Citing an existing sibling** (Path B may cite any status; Path A proved only). Framework classifies by status: **proved** → used directly; **open / attempting / pending_review** → auto-linked, your strategy waits for it; **shelved** → auto-linked; revived unless the Strategist parked it deliberately (those wait for its ruling); **dead / disproved** → rejected — re-declare the statement fresh as your own `new_<slug>.lean` instead.
+- **Citing an existing sibling** — any sibling except **dead / disproved**, which are rejected: re-declare the statement fresh as your own `new_<slug>.lean` instead. Citing one that is not proved yet is a legitimate complete delivery: the framework records the dependency and verifies your proof once it proves. What it will not take is a citation of your own ancestor, or of a statement equivalent to this goal — that waits on itself.
 - A redundant sub-goal file must be deleted from attempts_dir, not commented out.
 
 ## Lemma discovery

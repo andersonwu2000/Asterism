@@ -202,37 +202,21 @@ def test_citation_open_kind_aware_severity(ws: Path):
         assert r["issues"][0]["severity"] == "warn", k
 
 
-def test_citation_backward_leaf_bypass_is_error(ws: Path):
-    """P4 (b6 feedback family 2026-07-11): commit routes a Backward with
-    zero `new_*.lean` stubs down the leaf-bypass path, where a non-proved
-    cite is a hard `cite_unproved_sibling` reject — the mirror's one-size
-    warn read as "will pass" and burned the commit round. Sorry-free
-    pure-cite + no stub on disk → error; either a declared stub or a
-    `sorry` in the probed content keeps the auto-link warn."""
+def test_citation_stub_count_does_not_change_verdict(ws: Path):
+    """Task #123: citation permission is no longer keyed on whether the
+    patch declares stubs — commit auto-links a cited unproved sibling
+    either way (the WAIT edge is what defers verification, not the stub).
+    The mirror must therefore give the same auto-link warn for a sorry-free
+    stub-less pure-cite as for a decomposition; the old P4 escalation to
+    `error` now predicts a rejection that no longer happens."""
     _goal("wip", status="open")
-    adir = ws / ".attempts" / "42"
-    adir.mkdir(parents=True)
-    r = gw._citation_submission(_cite("wip"), "p", ws, declared=set(),
-                                kind="backward", attempts_dir=adir)
-    assert r["ok"] is False
-    assert r["issues"][0]["severity"] == "error"
-    assert "leaf-bypass" in r["issues"][0]["hint"]
-    # A stub on disk → decomposition path → auto-link warn.
-    (adir / "new_step.lean").write_text(
-        "theorem L_step : True := by sorry\n", encoding="utf-8")
-    r = gw._citation_submission(_cite("wip"), "p", ws, declared=set(),
-                                kind="backward", attempts_dir=adir)
-    assert r["ok"] is True and r["issues"][0]["severity"] == "warn"
-    (adir / "new_step.lean").unlink()
-    # `sorry` in the probed content → not a submittable leaf → warn.
-    r = gw._citation_submission(
-        _cite("wip").replace("trivial", "by sorry"), "p", ws,
-        declared=set(), kind="backward", attempts_dir=adir)
-    assert r["ok"] is True and r["issues"][0]["severity"] == "warn"
-    # Kind-less legacy client never escalates.
-    r = gw._citation_submission(_cite("wip"), "p", ws, declared=set(),
-                                kind=None, attempts_dir=adir)
-    assert r["ok"] is True and r["issues"][0]["severity"] == "warn"
+    for content in (_cite("wip"), _cite("wip").replace("trivial", "by sorry")):
+        for k in ("backward", "formalizer", None):
+            r = gw._citation_submission(content, "p", ws,
+                                        declared=set(), kind=k)
+            assert r["ok"] is True, (k, content)
+            assert r["issues"][0]["severity"] == "warn", (k, content)
+            assert "auto-links" in r["issues"][0]["hint"]
 
 
 def test_citation_hard_terminal_error_regardless_of_kind(ws: Path):

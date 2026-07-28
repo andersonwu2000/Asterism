@@ -1443,7 +1443,7 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
                   for p in meta.target_path.parent.glob("new_*.lean")}
     _cite = _citation_submission(
         new_content, meta.problem, meta.workspace, _own_stubs,
-        kind=meta.kind, attempts_dir=meta.target_path.parent)
+        kind=meta.kind)
     _verb = "deleted" if not replacement else "replaced"
     response = {
         "edit": (f"{_verb} lines {start_line}-{end_line}; "
@@ -1648,40 +1648,28 @@ def _gw_leading_comments(text: str) -> str:
 
 def _citation_submission(content: str, problem: str, workspace: "Path",
                          declared: "set[str]",
-                         kind: "str | None" = None,
-                         attempts_dir: "Path | None" = None) -> "dict | None":
+                         kind: "str | None" = None) -> "dict | None":
     """Classify each `import Problems.<problem>.proofs.L_<slug>` in `content`
     via the shared `db.classify_cited_slug` SoT so validate_file predicts the
     commit citation gate. `declared` = sibling stubs inlined this call (legit
     — skip). Best-effort: any DB failure → None (must never break validate).
 
-    `kind` (the session's pipeline) sharpens the non-proved verdict: only a
-    Backward decomposition can legally cite an open sibling (commit
-    auto-links it as a strategy sub-goal); Builder/Forward commits have no
+    `kind` (the session's pipeline) sharpens the non-proved verdict: a
+    Backward / Formalizer commit auto-links a cited open sibling as a
+    strategy sub-goal; Builder/Forward commits have no
     auto-link — the citation dies at their axiom gate (transitive sorryAx),
     so for those pipelines the mirror reports it as the ERROR it is instead
     of the historical one-size warn (feedback family: agents trusted the
     warn, burned the round trip).
 
-    `attempts_dir` sharpens the BACKWARD verdict the same way: commit
-    routes a Backward with zero `new_*.lean` stubs down the leaf-bypass
-    path (`allow_auto_link=False`), so a sorry-free pure-cite patch is
-    rejected there with `cite_unproved_sibling` — yet the mirror's warn
-    read as "will pass" (b6 feedback family, 2026-07-11). When the probed
-    content is sorry-free and no stub exists yet, report that error;
-    declaring one stub flips it back to the auto-link warn."""
+    Task #123 retired the stub-count sharpening: commit auto-links a cited
+    unproved sibling whether or not the patch declares stubs (the wait edge,
+    not the stub, is what defers verification), so a stub-less Backward /
+    Formalizer patch now gets the same auto-link warn as a decomposition."""
     try:
         conn = db.connect(workspace / "asterism.db")
     except Exception:
         return None
-    # Leaf-bypass predictor — mirrors backward.py's routing condition
-    # (`not _safe_glob(attempts_dir, "new_*.lean")`). A `sorry` anywhere
-    # means this content isn't a submittable leaf proof, so keep the warn.
-    leaf_bypass = (
-        (kind or "").lower() in ("backward", "formalizer")
-        and attempts_dir is not None
-        and not re.search(r"\bsorry\b", content)
-        and not next(attempts_dir.glob("new_*.lean"), None))
     issues: "list[dict]" = []
     try:
         seen: "set[str]" = set()
@@ -1722,24 +1710,13 @@ def _citation_submission(content: str, problem: str, workspace: "Path",
                                 "and dies at the axiom gate; cite proved "
                                 "siblings only, or (forward) declare the "
                                 "fact as your own lemma"})
-                elif leaf_bypass:
-                    issues.append({
-                        "slug": slug, "status": status, "severity": "error",
-                        "hint": "non-proved: with no new_<slug>.lean stub "
-                                "declared, commit routes this down the "
-                                "leaf-bypass path and rejects it with "
-                                "cite_unproved_sibling; declare at least "
-                                "one sub-goal stub (a byte-identical "
-                                "re-statement of this sibling counts — it "
-                                "statement-dedups and auto-links) or cite "
-                                "proved siblings only"})
                 else:
                     issues.append({
                         "slug": slug, "status": status, "severity": "warn",
-                        "hint": "non-proved: citable only via a Backward "
-                                "decomposition (which auto-links the "
-                                "sibling); a sorry-free leaf-bypass proof "
-                                "citing it is rejected at commit"})
+                        "hint": "non-proved: commit auto-links it as a "
+                                "dependency and your strategy waits until "
+                                "it proves — legitimate, but rejected if it "
+                                "is an ancestor of your goal or restates it"})
     finally:
         conn.close()
     return {"ok": not any(i["severity"] == "error" for i in issues),
@@ -2102,8 +2079,7 @@ def validate_file(content: str) -> str:
     submission: "dict" = {"annotation": _annotation_submission(content),
                           "decl_head": _declhead_submission(content)}
     cite = _citation_submission(content, meta.problem, meta.workspace,
-                                set(inlined_slugs), kind=meta.kind,
-                                attempts_dir=meta.target_path.parent)
+                                set(inlined_slugs), kind=meta.kind)
     if cite is not None:
         submission["citation"] = cite
     # D-lite (task #5): predict the SPLIT — the deterministic commit-policy

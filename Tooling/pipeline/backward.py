@@ -195,6 +195,79 @@ def _strict_ancestor_ids(conn, goal_id: int) -> "set[int]":
     return {int(r["id"]) for r in rows} - {int(goal_id)}
 
 
+def _cited_dependency_guards(
+    conn, workspace: Path, *, problem: str, goal_id: int,
+    auto_link_ids: "set[int]",
+) -> "tuple[str, str] | None":
+    """Guards on AUTO-LINKED cited siblings (goals this patch imports that
+    are not yet proved). Returns (failure_reason, detail) or None.
+
+    Citation permission is shape-derived (task #123): any patch that cites
+    an unproved sibling registers a `strategy_subgoals` wait edge and
+    defers verification, whether or not it also declares stubs. Both
+    guards below therefore have to run on BOTH commit paths — before, the
+    structural one lived only in the decomposition branch because the
+    leaf-bypass branch could not cite an unproved sibling at all.
+
+      * structural — the cited goal is an ANCESTOR: the strategies would
+        wait on each other forever.
+      * semantic — the cited goal is definitionally equal to this goal
+        or to an unproved ancestor: `X ⊢ X`, no progress. Mirrors the
+        `no_progress` verdict declared sub-goals already get; only a
+        PROVED match is a legitimate citation of an equal statement.
+    """
+    if not auto_link_ids:
+        return None
+    cyc = sorted(set(auto_link_ids) & _strict_ancestor_ids(conn, goal_id))
+    if cyc:
+        names = []
+        for _gid in cyc:
+            _g = db.get_goal(conn, _gid)
+            names.append(str(_g["slug"]) if _g else f"goal {_gid}")
+        return (
+            "circular_decomposition",
+            f"citing {', '.join(names)} closes a dependency cycle — it is "
+            f"an ANCESTOR of this goal (this goal is part of ITS proof, so "
+            f"it cannot also prove this goal; the strategies would wait on "
+            f"each other forever). Cite a goal from elsewhere in the tree, "
+            f"or decompose into genuinely smaller NEW pieces.",
+        )
+    # Semantic probe — read each cited sibling's committed statement file
+    # and run it through the same dedupe batch declared sub-goals use.
+    candidates: "list[tuple[str, str]]" = []
+    gids: "list[int]" = []
+    for gid in sorted(auto_link_ids):
+        g = db.get_goal(conn, gid)
+        if g is None:
+            continue
+        try:
+            text = (workspace / str(g["lean_path"])).read_text(
+                encoding="utf-8")
+        except OSError:
+            continue
+        candidates.append((str(g["slug"]), text))
+        gids.append(gid)
+    if not candidates:
+        return None
+    from ..quality import dedupe as _dedupe
+    matches = _dedupe.find_canonicals_batch(
+        conn, workspace, problem=problem, parent_goal_id=goal_id,
+        candidates=candidates)
+    hits = [(candidates[i][0], gids[i])
+            for i, m in enumerate(matches)
+            if m is not None and m.kind == "no_progress"]
+    if hits:
+        detail = "; ".join(f"`{slug}` (goal {gid})" for slug, gid in hits)
+        return (
+            "no_progress",
+            f"cited sibling(s) restate this goal or an UNPROVED ancestor: "
+            f"{detail}. Waiting on a statement equal to your own is not a "
+            f"proof step — it just parks this goal behind an identical one. "
+            f"Cite a strictly weaker result, or prove the goal directly.",
+        )
+    return None
+
+
 def _theorem_head(text: str, slug: str) -> "str | None":
     """The whitespace-normalized `<binders> : <conclusion>` of
     `theorem <slug> ... :=` in `text`, for cheap structural comparison
@@ -1091,20 +1164,41 @@ def _backward_parse_and_commit(
         forbidden = _grep_forbidden(main_patch_text, mfst.forbidden_lemmas)
         if forbidden:
             return _abort("forbidden_lemma", forbidden, leading)
-        # Citation gate (leaf-bypass: no decomposition, axiom probe
-        # runs at submit). `allow_auto_link=False` — leaf-bypass cannot
-        # tolerate cited unproved siblings because the immediate axiom
-        # probe sees their `:= by sorry` body through the import chain.
-        # Cited open siblings must be handled via the decomp path's
-        # auto-link mechanism (which defers verification until cited
-        # goal proves).
-        _, _, cite_err = _resolve_cite_dependencies(
+        # Citation gate. Shape-derived since task #123: a stub-less patch
+        # may cite an unproved sibling too — the soundness guarantee was
+        # never the stub declaration, it is the `strategy_subgoals` WAIT
+        # edge (verification defers until the cited goal proves). So this
+        # path auto-links as well, and the branch below routes on whether
+        # the patch actually carries unproved dependencies rather than on
+        # whether the agent happened to declare a stub.
+        auto_link_ids, revive_ids, cite_err = _resolve_cite_dependencies(
             conn, problem=goal["problem"], patch_text=main_patch_text,
-            declared_slugs=set(), allow_auto_link=False,
+            declared_slugs=set(), allow_auto_link=True,
             workspace=workspace,
         )
         if cite_err:
             return _abort("cite_unproved_sibling", cite_err, leading)
+        if auto_link_ids:
+            guard = _cited_dependency_guards(
+                conn, workspace, problem=goal["problem"], goal_id=goal_id,
+                auto_link_ids=set(auto_link_ids))
+            if guard is not None:
+                return _abort(guard[0], guard[1], leading)
+            # A cite-only patch that links exactly what an existing
+            # strategy on this goal already waits on adds nothing — same
+            # rationale as the decomposition path's twin guard.
+            dup_sid = _existing_duplicate_strategy(
+                conn, goal_id, set(auto_link_ids))
+            if dup_sid is not None:
+                return _abort(
+                    "duplicate_strategy",
+                    f"this patch declares no sub-goal and waits on exactly "
+                    f"the same goal set {sorted(auto_link_ids)} as existing "
+                    f"strategy s{dup_sid} on this goal — s{dup_sid} is "
+                    f"already waiting on those gates. Nothing new will "
+                    f"happen that is not already pending.",
+                    leading,
+                )
         proofs_dir = db.problem_dir(workspace, goal["problem"]) / "proofs"
         proofs_dir.mkdir(parents=True, exist_ok=True)
         scratch_dest = proofs_dir / f"_strategy_{sid_token}.lean"
@@ -1155,19 +1249,51 @@ def _backward_parse_and_commit(
         # — before the leaf-bypass promotes the goal proved. (P13 root sorryAx
         # came in via a leaf citing an orphan stub; a `\bsorry\b` scan can't
         # see that, `collectAxioms` can.)
-        from ._axiom import axiom_gate
+        # A patch that WAITS (cites an unproved sibling) is exempt from the
+        # submit-time probe for the same reason a decomposition patch is:
+        # the probe cannot separate this strategy's own sorry from the
+        # sorry it legitimately imports from a not-yet-proved dependency
+        # (verify.py module docstring). Soundness for that shape is the
+        # root-level `axiom_probe` + bisect + rollback backstop, reached
+        # only after every wait edge resolves to 'proved'. A patch with no
+        # unproved dependency keeps the immediate gate — it goes straight
+        # to ready_for_verify, so this is its only check.
         fq_name = f"Problems.{goal['problem']}.{sid_token}"
-        gate = axiom_gate(
-            scratch_dest, fq_name=fq_name,
-            whitelist=manifest.effective_axioms(
-                mfst, problem=goal["problem"]),
-            workspace=workspace, attempts_dir=attempts_dir, write_olean=True)
-        if not gate.ok:
-            _rm_scratch()
-            detail = gate.detail or ""
-            if gate.failure_reason == "lake_build_error":
-                detail = diagnostics.annotate_failure_detail(detail)
-            return _abort(gate.failure_reason, detail, leading)
+        if auto_link_ids:
+            v = _verify_owned(scratch_dest, write_olean=True)
+            if "error" in v:
+                _rm_scratch()
+                return _abort(
+                    "lake_build_error",
+                    diagnostics.annotate_failure_detail(
+                        f"verify infra error: {v['error']}"),
+                    leading)
+            if not v.get("ok"):
+                _rm_scratch()
+                err_lines = "\n".join(
+                    f"{scratch_dest.name}:{d.get('line','?')}:"
+                    f"{d.get('col','?')}  {d.get('message','')}"
+                    for d in (v.get("diagnostics") or [])
+                    if d.get("severity") == "error")
+                return _abort(
+                    "lake_build_error",
+                    diagnostics.annotate_failure_detail(
+                        err_lines or "no error diagnostics"),
+                    leading)
+        else:
+            from ._axiom import axiom_gate
+            gate = axiom_gate(
+                scratch_dest, fq_name=fq_name,
+                whitelist=manifest.effective_axioms(
+                    mfst, problem=goal["problem"]),
+                workspace=workspace, attempts_dir=attempts_dir,
+                write_olean=True)
+            if not gate.ok:
+                _rm_scratch()
+                detail = gate.detail or ""
+                if gate.failure_reason == "lake_build_error":
+                    detail = diagnostics.annotate_failure_detail(detail)
+                return _abort(gate.failure_reason, detail, leading)
         # Race guard mirrors the decomp path's check at line ~666.
         fresh = db.get_goal(conn, goal_id)
         if fresh is None or fresh["status"] not in ("open", "attempting"):
@@ -1176,16 +1302,33 @@ def _backward_parse_and_commit(
             return _abort(
                 "goal_no_longer_open",
                 f"goal {goal_id} transitioned to {current!r} during this "
-                f"Backward's leaf-bypass run; aborting to avoid orphan strategy.",
+                f"Backward's stub-less run; aborting to avoid orphan strategy.",
                 leading,
             )
+        # Revive cited soft terminals, then register the wait edges. Same
+        # semantics as the decomposition path — `strategies_ready_for_verify`
+        # blocks this strategy until every cited goal proves.
+        for rid in sorted(revive_ids):
+            cur = db.get_goal(conn, rid)
+            if cur is not None and str(cur["status"]) == "shelved":
+                transitions.apply_goal_transition(
+                    conn, rid, "open", event="backward_revive")
+                print(f"[backward-revive] cited sibling goal {rid} "
+                      f"({cur['slug']}) shelved → open", flush=True)
+        for pos, auto_gid in enumerate(sorted(auto_link_ids)):
+            db.link_subgoal(conn, strategy_id=strategy_id,
+                            subgoal_id=auto_gid, position=pos)
         scratch_rel = scratch_dest.relative_to(workspace).as_posix()
         db.update_strategy_scratch_path(conn, strategy_id, scratch_rel)
         conn.execute("UPDATE strategies SET proposal_md = ? WHERE id = ?",
                      (leading, strategy_id))
         conn.commit()
-        print(f"[backward leaf-bypass] strategy={sid_token} → ready_for_verify",
-              flush=True)
+        if auto_link_ids:
+            print(f"[backward cite-wait] strategy={sid_token} waits on "
+                  f"{sorted(auto_link_ids)}", flush=True)
+        else:
+            print(f"[backward leaf-bypass] strategy={sid_token} → "
+                  f"ready_for_verify", flush=True)
         return PipelineResult(outcome="success", proposal_md=leading)
 
     # Forbidden-lemma grep covers patch + every sub-goal stub.
@@ -1778,27 +1921,15 @@ def _backward_parse_and_commit(
             _discard_placed()
             return _abort("cite_unproved_sibling", cite_err, leading)
 
-        # Ancestor-link guard: an auto-link target that is an ANCESTOR
-        # of this goal would close a strategy-level dependency cycle.
-        if auto_link_ids:
-            cyc = sorted(set(auto_link_ids)
-                         & _strict_ancestor_ids(conn, goal_id))
-            if cyc:
-                names = []
-                for _gid in cyc:
-                    _g = db.get_goal(conn, _gid)
-                    names.append(str(_g["slug"]) if _g else f"goal {_gid}")
-                _discard_placed()
-                return _abort(
-                    "circular_decomposition",
-                    f"linking {', '.join(names)} as a sub-goal closes a "
-                    f"dependency cycle — it is an ANCESTOR of this goal "
-                    f"(this goal is part of ITS proof, so it cannot also "
-                    f"prove this goal; the strategies would wait on each "
-                    f"other forever). Decompose into genuinely smaller "
-                    f"NEW pieces instead of citing a goal above you.",
-                    leading,
-                )
+        # Cited-dependency guards (structural cycle + semantic no-progress)
+        # — shared with the stub-less commit path so both shapes of
+        # "this patch waits on a cited sibling" are held to one standard.
+        guard = _cited_dependency_guards(
+            conn, workspace, problem=goal["problem"], goal_id=goal_id,
+            auto_link_ids=set(auto_link_ids))
+        if guard is not None:
+            _discard_placed()
+            return _abort(guard[0], guard[1], leading)
 
         # P3 duplicate-strategy guard (agent_feedback 2026-07-11, the b6
         # strategy pile: ~30 byte-identical reductions s22785–s22831): a

@@ -3,14 +3,22 @@
 Classifies cited siblings:
   - declared / proved → pass through
   - open/attempting/pending_strategist_review:
-      - decomp path (allow_auto_link=True) → auto-link as sub-goal
-      - leaf-bypass path (allow_auto_link=False) → reject
+      - auto-linking caller (allow_auto_link=True) → auto-link as sub-goal
+      - non-auto-linking caller (allow_auto_link=False) → reject
   - shelved/dead (soft/context terminals, dedupe does NOT block them):
-      - decomp path → REVIVE: auto-link + flag for reopen-to-'open'
+      - auto-linking caller → REVIVE: auto-link + flag for reopen-to-'open'
         (the citing strategy gives them a fresh live path to root)
-      - leaf-bypass path → reject (can't tolerate transitive sorry)
+      - non-auto-linking caller → reject (can't tolerate transitive sorry)
   - disproved (hard terminal, counterexample, dedupe BLOCKS) → always
     reject (the one never-citable status)
+
+Task #123: BOTH Backward/Formalizer commit paths auto-link now — the
+stub count no longer decides citation permission, because the deferral
+comes from the `strategy_subgoals` WAIT edge, not from declaring a stub.
+`allow_auto_link=False` survives for the legacy Builder module, which
+probes axioms at submit with no wait edge to hide behind. The guards
+that ride on auto-linked ids (cycle + defeq no-progress) live in
+`_cited_dependency_guards` and are exercised at the bottom of this file.
 
 Returns a 3-tuple `(auto_link, revive, err)` with `revive` ⊆ `auto_link`.
 
@@ -130,8 +138,7 @@ def test_alias_to_open_canonical_inherits_status(
     conn: sqlite3.Connection,
 ) -> None:
     """An alias to an OPEN canonical inherits the canonical's status (not a
-    free pass): auto-link on the decomp path, reject on leaf-bypass — the
-    same handling the open canonical itself would get."""
+    free pass) — the same handling the open canonical itself would get."""
     canonical = _insert_goal(conn, "open_canonical", status="open")
     alias = _insert_goal(conn, "open_alias", status="proved")
     conn.execute("UPDATE goals SET alias_target_id = ? WHERE id = ?",
@@ -382,13 +389,13 @@ def test_decomp_mixes_proved_open_shelved_and_disproved(
 # sorry from a cited stub; revival is a decomp-path capability).
 # ---------------------------------------------------------------------
 
-def test_leafbypass_rejects_open_sibling(
+def test_no_autolink_caller_rejects_open_sibling(
     conn: sqlite3.Connection,
 ) -> None:
-    """Leaf-bypass strategies run axiom probe at submit — they can't
-    cite unproved siblings (the cited stub's `:= by sorry` would show
-    up in the transitive axiom set). Reject with hint pointing at the
-    decomp path's auto-link mechanism."""
+    """A caller that probes axioms at submit with no wait edge (legacy
+    Builder) can't cite unproved siblings — the cited stub's `:= by
+    sorry` shows up in the transitive axiom set. Reject with a hint
+    pointing at the auto-link mechanism."""
     _insert_goal(conn, "open_dep", status="open")
     patch = "import Problems.p.proofs.L_open_dep\n"
     auto_link, revive, err = _resolve_cite_dependencies(
@@ -402,10 +409,10 @@ def test_leafbypass_rejects_open_sibling(
     assert revive == set()
 
 
-def test_leafbypass_rejects_attempting_and_pending_review(
+def test_no_autolink_caller_rejects_attempting_and_pending_review(
     conn: sqlite3.Connection,
 ) -> None:
-    """Same as open — any non-proved state rejects in leaf-bypass."""
+    """Same as open — any non-proved state rejects without auto-link."""
     _insert_goal(conn, "foo", status="attempting")
     _insert_goal(conn, "bar", status="pending_strategist_review")
     patch = (
@@ -422,12 +429,11 @@ def test_leafbypass_rejects_attempting_and_pending_review(
     assert revive == set()
 
 
-def test_leafbypass_rejects_shelved_and_dead(
+def test_no_autolink_caller_rejects_shelved_and_dead(
     conn: sqlite3.Connection,
 ) -> None:
-    """Leaf-bypass can't revive — shelved/dead reject here even though
-    the decomp path would revive them (no parallel-wait / decomposition
-    to defer verification behind)."""
+    """Reviving is an auto-link capability — shelved/dead reject for a
+    caller with no wait edge to defer verification behind."""
     _insert_goal(conn, "sh", status="shelved")
     _insert_goal(conn, "de", status="dead")
     patch = (
@@ -526,3 +532,110 @@ def test_inject_skips_unproved_declared_and_already_imported(conn, tmp_path):
         declared_slugs={"declared_ref"}, workspace=tmp_path)
     assert added == []
     assert new == patch  # untouched
+
+
+# ---------------------------------------------------------------------
+# Cited-dependency guards (task #123)
+#
+# Citation permission became shape-derived: every Backward/Formalizer
+# commit path auto-links, so the guards that used to live only in the
+# decomposition branch now run on both. Structural (cycle) first, then
+# semantic (defeq no-progress) — the second one is what stops "prove G by
+# waiting on something equal to G", the shape the old stub requirement
+# blocked incidentally.
+# ---------------------------------------------------------------------
+
+def _chain(conn: sqlite3.Connection, parent: int, child: int) -> None:
+    """`child` becomes a sub-goal of `parent` (so parent is an ancestor)."""
+    sid = db.insert_strategy(
+        conn, goal_id=parent, lean_path="Problems/p/proofs/x.lean",
+        created_by="test")
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=child, position=0)
+    conn.commit()
+
+
+def test_cited_guard_rejects_ancestor(conn: sqlite3.Connection) -> None:
+    """Citing a goal above you closes a wait cycle: it needs your proof,
+    you would need its. Structural — no defeq probe required."""
+    from Tooling.pipeline.backward import _cited_dependency_guards
+    top = _insert_goal(conn, "top", status="open")
+    mid = _insert_goal(conn, "mid", status="open")
+    _chain(conn, top, mid)
+    out = _cited_dependency_guards(
+        conn, Path.cwd(), problem="p", goal_id=mid, auto_link_ids={top})
+    assert out is not None
+    reason, detail = out
+    assert reason == "circular_decomposition"
+    assert "top" in detail and "ANCESTOR" in detail
+
+
+def test_cited_guard_rejects_defeq_restatement(
+    conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cited sibling definitionally equal to this goal (or an unproved
+    ancestor) is `X ⊢ X` — the same verdict a declared sub-goal gets."""
+    from types import SimpleNamespace
+
+    from Tooling.pipeline import backward as bw
+    from Tooling.quality import dedupe as _dedupe
+    me = _insert_goal(conn, "me", status="open")
+    twin = _insert_goal(conn, "twin", status="open")
+    (Path.cwd() / "Problems" / "p" / "proofs").mkdir(parents=True)
+    (Path.cwd() / "Problems" / "p" / "proofs" / "L_twin.lean").write_text(
+        "theorem twin : T := by sorry\n", encoding="utf-8")
+    monkeypatch.setattr(
+        _dedupe, "find_canonicals_batch",
+        lambda *a, **k: [SimpleNamespace(kind="no_progress", goal_id=me)])
+    out = bw._cited_dependency_guards(
+        conn, Path.cwd(), problem="p", goal_id=me, auto_link_ids={twin})
+    assert out is not None
+    assert out[0] == "no_progress"
+    assert "twin" in out[1]
+
+
+def test_cited_guard_passes_unrelated_sibling(
+    conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point of the change: a genuine one-step reduction onto
+    an open sibling is legitimate and must survive both guards."""
+    from Tooling.pipeline import backward as bw
+    from Tooling.quality import dedupe as _dedupe
+    me = _insert_goal(conn, "me", status="open")
+    dep = _insert_goal(conn, "dep", status="open")
+    (Path.cwd() / "Problems" / "p" / "proofs").mkdir(parents=True)
+    (Path.cwd() / "Problems" / "p" / "proofs" / "L_dep.lean").write_text(
+        "theorem dep : U := by sorry\n", encoding="utf-8")
+    monkeypatch.setattr(_dedupe, "find_canonicals_batch",
+                        lambda *a, **k: [None])
+    assert bw._cited_dependency_guards(
+        conn, Path.cwd(), problem="p", goal_id=me,
+        auto_link_ids={dep}) is None
+
+
+def test_cited_guard_noop_and_probe_free_without_auto_links(
+    conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No cited unproved sibling → no guard work at all (a pure direct
+    proof must not pay for a dedupe batch)."""
+    from Tooling.pipeline import backward as bw
+    from Tooling.quality import dedupe as _dedupe
+
+    def _boom(*a, **k):
+        raise AssertionError("dedupe probe ran with no auto-links")
+
+    monkeypatch.setattr(_dedupe, "find_canonicals_batch", _boom)
+    g = _insert_goal(conn, "solo", status="open")
+    assert bw._cited_dependency_guards(
+        conn, Path.cwd(), problem="p", goal_id=g,
+        auto_link_ids=set()) is None
+
+
+def test_backward_commit_never_disables_auto_link() -> None:
+    """Routing invariant: no Backward/Formalizer commit path may ask the
+    citation gate to refuse unproved cites. `allow_auto_link=False`
+    survives only in the legacy Builder module (no wait edge, probes at
+    submit) — its reappearance here would restore the stub-count
+    discriminator this task retired."""
+    src = (Path(__file__).resolve().parents[1] / "Tooling" / "pipeline"
+           / "backward.py").read_text(encoding="utf-8")
+    assert "allow_auto_link=False" not in src
