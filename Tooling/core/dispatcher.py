@@ -890,6 +890,29 @@ class SchedulerState:
     verified_problems: "dict[str, bool]" = field(default_factory=dict)
 
 
+def _ensure_manifest(conn, manifests, problem: str) -> bool:
+    """Late-registration guard (#125): the problems table can gain rows
+    after daemon start (`asterism init` against a live daemon), which
+    the startup manifest load never saw — every dispatch of the new
+    problem then fast-failed `problem_not_found` in a T4-pumped loop,
+    silently (the reason never reached the log). Register on first
+    miss; a genuine ghost (row without a loadable Manifest) logs loudly
+    and cools via TARGET_COOLDOWN_REASONS."""
+    if problem in manifests:
+        return True
+    row = conn.execute(
+        "SELECT manifest_path FROM problems WHERE name = ?",
+        (problem,)).fetchone()
+    if row is not None and hasattr(manifests, "load"):
+        if manifests.load(problem, row["manifest_path"]) is not None:
+            print(f"[manifest] late-registered {problem} "
+                  f"(init after daemon start)", flush=True)
+            return True
+    print(f"[dispatch] {problem}: problem_not_found — no loadable "
+          f"Manifest for this queue row (cooling target)", flush=True)
+    return False
+
+
 def _gateway_unreachable_backoff(st: "SchedulerState", pool, *,
                                  kind: str, tk: str, tid: str) -> bool:
     """Shared gateway-unreachable back-off + circuit breaker (task #9 —
@@ -955,7 +978,7 @@ def _run_pipeline(workspace: Path,
             #     this Forward.
             if task_kind == "Strategist":
                 problem = target_id
-                if problem not in manifests:
+                if not _ensure_manifest(conn, manifests, problem):
                     db.record_pipeline(
                         conn, pipeline_id=pipeline_id, kind=task_kind,
                         target_id=target_id, target_kind=target_kind,
@@ -1015,7 +1038,7 @@ def _run_pipeline(workspace: Path,
                 # Mint job: target = problem name (TEXT); no goal lookup.
                 # 'Forward' = legacy queue rows (pre-merge recovery).
                 problem = target_id
-                if problem not in manifests:
+                if not _ensure_manifest(conn, manifests, problem):
                     db.record_pipeline(
                         conn, pipeline_id=pipeline_id, kind=task_kind,
                         target_id=target_id, target_kind=target_kind,
@@ -1077,7 +1100,7 @@ def _run_pipeline(workspace: Path,
                 # targeted like Forward; query/reason ride the FetchPaper
                 # decision row (decision_id threaded from the queue).
                 problem = target_id
-                if problem not in manifests:
+                if not _ensure_manifest(conn, manifests, problem):
                     db.record_pipeline(
                         conn, pipeline_id=pipeline_id, kind=task_kind,
                         target_id=target_id, target_kind=target_kind,
@@ -1123,7 +1146,7 @@ def _run_pipeline(workspace: Path,
                 # migrate/cleanup unit, or a plain `problem` for a serial phase
                 # step (dedup/classify/bridge).
                 problem, target_file = _lib_decode(target_id)
-                if problem not in manifests:
+                if not _ensure_manifest(conn, manifests, problem):
                     db.record_pipeline(
                         conn, pipeline_id=pipeline_id, kind=task_kind,
                         target_id=target_id, target_kind=target_kind,
@@ -1231,6 +1254,20 @@ def _run_pipeline(workspace: Path,
                 return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                         "failed", "goal_not_found")
 
+            # Same late-registration guard as the Problem-target kinds —
+            # without it a late-init problem's goal job died here on a
+            # raw KeyError (worker-exception path) instead of a clean
+            # problem_not_found.
+            if not _ensure_manifest(conn, manifests, goal["problem"]):
+                db.record_pipeline(
+                    conn, pipeline_id=pipeline_id, kind=task_kind,
+                    target_id=target_id, target_kind=target_kind,
+                    status="failed", outcome="failed",
+                    started_at=started_at,
+                )
+                return WorkerDone(pipeline_id, task_kind, target_id,
+                                  target_kind, "failed",
+                                  "problem_not_found")
             mfst = manifests[goal["problem"]]
 
             if task_kind in ("Formalizer", "Backward", "Builder"):

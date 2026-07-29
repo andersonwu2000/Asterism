@@ -271,19 +271,34 @@ def _record_spawn_usage(*, kind: str, attempts_dir: Path,
             # A miscomputed workspace must fail silent-and-clean, not
             # mint a junk sqlite file wherever it happened to point.
             return
+        vals = (int(usage.get("input_tokens") or 0),
+                int(usage.get("output_tokens") or 0),
+                int(usage.get("cache_read_input_tokens") or 0),
+                int(usage.get("cache_creation_input_tokens") or 0),
+                int(usage.get("turns") or 0))
         conn = _db.connect(db_path)
         try:
+            # Exact-snapshot dedup (#126): the usage block is the
+            # SESSION-CUMULATIVE snapshot, and tail hooks (feedback /
+            # reflection resumes) re-enter this recorder with the same
+            # numbers under their own kind label — 51% of historical
+            # rows were byte-identical five-tuples, doubling every
+            # SUM-based cost report. The first record (the work turn,
+            # true kind + true wall time) wins; kind is deliberately
+            # NOT part of the match.
+            if conn.execute(
+                "SELECT 1 FROM spawn_usage WHERE pipeline_id = ?"
+                " AND input_tokens = ? AND output_tokens = ?"
+                " AND cache_read_tokens = ? AND cache_new_tokens = ?"
+                " AND turns = ? LIMIT 1",
+                (pipeline_id, *vals)).fetchone() is not None:
+                return
             conn.execute(
                 "INSERT INTO spawn_usage (pipeline_id, kind, problem,"
                 " input_tokens, output_tokens, cache_read_tokens,"
                 " cache_new_tokens, turns, wall_sec, ts)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (pipeline_id, kind, problem,
-                 int(usage.get("input_tokens") or 0),
-                 int(usage.get("output_tokens") or 0),
-                 int(usage.get("cache_read_input_tokens") or 0),
-                 int(usage.get("cache_creation_input_tokens") or 0),
-                 int(usage.get("turns") or 0),
+                (pipeline_id, kind, problem, *vals,
                  float(wall_sec), _db.now()))
             conn.commit()
         finally:

@@ -105,6 +105,13 @@ REGISTRY: "dict[str, FailureTraits]" = {
 
     # --- framework shape errors (no agent involvement) ------------------
     "goal_not_found": _T("framework", agent_visible=False),
+    # #125 (07-29): a queue row whose problem has no loadable Manifest.
+    # Previously UNREGISTERED — the failure was invisible in the log and
+    # had no cooldown, so T4 stall-wakes pumped a 1ms crashloop against
+    # a post-startup `asterism init` the manifest cache hadn't seen.
+    # cooldown_scope='target' rides the existing cooldown branch.
+    "problem_not_found": _T("framework", agent_visible=False,
+                            cooldown_scope="target"),
     "lean_file_missing": _T("framework", agent_visible=False),
     "missing_parent_stub": _T("framework", agent_visible=False),
     "parent_stub_not_decomposable": _T("framework", agent_visible=False),

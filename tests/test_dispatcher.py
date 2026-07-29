@@ -2221,3 +2221,50 @@ def test_singleton_lock_legacy_conservative_when_cmdline_unreadable(
     monkeypatch.setattr(_dispatcher, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(_dispatcher, "_cmdline_is_daemon", lambda pid: None)
     assert _dispatcher._acquire_singleton_lock(tmp_path) is None
+
+
+# ---------------------------------------------------------------------
+# _ensure_manifest — late-init discovery (#125)
+# ---------------------------------------------------------------------
+
+def test_problem_not_found_is_registered_target_cooldown() -> None:
+    """#125: the reason was previously UNREGISTERED — invisible in the
+    log and cooldown-free, so T4 stall-wakes pumped a 1ms crashloop."""
+    from Tooling.state import failures
+    assert "problem_not_found" in failures.REGISTRY
+    assert "problem_not_found" in failures.TARGET_COOLDOWN_REASONS
+
+
+def test_ensure_manifest_late_registers_and_ghosts(tmp_path, monkeypatch):
+    """`asterism init` against a live daemon adds a problems row the
+    startup manifest load never saw — first dispatch must register it
+    instead of failing; a ghost row (no loadable Manifest) stays a
+    clean False."""
+    monkeypatch.chdir(tmp_path)
+    from Tooling.state import db as _sdb
+    from Tooling.state import manifest as _mf
+    conn = _sdb.connect(tmp_path / "asterism.db")
+    _sdb.init_schema(conn)
+    pdir = tmp_path / "Problems" / "Dom" / "np"
+    pdir.mkdir(parents=True)
+    (pdir / "Manifest.md").write_text(
+        "---\nproblem: Dom.np\n---\n\n## Statement\nT\n",
+        encoding="utf-8")
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at,"
+        " bootstrap_done) VALUES ('Dom.np',"
+        " 'Problems/Dom/np/Manifest.md', ?, 0)", (_sdb.now(),))
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at,"
+        " bootstrap_done) VALUES ('ghost',"
+        " 'Problems/ghost/Manifest.md', ?, 0)", (_sdb.now(),))
+    conn.commit()
+
+    cache = _mf.ManifestCache(tmp_path)  # startup load saw nothing
+    assert "Dom.np" not in cache
+    assert _dispatcher._ensure_manifest(conn, cache, "Dom.np") is True
+    assert "Dom.np" in cache
+    # ghost: problems row exists but no Manifest on disk
+    assert _dispatcher._ensure_manifest(conn, cache, "ghost") is False
+    # plain-dict manifests (test fixtures) degrade to a clean miss
+    assert _dispatcher._ensure_manifest(conn, {}, "unknown") is False

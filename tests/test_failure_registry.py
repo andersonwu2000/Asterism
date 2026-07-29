@@ -55,6 +55,7 @@ def test_non_agent_set_pinned():
         "agent_shelved", "goal_not_found", "lean_file_missing",
         "missing_parent_stub", "parent_stub_not_decomposable",
         "goal_no_longer_open", "unknown_kind", "no_nl_correspondence",
+        "problem_not_found",
     }
 
 
@@ -62,6 +63,9 @@ def test_target_cooldown_set_pinned():
     assert failures.TARGET_COOLDOWN_REASONS == {
         "spawn_fast_fail", "missing_dep", "gateway_unreachable",
         "transient_timeout", "strategist_proposal_rejected",
+        # #125: ghost queue rows (no loadable Manifest) must not be
+        # re-dispatched in a tight T4-pumped loop.
+        "problem_not_found",
     }
 
 
