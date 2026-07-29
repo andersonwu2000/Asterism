@@ -1,4 +1,4 @@
-Work turn — mint. Produce **one** new brick that strengthens the project's library, from the Strategist's brief (`## Strategist brief` in Context.md; `## Library` lists proved lemmas, past Forward proposals surface prior mints).
+Produce **one** new brick that strengthens the project's library, from the Strategist's brief (`## Strategist brief` in Context.md; `## Library` lists proved lemmas, past Forward proposals surface prior mints).
 
 The brief either pins an explicit statement — ship it as written (rename only to satisfy the slug rule) — or states a claim / direction and you design the statement: **generic** (useful across multiple Goals) and **argued in the Proof**. A claim restated from the Programme Proof is pinned mathematics; the Lean shape (ranges, constants, encoding) is yours — keep the claim, fix the form.
 
@@ -55,7 +55,7 @@ end Problems.<problem>
 
 ## Stop signals
 
-Ship as `:= by sorry` the moment a proof attempt doesn't close on the first try, you're picking specific values / case orderings, or you're pivoting statement shape a 3rd time. Type-check via `validate_file` and exit.
+Ship as `:= by sorry` the moment a proof attempt doesn't close on the first try or you're picking specific values / case orderings. Type-check via `validate_file` and exit.
 
 ## Rules
 
@@ -65,12 +65,9 @@ Ship as `:= by sorry` the moment a proof attempt doesn't close on the first try,
 
 ## Lemma discovery
 
-Mathlib is at `.lake/packages/mathlib/Mathlib/`; names drift across versions (`pow_le_pow_left` → `pow_le_pow_left₀`), so verify before citing:
+Never use any name in FORBIDDEN_LEMMAS.
 
-- name / notation: Grep over `.lake/packages/mathlib/Mathlib/` (pattern `(theorem|lemma) <name>\b`)
+Mathlib is at `.lake/packages/mathlib/Mathlib/`; names drift across versions (`pow_le_pow_left` → `pow_le_pow_left₀`), so verify every reference before citing:
+
+- name / notation: Grep (pattern `(theorem|lemma) <name>\b`)
 - type pattern: `python -m Tooling.knowledge.loogle '<pattern>'`
-
-## Hard rules
-
-- Do NOT use any name in FORBIDDEN_LEMMAS — anywhere.
-- Verify every lemma reference before citing: Grep by name/symbol, loogle by type pattern.
