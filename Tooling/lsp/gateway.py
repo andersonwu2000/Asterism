@@ -54,7 +54,7 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from ..state import assemble, db, manifest
+from ..state import assemble, db, manifest, metaprog
 from .client import LspClient
 
 
@@ -725,6 +725,29 @@ def _format_diag(d: dict) -> dict:
     }
 
 
+def _metaprog_error(text: str, where: str) -> "str | None":
+    """Readable form of the metaprogramming gate (`state.metaprog`), or
+    None when `text` is clean.
+
+    Every gateway path that hands agent text to Lean calls this FIRST.
+    The hard backstop lives one layer down in `client._guard_
+    metaprogramming` (raised from `did_open`/`did_change_full`, so no
+    elaboration can happen without a scan at all); these call sites exist
+    to turn that into an answer the agent can act on — being stopped is a
+    teaching moment, not a stack trace. `tests/test_metaprog_guard.py`
+    pins both layers.
+
+    Why the gateway and not only the commit gate: elab-time code runs
+    with the FRAMEWORK's privileges the moment a tool touches the file —
+    the danger is being elaborated, not being committed, and every
+    in-spawn tool elaborates long before any commit gate looks.
+    """
+    token = metaprog.scan_metaprogramming(text)
+    if token is None:
+        return None
+    return metaprog.blocked_detail(token, where=where)
+
+
 def _needed_imports(content: str, problem: str, workspace: Path) -> list[str]:
     """Single impl in `state.assemble` — the SAME function the commit paths
     run (task #5 Step A: no more hand-mirroring of the pipeline's injection
@@ -1367,6 +1390,15 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
                  + lines[end_line:])
     new_content = "\n".join(new_lines)
 
+    # Metaprogramming gate — BEFORE the mirror/disk write-through, so a
+    # blocked edit leaves neither the buffer nor the file carrying it.
+    _mp = _metaprog_error(new_content, meta.target_path.name)
+    if _mp is not None:
+        return json.dumps({"error": _mp, "edit": "rejected — file unchanged",
+                           "_server_recv_ts": _recv_ts,
+                           "_server_send_ts": _ts_now()},
+                          ensure_ascii=False)
+
     # Echo the post-edit region with CURRENT 1-indexed line numbers (±2 lines
     # of context) so the agent re-anchors from ground truth after every edit
     # instead of tracking line positions itself. Stale positions — line
@@ -1497,6 +1529,12 @@ def goal_at(line: int, col: int) -> str:
     # Pick up any external Write/Edit before swap_in didChanges the
     # mirror into the slot, so the goal query sees current disk (T1).
     _resync_buffer_from_disk(meta)
+    # The Write/Edit tools bypass apply_edit's gate — this is where such
+    # content would first reach an elaborator, so it is scanned here.
+    _mp = _metaprog_error(meta.file_content, meta.target_path.name)
+    if _mp is not None:
+        return json.dumps({"error": _mp, "_server_recv_ts": _recv_ts,
+                           "_server_send_ts": _ts_now()}, ensure_ascii=False)
     resolved_at_sorry: "int | None" = None
     with _acquire_slot(meta, swap_in=True) as (slot, _slot_kind):
         # The slot holds the merged compilation unit; the agent's `line`
@@ -1590,6 +1628,11 @@ def errors_at(line: int | None = None) -> str:
     # Pick up any external Write/Edit before swap_in didChanges the
     # mirror into the slot, so diagnostics track current disk (T1).
     _resync_buffer_from_disk(meta)
+    # Same disk-side entry as goal_at (Write/Edit bypass apply_edit).
+    _mp = _metaprog_error(meta.file_content, meta.target_path.name)
+    if _mp is not None:
+        return json.dumps({"error": _mp, "_server_recv_ts": _recv_ts,
+                           "_server_send_ts": _ts_now()}, ensure_ascii=False)
     with _acquire_slot(meta, swap_in=True) as (slot, _slot_kind):
         converged = _diags_converged(backend, slot)
         diags = backend.diagnostics_for(slot.slot_uri)
@@ -1997,6 +2040,14 @@ def validate_file(content: str) -> str:
     if not meta.problem:
         return json.dumps({"error": "no problem on session metadata",
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
+    # Metaprogramming gate — the candidate is about to be elaborated, and
+    # the sibling stubs folded in with it are agent text too.
+    _mp = _metaprog_error(content, "candidate")
+    if _mp is not None:
+        return json.dumps({"ok": False, "error": _mp, "diagnostic_count": 0,
+                           "diagnostics": [],
+                           "_server_recv_ts": _recv_ts,
+                           "_server_send_ts": _ts_now()}, ensure_ascii=False)
     # Build the SAME single compilation unit the claimed-session tools
     # elaborate: framework imports + Defs opens + referenced sibling stubs
     # (`new_<slug>.lean` in the attempts dir, not importable until commit)
@@ -2334,6 +2385,10 @@ def _verify_sync(target: Path, content: str, *, write_olean: bool,
     default threadpool via `asyncio.to_thread(_verify_sync, ...)`
     from the async handler. Event loop stays responsive; the slot-
     acquire's blocking polling no longer blocks other endpoints."""
+    _mp = _metaprog_error(content, Path(target).name)
+    if _mp is not None:
+        return {"ok": False, "error": _mp, "diagnostic_count": 0,
+                "diagnostics": [], "_status": 400}
     backend = _state.backend
     workspace = _state.workspace or target.parent
     probe_id = f"verify:{uuid.uuid4().hex[:8]}"
@@ -2655,6 +2710,10 @@ def _verify_session_sync(token: str, content: str, *, write_olean: bool,
         meta = _state.sessions.get(token)
     if meta is None:
         return {"error": f"unknown session token {token[:8]}", "_status": 404}
+    _mp = _metaprog_error(content, meta.target_path.name)
+    if _mp is not None:
+        return {"ok": False, "error": _mp, "diagnostic_count": 0,
+                "diagnostics": [], "_status": 400}
 
     olean_path: Path | None = None
     olean_written = False

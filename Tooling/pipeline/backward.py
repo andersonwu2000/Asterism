@@ -41,7 +41,8 @@ from pathlib import Path
 
 from .. import agent
 from ..agent import context
-from ..state import assemble, db, manifest, proof_store, thresholds, transitions
+from ..state import (assemble, db, manifest, metaprog, proof_store, thresholds,
+                     transitions)
 from ..quality import dedupe, diagnostics
 from . import _axiom
 from . import _presearch
@@ -1068,6 +1069,23 @@ def _backward_parse_and_commit(
     if not patches:
         return _abort("parse_proposal_fail", "no patch.lean")
     main_patch_text = patches[0].read_text(encoding="utf-8")
+
+    # Metaprogramming gate — FIRST, over patch + every sub-goal stub, and
+    # ahead of every other verdict: elaboration-time code runs with the
+    # framework's privileges, so a file carrying it must not be read as a
+    # decline, an annotation or a signature either. Shares one scanner
+    # with the gateway (`state.metaprog`), which already blocked this
+    # in-session; reaching here means the text arrived some other way
+    # (Write/Edit straight to disk, no LSP tool call).
+    for _f in [patches[0]] + _safe_glob(attempts_dir, "new_*.lean"):
+        try:
+            _text = _f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        _tok = metaprog.scan_metaprogramming(_text)
+        if _tok is not None:
+            return _abort("forbidden_metaprogramming",
+                          metaprog.blocked_detail(_tok, where=_f.name))
 
     # Bail-for-postmortem detection (Backward rescue option d): the
     # rescue prompt offers the agent a "write _progress.md and exit"

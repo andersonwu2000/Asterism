@@ -30,6 +30,26 @@ from pathlib import Path
 from typing import Any
 
 from ..core.process_group import no_window_creationflags
+from ..state.metaprog import blocked_detail, scan_metaprogramming
+
+
+class MetaprogrammingBlocked(RuntimeError):
+    """Text carrying an elaboration-time metaprogramming entry was about
+    to be pushed into a Lean worker.
+
+    Raised at the LSP boundary — the ONE place every elaboration of every
+    text in this framework passes through — so a gateway path added later
+    cannot elaborate un-scanned agent text by forgetting a guard. The
+    agent-facing gateway entries scan first and answer with a readable
+    message; reaching this exception means some other path tried.
+    """
+
+
+def _guard_metaprogramming(file_path: Path, content: str) -> None:
+    token = scan_metaprogramming(content)
+    if token is not None:
+        raise MetaprogrammingBlocked(
+            blocked_detail(token, where=Path(file_path).name))
 
 
 class LspClient:
@@ -335,6 +355,7 @@ class LspClient:
 
     def did_open(self, file_path: Path, content: str,
                  language_id: str = "lean") -> None:
+        _guard_metaprogramming(file_path, content)
         self.notify("textDocument/didOpen", {
             "textDocument": {
                 "uri": Path(file_path).resolve().as_uri(),
@@ -346,6 +367,7 @@ class LspClient:
 
     def did_change_full(self, file_path: Path, full_text: str,
                         version: int) -> None:
+        _guard_metaprogramming(file_path, full_text)
         self.notify("textDocument/didChange", {
             "textDocument": {
                 "uri": Path(file_path).resolve().as_uri(),

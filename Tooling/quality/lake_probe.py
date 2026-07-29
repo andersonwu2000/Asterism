@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from ..core.process_group import no_window_creationflags
+from ..state import metaprog
 
 # `<file>:<line>:<col>: error` — the (1-based) line number is group(1).
 LAKE_ERR_RE = re.compile(r"^.+?:(\d+):\d+:\s*error", re.MULTILINE)
@@ -65,7 +66,25 @@ def run_lean_source(workspace: Path, content: str, *, prefix: str = "_probe",
     """Write `content` to a throwaway `.lean` under `.attempts` and cold-run
     `lake env lean [--json] <file>` (typecheck only, no olean). Always cleans up
     the temp file. On timeout / OSError returns `LeanRun(returncode=None, …)`
-    (infra) with the exception text in `output`."""
+    (infra) with the exception text in `output`.
+
+    Metaprogramming gate: this is the SECOND elaboration chokepoint in the
+    framework (the gateway's LSP boundary is the first) and the only one
+    that bypasses it — the Library cleanup / dedup probes fall back here
+    whenever the gateway is unreachable or a `lean --json` stream is
+    wanted, and `lake env lean` runs elab-time code with the framework's
+    own privileges just as the gateway workers do. A hit is reported as a
+    plain Lean ERROR (rc=1, an error line the callers already parse), not
+    as infra: the content is genuinely rejected, and `infra` would make
+    callers retry it.
+    """
+    token = metaprog.scan_metaprogramming(content)
+    if token is not None:
+        return LeanRun(
+            1,
+            f"{prefix}.lean:1:0: error: "
+            + metaprog.blocked_detail(token, where=f"{prefix}.lean"),
+            False)
     tmp_dir = workspace / ".attempts"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp = tmp_dir / f"{prefix}_{uuid.uuid4().hex}.lean"

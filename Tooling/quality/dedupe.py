@@ -91,6 +91,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from ..core.process_group import no_window_creationflags
+from ..state import metaprog
 from ..state import db
 
 
@@ -607,6 +608,15 @@ def _batch_provable_via_apply(
     lines.append("end dedupe_check")
     content = "\n".join(lines)
 
+    # Metaprogramming gate: the spliced signatures are AGENT text, and
+    # this probe elaborates them outside the gateway. Fail-open to
+    # all-False like every other error path here — dedupe is an
+    # optimisation, never a soundness verdict.
+    if metaprog.scan_metaprogramming(content) is not None:
+        print("[dedupe] probe skipped — candidate signature carries a "
+              "metaprogramming entry", flush=True)
+        return [False] * len(pairs)
+
     tmp_dir = workspace / ".attempts"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp_file = tmp_dir / f"_dedupe_check_{uuid.uuid4().hex}.lean"
@@ -822,6 +832,13 @@ def _batch_statement_defeq(
         lines.append("")
     lines.append("end dedupe_check")
     content = "\n".join(lines)
+
+    # Same gate as `_batch_provable_via_apply` (agent text, gateway
+    # bypassed, fail-open).
+    if metaprog.scan_metaprogramming(content) is not None:
+        print("[dedupe] defeq probe skipped — candidate statement carries "
+              "a metaprogramming entry", flush=True)
+        return [False] * len(pairs)
 
     tmp_dir = workspace / ".attempts"
     tmp_dir.mkdir(parents=True, exist_ok=True)

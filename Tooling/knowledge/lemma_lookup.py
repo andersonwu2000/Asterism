@@ -107,13 +107,28 @@ def _parse_check_output(output: str, names: list[str]) -> dict[str, str]:
     return found
 
 
+#: A requested name is spliced verbatim into a `.lean` file that
+#: `lake env lean` then ELABORATES — so anything that is not a Lean
+#: identifier is a code-injection vector (a name carrying a newline plus
+#: `elab …` would run with the framework's privileges). Restricting to
+#: the identifier charset is the root fix: a string that cannot be a
+#: Mathlib name has no business reaching the elaborator. `\w` is
+#: unicode-aware, so Mathlib's Greek/subscript names still pass.
+_LEMMA_NAME_RE = re.compile(r"^[\w'!?.«»]{1,200}$")
+
+
+def _is_lemma_name(name: str) -> bool:
+    return bool(_LEMMA_NAME_RE.match(name))
+
+
 def _build_query(names: list[str]) -> str:
     """One Mathlib import + one `#check @name` per requested name.
 
     `@` makes Lean print the fully-explicit signature including instance
-    args, which is what weak models lack."""
+    args, which is what weak models lack. Callers must have filtered
+    `names` through `_is_lemma_name` — this function does no quoting."""
     lines = ["import Mathlib", ""]
-    lines.extend(f"#check @{n}" for n in names)
+    lines.extend(f"#check @{n}" for n in names if _is_lemma_name(n))
     return "\n".join(lines) + "\n"
 
 
@@ -139,7 +154,9 @@ def lookup_batch(
 
     toolchain_hash = _toolchain_hash(workspace)
     cache = _load_cache(toolchain_hash)
-    missing = [n for n in unique if n not in cache]
+    # Non-identifier requests never reach the elaborator (injection
+    # fence, see `_is_lemma_name`); they resolve as plain not-found.
+    missing = [n for n in unique if n not in cache and _is_lemma_name(n)]
 
     if missing:
         query_path = workspace / ".lemma_lookup_query.lean"
@@ -175,7 +192,11 @@ def lookup_batch(
                 cache[name] = LemmaInfo(name=name, signature="", found=False)
         _save_cache(toolchain_hash, cache)
 
-    return {n: cache[n] for n in unique}
+    # `.get` fallback: a name the identifier fence dropped was never
+    # queried and so has no cache row — it resolves as not-found, same
+    # as a name Lean did not know.
+    return {n: cache.get(n, LemmaInfo(name=n, signature="", found=False))
+            for n in unique}
 
 
 # ---------------------------------------------------------------------

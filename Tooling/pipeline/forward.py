@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any  # noqa: F401 — used in string annotations (mfst/return)
 
-from ..state import assemble, db, proof_store, transitions
+from ..state import assemble, db, metaprog, proof_store, transitions
 from ..state import manifest as _manifest_mod
 
 
@@ -690,6 +690,18 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
             return PipelineResult(
                 outcome="failed", failure_reason="forward_no_new_goal",
                 failure_detail="agent produced no lemma in new_forward.lean",
+            )
+
+        # Metaprogramming gate — same scanner as the gateway and Backward
+        # (`state.metaprog`), placed before the decline / metadata reads
+        # so a file carrying elaboration-time code is never interpreted
+        # as anything else. Mint had no text gate at all before this.
+        _tok = metaprog.scan_metaprogramming(body)
+        if _tok is not None:
+            return PipelineResult(
+                outcome="failed",
+                failure_reason="forbidden_metaprogramming",
+                failure_detail=metaprog.blocked_detail(_tok, where=src.name),
             )
 
         # Agent decline — mapped to `agent_declined` so the retry
