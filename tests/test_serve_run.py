@@ -332,6 +332,20 @@ def test_problem_detail_signature_binders_and_alias_suppression(
     assert by_slug["alias_g"]["signature"] is None
 
 
+def _verdict_json(**criteria: str) -> str:
+    """A verdict file in the shape the ADVERSARY actually writes —
+    every criterion adjudicated, unnamed ones clear. Hand-written
+    fixtures are what let the console drift: the old test froze the
+    pre-44ff4321 shape, stayed green, and the live console reported
+    every rebut as `passed`."""
+    import json as _json
+    from Tooling.pipeline.adversary import CRITERIA_KEYS
+    body = {"criteria": {k: criteria.get(f"c{k}", "clear")
+                         for k in CRITERIA_KEYS},
+            "reservations": []}
+    return _json.dumps(body)
+
+
 def test_proposal_cycle_phases(tmp_path: Path) -> None:
     """_proposal_cycle narrates the proposal-Adversary argument from
     the wake's working files (research mode; display-only)."""
@@ -348,19 +362,41 @@ def test_proposal_cycle_phases(tmp_path: Path) -> None:
     c = _proposal_cycle(wa)
     assert c["phase"] == "judging" and c["round"] == 1
     (r1 / "verdict.json").write_text(
-        '{"verdict": "rebut", "criticisms": ["too vague", "no experiment"]}',
+        _verdict_json(c2="fired: too vague", c4="fired: no experiment"),
         encoding="utf-8")
     c = _proposal_cycle(wa)
     assert c["phase"] == "revising" and c["round"] == 1
-    assert c["objections"] == ["too vague", "no experiment"]
+    # the fired criteria ARE the objections, tagged by the framework
+    assert c["objections"] == ["[criterion 2] too vague",
+                               "[criterion 4] no experiment"]
     r2 = wa / "adversary" / "r2"
     r2.mkdir(parents=True)
     (r2 / "proposal.md").write_text("# P2\n", encoding="utf-8")
-    (r2 / "verdict.json").write_text(
-        '{"verdict": "pass", "reservations": []}', encoding="utf-8")
+    (r2 / "verdict.json").write_text(_verdict_json(), encoding="utf-8")
     c = _proposal_cycle(wa)
     assert c["phase"] == "passed" and c["round"] == 2
     assert c["objections"] == []
+
+
+def test_proposal_cycle_never_invents_a_pass(tmp_path: Path) -> None:
+    """A verdict the framework would REFUSE must not read as `passed`.
+
+    The console's private copy of the verdict shape survived the
+    per-criterion migration (44ff4321) by falling through to the pass
+    branch: rounds that were rebutted displayed as "passed review;
+    committing the programme" with the objections gone. Any file
+    parse_verdict rejects leaves the phase at `judging` — the judge is
+    genuinely still out, since the pipeline re-spawns it."""
+    from Tooling.serve.run import _proposal_cycle
+    r1 = tmp_path / "adversary" / "r1"
+    r1.mkdir(parents=True)
+    (r1 / "proposal.md").write_text("# P\n", encoding="utf-8")
+    for bad in ('{"verdict": "rebut", "criticisms": ["legacy shape"]}',
+                '{"criteria": {"1": "clear"}}',      # incomplete
+                '{"criteria": {"1": "fired"}}',      # fired, no objection
+                '{"criteria":'):                     # half-written
+        (r1 / "verdict.json").write_text(bad, encoding="utf-8")
+        assert _proposal_cycle(tmp_path)["phase"] == "judging", bad
 
 
 def test_context_preamble_extraction() -> None:

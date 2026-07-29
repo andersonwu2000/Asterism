@@ -15,7 +15,6 @@ the shared aggregation file.
 """
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
 import time
@@ -88,8 +87,8 @@ def _goal_workarea_draft(workspace: Path, slug: str) -> "Path | None":
     """Freshest .lean draft in the workarea serving goal `slug`
     (matched by Context.md's '# Context for goal <slug>' heading —
     only the owning agent's context carries it as a heading, so a
-    sibling merely CITING the slug never matches). Backward/Builder
-    agents draft `patch.lean` here and only land at commit."""
+    sibling merely CITING the slug never matches). The Formalizer
+    drafts `patch.lean` here and only lands at commit."""
     marker = f"# Context for goal {slug}"
     best: "Path | None" = None
     best_m = -1.0
@@ -218,10 +217,12 @@ def _proposal_cycle(workarea: Path) -> "dict | None":
     """The strategist wake's proposal↔Adversary cycle, read from its
     working files (research_mode_design §2-§3; display-only). Phases:
     `proposing` (drafting, no round yet) → `judging` (round dir exists,
-    no verdict) → `revising` (rebut verdict; objections ride along) →
-    `passed`. `_tail_path` names the live text of the phase — the draft
-    while the strategist speaks, the on-trial proposal while the judge
-    deliberates."""
+    no readable verdict) → `revising` (rebut; the fired criteria ride
+    along as objections) → `passed`. The ruling itself comes from
+    `adversary.parse_verdict` — the contract's owner — so a change to
+    the verdict file cannot drift this reader. `_tail_path` names the
+    live text of the phase — the draft while the strategist speaks, the
+    on-trial proposal while the judge deliberates."""
     proposal = workarea / "proposal.md"
     rounds: "list[tuple[int, Path]]" = []
     adv = workarea / "adversary"
@@ -251,15 +252,26 @@ def _proposal_cycle(workarea: Path) -> "dict | None":
                 "_tail_path": str(proposal)}
     n, rdir = rounds[-1]
     verdict_p = rdir / "verdict.json"
-    if not verdict_p.is_file():
+    # The ruling is READ THROUGH the contract's own parser, never
+    # re-implemented here: verdict.json became a per-criterion
+    # adjudication (44ff4321) and this reader's private copy of the old
+    # shape silently reported every rebut as `passed` with zero
+    # objections — a lying console, not just a missing fold.
+    from ..pipeline.adversary import parse_verdict
+    v = None
+    if verdict_p.is_file():
+        try:
+            v, _err = parse_verdict(verdict_p.read_text(encoding="utf-8"))
+        except OSError:
+            v = None
+    if v is None:
+        # no verdict yet, half-written, or one the framework refuses —
+        # in every case the judge is still out (a rejected verdict makes
+        # the pipeline re-spawn it), so `judging` is the honest phase
         return {"phase": "judging", "round": n, "objections": [],
                 "since_sec": _since(_mtime(rdir / "proposal.md")
                                     or _mtime(rdir)),
                 "_tail_path": str(rdir / "proposal.md")}
-    try:
-        v = json.loads(verdict_p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        v = {}
     if v.get("verdict") == "rebut":
         return {"phase": "revising", "round": n,
                 "objections": [str(c) for c in
@@ -401,7 +413,7 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                 rel = str(r["lean_path"])
                 lane["path"] = rel
                 lane["file"] = _tail(workspace / rel)
-                # A Backward/Builder ATTEMPT drafts patch.lean in its
+                # A Formalizer ATTEMPT drafts patch.lean in its
                 # workarea and lands only at commit — the goal's own
                 # file is a static sorry stub the whole while (owner:
                 # "the card was sorry start to end, then subgoals

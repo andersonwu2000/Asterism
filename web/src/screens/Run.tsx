@@ -95,8 +95,11 @@ interface Ghost {
 const STRATEGIST_MODE: Record<string, string> = {
   pending_review: 'reviewing a finished attempt — accept, redirect, or shelve',
   inject_batch_done: 'its last batch of moves has landed — planning the next ones',
+  // the standalone audit wake merged into routine (38616b68): the
+  // belief sweep is now routine's first phase, so the copy has to
+  // carry both halves — 'audit' survives only on historical rows
   audit: 'auditing its own beliefs against the sources',
-  routine: 'routine look at the whole problem — fresh eyes on the plan',
+  routine: 'fresh eyes on the whole problem — auditing its beliefs, then re-deciding the plan',
 }
 
 /** The proposal↔reviewer cycle, narrated (research mode): the
@@ -262,11 +265,16 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
           {w.kind === 'Strategist'
             ? (STRATEGIST_MODE[w.mode ?? ''] ??
               'reading the state, deciding the next moves — nothing on disk yet')
-            : w.kind === 'Forward'
-              ? 'building new vocabulary and claims — each landed brick appears as a new star'
-              : w.kind === 'Librarian'
-                ? 'curating finished work into the Library'
-                : 'nothing on disk yet — composing its prompt'}
+            : /* one worker turns the argued proof into Lean since the
+                 v33 merge; Forward/Backward/Builder lanes only appear
+                 on historical rows now */
+              w.kind === 'Formalizer'
+              ? 'reading the goal against the programme — it will prove it, split it, or decline'
+              : w.kind === 'Forward'
+                ? 'building new vocabulary and claims — each landed brick appears as a new star'
+                : w.kind === 'Librarian'
+                  ? 'curating finished work into the Library'
+                  : 'nothing on disk yet — composing its prompt'}
         </div>
       )}
     </div>
