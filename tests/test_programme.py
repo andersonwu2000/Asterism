@@ -22,11 +22,13 @@ def _fresh(tmp_path):
     return c
 
 
-def _body(proof="The route holds because of X."):
+def _body(proof="The route holds because of X.",
+          argument="Brick A unblocks the named vector.",
+          roadmap="1. Re-prove s23259 without the exists."):
     return ("# Close the gcd gap\n"
-            "## Argument\nBrick A unblocks the named vector.\n"
+            "## Argument\n" + argument + "\n"
             "## Proof\n" + proof + "\n"
-            "## Roadmap\n1. Re-prove s23259 without the exists.\n")
+            "## Roadmap\n" + roadmap + "\n")
 
 
 # ---------------------------------------------------------------- parse
@@ -69,13 +71,29 @@ def test_parse_empty_section_rejected():
     assert sections is None and "## Proof" in err and "empty" in err
 
 
-def test_proof_warning_thresholds():
+def test_length_warning_thresholds():
+    """07-29 bloat ruling: three absolute surfaces — Proof (readability,
+    most headroom), Argument (the observed bloat surface), package
+    total. All warn-only, never a block."""
     ok, _ = programme.parse_proposal(_body())
-    assert programme.proof_warning(ok) is None
-    long_sections, _ = programme.parse_proposal(
+    assert programme.length_warning(ok) is None
+
+    long_proof, _ = programme.parse_proposal(
         _body(proof="x" * (programme.PROOF_WARN_CHARS + 1)))
-    warn = programme.proof_warning(long_sections)
+    warn = programme.length_warning(long_proof)
     assert warn and "PROOF LENGTH WARNING" in warn
+    assert "ARGUMENT" not in warn
+
+    body = _body(argument="a" * (programme.ARGUMENT_WARN_CHARS + 1))
+    long_arg, _ = programme.parse_proposal(body)
+    warn = programme.length_warning(long_arg, body)
+    assert warn and "ARGUMENT LENGTH WARNING" in warn
+    assert "PROOF LENGTH" not in warn
+
+    body = _body(roadmap="r" * (programme.DOC_WARN_CHARS + 1))
+    long_doc, _ = programme.parse_proposal(body)
+    warn = programme.length_warning(long_doc, body)
+    assert warn and "PROPOSAL LENGTH WARNING" in warn
 
 
 # ---------------------------------------------------------------- store

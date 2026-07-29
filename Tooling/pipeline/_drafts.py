@@ -183,7 +183,11 @@ PLAN_NOTE_FILENAME = "_plan.md"
 # Soft cap (chars): above this the context section carries ONE warning
 # line — nothing harder (user call 2026-07-05: the prompt asks for the
 # rewrite-don't-hoard spirit; over-constraining beats the purpose).
-PLAN_NOTE_SOFT_CAP = 5_000
+# 07-29 recalibration: healthy heavy-problem closeout notes measured
+# 13.3k (b6_1) / 14.8k (simple_loop) — at 5k the ⚠ line sat on every
+# healthy wake and carried no force. Set above the healthy-heavy max so
+# the warning is rare again.
+PLAN_NOTE_SOFT_CAP = 16_000
 
 
 def plan_note_path(problem_dir: Path) -> Path:

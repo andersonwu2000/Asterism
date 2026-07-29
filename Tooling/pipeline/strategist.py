@@ -136,16 +136,25 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
 
 
 def _format_rebuttal(verdict: dict, round_no: int,
-                     rounds_left: int) -> str:
+                     rounds_left: int,
+                     length_warn: "str | None" = None) -> str:
     crits = "\n".join(f"- {c}" for c in verdict.get("criticisms", []))
+    # 07-29 bloat ruling: revisions must not answer objections by
+    # accretion (observed: each rebut round ADDED argumentation;
+    # proposal 31.6k on a toy batch). The base sentence rides every
+    # rebuttal; the over-budget escalation appears only when a length
+    # warning actually tripped — a rare line keeps its force.
+    over = (f"\n{length_warn}\nThe revision must come back smaller.\n"
+            if length_warn else "")
     return (
         f"ADVERSARY REBUTTAL (round {round_no}; {rounds_left} revision "
         "round(s) left before this proposal is discarded and the next "
-        "wake restarts fresh):\n" + crits + "\n"
+        "wake restarts fresh):\n" + crits + "\n" + over +
         "For EACH point: either revise (rewrite proposal.md — and "
         "decision.json if the experiments change) or defend (keep your "
-        "position and answer the point inside `## Argument`). Do not "
-        "concede points you believe are misreadings. Re-emit "
+        "position and answer the point inside `## Argument`). Revise by "
+        "cutting and correcting in place, not by appending defenses. "
+        "Do not concede points you believe are misreadings. Re-emit "
         "decision.json in every case.")
 
 
@@ -1910,7 +1919,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             proposal_body, sections, err = verify_proposal_package(
                 decisions, attempts_dir)
             if not err:
-                proof_warn = _programme.proof_warning(sections)
+                proof_warn = _programme.length_warning(
+                    sections, proposal_body)
                 if proof_warn:
                     print(f"[strategist] {problem}: {proof_warn}",
                           flush=True)
@@ -1947,7 +1957,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 # the loop granted one more).
                 err = _format_rebuttal(
                     verdict, rounds_used + 1,
-                    max_rounds - rounds_used)
+                    max_rounds - rounds_used,
+                    length_warn=proof_warn)
                 err_is_rebuttal = True
         if not err:
             break  # verify clean; exempt batches skip the package gate

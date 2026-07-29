@@ -26,9 +26,18 @@ from .db import now
 
 PROGRAMME_BASENAME = "PROGRAMME.md"
 
-# Prominent-warning threshold for the Proof section (design §2: the
-# proof must stay readable; warn loudly, never hard-block).
+# Prominent-warning thresholds (design §2 + 07-29 bloat ruling): warn
+# loudly, never hard-block. The Proof is the load-bearing mathematics
+# and keeps the most headroom (healthy-heavy b6_1: 13 passed revs, max
+# Proof 7.2k — never tripped). The observed bloat surfaces are the
+# Argument (healthy ≤1.6k pre-endgame; verdict-war drafts 4-7k) and the
+# package total (healthy max 21.2k passed; the pathological draft was
+# 31.6k). Absolute thresholds by design: attention cost is absolute,
+# and ratio triggers misfire on legitimate pivots (b6_1 rev 9→10 was a
+# healthy 4.8×).
 PROOF_WARN_CHARS = 10_000
+ARGUMENT_WARN_CHARS = 3_000
+DOC_WARN_CHARS = 25_000
 
 _SECTION_ORDER = ("## Argument", "## Proof", "## Roadmap")
 
@@ -88,16 +97,35 @@ def parse_proposal(body: str) -> tuple[Optional[dict[str, str]], Optional[str]]:
     return sections, None
 
 
-def proof_warning(sections: dict[str, str]) -> Optional[str]:
-    """Prominent over-length warning for the Proof (never a block)."""
+def length_warning(sections: dict[str, str],
+                   body: "str | None" = None) -> Optional[str]:
+    """Prominent over-length warnings (never a block); one line per
+    tripped surface, joined. Shown to the judge (projection) and, on a
+    rebuttal, echoed to the strategist with a shrink instruction."""
+    warns = []
     n = len(sections.get("proof", ""))
-    if n <= PROOF_WARN_CHARS:
-        return None
-    return (f"⚠ PROOF LENGTH WARNING: {n} chars (threshold "
+    if n > PROOF_WARN_CHARS:
+        warns.append(
+            f"⚠ PROOF LENGTH WARNING: {n} chars (threshold "
             f"{PROOF_WARN_CHARS}). The Proof must stay readable — an "
             "unreadable Proof is itself rebuttable. Condense: "
             "superseded branches belong in Roadmap closure entries, "
             "not the Proof.")
+    a = len(sections.get("argument", ""))
+    if a > ARGUMENT_WARN_CHARS:
+        warns.append(
+            f"⚠ ARGUMENT LENGTH WARNING: {a} chars (threshold "
+            f"{ARGUMENT_WARN_CHARS}). The Argument says why THIS batch "
+            "— one screen. Cut narrative; mathematics belongs in the "
+            "Proof, the route in the Roadmap.")
+    d = len(body) if body is not None else sum(
+        len(v) for v in sections.values())
+    if d > DOC_WARN_CHARS:
+        warns.append(
+            f"⚠ PROPOSAL LENGTH WARNING: {d} chars total (threshold "
+            f"{DOC_WARN_CHARS}). Distill the settled — a closed line "
+            "collapses to its conclusion.")
+    return "\n".join(warns) if warns else None
 
 
 # ---------------------------------------------------------------------
