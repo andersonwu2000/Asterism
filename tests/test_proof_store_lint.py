@@ -32,8 +32,7 @@ _SHUTIL_RE = re.compile(r"shutil\.(copy2?|move)\s*\(")
 _BARE_ATOMIC_RE = re.compile(r"\batomic_write\s*\(")
 
 _QUALITY = _REPO / "Tooling" / "quality"
-_FILES = [_PIPELINE / "backward.py", _PIPELINE / "builder.py",
-          _PIPELINE / "forward.py"]
+_FILES = [_PIPELINE / "backward.py", _PIPELINE / "forward.py"]
 # 2026-07-03 (task #2): verify.py's G1 revival + prune.py's reconcile wrote
 # DB-owned lean_paths raw (`s_abs`/`parent_abs`.write_text) — invisible to the
 # variable lint (files weren't listed) AND the glob lint below (the paths come

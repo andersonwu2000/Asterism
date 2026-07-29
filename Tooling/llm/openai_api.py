@@ -6,7 +6,7 @@ no multi-turn — the prompt template + Context.md are inlined into the
 user message; the model's response is parsed for `==== FILE: ... ====`
 fenced blocks which the provider writes back into `attempts_dir`.
 
-This shape lets `pipeline.run_backward` / `run_builder` consume agent
+This shape lets `pipeline.run_backward` consume agent
 output identically regardless of provider — they still glob
 `PROPOSAL.md`, `patch*.lean`, `new_*.lean` from the attempts dir.
 
@@ -69,9 +69,10 @@ def _resolve_model(kind: str | None) -> str | None:
 
 
 def _select_prompt_template(prompt_path: Path) -> Path:
-    """If the caller passed `prompts/backward.md`, prefer the
-    `backward_singleshot.md` variant when present. Falls back to the
-    original if no single-shot file exists.
+    """If the caller passed `prompts/<kind>.md`, prefer the
+    `<kind>_singleshot.md` variant when present. Falls back to the
+    original if no single-shot file exists (no such variants ship
+    today — the pre-v33 backward/builder ones are deleted).
 
     This lets `pipeline.py` keep using the canonical prompt names while
     the provider transparently picks the right variant for its

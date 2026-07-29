@@ -16,10 +16,6 @@ Pipelines covered:
   - `verify_strategy` (`Tooling/verify.py`) — strategy assembly path
     used by both regular Backward decomposition AND Phase 6.5
     leaf-bypass salvage.
-  - Builder Phase 1 (`pipeline/builder.py`, hint winner) — fresh
-    sorry-stub closed by `:= by <tac>`.
-  - Builder Phase 2 (`pipeline/builder.py`, LLM patch) — agent's
-    patch.lean overwriting goal_lean.
   - `_try_promote_sorry_free` (`pipeline/backward.py`) — sub-goal
     stub auto-promote when agent inlines a complete proof.
 
@@ -56,7 +52,7 @@ from Tooling.pipeline import _axiom
 _PIPELINE = Path(__file__).resolve().parents[1] / "Tooling" / "pipeline"
 
 
-@pytest.mark.parametrize("name", ["forward.py", "builder.py", "backward.py"])
+@pytest.mark.parametrize("name", ["forward.py", "backward.py"])
 def test_proved_pipeline_uses_shared_axiom_gate(name) -> None:
     text = (_PIPELINE / name).read_text(encoding="utf-8")
     assert re.search(r"\baxiom_gate\s*\(", text), (
@@ -75,7 +71,6 @@ def test_proved_pipeline_uses_shared_axiom_gate(name) -> None:
 # cite via proofs-imports (its commit axiom gate's sorryAx tripwire is the
 # backstop) — deliberately absent here.
 @pytest.mark.parametrize("name,min_calls", [
-    ("builder.py", 1),
     ("backward.py", 2),
 ])
 def test_citing_commit_paths_use_shared_cite_gate(name, min_calls) -> None:
@@ -625,127 +620,6 @@ def test_gate_statement_pin_defs_lean_still_whole_file(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
     ).fetchone()
     assert row["integrity_verified"] == 0
-
-
-# ---------------------------------------------------------------------
-# Builder — rejects axiom-violation in both Phase 1 and Phase 2
-# ---------------------------------------------------------------------
-
-def _seed_builder_problem(conn, tmp_path) -> int:
-    pdir = tmp_path / "Problems" / "p"
-    pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n## Statement\nTrue\n", encoding="utf-8")
-    conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        ("p", str(pdir / "Manifest.md"), db.now()))
-    conn.commit()
-    root = pdir / "Root.lean"
-    root.write_text(
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem main : True := by sorry\n"
-        "end Problems.p\n",
-        encoding="utf-8")
-    return db.insert_goal(
-        conn, problem="p", slug="main",
-        lean_path=root.relative_to(tmp_path).as_posix(),
-        statement="True", origin="root", depth=0,
-    )
-
-
-def test_builder_phase1_axiom_violation_returns_failed(
-    conn: sqlite3.Connection, tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    _reject_probe,
-) -> None:
-    """Phase 1 hint succeeds, lake build passes, but axiom probe
-    rejects (transitive sorryAx via imported sibling). Builder must
-    NOT mark proved — outcome='failed' with reason='axiom_violation'.
-    goal_lean is restored to the original sorry stub."""
-    gid = _seed_builder_problem(conn, tmp_path)
-    # The `_reject_probe` fixture has already replaced verify_file
-    # with one that returns axioms = ['sorryAx'] when axioms_for is
-    # given. We additionally need the Phase 1 hint probe path to
-    # surface a Try-these info diagnostic so a winner is parsed.
-    from Tooling.lsp import lifecycle as gateway_lifecycle
-    def stub(target_path, *, write_olean=True, axioms_for=None, **kw):
-        if not write_olean:
-            return {
-                "ok": True,
-                "diagnostics": [{
-                    "line": 1, "col": 0, "severity": "info",
-                    "message": "Try these:\n  [apply] 🎉️ trivial\n",
-                }],
-                "diagnostic_count": 1,
-                "olean_written": False, "olean_path": None,
-                "axioms": None, "axiom_error": None,
-            }
-        return {
-            "ok": True,
-            "diagnostics": [],
-            "diagnostic_count": 0,
-            "olean_written": True,
-            "olean_path": str(target_path),
-            # Trigger the rogue-axiom rejection on the confirm call.
-            "axioms": ["sorryAx"] if axioms_for else None,
-            "axiom_error": None,
-        }
-    monkeypatch.setattr(gateway_lifecycle, "verify_file", stub)
-    monkeypatch.setattr(agent, "spawn_llm",
-                        lambda **kw: pytest.fail("LLM spawn unexpected"))
-
-    mfst = manifest.Manifest(
-        problem="p", statement="True", axioms_whitelist=["propext"])
-    r = pipeline.run_builder(
-        conn, goal_id=gid, workspace=tmp_path, mfst=mfst,
-        pipeline_id="pid-axiom-p1")
-    assert r.outcome == "failed"
-    assert r.failure_reason == "axiom_violation"
-    # goal_lean restored
-    goal = db.get_goal(conn, gid)
-    text = (tmp_path / goal["lean_path"]).read_text(encoding="utf-8")
-    assert ":= by sorry" in text
-
-
-def test_builder_phase2_axiom_violation_returns_failed(
-    conn: sqlite3.Connection, tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    _reject_probe,
-) -> None:
-    """Phase 2 LLM patch lake-builds clean, but axiom probe finds
-    sorryAx in transitive closure. Pipeline must reject — file restored
-    to backup, outcome='exhausted' (helper retries until budget out
-    treating axiom_violation as non-terminal, mirroring lake_build_error)."""
-    gid = _seed_builder_problem(conn, tmp_path)
-    db.increment_goal_attempts(conn, gid)  # bypass Phase 1
-    goal = db.get_goal(conn, gid)
-    original = (tmp_path / goal["lean_path"]).read_text(encoding="utf-8")
-
-    def fake_spawn(**kw):
-        (kw["attempts_dir"] / "patch.lean").write_text(
-            "-- main: trivially closed via imported sibling\n"
-            "import Mathlib\ntheorem main : True := trivial\n",
-            encoding="utf-8")
-        return 0
-    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
-    monkeypatch.setattr(pipeline, "_lake_build",
-                        lambda ws, t: (True, ""))
-
-    mfst = manifest.Manifest(
-        problem="p", statement="True", axioms_whitelist=["propext"])
-    r = pipeline.run_builder(
-        conn, goal_id=gid, workspace=tmp_path, mfst=mfst,
-        pipeline_id="pid-axiom-p2")
-    # Budget exhausted via repeated axiom_violation retries → 'exhausted'
-    # carrying the last failure_reason.
-    assert r.outcome == "exhausted"
-    assert r.failure_reason == "axiom_violation"
-    # goal_lean restored on every failed retry
-    assert (tmp_path / goal["lean_path"]).read_text(
-        encoding="utf-8") == original
-
-
 
 
 # ---------------------------------------------------------------------

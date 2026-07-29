@@ -53,7 +53,7 @@ def _auto_prepend_candidate_imports(
     imports + Defs opens + proved-sibling imports), then return the
     enriched content.
 
-    `forward.md` tells the agent NOT to write imports ("Framework
+    `mint.md` tells the agent NOT to write imports ("Framework
     auto-prepends..."), because the MCP `validate_file` tool the agent
     uses during candidate work auto-prepends the same way. Without this
     mutation, agents who follow the prompt literally write bare
@@ -101,7 +101,7 @@ def _forward_seed_scaffold(*, problem: str, workspace: Path) -> str:
         # per-decl waiver precedent).
         "set_option linter.style.longLine false\n\n"
         f"namespace Problems.{problem}\n\n"
-        "-- Write ONE forward lemma here (see forward.md). Edit this file with\n"
+        "-- Write ONE forward lemma here (see your instructions). Edit this file with\n"
         "-- apply_edit and validate_file to type-check before finishing.\n\n"
         f"end Problems.{problem}\n"
     )
@@ -227,7 +227,7 @@ def is_decline(text: str) -> bool:
 
 def _extract_decline_why(text: str) -> str:
     """Pull the agent's `## Why` reasoning out of a decline file's leading
-    comments (the `-- ## Why` block, see forward.md). Returns the joined
+    comments (the `-- ## Why` block, see mint.md). Returns the joined
     prose (comment markers stripped), or '' if absent. #4 — this reasoning
     is surfaced to the Strategist so it sees WHY its brief was declined,
     not just the coarse enum."""

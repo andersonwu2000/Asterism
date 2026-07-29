@@ -24,36 +24,15 @@ from ..state import failures as _failures
 from ..quality import prune, verify
 
 
-# Per-model defaults. Empirically:
-#   Sonnet/Opus rarely succeed at attempts ≥3 — 97% of proves happen
-#                in ≤3 Builder fails. Use 3/8 — first 3 attempts go to
-#                Builder, then Backward retries until attempts hit 8.
-#   Haiku       iterates productively across more attempts (its training
-#                memory of Mathlib API specifics is thinner; lemma
-#                signature lookup + retries lets it converge given enough
-#                budget). Use 5/10.
-#
-# Passive OR=1 means every dead strategy now consumes one goal-attempt
-# (added in _propagate_shelve). SHELVE_THRESHOLD was raised (7→8 / 8→10)
-# so the goal doesn't shelve before Backward gets enough chances to
-# explore alternative strategies.
-#
-# Semantics:
-#   BUILDER_THRESHOLD = N → first N attempts (0..N-1) dispatch Builder,
-#                          attempts >= N dispatch Backward.
-#   SHELVE_THRESHOLD = M  → goal shelves once attempts hits M.
-#
-# Resolution chain (see Tooling/config.py): env override
-# (ASTERISM_{BUILDER,SHELVE}_THRESHOLD) → Asterism.yaml `dispatch.*`
-# → built-in (3, 8) tuned for Sonnet/Opus baseline. Weak-tier models
-# (haiku/flash) want roughly (5, 10) — set explicitly in Asterism.yaml.
-# Real values resolved in `run()` below per-process.
-# Task #10(d): the LIVE values moved to `state.thresholds` (leaf) — ten
-# modules used to lazy-import THIS module upward just to read them (the
-# repo's only dependency cycle). `run()` writes them there; the module
-# __getattr__ below keeps `dispatcher.BUILDER_THRESHOLD` reads working
-# for historical call sites (read-only aliases — tune via
-# `state.thresholds`, tests monkeypatch that module).
+# Attempt thresholds. Builder ROUTING is retired (Formalizer merge —
+# see state/thresholds.py): SHELVE_THRESHOLD still shelves a goal once
+# attempts hit it (env ASTERISM_SHELVE_THRESHOLD → Asterism.yaml
+# `dispatch.*` → built-in, resolved in `run()`); BUILDER_THRESHOLD
+# survives only as an internal small-retry-budget constant. Task
+# #10(d): the LIVE values sit in `state.thresholds` (leaf — broke the
+# repo's only dependency cycle); the module __getattr__ below keeps
+# `dispatcher.*_THRESHOLD` reads working for historical call sites
+# (read-only aliases — tests monkeypatch `state.thresholds`).
 
 # A Librarian chain step (dedup/classify/migrate/bridge) that fails
 # after its own internal session-retries is re-enqueued up to this many times

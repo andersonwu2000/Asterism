@@ -925,7 +925,7 @@ def test_claude_spawn_stale_session_returns_rc_125(
     """When `--resume <uuid>` finds no on-disk session, claude prints
     'No conversation found with session ID: ...' to stderr and returns
     rc=1. spawn must surface this as SpawnRC.STALE_SESSION (=125) so
-    the caller (pipeline.run_builder) can clear the DB id and retry
+    the caller (pipeline.run_backward) can clear the DB id and retry
     cold."""
     from pathlib import Path
     from Tooling import llm

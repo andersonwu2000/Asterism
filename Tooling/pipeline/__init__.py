@@ -1,15 +1,14 @@
-"""Pipeline package: shared helpers + Builder/Backward dispatch.
+"""Pipeline package: shared helpers + Backward dispatch.
 
 Split layout (planned by docs/dev/goal_history_unified.md):
   __init__.py     — shared helpers, constants, common types, re-exports
-  builder.py      — `run_builder` + Phase 1/2 logic
   backward.py     — `run_backward` + decomposition + sub-goal placement
   _lake.py        — lake invocation helpers (already split)
   _skeleton.py    — strategy skeleton + alias promotion (already split)
   _drafts.py      — partial-output persistence
 
 Public API surfaced from this module (preserves pre-split callers):
-  - run_builder, run_backward                        — dispatch entry points
+  - run_backward                                     — dispatch entry point
   - PipelineResult, collect_artifacts                — DTO + forensics
   - _parse_hint_winner                               — Phase 1 hint output parser
   - DECLINE_*, DECLINE_DIRECTIVES, DECLINE_TO_FAILURE_REASON — unified
@@ -446,8 +445,8 @@ def _attempt_postmortem(*, kind: str, prompt_path: Path,
     Resumes `session_id` so the killed agent's session memory is
     intact; the postmortem prompt asks the agent to write a brief
     state + blocker note into `attempts_dir/_progress.md`. The wrapper
-    around `run_builder` / `run_backward` then captures that file as
-    the partial draft for the next dispatch.
+    around `run_backward` then captures that file as the partial draft
+    for the next dispatch.
 
     Best-effort: any failure (postmortem also times out, session GC'd,
     provider unavailable) is silently absorbed — the next dispatch
@@ -645,4 +644,3 @@ from .backward import (  # noqa: E402
     _SORRY_RE,
     run_backward,
 )
-from .builder import run_builder  # noqa: E402
