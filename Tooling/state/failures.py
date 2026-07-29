@@ -72,6 +72,11 @@ REGISTRY: "dict[str, FailureTraits]" = {
                       death_note=True),
     "gateway_unreachable": _T("provider_infra", cooldown_scope="target"),
     "transient_timeout": _T("provider_infra", cooldown_scope="target"),
+    # 07-30 audit: a shutdown-killed spawn produced nothing, but the old
+    # 'framework' origin let it burn a goal attempt toward SHELVE — the
+    # exact class the SG#14 gateway-death lesson exempts (cascade's
+    # attempts skip reads PROVIDER_INFRA_REASONS only).
+    "daemon_shutdown": _T("provider_infra"),
 
     # --- pipeline-level infra (clean declines / framework self-reject) --
     "strategist_noop": _T("pipeline_infra"),
@@ -116,10 +121,13 @@ REGISTRY: "dict[str, FailureTraits]" = {
     "missing_parent_stub": _T("framework", agent_visible=False),
     "parent_stub_not_decomposable": _T("framework", agent_visible=False),
     "unknown_kind": _T("framework", agent_visible=False),
-    "daemon_shutdown": _T("framework"),
 
     # --- agent-side proof/commit failures (defaults) --------------------
     "agent_error": _T(),
+    # Registered 07-30 (audit): emitted positionally via
+    # buffer_failure(), which the keyword-only drift scan missed; _T()
+    # codifies the default traits it was already receiving.
+    "agent_stuck_thinking": _T(),
     "agent_no_annotation": _T(),
     "agent_no_output": _T(),
     # Emitted via _spawn_failure()'s RETURN VALUE (pipeline/__init__.py),
@@ -136,6 +144,13 @@ REGISTRY: "dict[str, FailureTraits]" = {
     "circular_decomposition": _T(),
     "cite_unproved_sibling": _T(),
     "forbidden_lemma": _T(),
+    # Soundness/sandbox gate (2026-07-30): the file carries an
+    # elaboration-time metaprogramming entry (`elab`, `macro_rules`,
+    # `#eval`, `initialize`, `set_option debug.skipKernelTC`, …). Same
+    # traits as `forbidden_lemma` — the agent wrote it, so it burns an
+    # attempt and comes back as retry_context with the rule attached.
+    # Scanner + rationale: `state/metaprog.py`.
+    "forbidden_metaprogramming": _T(),
     "lake_build_error": _T(),
     "naming_violation": _T(),
     "no_progress": _T(),

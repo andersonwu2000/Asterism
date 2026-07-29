@@ -1294,6 +1294,28 @@ def _section_forward_history(conn: sqlite3.Connection,
     return out
 
 
+def _section_programme_proof(conn: sqlite3.Connection,
+                             problem: str) -> list[str]:
+    """The current passed revision's `## Proof` — the argued mathematics
+    this batch's mints are drawn from. Always renders (mirroring the
+    FORBIDDEN_LEMMAS precedent: intake.md references "the Programme
+    `## Proof`" unconditionally, and a silently absent heading leaves
+    the agent unsure whether it was empty or truncated)."""
+    from ..state import programme as _programme
+    header = "## Programme Proof"
+    try:
+        row = _programme.current_rev(conn, problem)
+    except sqlite3.Error:
+        row = None
+    if not row:
+        return [header, "(none yet)", ""]
+    sections, _err = _programme.parse_proposal(str(row["body"] or ""))
+    proof = ((sections or {}).get("proof") or "").strip()
+    if not proof:
+        return [header, "(none yet)", ""]
+    return [f"{header} (rev {row['rev']})", "", proof, ""]
+
+
 def compile_forward_context(conn: sqlite3.Connection, *,
                             problem: str, decision_id: int | None,
                             attempts_dir: Path,
@@ -1322,11 +1344,17 @@ def compile_forward_context(conn: sqlite3.Connection, *,
     (The Strategist context still inlines the full tree; it plans over
     the whole structure.)
     """
-    section_names = ["forward_brief", "library_inventory",
+    section_names = ["forward_brief", "programme_proof",
+                     "library_inventory",
                      "forward_history", "active_goals", "manifest_meta",
                      "manifest_forbidden", "paper_index"]
     sections: list[list[str]] = [
         _section_forward_brief(conn, decision_id),
+        # NL-first on the mint arm (07-30 audit): goal jobs carry the
+        # Programme; mints did not, so intake's falsification check had
+        # no source independent of the brief (written by the same
+        # Strategist whose transcription slips it exists to catch).
+        _section_programme_proof(conn, problem),
         _section_library_inventory(conn, problem, attempts_dir),
         _section_forward_history(conn, problem),
         _section_active_goals(conn, workspace, problem),

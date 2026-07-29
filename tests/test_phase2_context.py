@@ -1216,3 +1216,30 @@ def test_outcome_line_reads_full_signature_for_def(
         pending_review_id=None)
     text = out.read_text(encoding="utf-8")
     assert full in text
+
+
+def test_section_programme_proof_renders_current_rev(
+    conn: sqlite3.Connection,
+) -> None:
+    """07-30 audit item 4: the mint context carries the Programme's
+    `## Proof` so intake's falsification check has a source independent
+    of the brief (written by the same Strategist whose transcription
+    slips it exists to catch). The header always renders — "(none yet)"
+    pre-bootstrap, mirroring the FORBIDDEN_LEMMAS precedent."""
+    from Tooling.state import programme
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at,"
+        " bootstrap_done) VALUES ('p', 'Problems/p/Manifest.md', ?, 1)",
+        (db.now(),))
+    conn.commit()
+    out = phase2_context._section_programme_proof(conn, "p")
+    assert out[0] == "## Programme Proof"
+    assert "(none yet)" in out[1]
+    body = ("# Rev one\n\n## Argument\n\nBecause.\n\n"
+            "## Proof\n\nThe argued mathematics body.\n\n"
+            "## Roadmap\n\n1. next\n")
+    programme.record_pass(conn, "p", body, verdict={}, dialogue=[],
+                          rounds=0, batch_id=None)
+    out = phase2_context._section_programme_proof(conn, "p")
+    assert out[0].startswith("## Programme Proof (rev 1")
+    assert any("The argued mathematics body." in ln for ln in out)

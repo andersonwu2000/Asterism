@@ -29,6 +29,8 @@ def test_provider_infra_set_pinned():
     assert failures.PROVIDER_INFRA_REASONS == {
         "spawn_fast_fail", "quota_exhausted", "missing_dep",
         "gateway_unreachable", "transient_timeout",
+        # 07-30: shutdown kills must not burn goal attempts (SG#14 class).
+        "daemon_shutdown",
     }
 
 

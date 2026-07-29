@@ -36,9 +36,12 @@ def _py_files(*roots: Path) -> list[Path]:
 # AST, not regex: a `failure_reason=` value can be a ternary / parenthesized /
 # multi-line expression (e.g. librarian.py's `(... if _wok else "x")`), which a
 # `failure_reason=\s*"x"` regex silently skips — that gap shipped a real miss
-# (librarian_warnings_remain). Walk every `failure_reason=<expr>` keyword and
-# every `_abort("x", …)` call (backward.py's terminal-decline helper), and
-# collect every snake_case string literal anywhere inside the value.
+# (librarian_warnings_remain). Walk every `failure_reason=<expr>` keyword,
+# every `_abort("x", …)` / `buffer_failure("x", …)` positional call, and
+# every positional `WorkerDone(…, "x")` (failure_reason is field 6) —
+# the positional forms were blind spots that let agent_stuck_thinking
+# ship unregistered (07-30 audit) — and collect every snake_case string
+# literal anywhere inside the value.
 _SNAKE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -58,13 +61,19 @@ def _code_failure_reasons() -> set[str]:
         for node in ast.walk(tree):
             if isinstance(node, ast.keyword) and node.arg == "failure_reason":
                 reasons |= _str_literals(node.value)
-            elif (isinstance(node, ast.Call) and node.args
-                  and isinstance(node.args[0], ast.Constant)
-                  and isinstance(node.args[0].value, str)):
+            elif isinstance(node, ast.Call):
                 fn = node.func
                 name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
-                if name == "_abort" and _SNAKE.match(node.args[0].value):
+                if (name in ("_abort", "buffer_failure") and node.args
+                        and isinstance(node.args[0], ast.Constant)
+                        and isinstance(node.args[0].value, str)
+                        and _SNAKE.match(node.args[0].value)):
                     reasons.add(node.args[0].value)
+                elif (name == "WorkerDone" and len(node.args) >= 6
+                      and isinstance(node.args[5], ast.Constant)
+                      and isinstance(node.args[5].value, str)
+                      and _SNAKE.match(node.args[5].value)):
+                    reasons.add(node.args[5].value)
     return reasons
 
 

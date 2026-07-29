@@ -737,6 +737,9 @@ def test_run_forward_consumes_strategist_brief(
     # the Forward context even when the Manifest lists none — an SG
     # worker burned two blocked Bash calls hunting the list on disk.
     assert "## FORBIDDEN_LEMMAS" in captured_context[0]
+    # 07-30 audit item 4: intake.md tells the mint worker to check "the
+    # Programme ## Proof"; the section must exist even pre-bootstrap.
+    assert "## Programme Proof" in captured_context[0]
     assert "## Strategist brief" in captured_context[0]
     # Forward gets the proved-lemma inventory + alive goals (so it does not
     # restate one and get dedup-rejected), but NOT the full decomposition
