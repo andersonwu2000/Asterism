@@ -24,6 +24,7 @@ lines go to the strategist via the retry channel), all `clear` → pass.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 import uuid
@@ -34,9 +35,16 @@ VERDICT_BASENAME = "verdict.json"
 PROJECTION_DIRNAME = "adversary"
 
 
-def _decisions_digest(decisions) -> str:
+def _decisions_digest(decisions, conn=None, problem=None) -> str:
     """Render the batch's decisions for the judge (briefs + directive —
-    the package members it reviews alongside the Programme)."""
+    the package members it reviews alongside the Programme).
+
+    07-29 judge feedback: goal targets rendered as bare ids were
+    unverifiable inside the sandbox (CATALOG carries names, not ids) —
+    annotate with `(slug, status)` when a conn is given. The directive
+    body lives in `payload['body']` on real Decision objects (the
+    `.body` attribute only ever existed on test fixtures), so criterion
+    5 was judging a directive it could not read."""
     out: list[str] = ["# This batch's decisions\n"]
     for i, d in enumerate(decisions, 1):
         kind = getattr(d, "kind", "?")
@@ -46,10 +54,28 @@ def _decisions_digest(decisions) -> str:
         if pipeline:
             head += f"({pipeline})"
         if target is not None:
-            head += f" → {target}"
+            anno = ""
+            if conn is not None:
+                try:
+                    if str(target).lstrip("-").isdigit():
+                        row = conn.execute(
+                            "SELECT slug, status FROM goals WHERE id = ?",
+                            (int(target),)).fetchone()
+                    else:
+                        row = conn.execute(
+                            "SELECT slug, status FROM goals"
+                            " WHERE slug = ? AND (? IS NULL OR problem = ?)"
+                            " ORDER BY id DESC LIMIT 1",
+                            (str(target), problem, problem)).fetchone()
+                    if row is not None:
+                        anno = f" (`{row['slug']}`, {row['status']})"
+                except Exception:  # noqa: BLE001 — annotation only
+                    anno = ""
+            head += f" → {target}{anno}"
         out.append(head)
         brief = getattr(d, "brief", None)
-        body = getattr(d, "body", None)
+        body = getattr(d, "body", None) or (
+            getattr(d, "payload", None) or {}).get("body")
         reason = getattr(d, "reason", None)
         if brief:
             out.append(str(brief))
@@ -104,7 +130,10 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     # only check them against the Manifest's prose (07-19 feedback ×7
     # — permission-denied on every Root/Defs read attempt). Isolation
     # unchanged: copies into the projection, no sandbox widening.
-    for fname in ("Root.lean", "Defs.lean"):
+    # TREE.md joined 07-29 (judge feedback ×2): tree-shape and status
+    # claims were uncheckable; names+statuses live here (ids do not —
+    # decisions.md annotates its id targets with slug+status instead).
+    for fname in ("Root.lean", "Defs.lean", "TREE.md"):
         src = problem_dir / fname
         if src.exists():
             shutil.copyfile(src, proj / fname)
@@ -129,7 +158,8 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     # them (判官必見源). Outcome lines reuse the exact section the
     # strategist context renders.
     current = programme.current_rev(conn, problem)
-    outcome_lines = _section_inject_batch_outcomes(conn, problem)
+    outcome_lines = _section_inject_batch_outcomes(
+        conn, problem, workspace=attempts_dir.parent.parent)
     (proj / "PROGRAMME.md").write_text(
         (current["body"] if current is not None else
          "(no Programme yet — this cycle's proposal is rev 1; judge it "
@@ -152,8 +182,30 @@ def build_projection(*, round_no: int, attempts_dir: Path,
         head = proof_warn + "\n\n"
     (proj / "proposal.md").write_text(head + proposal_body + "\n",
                                       encoding="utf-8")
-    (proj / "decisions.md").write_text(_decisions_digest(decisions),
-                                       encoding="utf-8")
+    decisions_text = _decisions_digest(decisions, conn=conn,
+                                       problem=problem)
+    (proj / "decisions.md").write_text(decisions_text, encoding="utf-8")
+    # Cited landed proofs (07-29 judge feedback ×6): the artifacts the
+    # package's claims cite must be checkable inside the sandbox — a
+    # RETARGETED dispute's only deciding document is the landed file.
+    # Any on-disk proofs/L_<slug>.lean whose slug the package text
+    # mentions rides along read-only. Cap 20 with a loud log (no
+    # silent caps).
+    proofs_src = problem_dir / "proofs"
+    if proofs_src.is_dir():
+        package_text = proposal_body + "\n" + decisions_text
+        staged = 0
+        for f in sorted(proofs_src.glob("L_*.lean")):
+            slug = f.stem[2:]
+            if not re.search(rf"\b{re.escape(slug)}\b", package_text):
+                continue
+            if staged >= 20:
+                print("[adversary] cited-proofs staging cap (20) hit — "
+                      "remaining cited files NOT staged", flush=True)
+                break
+            (proj / "proofs").mkdir(exist_ok=True)
+            shutil.copyfile(f, proj / "proofs" / f.name)
+            staged += 1
     if dialogue:
         (proj / "dialogue.md").write_text(_dialogue_digest(dialogue),
                                           encoding="utf-8")

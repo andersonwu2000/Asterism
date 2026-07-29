@@ -349,8 +349,18 @@ def _section_pending_review_ancestors(
     return out
 
 
+def _slugify_ident(name: str) -> str:
+    """camelCase / PascalCase → snake_case, primes dropped — the slug
+    charset normalization ([a-z][a-z0-9_]*) workers apply when a brief
+    pins a name the commit gate would reject."""
+    s = re.sub(r"(?<=[a-z0-9])([A-Z])", r"_\1", name)
+    return s.lower().replace("'", "")
+
+
 def _section_inject_batch_outcomes(conn: sqlite3.Connection,
-                                   problem: str) -> list[str]:
+                                   problem: str,
+                                   workspace: "Path | None" = None,
+                                   ) -> list[str]:
     """Surface every Inject batch on this problem that completed since
     the last Strategist commit (`last_strategist_at` ratchet — see
     `db.unacknowledged_inject_batches`).
@@ -394,7 +404,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
         f"SELECT d.id, d.batch_id, d.brief, d.payload, d.outcome,"
         f" d.outcome_detail, d.updated_at, d.produced_kind,"
         f" g.slug AS landed_slug, g.status AS landed_status,"
-        f" g.statement AS landed_statement"
+        f" g.statement AS landed_statement, g.lean_path AS landed_path"
         f" FROM strategist_decisions d"
         f" LEFT JOIN goals g ON g.id = d.produced_goal_id"
         f" WHERE d.batch_id IN ({placeholders})"
@@ -437,7 +447,21 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
             out.append(f"- **step {idx}** outcome=`{outcome_text}`")
             kind = str(r["produced_kind"] or "")
             if r["landed_slug"]:
-                stmt = " ".join(str(r["landed_statement"] or "").split())
+                # Full signature off the landed file when reachable
+                # (07-29: the DB statement is the RESULT TYPE for a def
+                # — `— Prop` — which cannot establish arity; the arity
+                # dispute fueled a five-round verdict war).
+                stmt = ""
+                if workspace is not None and r["landed_path"]:
+                    try:
+                        from .context import _catalog_signature
+                        stmt = " ".join((_catalog_signature(
+                            workspace, str(r["landed_path"]),
+                            str(r["landed_slug"])) or "").split())
+                    except Exception:  # noqa: BLE001 — cosmetic only
+                        stmt = ""
+                if not stmt:
+                    stmt = " ".join(str(r["landed_statement"] or "").split())
                 if len(stmt) > 300:
                     stmt = stmt[:300].rstrip() + "…"
                 # v32 attribution: say HOW the artifact relates to the
@@ -481,12 +505,30 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                     slug = str(r["landed_slug"])
                     if full_brief and not re.search(
                             rf"\b{re.escape(slug)}\b", full_brief):
-                        out.append(
-                            "  RETARGETED: the brief never names this "
-                            "declaration — the worker delivered under a "
-                            "different name/statement than briefed; "
-                            "diff it against the brief before building "
-                            "on it")
+                        # 07-29: a briefed camelCase name whose slug
+                        # normalization equals the landed slug is a
+                        # RENAME the framework can attribute itself —
+                        # the bare RETARGETED flag cost a full batch of
+                        # forensics + an adversary round for a
+                        # mechanically-derivable fact.
+                        briefed = next(
+                            (m for m in re.findall(
+                                r"`([A-Za-z][A-Za-z0-9_']*)`", full_brief)
+                             if _slugify_ident(m) == slug), None)
+                        if briefed:
+                            out.append(
+                                f"  RENAMED: briefed `{briefed}` landed "
+                                f"as `{slug}` — the slug charset is "
+                                "[a-z0-9_], the worker normalized the "
+                                "name; statement otherwise as briefed "
+                                "unless the signature above disagrees")
+                        else:
+                            out.append(
+                                "  RETARGETED: the brief never names this "
+                                "declaration — the worker delivered under a "
+                                "different name/statement than briefed; "
+                                "diff it against the brief before building "
+                                "on it")
             elif str(r["outcome"] or "") in ("success", "proved"):
                 out.append(
                     "  landed: (nothing attributed to this step — the "
@@ -1025,7 +1067,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_programme_strategist(conn, problem),
         _section_current_directive(conn, problem),
         _section_plan_note(workspace, problem),
-        _section_inject_batch_outcomes(conn, problem),
+        _section_inject_batch_outcomes(conn, problem, workspace=workspace),
         _section_pending_reopens(conn, problem, trigger_kind),
         _section_active_goals(conn, workspace, problem),
         _section_failure_replay(conn, problem),

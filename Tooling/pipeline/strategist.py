@@ -980,7 +980,10 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                     f"  - Inject(target_goal_id=..., "
                     f"brief=...) to redispatch a non-root goal, OR\n"
                     f"  - RequestUserAmend(...) to escalate Defs.lean / "
-                    f"Manifest.md."
+                    f"Manifest.md.\n"
+                    f"Once the root is proved this gate lifts — a "
+                    f"marks/Ingest-only batch is then legal. Engage the "
+                    f"root first, bookkeeping after."
                 )
     return ""
 

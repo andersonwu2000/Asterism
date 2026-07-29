@@ -1147,3 +1147,72 @@ def test_batch_scoreboard_surfaces_recent_declines(
     assert "Worker declines since your last wake" in text
     assert "counterexample g = 2^n" in text
     assert "growth_exp_flawed" in text
+
+
+def test_inject_batch_done_attributes_slug_rename(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, tmp_path: Path,
+) -> None:
+    """07-29 (cube_e2e): a briefed camelCase name whose slug
+    normalization equals the landed slug is a RENAME the renderer can
+    attribute itself — the bare RETARGETED flag cost a full batch of
+    forensics + an adversary round for a mechanically-derivable fact."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    ids = _seed_inject_batch_done(
+        conn, batch_id="batch-rename",
+        briefs=["## Need\nMint `isPerfectCube` as the anchor def"],
+        outcomes=["success"])
+    gid = db.insert_goal(
+        conn, problem="p", slug="is_perfect_cube",
+        lean_path="Problems/p/proofs/L_is_perfect_cube.lean",
+        statement="Prop", origin="forward", status="proved")
+    conn.execute(
+        "UPDATE strategist_decisions SET produced_goal_id=? WHERE id=?",
+        (gid, ids[0]))
+    conn.commit()
+    attempts_dir = tmp_path / "_attempts_rename"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="inject_batch_done",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        pending_review_id=None)
+    text = out.read_text(encoding="utf-8")
+    assert "RENAMED: briefed `isPerfectCube`" in text
+    assert "RETARGETED" not in text
+
+
+def test_outcome_line_reads_full_signature_for_def(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, tmp_path: Path,
+) -> None:
+    """07-29 (C): the DB statement for a def is its RESULT TYPE (`Prop`)
+    — arity is invisible and fueled the verdict war. The outcome line
+    must read the full signature off the landed file when reachable."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    ids = _seed_inject_batch_done(
+        conn, batch_id="batch-sig",
+        briefs=["## Need\nanchor def `is_cube`"], outcomes=["success"])
+    pdir = workspace / "Problems" / "p" / "proofs"
+    pdir.mkdir(parents=True, exist_ok=True)
+    full = "def is_cube (n : ℕ) : Prop := ∃ k, n = k ^ 3"
+    (pdir / "L_is_cube.lean").write_text(
+        "namespace Problems.p\n" + full + "\nend Problems.p\n",
+        encoding="utf-8")
+    gid = db.insert_goal(
+        conn, problem="p", slug="is_cube",
+        lean_path="Problems/p/proofs/L_is_cube.lean",
+        statement="Prop", origin="forward", status="proved", kind="def")
+    conn.execute(
+        "UPDATE strategist_decisions SET produced_goal_id=? WHERE id=?",
+        (gid, ids[0]))
+    conn.commit()
+    attempts_dir = tmp_path / "_attempts_sig"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="inject_batch_done",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        pending_review_id=None)
+    text = out.read_text(encoding="utf-8")
+    assert full in text

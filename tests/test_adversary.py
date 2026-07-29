@@ -489,3 +489,74 @@ def test_projection_catalog_matches_strategist_view_nested_problem(
     sdir.mkdir(parents=True)
     write_catalog_companion(conn, "Dom.nested", sdir)
     assert (sdir / "CATALOG.md").read_text(encoding="utf-8") == cat
+
+
+def test_projection_stages_tree_cited_proofs_and_directive_body(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """07-29 judge feedback batch: TREE.md rides along; landed proof
+    files the package text cites are staged read-only; the directive
+    BODY (payload['body'] on real Decisions — `.body` only ever existed
+    on test fixtures) reaches decisions.md; goal targets are annotated
+    (slug, status) since CATALOG carries names, not ids."""
+    attempts = workspace / ".attempts" / "adv-stage"
+    attempts.mkdir(parents=True)
+    pdir = workspace / "Problems" / "p"
+    (pdir / "TREE.md").write_text("# t\nmain  (frozen)\n", encoding="utf-8")
+    (pdir / "proofs" / "L_cited_brick.lean").write_text(
+        "def cited_brick : Prop := True\n", encoding="utf-8")
+    (pdir / "proofs" / "L_unrelated.lean").write_text(
+        "def unrelated : Prop := True\n", encoding="utf-8")
+    gid = db.insert_goal(conn, problem="p", slug="tgt",
+                         lean_path="Problems/p/proofs/L_tgt.lean",
+                         statement="T", origin="forward", status="proved")
+    conn.commit()
+    decisions = [
+        SimpleNamespace(kind="MarkDeliverable", pipeline=None,
+                        target_id=gid, brief=None, body=None,
+                        reason="mark it", payload={}),
+        SimpleNamespace(kind="EmitDirective", pipeline=None,
+                        target_id=None, brief=None, body=None,
+                        reason="r", payload={"body": "DIRECTIVE BODY LINE"}),
+    ]
+    proj = adversary.build_projection(
+        round_no=1, attempts_dir=attempts, problem_dir=pdir,
+        conn=conn, problem="p",
+        proposal_body=_PROPOSAL + "\nuses cited_brick in the argument",
+        decisions=decisions, dialogue=[], proof_warn=None)
+    assert (proj / "TREE.md").exists()
+    assert (proj / "proofs" / "L_cited_brick.lean").exists()
+    assert not (proj / "proofs" / "L_unrelated.lean").exists()
+    dec = (proj / "decisions.md").read_text(encoding="utf-8")
+    assert "DIRECTIVE BODY LINE" in dec
+    assert f"→ {gid} (`tgt`, proved)" in dec
+
+
+def test_adversary_contract_section_matches_wake_prompts() -> None:
+    """07-29 (A): the judge carries a verbatim copy of the Strategist's
+    decision-kind contract so quoted contract clauses are checkable
+    inside the sandbox. Every bullet must exist byte-for-byte in one of
+    the three wake prompts — editing a wake bullet without updating the
+    judge's copy fails here."""
+    import re as _re
+    root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
+    adv = (root / "adversary" / "adversary.md").read_text(encoding="utf-8")
+    section = adv[adv.index("## The Strategist's contract"):
+                  adv.index("## How to judge")]
+    wakes = "".join(
+        (root / "strategist" / f).read_text(encoding="utf-8")
+        for f in ("routine.md", "inject_batch_done.md",
+                  "pending_review.md"))
+    body = section.split("\n\n`target_goal_id`")[0]
+    blocks = _re.split(r"\n(?=- )", body)
+    checked = 0
+    for b in blocks[1:]:
+        b = b.strip("\n")
+        if not b.startswith("- "):
+            continue
+        assert b in wakes, (
+            f"adversary contract bullet drifted from the wake prompts:\n"
+            f"{b[:140]}")
+        checked += 1
+    assert checked >= 9, checked
+    assert "`target_goal_id` accepts integer id or slug." in wakes
