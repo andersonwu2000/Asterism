@@ -598,9 +598,9 @@ def test_proposal_section_shared_lines_synced() -> None:
     for needle in (
         "Every route-moving batch carries ≥1 experiment — an Inject or "
         "an AttemptDisproof",
-        "Injects alone satisfy this — no defense needed",
-        "**Write for the record, not the reviewer** — the passed "
-        "revision outlives the cycle",
+        "its absence needs no defense",
+        "**Write for the record, not the reviewer** — fold accepted "
+        "criticisms into corrected text",
     ):
         for f, t in texts.items():
             assert needle in t, (f, needle)
