@@ -225,12 +225,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Fixed two verification flaws so a proof is only accepted after re-checking it against the current compiler diagnostics and on its own workspace, rather than trusting stale or borrowed results.
 - Kept the background worker alive until its finished proofs are collected, so completed work is no longer lost.
 
-### 2026-06-28
-- Improved the generation of Lean proof files so that declaration modifiers like `noncomputable` are preserved and the necessary definition imports are pulled in.
-- Consolidated the system's accumulated "lessons" into a single global store, retiring the older per-step lessons and an obsolete seed file.
-- Hardened proof storage so every saved proof passes an ownership check and writes no longer leave stray backup files behind.
-- Tightened reliability with assorted fixes: crashes now log a full traceback before shutdown, resetting a problem cleans up its dependent records, and the test suite was made cleaner and more portable.
-
 <!-- ASTERISM-PROGRESS:END -->
 
 
