@@ -112,9 +112,16 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     # lives in problem_dir — generate it into the projection directly
     # (the old problem_dir copy was dead code: the judge could never
     # check "X already landed" claims; 07-19 feedback).
+    # Workspace from attempts_dir (fixed <workspace>/.attempts/<pid>
+    # layout), NOT problem_dir: problem nesting varies (flat vs
+    # Problems/<Domain>/<name>), and the wrong root made the signature
+    # file-read silently fall back to the bare DB statement — the judge
+    # then saw `Prop` where the strategist's own CATALOG carried the
+    # full def, and prosecuted an honest citation as fabrication for
+    # two rounds (cube_e2e 07-29).
     from ..agent.context import write_catalog_companion
     write_catalog_companion(conn, problem, proj,
-                            workspace=problem_dir.parent.parent)
+                            workspace=attempts_dir.parent.parent)
 
     # Current rev + the terminal outcomes since it, welded into one
     # file: the outcomes ARE this rev's execution record, and the

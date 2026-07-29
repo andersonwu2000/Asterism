@@ -440,3 +440,52 @@ def test_record_spawn_usage_never_mints_a_junk_db(
     # derived workspace = proj.parent.parent = .attempts/pid-x — the
     # guard must not have created an asterism.db there
     assert not (workspace / ".attempts" / "pid-x" / "asterism.db").exists()
+
+
+def test_projection_catalog_matches_strategist_view_nested_problem(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """07-29 cube_e2e verdict war: for a DOMAIN-NESTED problem the
+    projection derived workspace from problem_dir (fixed 2-level
+    assumption) → the catalog's signature file-read silently fell back
+    to the bare DB statement (`Prop` for a def), and the judge
+    prosecuted the strategist's honest full-signature citation as
+    fabrication for two rounds. Workspace must come from attempts_dir
+    (fixed `<ws>/.attempts/<pid>` layout), not problem_dir (variable
+    nesting) — and the projection CATALOG must equal the strategist's
+    own companion byte for byte."""
+    ndir = workspace / "Problems" / "Dom" / "nested"
+    (ndir / "proofs").mkdir(parents=True)
+    (ndir / "Manifest.md").write_text(
+        "---\nproblem: Dom.nested\n---\n\n## Statement\nT\n",
+        encoding="utf-8")
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at,"
+        " bootstrap_done) VALUES ('Dom.nested',"
+        " 'Problems/Dom/nested/Manifest.md', ?, 1)", (db.now(),))
+    full = "def is_cube (n : ℕ) : Prop := ∃ k, n = k ^ 3"
+    (ndir / "proofs" / "L_is_cube.lean").write_text(
+        "import Mathlib\n\nnamespace Problems.Dom.nested\n\n"
+        + full + "\n\nend Problems.Dom.nested\n", encoding="utf-8")
+    db.insert_goal(
+        conn, problem="Dom.nested", slug="is_cube",
+        lean_path="Problems/Dom/nested/proofs/L_is_cube.lean",
+        statement="Prop", origin="forward", depth=1, kind="def",
+        status="proved")
+    conn.commit()
+    attempts = workspace / ".attempts" / "adv-nested"
+    attempts.mkdir(parents=True)
+
+    proj = adversary.build_projection(
+        round_no=1, attempts_dir=attempts, problem_dir=ndir,
+        conn=conn, problem="Dom.nested", proposal_body=_PROPOSAL,
+        decisions=[_d("Inject", brief="## Need\nx")],
+        dialogue=[], proof_warn=None)
+    cat = (proj / "CATALOG.md").read_text(encoding="utf-8")
+    assert full in cat, f"projection catalog degraded to bare statement:\n{cat}"
+
+    from Tooling.agent.context import write_catalog_companion
+    sdir = workspace / ".attempts" / "strategist-side"
+    sdir.mkdir(parents=True)
+    write_catalog_companion(conn, "Dom.nested", sdir)
+    assert (sdir / "CATALOG.md").read_text(encoding="utf-8") == cat
