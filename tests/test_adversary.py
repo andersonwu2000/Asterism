@@ -582,6 +582,30 @@ def test_plan_note_rewrite_step_synced_and_names_attempts_dir() -> None:
     assert "bare filename, in your attempts dir" in steps[0]
 
 
+def test_proposal_section_shared_lines_synced() -> None:
+    """07-29 programme readback: both SG and cube strategists misread
+    'Carry ≥1' as '≥1 AttemptDisproof per route-moving batch' (the gate
+    counts Inject or AttemptDisproof — strategist._EXPERIMENT_KINDS) and
+    paid a recurring defense paragraph in every revision; passed
+    revisions also carried round-numbered concession narration. The
+    corrective lines stay byte-identical across the three wake
+    prompts."""
+    root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
+    texts = {
+        f: (root / "strategist" / f).read_text(encoding="utf-8")
+        for f in ("routine.md", "inject_batch_done.md",
+                  "pending_review.md")}
+    for needle in (
+        "Every route-moving batch carries ≥1 experiment — an Inject or "
+        "an AttemptDisproof",
+        "Injects alone satisfy this — no defense needed",
+        "**Write for the record, not the reviewer** — the passed "
+        "revision outlives the cycle",
+    ):
+        for f, t in texts.items():
+            assert needle in t, (f, needle)
+
+
 def test_parse_verdict_tolerates_annotated_clear_and_fired() -> None:
     """07-29 third occurrence (2× b6_1 07-27, 1× SG): opus-tier judges
     annotate their verdicts — `"clear — I checked…"` — and the literal

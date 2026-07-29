@@ -47,10 +47,12 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 
 **Distill the settled** — a closed line collapses to its conclusion. Start from `## Programme` in Context.md (the Roadmap evolves; Title/Argument/Proof serve this batch).
 
+**Write for the record, not the reviewer** — the passed revision outlives the cycle: fold accepted criticisms into corrected text; no round numbers, no concession notes, no adversary attribution.
+
 - Every Inject brief names its Roadmap entry: a `Roadmap: <entry phrase>` line.
 - Every Inject is proven in the Proof — inject only what is fully argued; anything short of rigorous closure stays in the Roadmap awaiting a later batch. The brief names that claim, restated as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
 - Mark formal↔informal claims not yet kernel-checked in the Roadmap.
-- An AttemptDisproof probes a doubt. Carry ≥1 (MarkDeliverable/Ingest batches exempt).
+- Every route-moving batch carries ≥1 experiment — an Inject or an AttemptDisproof (MarkDeliverable/Ingest batches exempt). An AttemptDisproof probes a doubt; when no goal is a sane disproof target, Injects alone satisfy this — no defense needed.
 - A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds

@@ -40,7 +40,7 @@ The decision-kind rules the Strategist operates under — check quoted contract 
 4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof. A goal not proven by the ## Proof must not enter formalization.
 5. **Honesty**: the directive must not contradict the Programme; dead or shelved assertions must carry node pointers; a shelved item must state its restart condition. An external variable is not a restart condition.
 
-Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. The ## Proof serves only THIS batch, and every gap lives only in the ## Roadmap, never in the ## Proof. Reservations exist to help — never to command the workers. A fired criterion = rebut; demoting it to a reservation is the rubber stamp.
+Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. The ## Proof serves only THIS batch, and every gap lives only in the ## Roadmap, never in the ## Proof. Reservations exist to help — never to command the workers. The Programme and directive are standing surfaces future readers inherit — round narration, concession notes, and piling incident history are waste; flag them as reservations. A fired criterion = rebut; demoting it to a reservation is the rubber stamp.
 
 ## Output
 
