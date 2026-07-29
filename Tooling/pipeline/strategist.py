@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import re as _re
 import sqlite3
 import tempfile
 import uuid
@@ -114,25 +115,68 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
     # P2 — every Inject brief names its Roadmap entry (parse-level
     # existence check; experiments trace to the argument they test).
     roadmap_lc = sections["roadmap"].lower()
+    missing: list[str] = []      # briefs with no `Roadmap:` line at all
+    unmatched: list[str] = []    # briefs whose phrase isn't in the Roadmap
+    n = 0
     for d in decisions:
         if d.kind != "Inject":
             continue
+        n += 1
+        label = f"Inject #{n}" + (f" (target `{d.target_id}`)"
+                                  if getattr(d, "target_id", None) else "")
         tag = ""
         for line in str(getattr(d, "brief", "") or "").splitlines():
             if line.strip().lower().startswith("roadmap:"):
                 tag = line.split(":", 1)[1].strip()
                 break
         if not tag:
-            return None, None, (
-                "every Inject brief must name its Roadmap entry with a "
-                "`Roadmap: <entry phrase>` line (copy the entry's "
-                "leading phrase from `## Roadmap`).")
-        if tag.lower() not in roadmap_lc:
-            return None, None, (
-                f"an Inject brief cites `Roadmap: {tag}` but no "
-                "`## Roadmap` line contains that phrase — copy the "
-                "entry text verbatim, or add the entry.")
+            missing.append(label)
+        elif tag.lower() not in roadmap_lc:
+            unmatched.append(f"{label} cites `{tag}`")
+    # 07-29 feedback: reporting only the FIRST offender cost one
+    # rejection round-trip per brief when the mistake was systematic
+    # (all three briefs had prose appended to the entry phrase), and the
+    # message never showed which phrases would be accepted.
+    if missing or unmatched:
+        parts = []
+        if missing:
+            parts.append(
+                "these Inject briefs carry no `Roadmap: <entry phrase>` "
+                "line: " + ", ".join(missing))
+        if unmatched:
+            parts.append(
+                "these cite a phrase no `## Roadmap` line contains: "
+                + "; ".join(unmatched))
+        phrases = _roadmap_entry_phrases(sections["roadmap"])
+        tail = ("\nPhrases your `## Roadmap` offers: "
+                + " | ".join(f"`{p}`" for p in phrases)) if phrases else ""
+        return None, None, (
+            " — ".join(parts)
+            + ". Copy an entry's leading phrase verbatim (no appended "
+              "prose), or add the entry. Fix every brief listed above."
+            + tail)
     return body, sections, None
+
+
+_ROADMAP_ENTRY_RE = _re.compile(r"^\s*(?:\d+[.)]|[-*])\s+(.+?)\s*$")
+
+
+def _roadmap_entry_phrases(roadmap: str, cap: int = 12) -> list[str]:
+    """Leading phrase of each `## Roadmap` entry, for the rejection
+    message's 'here is what would be accepted' tail. Heuristic and
+    display-only — the acceptance test stays substring-in-Roadmap."""
+    out: list[str] = []
+    for line in roadmap.splitlines():
+        m = _ROADMAP_ENTRY_RE.match(line)
+        if m is None:
+            continue
+        head = _re.split(r"\s+[—–-]{1,2}\s+", m.group(1), maxsplit=1)[0]
+        head = head.replace("**", "").replace("*", "").strip().rstrip(":")
+        if head and head not in out:
+            out.append(head)
+        if len(out) >= cap:
+            break
+    return out
 
 
 def _format_rebuttal(verdict: dict, round_no: int,

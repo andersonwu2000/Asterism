@@ -117,6 +117,26 @@ def test_package_requires_file_and_experiment(tmp_path: Path):
     assert err is None
 
 
+def test_roadmap_tag_rejection_lists_every_offender(tmp_path: Path):
+    """07-29 feedback: the check returned on the FIRST bad brief and
+    never showed the accepted phrases, so one systematic mistake cost a
+    rejection round-trip per brief. Report all offenders + echo the
+    Roadmap's own entry phrases."""
+    (tmp_path / "proposal.md").write_text(
+        "# Step\n## Argument\nWhy.\n## Proof\nHolds.\n"
+        "## Roadmap\n1. **the brick** — brief-ready\n"
+        "2. **the wall** — later\n", encoding="utf-8")
+    body, _s, err = strategist.verify_proposal_package(
+        [_d("Inject", brief="Roadmap: the brick, then some prose\n## Need\nx"),
+         _d("Inject", target_id="g7", brief="Roadmap: also wrong\n## Need\ny"),
+         _d("Inject", brief="## Need\nz")], tmp_path)
+    assert body is None
+    assert "the brick, then some prose" in err and "also wrong" in err
+    assert "target `g7`" in err            # offenders identified
+    assert "Inject #3" in err              # the tagless one too
+    assert "`the brick`" in err and "`the wall`" in err  # accepted phrases
+
+
 # ------------------------------------------------- verdict contract
 
 def _criteria(**fired: str) -> dict:
