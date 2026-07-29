@@ -243,10 +243,17 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
         if not isinstance(val, str):
             return None, f"criterion {k} must be a string"
         s = val.strip()
-        if s.lower() == "clear":
+        # Prefix-keyed, annotation-tolerant (07-29, third occurrence of
+        # the same wake-killing parse: opus-tier judges annotate their
+        # verdicts — `"clear — I checked the chain end to end…"` — and
+        # the literal match threw away two full adversary rounds per
+        # hit. The DISCRIMINATOR is the leading word (word-boundary, so
+        # "clearly…" stays malformed); suffix prose is tolerated.
+        if re.match(r"clear\b", s, re.IGNORECASE):
             continue
-        if s.lower().startswith("fired"):
-            reason = s.split(":", 1)[1].strip() if ":" in s else ""
+        if re.match(r"fired\b", s, re.IGNORECASE):
+            reason = (s.split(":", 1)[1].strip() if ":" in s
+                      else s[5:].strip(" -—–:"))
             if not reason:
                 return None, (f"criterion {k} is fired but carries no "
                               f"objection — `\"fired: <objection>\"`")

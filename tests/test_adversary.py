@@ -560,3 +560,27 @@ def test_adversary_contract_section_matches_wake_prompts() -> None:
         checked += 1
     assert checked >= 9, checked
     assert "`target_goal_id` accepts integer id or slug." in wakes
+
+
+def test_parse_verdict_tolerates_annotated_clear_and_fired() -> None:
+    """07-29 third occurrence (2× b6_1 07-27, 1× SG): opus-tier judges
+    annotate their verdicts — `"clear — I checked…"` — and the literal
+    match discarded two full adversary rounds per hit, failing the
+    whole wake as agent_no_output. Prefix-keyed with a word boundary:
+    annotations tolerated, "clearly…" still malformed."""
+    v, err = adversary.parse_verdict(json.dumps({"criteria": {
+        "1": "clear — I checked the chain end to end",
+        "2": "Clear",
+        "3": "fired — the merge is not forced",
+        "4": "fired: the Proof skips the boundary case",
+        "5": "clear"}}))
+    assert err == "" and v is not None
+    assert v["verdict"] == "rebut"
+    assert len(v["criticisms"]) == 2
+    assert any("boundary case" in c for c in v["criticisms"])
+    assert any("merge is not forced" in c for c in v["criticisms"])
+
+    bad, err2 = adversary.parse_verdict(json.dumps({"criteria": {
+        "1": "clearly fine", "2": "clear", "3": "clear",
+        "4": "clear", "5": "clear"}}))
+    assert bad is None and "criterion 1" in err2
