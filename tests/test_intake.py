@@ -77,13 +77,42 @@ def test_intake_unknown_verdict_fails_open(tmp_path, monkeypatch) -> None:
     assert out.sid is not None and out.declined is None
 
 
-def test_intake_unknown_decline_reason_normalized(tmp_path, monkeypatch) -> None:
+def test_intake_unknown_decline_reason_fails_open(tmp_path, monkeypatch) -> None:
+    """Task #124: with a two-word vocabulary, coercing an unknown reason
+    (the pre-#124 fail-safe) is a mislabel — proceed instead; the work
+    turn carries the full decline vocabulary."""
     monkeypatch.setattr(agent, "spawn_llm", _spawn_writing(json.dumps({
-        "verdict": "decline", "reason": "made_up_reason", "note": "x"})))
+        "verdict": "decline", "reason": "return_to_parent", "note": "x"})))
     out = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=tmp_path,
                      problem_dir=tmp_path, label="t")
-    assert out.declined is not None
-    assert out.declined[0] == "no_nl_correspondence"
+    assert out.declined is None and out.sid is not None
+
+
+def test_intake_unprovable_decline_carries_counterexample(
+    tmp_path, monkeypatch,
+) -> None:
+    """Task #124 (archaeology: 27/27 disproved goals were killed by a
+    fresh agent's unprovable decline, never the transcribing parent —
+    the falsity scan belongs at the fresh zero-sunk-cost turn)."""
+    monkeypatch.setattr(agent, "spawn_llm", _spawn_writing(json.dumps({
+        "verdict": "decline", "reason": "unprovable",
+        "note": "n=0: LHS=1, RHS=0 — inequality reversed"})))
+    out = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=tmp_path,
+                     problem_dir=tmp_path, label="t")
+    assert out.declined == ("unprovable",
+                            "n=0: LHS=1, RHS=0 — inequality reversed")
+
+
+def test_intake_unprovable_without_note_fails_open(
+    tmp_path, monkeypatch,
+) -> None:
+    """The bar is a concrete counterexample — a bare unprovable verdict
+    must not flip a goal to disproved on a hunch."""
+    monkeypatch.setattr(agent, "spawn_llm", _spawn_writing(json.dumps({
+        "verdict": "decline", "reason": "unprovable"})))
+    out = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=tmp_path,
+                     problem_dir=tmp_path, label="t")
+    assert out.declined is None and out.sid is not None
 
 
 def test_intake_quota_rc_surfaces_infra(tmp_path, monkeypatch) -> None:
@@ -161,6 +190,32 @@ def test_backward_intake_decline_exits_before_work(
     assert r.failure_reason == "no_nl_correspondence"
     assert "unbacked λ-coupling" in (r.failure_detail or "")
     assert presearched["n"] == 0, "declined goal must not pay presearch"
+
+
+def test_backward_intake_unprovable_maps_to_agent_infeasible(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task #124: an intake unprovable decline rides the SAME
+    DECLINE_TO_FAILURE_REASON map as the work-turn directive, so cascade
+    sees `agent_infeasible` (→ disproved) — identical semantics, no new
+    mapping arm."""
+    gid = _seed_root_goal(tmp_path, conn)
+    monkeypatch.setattr(
+        _intake, "run_intake",
+        lambda **kw: IntakeOutcome(
+            declined=("unprovable", "n=0 breaks the inequality")))
+
+    def _no_loop(**kw):
+        raise AssertionError("work loop must not run after intake decline")
+    monkeypatch.setattr("Tooling.pipeline._retry.run_lsp_edit_loop", _no_loop)
+
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-intake-unprovable")
+    assert r.failure_reason == "agent_infeasible"
+    assert "n=0 breaks the inequality" in (r.failure_detail or "")
 
 
 def test_backward_intake_sid_threads_to_work_loop(

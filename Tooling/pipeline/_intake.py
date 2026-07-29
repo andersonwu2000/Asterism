@@ -3,7 +3,16 @@
 First turn on a fresh session: the agent reads Context.md (Programme
 `## Proof` + assignment + tree state) and writes an `intake.json`
 sentinel — `{"verdict":"proceed"}` or
-`{"verdict":"decline","reason":"no_nl_correspondence","note":...}`.
+`{"verdict":"decline","reason":<reason>,"note":...}` with reason one of
+  * `no_nl_correspondence` — the Proof does not argue this assignment;
+  * `unprovable` — a concrete instance breaks the statement (task #124,
+    archaeology-backed: all 27 historical disproved goals were killed by
+    a FRESH agent's unprovable decline within 1-3 attempts, never by the
+    parent that transcribed them — the falsity scan belongs at the
+    fresh, zero-sunk-cost turn. Note must carry the counterexample;
+    an empty note fails open to proceed. Maps through the same
+    DECLINE_TO_FAILURE_REASON as the work-turn directive, so the
+    cascade semantics (`agent_infeasible` → disproved) are identical.)
 
 Behavior contract (user ruling 2026-07-27 — intake is an ECONOMY gate,
 not a soundness gate; the work-turn `-- decline:` channel remains
@@ -36,7 +45,7 @@ INTAKE_INFRA_RCS = (SpawnRC.QUOTA_EXHAUSTED, SpawnRC.MISSING_DEP,
                     SpawnRC.SHUTDOWN)
 
 _SENTINEL = "intake.json"
-_VALID_DECLINE_REASONS = ("no_nl_correspondence",)
+_VALID_DECLINE_REASONS = ("no_nl_correspondence", "unprovable")
 
 
 @dataclass
@@ -95,10 +104,22 @@ def run_intake(*, prompt_dir: Path, attempts_dir: Path,
         return IntakeOutcome(sid=sid)
     if verdict == "decline":
         reason = str(data.get("reason", "")).strip()
+        note = str(data.get("note", "")).strip()
         if reason not in _VALID_DECLINE_REASONS:
-            reason = _VALID_DECLINE_REASONS[0]
-        note = str(data.get("note", "")).strip() or "(no note)"
-        return IntakeOutcome(declined=(reason, note))
+            # Pre-#124 this coerced to no_nl_correspondence — a one-word
+            # vocabulary's fail-safe. With two reasons a coercion is a
+            # mislabel; the work turn carries the full vocabulary.
+            print(f"[intake] {label}: unknown decline reason {reason!r} "
+                  f"— proceeding (work turn has the full vocabulary)",
+                  flush=True)
+            return IntakeOutcome(sid=sid)
+        if reason == "unprovable" and not note:
+            # The bar is a concrete counterexample; a bare verdict fails
+            # open rather than flipping a goal to disproved on a hunch.
+            print(f"[intake] {label}: unprovable without a counterexample "
+                  f"note — proceeding", flush=True)
+            return IntakeOutcome(sid=sid)
+        return IntakeOutcome(declined=(reason, note or "(no note)"))
     if verdict != "proceed":
         print(f"[intake] {label}: unknown verdict {verdict!r} — "
               f"proceeding (economy gate, fail-open)", flush=True)
