@@ -27,12 +27,22 @@ import json
 import re
 import shutil
 import sqlite3
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from ..state import failures
+
 VERDICT_BASENAME = "verdict.json"
 PROJECTION_DIRNAME = "adversary"
+#: `review` budgets, kept separate on purpose: a judge that produced no
+#: usable ruling twice is a wake-level failure (the agent is the
+#: problem), whereas a provider-side rc is nobody's ruling and must not
+#: cost the Strategist's finished proposal (task #132).
+VERDICT_TRIES = 2
+INFRA_SPAWN_RETRIES = 2
+INFRA_RETRY_BACKOFF_SEC = 15.0
 
 
 def _decisions_digest(decisions, conn=None, problem=None) -> str:
@@ -301,9 +311,16 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
     prompt_path = PROMPT_DIR / "adversary" / "adversary.md"
 
     # One re-spawn on a missing/malformed verdict (cheap; a judge that
-    # produced no usable ruling twice is a wake-level failure).
+    # produced no usable ruling twice is a wake-level failure), plus a
+    # separate budget for INFRA rcs: the caller turns rc != 0 into a
+    # wake-level failure, which discards a proposal the Strategist has
+    # already finished (SG 07-30: one `adversary rc=1` provider blip
+    # threw away 28k output tokens / 6.2 min, and the 07-27 malformed
+    # pair cost 27 min — same single-point-of-failure class). A provider
+    # hiccup on the judge must cost a re-spawn, not the author's work.
     last_err = ""
-    for _attempt in range(2):
+    verdict_tries = infra_tries = 0
+    while True:
         sid = str(uuid.uuid4())
         rc = agent.spawn_llm(
             kind="adversary", prompt_path=prompt_path,
@@ -317,20 +334,38 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
             usage_pipeline_id=attempts_dir.name,
         )
         if rc != 0:
+            if (failures.is_infra(failures.rc_to_reason(rc))
+                    and infra_tries < INFRA_SPAWN_RETRIES):
+                infra_tries += 1
+                print(f"[adversary] r{round_no}: spawn rc={rc} "
+                      f"(infra) — retry {infra_tries}/"
+                      f"{INFRA_SPAWN_RETRIES} in "
+                      f"{INFRA_RETRY_BACKOFF_SEC:.0f}s; the proposal "
+                      f"stays alive", flush=True)
+                time.sleep(INFRA_RETRY_BACKOFF_SEC)
+                continue
             return None, "", rc
+        # Verdict problems share ONE bounded budget (the loop is
+        # `while True` for the infra branch above, so every no-verdict
+        # path must count against it or the wake spins forever).
         vpath = proj / VERDICT_BASENAME
+        verdict = None
         if not vpath.exists():
             last_err = "adversary produced no verdict.json"
-            continue
-        try:
-            text = vpath.read_text(encoding="utf-8")
-        except OSError as e:
-            last_err = f"verdict.json unreadable: {e}"
-            continue
-        verdict, perr = parse_verdict(text)
+        else:
+            try:
+                text = vpath.read_text(encoding="utf-8")
+            except OSError as e:
+                last_err = f"verdict.json unreadable: {e}"
+            else:
+                verdict, perr = parse_verdict(text)
+                if verdict is None:
+                    last_err = perr
+                    vpath.unlink(missing_ok=True)
         if verdict is None:
-            last_err = perr
-            vpath.unlink(missing_ok=True)
+            verdict_tries += 1
+            if verdict_tries >= VERDICT_TRIES:
+                return None, last_err, 0
             continue
         # Framework-feedback questionnaire — the judge was the one spawn
         # family without the channel (zero adversary lines ever landed).
@@ -344,4 +379,3 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
             workspace=attempts_dir.parent.parent,
             problem_label=problem)
         return verdict, "", 0
-    return None, last_err, 0

@@ -115,7 +115,7 @@ Strategist（`Tooling/pipeline/strategist.py`）：
 - `strategist_schema_invalid` — `decision.json` 解析過但 `verify_decisions` / 提案包機械檢查不過；同 session resume 修訂，輪數上限 `strategist.verify_retry`（預設 6，與 Adversary 反駁共用計數）
 - `strategist_noop` — Strategist 合法地決定 Noop（當下無事可做）；非錯誤、記錄用
 - `strategist_proposal_rejected` — Adversary 於修訂輪用盡後仍反駁：提案+全部批評存 `programme_revisions`（status='rejected'）、session 拋棄、下一 wake 只帶一行被拒紀錄盲重推；target cooldown 節流連續拒絕循環；不 burn root.attempts
-- 另含共用的 `agent_no_output`。**Adversary 通道**：judge spawn rc≠0 → `rc_to_reason` 的 infra reason；`verdict.json` 缺失或解析不過（一次 re-spawn 後）→ `agent_no_output`。無 Adversary 專屬 reason string
+- 另含共用的 `agent_no_output`。**Adversary 通道**：judge spawn 的 **infra rc**（`is_infra`）先在 `review` 內重試 `INFRA_SPAWN_RETRIES` 次（15s backoff），耗盡才回 `rc_to_reason` 的 infra reason——provider 的一次抽風不該作廢 Strategist 已完成的提案（#132，SG 07-30 實測 6.2min/28k tokens）；`verdict.json` 缺失或解析不過走**獨立**的 `VERDICT_TRIES` 預算（判官兩次交不出裁決＝wake 級失敗）→ `agent_no_output`。同族修法也套在 strategist 修訂輪 spawn 上。無 Adversary 專屬 reason string
 
 Librarian（`Tooling/pipeline/librarian/`）：失敗走 `core/librarian_sched.py` `_advance_librarian_chain` 的 **per-unit fail-count**（`librarian_fail_counts`、跨 restart 持久）；連續失敗超過 `LIBRARIAN_MAX_CHAIN_RETRIES`（=2，即第 3 次）→ 該 unit **STALL**（不再 refill、不動 goal、無 shelve）。`librarian_file_busy` 不計數（另一 worker 正持有該檔）。
 - **migrate**：`librarian_migrate_not_mechanical`（需 LLM、非純機械 relabel）/ `librarian_migrate_hole_unfilled`（relabel 後仍有 sorry 洞）/ `librarian_migrate_build_failed`（搬出的檔 build 不過）

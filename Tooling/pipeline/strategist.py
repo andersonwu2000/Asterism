@@ -32,12 +32,13 @@ import os
 import re as _re
 import sqlite3
 import tempfile
+import time as _time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..state import db, transitions
+from ..state import db, failures as _failures, transitions
 from ..core import dispatcher as _dispatcher
 
 
@@ -2034,12 +2035,31 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                                 f"first-attempt: {first_err}"),
             )
         rounds_used += 1
-        rc2 = agent.spawn_llm(
-            kind="strategist", prompt_path=prompt_path,
-            problem_dir=problem_dir, attempts_dir=attempts_dir,
-            session_id=sid, is_retry=True, retry_context=err,
-            timeout_sec=strategist_timeout,
-        )
+        # Same class as the judge's infra retry (task #132): this wake
+        # already holds a parsed batch (and possibly rounds of
+        # criticism); a provider-side rc on the revision spawn must cost
+        # a re-spawn, not the accumulated work. Session id is reused —
+        # `--resume` on the same sid is what carries the revision.
+        _infra_tries = 0
+        while True:
+            rc2 = agent.spawn_llm(
+                kind="strategist", prompt_path=prompt_path,
+                problem_dir=problem_dir, attempts_dir=attempts_dir,
+                session_id=sid, is_retry=True, retry_context=err,
+                timeout_sec=strategist_timeout,
+            )
+            if (rc2 != 0
+                    and _failures.is_infra(_rc_to_reason(rc2))
+                    and _infra_tries < _adversary.INFRA_SPAWN_RETRIES):
+                _infra_tries += 1
+                print(f"[strategist] {problem}: revision round "
+                      f"{rounds_used} spawn rc={rc2} (infra) — retry "
+                      f"{_infra_tries}/{_adversary.INFRA_SPAWN_RETRIES} "
+                      f"in {_adversary.INFRA_RETRY_BACKOFF_SEC:.0f}s",
+                      flush=True)
+                _time.sleep(_adversary.INFRA_RETRY_BACKOFF_SEC)
+                continue
+            break
         _persist_plan(problem_dir, attempts_dir)  # retry may rewrite it
         if rc2 != 0:
             return PipelineResult(

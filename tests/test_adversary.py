@@ -626,6 +626,87 @@ def test_proposal_section_shared_lines_synced() -> None:
             assert needle in t, (f, needle)
 
 
+def test_review_retries_infra_rc_and_keeps_the_proposal(
+    workspace: Path, conn: sqlite3.Connection, monkeypatch,
+) -> None:
+    """#132 (SG 07-30): one `adversary rc=1` provider blip made the whole
+    strategist wake fail, discarding a finished proposal (28k tokens /
+    6.2 min). An infra rc must cost a re-spawn, not the author's work;
+    the verdict-problem budget stays separate."""
+    from Tooling.pipeline import adversary
+    monkeypatch.setattr(adversary, "INFRA_RETRY_BACKOFF_SEC", 0.0)
+    attempts = workspace / ".attempts" / "pid"
+    attempts.mkdir(parents=True, exist_ok=True)
+    pdir = workspace / "Problems" / "p"
+    calls = {"n": 0}
+
+    def fake_spawn(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return 1                      # provider blip → spawn_fast_fail
+        (Path(kw["attempts_dir"]) / "verdict.json").write_text(
+            json.dumps({"criteria": {str(i): "clear" for i in range(1, 6)}}),
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    verdict, err, rc = adversary.review(
+        round_no=1, attempts_dir=attempts, problem_dir=pdir, conn=conn,
+        problem="p", proposal_body=_PROPOSAL, decisions=[], dialogue=[],
+        proof_warn=None)
+    assert calls["n"] == 2, "infra rc must be retried, not fatal"
+    assert rc == 0 and err == "" and verdict is not None
+    assert verdict["verdict"] == "pass"
+
+
+def test_review_gives_up_after_the_infra_budget(
+    workspace: Path, conn: sqlite3.Connection, monkeypatch,
+) -> None:
+    """A systematic provider failure still fails the wake — bounded, not
+    an infinite re-spawn loop."""
+    from Tooling.pipeline import adversary
+    monkeypatch.setattr(adversary, "INFRA_RETRY_BACKOFF_SEC", 0.0)
+    attempts = workspace / ".attempts" / "pid"
+    attempts.mkdir(parents=True, exist_ok=True)
+    pdir = workspace / "Problems" / "p"
+    calls = {"n": 0}
+
+    def always_infra(**kw):
+        calls["n"] += 1
+        return 1
+    monkeypatch.setattr(agent, "spawn_llm", always_infra)
+    verdict, err, rc = adversary.review(
+        round_no=1, attempts_dir=attempts, problem_dir=pdir, conn=conn,
+        problem="p", proposal_body=_PROPOSAL, decisions=[], dialogue=[],
+        proof_warn=None)
+    assert verdict is None and rc == 1
+    assert calls["n"] == adversary.INFRA_SPAWN_RETRIES + 1
+
+
+def test_review_verdict_budget_is_bounded(
+    workspace: Path, conn: sqlite3.Connection, monkeypatch,
+) -> None:
+    """The no-verdict paths must count against VERDICT_TRIES — the infra
+    branch turned the loop into `while True`, so an always-silent judge
+    would otherwise spin forever."""
+    from Tooling.pipeline import adversary
+    attempts = workspace / ".attempts" / "pid"
+    attempts.mkdir(parents=True, exist_ok=True)
+    pdir = workspace / "Problems" / "p"
+    calls = {"n": 0}
+
+    def silent(**kw):
+        calls["n"] += 1
+        return 0                          # rc ok, but writes no verdict
+    monkeypatch.setattr(agent, "spawn_llm", silent)
+    verdict, err, rc = adversary.review(
+        round_no=1, attempts_dir=attempts, problem_dir=pdir, conn=conn,
+        problem="p", proposal_body=_PROPOSAL, decisions=[], dialogue=[],
+        proof_warn=None)
+    assert verdict is None and rc == 0 and "no verdict" in err
+    assert calls["n"] == adversary.VERDICT_TRIES
+
+
 def test_parse_verdict_tolerates_annotated_clear_and_fired() -> None:
     """07-29 third occurrence (2× b6_1 07-27, 1× SG): opus-tier judges
     annotate their verdicts — `"clear — I checked…"` — and the literal
