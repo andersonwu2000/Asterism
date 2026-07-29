@@ -725,6 +725,26 @@ def _format_diag(d: dict) -> dict:
     }
 
 
+def _collapse_repeats(formatted: "list[dict]") -> "list[dict]":
+    """Fold diagnostics that repeat the same message verbatim into one
+    entry carrying `repeats` + `also_lines`. Nothing is hidden — the
+    payload is the same information at one tenth the reading cost
+    (07-29 feedback: three identical `push_neg` deprecation warnings on
+    every probe, competing with the real ok/error signal)."""
+    out: "list[dict]" = []
+    seen: "dict[tuple[str, str], dict]" = {}
+    for f in formatted:
+        key = (str(f.get("severity")), str(f.get("message")))
+        first = seen.get(key)
+        if first is None:
+            seen[key] = f
+            out.append(f)
+            continue
+        first["repeats"] = int(first.get("repeats", 1)) + 1
+        first.setdefault("also_lines", []).append(f.get("line"))
+    return out
+
+
 def _metaprog_error(text: str, where: str) -> "str | None":
     """Readable form of the metaprogramming gate (`state.metaprog`), or
     None when `text` is clean.
@@ -1477,6 +1497,8 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
         new_content, meta.problem, meta.workspace, _own_stubs,
         kind=meta.kind)
     _verb = "deleted" if not replacement else "replaced"
+    _n_diags = len(formatted)
+    formatted = _collapse_repeats(formatted)
     response = {
         "edit": (f"{_verb} lines {start_line}-{end_line}; "
                  f"file is now {len(new_lines)} lines"),
@@ -1484,7 +1506,7 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
         "post_edit_region": post_edit_region,
         "goal_at_edit_start": goal_text,
         "diagnostics": formatted,
-        "diagnostic_count": len(formatted),
+        "diagnostic_count": _n_diags,
         "_server_recv_ts": _recv_ts,
         "_server_send_ts": _ts_now(),
     }
@@ -1766,7 +1788,7 @@ def _citation_submission(content: str, problem: str, workspace: "Path",
             "issues": issues}
 
 
-def _annotation_submission(content: str) -> "dict":
+def _annotation_submission(content: str, is_mint: bool = False) -> "dict":
     """Mirror commit's `agent_no_annotation` gate: a final patch needs a
     leading `--` comment block. Applies only when `content` is a real
     submission (declares SOMETHING — any decl kind, a data goal's patch
@@ -1774,7 +1796,13 @@ def _annotation_submission(content: str) -> "dict":
     `:= by sorry` stub is not a submission, so skip (`checked: False`).
     Historically theorem-only, so a def patch validated with
     `checked: false` and no explanation (feedback family: the agent
-    couldn't tell whether the gate applied)."""
+    couldn't tell whether the gate applied).
+
+    The mint arm has no such gate since the Forward-rationale comment
+    was retired (07-29) — nagging for it there is a false requirement."""
+    if is_mint:
+        return {"checked": False,
+                "note": "mint commits need no annotation"}
     if (not _GW_DECL_HEAD_RE.search(content)
             or _GW_SORRY_STUB_RE.search(content)):
         # Explain the skip (07-19 ×2: agents read a bare
@@ -2099,11 +2127,13 @@ def validate_file(content: str) -> str:
     if elaborate_failed:
         has_error = True
     dur = time.perf_counter() - t0
+    n_diags = len(formatted)
+    formatted = _collapse_repeats(formatted)
     response = {
         # A timeout means we never confirmed the file is clean, so it must
         # not surface as ok:true — report indeterminate (#102).
         "ok": not has_error and not timed_out,
-        "diagnostic_count": len(formatted),
+        "diagnostic_count": n_diags,
         "diagnostics": formatted,
         "_server_recv_ts": _recv_ts,
         "_server_send_ts": _ts_now(),
@@ -2123,12 +2153,17 @@ def validate_file(content: str) -> str:
     response["commit_header"] = _commit_header_for(
         content, meta.problem, meta.workspace, meta.target_path.parent,
         extra_opens=_harvest_open_lines(meta.file_content))
+    # 07-29 feedback: an agent read these as "my file was edited".
+    response["commit_header"]["note"] = (
+        "framework injects these at commit; do not write them")
     # Submission mirror (#8 / P2): the commit-time citation + annotation gates,
     # surfaced here so a clean Lean elaboration that would still be bounced at
     # commit is flagged pre-commit. Separate from `diagnostics` (Lean) so the
     # agent reads "elaborates" and "commit will accept" independently.
-    submission: "dict" = {"annotation": _annotation_submission(content),
-                          "decl_head": _declhead_submission(content)}
+    submission: "dict" = {
+        "annotation": _annotation_submission(
+            content, is_mint=meta.target_path.name.startswith("new_forward")),
+        "decl_head": _declhead_submission(content)}
     cite = _citation_submission(content, meta.problem, meta.workspace,
                                 set(inlined_slugs), kind=meta.kind)
     if cite is not None:

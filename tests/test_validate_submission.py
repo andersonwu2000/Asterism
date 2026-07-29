@@ -85,6 +85,44 @@ def test_annotation_passes_with_leading_comment():
     assert r["checked"] is True and r["ok"] is True and r["note"] == ""
 
 
+def test_annotation_skips_the_mint_arm():
+    """07-29 feedback + the 07-30 rationale retirement: mint commits have
+    no annotation gate, so nagging every mint probe for a leading comment
+    states a requirement that no longer exists."""
+    body = "theorem foo : True := by\n  trivial\n"
+    assert gw._annotation_submission(body)["checked"] is True
+    r = gw._annotation_submission(body, is_mint=True)
+    assert r["checked"] is False and "no annotation" in r["note"]
+
+
+# ---------------------------------------------------------------------
+# repeated-diagnostic collapse (07-29 feedback: 3 identical push_neg
+# deprecation warnings on every probe drowned the real signal)
+# ---------------------------------------------------------------------
+
+def test_collapse_repeats_folds_identical_messages_only():
+    diags = [
+        {"line": 3, "col": 2, "severity": "warning", "message": "push_neg dep"},
+        {"line": 9, "col": 2, "severity": "warning", "message": "push_neg dep"},
+        {"line": 12, "col": 0, "severity": "warning", "message": "push_neg dep"},
+        {"line": 5, "col": 1, "severity": "error", "message": "unknown id"},
+    ]
+    out = gw._collapse_repeats(diags)
+    assert len(out) == 2
+    first = out[0]
+    assert first["line"] == 3 and first["repeats"] == 3
+    assert first["also_lines"] == [9, 12]
+    assert out[1]["message"] == "unknown id" and "repeats" not in out[1]
+
+
+def test_collapse_repeats_keeps_distinct_messages():
+    diags = [
+        {"line": 1, "col": 0, "severity": "error", "message": "a"},
+        {"line": 2, "col": 0, "severity": "error", "message": "b"},
+    ]
+    assert gw._collapse_repeats(diags) == diags
+
+
 # ---------------------------------------------------------------------
 # (a2) decl-head slug — snake_case gate surfaced pre-commit (green #69/#107)
 # ---------------------------------------------------------------------
