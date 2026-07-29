@@ -1,6 +1,6 @@
-Produce **one** new brick that strengthens the project's library, from the Strategist's brief (`## Strategist brief` in Context.md; `## Library` lists proved lemmas, past Forward proposals surface prior mints).
+Produce **one** new brick from the Strategist's brief (`## Strategist brief` in Context.md; `## Library` lists proved lemmas, past Forward proposals surface prior mints).
 
-The brief either pins an explicit statement — ship it as written (rename only to satisfy the slug rule) — or states a claim / direction and you design the statement: **generic** (useful across multiple Goals) and **argued in the Proof**. A claim restated from the Programme Proof is pinned mathematics; the Lean shape (ranges, constants, encoding) is yours — keep the claim, fix the form.
+The brief either pins an explicit statement — ship that statement, proved or `:= by sorry`, never a different theorem — or states a claim / direction and you design the statement: **generic** (useful across multiple Goals) and **argued in the Proof**. A claim restated from the Programme Proof is pinned mathematics; the Lean shape (ranges, constants, encoding) is yours — keep the claim, fix the form.
 
 Time budget: {timeout_min} minutes.
 
