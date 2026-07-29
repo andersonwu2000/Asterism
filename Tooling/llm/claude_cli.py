@@ -1120,6 +1120,23 @@ class ClaudeCliProvider:
             *_trim_flags(req),
         ]
         env = dict(os.environ)
+        # Per-spawn write whitelist for spawn_guard's write-family fence
+        # (task #128): file-tool WRITES are default-deny outside these
+        # roots — the attempts sandbox, plus the kind's sanctioned edit
+        # surface (the librarian family edits Library in place; every
+        # other persisted artifact is written by framework code, not
+        # spawn tools). Reads keep the broad repo whitelist. Attempts
+        # dir stays FIRST — the deny message points at roots[0].
+        from .spawn_guard import WRITE_ROOTS_ENV
+        write_roots = [str(req.attempts_dir)]
+        if req.kind in ("librarian", "migrate", "classify", "alias"):
+            write_roots.append(str(library_dir))
+        if req.kind == "paper_index":
+            # Its problem_dir IS Papers/<pid>, and the agent's contract
+            # is to write map.md there (papers/index.py re-stamps the
+            # frontmatter afterwards).
+            write_roots.append(str(req.problem_dir))
+        env[WRITE_ROOTS_ENV] = os.pathsep.join(write_roots)
         # Per-spawn thinking-token cap (restored 2026-05-10 from 9d05d19).
         # Sonnet 4.6's adaptive thinking can produce 30-90K-character
         # single thinking blocks that hit Anthropic's max_tokens stop

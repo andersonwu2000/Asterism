@@ -14,7 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from Tooling.llm.spawn_guard import REPO_ROOT, check
+from Tooling.llm.spawn_guard import REPO_ROOT, WRITE_ROOTS_ENV, check
 
 CWD = str(REPO_ROOT / "Problems" / "Topology" / "some_problem")
 HOME = Path.home()
@@ -104,6 +104,58 @@ def test_bash_allows_toolchain_interpreter_and_non_home() -> None:
         f"cd {REPO_ROOT} && git log --oneline -3",
     ):
         assert check("Bash", {"command": cmd}, CWD) is None, cmd
+
+
+# ---------- write family: per-spawn whitelist (task #128) ----------
+
+ATT = str(REPO_ROOT / ".attempts" / "abc12345")
+
+
+def test_write_family_default_deny_outside_roots(monkeypatch) -> None:
+    """07-29 SG: a strategist wrote `_plan.md` to the problem root
+    (cwd-relative) and the persist chain silently missed it. With the
+    per-spawn roots env set, every write outside {attempts, temp} is
+    denied with a message pointing at the attempts dir — including the
+    soundness-adjacent surfaces every kind could previously write
+    (mathlib packages, Library, other problems, Tooling)."""
+    monkeypatch.setenv(WRITE_ROOTS_ENV, ATT)
+    reason = check("Write", {"file_path": "_plan.md"}, CWD)
+    assert reason and ATT in reason
+    for raw in (
+        str(REPO_ROOT / "Problems" / "p" / "notes.md"),
+        str(REPO_ROOT / ".lake" / "packages" / "mathlib" / "M.lean"),
+        str(REPO_ROOT / "Library" / "L.lean"),
+        str(REPO_ROOT / "Tooling" / "pipeline" / "strategist.py"),
+        str(HOME / ".ssh" / "config"),
+    ):
+        assert check("Edit", {"file_path": raw}, CWD), raw
+    assert check("Write",
+                 {"file_path": ATT + os.sep + "patch.lean"}, CWD) is None
+    assert check("Write", {"file_path": str(
+        HOME / "AppData" / "Local" / "Temp" / "t.txt")}, CWD) is None
+    # read family unaffected by the write roots
+    assert check("Read", {"file_path": str(
+        REPO_ROOT / "Problems" / "p" / "Defs.lean")}, CWD) is None
+    assert check("Grep", {"path": str(REPO_ROOT / "Library")}, CWD) is None
+
+
+def test_write_family_kind_extras_and_env_absent(monkeypatch) -> None:
+    lib = str(REPO_ROOT / "Library")
+    monkeypatch.setenv(WRITE_ROOTS_ENV, ATT + os.pathsep + lib)
+    assert check("Edit", {"file_path": lib + os.sep + "L.lean"}, CWD) is None
+    assert check("Edit", {"file_path": str(
+        REPO_ROOT / "Problems" / "p" / "x.md")}, CWD)
+    monkeypatch.delenv(WRITE_ROOTS_ENV, raising=False)
+    # legacy fallback (manual spawn): broad whitelist as before
+    assert check("Write", {"file_path": str(
+        REPO_ROOT / "Problems" / "p" / "_plan.md")}, CWD) is None
+
+
+def test_claude_cli_injects_write_roots() -> None:
+    src = (REPO_ROOT / "Tooling" / "llm" / "claude_cli.py").read_text(
+        encoding="utf-8")
+    assert "env[WRITE_ROOTS_ENV] = os.pathsep.join(write_roots)" in src
+    assert "write_roots = [str(req.attempts_dir)]" in src
 
 
 # ---------- fail-open + hook protocol ----------

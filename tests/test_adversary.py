@@ -562,6 +562,26 @@ def test_adversary_contract_section_matches_wake_prompts() -> None:
     assert "`target_goal_id` accepts integer id or slug." in wakes
 
 
+def test_plan_note_rewrite_step_synced_and_names_attempts_dir() -> None:
+    """07-29 SG: the `Rewrite _plan.md` step named no location, and with
+    cwd=problem_dir one strategist wrote the note to the problem root —
+    persist_plan_note found nothing in the sandbox, so soft-cap telemetry
+    and the next wake's plan-note context section silently vanished
+    (cube_e2e same day: sandbox write, channel fine). The step must carry
+    the same location convention as proposal.md / brief_file and stay
+    byte-identical across the three wake prompts."""
+    root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
+    steps = []
+    for f in ("routine.md", "inject_batch_done.md", "pending_review.md"):
+        text = (root / "strategist" / f).read_text(encoding="utf-8")
+        hits = [ln.lstrip("0123456789. ") for ln in text.splitlines()
+                if "**Rewrite `_plan.md`**" in ln]
+        assert len(hits) == 1, (f, hits)
+        steps.append(hits[0])
+    assert len(set(steps)) == 1, steps
+    assert "bare filename, in your attempts dir" in steps[0]
+
+
 def test_parse_verdict_tolerates_annotated_clear_and_fired() -> None:
     """07-29 third occurrence (2× b6_1 07-27, 1× SG): opus-tier judges
     annotate their verdicts — `"clear — I checked…"` — and the literal

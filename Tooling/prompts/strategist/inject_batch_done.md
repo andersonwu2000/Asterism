@@ -21,7 +21,7 @@ Tools: Read / Write / Edit / Grep / Bash(`python -m Tooling.knowledge.loogle ...
 
 4. **Mark deliverables**: a landed minted node that satisfies the Manifest → `MarkDeliverable`; all marked → `Ingest`.
 
-5. **Rewrite `_plan.md`** (your private note): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
+5. **Rewrite `_plan.md`** (your private note; bare filename, in your attempts dir): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
 
 Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
 

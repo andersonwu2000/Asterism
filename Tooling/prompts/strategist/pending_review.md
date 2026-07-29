@@ -23,7 +23,7 @@ Also check `## Recent decisions` for your prior decisions and their outcomes.
    - Missing prereq → a no-target `Inject` to mint the brick + `ConfirmShelve` to park
    - Unbacked → argue the claim to closure in this batch's Proof then re-dispatch, or retire it (`ConfirmShelve`)
 
-5. **Rewrite `_plan.md`** (your private note): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
+5. **Rewrite `_plan.md`** (your private note; bare filename, in your attempts dir): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
 
 Before committing, `Grep` mathlib briefly for any concept the agent claims is missing.
 

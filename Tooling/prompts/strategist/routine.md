@@ -35,7 +35,7 @@ Start from Context.md (TREE, active goals, recent decisions, standing directive)
    - Tree is sound → pair a short situation-summary `EmitDirective` with the next Roadmap experiment (a directive alone is not a batch), or `Noop` when everything is genuinely in flight
    - User file is wrong → `RequestUserAmend`
 
-4. **Rewrite `_plan.md`** (your private note): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
+4. **Rewrite `_plan.md`** (your private note; bare filename, in your attempts dir): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
 
 **Difficulty alone is not a reason to give up.** "Hard problem" / "Mathlib lacks X" describe work, not stop signs.
 

@@ -14,6 +14,15 @@ Policy:
 - File tools (Read/Grep/Glob/Edit/Write/MultiEdit/NotebookEdit):
   path must be inside WHITELIST = {repo root, <home>/AppData/Local/Temp,
   <home>/.elan, /tmp}. Everything else → deny with a teaching message.
+- Write family (Edit/Write/MultiEdit/NotebookEdit), when the spawn cmd
+  injects ASTERISM_SPAWN_WRITE_ROOTS (task #128, 2026-07-29): default-
+  deny outside {attempts sandbox, the kind's sanctioned edit surface,
+  temp}. The repo tree stays readable but is NOT a write surface —
+  problem files are framework- or user-owned (07-29: a strategist wrote
+  its plan note to the problem root and the persist chain silently
+  missed it; same rule closes worker writes into mathlib packages /
+  Library). Env absent (manual/legacy spawn) → broad whitelist as
+  before.
 - Bash: home-directory guard. A command is denied only if it contains
   an absolute-path token that resolves under the user's home dir and
   outside the whitelist (~/.claude, ~/.ssh, ...). Tokens elsewhere are
@@ -38,6 +47,29 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 FILE_TOOLS = {"Read", "Grep", "Glob", "Edit", "Write", "MultiEdit",
               "NotebookEdit"}
+
+WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+# Per-spawn write whitelist, injected by claude_cli (os.pathsep-
+# separated absolute paths; attempts dir FIRST — the deny message
+# points at roots[0]).
+WRITE_ROOTS_ENV = "ASTERISM_SPAWN_WRITE_ROOTS"
+
+
+def _write_roots() -> "list[Path] | None":
+    """Parse the per-spawn write whitelist. None = env absent
+    (manual/legacy spawn) → the write family falls back to the broad
+    whitelist. Temp scratchpads ride along so probe scripts keep
+    working."""
+    raw = os.environ.get(WRITE_ROOTS_ENV, "").strip()
+    if not raw:
+        return None
+    roots = [Path(p.strip()) for p in raw.split(os.pathsep) if p.strip()]
+    if not roots:
+        return None
+    home = Path.home()
+    roots += [home / "AppData" / "Local" / "Temp", Path(os.sep + "tmp")]
+    return roots
 
 # Path-bearing input fields per tool (Grep/Glob use `path`).
 _PATH_FIELDS = ("file_path", "path", "notebook_path")
@@ -111,12 +143,22 @@ def check(tool_name: str, tool_input: dict, cwd: str | None) -> str | None:
     """Return a deny reason, or None to allow."""
     wl = _whitelist()
     if tool_name in FILE_TOOLS:
+        wroots = _write_roots() if tool_name in WRITE_TOOLS else None
         for field in _PATH_FIELDS:
             raw = tool_input.get(field)
             if not raw:
                 continue
             path = _normalize(str(raw), cwd)
             if path is None:
+                continue
+            if wroots is not None:
+                if not any(_under(path, root) for root in wroots):
+                    return (
+                        f"{tool_name} on {raw} is outside your write "
+                        "surface. The repository is readable but its "
+                        "files are framework- or user-owned; write "
+                        "your outputs into your attempts dir: "
+                        f"{wroots[0]}")
                 continue
             if not any(_under(path, root) for root in wl):
                 return (
