@@ -117,13 +117,14 @@ SLUG_RE = assemble.SLUG_RE
 SLUG_MAX_LEN = assemble.SLUG_MAX_LEN
 
 # Leading-comment directives the mint agent writes:
-#   `-- Forward rationale: <prose>`   required, 2-3 sentences
-#   `-- decline: library_sufficient`  agent decline (no lemma needed)
-# (`-- entry_kind:` retired v33 — routing no longer exists; a legacy
-# line is stripped at commit, never parsed.)
-_RATIONALE_RE = re.compile(
-    r"^\s*--\s*Forward\s+rationale\s*:\s*(.+?)$", re.MULTILINE | re.IGNORECASE,
-)
+#   `-- decline: <reason>`  agent decline; prompt vocabulary is
+#       {library_sufficient, missing_prereq, unprovable} but the regex
+#       accepts any [a-z_]+ token — reason + `## Why` ride
+#       `agent_declined`'s failure_detail to the Strategist.
+# (`-- entry_kind:` retired v33; `-- Forward rationale:` retired 07-29 —
+# the batch scoreboard renders the landed signature, kernel truth, so
+# required motive prose earned nothing. Volunteered comments still
+# commit verbatim with the body.)
 _DECLINE_RE = re.compile(
     r"^\s*--\s*decline\s*:\s*([a-z_]+)\b",
     re.MULTILINE | re.IGNORECASE,
@@ -166,10 +167,9 @@ _ANON_INSTANCE_RE = re.compile(
 
 @dataclass
 class ForwardMetadata:
-    """Parsed leading-comment directives + declaration head from a
-    mint agent's `new_<slug>.lean` output."""
+    """Parsed declaration head from a mint agent's `new_<slug>.lean`
+    output."""
     slug: str
-    rationale: str
     sorry_free: bool  # True iff body has no `sorry` token
     kind: str = "theorem"  # 'theorem'|'def'|'structure'|'class'|'inductive'|'instance'
 
@@ -201,12 +201,6 @@ def extract_forward_metadata(text: str) -> tuple[ForwardMetadata | None, str]:
         )
     if len(slug) > SLUG_MAX_LEN:
         return None, f"slug {slug!r} exceeds max length {SLUG_MAX_LEN}"
-    rat_m = _RATIONALE_RE.search(text)
-    if rat_m is None:
-        return None, "missing required `-- Forward rationale: ...` comment"
-    rationale = rat_m.group(1).strip()
-    if not rationale:
-        return None, "Forward rationale comment is empty"
     # sorry detection — any `sorry` token below the imports. For non-
     # theorem kinds this still tracks "did the agent leave a hole";
     # commit uses kind alone to decide initial status (`sorry_free`
@@ -220,10 +214,7 @@ def extract_forward_metadata(text: str) -> tuple[ForwardMetadata | None, str]:
         # un-dispatchable open goal.
         return None, ("`inductive` must be complete (no `sorry`): "
                       "emit the full constructor list or decline")
-    return ForwardMetadata(
-        slug=slug, rationale=rationale,
-        sorry_free=sorry_free, kind=kind,
-    ), ""
+    return ForwardMetadata(slug=slug, sorry_free=sorry_free, kind=kind), ""
 
 
 def is_decline(text: str) -> bool:

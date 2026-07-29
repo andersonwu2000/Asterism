@@ -112,7 +112,6 @@ def test_extract_metadata_happy_path() -> None:
     md, err = forward.extract_forward_metadata(_NEW_LEAN_OK)
     assert err == ""
     assert md.slug == "contour_deformation_piecewise"
-    assert "bridges Mathlib" in md.rationale
     assert md.sorry_free is False
 
 
@@ -155,10 +154,13 @@ def test_extract_metadata_sorry_free() -> None:
     assert md.sorry_free is True
 
 
-def test_extract_metadata_missing_rationale() -> None:
+def test_extract_metadata_no_rationale_ok() -> None:
+    """07-29: `-- Forward rationale:` retired — the batch scoreboard
+    renders the landed signature (kernel truth), so the required motive
+    prose earned nothing. A bare declaration parses."""
     md, err = forward.extract_forward_metadata(_NEW_LEAN_NO_RATIONALE)
-    assert md is None
-    assert "rationale" in err.lower()
+    assert err == ""
+    assert md is not None and md.slug == "foo"
 
 
 def test_extract_metadata_bad_slug() -> None:
