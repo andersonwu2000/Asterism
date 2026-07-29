@@ -1,17 +1,19 @@
-Produce **one** new brick from the Strategist's brief (`## Strategist brief` in Context.md; `## Library` lists proved lemmas, past Forward proposals surface prior mints).
+Produce **one** new brick to the `## Strategist brief`'s specification — keep the claim, the Lean shape is yours.
 
-The brief either pins an explicit statement — ship that statement, proved or `:= by sorry`, never a different theorem — or states a claim / direction and you design the statement: **generic** (useful across multiple Goals) and **argued in the Proof**. A claim restated from the Programme Proof is pinned mathematics; the Lean shape (ranges, constants, encoding) is yours — keep the claim, fix the form.
+Before minting, grep Mathlib + Library + siblings to confirm the brick does not already exist.
 
 Time budget: {timeout_min} minutes.
 
 ## Tools — LSP-backed
 
-Live Lean server holds **your `new_forward.lean`** (pre-seeded with `import Mathlib` + `Defs` + the problem `namespace`; sandboxed in attempts_dir — your final edit is what the framework commits):
+`new_forward.lean` comes pre-seeded with `import Mathlib` + `Defs` + the problem `namespace`; your final edit of it is what the framework commits.
+
+Four MCP tools talk to a live Lean server already holding **your `new_forward.lean` sandbox**:
 
 - `mcp__lsp__apply_edit(start_line, end_line, new_text)` / `goal_at(line, col)` / `errors_at(line=None)` — edit, read a goal, list diagnostics.
 - `mcp__lsp__validate_file(content)` — elaborate a standalone candidate; a leading `sorry` is OK.
 
-Write your declaration (with its leading `-- Forward rationale:` comment) into the namespace body, then validate until only sorry warnings remain.
+Write your declaration into the namespace body, then validate until only sorry warnings remain.
 
 ## Output: one declaration in new_forward.lean
 
@@ -27,27 +29,34 @@ Write your declaration (with its leading `-- Forward rationale:` comment) into t
 ```lean
 namespace Problems.<problem>
 
--- Forward rationale: <why this brick, what gap it fills>
 theorem <slug> : <type> := by sorry
 
 end Problems.<problem>
 ```
 
+- Edit only `new_forward.lean`, one declaration per invocation — do NOT create other `new_*.lean` files.
 - `<slug>`: `[a-z][a-z0-9_]*`, ≤ 60 chars, descriptive. Read from the declaration head, not the filename. A slug colliding with an existing `proofs/L_*.lean` hard-fails the commit — pick a fresh name (Grep `proofs/` if unsure).
-- `Forward rationale:` is required — it ships in the brick's file header as the permanent record of why it exists.
+- When the problem ships `Defs.lean`: `def` / `structure` / `class` slugs must NOT take a symbol name the Manifest statement references — statement vocabulary belongs to the user-owned `Defs.lean`.
 - Keep the seeded imports; add `import` lines only to cite proved siblings or Library modules.
-- Proof body optional; if included it must be sorry-free and `validate_file`-clean.
+- If the proof is easy, prove it directly — it must then be sorry-free and `validate_file`-clean.
 
 ## Decline
 
-If after reading Library / Mathlib / brief you believe **the brick already exists** — a Library/Mathlib lemma, a proved sibling, or an ALIVE in-problem Goal (name its slug; closing an existing goal is not mint work) — edit `new_forward.lean` to a decline placeholder:
+When one of the cases below applies, turn `new_forward.lean` into the decline placeholder. Pick one:
+
+- `library_sufficient` — the brick already exists: a Library/Mathlib lemma, a proved sibling, or an ALIVE in-problem Goal (check `## Alive goals` in `CATALOG.md` and name it; closing an existing goal is not mint work).
+- `missing_prereq` — vocabulary / definitions / abstractions needed to state this brick are missing — if you can state it, sorry-stub it; decline only when you cannot. Describe the missing piece and how you'd use it.
+- `unprovable` — false in this hypothesis scope. The description must give a counterexample (concrete instance + a check of the logic).
+
+Make the description actionable, e.g.:
 
 ```lean
 namespace Problems.<problem>
 
--- decline: library_sufficient
+-- decline: missing_prereq
 -- ## Why
--- Brief asked for X; `<existing_lemma_name>` already states exactly this (verified via Grep).
+-- The statement minimises `line_dist_sq`, but that def has not landed; this
+-- brick's type is only writable once it does.
 theorem _forward_decline : True := by trivial
 
 end Problems.<problem>
@@ -57,17 +66,8 @@ end Problems.<problem>
 
 Ship as `:= by sorry` the moment a proof attempt doesn't close on the first try or you're picking specific values / case orderings. Type-check via `validate_file` and exit.
 
-## Rules
-
-- One brick per invocation. Edit only `new_forward.lean` — do NOT create other `new_*.lean` files.
-- A statement matching an alive in-problem Goal (`## Alive goals` in `CATALOG.md`) never lands: decline and name the goal.
-- When the problem ships `Defs.lean`: `def` / `structure` / `class` slugs must NOT match a symbol referenced in the user's Manifest statement — statement-vocabulary belongs in user-owned `Defs.lean`.
-
 ## Lemma discovery
 
 Never use any name in FORBIDDEN_LEMMAS.
 
-Mathlib is at `.lake/packages/mathlib/Mathlib/`; names drift across versions (`pow_le_pow_left` → `pow_le_pow_left₀`), so verify every reference before citing:
-
-- name / notation: Grep (pattern `(theorem|lemma) <name>\b`)
-- type pattern: `python -m Tooling.knowledge.loogle '<pattern>'`
+Mathlib is at `.lake/packages/mathlib/Mathlib/` (names drift across versions; verify before citing) — Grep (`(theorem|lemma) <name>\b`) or `python -m Tooling.knowledge.loogle '<pattern>'`.
