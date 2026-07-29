@@ -36,7 +36,8 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
     ## Proof        this batch's mathematics, written as a mathematician writes proofs: a complete
                     argument for every claim this batch dispatches. No gaps here — an unclosed
                     claim belongs in the Roadmap, not the Proof. The worker's only share is the
-                    Lean shape.
+                    Lean shape. (A batch dispatching only marks / Ingest writes the single
+                    line "No new mathematics this batch.")
     ## Roadmap      the route, and the ONLY home for gaps: ordered next goals and open questions
                     with their status and the plan to close them — near entries brief-ready, far
                     entries coarse; a closure names the exact instantiation that died AND a
