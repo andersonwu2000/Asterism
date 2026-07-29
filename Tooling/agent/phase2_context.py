@@ -1324,13 +1324,19 @@ def compile_forward_context(conn: sqlite3.Connection, *,
     """
     section_names = ["forward_brief", "library_inventory",
                      "forward_history", "active_goals", "manifest_meta",
-                     "paper_index"]
+                     "manifest_forbidden", "paper_index"]
     sections: list[list[str]] = [
         _section_forward_brief(conn, decision_id),
         _section_library_inventory(conn, problem, attempts_dir),
         _section_forward_history(conn, problem),
         _section_active_goals(conn, workspace, problem),
         _section_manifest_meta(mfst, workspace, problem),
+        # Dropped in the v33 merge: mint.md says "Never use any name in
+        # FORBIDDEN_LEMMAS" but no section carried the list — a 07-29 SG
+        # worker burned two blocked Bash calls hunting the file, and on
+        # benchmark problems the ban is load-bearing. Renders "(none)"
+        # when empty by design.
+        context._section_manifest_forbidden(mfst),
         # Paper navigation — Forward mints the vocabulary; exact
         # hypotheses/definitions come from the paper (design D1).
         context._section_paper_index(mfst, workspace, conn,

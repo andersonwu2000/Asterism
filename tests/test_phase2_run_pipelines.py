@@ -732,6 +732,11 @@ def test_run_forward_consumes_strategist_brief(
     )
     assert captured_context
     assert "FooLemma" in captured_context[0]
+    # v33-merge regression pin (07-29): mint.md says "Never use any name
+    # in FORBIDDEN_LEMMAS" unconditionally, so the section must render in
+    # the Forward context even when the Manifest lists none — an SG
+    # worker burned two blocked Bash calls hunting the list on disk.
+    assert "## FORBIDDEN_LEMMAS" in captured_context[0]
     assert "## Strategist brief" in captured_context[0]
     # Forward gets the proved-lemma inventory + alive goals (so it does not
     # restate one and get dedup-rejected), but NOT the full decomposition
