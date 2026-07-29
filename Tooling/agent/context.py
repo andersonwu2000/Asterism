@@ -434,11 +434,12 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
         " `s<N>` head is an internal alias target — never cite it)._",
         "",
     ]
-    # Alive goals up top (user call 2026-07-19): the Forward rule
+    # Alive goals up top (user call 2026-07-19): the mint rule
     # "a statement matching an ALIVE in-problem Goal is discarded —
     # decline and name it" was unenforceable with no list to check
     # (a5 run ×4); same grep motion as a citation lookup, so it lives
-    # in the same file, clearly fenced as NOT citable.
+    # in the same file. Not mintable; CITABLE since task #123 (the
+    # commit gate registers a wait edge).
     alive = list(conn.execute(
         "SELECT slug, statement, kind, lean_path FROM goals"
         " WHERE problem = ? AND status IN"
@@ -446,10 +447,10 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
         " ORDER BY id", (problem,)))
     if alive:
         lines += [
-            f"## Alive goals ({len(alive)} — OPEN, NOT citable)",
-            "_In-flight statements. A Forward lemma matching one of"
-            " these is discarded by dedupe — decline and name the goal"
-            " instead. Never cite these names in a proof._",
+            f"## Alive goals ({len(alive)} — OPEN, in flight)",
+            "_A minted lemma matching one of these is discarded by"
+            " dedupe — decline and name the goal instead. Citing one"
+            " is legal: it auto-links and your strategy waits for it._",
             "",
         ]
         for a in alive:

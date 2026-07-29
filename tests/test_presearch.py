@@ -194,14 +194,13 @@ def test_verify_excludes_goal_own_slug(tmp_path):
     assert "sibling_done" in names
 
 
-def test_render_section_status_note_names_all_three_modes() -> None:
-    """07-19 x12: the status warning said only "proved ones are citable"
-    with no constructive half -- workers could not tell that Backward
-    decomposition MAY import-cite a non-proved sibling (auto-link) while
-    leaf-bypass cannot. The note now spells out all three modes."""
+def test_render_section_status_note_citation_rule() -> None:
+    """Task #123: citation is shape-derived — a non-proved sibling is
+    citable on every path (auto-link + wait). The old three-mode note
+    (Builder proved-only / leaf-bypass proved-only) must stay gone."""
     out = [{"name": "sib", "source": "sibling", "status": "attempting",
             "signature": "theorem sib : True"}]
     section = _presearch._render_section(out)
-    assert "Backward decomposition may import-cite" in section
-    assert "leaf-bypass" in section
-    assert "Builder" in section
+    assert "citable" in section and "auto-links" in section
+    assert "leaf-bypass" not in section
+    assert "Builder" not in section

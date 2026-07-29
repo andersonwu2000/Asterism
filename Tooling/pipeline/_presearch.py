@@ -224,13 +224,10 @@ def _render_section(candidates: list) -> str:
              "`#check`-verified). Cite by full name; grep for more if needed.",
              ""]
     if any(c.get("status") for c in candidates):
-        lines[2] += (" In-problem siblings carry their status: Builder "
-                     "can use `proved` only; Backward decomposition may "
-                     "import-cite a non-proved one (auto-links, your "
-                     "strategy waits for it) or declare a same-slug "
-                     "stub; a `patch.lean`-alone proof (leaf-bypass) "
-                     "accepts `proved` only. `disproved` means the "
-                     "statement is FALSE — do not assume it.")
+        lines[2] += (" In-problem siblings carry their status: a "
+                     "non-proved one is citable — it auto-links and "
+                     "your strategy waits for it. `disproved` means "
+                     "the statement is FALSE — do not assume it.")
     for c in candidates:
         name = str(c.get("name") or "")
         tag = _SOURCE_TAG.get(str(c.get("source") or ""), str(c.get("source") or "?"))
