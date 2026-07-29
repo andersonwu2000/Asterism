@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import threading
 from typing import NamedTuple
-from ...state import db, thresholds
+from ...state import db, metaprog, thresholds
 
 from ._base import _MechIntegrityError, _code_normalized, _sorted_import_lines
 from .astslice import _decl_signature, _defs_decl_namespace, _defs_decl_source, _library_module_of, _ns_is_operator_specified, extract_decls
@@ -685,6 +685,21 @@ def _migrate_file_incremental(
                     outcome="failed", failure_reason="agent_no_output",
                     failure_detail=f"decl {slug}: no patch.lean")
             text = patch.read_text(encoding="utf-8")
+            # Metaprogramming gate — FIRST, like the Backward/Forward
+            # commit gates (`state/metaprog.py`): this text is assembled
+            # into a Library file and built, so elaboration-time code
+            # would run with the framework's privileges, and a Library
+            # decl is cited across problems. The file can reach disk via
+            # Write/Edit with no LSP call, so the gateway scan alone is
+            # not sufficient.
+            _tok = metaprog.scan_metaprogramming(text)
+            if _tok is not None:
+                return PipelineResult(
+                    outcome="failed",
+                    failure_reason="forbidden_metaprogramming",
+                    failure_detail=metaprog.blocked_detail(
+                        _tok, where=f"decl {slug} patch.lean"),
+                    proposal_md=text)
             if "-- decline:" in text:
                 cap["decline"] = text
                 return PipelineResult(

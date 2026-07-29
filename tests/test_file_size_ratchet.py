@@ -121,9 +121,12 @@ _WATERMARKS = {
     # call (same alias-coverage fix).
     # 425→440 (2026-07-06): inductive-companion exemption in the coverage
     # cross-check (casesOn re-probe class) — conscious bump.
-    "Tooling/pipeline/librarian/gate.py": 440,
+    # 440→450 / 1170→1190 (2026-07-30): the metaprogramming gate reaches
+    # the Library arm — agent Lean assembled into a Library file and built
+    # by lake was the one un-scanned elaboration path. Conscious bump.
+    "Tooling/pipeline/librarian/gate.py": 450,
     "Tooling/pipeline/librarian/context.py": 430,
-    "Tooling/pipeline/librarian/execute.py": 1170,  # +universe hoist/dedup (#72)
+    "Tooling/pipeline/librarian/execute.py": 1190,  # +universe hoist/dedup (#72)
     "Tooling/pipeline/librarian/bridge.py": 390,
     "Tooling/pipeline/librarian/run.py": 560,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability

@@ -39,6 +39,8 @@ BACKWARD = ROOT / "Tooling" / "pipeline" / "backward.py"
 FORWARD = ROOT / "Tooling" / "pipeline" / "forward.py"
 LAKE_PROBE = ROOT / "Tooling" / "quality" / "lake_probe.py"
 DEDUPE = ROOT / "Tooling" / "quality" / "dedupe.py"
+LIB_EXECUTE = ROOT / "Tooling" / "pipeline" / "librarian" / "execute.py"
+LIB_GATE = ROOT / "Tooling" / "pipeline" / "librarian" / "gate.py"
 
 
 def _fn_source(path: Path, name: str) -> str:
@@ -105,6 +107,21 @@ def test_commit_gate_scans_agent_output(path) -> None:
         "(the file can reach disk via Write/Edit without any LSP tool "
         "call, so the gateway scan is not sufficient on its own)")
     assert '"forbidden_metaprogramming"' in text
+
+
+#: The Library arm (07-30 audit): a migrate spawn's `patch.lean` is
+#: assembled into a Library file and built by `lake`, and Library decls
+#: are cited across problems — the widest blast radius of all, and it was
+#: missing from the original enumeration.
+@pytest.mark.parametrize("path,fn", [
+    (LIB_EXECUTE, "_default_fill_decl"),   # per-decl fill: agent patch.lean
+    (LIB_GATE, "migrate_commit_gate"),     # assembled file, pre-commit
+])
+def test_librarian_scans_agent_lean(path, fn) -> None:
+    src = _fn_source(path, fn)
+    assert "metaprog.scan_metaprogramming(" in src, (
+        f"{path.name}::{fn} accepts agent-written Lean that reaches a "
+        "Library file and a `lake` build — it must scan first")
 
 
 #: The elaboration paths that do NOT go through the gateway: they write a
@@ -259,12 +276,19 @@ def test_block_message_first_line_is_self_contained() -> None:
 def test_existing_lean_corpus_is_clean() -> None:
     """Zero hits over every committed proof and Library file.
 
+    Every `.lean` under `Library/` and `Problems/`, not just the
+    `proofs/` dirs of nested-layout problems: the original
+    `Problems/*/*/proofs` glob silently skipped flat-layout problems
+    (`Problems/sylvester_gallai/proofs`, 5 dirs / ~900 files) and the
+    user-owned `Root.lean` / `Defs.lean`, which the gateway scans too
+    (07-30 audit).
+
     `Asterism/GatewayRpc.lean` is excluded on purpose: it is the
     FRAMEWORK's own Lean RPC plugin (`builtin_initialize` by design), it
     is never agent text, and it reaches Lean through lake's module graph
     rather than through any scanned path.
     """
-    roots = [ROOT / "Library"] + sorted((ROOT / "Problems").glob("*/*/proofs"))
+    roots = [ROOT / "Library", ROOT / "Problems"]
     files = [f for r in roots if r.is_dir() for f in r.rglob("*.lean")]
     if not files:
         pytest.skip("no Lean corpus in this checkout")

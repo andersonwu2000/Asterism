@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path as _Path
-from ...state import db
+from ...state import db, metaprog
 
 from ._base import MigrateResult, _code_normalized
 from .astslice import _NOMINAL_KINDS, _defs_decl_fqn, _nominal_decl_src, extract_decl_fq_name, extract_decl_kind, extract_decls
@@ -215,6 +215,15 @@ def migrate_commit_gate(
     file copy + `mark_library_migrated` on ok=True.
     """
     from ...quality.librarian import gates
+
+    # Metaprogramming gate — before any other verdict, mirroring the
+    # Backward/Forward commit gates (`state/metaprog.py`). A Library file
+    # is elaborated by `lake` and its decls are cited across problems, so
+    # elaboration-time code here is the widest-blast-radius variant.
+    _tok = metaprog.scan_metaprogramming(patch_text)
+    if _tok is not None:
+        return MigrateResult(
+            False, metaprog.blocked_detail(_tok, where=target_path.name))
 
     closure = gates.check_import_closure_text(
         patch_text, label=target_path.name)
