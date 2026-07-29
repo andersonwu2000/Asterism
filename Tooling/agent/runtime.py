@@ -162,7 +162,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     verbatim (a short instruction asking the agent to dump state +
     blockers into `_progress.md`). `timeout_sec` defaults to
     `POSTMORTEM_TIMEOUT_SEC` (180s) for postmortem calls and
-    `WORKER_TIMEOUT_SEC` (600s) otherwise.
+    `WORKER_TIMEOUT_SEC` (900s) otherwise.
 
     `inline_prompt`: 2026-05-10 — fresh-rescue stage 2 / stage 3
     inline prompt. Caller has minted a fresh `session_id` and copied

@@ -1,6 +1,7 @@
 # Asterism — 架構
 
-原寫於 2026-05-06；2026-07-03 對照代碼全面重寫。本檔講**概念形狀**：系統由哪些角色組成、
+原寫於 2026-05-06；2026-07-03 對照代碼全面重寫；2026-07-29 漂移校正（Formalizer 合併、
+research mode、problem FSM、schema v33）。本檔講**概念形狀**：系統由哪些角色組成、
 狀態存在哪、哪些不變量在撐著正確性。動態流程（tick 怎麼跑、pipeline 逐步）見
 `docs/data-flow.md`；失敗語彙見 `docs/failure_modes.md`；技術細節以代碼為準、動手時再讀。
 
@@ -25,33 +26,51 @@ sqlite（`goals` × `strategies` × `strategy_subgoals`），**DB 是單一真�
   `MarkDeliverable` 標記交付物；kernel 算 anchor 閉包供人 `asterism review` / `reject`；
   全部 deliverable 終態後 Strategist 下 `Ingest`，經**人工 sign-off**（`approve-ingest` /
   `reject-ingest`）才 harvest 進 Library。root 此時可以只是鷹架（`main : True`）。
-  Root/Defs 目前仍必須存在；變 optional 是 Phase 6 未做項。
+  `Root.lean` / `Defs.lean` 皆 optional——pure-NL 題兩者全缺：無 root goal 列，
+  靠 structural stall 喚起第一次 Strategist。
 
 ---
 
-## 2. 角色：五種 worker、一個 housekeeping
+## 2. 角色：四種 worker、一個 housekeeping
 
 **Worker 是 LLM 介入點，純框架操作不佔 worker slot** —— 這條原則決定角色邊界。
 
 | 角色 | target_kind | 做什麼 |
 |---|---|---|
-| **Builder** | Goal | 先 deterministic tactic（`by hint`）、不行請 LLM 寫 patch 收尾 |
-| **Backward** | Goal | 請 LLM 拆成一條 Strategy + N 個 sub-Goal |
-| **Forward** | Problem | Strategist 派、產一條新 toolkit lemma（theorem/def/structure/class；v19+ inductive、v20+ named instance）、進 BFS 或 leaf-bypass |
-| **Strategist** | Problem | 讀 problem state、下決策（七種、見下）；Phase 6 起 problem-keyed（曾 key 在 root goal） |
+| **Formalizer** | Goal / Problem | 唯一 Lean 證明 worker（2026-07-27 由 Builder/Backward/Forward 三種合併、v33）。Goal-target：intake 分流（含 falsity scan、可 decline）→ 自行決定直接證明或拆成 Strategy + N 個 sub-Goal；Problem-target（**mint**）：Strategist 派、產一條新 toolkit lemma。實作仍分 `pipeline/backward.py`（prove/split）與 `forward.py`（mint）兩檔 |
+| **Strategist** | Problem | 讀 problem state、寫提案包（Programme 修訂 + 決策批）、經 Adversary 裁決放行後 commit（決策九種、見下） |
+| **Scholar** | Problem | Strategist `FetchPaper` 派：抓白名單論文進 `Papers/`、建索引（v23） |
 | **Librarian** | Problem (per-file) | 已證 + opt-in 後走五階段鏈：dedup → classify → migrate → cleanup → bridge |
 | **Verify housekeeping** | — | 非 worker：dispatcher tick 內 sequential 跑，組裝全 proved 的 strategy、寫 alias 進 parent、跑 G1 revival |
 
-Strategist 決策七種：`Inject` / `ConfirmShelve` / `EmitDirective` / `RequestUserAmend` /
-`MarkDeliverable` / `Ingest` / `Noop`。觸發三種（Phase 6 起）：`routine` /
-`pending_review` / `inject_batch_done`（structural stall 的喚醒歸類為
-inject_batch_done——「empty batch done」語意；`first_launch` 已退役，fresh 題本身
-即 stalled）。`Ingest` 是唯一終態（Done 已融入）：root 在場時未 proved 前框架硬性
+**Adversary（判官）不是 worker kind**——它是 Strategist wake 內逐輪 fresh 的
+sub-spawn，在投影目錄硬隔離下審提案包、產 `verdict.json`，框架從逐準則裁決推導
+放行/反駁（見下「研究模式」）。
+
+Strategist 決策九種（SoT：`strategist.py` `DECISION_KINDS`）：`Inject` /
+`ConfirmShelve` / `EmitDirective` / `RequestUserAmend` / `MarkDeliverable` / `Ingest` /
+`FetchPaper` / `AttemptDisproof`（框架機械鑄 ¬P goal——信念不被信任、兩個方向都要
+kernel）/ `Noop`。觸發三種：`routine`（含 belief audit 第一階段）/ `pending_review` /
+`inject_batch_done`（structural stall 的喚醒也歸這類——fresh 題、deadlock、root 已證待
+Ingest 都算「empty batch done」）。`Ingest` 是唯一終態：root 在場時未 proved 前框架硬性
 拒絕；`ingested_at` 驅動 T1/T4 活性、Librarian selfstart 與 daemon 退出。
 
-並發紀律：每個 Goal 同時最多一條 pipeline（passive OR、cap=1）；Forward / Strategist 同
-problem 各最多一條 in-flight；Librarian 以檔為平行單位。`ingest_signoff_pending` 的
+並發紀律：每個 Goal 同時最多一條 pipeline（passive OR、cap=1）；Strategist 同 problem
+最多一條 in-flight；mint 以 `(target, kind, decision_id)` 為去重單位——同 batch 的
+N 條 mint Inject 會並行 fan-out；Librarian 以檔為平行單位。`ingest_signoff` 態的
 problem 一切 Librarian 自動路徑暫停（等人 sign-off）。
+
+### 研究模式（Programme + Adversary，2026-07 起）
+
+Strategist 每批決策不再裸提交：一份**提案包**（`proposal.md`：`# Title` / `## Argument`
+/ `## Proof` / `## Roadmap`）連同決策批送 Adversary 逐輪審查，反駁騎在 verify-retry
+迴圈上（與機械檢查共用輪數上限）；到頂仍被反駁 → 提案+批評全存 `programme_revisions`
+（v30、status='rejected'）、session 拋棄。通過的 Programme 修訂鏈是 problem 的戰略
+SoT（`PROGRAMME.md` 只是 render；v31 以 partial unique index 釘每 rev 至多一 passed）。
+**NL-first**（2026-07-25 起）：worker 以 Programme 的 `## Proof` 為前提工作，goal 對應
+不到任何 NL 步驟時以 `no_nl_correspondence` 上交、不發明數學。{`FetchPaper`,
+`RequestUserAmend`, `Noop`} 全豁免包閘；提案必附 ≥1 實驗（`Inject`/`AttemptDisproof`）。
+設計 SoT：`docs/internal/research_mode_design.md`、`nl_first_design.md`。
 
 ---
 
@@ -59,7 +78,7 @@ problem 一切 Librarian 自動路徑暫停（等人 sign-off）。
 
 | 形式 | 內容 |
 |---|---|
-| **DB**（`asterism.db`、sqlite WAL、schema v20、11 張表；v16 ingested_at 終態、v17 queue lease、v18 Library 索引入 DB、v19/v20 kind 擴張） | 整棵 graph、pipeline 歷史、dead attempt forensics、Strategist 決策、Librarian lifecycle、KB lessons |
+| **DB**（`asterism.db`、sqlite WAL；版本號與表清單以 `state/db.py` `_CURRENT_USER_VERSION` 為準（撰稿時 v33、16 張表）；近代里程碑：v17 queue lease、v21 spawn_usage 計帳、v23 Scholar/FetchPaper、v25 AttemptDisproof、v28 user_file_history、v29 problem FSM、v30/v31 Programme 修訂鏈、v33 Formalizer 合併） | 整棵 graph、pipeline 歷史、dead attempt forensics、Strategist 決策、Programme 修訂、Librarian lifecycle、KB lessons、spawn 用量 |
 | **`Manifest.md`** | 唯一人手檔（§4） |
 | **`Defs.lean` / `Root.lean`** | problem 自訂定義 / 框架管的 root（§5） |
 | **`proofs/L_<slug>.lean`、`_strategy_s<sid>.lean`** | 每 sub-Goal 一檔、每 Strategy 一份組裝 patch |
@@ -70,16 +89,19 @@ problem 一切 Librarian 自動路徑暫停（等人 sign-off）。
 ownership guard + drift inventory；lint test 禁止門外裸寫）。`asterism drift-check` 隨時可驗
 DB↔檔一致。
 
-schema 是「程式碼即文件」：表定義、欄位、migration 全在 `Tooling/state/db.py`。狀態
-enum 的 SoT 在 `Tooling/state/transitions.py`（goal 8 態、strategy 5 態含 `stalled`），
-schema CHECK 由測試綁定、不會漂。
+schema 是「程式碼即文件」：表定義在 `Tooling/state/db.py`、migration 全集在
+`state/db_migrations.py`。狀態 enum 的 SoT 在 `Tooling/state/transitions.py`
+（goal 8 態、strategy 5 態含 `stalled`、problem 5 態——見 §7），schema CHECK 由
+測試綁定、不會漂。
 
 ---
 
 ## 4. 人機介面
 
-**Manifest.md**（YAML frontmatter + markdown body）：statement、`axioms_whitelist`、
-`forbidden_lemmas`、`library: true`（opt-in Library 化）、自由 strategic notes。`init` 寬解：
+**Manifest.md**（YAML frontmatter + markdown body；欄位 SoT `state/manifest.py`）：
+statement、`axioms_whitelist`、`forbidden_lemmas`、`library: true`（opt-in Library 化）、
+`signoff: false`（benchmark 無人值守專用、跳過人工 sign-off；解析異常一律 coerce 回
+true）、自由 strategic notes；`paper:` 已棄用（綁定移 `problem_papers` 表）。`init` 寬解：
 缺欄位給 default + warning。`## Lemma hints` 仍會被解析，但 pre-search 上線後 prover
 context 的主 hint 通道已是自動生成的 `## Candidate lemmas`。
 
@@ -88,17 +110,20 @@ context 的主 hint 通道已是自動生成的 `## Candidate lemmas`。
 （harvest 前的 sign-off 閘）。
 
 **Problem 佈局**：`<Domain>.<slug>` → `Problems/<Domain>/<slug>/`；Domain 對齊 mathlib
-（`Topology`/`Algebra`/`Analysis`/`Geometry`/`NumberTheory`/`Logic`/`Probability`/
-`Combinatorics`/`Minif2f`）。舊 problem 不能純 `git mv` 搬移——Lean module path =
-檔案路徑，會壞 build。`Defs.lean` / `Root.lean` 皆 optional（pure-NL 可全缺）；
-手改 Root statement 後要重 `init` 或同步 `goals.statement`。
+頂層命名（`Topology`/`NumberTheory`/`Analysis`…慣例、非硬編白名單）。舊 problem 不能
+純 `git mv` 搬移——Lean module path = 檔案路徑，會壞 build。`Defs.lean` / `Root.lean`
+皆 optional（pure-NL 可全缺）；手改 Root statement 後要重 `init` 或 `asterism repin`
+（user 檔 baseline 走 `user_file_history`，v28）。
 
 ---
 
 ## 5. Root.lean 三態
 
-框架管理、不手改。**A 初始**：`init` 寫 sorry stub。**B 過程中**：框架只在 `proofs/`
-下產檔、Root.lean 不動。**C 證完**：`prune.reconcile_proved_goals` 改成薄 indirection ——
+**A 初始**：使用者手寫 sorry stub（框架不產；`init` 只做 lake build 型檢 + 抽
+statement，`--force` 是型檢旁路；root goal 起始 `frozen`）。**B 過程中**：框架只在
+`proofs/` 下產檔、Root.lean 不動。**C 證完**：兩種欽定寫法——(a) assembly 直接就地寫
+完整 `theorem main`（statement byte-for-byte 保留）；(b) `prune.reconcile_proved_goals`
+改成薄 indirection——
 
 ```lean
 import Problems.<p>.proofs._strategy_s<NN>
@@ -109,15 +134,17 @@ end Problems.<p>
 
 注意是 `def`（型別由 winner strategy 簽名推得）；keyword modifier（`noncomputable`）與
 `@[instance]` 前綴保留（root 可宣告 Prop instance——框架只證 Prop、不產 data）。
-`init` 偵測現有形態：sorry stub → A；alias → C（noop）；其它 → 要 `--force`。
+兩形皆過 `verify._root_statement_pin_ok`（statement pin、task #120——proved root 釘回
+user baseline）。
 
 ---
 
 ## 6. Dispatcher 主迴圈
 
 每 tick 固定順序：cascade → verify housekeeping → post-proved gate（reconcile + root
-integrity）→ librarian refill → exit check → bfs refill → strategist triggers →
-reconcile_stuck_states（per-tick 安全網）→ spawn。逐步細節與退出條件見 `data-flow.md` §2。
+integrity）→ librarian refill → exit check → quota-wait gate → bfs refill →
+strategist triggers → reconcile_stuck_states（per-tick 安全網）→ lease sweep → spawn。
+逐步細節與退出條件見 `data-flow.md` §2。
 
 **紀律**：cascade 的**傳播**永遠在主線程 sequential（`transitions.assert_main_thread` 守；
 CI strict 模式 raise）。worker thread 可以對**自己的 target** 做 commit 時刻的狀態轉移
@@ -138,23 +165,30 @@ lake）自動回收，不需要手動清 orphan。
 `GOAL_EDGES` / `STRATEGY_EDGES`，CI strict 模式下未註冊的邊直接 raise、production 大聲
 log。lint test 以計數 ratchet 禁止新增 raw `UPDATE … SET status`。
 
-cascade 的概念形狀（完整 outcome × 轉移表在 `data-flow.md` §3 + `failure_modes.md` §2）：
+cascade 的概念形狀（完整 outcome × 轉移對照**只在** `failure_modes.md` §2）：
 
-- 失敗計 `attempts`，達 SHELVE_THRESHOLD → `shelved` 並**上拋**：殺掉依賴它的 parent
-  strategy；parent 無活 strategy → 自己也可能 shelve、繼續上拋。
-- `open_goals` 用 recursive CTE 濾掉死分支下的 orphan；`detached=1`（Forward output、
+- 失敗計 `attempts`，達 SHELVE_THRESHOLD → 轉 `pending_strategist_review` 交 Strategist
+  裁決——**ConfirmShelve 才真 `shelved` 並上拋**（殺掉依賴它的 parent strategy；parent
+  無活 strategy → 繼續上拋）。硬終態 `dead`（如 `missing_parent_stub`）仍直接上拋。
+- `open_goals` 用 recursive CTE 濾掉死分支下的 orphan；`detached=1`（mint output、
   Strategist 重啟目標）額外 union 進 alive seed。
 - 每筆 Inject decision 寫 outcome；同 batch 全落地 → enqueue Strategist
   `inject_batch_done`（batch_id immutable、以「全部 outcome 非 NULL」推導完成）。
 - proved 的前置條件見 §10 公理閘。
+
+**Problem 層另有五態 FSM**（v29、`problems.state`）：`active` / `awaiting_human` /
+`ingest_signoff` / `ingested` / `revoked`。`WAKE_LEGALITY` 只許 `active` 收 Strategist
+wake（其餘為人類擁有或終態）；唯一 mutator `apply_problem_transition`；`revoked`
+（入庫後 un-prove）由 `asterism revive` 復活。「stalled」刻意不是狀態、是 `active` 上
+的推導守衛——機器無合法靜止態。設計 SoT：`docs/internal/problem_fsm_design.md`。
 
 ---
 
 ## 8. OR 順序展開（passive）
 
 每個 Goal 同時只跑一條 Strategy；死了才生下一條。強模型下 eager fanout 純浪費 token；
-代價是第一條走錯方向時 wall-clock 較慢，緩解靠 SHELVE_THRESHOLD + 給 Backward 看「過去
-死掉的分解試過什麼」。每條 Strategy 用 strategy-isolated 檔名（`_strategy_s<sid>.lean`、
+代價是第一條走錯方向時 wall-clock 較慢，緩解靠 SHELVE_THRESHOLD + 給 Formalizer 看
+「過去死掉的分解試過什麼」。每條 Strategy 用 strategy-isolated 檔名（`_strategy_s<sid>.lean`、
 定理名 `s<sid>` 由框架鎖定）；parent 的 `lean_path` 只在 Verify 勝出時被改。sub-goal slug
 是 agent 取的描述名、全題唯一（`UNIQUE(problem, slug)`）。
 
@@ -162,7 +196,7 @@ cascade 的概念形狀（完整 outcome × 轉移表在 `data-flow.md` §3 + `f
 
 ## 9. Dedupe（sub-goal 等價共享）
 
-Backward 拆出新 sub-goal 時，框架用 Lean kernel probe（`apply @<canonical> <;> assumption`
+Formalizer 拆出新 sub-goal 時，框架用 Lean kernel probe（`apply @<canonical> <;> assumption`
 單一 batch cold 呼叫）比對候選池：ancestor chain / sibling orphan / 跨 branch proved /
 同題 disproved / reuse tier（open·attempting·shelved）。命中 → 不 INSERT、
 `strategy_subgoals` link 到 canonical、檔案寫成 alias 並 build-verify。fail-open：probe
@@ -175,9 +209,10 @@ Backward 拆出新 sub-goal 時，框架用 Lean kernel probe（`apply @<canonic
 - 命中 disproved → 整批 abort（「已給過反例、別再提」）。
 - `no_progress` 守門是單-canonical apply 探針：sub-goal 若能被正在拆的 goal 或其未證
   ancestor 一發 discharge → 拒（拆了等於沒拆）。
-- Forward 端：dedupe 命中 alive → 拒提案；命中 **proved** → 直接落地 alias（提案自動變
-  引用）。cite-gate 會 resolve alias、proved alias 可被引用。
-- **G1 shelved-revival**：Forward 落地新 goal X 時反向探「X 能否 discharge 某 shelved S」，
+- mint 端三分支：命中同題 alive/parked 孿生 → **reuse**（Inject 重指到既有 goal、必要
+  時復活 detach，不新建）；命中 **proved** → 直接落地 alias（提案自動變引用）；其餘
+  正常落地。cite-gate 會 resolve alias、proved alias 可被引用。
+- **G1 shelved-revival**：mint 落地新 goal X 時反向探「X 能否 discharge 某 shelved S」，
   命中先記 link；X 之後 proved，housekeeping 補寫 alias body、S 復活轉 proved 上拋。
 
 ---
@@ -190,7 +225,7 @@ Backward 拆出新 sub-goal 時，框架用 Lean kernel probe（`apply @<canonic
 
 | 閘 | 位置 | 守什麼 |
 |---|---|---|
-| **pipeline 出口閘** | `_axiom.axiom_gate`，Builder / Backward leaf-bypass / Forward 三處共用（own-slot、~150ms） | 任何 goal 標 proved 前，其證明的公理集 ⊆ whitelist（結構 lint test 斷言三 pipeline 都走它） |
+| **pipeline 出口閘** | `_axiom.axiom_gate`，Formalizer 兩入口（prove/split leaf-bypass + mint）共用（own-slot、~150ms） | 任何 goal 標 proved 前，其證明的公理集 ⊆ whitelist（結構 lint test 斷言） |
 | **root integrity gate** | root 翻 proved 時（`integrity_verified` marker 守、翻離 proved 自動清） | 整條 alias 鏈的唯一一次完整 elaboration；抓 drift + 漏網 sorryAx，元凶 bisect + rollback 重拆 |
 | **Librarian migrate gate** | 每檔搬進 Library 時 | per-decl `#print axioms` ⊆ whitelist + import 閉包 + Gate D def-equivalence；`axiom` 宣告一律 hard-fail |
 | **cleanup 收尾 re-gate** | cleanup 改寫證明體之後 | 同 per-decl 檢查對**最終文本**重跑——LLM 改寫段（simplify / near-dup bridge / audit 整檔重寫）是 migrate 之後唯一能改公理集的地方 |
@@ -207,24 +242,33 @@ elaborate；root gate 的 rollback 是 false-proved 溜過機械驗證時的修�
 ```
 Tooling/
   core/       dispatcher.py（主迴圈+排程）、librarian_sched.py（五階段 DAG 排程）、
-              cli.py、config.py、lifecycle
-  state/      db.py（schema+migration+query）、transitions.py（狀態機+ProvedReceipt）、
-              proof_store.py（proofs/ chokepoint）、recovery.py（startup 修復+orphan sweep）、
-              failures.py（failure-reason registry）、thresholds.py（運行閾值 leaf）、
-              regress.py（proved manifest）、kb.py / kb_ingest.py（lessons、Model B）
-  pipeline/   builder.py / backward.py / forward.py / strategist.py
-              librarian/（_base/astslice/bridge/classify/context/execute/gate/run/schedule/unharvest）
-              _retry.py（session retry helper）、_assembly.py、_axiom.py（共用公理閘）、
-              _cite_gate.py、_constants.py（含 anchor_closure RPC wrapper）、_drafts.py、
-              _feedback.py、_infra.py、_lake.py、_olean_warm.py、_presearch.py、
-              _reflection.py、_skeleton.py、events.py
-  quality/    verify.py（housekeeping+root gate）、dedupe.py、prune.py、
-              librarian/（dedup/gates/inventory/relabel + cleanup/{mechanical,simplify,audit,decide}）
-  agent/      context.py / phase2_context.py（Context.md 編譯）、runtime.py
-  llm/        claude_cli.py（spawn+watchdog）、gemini/openai 後端
-  lsp/        gateway.py（warm verify_file + validate_file + anchorClosure RPC）、lifecycle
+              cli.py、config.py、quota_wait.py / usage_quota.py（額度）、
+              warmup.py（NL-first gateway 暖機）、process_group.py（Job Object）
+  state/      db.py（schema DDL+query）、db_migrations.py（migration 全集）、
+              transitions.py（goal/strategy/problem 狀態機+ProvedReceipt+cascade_one）、
+              programme.py（Programme 修訂鏈）、manifest.py、proof_store.py（proofs/
+              chokepoint）、recovery.py（startup 修復+orphan sweep）、failures.py
+              （failure-reason registry=機器 SoT）、thresholds.py、regress.py、
+              consistency.py（drift-check 謂詞）、kb.py / kb_ingest.py（lessons、Model B）
+  pipeline/   backward.py / forward.py（Formalizer 的 prove-split / mint 兩入口）、
+              _intake.py（Formalizer intake 閘）、strategist.py、adversary.py（判官）、
+              scholar.py（論文抓取）、
+              librarian/、_retry.py（session retry helper）、_assembly.py、
+              _axiom.py（共用公理閘）、_cite_gate.py、_presearch.py、_reflection.py、
+              events.py 等
+  quality/    verify.py（housekeeping+root gate）、dedupe.py、prune.py、review.py、
+              knowledge_stats.py、librarian/（dedup/gates/inventory/relabel + cleanup/*）
+  agent/      context.py / phase2_context.py（Context.md 編譯）、runtime.py（spawn +
+              spawn_usage 計帳）、sandbox.py
+  llm/        claude_cli.py（spawn+watchdog+sandbox flags）、spawn_guard.py、
+              gemini/openai 後端
+  lsp/        gateway.py（warm verify_file + validate_file + anchorClosure RPC）、
+              client.py、decl_oracle.py、lifecycle
   knowledge/  loogle 等 lemma 搜尋
-  prompts/    各 worker system prompt（每 pipeline 一檔）
+  papers/     fetch / index / search / shelf（Papers/ 書架）
+  serve/      web console（`asterism serve`：星圖、Engine 視圖、chat explainer）
+  prompts/    每 worker 一資料夾、多階段檔（formalizer/{intake,formalize,mint}、
+              strategist/、adversary/、scholar/、librarian/、_shared/）
 ```
 
 ---
@@ -234,8 +278,11 @@ Tooling/
 每次 spawn 前框架從 DB 編一份 Context.md——**agent 看到的所有訊息都從這裡來**（companion
 檔只是備援，agent 常不讀）。編譯原則：必看訊息 inline、curated 不 dump、跨 spawn 穩定的
 段落（BRIEF、KB lessons）放最前讓 prompt cache 命中。lessons 來源是 DB `kb_entries`
-（Model B：global-only、reflection 寫入、每 spawn inline）；pre-search 在場時注入
-`## Candidate lemmas` 並取代 proved-siblings 段。完整 section 順序見 `data-flow.md` §5。
+（Model B：global-only、reflection 寫入、每 spawn inline、cap 25）；pre-search 在場時
+注入 `## Candidate lemmas` 並取代 proved-siblings 段。research mode 下 Programme 的
+`## Proof` 以 programme 段注入 worker context（NL-first 前提）；bulky 內容走
+`CATALOG.md` / `PAPER_MAP.md` companion、inline 只留索引指標。完整 section 順序見
+`data-flow.md` §5。
 
 ---
 
@@ -245,7 +292,7 @@ Tooling/
 |---|---|
 | 'running' state 在 pipelines 表 | 只放 finished rows，daemon 死了不留 zombie |
 | Active cancellation propagation 表 | cascade 入口 no-op 已被動接住 OR 落敗者 |
-| Generalizer / Refuter 等新 worker_kind | schema 留洞、deferred（backlog「考慮中」） |
+| Generalizer / Refuter 等新 worker_kind | 仍 deferred（Scholar v23、Formalizer v33 已示範 kind 擴張路徑） |
 | 自動 prune OR 落敗 strategy 檔 | blast radius 太大（Jordan 2026-05-26）；只自動 reconcile，prune 是 operator opt-in `asterism prune` |
 | events 表 audit log | dead_attempts.artifacts JSON + stdout 夠 |
 | `commit_state` pending/live 兩段式 | backup-restore + `os.replace` 夠用 |
@@ -262,8 +309,10 @@ Tooling/
 - **pipeline = slot**：pipeline 生命週期內的驗證走自己 claim 的 gateway 格
   （`_axiom.verify_on_own_slot`）；borrow 只限非-pipeline context、挑格 unclaimed 優先
 - `pipelines` 表只存 finished rows
-- worker_kind ↔ target_kind：Builder/Backward → Goal、Forward → Problem、Strategist →
-  Goal (root)、Librarian → Problem（per-file target `problem\x1ffile`）；Verify 不是 worker
+- worker_kind ↔ target_kind：Formalizer → Goal（prove/split）或 Problem（mint）、
+  Strategist → Problem、Scholar → Problem、Librarian → Problem（per-file target
+  `problem\x1ffile`）；Verify 不是 worker
+- `problems.state` 轉移只走 `apply_problem_transition`；wake 只投給 `active`（WAKE_LEGALITY）
 
 **soundness**
 - `proved` 只在 `axiom_gate` 通過後才標；Library 內容每次高風險改寫後重驗公理（§10）
@@ -278,15 +327,17 @@ Tooling/
 - Schema 修改要 bump user_version + 寫 migration
 
 **Strategist**
-- ConfirmShelve 與 Inject(Backward|Builder) 不得指向同一 target 或其 descendant
+- ConfirmShelve 與 goal-target Inject 不得指向同一 target 或其 descendant
 - `strategist_decisions.batch_id` immutable；「同 batch 全部 outcome 非 NULL」推導完成
-- Forward output goal 必 `detached=1`
-- deliverable 題 harvest 前必經 `ingest_signoff_pending` 人工 sign-off
+- mint output goal 必 `detached=1`
+- 非豁免決策批必附通過 Adversary 的提案包；Programme 修訂鏈每 rev 至多一 passed（v31）
+- deliverable 題 harvest 前必經 `ingest_signoff` 人工 sign-off（`signoff: false` 的
+  benchmark 題除外）
 
 **進程**
 - daemon process tree 綁 kill-on-close Job Object（parent 死、children 自動回收）
 
 ---
 
-已證題目清單不再維護於本檔——看 DB（`origin='root' AND status='proved'`）、README 進度
-log、或 DB（`problems.library_bridged_at` + `library_decls`；v18 起 INDEX.md 退役、DB 即索引）。
+已證題目清單不維護於本檔——查 DB：`origin='root' AND status='proved'`；Library 索引即
+`library_decls` + `problems.library_bridged_at`（v18 起 INDEX.md 退役、DB 即索引）。
