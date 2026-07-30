@@ -113,10 +113,9 @@ def _section_sandbox(strategy_id: int | None = None,
         "`PAPER_MAP.md` companion files: read-only. `CATALOG.md` holds "
         "the exact statement of every proved brick in this problem — "
         "read it before citing one.",
-        "- `patch.lean` is your single output. Lead with `--` annotation "
-        "comments, then edit the body (Builder fills in the proof; "
-        "Backward edits the strategy skeleton's body — signature locked). "
-        "See the kind-specific prompt for layout.",
+        "- `patch.lean` is your output; sub-goal stubs go in "
+        "`new_<slug>.lean`. Lead with `--` annotation comments, then edit "
+        "the body — the signature is locked. See your prompt for layout.",
         "",
     ]
 

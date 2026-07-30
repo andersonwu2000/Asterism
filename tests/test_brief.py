@@ -55,6 +55,34 @@ def test_render_includes_forbidden_and_strategic_notes(
     assert "Avoid path X" in out
 
 
+def test_worker_surface_carries_no_retired_pipeline_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BRIEF is inlined into `Context.md` on every dispatch, so it is the
+    highest-traffic agent-facing text there is — and the d75500a7 sweep
+    missed it. It still told workers the framework renders this "for
+    every Builder / Backward dispatch", and that "Builder fills in the
+    proof; Backward edits the strategy skeleton's body", three months
+    after v33 collapsed all three into the Formalizer. The companion pin
+    in test_phase2_context.py covers only the strategist surfaces; this
+    one covers the worker side, header and Sandbox section together
+    (`brief.render` composes both).
+
+    The Sandbox line also claimed `patch.lean` was the "single output"
+    while formalize.md ships `patch.lean + new_*.lean` as the
+    deliverable — stale role names travel with stale contracts."""
+    from Tooling.knowledge import lemma_lookup
+    monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
+
+    out = brief.render(tmp_path, Manifest(problem="p", statement="True"))
+    for dead in ("Builder", "Backward", "Forward", "single output"):
+        assert dead not in out, dead
+    # The replacement has to still say what the output contract is.
+    assert "`patch.lean` is your output" in out
+    assert "new_<slug>.lean" in out
+    assert "the signature is locked" in out
+
+
 def test_render_no_mathlib_hints_section(tmp_path: Path) -> None:
     """`## Lemma hints` was retired (target-1 pre-search replaces it): a
     Manifest with mathlib hints no longer renders a `## Mathlib lemmas`

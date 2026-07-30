@@ -106,7 +106,7 @@ def _section_brief_header(mfst: manifest.Manifest) -> list[str]:
         f"# {mfst.problem} — BRIEF",
         "",
         f"_Auto-rendered from `Manifest.md` + `Library/`. The framework_",
-        f"_inlines this file into `Context.md` for every Builder /_",
-        f"_Backward dispatch on this problem._",
+        f"_inlines this file into `Context.md` for every dispatch on_",
+        f"_this problem._",
         "",
     ]
