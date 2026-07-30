@@ -286,3 +286,75 @@ def test_provider_resolves_by_config_name(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ASTERISM_STRATEGIST_PROVIDER", "agy")
     assert isinstance(llm.get_provider(kind="strategist"),
                       agy.AntigravityCliProvider)
+
+
+# ---------------------------------------------------------------------
+# Artifact tripwire — the write control that replaces the sandbox
+# ---------------------------------------------------------------------
+
+def test_tripwire_fails_the_spawn_when_a_proof_file_changes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """agy must run with `command(*)` (its matcher takes an exact
+    literal or `*`), and every command goes through powershell — so a
+    reachable shell, hence a write channel, is unavoidable. The control
+    is verification after the fact: it catches a write through ANY
+    channel, not just the tool the sandbox knows about."""
+    from Tooling.agent import runtime
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / "proofs").mkdir(parents=True)
+    (pdir / "Root.lean").write_text("theorem main : T := by sorry\n",
+                                    encoding="utf-8")
+    (pdir / "proofs" / "L_a.lean").write_text("-- a\n", encoding="utf-8")
+    before = runtime._artifact_fingerprint(pdir)
+
+    assert not runtime._artifact_tripwire("strategist", pdir, before)
+
+    (pdir / "proofs" / "L_a.lean").write_text("-- tampered\n",
+                                              encoding="utf-8")
+    assert runtime._artifact_tripwire("strategist", pdir, before)
+    out = capsys.readouterr().out
+    assert "artifact-tripwire" in out and "proofs/L_a.lean" in out
+
+
+def test_tripwire_catches_a_user_file_edit_and_a_new_proof_file(
+    tmp_path: Path,
+) -> None:
+    from Tooling.agent import runtime
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / "proofs").mkdir(parents=True)
+    (pdir / "Root.lean").write_text("stub\n", encoding="utf-8")
+    before = runtime._artifact_fingerprint(pdir)
+
+    (pdir / "Root.lean").write_text("assembled\n", encoding="utf-8")
+    assert runtime._artifact_tripwire("formalizer", pdir, before)
+
+    (pdir / "Root.lean").write_text("stub\n", encoding="utf-8")
+    (pdir / "proofs" / "L_new.lean").write_text("-- smuggled\n",
+                                                encoding="utf-8")
+    assert runtime._artifact_tripwire("formalizer", pdir, before)
+
+
+def test_tripwire_ignores_the_attempts_dir_and_identical_rewrites(
+    tmp_path: Path,
+) -> None:
+    """A spawn's own output dir is not guarded, and a byte-identical
+    rewrite is not a violation worth failing a wake over."""
+    from Tooling.agent import runtime
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / "proofs").mkdir(parents=True)
+    (pdir / "proofs" / "L_a.lean").write_text("-- a\n", encoding="utf-8")
+    (pdir / ".drafts").mkdir()
+    before = runtime._artifact_fingerprint(pdir)
+
+    (pdir / ".drafts" / "strategist_plan.md").write_text("notes",
+                                                         encoding="utf-8")
+    (pdir / "proofs" / "L_a.lean").write_text("-- a\n", encoding="utf-8")
+    assert not runtime._artifact_tripwire("strategist", pdir, before)
+
+
+def test_tripwire_rc_maps_to_provider_misconfigured() -> None:
+    """Retrying cannot fix a spawn that wrote where it must not."""
+    from Tooling.agent import runtime
+    assert (failures.rc_to_reason(runtime.RC_SPAWN_WROTE_OUTSIDE_SANDBOX)
+            == "provider_misconfigured")

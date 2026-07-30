@@ -198,6 +198,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
         timeout_sec = timeout_sec_override
     import time as _time
     _t0 = _time.monotonic()
+    _before = _artifact_fingerprint(problem_dir)
     rc = llm.get_provider(kind=kind).spawn(llm.LLMRequest(
         kind=kind,
         prompt_path=prompt_path,
@@ -220,7 +221,87 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
                         wall_sec=_time.monotonic() - _t0,
                         workspace=usage_workspace, problem=usage_problem,
                         pipeline_id=usage_pipeline_id)
+    if _artifact_tripwire(kind, problem_dir, _before):
+        return RC_SPAWN_WROTE_OUTSIDE_SANDBOX
     return rc
+
+
+#: rc for "the spawn changed a file it must never touch". Provider-
+#: independent, so it lives here rather than in any one provider's rc
+#: block. Maps to `provider_misconfigured` (state/failures) — the cure
+#: is an operator fix, never a retry.
+RC_SPAWN_WROTE_OUTSIDE_SANDBOX = 123
+
+#: The problem-dir files a spawn must never write. `proofs/` is the
+#: framework's own output (every legal write goes through
+#: `state/proof_store`); the three user files are the pinned baseline
+#: (`user_file_history` + the root gate).
+_GUARDED_USER_FILES = ("Root.lean", "Defs.lean", "Manifest.md")
+
+
+def _artifact_fingerprint(problem_dir: Path) -> "dict[str, str]":
+    """Hash the files a spawn must not change: the three user files and
+    every `proofs/*.lean`. Cheap (a few dozen small files) and stable.
+
+    Why hashes and not mtimes: a rewrite with identical content is not a
+    violation worth failing a wake over, and mtime alone false-fires on
+    tools that touch without changing."""
+    import hashlib
+    out: "dict[str, str]" = {}
+
+    def _put(rel: str, path: Path) -> None:
+        try:
+            out[rel] = hashlib.blake2b(path.read_bytes(),
+                                       digest_size=8).hexdigest()
+        except OSError:
+            pass
+
+    for name in _GUARDED_USER_FILES:
+        f = problem_dir / name
+        if f.is_file():
+            _put(name, f)
+    proofs = problem_dir / "proofs"
+    if proofs.is_dir():
+        for f in sorted(proofs.glob("*.lean")):
+            _put(f"proofs/{f.name}", f)
+    return out
+
+
+def _artifact_tripwire(kind: str, problem_dir: Path,
+                       before: "dict[str, str]") -> bool:
+    """True iff the spawn changed a guarded artifact — report and fail.
+
+    This is the write control, and it replaces the sandbox rather than
+    supplementing it (2026-07-30). The claude side denies the write
+    tools and fences Bash writes with `ASTERISM_SPAWN_WRITE_ROOTS`, but
+    a Bash write there was never actually *verified*; the Antigravity
+    side has to run with `command(*)` (its permission matcher takes an
+    exact literal or `*` and nothing between) and every command goes
+    through powershell, so a reachable shell — hence a write channel —
+    is unavoidable there. Checking the artifacts afterwards catches a
+    write through ANY channel: tool, shell, absolute-path interpreter,
+    MCP.
+
+    Deliberately NOT a soundness mechanism: a hand-written proof file
+    still has to pass the commit chokepoint (`state/proof_store`), the
+    per-decl axiom gate, and the user-file baseline pin. This is the
+    layer that makes such an attempt LOUD instead of silent, and it
+    turns "the fence held" from an assumption into an observation.
+    """
+    after = _artifact_fingerprint(problem_dir)
+    changed = sorted(
+        k for k in set(before) | set(after)
+        if before.get(k) != after.get(k))
+    if not changed:
+        return False
+    print(f"[artifact-tripwire] {kind} spawn changed {len(changed)} "
+          f"guarded file(s) under {problem_dir}: "
+          f"{', '.join(changed[:8])}"
+          f"{' …' if len(changed) > 8 else ''} — a spawn may only write "
+          f"inside its attempts dir; every proofs/ write goes through "
+          f"state/proof_store. Failing the spawn; inspect before "
+          f"re-running.", flush=True)
+    return True
 
 
 def _record_spawn_usage(*, kind: str, attempts_dir: Path,

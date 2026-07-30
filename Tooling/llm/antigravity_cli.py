@@ -1,4 +1,4 @@
-"""Antigravity CLI provider — subprocess to the `agy` executable.
+r"""Antigravity CLI provider — subprocess to the `agy` executable.
 
 Google retired the Gemini CLI for individual accounts on 2026-06-18:
 free tier, Google AI Pro AND AI Ultra all stopped being served (only
@@ -77,43 +77,58 @@ later session can find them instead of re-deriving:
    cannot be backed up by copying.
 
 3. Tool permissions — `~/.gemini/antigravity-cli/settings.json`
-   (agy's own log names this path; global, there is no project-scoped
-   settings file and no `--policy` flag). Installed content, approved
-   by the user verbatim:
+   (agy's own log names this path; global — there is no project-scoped
+   settings file). Installed content, approved by the user:
 
        permissions.allow:
-         read_file(D:\\Asterism)                       whole workspace,
-                                                       incl. Mathlib src
-         write_file(D:\\Asterism\\.attempts)           the ONLY writable
-                                                       root
-         command(python -m Tooling\\.knowledge\\.loogle)  loogle only
+         read_file(D:\Asterism)              whole workspace, incl. Mathlib
+         write_file(D:\Asterism\.attempts)   the only writable root
+         command(*)                          see the measurement below
        permissions.deny:
-         write_file(D:\\Asterism\\Problems)
-         write_file(D:\\Asterism\\Library)
-         write_file(D:\\Asterism\\Tooling)
-         unsandboxed(*)
+         write_file(D:\Asterism\Problems)
+         write_file(D:\Asterism\Library)
+         write_file(D:\Asterism\Tooling)
 
-   Why this shape holds up:
-     - Precedence is Deny > Ask > Allow, and an unmatched action
-       defaults to Ask, which headless mode auto-DENIES. So the
-       default posture is already deny-by-default — tighter than the
-       claude side, which needs `--disallowedTools` + the spawn_guard
-       hook to get there.
-     - EVERY pipeline's write root is `.attempts/<pipeline_id>/`
-       (WorkArea), and the Adversary projection is
-       `.attempts/<pid>/adversary/rN`, so one allow rule covers all
-       spawns while `proofs/`, `Root.lean`, `Defs.lean` and
-       `Manifest.md` stay unwritable. That is the load-bearing half of
-       the #128 write fence, reproduced without a hook.
-     - `command` targets are matched token-by-token as ANCHORED
-       regexes, so `command(python -m Tooling\\.knowledge\\.loogle)`
-       does NOT admit `python -c "..."` (token 2 is `-c`, not `-m`).
-       Allowing bare `command(python)` would hand back an unrestricted
-       write channel — never do that.
-   Verified end-to-end 2026-07-30: a write into `.attempts/` landed on
-   disk; a write into `Problems/` came back
-   `Permission denied ... Matches user-configured deny rule` and no
-   file was created.
+   Precedence is Deny > Ask > Allow and an unmatched action defaults to
+   Ask, which headless mode auto-DENIES — so the posture is
+   deny-by-default. Every pipeline's write root is
+   `.attempts/<pipeline_id>/` (WorkArea; the Adversary projection is
+   `.attempts/<pid>/adversary/rN`), so one allow rule covers all spawns
+   while `proofs/`, `Root.lean`, `Defs.lean` and `Manifest.md` stay
+   unwritable through the write_file tool. Verified: a write into
+   `.attempts/` landed; a write into `Problems/` came back
+   `Permission denied ... Matches user-configured deny rule`.
+
+   MEASURED — the `command` matcher takes an exact literal or `*`, and
+   NOTHING between (2026-07-30, seven probes). Auto-denied:
+   `command(python -m Tooling\.knowledge\.loogle)`,
+   `command(python -m Tooling.knowledge.loogle)`, `command(python)`,
+   `command(python*)`, `command(python -m Tooling.knowledge.loogle .*)`,
+   and the last one paired with an `unsandboxed(...)` allow. Accepted:
+   `command(*)` and the full literal
+   `command(python -m Tooling.knowledge.loogle "Nat.even_mul_succ_self")`.
+   The docs' "each whitespace-separated token is an anchored regex" does
+   not describe the behaviour. `--sandbox` is not an alternative: it
+   demands an `escalate_admin` permission that headless cannot prompt
+   for (the run is CANCELED), and granting admin escalation would be
+   strictly worse than what it buys.
+
+   THE COST, recorded deliberately (user call): with `command(*)` a
+   spawn can write around the write_file deny rules via a command, so
+   the sandbox is no longer the write fence. Two mitigations replace it:
+     - PATH narrowing was tried and ABANDONED: agy shells out through
+       `powershell`, so any command channel implies a reachable shell and
+       a shell is a write channel; narrowing only broke loogle. See
+       `_spawn_env`.
+     - the post-spawn artifact tripwire in `agent.runtime` verifies the
+       problem's user files and `proofs/` across every spawn, catching a
+       write through ANY channel. That is the actual guarantee, and it
+       covers the claude side too (a Bash write there was never checked
+       either).
+   Soundness never rested on any of this: the commit chokepoint
+   (`state/proof_store`), the per-decl axiom gate, the user-file
+   baseline pin (`user_file_history` + root gate) and `drift-check` are
+   what make a hand-written proof file fail.
 
 4. NEVER pass `--dangerously-skip-permissions`. It auto-approves every
    tool and voids all of the above. `--mode accept-edits` is also
@@ -210,6 +225,34 @@ def legacy_oauth_creds_path() -> Path:
     serves the run, and picking the wrong one is silent, so doctor
     surfaces it."""
     return Path.home() / ".gemini" / "oauth_creds.json"
+
+
+def _spawn_env() -> "dict[str, str]":
+    """Environment for an agy spawn: the inherited env plus PYTHONPATH.
+
+    PYTHONPATH must carry the repo root or the advertised search tool
+    (`python -m Tooling.knowledge.loogle`) is dead on arrival from any
+    cwd but the root — claude_cli does the same for its own spawns
+    (agent_feedback 2026-07-13 ×5).
+
+    NOT narrowed further, and that was measured rather than assumed
+    (2026-07-30): the first attempt pointed PATH at a policy shim that
+    forwarded only the loogle module, so `command(*)` could not become a
+    write channel. It failed for a structural reason — agy executes
+    every command through `powershell`, so a reachable shell is a
+    precondition for ANY command, and a reachable shell IS a write
+    channel (`Set-Content`). Narrowing PATH only broke loogle
+    (`exec: "powershell": executable file not found in %PATH%`), and
+    wrapping powershell to inspect its `-Command` payload is defeated by
+    quoting / `-EncodedCommand`. So the write control is the post-spawn
+    artifact tripwire in `agent.runtime`, not the sandbox.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = (
+        str(repo) + os.pathsep + env["PYTHONPATH"]
+        if env.get("PYTHONPATH") else str(repo))
+    return env
 
 
 def permissions_path() -> Path:
@@ -393,7 +436,7 @@ class AntigravityCliProvider:
                 cmd, timeout=print_timeout + _SUBPROCESS_SLACK_SEC,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
-                cwd=str(req.problem_dir),
+                cwd=str(req.problem_dir), env=_spawn_env(),
                 creationflags=no_window_creationflags(),
             )
         except subprocess.TimeoutExpired:
@@ -489,7 +532,7 @@ class AntigravityCliProvider:
             r = subprocess.run(
                 cmd, timeout=timeout_sec + _SUBPROCESS_SLACK_SEC,
                 capture_output=True, text=True,
-                encoding="utf-8", errors="replace",
+                encoding="utf-8", errors="replace", env=_spawn_env(),
                 creationflags=no_window_creationflags(),
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
