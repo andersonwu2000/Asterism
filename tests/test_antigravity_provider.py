@@ -173,6 +173,54 @@ def test_usage_translated_for_spawn_usage_recorder(tmp_path: Path):
 
 # ------------------------------------------------------------- spawn
 
+def test_error_envelope_with_artifact_is_not_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """The converse of THE HAZARD, found by the live acceptance run.
+
+    The model called the `loogle` MCP tool with the wrong argument name,
+    the server raised, the model corrected itself and answered — and agy
+    still stamped the envelope ERROR and exited 1. Failing there would
+    throw away a wake whose work was finished, the same class of loss as
+    a tripwire replacing an honest spawn's rc. The artifact decides."""
+    monkeypatch.setattr(agy, "resolve_agy_executable", lambda: "agy")
+
+    class _R:
+        returncode = 1
+        stdout = ('{"conversation_id":"c1","status":"ERROR",'
+                  '"response":"Nat.factorial_one",'
+                  '"error":"Error in MCP tool execution: validation error",'
+                  '"num_turns":1,"usage":{"input_tokens":5,'
+                  '"output_tokens":1}}')
+        stderr = ""
+
+    monkeypatch.setattr(agy.subprocess, "run", lambda *a, **k: _R())
+    req = _req(tmp_path)
+    (req.attempts_dir / "decision.json").write_text("{}", encoding="utf-8")
+    assert agy.AntigravityCliProvider().spawn(req) == 0
+    assert "recovered and left its artifact" in capsys.readouterr().out
+
+
+def test_error_envelope_without_artifact_still_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """The tolerance is bounded by the artifact — an ERROR that produced
+    nothing is still a failed spawn."""
+    monkeypatch.setattr(agy, "resolve_agy_executable", lambda: "agy")
+
+    class _R:
+        returncode = 1
+        stdout = ('{"conversation_id":"c1","status":"ERROR",'
+                  '"response":"partial thought","error":"boom",'
+                  '"num_turns":1,"usage":{"input_tokens":5,'
+                  '"output_tokens":1}}')
+        stderr = ""
+
+    monkeypatch.setattr(agy.subprocess, "run", lambda *a, **k: _R())
+    assert agy.AntigravityCliProvider().spawn(_req(tmp_path)) != 0
+
+
 def test_success_with_no_artifact_is_misconfigured(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

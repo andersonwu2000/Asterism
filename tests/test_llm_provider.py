@@ -1580,9 +1580,16 @@ def test_default_tools_include_grep_and_bash(
 def test_spawn_passes_allowed_tools_for_loogle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F50 — Bash is gated via --allowed-tools so the agent can ONLY
-    invoke `python -m Tooling.knowledge.loogle`. Other Bash commands (rm, curl,
-    git, ...) stay blocked by the permission system."""
+    """Loogle is an MCP tool now, not a Bash pattern (2026-07-30).
+
+    F50 gated Bash to the loogle module and nothing else, which works on
+    claude — its matcher takes `<prefix> *`. The Antigravity CLI's does
+    not (exact literal or `*`, measured), so the same rule was
+    inexpressible there and the run went out with `command(*)`; within a
+    day an agent-authored `python -c` loop burned 32 minutes of a wake.
+    Moving the tool to MCP puts the whitelist where every provider reads
+    the same one. The pattern only appears when a config is present —
+    without one there is no server to call."""
     from pathlib import Path
     from Tooling import llm
     from Tooling.llm import claude_cli
@@ -1595,13 +1602,14 @@ def test_spawn_passes_allowed_tools_for_loogle(
         problem_dir=Path("/x/prob"),
         attempts_dir=Path("/x/att"),
         timeout_sec=60,
+        mcp_config_path=Path("/x/att/_mcp_tools.json"),
     ))
     cmd = captured[0]
     assert "--allowed-tools" in cmd
     val = cmd[cmd.index("--allowed-tools") + 1]
-    # Must scope to loogle invocation; arbitrary Bash blocked
-    assert "Tooling.knowledge.loogle" in val
-    assert val.startswith("Bash(")
+    assert "mcp__asterism_tools__loogle" in val
+    # The shell no longer carries it — that is the point of the move.
+    assert "Bash(python -m Tooling.knowledge.loogle" not in val
 
 
 def test_spawn_allowed_tools_include_readonly_json(
@@ -1712,8 +1720,9 @@ def test_allowed_tools_scopes_read_to_problem_and_mathlib(
     # Other Problems must NOT be in scope — the F44 sandbox boundary
     # is what F53 rerun showed Sonnet wandering across.
     assert "Read(/ws/Problems/other" not in val
-    # Bash allowlist (Loogle) preserved
-    assert "Bash(python -m Tooling.knowledge.loogle *)" in val
+    # The Bash allowlist survives the Read/Grep scoping — it is just
+    # shorter now that loogle is an MCP tool.
+    assert "Bash(python -m json.tool *)" in val
 
 
 # ---------------------------------------------------------------------

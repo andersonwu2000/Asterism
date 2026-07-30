@@ -390,12 +390,21 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
     # hiccup on the judge must cost a re-spawn, not the author's work.
     last_err = ""
     verdict_tries = infra_tries = 0
+    # Loogle over MCP, not a shell — the judge checks "Mathlib has X"
+    # claims, and that was its only shell use. The config lands INSIDE
+    # the projection, so the isolation is unchanged.
+    from . import write_tools_mcp_config as _write_tools_cfg
+    _tools_cfg = _write_tools_cfg(proj, attempts_dir.parent.parent)
     while True:
         sid = str(uuid.uuid4())
         rc = agent.spawn_llm(
             kind="adversary", prompt_path=prompt_path,
             problem_dir=proj, attempts_dir=proj,
             session_id=sid, timeout_sec=timeout_sec,
+            # Loogle over MCP, not a shell — the judge checks "Mathlib
+            # has X" claims, and that was its only shell use. The config
+            # lands INSIDE the projection so the isolation is unchanged.
+            mcp_config_path=_tools_cfg,
             # The projection dir breaks the standard attempts layout —
             # attribute the judge's cost explicitly or the spawn_usage
             # row is silently dropped (invisible-judge class, 07-18).

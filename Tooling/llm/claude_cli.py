@@ -500,16 +500,23 @@ DEFAULT_TOOLS = "Read Write Edit Grep Bash"
 # Grep patterns are appended per-spawn from problem_dir + Mathlib by
 # `_compose_allowed_tools` below.
 #
-# Loogle: Mathlib type-pattern search via HTTPS.
 # json.tool: read-only JSON self-validation — lets an agent (esp. the
 # Strategist) check its own decision.json parses before emitting, instead of
 # blind-sending and burning a cycle on a malformed payload (agent_feedback,
 # strategist 06-21/06-22). `python -c` stays BLOCKED (arbitrary code); the
 # `json.tool` module is a structured, side-effect-free validator.
-DEFAULT_BASH_ALLOWED = (
-    "Bash(python -m Tooling.knowledge.loogle *) "
-    "Bash(python -m json.tool *)"
-)
+#
+# Loogle LEFT this list on 2026-07-30: it is an MCP tool now
+# (`knowledge/mcp_tools.py`). A shell allowlist is only a control where
+# the provider can express one, and the Antigravity CLI cannot — so the
+# whitelist moved to a layer that is the same for every provider. What
+# remains here is the shrinking claude-only tail.
+DEFAULT_BASH_ALLOWED = "Bash(python -m json.tool *)"
+
+#: Framework tools, exposed over MCP so every provider reaches them the
+#: same way. claude CLI names MCP tools `mcp__<server>__<tool>`.
+_TOOLS_MCP_PATTERNS = ("mcp__asterism_tools__loogle",
+                       "mcp__asterism_tools__validate_json")
 
 
 def resolve_model(kind: str | None) -> str:
@@ -704,6 +711,8 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
             f"Read({problem}/**)",
             f"Read({attempts}/**)",
             f"Grep({problem}/**)",
+            *(_TOOLS_MCP_PATTERNS
+              if req.mcp_config_path is not None else ()),
         ] if p)
     patterns = [
         # Bash (Loogle, plus operator override)
@@ -761,6 +770,7 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
             "mcp__lsp__goal_at",
             "mcp__lsp__errors_at",
             "mcp__lsp__validate_file",
+            *_TOOLS_MCP_PATTERNS,
         ])
     return " ".join(p for p in patterns if p)
 

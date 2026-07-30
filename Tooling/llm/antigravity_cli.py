@@ -83,8 +83,10 @@ later session can find them instead of re-deriving:
        permissions.allow:
          read_file(D:\Asterism)              whole workspace, incl. Mathlib
          write_file(D:\Asterism\.attempts)   the only writable root
-         command(*)                          see the measurement below
+         mcp(*)                              the ONLY capability channel
        permissions.deny:
+         command(*)                          no shell — see below
+         read_url(*)                         no outbound fetch — see below
          write_file(D:\Asterism\Problems)
          write_file(D:\Asterism\Library)
          write_file(D:\Asterism\Tooling)
@@ -113,9 +115,39 @@ later session can find them instead of re-deriving:
    for (the run is CANCELED), and granting admin escalation would be
    strictly worse than what it buys.
 
-   THE COST, recorded deliberately (user call): with `command(*)` a
-   spawn can write around the write_file deny rules via a command, so
-   the sandbox is no longer the write fence. Two mitigations replace it:
+   `command(*)` WAS allowed, from the measurement above: a shell was the
+   only way to reach loogle, and "loogle only" is inexpressible here. It
+   lasted one day. On 2026-07-30 a Strategist wake spent 32 minutes
+   pinned on an agent-authored `python -c` loop scanning to 10**15 — a
+   COMPUTE channel, while all the design attention had gone to the write
+   channel. Patching per-channel is a losing game (writes yesterday,
+   compute today), so the capability moved to MCP instead, where the
+   framework owns the command line and the whitelist is a tool list:
+   `knowledge/mcp_tools.py`, registered by `ensure_mcp_config`.
+
+   MEASURED for the other two actions (11 + 4 probes, 2026-07-30):
+     read_url — allow rules are IGNORED (it fetches with no rule at all,
+       and with every scoping form). deny WORKS and is absolute: deny
+       `read_url(*)` plus an allow for the exact URL still blocks. So it
+       is all-or-nothing, and it is now denied — an ungated outbound
+       fetch is a route to a published solution, which for a benchmark
+       is a validity problem before it is a security one. (Audited: no
+       agy leg ever fetched an external URL.)
+     mcp — allow IS enforced headless (no rule → auto-denied, and agy
+       says so in the envelope). `mcp(*)` grants it; `mcp(<server>)`
+       does not match. Scoping costs nothing here: the server is ours,
+       so "every MCP tool" means "every tool we chose to expose".
+
+   The MCP config lives at `~/.gemini/config/mcp_config.json` — from
+   agy's own bundled docs (`builtin/skills/agy-customizations/docs/
+   mcp_servers.md`), NOT the path the web suggests. A probe written to
+   `~/.gemini/antigravity-cli/mcp_config.json` was silently ignored,
+   which is indistinguishable from "agy has no MCP support".
+
+   Historical note, kept because the reasoning still applies to any
+   future `command` allowance: with `command(*)` a spawn can write
+   around the write_file deny rules via a command, so the sandbox is not
+   the write fence. Two mitigations were built for that:
      - PATH narrowing was tried and ABANDONED: agy shells out through
        `powershell`, so any command channel implies a reachable shell and
        a shell is a write channel; narrowing only broke loogle. See
@@ -397,6 +429,65 @@ def _classify(envelope: "dict | None", raw: str, rc: int) -> int:
     return rc if rc != 0 else 1
 
 
+def mcp_config_path() -> Path:
+    """Where agy reads MCP servers from — its OWN bundled docs
+    (`builtin/skills/agy-customizations/docs/mcp_servers.md`), not the
+    path the web suggests. The first probe wrote
+    `~/.gemini/antigravity-cli/mcp_config.json` and agy silently ignored
+    it, which looks exactly like "no MCP support"."""
+    return Path.home() / ".gemini" / "config" / "mcp_config.json"
+
+
+def ensure_mcp_config(problem_dir: "Path | None") -> None:
+    """Keep the framework's tool server registered for agy.
+
+    agy resolves MCP servers globally, so unlike claude (a config per
+    spawn) there is nowhere to put a per-run entry — the provider
+    refreshes the global file instead of leaving it to an operator step
+    that would rot the first time the workspace path changed. Other
+    servers in the file are left alone; only our key is written, and only
+    when it differs.
+
+    MEASURED (2026-07-30, four probes): the `mcp` permission IS enforced
+    headless — with no allow rule the call is auto-denied, agy saying so
+    in the envelope — and `mcp(*)` grants it. Per-server scoping
+    (`mcp(asterism_probe)`) does NOT match, which costs nothing: the
+    server is ours, so "every MCP tool" already means "every tool we
+    chose to expose"."""
+    if problem_dir is None:
+        return
+    try:
+        from ..pipeline import tools_mcp_entry
+        workspace = _workspace_of(problem_dir)
+        if workspace is None:
+            return
+        want = tools_mcp_entry(workspace)
+        path = mcp_config_path()
+        cfg: dict = {}
+        if path.exists():
+            try:
+                cfg = json.loads(path.read_text(encoding="utf-8") or "{}")
+            except ValueError:
+                cfg = {}
+        servers = cfg.setdefault("mcpServers", {})
+        if servers.get("asterism_tools") == want:
+            return
+        servers["asterism_tools"] = want
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        print(f"[llm:agy] registered asterism_tools in {path}", flush=True)
+    except Exception as e:  # noqa: BLE001 — never fail a spawn over config
+        print(f"[llm:agy] could not refresh MCP config: {e}", flush=True)
+
+
+def _workspace_of(problem_dir: Path) -> "Path | None":
+    """`<workspace>/Problems/<name…>` → `<workspace>`."""
+    for parent in problem_dir.parents:
+        if parent.name == "Problems":
+            return parent.parent
+    return None
+
+
 class AntigravityCliProvider:
     def spawn(self, req: LLMRequest) -> int:
         exe = resolve_agy_executable()
@@ -407,6 +498,7 @@ class AntigravityCliProvider:
             return RC_MISSING_CLI
 
         model = _resolve_model(req.kind)
+        ensure_mcp_config(req.problem_dir)
         prompt = self._build_prompt(req)
         print_timeout = max(60, int(req.timeout_sec or 900))
 
@@ -458,7 +550,24 @@ class AntigravityCliProvider:
                                    str(envelope.get("conversation_id") or ""))
 
         status = str((envelope or {}).get("status") or "")
-        if r.returncode != 0 or status.upper() != "SUCCESS":
+        # ERROR is not proof either — the converse of THE HAZARD, and the
+        # live acceptance run found it: the model called `loogle` with the
+        # wrong argument name, MCP raised, the model corrected itself and
+        # answered — and agy still stamped the envelope ERROR and exited
+        # 1. Failing there would discard a wake whose work is done, the
+        # same class of loss as the 07-30 tripwire replacing an honest
+        # spawn's rc. The artifact decides; a recovered tool error does
+        # not.
+        recovered = (status.upper() != "SUCCESS"
+                     and str((envelope or {}).get("response") or "").strip()
+                     and _agent_artifact_present(req.attempts_dir))
+        if recovered:
+            print(f"[llm:agy] {req.kind}: status={status} but the agent "
+                  f"recovered and left its artifact — "
+                  f"{str((envelope or {}).get('error') or '')[:200]}",
+                  flush=True)
+        if not recovered and (r.returncode != 0
+                              or status.upper() != "SUCCESS"):
             code = _classify(envelope, raw, r.returncode)
             detail = str((envelope or {}).get("error") or "")[:400]
             print(f"[llm:agy] {req.kind}: status={status or '?'} "

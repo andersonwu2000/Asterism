@@ -1251,9 +1251,44 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         perms = _agy.permissions_path()
         if perms.is_file():
             line("OK", f"agy permissions: {perms}")
+            # The closed shape (2026-07-30): capability comes from OUR
+            # MCP server and nothing else. `command(*)` is what let an
+            # agent-authored `python -c` loop pin a wake for 32 minutes;
+            # `read_url` ungated is a route to the answer for a problem
+            # whose solution is on the public web.
+            try:
+                _p = json.loads(perms.read_text(encoding="utf-8"))
+                _al = set(_p.get("permissions", {}).get("allow") or [])
+                _dn = set(_p.get("permissions", {}).get("deny") or [])
+            except Exception:  # noqa: BLE001
+                _al = _dn = set()
+            for tok, where, why in (
+                ("mcp(*)", _al, "the framework's tools are unreachable"),
+                ("command(*)", _dn, "arbitrary shell is open"),
+                ("read_url(*)", _dn, "outbound fetch is open"),
+            ):
+                if tok not in where:
+                    line("WARN", f"agy permissions: {tok} not in "
+                                 f"{'allow' if where is _al else 'deny'} — "
+                                 f"{why}")
+            if "command(*)" in _al:
+                line("WARN", "agy permissions: command(*) is ALLOWED — "
+                             "any shell command, hence any write and any "
+                             "unbounded computation")
         else:
             line("WARN", f"agy permissions file missing ({perms}) — every "
                          f"tool call will be auto-denied in headless mode")
+        mcfg = _agy.mcp_config_path()
+        try:
+            _srv = json.loads(mcfg.read_text(encoding="utf-8") or "{}")
+            _has = "asterism_tools" in (_srv.get("mcpServers") or {})
+        except Exception:  # noqa: BLE001
+            _has = False
+        if _has:
+            line("OK", f"agy MCP tools registered: {mcfg}")
+        else:
+            line("WARN", f"agy MCP tools not registered in {mcfg} — the "
+                         f"next agy spawn re-writes it (ensure_mcp_config)")
         # Which ACCOUNT serves the run is decided silently (§2b): this
         # file outranks the Antigravity IDE session, so its presence can
         # quietly move the run onto a different subscription's quota.

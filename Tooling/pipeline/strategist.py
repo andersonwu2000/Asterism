@@ -1911,10 +1911,17 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # empty KB renders neither the Context surface nor the instruction.
     from ..state import kb as _kb
     has_kb = bool(_kb.global_lessons(conn, problem))
+    # The framework's tools reach this wake over MCP, not a shell (see
+    # knowledge/mcp_tools.py). No gateway session: the Strategist has no
+    # Lean file open, and registering one would hold a backend slot for
+    # nothing.
+    from . import write_tools_mcp_config as _write_tools_cfg
+    tools_cfg = _write_tools_cfg(attempts_dir, workspace)
     rc = agent.spawn_llm(
         kind="strategist", prompt_path=prompt_path,
         problem_dir=problem_dir, attempts_dir=attempts_dir,
         session_id=sid, timeout_sec=strategist_timeout,
+        mcp_config_path=tools_cfg,
         prompt_flags={"has_history": has_history, "has_kb": has_kb},
     )
     # Persist the plan note BEFORE any outcome branching: the note is the
@@ -2078,6 +2085,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 problem_dir=problem_dir, attempts_dir=attempts_dir,
                 session_id=sid, is_retry=True, retry_context=err,
                 timeout_sec=strategist_timeout,
+                mcp_config_path=tools_cfg,
             )
             if (rc2 != 0
                     and _failures.is_infra(_rc_to_reason(rc2))

@@ -38,6 +38,36 @@ from ..quality import diagnostics
 from ..state import assemble
 
 
+def tools_mcp_entry(workspace: Path) -> dict:
+    """The `asterism_tools` stdio server entry, shared by every config.
+
+    PYTHONPATH rather than cwd: the client spawns this from the spawn's
+    own directory, and the MCP config schemas (claude's and agy's alike)
+    carry `env` but not `cwd`."""
+    return {
+        "type": "stdio",
+        "command": sys.executable,
+        "args": ["-m", "Tooling.knowledge.mcp_tools"],
+        "env": {"PYTHONPATH": str(workspace)},
+    }
+
+
+def write_tools_mcp_config(attempts_dir: Path, workspace: Path) -> Path:
+    """MCP config for the spawns that need the framework's tools but not
+    the Lean gateway — Strategist and Adversary.
+
+    They had no MCP at all and reached loogle through the shell, which is
+    the capability that made a `command` allowance necessary in the first
+    place. Registering a gateway session for them would open a Lean
+    backend slot nobody uses, so this writes the tools server alone."""
+    path = attempts_dir / "_mcp_tools.json"
+    path.write_text(
+        json.dumps({"mcpServers": {"asterism_tools":
+                                   tools_mcp_entry(workspace)}}, indent=2),
+        encoding="utf-8")
+    return path
+
+
 def _write_mcp_config(attempts_dir: Path, workspace: Path,
                       target: Path, *,
                       pipeline_id: str, problem: str,
@@ -97,8 +127,13 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
         raise RuntimeError(
             f"gateway /register returned no session_token: {body}")
 
+    # `asterism_tools` is the framework's tool surface — the whitelist,
+    # moved to a layer that can express it. It rides the same MCP channel
+    # as the gateway so both providers reach it the same way; see
+    # `knowledge/mcp_tools.py` for why a shell allowlist could not.
     config = {
         "mcpServers": {
+            "asterism_tools": tools_mcp_entry(workspace),
             "lsp": {
                 "type": "http",
                 "url": f"{base}/mcp",
