@@ -135,6 +135,42 @@ def _mk_deliverable(conn, tmp_path: Path) -> int:
     return gid
 
 
+def test_ingest_gate_blocks_on_db_file_drift(tmp_path: Path) -> None:
+    """`proof_store.inventory` is the DB↔file oracle, and until
+    2026-07-30 its only caller was the operator typing `asterism
+    drift-check` — so nothing asked it across a 13-hour unattended run.
+    Ingest is the moment it matters (this publishes the snapshot) and,
+    unlike the per-spawn audit, a place where the question is answerable:
+    the oracle only needs the tree to agree with the DB, not to know who
+    wrote a file.
+
+    Passing `workspace` is what arms it; the gate stays quiet without one
+    so callers that have no tree to inspect are unaffected."""
+    conn = _conn(tmp_path)
+    gid = _mk_deliverable(conn, tmp_path)
+    # The seed helper writes a `sorry` body under a `proved` row — which
+    # the oracle rightly calls a silent fake proof. Make the baseline
+    # honest first, or the test proves nothing about orphans.
+    proved = tmp_path / str(_db.get_goal(conn, gid)["lean_path"])
+    proved.write_text("theorem wanted : True := trivial\n", encoding="utf-8")
+    assert verify_decision(Decision(kind="Ingest"), conn,
+                           problem="Test.px", workspace=tmp_path) == ""
+
+    # A proof file with no DB row — a placement that crashed before its
+    # commit, or something that never went through the chokepoint.
+    orphan = proved.parent / "L_ghost.lean"
+    orphan.write_text("theorem ghost : True := trivial\n", encoding="utf-8")
+
+    err = verify_decision(Decision(kind="Ingest"), conn,
+                          problem="Test.px", workspace=tmp_path)
+    assert "Ingest blocked" in err and "orphan" in err
+    assert "drift-check" in err
+    # Without a workspace there is nothing to inspect — unchanged.
+    assert verify_decision(Decision(kind="Ingest"), conn,
+                           problem="Test.px") == ""
+    conn.close()
+
+
 def test_ingest_gate_blocks_on_proved_negation(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     # A proved+marked deliverable satisfies the base Ingest requirement.

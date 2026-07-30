@@ -298,88 +298,200 @@ def test_provider_resolves_by_config_name(monkeypatch: pytest.MonkeyPatch):
 # Artifact tripwire — the write control that replaces the sandbox
 # ---------------------------------------------------------------------
 
-def test_tripwire_fails_the_spawn_when_a_proof_file_changes(
+def _audit_workspace(tmp_path: Path) -> "tuple[Path, Path]":
+    """A git repo with one problem dir. Returns (workspace, problem_dir).
+
+    A real repo because the third layer's instrument IS `git status`:
+    stubbing it would test the stub."""
+    import subprocess
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / "proofs").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=True,
+                   capture_output=True)
+    return tmp_path, pdir
+
+
+def _lease(workspace: Path, *, goal_id: int, lean_path: str,
+           target_kind: str = "Goal") -> None:
+    """Register goal `goal_id` and put a leased queue row on it."""
+    from Tooling.state import db as _db
+    conn = _db.connect(workspace / "asterism.db")
+    _db.init_schema(conn)
+    conn.execute(
+        "INSERT OR IGNORE INTO problems (name, manifest_path, created_at)"
+        " VALUES ('p', 'Problems/p/Manifest.md',"
+        " '2026-07-30T10:00:00Z')")
+    conn.execute(
+        "INSERT INTO goals (id, problem, slug, lean_path, statement,"
+        " kind, origin, status, depth, attempts, created_at, updated_at)"
+        " VALUES (?, 'p', 'g', ?, 'T', 'theorem', 'root', 'attempting',"
+        " 0, 0, '2026-07-30T10:00:00Z', '2026-07-30T10:00:00Z')",
+        (goal_id, lean_path))
+    conn.execute(
+        "INSERT INTO queue (kind, target_id, target_kind, priority,"
+        " problem, owner_pid, leased_at, created_at)"
+        " VALUES ('Formalizer', ?, ?, 10, 'p', 4242, '2026-07-30T10:00:00Z',"
+        " '2026-07-30T10:00:00Z')", (str(goal_id), target_kind))
+    conn.commit()
+    conn.close()
+
+
+def test_audit_is_silent_when_a_live_lease_covers_the_proof_file(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """agy must run with `command(*)` (its matcher takes an exact
-    literal or `*`), and every command goes through powershell — so a
-    reachable shell, hence a write channel, is unavoidable. The control
-    is verification after the fact: it catches a write through ANY
-    channel, not just the tool the sandbox knows about."""
+    """The 07-30 misfire, pinned.
+
+    A Formalizer decomposed its goal; the framework rewrote that goal's
+    own proof file into an alias on the strategy — a legal commit
+    through `state/proof_store` — while a second dispatch on the same
+    goal was still inside its provider call. The old check compared file
+    snapshots, could not see WHO wrote, and replaced an honest spawn's
+    rc with `provider_misconfigured`. Legitimacy is per-lease: a file
+    the queue says someone is working on is fair game."""
     from Tooling.agent import runtime
-    pdir = tmp_path / "Problems" / "p"
-    (pdir / "proofs").mkdir(parents=True)
-    (pdir / "Root.lean").write_text("theorem main : T := by sorry\n",
-                                    encoding="utf-8")
-    (pdir / "proofs" / "L_a.lean").write_text("-- a\n", encoding="utf-8")
-    before = runtime._artifact_fingerprint(pdir)
+    ws, pdir = _audit_workspace(tmp_path)
+    proof = pdir / "proofs" / "L_g.lean"
+    proof.write_text("theorem g : T := by sorry\n", encoding="utf-8")
+    _lease(ws, goal_id=7140,
+           lean_path="Problems/p/proofs/L_g.lean")
 
-    assert not runtime._artifact_tripwire("strategist", pdir, before)
+    before = runtime._artifact_snapshot(pdir, ws, "p")
+    proof.write_text("def g := @s24112\n", encoding="utf-8")
 
-    (pdir / "proofs" / "L_a.lean").write_text("-- tampered\n",
-                                              encoding="utf-8")
-    assert runtime._artifact_tripwire("strategist", pdir, before)
-    out = capsys.readouterr().out
-    assert "artifact-tripwire" in out and "proofs/L_a.lean" in out
+    assert runtime._artifact_audit(
+        kind="formalizer", problem_dir=pdir, workspace=ws, problem="p",
+        attempts_dir=tmp_path / ".attempts" / "x", before=before) == []
+    assert "artifact-audit" not in capsys.readouterr().out
 
 
-def test_tripwire_catches_a_user_file_edit(tmp_path: Path) -> None:
-    """Root.lean is both the assembly target and the pinned baseline,
-    and the framework only ever rewrites it OUTSIDE a spawn — so a
-    change during one is always a violation."""
+def test_audit_reports_a_proof_file_no_lease_covers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The case worth catching: a worker rewriting SOMEONE ELSE's proved
+    brick. No live lease covers that file, so no legitimate writer
+    exists — which is decidable even though "who wrote it" is not."""
     from Tooling.agent import runtime
-    pdir = tmp_path / "Problems" / "p"
-    (pdir / "proofs").mkdir(parents=True)
+    ws, pdir = _audit_workspace(tmp_path)
+    (pdir / "proofs" / "L_g.lean").write_text("mine\n", encoding="utf-8")
+    other = pdir / "proofs" / "L_someone_else.lean"
+    other.write_text("theorem done : T := trivial\n", encoding="utf-8")
+    _lease(ws, goal_id=7140, lean_path="Problems/p/proofs/L_g.lean")
+
+    before = runtime._artifact_snapshot(pdir, ws, "p")
+    other.write_text("theorem done : T := by sorry\n", encoding="utf-8")
+
+    found = runtime._artifact_audit(
+        kind="formalizer", problem_dir=pdir, workspace=ws, problem="p",
+        attempts_dir=tmp_path / ".attempts" / "x", before=before)
+    assert [v["layer"] for v in found] == ["proofs"]
+    assert found[0]["path"] == "proofs/L_someone_else.lean"
+    assert "artifact-audit" in capsys.readouterr().out
+
+
+def test_audit_reports_a_user_file_change(tmp_path: Path) -> None:
+    """The pinned baseline (`user_file_history` + the root gate) has no
+    writer while a spawn runs. Reported, not fatal: root assembly is a
+    framework write to the same file, and 07-30 taught what happens when
+    an incomplete model of legitimacy gets a fatal consequence."""
+    from Tooling.agent import runtime
+    ws, pdir = _audit_workspace(tmp_path)
     (pdir / "Root.lean").write_text("stub\n", encoding="utf-8")
-    before = runtime._artifact_fingerprint(pdir)
 
+    before = runtime._artifact_snapshot(pdir, ws, "p")
     (pdir / "Root.lean").write_text("assembled\n", encoding="utf-8")
-    assert runtime._artifact_tripwire("formalizer", pdir, before)
+
+    found = runtime._artifact_audit(
+        kind="formalizer", problem_dir=pdir, workspace=ws, problem="p",
+        attempts_dir=tmp_path / ".attempts" / "x", before=before)
+    assert [(v["layer"], v["path"]) for v in found] == [
+        ("user_file", "Root.lean")]
 
 
-def test_tripwire_ignores_the_attempts_dir_and_identical_rewrites(
+def test_audit_covers_the_whole_repo_except_the_output_regions(
     tmp_path: Path,
 ) -> None:
-    """A spawn's own output dir is not guarded, and a byte-identical
-    rewrite is not a violation worth failing a wake over."""
+    """What the old enumeration missed entirely: a spawn writing into
+    `Tooling/`, another problem, or `Asterism.yaml` was unwatched,
+    because the guard listed three files and one dir. The complement of
+    the framework's own output regions is a rule instead of a list."""
     from Tooling.agent import runtime
-    pdir = tmp_path / "Problems" / "p"
-    (pdir / "proofs").mkdir(parents=True)
-    (pdir / "proofs" / "L_a.lean").write_text("-- a\n", encoding="utf-8")
-    (pdir / ".drafts").mkdir()
-    before = runtime._artifact_fingerprint(pdir)
+    ws, pdir = _audit_workspace(tmp_path)
+    before = runtime._artifact_snapshot(pdir, ws, "p")
 
-    (pdir / ".drafts" / "strategist_plan.md").write_text("notes",
+    (ws / "Tooling").mkdir()
+    (ws / "Tooling" / "hack.py").write_text("x = 1\n", encoding="utf-8")
+    (ws / "Problems" / "other").mkdir(parents=True)
+    (ws / "Problems" / "other" / "Root.lean").write_text("t\n",
                                                          encoding="utf-8")
-    (pdir / "proofs" / "L_a.lean").write_text("-- a\n", encoding="utf-8")
-    assert not runtime._artifact_tripwire("strategist", pdir, before)
+    for region in (".attempts", ".asterism", "Papers"):
+        (ws / region).mkdir()
+        (ws / region / "note.txt").write_text("fine\n", encoding="utf-8")
+
+    found = runtime._artifact_audit(
+        kind="strategist", problem_dir=pdir, workspace=ws, problem="p",
+        attempts_dir=tmp_path / ".attempts" / "x", before=before)
+    paths = {v["path"] for v in found if v["layer"] == "repo"}
+    assert paths == {"Tooling/hack.py", "Problems/other/Root.lean"}
 
 
-def test_tripwire_rc_maps_to_provider_misconfigured() -> None:
-    """Retrying cannot fix a spawn that wrote where it must not."""
+def test_audit_widens_when_legitimacy_is_unknowable(tmp_path: Path) -> None:
+    """No DB, no problem name, or a Problem-level lease (mint, Librarian,
+    harvest — they sweep the tree) all mean the footprint cannot be
+    narrowed. Widen, never fail: an incomplete model of legitimacy that
+    is allowed to be fatal spends its life failing honest work, which is
+    exactly what happened on 07-30."""
     from Tooling.agent import runtime
-    assert (failures.rc_to_reason(runtime.RC_SPAWN_WROTE_OUTSIDE_SANDBOX)
-            == "provider_misconfigured")
+    ws, pdir = _audit_workspace(tmp_path)
+    proof = pdir / "proofs" / "L_g.lean"
+    proof.write_text("before\n", encoding="utf-8")
+
+    assert runtime._legit_proofs_writes(ws, None) == runtime._PROOFS_ALL
+    assert runtime._legit_proofs_writes(ws, "p") == runtime._PROOFS_ALL
+
+    _lease(ws, goal_id=7140, lean_path="Problems/p/proofs/L_g.lean",
+           target_kind="Problem")
+    assert runtime._legit_proofs_writes(ws, "p") == runtime._PROOFS_ALL
+
+    before = runtime._artifact_snapshot(pdir, ws, "p")
+    proof.write_text("after\n", encoding="utf-8")
+    assert runtime._artifact_audit(
+        kind="librarian", problem_dir=pdir, workspace=ws, problem="p",
+        attempts_dir=tmp_path / ".attempts" / "x", before=before) == []
 
 
-def test_tripwire_tolerates_a_sibling_pipelines_new_brick(
+def test_audit_writes_a_durable_record_not_just_a_log_line(
     tmp_path: Path,
 ) -> None:
-    """`dispatch.pool` > 1 means a sibling pipeline can land a brick
-    through proof_store while this spawn runs (b6_1 07-30: two mints in
-    parallel). Additions must not fail an honest wake — drift-check
-    catches a smuggled file with no DB row. A REWRITE of a pre-existing
-    proof still trips."""
+    """A log line only reaches whoever is watching the log — the
+    operator, and nobody else (user ruling 07-30). The ledger is the
+    input a revert would need, so the detection does not have to be
+    rewritten when one gets built."""
+    import json
     from Tooling.agent import runtime
-    pdir = tmp_path / "Problems" / "p"
-    (pdir / "proofs").mkdir(parents=True)
-    (pdir / "proofs" / "L_old.lean").write_text("-- old\n", encoding="utf-8")
-    before = runtime._artifact_fingerprint(pdir)
+    ws, pdir = _audit_workspace(tmp_path)
+    (pdir / "Defs.lean").write_text("a\n", encoding="utf-8")
+    before = runtime._artifact_snapshot(pdir, ws, "p")
+    (pdir / "Defs.lean").write_text("b\n", encoding="utf-8")
 
-    (pdir / "proofs" / "L_sibling.lean").write_text("-- landed\n",
-                                                    encoding="utf-8")
-    assert not runtime._artifact_tripwire("formalizer", pdir, before)
+    runtime._artifact_audit(
+        kind="formalizer", problem_dir=pdir, workspace=ws, problem="p",
+        attempts_dir=tmp_path / ".attempts" / "abc", before=before)
 
-    (pdir / "proofs" / "L_old.lean").write_text("-- rewritten\n",
-                                                encoding="utf-8")
-    assert runtime._artifact_tripwire("formalizer", pdir, before)
+    rows = [json.loads(ln) for ln in
+            (ws / runtime._AUDIT_LEDGER).read_text(
+                encoding="utf-8").splitlines() if ln.strip()]
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "formalizer"
+    assert rows[0]["attempts_dir"] == "abc"
+    assert rows[0]["violations"][0]["path"] == "Defs.lean"
+
+
+def test_no_audit_layer_can_fail_a_spawn() -> None:
+    """The 07-30 defect was not only the false positive: the check
+    replaced the provider's rc, so a spawn that had done real work was
+    discarded. Nothing here returns an rc any more."""
+    from Tooling.agent import runtime
+    assert not hasattr(runtime, "RC_SPAWN_WROTE_OUTSIDE_SANDBOX")
+    src = Path(runtime.__file__).read_text(encoding="utf-8")
+    audit_call = src.split("_artifact_audit(kind=kind")[1][:200]
+    assert "return" not in audit_call.split("return rc")[0]

@@ -595,6 +595,26 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         if not db.deliverables(conn, problem=problem) and not root_proved:
             return ("Ingest requires at least one marked deliverable "
                     "(MarkDeliverable) or a proved root goal")
+        # The tree must be ACCOUNTABLE before it becomes terminal.
+        # `proof_store.inventory` is the framework's DB↔file oracle and
+        # it had exactly one caller — the operator typing `asterism
+        # drift-check` — so across a 13-hour unattended run nothing ever
+        # asked it (2026-07-30). Ingest is both the moment it matters
+        # (this publishes the snapshot) and a place where the question is
+        # answerable: unlike the per-spawn audit, which cannot tell a
+        # concurrent legal commit from tampering, the oracle only needs
+        # the tree to agree with the DB.
+        from ..state import proof_store as _proof_store
+        drift = (_proof_store.inventory(conn, workspace, scope=problem)
+                 if workspace is not None else None)
+        if drift is not None and not drift.ok():
+            print(f"[strategist] Ingest({problem}) blocked by DB↔file "
+                  f"drift: {drift.summary()}; run `asterism drift-check` "
+                  f"— operator must resolve", flush=True)
+            return (f"Ingest blocked: {drift.summary()} — the proofs tree "
+                    f"does not agree with the DB, so the snapshot would "
+                    f"describe something that is not there. A human must "
+                    f"resolve it (`asterism drift-check`)")
         # Feature D — a PROVED negation of a still-pursued target blocks
         # the terminal judgment: the user asked for P and the kernel
         # says ¬P; the honest exit is RequestUserAmend (hand the

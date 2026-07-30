@@ -198,7 +198,8 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
         timeout_sec = timeout_sec_override
     import time as _time
     _t0 = _time.monotonic()
-    _before = _artifact_fingerprint(problem_dir)
+    _before = _artifact_snapshot(problem_dir, usage_workspace,
+                                 usage_problem)
     rc = llm.get_provider(kind=kind).spawn(llm.LLMRequest(
         kind=kind,
         prompt_path=prompt_path,
@@ -221,96 +222,253 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
                         wall_sec=_time.monotonic() - _t0,
                         workspace=usage_workspace, problem=usage_problem,
                         pipeline_id=usage_pipeline_id)
-    if _artifact_tripwire(kind, problem_dir, _before):
-        return RC_SPAWN_WROTE_OUTSIDE_SANDBOX
+    _artifact_audit(kind=kind, problem_dir=problem_dir,
+                    workspace=usage_workspace, problem=usage_problem,
+                    attempts_dir=attempts_dir, before=_before)
     return rc
 
 
-#: rc for "the spawn changed a file it must never touch". Provider-
-#: independent, so it lives here rather than in any one provider's rc
-#: block. Maps to `provider_misconfigured` (state/failures) — the cure
-#: is an operator fix, never a retry.
-RC_SPAWN_WROTE_OUTSIDE_SANDBOX = 123
+#: The problem-dir files whose baseline is pinned (`user_file_history`
+#: + the root gate). Watched here, enforced there.
+_USER_FILES = ("Root.lean", "Defs.lean", "Manifest.md")
 
-#: The problem-dir files a spawn must never write. `proofs/` is the
-#: framework's own output (every legal write goes through
-#: `state/proof_store`); the three user files are the pinned baseline
-#: (`user_file_history` + the root gate).
-_GUARDED_USER_FILES = ("Root.lean", "Defs.lean", "Manifest.md")
+#: Repo regions where a write DURING a spawn is expected, so a change
+#: there is not evidence of anything: the spawn sandboxes, the
+#: framework's own runtime state, the Scholar's shelf, the harvest
+#: target, and the benchmark ledger. `Problems/**/proofs/` needs no
+#: entry — it is gitignored, hence invisible to `_repo_status`, and is
+#: adjudicated by the per-lease footprint instead.
+_EXPECTED_WRITE_PREFIXES = (
+    ".attempts/", ".asterism/", "Papers/", "Library/", "Benchmarks/",
+)
+
+#: Where a violation is recorded, one JSON object per audit. A log line
+#: only reaches whoever is watching the log — which is the operator and
+#: nobody else. The durable record is what a future rollback would need
+#: as input (user ruling 2026-07-30: shouting has limited value, the
+#: risk is low, revisit with a real revert mechanism if it ever bites).
+_AUDIT_LEDGER = ".asterism/artifact_audit.jsonl"
 
 
-def _artifact_fingerprint(problem_dir: Path) -> "dict[str, str]":
-    """Hash the files a spawn must not change: the three user files and
-    every `proofs/*.lean`. Cheap (a few dozen small files) and stable.
+def _artifact_snapshot(problem_dir: Path, workspace: "Path | None",
+                       problem: "str | None") -> dict:
+    """One observation of everything the audit compares.
 
-    Why hashes and not mtimes: a rewrite with identical content is not a
-    violation worth failing a wake over, and mtime alone false-fires on
-    tools that touch without changing."""
+    Three questions, three instruments, because no single one answers
+    all three (see `_artifact_audit` for what each layer is for)."""
+    return {
+        "user": _digests(problem_dir, _USER_FILES),
+        "proofs": _digests(problem_dir / "proofs", None),
+        "legit": _legit_proofs_writes(workspace, problem),
+        "repo": _repo_status(workspace),
+    }
+
+
+def _digests(base: Path, names: "tuple[str, ...] | None") -> "dict[str, str]":
+    """blake2b of `names` under `base`, or of every `*.lean` when None.
+
+    Hashes rather than mtimes: a rewrite with identical bytes is not a
+    change worth reporting, and mtime alone fires on tools that touch
+    without writing."""
     import hashlib
     out: "dict[str, str]" = {}
-
-    def _put(rel: str, path: Path) -> None:
+    try:
+        files = ([base / n for n in names] if names
+                 else sorted(base.glob("*.lean")))
+    except OSError:
+        return out
+    for f in files:
         try:
-            out[rel] = hashlib.blake2b(path.read_bytes(),
-                                       digest_size=8).hexdigest()
+            out[f.name] = hashlib.blake2b(f.read_bytes(),
+                                          digest_size=8).hexdigest()
         except OSError:
             pass
-
-    for name in _GUARDED_USER_FILES:
-        f = problem_dir / name
-        if f.is_file():
-            _put(name, f)
-    proofs = problem_dir / "proofs"
-    if proofs.is_dir():
-        for f in sorted(proofs.glob("*.lean")):
-            _put(f"proofs/{f.name}", f)
     return out
 
 
-def _artifact_tripwire(kind: str, problem_dir: Path,
-                       before: "dict[str, str]") -> bool:
-    """True iff the spawn changed a guarded artifact — report and fail.
+def _repo_status(workspace: "Path | None") -> "set[str]":
+    """`git status --porcelain -uall`, as a line set.
 
-    This is the write control, and it replaces the sandbox rather than
-    supplementing it (2026-07-30). The claude side denies the write
-    tools and fences Bash writes with `ASTERISM_SPAWN_WRITE_ROOTS`, but
-    a Bash write there was never actually *verified*; the Antigravity
-    side has to run with `command(*)` (its permission matcher takes an
-    exact literal or `*` and nothing between) and every command goes
-    through powershell, so a reachable shell — hence a write channel —
-    is unavoidable there. Checking the artifacts afterwards catches a
-    write through ANY channel: tool, shell, absolute-path interpreter,
-    MCP.
+    The cheap way to ask "what in this repo is not as committed?"
+    without enumerating a guarded list — and enumerations rot: the old
+    check watched three files plus one `proofs/` dir, so a spawn writing
+    into `Tooling/`, another problem, `lakefile.lean` or `Asterism.yaml`
+    was entirely unwatched. ~100ms measured on this repo (23 lines).
 
-    Deliberately NOT a soundness mechanism: a hand-written proof file
-    still has to pass the commit chokepoint (`state/proof_store`), the
-    per-decl axiom gate, and the user-file baseline pin. This is the
-    layer that makes such an attempt LOUD instead of silent, and it
-    turns "the fence held" from an assumption into an observation.
-    """
-    after = _artifact_fingerprint(problem_dir)
-    # ADDITIONS to proofs/ are not evidence of tampering: with
-    # `dispatch.pool` > 1 a sibling pipeline on the same problem commits
-    # its brick through `state/proof_store` while this spawn is still
-    # running (b6_1 07-30 ran two mints concurrently). Flagging those
-    # would fail honest wakes. A smuggled NEW file is still caught —
-    # `asterism drift-check` reports any proofs file with no DB row.
-    # What has no other backstop, and stays guarded here, is a REWRITE
-    # of a file that already existed when this spawn started.
-    changed = sorted(
-        k for k in set(before) | set(after)
-        if before.get(k) != after.get(k)
-        and not (k.startswith("proofs/") and k not in before))
-    if not changed:
-        return False
-    print(f"[artifact-tripwire] {kind} spawn changed {len(changed)} "
-          f"guarded file(s) under {problem_dir}: "
-          f"{', '.join(changed[:8])}"
-          f"{' …' if len(changed) > 8 else ''} — a spawn may only write "
-          f"inside its attempts dir; every proofs/ write goes through "
-          f"state/proof_store. Failing the spawn; inspect before "
-          f"re-running.", flush=True)
-    return True
+    Two blind spots, stated rather than papered over. A MODIFICATION to
+    an untracked file yields no new line (its `??` line is already
+    there), which is exactly the case for every user file of a problem
+    that was never committed — hence the separate digests. And ignored
+    trees are invisible, which is why `proofs/` is a different layer."""
+    if workspace is None:
+        return set()
+    import subprocess
+
+    from ..core.process_group import no_window_creationflags
+    try:
+        r = subprocess.run(
+            ["git", "status", "--porcelain", "-uall"],
+            cwd=str(workspace), capture_output=True, text=True,
+            timeout=30, creationflags=no_window_creationflags())
+    except Exception:  # noqa: BLE001 — not a repo / git missing / slow disk
+        return set()
+    if r.returncode != 0:
+        return set()
+    return {ln for ln in r.stdout.splitlines() if ln.strip()}
+
+
+#: `_legit_proofs_writes` sentinel: every `proofs/` path is fair game
+#: this round. Widening beats failing — see the docstring.
+_PROOFS_ALL = "*"
+
+
+def _legit_proofs_writes(workspace: "Path | None",
+                         problem: "str | None") -> "set[str] | str":
+    """The `proofs/` files that in-flight work may legitimately change.
+
+    "Who wrote this file" has no answer from file snapshots: with
+    `dispatch.pool` > 1 the framework commits a sibling pipeline's work
+    through `state/proof_store` while this spawn runs, and on 2026-07-30
+    a decomposition legitimately rewrote its target's own file into an
+    alias — which the previous check called tampering and used to
+    discard an honest spawn's output.
+
+    "Does ANY live lease have business touching this file" does have an
+    answer, and the queue holds it. A Goal-targeted worker may change
+    its goal's file and its strategies' files; a Problem-targeted one
+    (mint, Librarian, harvest) sweeps the tree, so the honest answer for
+    it is "all of it".
+
+    Unknown lease kinds and unresolvable state WIDEN rather than
+    narrow. That direction is the whole lesson of the 07-30 misfire: a
+    model of legitimacy that is incomplete must be loud, never fatal,
+    or it spends its life failing honest work."""
+    if workspace is None or not problem:
+        return _PROOFS_ALL
+    from ..state import db as _db
+    allowed: "set[str]" = set()
+    try:
+        conn = _db.connect(workspace / "asterism.db")
+    except Exception:  # noqa: BLE001 — no DB (unit-test spawn, fresh tree)
+        return _PROOFS_ALL
+    try:
+        leases = conn.execute(
+            "SELECT target_id, target_kind FROM queue"
+            " WHERE owner_pid IS NOT NULL AND problem = ?",
+            (problem,)).fetchall()
+        for tid, tkind in leases:
+            if tkind != "Goal" or not str(tid).isdigit():
+                return _PROOFS_ALL
+            for (lp,) in conn.execute(
+                    "SELECT lean_path FROM goals WHERE id = ?", (tid,)):
+                if lp:
+                    allowed.add(Path(str(lp)).name)
+            for lp, sp in conn.execute(
+                    "SELECT lean_path, scratch_path FROM strategies"
+                    " WHERE goal_id = ?", (tid,)):
+                for p in (lp, sp):
+                    if p:
+                        allowed.add(Path(str(p)).name)
+    except Exception:  # noqa: BLE001 — schema drift must not fail a spawn
+        return _PROOFS_ALL
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return allowed
+
+
+def _artifact_audit(*, kind: str, problem_dir: Path,
+                    workspace: "Path | None", problem: "str | None",
+                    attempts_dir: Path, before: dict) -> "list[dict]":
+    """Report every write this spawn's window cannot account for.
+
+    Replaces the sandbox rather than supplementing it (2026-07-30): the
+    claude side denies the write tools and fences Bash with
+    `ASTERISM_SPAWN_WRITE_ROOTS`, but the Antigravity side must run with
+    `command(*)` — its permission matcher takes an exact literal or `*`
+    and nothing between — and every command shells through powershell,
+    so a write channel there is unavoidable. Checking afterwards catches
+    a write through ANY channel: tool, shell, interpreter, MCP.
+
+    Three layers, because each answers a question the others cannot:
+      user files — no legitimate writer exists during a spawn, and the
+        pin (`user_file_history` + root gate) is what enforces it;
+      proofs/    — legitimacy is per-lease, not per-file (see
+        `_legit_proofs_writes`); gitignored, so git cannot see it;
+      the rest of the repo — the complement of the framework's own
+        output regions, via `git status`; catches `Tooling/`, other
+        problems, `lakefile.lean`, `Asterism.yaml`, which nothing
+        watched before.
+
+    NOT a soundness mechanism, and no layer fails the spawn. A written
+    proof still faces the commit chokepoint, the per-decl axiom gate and
+    the baseline pin; those decide. This layer turns "the fence held"
+    from an assumption into an observation, and records enough for a
+    revert to be written later without redoing the detection."""
+    after = _artifact_snapshot(problem_dir, workspace, problem)
+    out: "list[dict]" = []
+
+    for name, was in sorted(before["user"].items()):
+        if after["user"].get(name) != was:
+            out.append({"layer": "user_file", "path": name,
+                        "why": "the pinned baseline has no writer while "
+                               "a spawn runs"})
+
+    widened = _PROOFS_ALL in (before["legit"], after["legit"])
+    if not widened:
+        # Union of the lease snapshots taken either side of the spawn: a
+        # lease released moments before the audit still legitimises the
+        # write it just made. Narrowing to "live right now" would
+        # reintroduce the same race in a new place.
+        allowed = set(before["legit"]) | set(after["legit"])
+        for name in sorted(set(before["proofs"]) | set(after["proofs"])):
+            if (before["proofs"].get(name) != after["proofs"].get(name)
+                    and name not in allowed):
+                out.append({"layer": "proofs", "path": f"proofs/{name}",
+                            "why": "no in-flight lease covers this file"})
+
+    appeared = after["repo"] - before["repo"]
+    for line in sorted(appeared):
+        rel = line[3:].strip().strip('"')
+        if rel.startswith(_EXPECTED_WRITE_PREFIXES):
+            continue
+        out.append({"layer": "repo", "path": rel,
+                    "why": "outside every expected write region"})
+
+    if not out:
+        return out
+    shown = ", ".join(v["path"] for v in out[:6])
+    print(f"[artifact-audit] {kind} spawn: {len(out)} unaccounted write(s)"
+          f" — {shown}{' …' if len(out) > 6 else ''}. Not failing the "
+          f"spawn; the commit chokepoint, axiom gate and baseline pin "
+          f"decide. Recorded in {_AUDIT_LEDGER}.", flush=True)
+    _record_audit(workspace, kind=kind, problem=problem,
+                  attempts_dir=attempts_dir, violations=out)
+    return out
+
+
+def _record_audit(workspace: "Path | None", *, kind: str,
+                  problem: "str | None", attempts_dir: Path,
+                  violations: "list[dict]") -> None:
+    """Append the audit to the durable ledger. Best-effort: telemetry
+    must never be the reason a spawn fails."""
+    if workspace is None:
+        return
+    import json as _json
+    from datetime import datetime, timezone
+    try:
+        path = workspace / _AUDIT_LEDGER
+        path.parent.mkdir(parents=True, exist_ok=True)
+        row = {"ts": datetime.now(timezone.utc).isoformat(),
+               "kind": kind, "problem": problem,
+               "attempts_dir": attempts_dir.name,
+               "violations": violations}
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _record_spawn_usage(*, kind: str, attempts_dir: Path,
