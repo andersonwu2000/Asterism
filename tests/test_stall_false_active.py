@@ -204,6 +204,118 @@ def test_park_last_route_escalates_to_review(tmp_path: Path) -> None:
     conn.close()
 
 
+def _confirm_shelve(conn, goal_id: int, *, batch: str) -> int:
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, batch_id, outcome,"
+        " created_at, updated_at)"
+        " VALUES (?, 0, 'pending_review', 'ConfirmShelve', CAST(? AS TEXT),"
+        " ?, 'success', ?, ?)",
+        (P, goal_id, batch, _db.now(), _db.now()))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def _mint_inject(conn, *, batch: str, outcome: str | None) -> int:
+    """A no-target Inject sibling — the helper brick a ConfirmShelve
+    promises. `outcome=None` = still in flight."""
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, batch_id, outcome,"
+        " created_at, updated_at)"
+        " VALUES (?, 0, 'pending_review', 'Inject', ?, ?, ?, ?)",
+        (P, batch, outcome, _db.now(), _db.now()))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+# ---------------------------------------------------------------------
+# Promise-aware aliveness (2026-07-30, b6_1 four-level review cascade)
+# ---------------------------------------------------------------------
+
+def test_promised_park_does_not_escalate_the_parent(tmp_path: Path) -> None:
+    """A shelved sub-goal whose promised helper batch is still in flight
+    keeps the parent WAITING — no stall, no review wake.
+
+    b6_1 07-30: the leaf was parked by a ConfirmShelve that minted two
+    helper bricks in the same batch, yet the parent's only strategy was
+    stalled and the parent (attempts=0, never failed) was handed to a
+    review wake; the Strategist, asked about a goal whose only blocker
+    was the parked child, answered ConfirmShelve — four levels, root
+    included, four full batch cycles. `pending_strategist_review`
+    already counts as alive because a wake is scheduled for it; a park
+    with a live promise has the same property."""
+    conn = _conn(tmp_path)
+    pa = _goal(conn, "pa", status="attempting")
+    sp = _strategy(conn, pa, "proposed")
+    leaf = _goal(conn, "pleaf", status="shelved", origin="backward")
+    _link(conn, sp, leaf)
+    _confirm_shelve(conn, leaf, batch="promise-1")
+    _mint_inject(conn, batch="promise-1", outcome=None)  # in flight
+
+    _tr._maybe_stall_parent_strategies(conn, leaf)
+
+    s = conn.execute("SELECT status FROM strategies WHERE id = ?",
+                     (sp,)).fetchone()
+    assert str(s["status"]) == "proposed"        # still waiting
+    assert str(_db.get_goal(conn, pa)["status"]) == "attempting"
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+        " AND target_id = ?", (P,)).fetchone()
+    assert q["n"] == 0                           # no churn wake
+    conn.close()
+
+
+def test_park_without_a_promise_still_escalates(tmp_path: Path) -> None:
+    """No promise (ConfirmShelve batched with no Inject) → unchanged
+    2026-07-09 behaviour: stall + escalate, or the goal is stranded
+    (BFS dispatches only `open`)."""
+    conn = _conn(tmp_path)
+    pa = _goal(conn, "pa", status="attempting")
+    sp = _strategy(conn, pa, "proposed")
+    leaf = _goal(conn, "pleaf", status="shelved", origin="backward")
+    _link(conn, sp, leaf)
+    _confirm_shelve(conn, leaf, batch="lonely")   # no Inject sibling
+
+    _tr._maybe_stall_parent_strategies(conn, leaf)
+
+    s = conn.execute("SELECT status FROM strategies WHERE id = ?",
+                     (sp,)).fetchone()
+    assert str(s["status"]) == "stalled"
+    assert (str(_db.get_goal(conn, pa)["status"])
+            == "pending_strategist_review")
+    conn.close()
+
+
+def test_promise_that_came_due_escalates_again(tmp_path: Path) -> None:
+    """Once every promised Inject has settled the promise is DUE, not
+    live: `maybe_enqueue_inject_batch_done` has put the Strategist wake
+    in front of it, and if that wake leaves the goal parked with no
+    fresh promise the branch is genuinely out of routes. No timer is
+    involved — the batch reaching terminal state IS the signal."""
+    conn = _conn(tmp_path)
+    pa = _goal(conn, "pa", status="attempting")
+    sp = _strategy(conn, pa, "proposed")
+    leaf = _goal(conn, "pleaf", status="shelved", origin="backward")
+    _link(conn, sp, leaf)
+    _confirm_shelve(conn, leaf, batch="promise-2")
+    _mint_inject(conn, batch="promise-2", outcome="success")   # landed
+
+    assert not _tr._awaiting_promised_batch(conn, leaf)
+    _tr._maybe_stall_parent_strategies(conn, leaf)
+    assert (str(_db.get_goal(conn, pa)["status"])
+            == "pending_strategist_review")
+
+    # ... and a FRESH promise on the same goal makes it wait again —
+    # the user's case: the Strategist re-parks it and mints another
+    # helper instead of reviving. No expiry rule can express this; the
+    # latest ConfirmShelve's batch does.
+    _confirm_shelve(conn, leaf, batch="promise-3")
+    _mint_inject(conn, batch="promise-3", outcome=None)
+    assert _tr._awaiting_promised_batch(conn, leaf)
+    conn.close()
+
+
 def test_bfs_routes_over_budget_open_goal_to_review(
         tmp_path: Path) -> None:
     """Organic budget guard (putnam_2025_b6 hot moot loop, 4,317

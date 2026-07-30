@@ -213,7 +213,12 @@ _WATERMARKS = {
     # apply_problem_transition — conscious bump.
     # 1530→1580 (2026-07-12): FSM P3 — WAKE_LEGALITY matrix +
     # problem_accepts_wake — conscious bump.
-    "Tooling/state/transitions.py": 1620,
+    # 1620 → 1660 (2026-07-30): promise-aware aliveness in
+    # `_maybe_stall_parent_strategies` — the b6_1 four-level review
+    # cascade. The two helpers are 30 lines of code and a long WHY
+    # (the incident + why the anti-stranding guarantee survives);
+    # the reasoning belongs next to the predicate it justifies.
+    "Tooling/state/transitions.py": 1660,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.

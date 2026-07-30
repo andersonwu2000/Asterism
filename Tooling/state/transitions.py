@@ -939,6 +939,71 @@ def _inward_kill_strategies(conn: sqlite3.Connection,
             conn, sid, "dead", event="inward_kill")
 
 
+def _awaiting_promised_batch(conn: sqlite3.Connection,
+                             goal_id: int) -> bool:
+    """True iff this shelved goal's own park carries a promise that has
+    not come due yet — i.e. the LATEST `ConfirmShelve` on it shares a
+    batch with at least one `Inject` still lacking an outcome.
+
+    This is the framework's existing definition of a reopen-promise
+    (there is no promise table: a promise IS a ConfirmShelve batched
+    with Injects — see `phase2_context._section_pending_reopens`, which
+    surfaces exactly the complement: batches whose Injects HAVE all
+    resolved). Batch semantics guarantee the continuity: the moment the
+    last Inject settles, `maybe_enqueue_inject_batch_done` enqueues the
+    Strategist wake that puts the due promise in front of it. So there
+    is no window between "helpers in flight" and "wake scheduled", and
+    hence no need for an expiry timer here.
+
+    Why it belongs in the aliveness composition (2026-07-30, b6_1):
+    `pending_strategist_review` already counts as alive for exactly the
+    same reason — something is scheduled to touch that goal. A shelved
+    goal awaiting its promised bricks has the same property, and not
+    counting it produced a 4-level review cascade: 7134 parked (its own
+    batch minting two helpers) → parent's only strategy stalled →
+    `_maybe_review_goal_out_of_routes` handed the parent to a review
+    wake → the Strategist, asked about a goal that had never failed
+    (attempts=0) and whose only blocker was the parked child, answered
+    ConfirmShelve → repeat, one level per wake, root included. Four
+    full batch cycles (strategist + adversary spawns + a Programme
+    revision each), three of them adjudicating a non-question. The
+    per-ancestor escalation is redundant while a promise is live: if
+    the promise is never honoured, the problem-level stall predicate
+    still fires (`db._subtree_has_live_frontier` — an `attempting` node
+    contributes no live frontier by itself, the 2026-07-09 fix), which
+    wakes the Strategist ONCE for the whole problem instead of once per
+    level. Nothing here weakens that guarantee: a shelved sub-goal with
+    no live promise still settles the parent exactly as before.
+    """
+    row = conn.execute(
+        "SELECT batch_id FROM strategist_decisions"
+        " WHERE decision_kind = 'ConfirmShelve'"
+        "   AND target_id = CAST(? AS TEXT)"
+        " ORDER BY id DESC LIMIT 1", (goal_id,)).fetchone()
+    if row is None or not row["batch_id"]:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM strategist_decisions"
+        " WHERE batch_id = ? AND decision_kind = 'Inject'"
+        "   AND outcome IS NULL LIMIT 1",
+        (str(row["batch_id"]),)).fetchone() is not None
+
+
+def _strategy_waits_on_promised_batch(conn: sqlite3.Connection,
+                                      strategy_id: int) -> bool:
+    """True iff any of this strategy's shelved sub-goals is still
+    awaiting its promised helper batch (`_awaiting_promised_batch`)."""
+    for r in conn.execute(
+        "SELECT g.id FROM strategy_subgoals ss"
+        " JOIN goals g ON g.id = ss.subgoal_id"
+        " WHERE ss.strategy_id = ? AND g.status = 'shelved'",
+        (strategy_id,),
+    ).fetchall():
+        if _awaiting_promised_batch(conn, int(r["id"])):
+            return True
+    return False
+
+
 def _maybe_stall_parent_strategies(conn: sqlite3.Connection,
                                    goal_id: int) -> None:
     """Soft-shelve UPWARD transition — the reopenable counterpart of
@@ -964,7 +1029,10 @@ def _maybe_stall_parent_strategies(conn: sqlite3.Connection,
       - a hard-terminal (disproved/dead) sibling → `_kill_upward_chain`
         marks the parent 'dead' (not reopenable);
       - all sub-goals proved → 'succeeded' (handled at proof time);
-      - any alive sibling → genuinely in flight, stays 'proposed'.
+      - any alive sibling → genuinely in flight, stays 'proposed';
+      - a shelved sub-goal whose promised helper batch is still in
+        flight → the promise IS the schedule (see
+        `_awaiting_promised_batch`), so the parent keeps waiting.
     """
     parents = conn.execute(
         "SELECT s.id, s.goal_id FROM strategies s"
@@ -986,6 +1054,8 @@ def _maybe_stall_parent_strategies(conn: sqlite3.Connection,
         if (total > 0 and alive == 0 and comp.get("shelved", 0) >= 1
                 and comp.get("disproved", 0) == 0
                 and comp.get("dead", 0) == 0):
+            if _strategy_waits_on_promised_batch(conn, sid):
+                continue
             apply_strategy_transition(
                 conn, sid, "stalled", event="parent_stall")
             _maybe_review_goal_out_of_routes(conn, int(p["goal_id"]))

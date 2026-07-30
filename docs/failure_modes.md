@@ -33,6 +33,7 @@ infra/投影/cooldown 集合、tests 綁定）；本檔是它的人類敘述層�
 - **Strategist Inject 例外**：pipeline 帶 `decision_id` 時 budget gate 與 attempts 上限**完全 bypass**——Strategist 看完 failure replay 認可後框架不二猜；唯一守住的是 goal status 已終態則 `moot`
 - 五種 provider-infra reason（spawn_fast_fail / quota_exhausted / missing_dep / gateway_unreachable / transient_timeout）→ 不增 attempts、不寫 dead_attempt。除 quota 外設 30s target cooldown；`quota_exhausted` 走 per-kind 指數退避（30s×2ⁿ cap 600s）+ flush 同 kind queue + 可轉 quota-wait。CONSEC daemon-exit：spawn_fast_fail=10（撞頂先向 usage endpoint 確認、真 quota 則轉 quota-wait 不退出）、gateway_unreachable=8、transient_timeout 不進 CONSEC
 - 四條 decline 的 cascade：agent_declined → attempts++（entry_kind 路由已隨 v33 移除）；agent_infeasible → attempts++ + goal `disproved` + propagate；parent_needs_fix → attempts++ + goal `dead` + propagate；agent_shelved / no_nl_correspondence → attempts++ + 轉 pending_strategist_review、不 propagate
+- **soft-shelve 的上行**（`_maybe_stall_parent_strategies` → `_maybe_review_goal_out_of_routes`，07-09 `453c0636`）：子目標 soft-shelve 後父 strategy 的子目標全部結清 ⇒ strategy 轉 `stalled`、父目標交給 T2 review（否則 `attempting` 且無活 strategy 的目標永遠沒人碰，BFS 只吃 `open`）。**aliveness 判準含承諾**（07-30，b6_1 四層級聯):`shelved` 子目標若其最新 ConfirmShelve 所屬批次仍有未結清 Inject，算 **alive** ⇒ 不 stall、不 review，父節點單純等——與 `pending_strategist_review` 算 alive 同一條理由（有排程要發生的事）。批次語意保證連續性:最後一個 Inject 結清的同時 `maybe_enqueue_inject_batch_done` 就排好 wake,所以不需要逾期計時器;承諾未兌現的情況由問題層級 stall 判準(`_subtree_has_live_frontier`,`attempting` 本身不算 live frontier)一次叫醒,而非每層一次。無承諾的 shelved 行為不變
 
 ---
 
