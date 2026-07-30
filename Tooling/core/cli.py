@@ -1254,6 +1254,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         else:
             line("WARN", f"agy permissions file missing ({perms}) — every "
                          f"tool call will be auto-denied in headless mode")
+        # Which ACCOUNT serves the run is decided silently (§2b): this
+        # file outranks the Antigravity IDE session, so its presence can
+        # quietly move the run onto a different subscription's quota.
+        legacy = _agy.legacy_oauth_creds_path()
+        if legacy.is_file():
+            line("WARN", f"{legacy} exists — agy prefers it over the "
+                         f"Antigravity IDE session, so THIS file's account "
+                         f"pays for the run; rename it away to fall back to "
+                         f"the IDE login")
+        else:
+            line("OK", "agy identity: Antigravity IDE session (no "
+                       "oauth_creds.json overriding it)")
     else:
         line("WARN", "agy CLI not on PATH (Antigravity provider "
                      "unavailable)")

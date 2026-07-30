@@ -52,6 +52,30 @@ later session can find them instead of re-deriving:
    authenticate, the fix is an interactive `agy` session by the USER,
    not anything this file can do.
 
+2b. CREDENTIAL PRECEDENCE — a silent-downgrade trap (measured
+   2026-07-30). `agy` resolves credentials in this order:
+       (1) `~/.gemini/oauth_creds.json`   (the gemini-CLI style file)
+       (2) the Antigravity IDE's signed-in session
+   Both were live on this machine under DIFFERENT accounts, and (1)
+   won: agy ran on the operator's own free tier while the IDE was
+   signed in to the Google AI Pro account we actually wanted. Renaming
+   (1) out of the way (`oauth_creds.json.own`) made the Pro account
+   take over — the interactive banner then printed
+   `... (Google AI Pro)` and headless `-p` followed suit.
+   Why it matters: NOTHING errors when the wrong account wins. Quota
+   just comes out of the wrong subscription, and a long run can die on
+   a free-tier ceiling with no diagnostic. So:
+     - Do NOT restore `~/.gemini/oauth_creds.json` while the IDE
+       session is the intended identity.
+     - Anything that re-creates that file (running the old `gemini`
+       CLI, some other Google login) silently flips the account back.
+     - `asterism doctor` warns whenever that file exists, precisely
+       because presence — not content — is the detectable signal.
+   The IDE session is therefore load-bearing state: signing out of the
+   Antigravity IDE, or resetting it, costs a fresh interactive login.
+   The token is NOT in a file we control (Electron app storage), so it
+   cannot be backed up by copying.
+
 3. Tool permissions — `~/.gemini/antigravity-cli/settings.json`
    (agy's own log names this path; global, there is no project-scoped
    settings file and no `--policy` flag). Installed content, approved
@@ -177,6 +201,15 @@ _NON_ARTIFACTS = ("Context.md", "_parser_state.json", "_agy_session.json",
                   "_spawn.stderr")
 
 _SESSION_MAP = "_agy_session.json"
+
+
+def legacy_oauth_creds_path() -> Path:
+    """`~/.gemini/oauth_creds.json` — the gemini-CLI credential file,
+    which `agy` prefers over the Antigravity IDE session (see
+    AUTHORIZED OPERATIONS §2b). Its mere PRESENCE decides which account
+    serves the run, and picking the wrong one is silent, so doctor
+    surfaces it."""
+    return Path.home() / ".gemini" / "oauth_creds.json"
 
 
 def permissions_path() -> Path:

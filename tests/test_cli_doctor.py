@@ -46,7 +46,7 @@ class _FakeRun:
 def _setup_tools(monkeypatch: pytest.MonkeyPatch, *,
                  has_claude: bool = True, has_gemini: bool = True,
                  has_lake: bool = True, has_agy: bool = True,
-                 agy_perms: bool = True,
+                 agy_perms: bool = True, agy_legacy_creds: bool = False,
                  responses: dict[str, tuple[int, str]] | None = None) -> _FakeRun:
     """Wire fake `which` + fake `run` so cmd_doctor sees the desired toolchain.
 
@@ -63,6 +63,10 @@ def _setup_tools(monkeypatch: pytest.MonkeyPatch, *,
         _agy, "permissions_path",
         lambda: (Path(__file__) if agy_perms
                  else Path("/fake/home/.gemini/antigravity-cli/settings.json")))
+    monkeypatch.setattr(
+        _agy, "legacy_oauth_creds_path",
+        lambda: (Path(__file__) if agy_legacy_creds
+                 else Path("/fake/home/.gemini/oauth_creds.json")))
     available = set()
     if has_claude:
         available.add("claude")
@@ -193,6 +197,33 @@ def test_doctor_warns_when_agy_permissions_missing(
     out = capsys.readouterr().out
     assert "agy permissions file missing" in out
     assert "auto-denied" in out
+
+
+def test_doctor_warns_when_legacy_gemini_creds_shadow_the_ide_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`~/.gemini/oauth_creds.json` outranks the Antigravity IDE session
+    (antigravity_cli.py §2b): on 2026-07-30 both existed under different
+    accounts and the file won, so the run silently drew on the operator's
+    free tier while the IDE held the AI Pro login. Nothing errors when
+    the wrong account wins — quota just comes out of the wrong place —
+    so presence has to be surfaced."""
+    _setup_tools(monkeypatch, agy_legacy_creds=True)
+    monkeypatch.chdir(tmp_path)
+    assert cmd_doctor(argparse.Namespace()) == 0
+    out = capsys.readouterr().out
+    assert "prefers it over the Antigravity IDE session" in out
+
+
+def test_doctor_reports_ide_session_identity_when_unshadowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _setup_tools(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    assert cmd_doctor(argparse.Namespace()) == 0
+    assert "agy identity: Antigravity IDE session" in capsys.readouterr().out
 
 
 def test_doctor_agy_absent_is_warn_not_fail(
