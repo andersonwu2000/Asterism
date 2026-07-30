@@ -18,21 +18,31 @@ description = "LLM-orchestrated Lean 4 theorem-proving framework (AND/OR-graph B
 readme = "README.md"
 requires-python = ">=3.12"
 # Floors = versions in the 2026-06-10 dev environment (verified working).
+#
+# Ceilings = the next major, uniformly (a 0.x package's next major is 1).
+# One rule, no per-package judgement. They exist because floors alone let
+# CI resolve whatever PyPI happens to hold that hour: mcp 2.0.0 shipped
+# 2026-07-28 without `mcp.server.fastmcp`, and the gate was red for two
+# days on code that had not changed. A ceiling makes an upstream major an
+# explicit decision (bump here, migrate, re-verify) instead of an outage.
+#
+# The cost is silence about what upstream is doing — .github/workflows/
+# deps-drift.yml buys that signal back, unpinned and non-blocking.
 dependencies = [
-    "mcp>=1.27",
-    "starlette>=0.52",
-    "uvicorn>=0.42",
-    "fastapi>=0.115",
-    "PyYAML>=6.0",
-    "psutil>=7.2",
+    "mcp>=1.27,<2",
+    "starlette>=0.52,<1",
+    "uvicorn>=0.42,<1",
+    "fastapi>=0.115,<1",
+    "PyYAML>=6.0,<7",
+    "psutil>=7.2,<8",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.4",
-    "ruff>=0.15",
+    "pytest>=8.4,<10",
+    "ruff>=0.15,<1",
     # starlette/fastapi TestClient transport for tests/test_serve_api.py
-    "httpx>=0.28",
+    "httpx>=0.28,<1",
 ]
 
 [project.scripts]

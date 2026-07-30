@@ -7,6 +7,10 @@
 #   locally. Blocking since the win32-only tests gained platform
 #   skipifs (first informational run: 3 failed / 1614 passed, all
 #   three were tests of Windows-only contracts).
+# - Dependencies resolve fresh here, so pyproject.toml caps each one
+#   below the next major — otherwise this gate tests whatever PyPI holds
+#   that hour rather than what the daemon runs. Upstream majors are
+#   watched by deps-drift.yml instead, where they cannot block.
 # - No Lean toolchain on runners. The one real-lake e2e
 #   (tests/test_lemma_lookup.py::test_lookup_batch_real_lake) is marked
 #   `real_lake` and OFF by default — conftest drops it from collection

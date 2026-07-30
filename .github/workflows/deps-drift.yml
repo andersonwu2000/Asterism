@@ -1,0 +1,47 @@
+# Dependency-drift probe — informational, never blocking.
+#
+# pyproject.toml caps every dependency below the next major, so an upstream
+# major release can no longer turn the CI gate red on its own (mcp 2.0.0,
+# 2026-07-28, cost two days of red on unchanged code). The price of that cap
+# is silence: without this job we would not learn a major exists until
+# something forced us to look.
+#
+# So this job buys the signal back. It installs the newest of everything,
+# ignoring the caps, and runs the suite with `continue-on-error` — a failure
+# here is a to-do (read the changelog, decide whether to migrate), not a
+# regression. Read the run summary, not the check mark.
+name: Deps drift
+
+on:
+  schedule:
+    - cron: "0 4 * * 1" # Mondays 04:00 UTC
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned, then force the newest of everything
+        run: |
+          pip install -e ".[dev]"
+          pip install --upgrade mcp starlette uvicorn fastapi PyYAML psutil pytest ruff httpx
+      - name: Record what resolved
+        run: |
+          {
+            echo '### Newest available (caps ignored)'
+            echo '```'
+            pip list --format=freeze \
+              | grep -iE '^(mcp|starlette|uvicorn|fastapi|PyYAML|psutil|pytest|ruff|httpx)=' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Lint against the newest (informational)
+        continue-on-error: true
+        run: ruff check --no-cache Tooling
+      - name: Suite against the newest (informational)
+        continue-on-error: true
+        run: pytest -q
