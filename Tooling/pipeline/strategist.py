@@ -1979,11 +1979,19 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                     proposal_body=proposal_body, decisions=decisions,
                     dialogue=dialogue, proof_warn=proof_warn)
                 if arc != 0:
+                    _discard_proposal(
+                        conn, problem, proposal_body, dialogue,
+                        rounds_used,
+                        f"adversary spawn rc={arc}", attempts_dir)
                     return PipelineResult(
                         outcome="failed",
                         failure_reason=_rc_to_reason(arc),
                         failure_detail=f"adversary rc={arc}")
                 if verdict is None:
+                    _discard_proposal(
+                        conn, problem, proposal_body, dialogue,
+                        rounds_used,
+                        "adversary produced no ruling", attempts_dir)
                     return PipelineResult(
                         outcome="failed",
                         failure_reason="agent_no_output",
@@ -2018,9 +2026,9 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 # proposal AND the session: the rejected draft + full
                 # criticism go to the DB for audit; the next wake gets
                 # one line and re-derives blind (design §1/§3).
-                _programme.record_rejection(
-                    conn, problem, proposal_body, dialogue, rounds_used)
-                conn.commit()
+                _discard_proposal(
+                    conn, problem, proposal_body, dialogue, rounds_used,
+                    "adversary rebuttal", attempts_dir)
                 return PipelineResult(
                     outcome="failed",
                     failure_reason="strategist_proposal_rejected",
@@ -2028,6 +2036,9 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                         f"adversary rejected after {rounds_used} "
                         "revision round(s); proposal + criticisms "
                         "recorded in programme_revisions"))
+            _discard_proposal(
+                conn, problem, proposal_body, dialogue, rounds_used,
+                "package verify rejected", attempts_dir)
             return PipelineResult(
                 outcome="failed",
                 failure_reason="strategist_schema_invalid",
@@ -2062,6 +2073,9 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             break
         _persist_plan(problem_dir, attempts_dir)  # retry may rewrite it
         if rc2 != 0:
+            _discard_proposal(
+                conn, problem, proposal_body, dialogue, rounds_used,
+                f"revision spawn rc={rc2}", attempts_dir)
             return PipelineResult(
                 outcome="failed",
                 failure_reason=_rc_to_reason(rc2),
@@ -2073,6 +2087,10 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
         decisions, parse_err, missing = _read_and_parse()
         if missing or decisions is None:
             detail = missing or f"parse: {parse_err}"
+            _discard_proposal(
+                conn, problem, proposal_body, dialogue, rounds_used,
+                "revision round produced no decision.json",
+                attempts_dir)
             return PipelineResult(
                 outcome="failed",
                 failure_reason="strategist_schema_invalid",
@@ -2279,6 +2297,45 @@ def _apply_kb_curation(conn: "Any", *, problem: str,
                   f"reason={op['reason']!r} "
                   f"pre-images={[dict(r) for r in snaps or []]}",
                   flush=True)
+
+
+def _discard_proposal(conn, problem: str,
+                      proposal_body: "str | None",
+                      dialogue: list, rounds_used: int,
+                      reason: str,
+                      attempts_dir: "Path | None" = None) -> None:
+    """Record a proposal that did NOT commit, whichever channel dropped
+    it (Adversary refutation / package verify / revision spawn failure /
+    unusable revision output).
+
+    Pre-v34 only the Adversary path left a row, so a batch dropped by
+    the mechanical channels vanished without trace while its plan note
+    — persisted before the batch is judged — survived asserting the
+    dispatch. The next wake then had to reconstruct that from three
+    artifacts (07-29 SG ×2). No proposal at all (exempt batch: Noop /
+    RequestUserAmend / FetchPaper) → nothing to record; the plan note's
+    provenance stamp still covers those.
+
+    `attempts_dir` is the fallback source: an early verify rejection
+    fires BEFORE the package gate reads `proposal.md`, so the body the
+    agent wrote exists only on disk at that point."""
+    if not proposal_body and attempts_dir is not None:
+        try:
+            proposal_body = (attempts_dir / PROPOSAL_BASENAME).read_text(
+                encoding="utf-8")
+        except OSError:
+            proposal_body = None
+    if not proposal_body:
+        return
+    from ..state import programme as _programme
+    try:
+        _programme.record_rejection(conn, problem, proposal_body,
+                                    dialogue, rounds_used,
+                                    discard_reason=reason)
+        conn.commit()
+    except Exception as e:  # noqa: BLE001 — audit record, never fatal
+        print(f"[strategist] {problem}: discard record failed: "
+              f"{type(e).__name__}: {e}", flush=True)
 
 
 def _persist_plan(problem_dir: Path, attempts_dir: Path) -> None:

@@ -115,6 +115,7 @@ Strategist（`Tooling/pipeline/strategist.py`）：
 - `strategist_schema_invalid` — `decision.json` 解析過但 `verify_decisions` / 提案包機械檢查不過；同 session resume 修訂，輪數上限 `strategist.verify_retry`（預設 6，與 Adversary 反駁共用計數）
 - `strategist_noop` — Strategist 合法地決定 Noop（當下無事可做）；非錯誤、記錄用
 - `strategist_proposal_rejected` — Adversary 於修訂輪用盡後仍反駁：提案+全部批評存 `programme_revisions`（status='rejected'）、session 拋棄、下一 wake 只帶一行被拒紀錄盲重推；target cooldown 節流連續拒絕循環；不 burn root.attempts
+- **每條丟棄路徑都留紀錄**（v34 `programme_revisions.discard_reason`）：Adversary 反駁 / 提案包機械檢查駁回 / 修訂 spawn rc≠0 / 修訂輪交不出 decision.json / 判官 spawn 掛或兩次交不出裁決——全部寫 `status='rejected'` 列並記下是哪條通道丟的；`rejection_notice` 把該理由帶進下一 wake 並明說「該批未派出」。理由：`_plan.md` 在 spawn 一結束就落盤（判決之前），被丟棄的批次會留下宣稱已派的筆記（SG 07-29 燒掉兩個 wake）。提案文本在早期 verify 駁回時尚未讀進記憶體，`_discard_proposal` 退而從 attempts dir 讀 `proposal.md`
 - 另含共用的 `agent_no_output`。**Adversary 通道**：judge spawn 的 **infra rc**（`is_infra`）先在 `review` 內重試 `INFRA_SPAWN_RETRIES` 次（15s backoff），耗盡才回 `rc_to_reason` 的 infra reason——provider 的一次抽風不該作廢 Strategist 已完成的提案（#132，SG 07-30 實測 6.2min/28k tokens）；`verdict.json` 缺失或解析不過走**獨立**的 `VERDICT_TRIES` 預算（判官兩次交不出裁決＝wake 級失敗）→ `agent_no_output`。同族修法也套在 strategist 修訂輪 spawn 上。無 Adversary 專屬 reason string
 
 Librarian（`Tooling/pipeline/librarian/`）：失敗走 `core/librarian_sched.py` `_advance_librarian_chain` 的 **per-unit fail-count**（`librarian_fail_counts`、跨 restart 持久）；連續失敗超過 `LIBRARIAN_MAX_CHAIN_RETRIES`（=2，即第 3 次）→ 該 unit **STALL**（不再 refill、不動 goal、無 shelve）。`librarian_file_busy` 不計數（另一 worker 正持有該檔）。

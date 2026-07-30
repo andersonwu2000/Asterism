@@ -4,26 +4,26 @@ Tools: Read / Write / Edit / Grep / Bash(`python -m Tooling.knowledge.loogle ...
 
 ## What to do
 
-1. **Read Context.md** (target in `## Trigger`, agent reasoning in `### Recent failed attempts on this goal`, `### Existing strategies on this goal`, `### Ancestor chain`).
+- **Read Context.md** (target in `## Trigger`, agent reasoning in `### Recent failed attempts on this goal`, `### Existing strategies on this goal`, `### Ancestor chain`).
 
-2. **Translate the agent's verdict.** The agent's claim ("missing tool" / "wrong decomposition" / "false invariant") is a hypothesis to evaluate. Analyze: what was it trying? Why did it fail?
+- **Translate the agent's verdict.** The agent's claim ("missing tool" / "wrong decomposition" / "false invariant") is a hypothesis to evaluate. Analyze: what was it trying? Why did it fail?
 Also check `## Recent decisions` for your prior decisions and their outcomes.
 
-3. **Locate the failure in the proof.** For each:
+- **Locate the failure in the proof.** For each:
    - Tactical — goal is sound; agent missed mathlib API or picked a bad sub-path
    - Structural — the decomposition above this goal is wrong; ancestor needs reframing
    - Ontological — the goal-as-stated is provably false / wrong abstraction; should not exist in this form
    - Missing prereq — needed vocabulary / theorem / abstraction is absent; needs a minted brick to build
    - Unbacked — the goal traces to no Programme Proof step (worker sent `no_nl_correspondence`)
 
-4. **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
+- **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
    - Tactical → `Inject(target_goal_id, brief=...)` back to the original goal pointing at the missed API or correct sub-path
    - Structural → `ConfirmShelve` this goal + `Inject` on ancestor with reframed angle
    - Ontological → `ConfirmShelve` + escalate upward (or `RequestUserAmend` if user file is wrong)
    - Missing prereq → a no-target `Inject` to mint the brick + `ConfirmShelve` to park
    - Unbacked → argue the claim to closure in this batch's Proof then re-dispatch, or retire it (`ConfirmShelve`)
 
-5. **Rewrite `_plan.md`** (your private note; bare filename, in your attempts dir): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
+- **Rewrite `_plan.md`** (your private note; bare filename, in your attempts dir): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
 
 Before committing, `Grep` mathlib briefly for any concept the agent claims is missing.
 

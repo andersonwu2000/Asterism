@@ -165,15 +165,23 @@ def record_pass(conn: sqlite3.Connection, problem: str, body: str,
 
 def record_rejection(conn: sqlite3.Connection, problem: str, body: str,
                      dialogue: list[dict[str, Any]],
-                     rounds: int) -> None:
-    """Keep a discarded proposal + full criticism for audit."""
+                     rounds: int,
+                     discard_reason: Optional[str] = None) -> None:
+    """Keep a discarded proposal + full criticism for audit.
+
+    `discard_reason` (v34) names WHICH channel dropped it — adversary
+    refutation, verify rounds exhausted, revision spawn failure. Every
+    discard path records a row: the next wake's plan note may assert a
+    dispatch that never happened, and the reason is what stops it
+    re-deriving blind (07-29 SG feedback ×2)."""
     conn.execute(
         "INSERT INTO programme_revisions"
         " (problem, rev, body, status, verdict, dialogue, rounds,"
-        "  batch_id, created_at)"
-        " VALUES (?,?,?,'rejected',NULL,?,?,NULL,?)",
+        "  batch_id, created_at, discard_reason)"
+        " VALUES (?,?,?,'rejected',NULL,?,?,NULL,?,?)",
         (problem, next_rev_number(conn, problem), body,
-         json.dumps(dialogue, ensure_ascii=False), rounds, now()))
+         json.dumps(dialogue, ensure_ascii=False), rounds, now(),
+         discard_reason))
 
 
 def rejection_notice(conn: sqlite3.Connection,
@@ -185,11 +193,13 @@ def rejection_notice(conn: sqlite3.Connection,
         " ORDER BY id DESC LIMIT 1", (problem,)).fetchone()
     if row is None or row["status"] != "rejected":
         return None
-    return (f"Your previous proposal for Programme rev {row['rev']} was "
-            f"rejected by the Adversary after {row['rounds']} round(s) "
-            f"({row['created_at'][:10]}). Re-derive from scratch against "
-            "the current Programme — the discarded draft is intentionally "
-            "not shown.")
+    keys = row.keys()
+    why = (row["discard_reason"] if "discard_reason" in keys else None)
+    # NULL on pre-v34 rows: those only ever came from the Adversary.
+    cause = why or "adversary rebuttal"
+    return (f"Programme rev {row['rev']} did not commit — {cause} after "
+            f"{row['rounds']} round(s) ({row['created_at'][:10]}). "
+            f"Batch not dispatched; draft not shown.")
 
 
 # ---------------------------------------------------------------------

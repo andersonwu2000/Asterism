@@ -276,9 +276,13 @@ def test_exhaustion_records_rejection(
     assert [e["criticisms"] for e in dialogue] == [
         ["[criterion 2] objection 1"], ["[criterion 2] objection 2"],
         ["[criterion 2] objection 3"]]
-    # Next wake gets the one-line record, never the draft.
+    # Next wake gets the one-line record, never the draft — and it says
+    # the batch never dispatched (the plan note, persisted before the
+    # judgment, claims otherwise; 07-29 SG ×2).
+    assert row["discard_reason"] == "adversary rebuttal"
     notice = programme.rejection_notice(conn, "p")
-    assert notice and "rejected" in notice
+    assert notice and "adversary rebuttal" in notice
+    assert "Batch not dispatched" in notice
     # No commit happened: no strategist_decisions row for the batch,
     # and the stall anchor (last_strategist_at ratchet) did not move —
     # a rejected wake stays visible to the cross-wake no-delta
@@ -289,6 +293,48 @@ def test_exhaustion_records_rejection(
     assert conn.execute(
         "SELECT last_strategist_at FROM problems WHERE name='p'"
     ).fetchone()[0] is None
+
+
+def test_mechanical_discard_also_records_a_reason(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The non-Adversary discard paths (package verify exhausted,
+    revision spawn rc≠0, unusable revision output) left NO record
+    anywhere pre-v34, while the plan note — persisted before the batch
+    is judged — survived asserting the dispatch. Two SG wakes (07-29)
+    burned reconstructing that. Every discarded proposal now records a
+    row naming which channel dropped it."""
+    _insert_root(conn)
+    monkeypatch.setenv("ASTERISM_STRATEGIST_VERIFY_RETRY", "1")
+
+    def fake_spawn(**kw):
+        if kw.get("kind") == "adversary":  # pragma: no cover — never reached
+            raise AssertionError("gate must reject before the judge")
+        # A route-moving batch with no experiment: the package gate
+        # rejects it mechanically, every round.
+        (kw["attempts_dir"] / "decision.json").write_text(
+            json.dumps({"kind": "EmitDirective",
+                        "scope": "problem:p", "body": "hint",
+                        "reason": "note"}), encoding="utf-8")
+        (kw["attempts_dir"] / "proposal.md").write_text(
+            _PROPOSAL, encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="routine", tick=1,
+        workspace=workspace, mfst=mfst, pipeline_id="adv-mech",
+    )
+    assert r.outcome == "failed"
+    assert r.failure_reason == "strategist_schema_invalid"
+    row = conn.execute(
+        "SELECT * FROM programme_revisions WHERE problem='p'"
+        " AND status='rejected'").fetchone()
+    assert row is not None
+    assert row["discard_reason"] == "package verify rejected"
+    notice = programme.rejection_notice(conn, "p")
+    assert notice and "package verify" in notice
 
 
 def test_exempt_batch_skips_adversary(
@@ -405,6 +451,111 @@ def test_projection_contents(
         encoding="utf-8")
     d = (proj / "dialogue.md").read_text(encoding="utf-8")
     assert "too vague" in d and "# old" in d
+
+
+def test_projection_ships_standing_directive_even_when_unchanged(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Criterion 5 (`the directive must not contradict the Programme`)
+    was unjudgeable on any batch that left the directive alone: only a
+    batch-emitted body reached `decisions.md`, so the judge ruled on
+    text it could not read and demoted a possibly-real mis-citation to
+    a reservation (07-29 SG judge feedback). The directive in force
+    ships every round, with the batch that emitted it."""
+    attempts = workspace / ".attempts" / "adv-dir"
+    attempts.mkdir(parents=True)
+    pdir = workspace / "Problems" / "p"
+    conn.execute(
+        "UPDATE problems SET strategist_directive = ? WHERE name = 'p'",
+        ("item 2: use `sq_pos_of_ne_zero`",))
+    conn.execute(
+        "INSERT INTO strategist_decisions"
+        " (problem, triggered_at_tick, trigger_kind, decision_kind,"
+        "  batch_id, created_at, updated_at)"
+        " VALUES ('p', 1, 'routine', 'EmitDirective', 'batch-abc',"
+        "         '2026-07-30T01:02:03Z', '2026-07-30T01:02:03Z')")
+    conn.commit()
+
+    proj = adversary.build_projection(
+        round_no=1, attempts_dir=attempts, problem_dir=pdir,
+        conn=conn, problem="p", proposal_body=_PROPOSAL,
+        # this batch emits NO directive — the standing one still ships
+        decisions=[_d("Inject", pipeline="Forward", brief="## Need\nx")],
+        dialogue=[], proof_warn=None)
+
+    text = (proj / "directive.md").read_text(encoding="utf-8")
+    assert "sq_pos_of_ne_zero" in text
+    assert "batch-abc" in text
+
+
+def test_projection_directive_absent_says_so(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """No directive in force → the file still exists and says none, so
+    the judge never has to distinguish "empty" from "not shipped"."""
+    attempts = workspace / ".attempts" / "adv-dir0"
+    attempts.mkdir(parents=True)
+    proj = adversary.build_projection(
+        round_no=1, attempts_dir=attempts,
+        problem_dir=workspace / "Problems" / "p",
+        conn=conn, problem="p", proposal_body=_PROPOSAL,
+        decisions=[_d("Inject", pipeline="Forward", brief="## Need\nx")],
+        dialogue=[], proof_warn=None)
+    assert "(none" in (proj / "directive.md").read_text(encoding="utf-8")
+
+
+def test_projection_stages_strategy_files_behind_alias_stubs(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """A cited brick's `L_<slug>.lean` is often just
+    `def slug := @...s<N>`; the tactic proof lives in the
+    `_strategy_s<N>.lean` it imports. Staging only `L_*` made the
+    prompt's "a RETARGETED dispute is decided by these files" a dead
+    promise — the judge got an alias line and was permission-blocked
+    from the real proof (07-29 SG judge feedback). Import edges are
+    followed, transitively."""
+    pdir = workspace / "Problems" / "p"
+    proofs = pdir / "proofs"
+    (proofs / "L_brick_a.lean").write_text(
+        "import Problems.p.proofs._strategy_s24103\n"
+        "def brick_a := @Problems.p.s24103\n", encoding="utf-8")
+    (proofs / "_strategy_s24103.lean").write_text(
+        "import Problems.p.proofs.L_helper\n"
+        "theorem s24103 : True := by exact trivial\n", encoding="utf-8")
+    (proofs / "L_helper.lean").write_text(
+        "theorem helper : True := trivial\n", encoding="utf-8")
+    (proofs / "L_unrelated.lean").write_text("-- not cited\n",
+                                             encoding="utf-8")
+    attempts = workspace / ".attempts" / "adv-closure"
+    attempts.mkdir(parents=True)
+
+    proj = adversary.build_projection(
+        round_no=1, attempts_dir=attempts, problem_dir=pdir,
+        conn=conn, problem="p", proposal_body=_PROPOSAL,
+        decisions=[_d("Inject", pipeline="Forward",
+                      brief="cite `brick_a`")],
+        dialogue=[], proof_warn=None)
+
+    staged = {f.name for f in (proj / "proofs").iterdir()}
+    assert staged == {"L_brick_a.lean", "_strategy_s24103.lean",
+                      "L_helper.lean"}
+
+
+def test_proof_staging_cap_is_loud(
+    workspace: Path, conn: sqlite3.Connection,
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bounded closure must announce what it dropped (CLAUDE.md: no
+    silent caps)."""
+    proofs = workspace / "Problems" / "p" / "proofs"
+    for i in range(4):
+        (proofs / f"L_b{i}.lean").write_text("-- x\n", encoding="utf-8")
+    monkeypatch.setattr(adversary, "PROOF_STAGING_CAP", 2)
+    n = adversary._stage_proof_closure(
+        proofs, workspace / "proj",
+        sorted(proofs.glob("L_b*.lean")))
+    assert n == 2
+    assert "staging cap" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------
@@ -594,7 +745,7 @@ def test_plan_note_rewrite_step_synced_and_names_attempts_dir() -> None:
     steps = []
     for f in ("routine.md", "inject_batch_done.md", "pending_review.md"):
         text = (root / "strategist" / f).read_text(encoding="utf-8")
-        hits = [ln.lstrip("0123456789. ") for ln in text.splitlines()
+        hits = [ln.lstrip("-0123456789. ") for ln in text.splitlines()
                 if "**Rewrite `_plan.md`**" in ln]
         assert len(hits) == 1, (f, hits)
         steps.append(hits[0])

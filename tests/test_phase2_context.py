@@ -1007,7 +1007,7 @@ def test_current_directive_section_silent_when_only_whitespace(
 def test_plan_note_section_absent_when_no_note(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    assert phase2_context._section_plan_note(workspace, "p") == []
+    assert phase2_context._section_plan_note(conn, workspace, "p") == []
 
 
 def test_plan_note_section_renders_and_warns_over_cap(
@@ -1026,7 +1026,7 @@ def test_plan_note_section_renders_and_warns_over_cap(
     (pdir / ".drafts").mkdir(parents=True, exist_ok=True)
     _drafts.plan_note_path(pdir).write_text("serial plan: (i) x (ii) y",
                                             encoding="utf-8")
-    lines = phase2_context._section_plan_note(workspace, "p")
+    lines = phase2_context._section_plan_note(conn, workspace, "p")
     text = "\n".join(lines)
     assert "## Your plan note (private, cross-wake)" in text
     assert "serial plan: (i) x (ii) y" in text
@@ -1034,7 +1034,7 @@ def test_plan_note_section_renders_and_warns_over_cap(
     # over the soft cap → one warning line
     _drafts.plan_note_path(pdir).write_text(
         "x" * (_drafts.PLAN_NOTE_SOFT_CAP + 1), encoding="utf-8")
-    text2 = "\n".join(phase2_context._section_plan_note(workspace, "p"))
+    text2 = "\n".join(phase2_context._section_plan_note(conn, workspace, "p"))
     assert "past the useful size" in text2
 
     # integration: the strategist compile carries the section
@@ -1047,6 +1047,45 @@ def test_plan_note_section_renders_and_warns_over_cap(
     )
     assert "## Your plan note (private, cross-wake)" in out.read_text(
         encoding="utf-8")
+
+
+def test_plan_note_carries_framework_provenance(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The note is persisted right after the spawn — before the package
+    gate / Adversary / commit decide whether that batch ships — so a
+    discarded batch leaves a note asserting a state that never existed
+    (07-29 SG: two wakes burned on forensics, and the agent's own
+    workaround was a standing "do not trust your prior plan note"
+    rule). The render carries the framework's record of what actually
+    committed: batch id + Programme rev."""
+    from Tooling.pipeline import _drafts
+    from Tooling.state import programme
+    _insert_problem(conn)
+    _insert_root(conn)
+    pdir = workspace / "Problems" / "p"
+    (pdir / ".drafts").mkdir(parents=True, exist_ok=True)
+    _drafts.plan_note_path(pdir).write_text(
+        "State after batch 2 dispatch (Programme rev 2)",
+        encoding="utf-8")
+
+    # nothing committed yet → says so, so a phantom batch is visible
+    text = "\n".join(phase2_context._section_plan_note(conn, workspace, "p"))
+    assert "no batch committed" in text
+    assert "no Programme rev" in text
+
+    conn.execute(
+        "INSERT INTO strategist_decisions"
+        " (problem, triggered_at_tick, trigger_kind, decision_kind,"
+        "  batch_id, created_at, updated_at)"
+        " VALUES ('p', 1, 'routine', 'Inject', 'batch-1',"
+        "         '2026-07-30T01:02:03Z', '2026-07-30T01:02:03Z')")
+    programme.record_pass(
+        conn, "p", "# T\n## Argument\na\n## Proof\np\n## Roadmap\nr\n",
+        {"verdict": "pass"}, [], 0, "batch-1")
+    conn.commit()
+    text = "\n".join(phase2_context._section_plan_note(conn, workspace, "p"))
+    assert "batch-1" in text and "Programme rev 1" in text
 
 
 def test_tree_inline_keeps_pure_nl_forest(

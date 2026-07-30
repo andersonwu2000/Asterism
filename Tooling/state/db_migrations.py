@@ -741,6 +741,23 @@ def apply(conn: sqlite3.Connection) -> None:
             conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA user_version = 33")
         conn.commit()
+    if v < 34:
+        # v34 — why a proposal was discarded. Pre-v34 only the
+        # Adversary-exhaustion path recorded a `rejected` row; the
+        # mechanical paths (verify rounds exhausted, revision spawn
+        # rc≠0) discarded the batch with no record anywhere, so the
+        # next wake inherited a plan note describing a dispatch that
+        # never happened and no reason it didn't (07-29 SG: two wakes
+        # burned reconstructing it). Additive nullable; NULL on
+        # pre-v34 rows = the legacy Adversary-rejection wording.
+        rcols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(programme_revisions)")}
+        if "discard_reason" not in rcols:
+            conn.execute(
+                "ALTER TABLE programme_revisions"
+                " ADD COLUMN discard_reason TEXT NULL")
+        conn.execute("PRAGMA user_version = 34")
+        conn.commit()
 
 
 def _migrate_to_v26(conn: sqlite3.Connection) -> None:

@@ -7,7 +7,7 @@ Tools: Read / Write / Edit / Grep / Bash(`python -m Tooling.knowledge.loogle ...
 Start from Context.md (TREE, active goals, recent decisions, standing directive).
 
 <!-- #if has_history -->
-1. **Audit the accumulated beliefs before building on them** (`_plan.md`, the standing directive, annotations on proved lemmas) — as CLAIMS, re-derived against their sources; never trust the note's citation of itself. Audit beliefs, not tactics — statement direction, quantifier scope, status, never Lean syntax; the most valuable target is a claim every route depends on (a lever annotation, a wall's stated root cause):
+- **Audit the accumulated beliefs before building on them** (`_plan.md`, the standing directive, annotations on proved lemmas) — as CLAIMS, re-derived against their sources; never trust the note's citation of itself. Audit beliefs, not tactics — statement direction, quantifier scope, status, never Lean syntax; the most valuable target is a claim every route depends on (a lever annotation, a wall's stated root cause):
    - Directionality / strength annotations on proved lemmas → Read the actual `proofs/L_<slug>.lean` statement.
    - Certified-dead / DO-NOT entries → does the recorded reason still hold against the current tree and proved base?
    - Status claims ("X is the sole gate", "Y is in flight") → check the tree.
@@ -25,17 +25,17 @@ Start from Context.md (TREE, active goals, recent decisions, standing directive)
    Reason cites the re-checked source; prefer merge over delete; never delete for age alone. One invalid op voids the whole file (max 10 ops).
 <!-- #endif -->
 
-2. **Re-derive and organize the proof's overall architecture.** Don't paraphrase the Lean statement — write the proof outline a mathematician would, against the Programme Roadmap; discrepancies are this batch's revision. Structural defects to catch as you go:
+- **Re-derive and organize the proof's overall architecture.** Don't paraphrase the Lean statement — write the proof outline a mathematician would, against the Programme Roadmap; discrepancies are this batch's revision. Structural defects to catch as you go:
    - Are variants of the same failed approach being tried repeatedly?
    - Is the tree reinventing a property mathlib already has?
    - Are there complex or verbose constructs that should have been pre-defined as named abstractions?
 
-3. **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
+- **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
    - Any structural defect → `ConfirmShelve` the defective branch + `Inject` the right direction
    - Tree is sound → pair a short situation-summary `EmitDirective` with the next Roadmap experiment (a directive alone is not a batch), or `Noop` when everything is genuinely in flight
    - User file is wrong → `RequestUserAmend`
 
-4. **Rewrite `_plan.md`** (your private note; bare filename, in your attempts dir): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
+- **Rewrite `_plan.md`** (your private note; bare filename, in your attempts dir): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
 
 **Difficulty alone is not a reason to give up.** "Hard problem" / "Mathlib lacks X" describe work, not stop signs.
 

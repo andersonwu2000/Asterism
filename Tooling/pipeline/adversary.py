@@ -97,6 +97,37 @@ def _decisions_digest(decisions, conn=None, problem=None) -> str:
     return "\n".join(out)
 
 
+def _standing_directive_digest(conn: sqlite3.Connection,
+                               problem: str) -> str:
+    """The directive in force RIGHT NOW, whether or not this batch
+    touches it.
+
+    Criterion 5 asks whether the directive contradicts the Programme,
+    but `decisions.md` only carries a directive body when the batch
+    emits one — so on an unchanged directive the judge was ruling on
+    text it could not read, and a possibly-real mis-citation had to be
+    demoted to a reservation (07-29 SG judge feedback). Every worker on
+    every spawn reads this text; the judge now reads the same bytes."""
+    try:
+        row = conn.execute(
+            "SELECT strategist_directive FROM problems WHERE name = ?",
+            (problem,)).fetchone()
+    except sqlite3.OperationalError:
+        row = None
+    body = (row["strategist_directive"] or "") if row is not None else ""
+    head = ["# Standing directive (in force for every worker spawn)\n"]
+    if not body.strip():
+        return "\n".join(head + ["(none — no directive in force.)\n"])
+    src = conn.execute(
+        "SELECT batch_id, created_at FROM strategist_decisions"
+        " WHERE problem = ? AND decision_kind = 'EmitDirective'"
+        " ORDER BY id DESC LIMIT 1", (problem,)).fetchone()
+    if src is not None:
+        head.append(f"_Emitted by batch `{src['batch_id']}` "
+                    f"({str(src['created_at'])[:16]})._\n")
+    return "\n".join(head + [body.strip(), ""])
+
+
 def _dialogue_digest(dialogue: list[dict[str, Any]]) -> str:
     """Prior rounds of this cycle, projected as a document so the fresh
     judge can rule on the standing defence without inheriting the
@@ -116,6 +147,51 @@ def _dialogue_digest(dialogue: list[dict[str, Any]]) -> str:
                        + str(entry["proposal"]))
         out.append("")
     return "\n".join(out)
+
+
+#: Total proof files the projection stages (cited seeds + the files
+#: their imports reach). Cap is loud, never silent (CLAUDE.md).
+PROOF_STAGING_CAP = 20
+
+_PROOFS_IMPORT_RE = re.compile(
+    r"^import\s+[\w.]*\.proofs\.([\w]+)\s*$", re.M)
+
+
+def _stage_proof_closure(proofs_src: Path, proj: Path,
+                         seeds: list[Path]) -> int:
+    """Copy the cited proof files AND what their imports reach.
+
+    A cited brick's `L_<slug>.lean` is often just
+    `def slug := @...s<N>` — the tactic proof lives in the
+    `_strategy_s<N>.lean` it imports. Staging only the `L_` stubs made
+    the prompt's "a RETARGETED dispute is decided by these files, not
+    by quotation" unfulfillable: the judge got an alias line and was
+    permission-blocked from the real file (07-29 SG judge feedback).
+    Follows `import ...proofs.<name>` edges breadth-first, so an alias
+    stub drags its strategy file (and a strategy file its cited
+    siblings) into the projection."""
+    queue = list(seeds)
+    staged: set[str] = set()
+    while queue:
+        f = queue.pop(0)
+        if f.name in staged or not f.is_file():
+            continue
+        if len(staged) >= PROOF_STAGING_CAP:
+            print(f"[adversary] proof staging cap "
+                  f"({PROOF_STAGING_CAP}) hit — {len(queue) + 1} "
+                  f"reachable file(s) NOT staged, starting with "
+                  f"{f.name}", flush=True)
+            break
+        (proj / "proofs").mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(f, proj / "proofs" / f.name)
+        staged.add(f.name)
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for mod in _PROOFS_IMPORT_RE.findall(text):
+            queue.append(proofs_src / f"{mod}.lean")
+    return len(staged)
 
 
 def build_projection(*, round_no: int, attempts_dir: Path,
@@ -195,6 +271,8 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     decisions_text = _decisions_digest(decisions, conn=conn,
                                        problem=problem)
     (proj / "decisions.md").write_text(decisions_text, encoding="utf-8")
+    (proj / "directive.md").write_text(
+        _standing_directive_digest(conn, problem), encoding="utf-8")
     # Cited landed proofs (07-29 judge feedback ×6): the artifacts the
     # package's claims cite must be checkable inside the sandbox — a
     # RETARGETED dispute's only deciding document is the landed file.
@@ -204,18 +282,10 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     proofs_src = problem_dir / "proofs"
     if proofs_src.is_dir():
         package_text = proposal_body + "\n" + decisions_text
-        staged = 0
-        for f in sorted(proofs_src.glob("L_*.lean")):
-            slug = f.stem[2:]
-            if not re.search(rf"\b{re.escape(slug)}\b", package_text):
-                continue
-            if staged >= 20:
-                print("[adversary] cited-proofs staging cap (20) hit — "
-                      "remaining cited files NOT staged", flush=True)
-                break
-            (proj / "proofs").mkdir(exist_ok=True)
-            shutil.copyfile(f, proj / "proofs" / f.name)
-            staged += 1
+        seeds = [f for f in sorted(proofs_src.glob("L_*.lean"))
+                 if re.search(rf"\b{re.escape(f.stem[2:])}\b",
+                              package_text)]
+        _stage_proof_closure(proofs_src, proj, seeds)
     if dialogue:
         (proj / "dialogue.md").write_text(_dialogue_digest(dialogue),
                                           encoding="utf-8")

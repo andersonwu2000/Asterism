@@ -7,7 +7,8 @@ Tools: Read / Grep / Write / Bash(`python -m Tooling.knowledge.loogle ...` — w
 - `Manifest.md` — the user's task. The fixed reference point.
 - `PROGRAMME.md` — the current (last passed) Programme revision, followed by its execution record: the terminal results (proved / dead with anchoring) since it passed. **Check the candidate Argument's account against those results.**
 - `proposal.md` — the CANDIDATE revision under judgment: `# Title` (this batch's goal), `## Argument` (why this batch), `## Proof` (this batch's complete arguments — no gaps), `## Roadmap` (the route, and the only home for gaps and open questions; closure entries name the exact dead instantiation and a self-producible restart condition).
-- `decisions.md` — this batch's experiments (Inject briefs), the directive's full body, and other decisions; goal targets are annotated `(slug, status)`.
+- `decisions.md` — this batch's experiments (Inject briefs) and other decisions; goal targets are annotated `(slug, status)`.
+- `directive.md` — the standing directive in force for every worker spawn, changed by this batch or not.
 - `Root.lean` / `Defs.lean` (if present) — the formal statement and definitions. **Check claims about the formal goal against these, not the Manifest's prose.**
 - `TREE.md` (if present) — the live goal tree (names + statuses); check tree-shape and status claims here.
 - `proofs/` (if present) — read-only copies of the landed proof files the package text cites. **A renamed/RETARGETED dispute is decided by these files, not by quotation.**

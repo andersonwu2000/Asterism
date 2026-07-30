@@ -397,6 +397,19 @@ def _catalog_signature(workspace: Path, lean_path: str,
     return _decl_signature(text, slug)
 
 
+def alive_goal_rows(conn: sqlite3.Connection,
+                    problem: str) -> list[sqlite3.Row]:
+    """The problem's ALIVE goals (open / attempting / awaiting review).
+
+    Single home for the catalog's alive query: the companion renders
+    them and callers gate their pointer surfaces on the same rows."""
+    return list(conn.execute(
+        "SELECT slug, statement, kind, lean_path FROM goals"
+        " WHERE problem = ? AND status IN"
+        " ('open','attempting','pending_strategist_review')"
+        " ORDER BY id", (problem,)))
+
+
 def write_catalog_companion(conn: sqlite3.Connection, problem: str,
                             attempts_dir: Path,
                             workspace: "Path | None" = None,
@@ -417,12 +430,18 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
     `<workspace>/.attempts/<pid>` layout (the adversary projection dir).
 
     Returns the proved rows (empty when nothing proved or the write
-    failed — callers render no section in that case)."""
+    failed — callers render no section in that case). The FILE is
+    written whenever the problem has proved OR alive goals: the alive
+    block is mint's dedupe surface, and gating the write on proved
+    rows alone deleted it exactly when the problem was youngest — the
+    prompts' "check `## Alive goals` in CATALOG.md" then pointed at a
+    file that did not exist (07-29 mint feedback)."""
     rows = list(conn.execute(
         "SELECT slug, statement, kind, lean_path FROM goals"
         " WHERE problem = ? AND status = 'proved' ORDER BY id",
         (problem,)))
-    if not rows:
+    alive = alive_goal_rows(conn, problem)
+    if not rows and not alive:
         return []
     if workspace is None:
         workspace = attempts_dir.parent.parent
@@ -440,11 +459,6 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
     # (a5 run ×4); same grep motion as a citation lookup, so it lives
     # in the same file. Not mintable; CITABLE since task #123 (the
     # commit gate registers a wait edge).
-    alive = list(conn.execute(
-        "SELECT slug, statement, kind, lean_path FROM goals"
-        " WHERE problem = ? AND status IN"
-        " ('open','attempting','pending_strategist_review')"
-        " ORDER BY id", (problem,)))
     if alive:
         lines += [
             f"## Alive goals ({len(alive)} — OPEN, in flight)",

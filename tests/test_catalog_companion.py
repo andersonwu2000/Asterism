@@ -117,6 +117,34 @@ def test_companion_empty_kb_writes_nothing(conn, tmp_path):
     assert not (tmp_path / ctx.CATALOG_COMPANION).exists()
 
 
+def test_companion_written_when_only_alive_goals_exist(conn, tmp_path):
+    """The alive block is mint's dedupe surface ("a mint matching an
+    alive goal is discarded — decline and name it") and the prompts
+    send the worker to `## Alive goals` in this file. Gating the write
+    on PROVED rows deleted the file exactly when the problem was
+    youngest, so the first mint of a fresh problem was told to grep a
+    file that did not exist (07-29 SG mint feedback)."""
+    _goal(conn, "root_goal", status="open")
+    assert ctx.write_catalog_companion(conn, "P", tmp_path) == []  # 0 proved
+    body = (tmp_path / ctx.CATALOG_COMPANION).read_text(encoding="utf-8")
+    assert "## Alive goals" in body and "root_goal" in body
+
+
+def test_forward_library_section_points_at_alive_catalog(conn, tmp_path):
+    """Nothing proved yet → the Library section still has to name the
+    companion, or the mint dedupe rule points at an unmentioned file."""
+    _goal(conn, "root_goal", status="open")
+    text = "\n".join(
+        phase2_context._section_library_inventory(conn, "P", tmp_path))
+    assert ctx.CATALOG_COMPANION in text and "alive goals" in text
+    # and with nothing at all, the section stays bare
+    conn.execute("DELETE FROM goals")
+    conn.commit()
+    bare = "\n".join(
+        phase2_context._section_library_inventory(conn, "P", tmp_path))
+    assert ctx.CATALOG_COMPANION not in bare
+
+
 def test_worker_pointer_is_two_lines_not_a_list(conn, tmp_path):
     for i in range(30):
         _goal(conn, f"brick_{i}")

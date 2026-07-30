@@ -849,19 +849,53 @@ def _section_failure_replay(conn: sqlite3.Connection,
     return out
 
 
-def _section_plan_note(workspace: Path, problem: str) -> list[str]:
+def _plan_note_provenance(conn: sqlite3.Connection, problem: str) -> str:
+    """The framework's own record of what the last wake actually landed:
+    last committed batch id + current Programme rev.
+
+    The note is persisted right after the spawn — BEFORE the package
+    gate, the Adversary and the commit decide whether that batch ships
+    (deliberate: the note is the agent's memory of its own thinking and
+    is worth keeping even when the wake then fails). So a discarded
+    batch leaves a note asserting a state the framework never entered.
+    Two SG wakes (07-29) each burned on forensics reconstructing that,
+    and the agent's workaround was a standing "do not trust your own
+    prior plan note" rule. Stamping the render — not the file — keeps
+    the check crash-proof (a killed wake writes no footer) and immune
+    to the agent's own rewrites."""
+    from ..state import programme as _programme
+    row = conn.execute(
+        "SELECT batch_id, created_at FROM strategist_decisions"
+        " WHERE problem = ? AND batch_id IS NOT NULL"
+        " ORDER BY id DESC LIMIT 1", (problem,)).fetchone()
+    rev = _programme.current_rev(conn, problem)
+    rev_txt = (f"Programme rev {rev['rev']}" if rev is not None
+               else "no Programme rev")
+    if row is None:
+        return f"_Framework: no batch committed · {rev_txt}._"
+    return (f"_Framework: last committed batch `{row['batch_id']}` · "
+            f"{rev_txt} · {str(row['created_at'])[:16]}._")
+
+
+def _section_plan_note(conn: sqlite3.Connection, workspace: Path,
+                       problem: str) -> list[str]:
     """The Strategist's PRIVATE cross-wake plan note
     (`.drafts/strategist_plan.md`) — rendered here ONLY, never into worker
     contexts. The third channel next to the two worker-facing ones
     (standing directive broadcast / one-shot Inject brief): its curated
     world-model previously leaked into the directive and taxed every
-    worker spawn. Soft cap = one warning line, nothing harder."""
+    worker spawn. Soft cap = one warning line, nothing harder.
+
+    Rendered under `_plan_note_provenance` — the framework's line on
+    what actually committed, so a phantom batch is a two-line compare
+    instead of an archaeology session."""
     from ..pipeline import _drafts
     problem_dir = db.problem_dir(workspace, problem)
     text = _drafts.read_plan_note(problem_dir)
     if not text or not text.strip():
         return []
-    out = ["## Your plan note (private, cross-wake)", ""]
+    out = ["## Your plan note (private, cross-wake)", "",
+           _plan_note_provenance(conn, problem), ""]
     if len(text) > _drafts.PLAN_NOTE_SOFT_CAP:
         out += [f"_⚠ {len(text)} chars — past the useful size; rewrite it "
                 f"down to what still matters._", ""]
@@ -1066,7 +1100,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_disproof_guidance(conn, problem),
         _section_programme_strategist(conn, problem),
         _section_current_directive(conn, problem),
-        _section_plan_note(workspace, problem),
+        _section_plan_note(conn, workspace, problem),
         _section_inject_batch_outcomes(conn, problem, workspace=workspace),
         _section_pending_reopens(conn, problem, trigger_kind),
         _section_active_goals(conn, workspace, problem),
@@ -1253,6 +1287,15 @@ def _section_library_inventory(conn: sqlite3.Connection, problem: str,
     rows = context.write_catalog_companion(conn, problem, attempts_dir)
     header = "## Library (proved lemmas in this problem)"
     if not rows:
+        # Nothing proved yet, but the companion still exists when the
+        # problem has alive goals — and its `## Alive goals` block is
+        # the surface the mint dedupe rule reads. Say so, or the rule
+        # points at a file the worker was told nothing about.
+        if context.alive_goal_rows(conn, problem):
+            return [header, "", "(none yet — but"
+                    f" `{context.CATALOG_COMPANION}` lists this problem's"
+                    " alive goals: a mint matching one is discarded,"
+                    " citing one is legal.)", ""]
         return [header, "", "(none yet)", ""]
     # Recent tail only (2026-07-14, user call — same cut as the
     # Strategist index): the brief names the bricks to use; the inline

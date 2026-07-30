@@ -4,24 +4,24 @@ Tools: Read / Write / Edit / Grep / Bash(`python -m Tooling.knowledge.loogle ...
 
 ## What to do
 
-1. **Read Context.md** (`## Completed Inject batches`, `## Pending reopen-promises`, active goals, TREE).
+- **Read Context.md** (`## Completed Inject batches`, `## Pending reopen-promises`, active goals, TREE).
 
 <!-- #if has_history -->
-2. **Meta-analysis first.** Reflect on your prior decisions:
+- **Meta-analysis first.** Reflect on your prior decisions:
    - If the batch has failed decisions (agent disproved a statement, a minted brick was mis-specified, proof direction was wrong, etc.) → change the proof structure or brief writing.
    - A declined mint shows its reason as `why:` in `## Completed Inject batches`. If it says your brief was under-specified (e.g. called a step "trivial" but named no lemma), name the specific lemma / state the obligation shape concretely in the re-Inject — don't just rephrase the same vague brief.
    - Cross-check `## Recent decisions` for repeating failure patterns → step back and reassess the math logic and methodology.
 
-3. **Process each reopen-promise** (your prior `ConfirmShelve` rows parked waiting for this batch):
+- **Process each reopen-promise** (your prior `ConfirmShelve` rows parked waiting for this batch):
    - Brick landed, gap closed → `Inject(target_goal_id, brief=...)` back to the original goal naming which brick to cite
    - Brick landed but gap remains → `Inject` a new brick + `ConfirmShelve` to keep parked
    - Brick didn't land / proof direction was wrong → `ConfirmShelve` this goal + `Inject` a reframed angle on its upper goal
    - Permanently superseded → standalone `ConfirmShelve` (no paired Inject)
 <!-- #endif -->
 
-4. **Mark deliverables**: a landed minted node that satisfies the Manifest → `MarkDeliverable`; all marked → `Ingest`.
+- **Mark deliverables**: a landed minted node that satisfies the Manifest → `MarkDeliverable`; all marked → `Ingest`.
 
-5. **Rewrite `_plan.md`** (your private note; bare filename, in your attempts dir): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
+- **Rewrite `_plan.md`** (your private note; bare filename, in your attempts dir): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
 
 Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
 
