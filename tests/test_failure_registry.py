@@ -31,6 +31,9 @@ def test_provider_infra_set_pinned():
         "gateway_unreachable", "transient_timeout",
         # 07-30: shutdown kills must not burn goal attempts (SG#14 class).
         "daemon_shutdown",
+        # 07-30: agy provider — bad model slug / refused credentials /
+        # a tool denied for want of a permissions.allow rule.
+        "provider_misconfigured",
     }
 
 
@@ -58,6 +61,9 @@ def test_non_agent_set_pinned():
         "missing_parent_stub", "parent_stub_not_decomposable",
         "goal_no_longer_open", "unknown_kind", "no_nl_correspondence",
         "problem_not_found",
+        # A provider config error teaches the agent nothing — the fix is
+        # an operator edit to the CLI's permission/model settings.
+        "provider_misconfigured",
     }
 
 

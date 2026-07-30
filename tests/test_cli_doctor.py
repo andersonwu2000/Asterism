@@ -45,9 +45,24 @@ class _FakeRun:
 
 def _setup_tools(monkeypatch: pytest.MonkeyPatch, *,
                  has_claude: bool = True, has_gemini: bool = True,
-                 has_lake: bool = True,
+                 has_lake: bool = True, has_agy: bool = True,
+                 agy_perms: bool = True,
                  responses: dict[str, tuple[int, str]] | None = None) -> _FakeRun:
-    """Wire fake `which` + fake `run` so cmd_doctor sees the desired toolchain."""
+    """Wire fake `which` + fake `run` so cmd_doctor sees the desired toolchain.
+
+    `agy` needs its own two hooks: the provider's resolver probes the
+    installer path (`%LOCALAPPDATA%\\agy\\bin`) directly instead of going
+    through `which` — the PowerShell installer edits the user PATH that a
+    running daemon never sees — and its permissions file lives in the real
+    HOME. Both are patched so no test reaches the real binary or home."""
+    from Tooling.llm import antigravity_cli as _agy
+    monkeypatch.setattr(
+        _agy, "resolve_agy_executable",
+        lambda: "/fake/agy" if has_agy else None)
+    monkeypatch.setattr(
+        _agy, "permissions_path",
+        lambda: (Path(__file__) if agy_perms
+                 else Path("/fake/home/.gemini/antigravity-cli/settings.json")))
     available = set()
     if has_claude:
         available.add("claude")
@@ -62,6 +77,7 @@ def _setup_tools(monkeypatch: pytest.MonkeyPatch, *,
     fake = _FakeRun(responses or {
         "claude --version": (0, "2.1.123 (Claude Code)\n"),
         "gemini --version": (0, "0.40.1\n"),
+        "agy --version": (0, "1.1.8\n"),
         "lake env lean --version": (0, "Lean (version 4.x.x)\n"),
     })
     monkeypatch.setattr("subprocess.run", fake)
@@ -149,6 +165,45 @@ def test_doctor_claude_missing_is_warn_not_fail(
     out = capsys.readouterr().out
     assert rc == 0
     assert "WARN" in out
+
+
+def test_doctor_reports_agy_and_its_permission_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`agy` present + its permissions file present → both OK. The file
+    is not cosmetic: without it every tool call is auto-denied in
+    headless mode and a spawn returns SUCCESS having written nothing
+    (antigravity_cli.py, THE HAZARD), so doctor has to surface it."""
+    _setup_tools(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    assert cmd_doctor(argparse.Namespace()) == 0
+    out = capsys.readouterr().out
+    assert "agy     1.1.8" in out
+    assert "agy permissions:" in out
+
+
+def test_doctor_warns_when_agy_permissions_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _setup_tools(monkeypatch, agy_perms=False)
+    monkeypatch.chdir(tmp_path)
+    assert cmd_doctor(argparse.Namespace()) == 0
+    out = capsys.readouterr().out
+    assert "agy permissions file missing" in out
+    assert "auto-denied" in out
+
+
+def test_doctor_agy_absent_is_warn_not_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Optional provider — a claude-only run must not fail doctor."""
+    _setup_tools(monkeypatch, has_agy=False)
+    monkeypatch.chdir(tmp_path)
+    assert cmd_doctor(argparse.Namespace()) == 0
+    assert "Antigravity provider" in capsys.readouterr().out
 
 
 def test_doctor_unparseable_yaml_is_fail(

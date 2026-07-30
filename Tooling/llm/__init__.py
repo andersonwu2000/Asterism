@@ -4,8 +4,11 @@
   'claude' (fallback)  — claude CLI subprocess
   'openai'             — OpenAI-compatible HTTP API (vLLM / Ollama /
                          LM Studio / Anthropic-via-proxy / etc.)
-  'gemini'             — Google Gemini CLI subprocess (Code Assist
-                         free-tier auth; flash model practical)
+  'gemini'             — Google Gemini CLI subprocess (API-key /
+                         enterprise Code Assist only: the individual
+                         tiers were cut off 2026-06-18)
+  'antigravity'        — Antigravity CLI (`agy`) subprocess; the
+                         subscription-priced path to Gemini models
 
 Per-pipeline overrides:
   `ASTERISM_BUILDER_PROVIDER` / `ASTERISM_BACKWARD_PROVIDER` take
@@ -53,6 +56,9 @@ def get_provider(kind: str | None = None) -> Provider:
     if name == "gemini":
         from .gemini_cli import GeminiCliProvider
         return GeminiCliProvider()
+    if name in ("antigravity", "agy"):
+        from .antigravity_cli import AntigravityCliProvider
+        return AntigravityCliProvider()
     raise ValueError(f"unknown ASTERISM_LLM_PROVIDER={name!r}")
 
 

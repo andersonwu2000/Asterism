@@ -113,6 +113,7 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 
 Strategist（`Tooling/pipeline/strategist.py`）：
 - `strategist_schema_invalid` — `decision.json` 解析過但 `verify_decisions` / 提案包機械檢查不過；同 session resume 修訂，輪數上限 `strategist.verify_retry`（預設 6，與 Adversary 反駁共用計數）
+- `provider_misconfigured`（rc 123，2026-07-30 隨 Antigravity provider 加入）— provider 結構性不可用：CLI 不認的 model slug、憑證被拒（Gemini CLI 個人層 2026-06-18 停服）、或工具因缺 `permissions.allow` 規則被 headless 自動拒絕。**`agy` 對後者回 `status: SUCCESS` 但什麼都沒寫**，所以 provider 自己驗 attempts dir 有無產物，無產物即回 123。traits：`provider_infra`（不燒 goal attempts——數學沒失敗）、`cooldown_scope='kind'`（整條通道壞掉不是單一 target）、無 death note（讀者是 operator 不是 agent）。**重試治不了它**——修 `~/.gemini/antigravity-cli/settings.json` 或 model 設定；授權細節全記在 `Tooling/llm/antigravity_cli.py` 檔頭
 - `strategist_noop` — Strategist 合法地決定 Noop（當下無事可做）；非錯誤、記錄用
 - `strategist_proposal_rejected` — Adversary 於修訂輪用盡後仍反駁：提案+全部批評存 `programme_revisions`（status='rejected'）、session 拋棄、下一 wake 只帶一行被拒紀錄盲重推；target cooldown 節流連續拒絕循環；不 burn root.attempts
 - **每條丟棄路徑都留紀錄**（v34 `programme_revisions.discard_reason`）：Adversary 反駁 / 提案包機械檢查駁回 / 修訂 spawn rc≠0 / 修訂輪交不出 decision.json / 判官 spawn 掛或兩次交不出裁決——全部寫 `status='rejected'` 列並記下是哪條通道丟的；`rejection_notice` 把該理由帶進下一 wake 並明說「該批未派出」。理由：`_plan.md` 在 spawn 一結束就落盤（判決之前），被丟棄的批次會留下宣稱已派的筆記（SG 07-29 燒掉兩個 wake）。提案文本在早期 verify 駁回時尚未讀進記憶體，`_discard_proposal` 退而從 attempts dir 讀 `proposal.md`

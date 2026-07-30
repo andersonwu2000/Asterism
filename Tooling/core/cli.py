@@ -1227,6 +1227,37 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         line("WARN", "gemini CLI not on PATH (Gemini provider unavailable)")
 
+    # Antigravity CLI (`agy`) — the subscription-priced path to Gemini
+    # models since Google cut the Gemini CLI's individual tiers off
+    # (2026-06-18). Resolver probes the installer location first: the
+    # PowerShell installer edits the USER PATH, which a daemon started
+    # before the install never sees.
+    from ..llm import antigravity_cli as _agy
+    agy_exe = _agy.resolve_agy_executable()
+    if agy_exe:
+        try:
+            r = subprocess.run(
+                [agy_exe, "--version"],
+                capture_output=True, text=True, timeout=15,
+                encoding="utf-8", errors="replace",
+            )
+            v = (r.stdout or "").strip().splitlines()[0] if r.stdout else "?"
+            line("OK", f"agy     {v}")
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            line("FAIL", f"agy --version timed out or errored: {exc}")
+        # The permission file is what makes the write fence real; without
+        # it every tool falls to headless auto-deny and a spawn returns
+        # SUCCESS having written nothing (see antigravity_cli.py).
+        perms = _agy.permissions_path()
+        if perms.is_file():
+            line("OK", f"agy permissions: {perms}")
+        else:
+            line("WARN", f"agy permissions file missing ({perms}) — every "
+                         f"tool call will be auto-denied in headless mode")
+    else:
+        line("WARN", "agy CLI not on PATH (Antigravity provider "
+                     "unavailable)")
+
     # Lake (Lean build tool)
     if shutil.which("lake"):
         try:

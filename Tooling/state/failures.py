@@ -72,6 +72,16 @@ REGISTRY: "dict[str, FailureTraits]" = {
                       death_note=True),
     "gateway_unreachable": _T("provider_infra", cooldown_scope="target"),
     "transient_timeout": _T("provider_infra", cooldown_scope="target"),
+    # The provider is structurally unusable: a model slug the CLI does
+    # not know, refused credentials, or a tool auto-denied for want of a
+    # permission rule (the Antigravity CLI reports that last one as
+    # status=SUCCESS with nothing written — see antigravity_cli.py).
+    # provider_infra so it never burns a goal attempt (the mathematics
+    # did not fail), kind-scoped cooldown because the whole channel is
+    # down rather than this one target, and NO death note: the audience
+    # for a config error is the operator, not the agent.
+    "provider_misconfigured": _T("provider_infra", agent_visible=False,
+                                 cooldown_scope="kind"),
     # 07-30 audit: a shutdown-killed spawn produced nothing, but the old
     # 'framework' origin let it burn a goal attempt toward SHELVE — the
     # exact class the SG#14 gateway-death lesson exempts (cascade's
@@ -218,7 +228,10 @@ def rc_to_reason(rc: int) -> str:
     single home of the rc taxonomy (was mirrored per-pipeline; strategist
     carried the last copy). rc values are the SpawnRC contract
     (llm/base.py): 124 timeout, 125 stale-session/fast-fail, 126 provider
-    quota, 127 missing CLI, 128 stuck-thinking watchdog."""
+    quota, 127 missing CLI, 128 stuck-thinking watchdog. 123 =
+    provider config/authorization is broken (antigravity_cli)."""
+    if rc == 123:
+        return "provider_misconfigured"
     if rc == 124:
         return "transient_timeout"
     if rc == 126:
