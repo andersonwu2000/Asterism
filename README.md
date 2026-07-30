@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-29
+- Fixed several bugs in the automated proof-review judge, including one that fed it degraded views of nested problems and a display bug that showed rejected proofs as passing.
+- Rewrote and tightened the instructions guiding the proof-writing agents, adding explicit length limits on proof documents and clearer rules for when a one-line proof summary suffices.
+- Reworked the rules for when agents may cite external lemmas, basing permission on the structure of the goal rather than a simple count, and removed outdated citation restrictions.
+- Added a falsity check at problem intake so statements suspected to be unprovable are declined upfront.
+
 ### 2026-07-27
 - Merged the three separate agents that translate informal mathematics into Lean into a single worker that proceeds through staged steps, and drafted a new set of prompts for it that is awaiting review before being switched on.
 - Fixed a batch of bugs in that translation component, found through a systematic code review and a follow-up cleanup sweep, including a resource leak and stale-metadata issues.
@@ -219,11 +225,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 
 ### 2026-06-30
 - Fixed the component that catalogs Lean definitions so it now strips comments before reading declaration names, preventing commented-out code from being mistaken for real definitions.
-
-### 2026-06-29
-- Added an automatic lemma pre-search that, for each step of a proof attempt, looks for useful lemmas first in the problem itself, then a local library, then Mathlib, capping results per source and using a configurable time budget, in place of the old hand-written hints.
-- Fixed two verification flaws so a proof is only accepted after re-checking it against the current compiler diagnostics and on its own workspace, rather than trusting stale or borrowed results.
-- Kept the background worker alive until its finished proofs are collected, so completed work is no longer lost.
 
 <!-- ASTERISM-PROGRESS:END -->
 
