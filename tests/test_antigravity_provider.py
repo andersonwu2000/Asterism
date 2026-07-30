@@ -191,9 +191,15 @@ def test_success_with_no_artifact_is_misconfigured(
         stderr = ""
 
     monkeypatch.setattr(agy.subprocess, "run", lambda *a, **k: _R())
-    rc = agy.AntigravityCliProvider().spawn(_req(tmp_path))
+    req = _req(tmp_path)
+    (req.attempts_dir / "scratch.log").write_text("x", encoding="utf-8")
+    rc = agy.AntigravityCliProvider().spawn(req)
     assert rc == agy.RC_MISCONFIGURED
-    assert "wrote NOTHING" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "left no usable artifact" in out
+    # naming what IS there is the diagnostic: "wrote the wrong file" and
+    # "was denied every tool" look identical without it
+    assert "scratch.log" in out
 
 
 def test_success_with_artifact_is_zero_and_records_session(

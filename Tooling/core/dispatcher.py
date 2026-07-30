@@ -1983,6 +1983,18 @@ def run(workspace: Path, *, once: bool = False,
                         and reason == "strategist_noop" else outcome)
                     print(f"[cascade] {kind} {tk}={tid} → {_disp_outcome}",
                           flush=True)
+                    # A Goal-target failure lands in `dead_attempts`
+                    # with its reason and detail; a Problem-target one
+                    # (Strategist / Librarian) lands NOWHERE — the
+                    # PipelineResult is dropped after this line and the
+                    # attempts dir is rmtree'd on WorkArea exit. Two
+                    # b6_1 wakes (07-30) failed with no trace at all,
+                    # and reconstructing why cost a dig through the
+                    # provider's private conversation store. One line
+                    # is the whole fix.
+                    if outcome == "failed" and tk != "Goal":
+                        print(f"[cascade] {kind} {tk}={tid} "
+                              f"reason={reason or '?'}", flush=True)
                     tree.write_for_target(conn, workspace, tid, tk)
                 except Exception as exc:
                     # Worker thread raised an unhandled exception (e.g.

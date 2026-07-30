@@ -469,8 +469,13 @@ class AntigravityCliProvider:
 
         # SUCCESS is not proof — see THE HAZARD.
         if not _agent_artifact_present(req.attempts_dir):
+            try:
+                left = sorted(p.name for p in req.attempts_dir.iterdir())
+            except OSError:
+                left = []
             print(f"[llm:agy] {req.kind}: status=SUCCESS but the agent "
-                  f"wrote NOTHING into {req.attempts_dir} — a tool was "
+                  f"left no usable artifact in {req.attempts_dir} "
+                  f"(files: {', '.join(left) or 'none'}) — a tool was "
                   f"almost certainly auto-denied (no matching "
                   f"permissions.allow rule). Retrying will not help; fix "
                   f"~/.gemini/antigravity-cli/settings.json.", flush=True)
