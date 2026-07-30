@@ -1282,3 +1282,46 @@ def test_section_programme_proof_renders_current_rev(
     out = phase2_context._section_programme_proof(conn, "p")
     assert out[0].startswith("## Programme Proof (rev 1")
     assert any("The argued mathematics body." in ln for ln in out)
+
+
+def test_ingest_gate_states_the_ordering_cost_ungated(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The ordering advice used to render only for a `frozen` root — so
+    on b6_1 (07-30) it never appeared, and its wording forbade a
+    same-batch root Inject, which #123 made legal and efficient (the
+    commit gate registers a wait edge; the root's assembly landed and
+    parked on two edges). It now renders for any unproved root and
+    states the real cost instead of a prohibition: a citer dispatched
+    before its citees cannot read their exact statements."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    text = "\n".join(phase2_context._section_ingest_gate(conn, "p"))
+    assert "Land a goal's cited prerequisites before dispatching it" in text
+    assert "pin their exact signatures in the brief" in text
+    # retired pipeline vocabulary is gone from every strategist surface
+    assert "Backward" not in text and "Builder" not in text
+
+
+def test_strategist_surfaces_carry_no_retired_pipeline_names(
+    workspace: Path, conn: sqlite3.Connection, mfst: manifest.Manifest,
+    tmp_path: Path,
+) -> None:
+    """v33 hard-wired every Inject to the Formalizer, but the
+    strategist-facing text kept teaching `Inject(Backward|Builder ...)`
+    and "no Backward/Builder/Forward worker in flight" — and the
+    b6_1 Programme rev1 duly planned for a "Backward worker" that does
+    not exist. The decision object still tolerates a `pipeline` field,
+    so nothing failed loudly; only a pin keeps it gone."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    attempts_dir = tmp_path / "_att_vocab"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="routine",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        pending_review_id=None,
+    ).read_text(encoding="utf-8")
+    for dead in ("Inject(Backward", "Inject(Builder", "Inject(Forward)",
+                 "Backward/Builder"):
+        assert dead not in out, dead

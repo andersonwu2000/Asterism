@@ -70,9 +70,10 @@ def _section_ingest_gate(conn: sqlite3.Connection,
       - root exists, NOT proved → surface "Ingest is unavailable" (the
         HARD gate would reject it), so the Strategist doesn't burn a
         decision on it.
-      - root still `frozen` (never injected) → additionally steer the
-        opening moves: Forward prerequisite lemmas first; don't Inject
-        Backward on the root in the same batch as its prerequisites.
+      - root not proved → also state the ordering cost: a citer
+        dispatched before its citees land cannot read their exact
+        statements from CATALOG.md (ungated 2026-07-30; the old
+        `frozen`-only gate meant it never rendered).
       - root proved, or no root (pure-NL) → say nothing; the prompt's
         standing instruction ("commit Ingest once the Manifest's
         requirements are met") is the only voice — these notes would be
@@ -90,12 +91,17 @@ def _section_ingest_gate(conn: sqlite3.Connection,
         f"(status: `{root['status']}`; hard exit gate).",
         "",
     ]
-    if str(root["status"]) == "frozen":
-        lines += [
-            "Forward the root's prerequisites first; don't "
-            "`Inject(Backward)` on the root in the same batch.",
-            "",
-        ]
+    # Ordering advice, ungated (2026-07-30): it used to render only for
+    # a `frozen` root, i.e. almost never, and its old wording forbade a
+    # same-batch root Inject — obsolete since #123 made that legal (the
+    # commit gate registers a wait edge). What survives is the real
+    # cost: a citer dispatched before its citees land cannot read their
+    # exact statements from CATALOG.md and has to assume the shape.
+    lines += [
+        "Land a goal's cited prerequisites before dispatching it; if"
+        " you dispatch first, pin their exact signatures in the brief.",
+        "",
+    ]
     return lines
 
 
@@ -158,7 +164,7 @@ def _section_stall_warning(conn: sqlite3.Connection,
     Surfaces a header when:
       - `Ingest` not yet committed AND
       - zero open goals reachable AND
-      - no in-flight Backward/Builder/Forward worker.
+      - no in-flight worker.
 
     These conditions mean BFS literally cannot dispatch anything until
     Strategist intervenes. Polar 2026-05-23 hit this for 174 min while
@@ -187,7 +193,7 @@ def _section_stall_warning(conn: sqlite3.Connection,
         "",
         "Structural deadlock detected: this problem has not been"
         " `Ingest`ed, no `open` goal is reachable for BFS dispatch, and"
-        " no Backward/Builder/Forward worker is in flight. The framework"
+        " no worker is in flight. The framework"
         " cannot dispatch any worker on this problem until you intervene.",
         "",
         "Typical causes:",
@@ -205,10 +211,9 @@ def _section_stall_warning(conn: sqlite3.Connection,
         " current Forward batch is addressing.",
         "",
         "**`Noop` is not appropriate while this section is present.**"
-        " Choose one of: `Inject(Backward|Builder, target_goal_id=...)`"
-        " (revive a `shelved` / `pending_strategist_review` goal with"
-        " an explicit pipeline + brief), `Inject(Forward)` (build the"
-        " missing prerequisite), `Ingest` (every Manifest requirement is"
+        " Choose one of: `Inject(target_goal_id=..., brief=...)`"
+        " (revive a `shelved` / `pending_strategist_review` goal), a"
+        " no-target `Inject` (mint the missing prerequisite), `Ingest` (every Manifest requirement is"
         " satisfied — the terminal judgment), `ConfirmShelve` (truly"
         " cannot proceed — followed by an Inject that pivots), or"
         " `RequestUserAmend` (Manifest scope decision needed).",
@@ -714,8 +719,8 @@ def _section_pending_reopens(conn: sqlite3.Connection,
         "Shelved goal(s) whose ConfirmShelve batch promised a follow-up "
         "Inject set — and that follow-up set has now fully landed. "
         "Strategist's own batch-time promise is the trigger; this is "
-        "the moment to evaluate `Inject(Backward|Builder, target_goal_id"
-        "=<id>, brief=...)` vs a further `Inject` vs a second "
+        "the moment to evaluate `Inject(target_goal_id=<id>, "
+        "brief=...)` vs a further mint vs a second "
         "`ConfirmShelve` with a refined promise. Fortuitous unblock by "
         "unrelated Forwards is handled "
         "automatically by the G1 dedupe revival pass — no need to "
