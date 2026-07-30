@@ -317,9 +317,10 @@ def test_tripwire_fails_the_spawn_when_a_proof_file_changes(
     assert "artifact-tripwire" in out and "proofs/L_a.lean" in out
 
 
-def test_tripwire_catches_a_user_file_edit_and_a_new_proof_file(
-    tmp_path: Path,
-) -> None:
+def test_tripwire_catches_a_user_file_edit(tmp_path: Path) -> None:
+    """Root.lean is both the assembly target and the pinned baseline,
+    and the framework only ever rewrites it OUTSIDE a spawn — so a
+    change during one is always a violation."""
     from Tooling.agent import runtime
     pdir = tmp_path / "Problems" / "p"
     (pdir / "proofs").mkdir(parents=True)
@@ -327,11 +328,6 @@ def test_tripwire_catches_a_user_file_edit_and_a_new_proof_file(
     before = runtime._artifact_fingerprint(pdir)
 
     (pdir / "Root.lean").write_text("assembled\n", encoding="utf-8")
-    assert runtime._artifact_tripwire("formalizer", pdir, before)
-
-    (pdir / "Root.lean").write_text("stub\n", encoding="utf-8")
-    (pdir / "proofs" / "L_new.lean").write_text("-- smuggled\n",
-                                                encoding="utf-8")
     assert runtime._artifact_tripwire("formalizer", pdir, before)
 
 
@@ -358,3 +354,26 @@ def test_tripwire_rc_maps_to_provider_misconfigured() -> None:
     from Tooling.agent import runtime
     assert (failures.rc_to_reason(runtime.RC_SPAWN_WROTE_OUTSIDE_SANDBOX)
             == "provider_misconfigured")
+
+
+def test_tripwire_tolerates_a_sibling_pipelines_new_brick(
+    tmp_path: Path,
+) -> None:
+    """`dispatch.pool` > 1 means a sibling pipeline can land a brick
+    through proof_store while this spawn runs (b6_1 07-30: two mints in
+    parallel). Additions must not fail an honest wake — drift-check
+    catches a smuggled file with no DB row. A REWRITE of a pre-existing
+    proof still trips."""
+    from Tooling.agent import runtime
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / "proofs").mkdir(parents=True)
+    (pdir / "proofs" / "L_old.lean").write_text("-- old\n", encoding="utf-8")
+    before = runtime._artifact_fingerprint(pdir)
+
+    (pdir / "proofs" / "L_sibling.lean").write_text("-- landed\n",
+                                                    encoding="utf-8")
+    assert not runtime._artifact_tripwire("formalizer", pdir, before)
+
+    (pdir / "proofs" / "L_old.lean").write_text("-- rewritten\n",
+                                                encoding="utf-8")
+    assert runtime._artifact_tripwire("formalizer", pdir, before)

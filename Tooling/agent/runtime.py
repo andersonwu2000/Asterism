@@ -289,9 +289,18 @@ def _artifact_tripwire(kind: str, problem_dir: Path,
     turns "the fence held" from an assumption into an observation.
     """
     after = _artifact_fingerprint(problem_dir)
+    # ADDITIONS to proofs/ are not evidence of tampering: with
+    # `dispatch.pool` > 1 a sibling pipeline on the same problem commits
+    # its brick through `state/proof_store` while this spawn is still
+    # running (b6_1 07-30 ran two mints concurrently). Flagging those
+    # would fail honest wakes. A smuggled NEW file is still caught —
+    # `asterism drift-check` reports any proofs file with no DB row.
+    # What has no other backstop, and stays guarded here, is a REWRITE
+    # of a file that already existed when this spawn started.
     changed = sorted(
         k for k in set(before) | set(after)
-        if before.get(k) != after.get(k))
+        if before.get(k) != after.get(k)
+        and not (k.startswith("proofs/") and k not in before))
     if not changed:
         return False
     print(f"[artifact-tripwire] {kind} spawn changed {len(changed)} "
