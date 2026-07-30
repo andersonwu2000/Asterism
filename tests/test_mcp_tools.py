@@ -144,12 +144,13 @@ def test_loogle_left_the_shell_allowlist() -> None:
     control."""
     from Tooling.llm import claude_cli
 
-    assert "Tooling.knowledge.loogle" not in claude_cli.DEFAULT_BASH_ALLOWED
     assert set(claude_cli._TOOLS_MCP_PATTERNS) == {
         "mcp__asterism_tools__loogle",
         "mcp__asterism_tools__validate_json",
     }
-    # The claude-only tail: `json.tool` stays until every spawn kind
-    # carries the tools config, so a librarian/scholar wake does not lose
-    # JSON validation with nothing to replace it.
-    assert "json.tool" in claude_cli.DEFAULT_BASH_ALLOWED
+    # Empty, so an unmatched Bash call falls to the prompt that headless
+    # auto-denies. `json.tool` went with loogle once `validate_json`
+    # existed — and not for tidiness: `python -m json.tool <in> <out>`
+    # writes its OUTFILE, so the trailing `*` was a write channel that
+    # two months of comments called side-effect-free.
+    assert claude_cli.DEFAULT_BASH_ALLOWED == ""

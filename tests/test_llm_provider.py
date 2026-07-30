@@ -1615,10 +1615,14 @@ def test_spawn_passes_allowed_tools_for_loogle(
 def test_spawn_allowed_tools_include_readonly_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Read-only `python -m json.tool` is whitelisted so an agent (esp. the
-    Strategist) can validate its own decision.json before emitting, instead of
-    blind-sending and burning a cycle on a malformed payload (agent_feedback,
-    strategist 06-21/06-22). `python -c` (arbitrary code) stays blocked."""
+    """JSON self-validation survived; the shell that carried it did not.
+
+    The capability is real — agents check their own decision.json parses
+    rather than spend a round on a rejection, ~47 uses across the 07-30
+    legs, the most-used call of all. It is `validate_json` over MCP now,
+    because `python -m json.tool <in> <out>` writes its OUTFILE: the
+    trailing `*` in the old `Bash(python -m json.tool *)` was a write
+    channel, in a rule whose comment called it side-effect-free."""
     from pathlib import Path
     from Tooling import llm
     from Tooling.llm import claude_cli
@@ -1631,9 +1635,11 @@ def test_spawn_allowed_tools_include_readonly_json(
         problem_dir=Path("/x/prob"),
         attempts_dir=Path("/x/att"),
         timeout_sec=60,
+        mcp_config_path=Path("/x/att/_mcp_tools.json"),
     ))
     val = captured[0][captured[0].index("--allowed-tools") + 1]
-    assert "python -m json.tool" in val          # read-only JSON validation
+    assert "mcp__asterism_tools__validate_json" in val
+    assert "json.tool" not in val                # the write channel is gone
     assert "python -c" not in val                # arbitrary code stays blocked
 
 
@@ -1720,9 +1726,10 @@ def test_allowed_tools_scopes_read_to_problem_and_mathlib(
     # Other Problems must NOT be in scope — the F44 sandbox boundary
     # is what F53 rerun showed Sonnet wandering across.
     assert "Read(/ws/Problems/other" not in val
-    # The Bash allowlist survives the Read/Grep scoping — it is just
-    # shorter now that loogle is an MCP tool.
-    assert "Bash(python -m json.tool *)" in val
+    # No Bash pattern at all for a general kind now: an unmatched Bash
+    # call falls to the prompt headless auto-denies. Read/Grep scoping is
+    # unaffected by that — which is what this test is really about.
+    assert "Bash(" not in val
 
 
 # ---------------------------------------------------------------------
