@@ -484,12 +484,17 @@ def _run_structured(conn, *, problem, work_kind, workspace,
         spawn_to = _cfg.get("dispatch.spawn_timeout_sec", default=960,
                             env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int)
         timeout_override = trap_override + max(0, spawn_to - base)
+    from .. import write_tools_mcp_config as _write_tools_cfg
     rc = agent.spawn_llm(
         kind="librarian", prompt_path=prompt_path,
         problem_dir=problem_dir, attempts_dir=attempts_dir,
         session_id=sid,
         trap_check_sec_override=trap_override,
-        timeout_sec_override=timeout_override)
+        timeout_sec_override=timeout_override,
+        # dedup_audit and migrate both search Mathlib for a twin; loogle
+        # is an MCP tool now, so without this the prompt names a tool the
+        # agent cannot call.
+        mcp_config_path=_write_tools_cfg(attempts_dir, workspace))
     if rc != 0:
         return PipelineResult(
             outcome="failed", failure_reason="agent_error",

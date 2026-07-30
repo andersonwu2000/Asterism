@@ -103,6 +103,40 @@ def test_gateway_config_carries_the_same_tools_entry() -> None:
     assert '"asterism_tools"' in src
 
 
+def test_every_prompt_naming_a_tool_gets_a_config() -> None:
+    """Naming a tool in a prompt is a promise the dispatch must keep.
+
+    Caught while landing this change: the librarian and presearch prompts
+    were rewritten to call `loogle(...)` while their spawns passed no MCP
+    config at all, so the instruction would have named a tool the agent
+    could not call — a silent capability gap, the same shape as the
+    retired-pipeline vocabulary that told workers about roles that no
+    longer existed."""
+    repo = Path(__file__).resolve().parents[1]
+    prompts = repo / "Tooling" / "prompts"
+    # prompt directory -> the module that spawns that kind
+    owners = {
+        "strategist": ["Tooling/pipeline/strategist.py"],
+        "adversary": ["Tooling/pipeline/adversary.py"],
+        "librarian": ["Tooling/pipeline/librarian/run.py"],
+        "formalizer": ["Tooling/pipeline/_retry.py"],
+        "_shared": ["Tooling/pipeline/_presearch.py",
+                    "Tooling/pipeline/_retry.py"],
+    }
+    missing: list[str] = []
+    for sub, modules in owners.items():
+        names = " ".join(
+            p.read_text(encoding="utf-8")
+            for p in (prompts / sub).glob("*.md"))
+        if "loogle(" not in names and "validate_json(" not in names:
+            continue
+        if not any("mcp_config_path=" in (repo / m).read_text(encoding="utf-8")
+                   for m in modules):
+            missing.append(f"{sub} prompts name a tool; none of "
+                           f"{modules} passes mcp_config_path")
+    assert not missing, "\n  ".join(missing)
+
+
 def test_loogle_left_the_shell_allowlist() -> None:
     """The claude side kept a working Bash rule for months; it is removed
     here not because it failed but because it could not be mirrored on the

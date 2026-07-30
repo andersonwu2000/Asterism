@@ -70,4 +70,4 @@ Ship as `:= by sorry` the moment a proof attempt doesn't close on the first try 
 
 Never use any name in FORBIDDEN_LEMMAS.
 
-Mathlib is at `.lake/packages/mathlib/Mathlib/` (names drift across versions; verify before citing) — Grep (`(theorem|lemma) <name>\b`) or `python -m Tooling.knowledge.loogle '<pattern>'`.
+Mathlib is at `.lake/packages/mathlib/Mathlib/` (names drift across versions; verify before citing) — Grep (`(theorem|lemma) <name>\b`) or `loogle('<pattern>')`.

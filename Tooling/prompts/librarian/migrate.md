@@ -53,5 +53,5 @@ The framework extracts your one declaration and appends it. Keep the seed's impo
 Mathlib at `.lake/packages/mathlib/Mathlib/`, Library at `Library/`. Names and migrated signatures drift — verify before citing:
 
 - name: `rg -n "(theorem|lemma|def) <name>\b" .lake/packages/mathlib/Mathlib/ Library/`
-- type: `python -m Tooling.knowledge.loogle '<pattern>'`
+- type: `loogle('<pattern>')`
 - sibling signature: `#check <name>` — a migrated sibling can differ from the original proof's call

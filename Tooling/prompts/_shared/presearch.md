@@ -19,7 +19,7 @@ the relevant lemmas; do not keep reformulating.
 2. **Library** — Grep `__LIBRARY_DIR__` for the goal's head symbols (harvested,
    reusable; often the exact lemma). Report names in full (`Library.<…>`).
 3. **Mathlib** — loogle for shape/type, e.g.
-   `python -m Tooling.knowledge.loogle 'ContinuousLinearMap.comp _ _ = _'`; or Grep
+   `loogle('ContinuousLinearMap.comp _ _ = _')`; or Grep
    `__PACKAGES__` by name. Try a few query shapes; if they miss, move on — leave the
    block thin rather than burning the budget reformulating.
 

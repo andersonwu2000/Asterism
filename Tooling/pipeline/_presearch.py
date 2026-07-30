@@ -304,11 +304,16 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
         prompt_file = sandbox / _PROMPT_FILENAME
         prompt_file.write_text(rendered, encoding="utf-8")
 
+        from . import write_tools_mcp_config as _write_tools_cfg
         agent.spawn_llm(
             kind="presearch", prompt_path=prompt_file,
             problem_dir=problem_dir, attempts_dir=sandbox,
             session_id=str(uuid.uuid4()),
             timeout_sec_override=timeout,
+            # Searching Mathlib IS this spawn's whole job, and loogle is
+            # an MCP tool now — without the config the prompt would name
+            # a tool the agent cannot call.
+            mcp_config_path=_write_tools_cfg(sandbox, workspace),
         )
 
         if not out_path.is_file():
