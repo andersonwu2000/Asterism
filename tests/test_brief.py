@@ -83,6 +83,55 @@ def test_worker_surface_carries_no_retired_pipeline_names(
     assert "the signature is locked" in out
 
 
+def test_no_retired_kind_name_survives_in_any_rendered_string() -> None:
+    """Class-level pin over the two modules that render worker context.
+
+    Fixing the strings twice (d75500a7, then the BRIEF header and Sandbox
+    line) fixed instances. Four more sites were still live afterwards —
+    the Library pointer, the `agent_declined` note, and both
+    dead-strategy headers — because every pin so far rendered one
+    section with one fixture, and a section nobody set up in a test is a
+    section nobody checks.
+
+    So this walks the AST instead of the output: every string constant in
+    `agent/context.py` and `state/brief.py` that is not a docstring is
+    either agent-facing prose or an internal key, and neither may name a
+    kind that v33 retired. Comments never enter the AST, which is the
+    behaviour we want — `dispatcher.py` and friends keep their historical
+    incident notes; only text that can reach an agent is pinned."""
+    import ast
+
+    from Tooling.agent import context as agent_context
+
+    retired = ("Builder", "Backward", "Forward")
+    offenders: list[str] = []
+    for mod in (agent_context, brief):
+        path = Path(mod.__file__)
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        docstrings = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Module, ast.FunctionDef,
+                                 ast.AsyncFunctionDef, ast.ClassDef))
+            and node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        }
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and id(node) not in docstrings):
+                for dead in retired:
+                    if dead in node.value:
+                        offenders.append(
+                            f"{path.name}:{node.lineno} {dead!r} in "
+                            f"{node.value[:70]!r}")
+    assert not offenders, (
+        "v33 merged every worker kind into the Formalizer; these strings "
+        "still name the retired ones:\n  " + "\n  ".join(offenders))
+
+
 def test_render_no_mathlib_hints_section(tmp_path: Path) -> None:
     """`## Lemma hints` was retired (target-1 pre-search replaces it): a
     Manifest with mathlib hints no longer renders a `## Mathlib lemmas`

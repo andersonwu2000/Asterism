@@ -719,8 +719,8 @@ def _section_proved_goals(conn: sqlite3.Connection,
         f"`Problems/{goal['problem']}/proofs/L_<slug>.lean` for the "
         "current goal's keywords. Every file carries the proved "
         "`theorem`/`def <slug>` line (always greppable); most also open "
-        "with a leading `--` summary — Builder proofs lead with "
-        "`-- <slug>: <summary>`, decomposition proofs with a `--` "
+        "with a leading `--` summary — proofs lead with "
+        "`-- <slug>: <summary>`, decompositions with a `--` "
         "rationale block.")
     lines.append("")
     return lines
@@ -822,7 +822,7 @@ def _section_goal_history(*,
         if any(e.get("failure_reason") == "agent_declined"
                for e in direct_events):
             sub.append(
-                "Note: blocks with `agent_declined` are Builder declining "
+                "Note: blocks with `agent_declined` are a worker declining "
                 "this goal as decomposition-needed (PROPOSAL.md carries "
                 "the specific hard parts identified). Design the "
                 "decomposition to address them."
@@ -837,7 +837,7 @@ def _section_goal_history(*,
         sub = [
             "### Sibling decompositions that failed Verify",
             "",
-            "Earlier Backward attempts decomposed this goal but the "
+            "Earlier attempts decomposed this goal but the "
             "combination patch did not elaborate against the sub-goal "
             "proofs. Avoid re-proposing a decomposition with the same "
             "typing shape.",
@@ -852,7 +852,7 @@ def _section_goal_history(*,
         sub = [
             "### Strategies whose decomposition died",
             "",
-            "Earlier Backward attempts produced the decompositions below "
+            "Earlier attempts produced the decompositions below "
             "— each killed because at least one of its sub-goals could "
             "not be proved (cascade-shelve).",
             "",
