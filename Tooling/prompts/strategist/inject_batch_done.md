@@ -93,8 +93,8 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 
 ```json
 // batch revealed proof direction fundamentally wrong → escalate upward
-[{"kind": "ConfirmShelve", "target_goal_id": "wagon_class0_col0_three_invariant",
-  "reason": "Two prior Injects on this goal both died with the same parent_needs_fix pattern — agents identify that the joint-mod-3 form lemma the parent decomposition relies on is itself unprovable in isolation. The whole class-0 sub-tree is built on a flawed decomposition."},
- {"kind": "Inject", "target_goal_id": "wagon_head_class0_joint_mod3_invariant",
-  "brief": "Roadmap: joint invariant reframe\nReframe upward: stop separating 'pure form' from 'non-divisibility' bricks. Carry both as a single joint invariant on the integer triple from the start; induct on word length so the mod-3 constraint co-evolves with the form."}]
+[{"kind": "ConfirmShelve", "target_goal_id": "child_lemma",
+  "reason": "Two Injects died the same way: the parent's split assumes a lemma that is false in isolation."},
+ {"kind": "Inject", "target_goal_id": "parent_goal",
+  "brief": "Roadmap: reframe\nStop splitting A from B; carry them as one joint invariant and induct so both co-evolve."}]
 ```

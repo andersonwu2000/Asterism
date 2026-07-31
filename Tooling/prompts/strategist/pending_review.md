@@ -86,18 +86,18 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 
 ```json
 // structural — agent's disproof correct; parent decomposition needs reframing
-[{"kind": "ConfirmShelve", "target_goal_id": "wagon_class0_head_b_nondiv_from_form",
-  "reason": "Agent's disproof is correct: the statement isolates ¬3∣b from joint form alone, but h0/h1/h2 only constrain a/b/c via the column equality, not their individual mod-3 residues. Parent decomposition is asking the impossible."},
- {"kind": "Inject", "target_goal_id": "wagon_class0_col0_three_invariant",
-  "brief": "Roadmap: joint mod-3 invariant\nReframe parent: instead of decomposing into separate 'pure form + ¬3∣b', state a stronger joint invariant ∃ a b c : ℤ, M_ω·e_3 = (a,b,c)/3^|ω| ∧ 3 ∤ gcd(a,b,c). Induct on word length so the mod-3 constraint co-evolves with the integer triple — never extracted as a separate sub-goal that loses context."}]
+[{"kind": "ConfirmShelve", "target_goal_id": "child_lemma",
+  "reason": "Agent's disproof is correct: the hypotheses constrain A and B jointly, never B alone. The parent split asks the impossible."},
+ {"kind": "Inject", "target_goal_id": "parent_goal",
+  "brief": "Roadmap: joint invariant\nReframe the parent: carry A and B as one invariant and induct so both co-evolve, instead of splitting B off into a sub-goal that loses the coupling."}]
 ```
 
 ```json
 // missing prereq(s) → mint(s) + park (N mints allowed per batch)
 [{"kind": "Inject",
-  "brief": "Roadmap: equidecomp composition\n## Need\nA composition lemma for Equidecomp.trans over partial bijections... (Grep + Loogle confirmed missing)..."},
+  "brief": "Roadmap: equidecomp composition\n## Need\nA composition lemma for `Equidecomp.trans` over partial bijections (Grep + loogle confirmed missing)."},
  {"kind": "Inject",
-  "brief": "Roadmap: equidecomp composition\n## Need\nThe inverse lemma for Equidecomp.symm, independent of the above... (Grep + Loogle confirmed missing)..."},
+  "brief": "Roadmap: equidecomp composition\n## Need\nThe inverse lemma for `Equidecomp.symm`, independent of the above."},
  {"kind": "ConfirmShelve", "target_goal_id": 1743,
   "reason": "Parked pending both minted bricks; reassess after they land."}]
 ```

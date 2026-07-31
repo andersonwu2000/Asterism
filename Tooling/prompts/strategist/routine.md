@@ -88,6 +88,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 ## Examples
 
 ```json
+// branch reinvents existing mathlib → park it, redirect the parent
 [{"kind": "ConfirmShelve", "target_goal_id": "family_card_eq_finrank",
   "reason": "Branch reinvents Module.finrank_eq_card_basis (mathlib has)."},
  {"kind": "Inject", "target_goal_id": "extended_jordan_family",
@@ -95,8 +96,9 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 ```
 
 ```json
+// same witness replicated across sub-goals → mint it as a named def
 [{"kind": "ConfirmShelve", "target_goal_id": "lu_step_assembly",
-  "reason": "Six dead decomposition strategies all shelved with the same structural complaint: the four conjuncts bind to the same `Matrix.reindex (Matrix.fromBlocks …)` witness, which replicates verbatim across each sub-goal signature."},
+  "reason": "Six dead strategies, one complaint: every sub-goal replicates the same witness term."},
  {"kind": "Inject",
   "brief": "Roadmap: LU witness packaging\n## Need\nA `noncomputable def lu_assembled_lower` packaging `Matrix.reindex e e (Matrix.fromBlocks 1 0 w L')` so decomposition sub-goals can cite the witness by name instead of replicating it. (Grep + Loogle confirmed no mathlib analogue.)"}]
 ```
