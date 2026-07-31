@@ -30,7 +30,7 @@ Start from Context.md (TREE, active goals, recent decisions, standing directive)
    - Is the tree reinventing a property mathlib already has?
    - Are there complex or verbose constructs that should have been pre-defined as named abstractions?
 
-- **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
+- **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions. Validate `decision.json` with `validate_json` before finishing.
    - Any structural defect → `ConfirmShelve` the defective branch + `Inject` the right direction
    - Tree is sound → pair a short situation-summary `EmitDirective` with the next Roadmap experiment (a directive alone is not a batch), or `Noop` when everything is genuinely in flight
    - User file is wrong → `RequestUserAmend`
@@ -63,6 +63,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 - Every Inject is proven in the Proof — inject only what is fully argued; anything short of rigorous closure stays in the Roadmap awaiting a later batch. The brief names that claim, restated as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
 - Mark formal↔informal claims not yet kernel-checked in the Roadmap.
 - Every route-moving batch carries ≥1 experiment — an Inject or an AttemptDisproof (MarkDeliverable/Ingest batches exempt). An AttemptDisproof probes a doubt; its absence needs no defense.
+- Before submitting, re-check your ## Proof for correctness: every step's direction and quantifier scope, and any step that assumes structure the hypothesis does not give.
 - A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds

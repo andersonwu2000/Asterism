@@ -708,12 +708,16 @@ def test_adversary_contract_section_matches_wake_prompts() -> None:
     decision-kind contract so quoted contract clauses are checkable
     inside the sandbox. Every bullet must exist byte-for-byte in one of
     the three wake prompts — editing a wake bullet without updating the
-    judge's copy fails here."""
+    judge's copy fails here.
+
+    07-31: the copy moved out of the inlined prompt into `_contract.md`,
+    staged into the projection. Reference material does not belong in an
+    instruction that is re-sent on every spawn; the drift guard follows
+    it."""
     import re as _re
     root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
-    adv = (root / "adversary" / "adversary.md").read_text(encoding="utf-8")
-    section = adv[adv.index("## The Strategist's contract"):
-                  adv.index("## How to judge")]
+    section = (root / "adversary" / "_contract.md").read_text(
+        encoding="utf-8")
     wakes = "".join(
         (root / "strategist" / f).read_text(encoding="utf-8")
         for f in ("routine.md", "inject_batch_done.md",

@@ -137,6 +137,58 @@ def test_every_prompt_naming_a_tool_gets_a_config() -> None:
     assert not missing, "\n  ".join(missing)
 
 
+def test_no_prompt_names_a_shell_command_the_agent_cannot_run() -> None:
+    """The other direction of the pairing, and the one that was missed.
+
+    When `json.tool` left the Bash allowlist the prompts kept telling
+    agents to run `python -m json.tool <file>` — four of them. The
+    existing pin only checked that a prompt naming an MCP tool gets a
+    config; nothing checked that a prompt naming a SHELL command still
+    has a shell. Every `python -m X` a prompt names must still be
+    granted somewhere in the claude allowlist (scholar's two curated
+    network commands are the only survivors)."""
+    import re
+
+    repo = Path(__file__).resolve().parents[1]
+    src = (repo / "Tooling" / "llm" / "claude_cli.py").read_text(
+        encoding="utf-8")
+    granted = set(re.findall(r"Bash\(python -m ([\w.]+)", src))
+
+    named: dict[str, str] = {}
+    for p in (repo / "Tooling" / "prompts").rglob("*.md"):
+        for mod in re.findall(r"python -m ([\w.]+)",
+                              p.read_text(encoding="utf-8")):
+            named.setdefault(mod, p.name)
+    ungranted = {m: f for m, f in named.items() if m not in granted}
+    assert not ungranted, (
+        "prompts name shell commands no allowlist grants: "
+        + ", ".join(f"{m} ({f})" for m, f in sorted(ungranted.items())))
+
+
+def test_judge_contract_rides_the_projection_not_the_prompt() -> None:
+    """17 lines of decision-kind reference were inlined into every judge
+    spawn. They are reference, not instruction, so they move to the
+    projection — in their own file: `decisions.md` is what the Strategist
+    wrote, and a judge that prosecutes attribution should not find
+    framework text inside it."""
+    import inspect
+
+    from Tooling.pipeline import adversary
+
+    repo = Path(__file__).resolve().parents[1]
+    fragment = repo / "Tooling" / "prompts" / "adversary" / "_contract.md"
+    prompt = (repo / "Tooling" / "prompts" / "adversary"
+              / "adversary.md").read_text(encoding="utf-8")
+
+    assert fragment.exists()
+    assert "`Inject` —" in fragment.read_text(encoding="utf-8")
+    # Moved, not copied.
+    assert "The Strategist's contract (verbatim)" not in prompt
+    assert "`contract.md`" in prompt          # the judge is told it exists
+    src = inspect.getsource(adversary.build_projection)
+    assert '"contract.md"' in src
+
+
 def test_loogle_left_the_shell_allowlist() -> None:
     """The claude side kept a working Bash rule for months; it is removed
     here not because it failed but because it could not be mirrored on the

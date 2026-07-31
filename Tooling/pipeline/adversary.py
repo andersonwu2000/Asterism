@@ -223,6 +223,16 @@ def build_projection(*, round_no: int, attempts_dir: Path,
         src = problem_dir / fname
         if src.exists():
             shutil.copyfile(src, proj / fname)
+    # The decision-kind contract is reference material, not instruction:
+    # 17 lines that were inlined into every judge spawn's prompt. It
+    # rides the projection instead, next to the decisions it governs.
+    # Its OWN file, not the head of `decisions.md` — that file is what
+    # the Strategist wrote, and mixing framework text into it blurs
+    # authorship for a reader who prosecutes attribution (07-31).
+    contract = (Path(__file__).resolve().parents[1] / "prompts"
+                / "adversary" / "_contract.md")
+    if contract.exists():
+        shutil.copyfile(contract, proj / "contract.md")
     # CATALOG.md is lazily machine-generated per assembly and never
     # lives in problem_dir — generate it into the projection directly
     # (the old problem_dir copy was dead code: the judge could never

@@ -23,7 +23,7 @@ Tools: Read / Write / Edit / Grep / `loogle(pattern)` / `validate_json(text)`. N
 
 - **Rewrite `_plan.md`** (your private note; bare filename, in your attempts dir): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
 
-Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
+Output as `decision.json` — JSON array of one or more decisions. Validate `decision.json` with `validate_json` before finishing.
 
 **Difficulty alone is not a reason to give up.** Don't shelve just because the brick was harder than expected. With `## Framework stalled` present (nothing dispatchable, no in-flight worker) the batch must dispatch something new — vary the dead attempts' shared assumption, or build the missing tool as a minted brick (no-target Inject).
 
@@ -51,6 +51,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 - Every Inject is proven in the Proof — inject only what is fully argued; anything short of rigorous closure stays in the Roadmap awaiting a later batch. The brief names that claim, restated as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
 - Mark formal↔informal claims not yet kernel-checked in the Roadmap.
 - Every route-moving batch carries ≥1 experiment — an Inject or an AttemptDisproof (MarkDeliverable/Ingest batches exempt). An AttemptDisproof probes a doubt; its absence needs no defense.
+- Before submitting, re-check your ## Proof for correctness: every step's direction and quantifier scope, and any step that assumes structure the hypothesis does not give.
 - A fresh, isolated **Adversary** judges the package (proposal + briefs + directive) before dispatch.
 
 ## Decision kinds
