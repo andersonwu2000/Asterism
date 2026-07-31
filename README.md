@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-30
+- Added a soundness gate that blocks code-execution tricks in metaprogramming on every path a proof can be elaborated, closing a potential route to unsound proofs.
+- Integrated a new subscription-based provider giving access to Google's Gemini models, and fixed credential handling that could silently fall back to the wrong account.
+- Fixed several scheduling and reliability bugs, including agents being woken or reviewed prematurely and false alarms triggered by unrelated concurrent work.
+- Removed dead code and obsolete internal terminology from an earlier design, and rewrote the architecture documentation to match the current system.
+
 ### 2026-07-29
 - Fixed several bugs in the automated proof-review judge, including one that fed it degraded views of nested problems and a display bug that showed rejected proofs as passing.
 - Rewrote and tightened the instructions guiding the proof-writing agents, adding explicit length limits on proof documents and clearer rules for when a one-line proof summary suffices.
@@ -222,9 +228,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Added a check that reads directly from the Lean kernel to record exactly which axioms and assumptions each proved result relies on.
 - Built a workflow to designate the intended theorems and then accept them behind a required human sign-off, or reject them so that everything built on a discarded result is automatically invalidated.
 - Fixed the archiving step to store only the approved theorems rather than everything reachable from the starting goal.
-
-### 2026-06-30
-- Fixed the component that catalogs Lean definitions so it now strips comments before reading declaration names, preventing commented-out code from being mistaken for real definitions.
 
 <!-- ASTERISM-PROGRESS:END -->
 
