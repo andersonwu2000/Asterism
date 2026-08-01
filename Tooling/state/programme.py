@@ -132,17 +132,28 @@ def length_warning(sections: dict[str, str],
 # Store
 # ---------------------------------------------------------------------
 
-def current_rev(conn: sqlite3.Connection,
-                problem: str) -> Optional[sqlite3.Row]:
-    """The latest passed revision row, or None before bootstrap."""
+def current_rev(conn: sqlite3.Connection, problem: str,
+                group_id: "int | None" = None) -> Optional[sqlite3.Row]:
+    """The latest passed revision row, or None before bootstrap.
+
+    v35 — every discussion group owns its own revision chain, numbered
+    from 1 (the partial unique index is keyed `(group_id, rev)`). Omit
+    `group_id` only where the question really is problem-wide; a wake
+    always knows which group it is."""
+    if group_id is None:
+        return conn.execute(
+            "SELECT * FROM programme_revisions"
+            " WHERE problem = ? AND status = 'passed'"
+            " ORDER BY rev DESC LIMIT 1", (problem,)).fetchone()
     return conn.execute(
         "SELECT * FROM programme_revisions"
-        " WHERE problem = ? AND status = 'passed'"
-        " ORDER BY rev DESC LIMIT 1", (problem,)).fetchone()
+        " WHERE problem = ? AND group_id = ? AND status = 'passed'"
+        " ORDER BY rev DESC LIMIT 1", (problem, int(group_id))).fetchone()
 
 
-def next_rev_number(conn: sqlite3.Connection, problem: str) -> int:
-    row = current_rev(conn, problem)
+def next_rev_number(conn: sqlite3.Connection, problem: str,
+                    group_id: "int | None" = None) -> int:
+    row = current_rev(conn, problem, group_id)
     return (row["rev"] + 1) if row else 1
 
 
@@ -172,7 +183,8 @@ SELECT pr.* FROM up
 
 def rev_for_goal(conn: sqlite3.Connection, problem: str, *,
                  goal_id: "int | None" = None,
-                 decision_id: "int | None" = None
+                 decision_id: "int | None" = None,
+                 group_id: "int | None" = None
                  ) -> Optional[sqlite3.Row]:
     """The revision whose `## Proof` AUTHORISED this piece of work.
 
@@ -204,7 +216,9 @@ def rev_for_goal(conn: sqlite3.Connection, problem: str, *,
          — covers sub-goals the worker created, which have no decision
          of their own but inherit their parent's authorisation;
       3. `current_rev` — nothing above has one (fresh problem, or work
-         that predates the Programme).
+         that predates the Programme). v35: of the OWNING group, derived
+         from the goal when not passed in, so the fallback cannot serve
+         a sibling group's argument.
     """
     if decision_id is not None:
         row = conn.execute(
@@ -220,30 +234,37 @@ def rev_for_goal(conn: sqlite3.Connection, problem: str, *,
                            (int(goal_id), problem)).fetchone()
         if row is not None:
             return row
-    return current_rev(conn, problem)
+    if group_id is None and goal_id is not None:
+        from . import groups as _groups
+        owner = _groups.group_for_goal(conn, problem, int(goal_id))
+        if owner is not None:
+            group_id = int(owner["id"])
+    return current_rev(conn, problem, group_id)
 
 
 def record_pass(conn: sqlite3.Connection, problem: str, body: str,
                 verdict: dict[str, Any],
                 dialogue: list[dict[str, Any]],
-                rounds: int, batch_id: Optional[str]) -> int:
+                rounds: int, batch_id: Optional[str],
+                group_id: "int | None" = None) -> int:
     """Advance the revision chain. Returns the new rev number."""
-    rev = next_rev_number(conn, problem)
+    rev = next_rev_number(conn, problem, group_id)
     conn.execute(
         "INSERT INTO programme_revisions"
         " (problem, rev, body, status, verdict, dialogue, rounds,"
-        "  batch_id, created_at)"
-        " VALUES (?,?,?,'passed',?,?,?,?,?)",
+        "  batch_id, created_at, group_id)"
+        " VALUES (?,?,?,'passed',?,?,?,?,?,?)",
         (problem, rev, body, json.dumps(verdict, ensure_ascii=False),
          json.dumps(dialogue, ensure_ascii=False), rounds, batch_id,
-         now()))
+         now(), group_id))
     return rev
 
 
 def record_rejection(conn: sqlite3.Connection, problem: str, body: str,
                      dialogue: list[dict[str, Any]],
                      rounds: int,
-                     discard_reason: Optional[str] = None) -> None:
+                     discard_reason: Optional[str] = None,
+                     group_id: "int | None" = None) -> None:
     """Keep a discarded proposal + full criticism for audit.
 
     `discard_reason` (v34) names WHICH channel dropped it — adversary
@@ -254,20 +275,26 @@ def record_rejection(conn: sqlite3.Connection, problem: str, body: str,
     conn.execute(
         "INSERT INTO programme_revisions"
         " (problem, rev, body, status, verdict, dialogue, rounds,"
-        "  batch_id, created_at, discard_reason)"
-        " VALUES (?,?,?,'rejected',NULL,?,?,NULL,?,?)",
-        (problem, next_rev_number(conn, problem), body,
+        "  batch_id, created_at, discard_reason, group_id)"
+        " VALUES (?,?,?,'rejected',NULL,?,?,NULL,?,?,?)",
+        (problem, next_rev_number(conn, problem, group_id), body,
          json.dumps(dialogue, ensure_ascii=False), rounds, now(),
-         discard_reason))
+         discard_reason, group_id))
 
 
-def rejection_notice(conn: sqlite3.Connection,
-                     problem: str) -> Optional[str]:
+def rejection_notice(conn: sqlite3.Connection, problem: str,
+                     group_id: "int | None" = None) -> Optional[str]:
     """One-line record for the next wake after a discard (design §3:
     the fresh session gets the fact, never the failed draft)."""
-    row = conn.execute(
-        "SELECT * FROM programme_revisions WHERE problem = ?"
-        " ORDER BY id DESC LIMIT 1", (problem,)).fetchone()
+    if group_id is None:
+        row = conn.execute(
+            "SELECT * FROM programme_revisions WHERE problem = ?"
+            " ORDER BY id DESC LIMIT 1", (problem,)).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT * FROM programme_revisions WHERE problem = ?"
+            "   AND group_id = ? ORDER BY id DESC LIMIT 1",
+            (problem, int(group_id))).fetchone()
     if row is None or row["status"] != "rejected":
         return None
     keys = row.keys()
@@ -298,17 +325,37 @@ def _verdict_summary(verdict_json: Optional[str]) -> str:
     return "\n".join(lines)
 
 
+def group_dir(problem_dir: Path, group_id: "int | None",
+              top_id: "int | None") -> Path:
+    """Where a group's rendered artefacts live.
+
+    The TOP group keeps the problem dir itself, so `PROGRAMME.md` stays
+    exactly where every existing reader (the human, the UI, the judge's
+    projection) already looks. Sub-groups get `.groups/<id>/` — visible,
+    greppable, and out of the way."""
+    if group_id is None or (top_id is not None
+                            and int(group_id) == int(top_id)):
+        return problem_dir
+    return problem_dir / ".groups" / str(int(group_id))
+
+
 def render(conn: sqlite3.Connection, problem: str,
-           problem_dir: Path) -> Optional[Path]:
+           problem_dir: Path,
+           group_id: "int | None" = None) -> Optional[Path]:
     """Write PROGRAMME.md (read-only render of the current rev).
 
     Header = rev N + last verdict summary; full history stays in the
     DB (design §2: no revision log in the render). Returns the path,
     or None before bootstrap (no passed rev → no file)."""
-    row = current_rev(conn, problem)
+    row = current_rev(conn, problem, group_id)
     if row is None:
         return None
-    path = problem_dir / PROGRAMME_BASENAME
+    from . import groups as _groups
+    top = _groups.top_group(conn, problem)
+    out_dir = group_dir(problem_dir, group_id,
+                        int(top["id"]) if top is not None else None)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / PROGRAMME_BASENAME
     header = (
         "<!-- rendered by state.programme — DO NOT EDIT; SoT is the\n"
         "     programme_revisions table. Writes go through the passed\n"

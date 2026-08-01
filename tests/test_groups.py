@@ -1,0 +1,1373 @@
+"""Discussion-group store + v35 migration (discussion_group_design.md).
+
+Strategy mirrors test_phase2_migration.py: for the store, drive
+`state.groups` against a fresh schema; for the migration, hand-roll the
+v34 shape of the three rebuilt tables and assert the widening preserves
+every row while the backfill leaves a one-group tree that describes
+exactly what was there before.
+"""
+from __future__ import annotations
+
+import sqlite3
+
+import pytest
+
+from Tooling.state import db
+from Tooling.state import db_migrations
+from Tooling.state import groups
+
+
+def _conn(tmp_path, name="asterism.db"):
+    c = db.connect(tmp_path / name)
+    db.init_schema(c)
+    return c
+
+
+def _problem(conn, name="Test.p"):
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES (?, 'Manifest.md', '2026-08-02T00:00:00Z')", (name,))
+    return name
+
+
+def _goal(conn, problem, slug, *, origin="forward", status="open"):
+    cur = conn.execute(
+        "INSERT INTO goals (problem, slug, lean_path, statement, origin,"
+        " status, created_at, updated_at)"
+        " VALUES (?, ?, ?, 'theorem x : True', ?, ?, 't', 't')",
+        (problem, slug, f"{problem}/{slug}.lean", origin, status))
+    return int(cur.lastrowid)
+
+
+def _decision(conn, problem, *, group_id, produced_goal_id=None,
+              kind="Inject"):
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, produced_goal_id,"
+        " payload, created_at, updated_at)"
+        " VALUES (?, 0, 'routine', ?, ?, ?, '{}', 't', 't')",
+        (problem, kind, group_id, produced_goal_id))
+    return int(cur.lastrowid)
+
+
+def _edge(conn, parent_goal, child_goal):
+    """parent_goal --(strategy)--> child_goal, the only tree edge shape."""
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, status, created_by,"
+        " created_at) VALUES (?, '', 'proposed', 'test', 't')",
+        (parent_goal,))
+    sid = int(cur.lastrowid)
+    conn.execute(
+        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
+        " VALUES (?, ?, 0)", (sid, child_goal))
+    return sid
+
+
+# ---------------------------------------------------------------------
+# Store
+# ---------------------------------------------------------------------
+
+def test_ensure_top_group_is_idempotent_and_carries_the_clocks(tmp_path):
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.clocks")
+    conn.execute(
+        "UPDATE problems SET last_routine_at = 'R', last_strategist_at = 'S'"
+        " WHERE name = ?", (p,))
+    gid = groups.ensure_top_group(conn, p)
+    assert groups.ensure_top_group(conn, p) == gid
+    row = groups.top_group(conn, p)
+    assert row["last_routine_at"] == "R"
+    assert row["last_strategist_at"] == "S"
+    assert row["charter"] == ""          # the Manifest is read from disk
+    assert groups.is_top(row)
+
+
+def test_second_top_group_for_one_problem_is_rejected(tmp_path):
+    """The 'who faces the human' invariant is pinned in the schema, not
+    trusted to the code that creates it (CLAUDE.md rule 6)."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.uniq")
+    groups.ensure_top_group(conn, p)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO groups (problem, parent_group_id, charter, status,"
+            " created_at, updated_at) VALUES (?, NULL, '', 'active', 't', 't')",
+            (p,))
+
+
+def test_open_group_requires_a_charter(tmp_path):
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.charter")
+    top = groups.ensure_top_group(conn, p)
+    for empty in ("", "   ", "\n"):
+        with pytest.raises(ValueError):
+            groups.open_group(conn, problem=p, parent_group_id=top,
+                              charter=empty)
+
+
+def test_sub_group_is_not_top_and_walks_up_to_it(tmp_path):
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.tree")
+    top = groups.ensure_top_group(conn, p)
+    mid = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="settle claim A")
+    leaf = groups.open_group(conn, problem=p, parent_group_id=mid,
+                             charter="settle sub-claim A1")
+    assert not groups.is_top(groups.get(conn, leaf))
+    assert [int(r["id"]) for r in groups.ancestors(conn, leaf)] == [mid, top]
+    assert groups.ancestors(conn, top) == []
+    assert [int(r["id"]) for r in groups.children(conn, top)] == [mid]
+
+
+def test_ancestors_does_not_spin_on_a_cycle(tmp_path):
+    """A cycle is a framework bug; the walk must surface it as a short
+    chain rather than hang the dispatcher tick that called it."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.cycle")
+    top = groups.ensure_top_group(conn, p)
+    a = groups.open_group(conn, problem=p, parent_group_id=top, charter="a")
+    b = groups.open_group(conn, problem=p, parent_group_id=a, charter="b")
+    conn.execute("UPDATE groups SET parent_group_id = ? WHERE id = ?", (b, a))
+    assert len(groups.ancestors(conn, b)) <= 3
+
+
+def test_set_status_rejects_an_unknown_status(tmp_path):
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.status")
+    top = groups.ensure_top_group(conn, p)
+    with pytest.raises(ValueError):
+        groups.set_status(conn, top, "finished")
+    groups.set_status(conn, top, "delivered")
+    assert groups.get(conn, top)["status"] == "delivered"
+
+
+# ---------------------------------------------------------------------
+# group_for_goal — which Strategist a review on this goal should wake
+# ---------------------------------------------------------------------
+
+def test_group_for_goal_prefers_the_anchor_over_the_producing_decision(
+        tmp_path):
+    """The rescue shape: the parent's decision promoted the goal, but the
+    goal now belongs to the CHILD group it anchors."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.anchor")
+    top = groups.ensure_top_group(conn, p)
+    g = _goal(conn, p, "promoted")
+    _decision(conn, p, group_id=top, produced_goal_id=g, kind="Delegate")
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="work the promoted goal",
+                            anchor_goal_id=g)
+    assert int(groups.group_for_goal(conn, p, g)["id"]) == sub
+
+
+def test_group_for_goal_inherits_from_the_nearest_producing_ancestor(
+        tmp_path):
+    """A worker's sub-goals carry no decision of their own — they belong
+    to whoever dispatched the goal above them."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.inherit")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    minted = _goal(conn, p, "minted")
+    _decision(conn, p, group_id=sub, produced_goal_id=minted)
+    kid = _goal(conn, p, "kid")
+    grandkid = _goal(conn, p, "grandkid")
+    _edge(conn, minted, kid)
+    _edge(conn, kid, grandkid)
+    assert int(groups.group_for_goal(conn, p, kid)["id"]) == sub
+    assert int(groups.group_for_goal(conn, p, grandkid)["id"]) == sub
+
+
+def test_group_for_goal_gives_a_reused_goal_to_its_latest_claimant(tmp_path):
+    """Dedupe repoints an Inject at an existing goal, so two groups can
+    have dispatched the same node. The one most recently waiting on it is
+    the one a review concerns."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.reuse")
+    top = groups.ensure_top_group(conn, p)
+    a = groups.open_group(conn, problem=p, parent_group_id=top, charter="A")
+    b = groups.open_group(conn, problem=p, parent_group_id=top, charter="B")
+    shared = _goal(conn, p, "shared")
+    _decision(conn, p, group_id=a, produced_goal_id=shared)
+    _decision(conn, p, group_id=b, produced_goal_id=shared)
+    assert int(groups.group_for_goal(conn, p, shared)["id"]) == b
+
+
+def test_group_for_goal_skips_a_finished_group(tmp_path):
+    """A wake sent to a group with no seat is dropped on the floor; the
+    leftovers belong to whoever is still working above it."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.finished")
+    top = groups.ensure_top_group(conn, p)
+    mid = groups.open_group(conn, problem=p, parent_group_id=top, charter="A")
+    leaf = groups.open_group(conn, problem=p, parent_group_id=mid,
+                             charter="A1")
+    g = _goal(conn, p, "leftover")
+    _decision(conn, p, group_id=leaf, produced_goal_id=g)
+    assert int(groups.group_for_goal(conn, p, g)["id"]) == leaf
+    groups.set_status(conn, leaf, "returned")
+    assert int(groups.group_for_goal(conn, p, g)["id"]) == mid
+    groups.set_status(conn, mid, "closed")
+    assert int(groups.group_for_goal(conn, p, g)["id"]) == top
+
+
+def test_group_for_goal_survives_a_detached_mint(tmp_path):
+    """`detached` seeds the top-down alive CTE; it does not remove the
+    strategy_subgoals edges this walk climbs — so a detached mint's whole
+    subtree still resolves to the group that minted it."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.detached")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    minted = _goal(conn, p, "minted")
+    conn.execute("UPDATE goals SET detached = 1 WHERE id = ?", (minted,))
+    _decision(conn, p, group_id=sub, produced_goal_id=minted)
+    kid = _goal(conn, p, "kid")
+    _edge(conn, minted, kid)
+    assert int(groups.group_for_goal(conn, p, minted)["id"]) == sub
+    assert int(groups.group_for_goal(conn, p, kid)["id"]) == sub
+
+
+def test_group_for_goal_falls_back_to_the_top_group(tmp_path):
+    """Orphans and pre-group work are the top group's — never None, or
+    the wake would have nowhere to go."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.orphan")
+    top = groups.ensure_top_group(conn, p)
+    stray = _goal(conn, p, "stray")
+    assert int(groups.group_for_goal(conn, p, stray)["id"]) == top
+
+
+def test_group_for_goal_picks_the_nearest_when_two_groups_are_above(
+        tmp_path):
+    """Depth beats recency: the closest producing ancestor owns the goal,
+    even when a group further up also produced one on the same chain."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.nearest")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    high = _goal(conn, p, "high")
+    _decision(conn, p, group_id=top, produced_goal_id=high)
+    low = _goal(conn, p, "low")
+    _decision(conn, p, group_id=sub, produced_goal_id=low)
+    kid = _goal(conn, p, "kid")
+    _edge(conn, high, low)
+    _edge(conn, low, kid)
+    assert int(groups.group_for_goal(conn, p, kid)["id"]) == sub
+
+
+# ---------------------------------------------------------------------
+# The batch cycle — a delegated burden is the parent's third artifact
+# ---------------------------------------------------------------------
+
+def _delegate(conn, problem, *, group_id, produced_group_id, batch_id="b1"):
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, produced_group_id,"
+        " batch_id, payload, created_at, updated_at)"
+        " VALUES (?, 0, 'routine', 'Delegate', ?, ?, ?, '{}', 't', 't')",
+        (problem, group_id, produced_group_id, batch_id))
+    return int(cur.lastrowid)
+
+
+def test_an_active_group_keeps_the_parent_in_flight(tmp_path):
+    """The point of the third artifact: a delegated burden with no anchor
+    goal has neither a produced goal nor a produced strategy, so without
+    the group arm T4 would wake the parent on every tick while its child
+    is still working."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.quiet")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    _delegate(conn, p, group_id=top, produced_group_id=sub)
+    assert db.has_active_inflight_inject(conn, p) is True
+
+
+@pytest.mark.parametrize("terminal", ["delivered", "returned", "closed"])
+def test_a_finished_group_settles_the_delegate_and_wakes_the_parent(
+        tmp_path, terminal):
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.settle")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    did = _delegate(conn, p, group_id=top, produced_group_id=sub)
+
+    groups.set_status(conn, sub, terminal)
+
+    outcome = conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (did,)).fetchone()["outcome"]
+    assert outcome == ("success" if terminal == "delivered"
+                       else f"failed:{terminal}")
+    assert db.has_active_inflight_inject(conn, p) is False
+    # The batch is complete, so exactly one Strategist wake was queued.
+    assert conn.execute(
+        "SELECT COUNT(*) FROM queue WHERE kind = 'Strategist'"
+        " AND problem = ?", (p,)).fetchone()[0] == 1
+
+
+def test_the_batch_waits_for_the_delegate_and_the_inject_together(tmp_path):
+    """User's constraint: dispatch a Formalizer and a group in one batch
+    and the parent wakes only when BOTH are terminal. The cycle keys on
+    batch_id alone, so this holds without the counter knowing the kinds —
+    but it is exactly what would silently break if a new kind were minted
+    outside the batch."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.pair")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    minted = _goal(conn, p, "minted")
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, produced_goal_id,"
+        " batch_id, payload, created_at, updated_at)"
+        " VALUES (?, 0, 'routine', 'Inject', ?, ?, 'b1', '{}', 't', 't')",
+        (p, top, minted))
+    _delegate(conn, p, group_id=top, produced_group_id=sub, batch_id="b1")
+
+    # Only the group finishes → the batch is still open, no wake.
+    groups.set_status(conn, sub, "delivered")
+    assert conn.execute(
+        "SELECT COUNT(*) FROM queue WHERE kind = 'Strategist'").fetchone()[
+            0] == 0
+
+    # The lemma lands too → the batch completes and the parent wakes once.
+    conn.execute("UPDATE goals SET status = 'proved' WHERE id = ?", (minted,))
+    filled = db.propagate_inject_outcome_from_goal(conn, minted)
+    db.maybe_enqueue_inject_batch_done(conn, filled)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM queue WHERE kind = 'Strategist'").fetchone()[
+            0] == 1
+
+
+def test_a_delegated_group_opens_the_anti_idle_gate(tmp_path):
+    """The OTHER in-flight predicate. A parent woken by its routine clock
+    must commit a batch; if it delegated everything, `Noop` is its only
+    legal output — and `Noop` on a blocked root is rejected unless
+    something moves without this Strategist. A child group moves by its
+    own seat and its own clock, so it counts. Without this the parent is
+    forced to invent work beside the burden it just handed off."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.antiidle")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    _delegate(conn, p, group_id=top, produced_group_id=sub)
+    assert db.has_live_inflight_inject(conn, p) is True
+    groups.set_status(conn, sub, "returned")
+    assert db.has_live_inflight_inject(conn, p) is False
+
+
+def test_both_in_flight_predicates_agree_about_a_group(tmp_path):
+    """The two have disagreed on one state three times, each time a
+    livelock or a deadlock (P13 4284 spin -> cond-4 deadlock -> the b6
+    301-spawn pump). A new artifact form must enter BOTH gates."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.agree")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    _delegate(conn, p, group_id=top, produced_group_id=sub)
+    for status in ("active", "delivered", "returned", "closed"):
+        conn.execute("UPDATE groups SET status = ? WHERE id = ?",
+                     (status, sub))
+        assert (db.has_active_inflight_inject(conn, p)
+                == db.has_live_inflight_inject(conn, p)), status
+
+
+def test_reconcile_settles_a_delegate_whose_group_already_finished(tmp_path):
+    """The stuck-outcome sweep must cover the third artifact too — a
+    permanently-NULL Delegate outcome would suppress T4 forever."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.reconcile")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    did = _delegate(conn, p, group_id=top, produced_group_id=sub)
+    # Terminal status written WITHOUT the sanctioned mutator — the exact
+    # shape the sweep exists to repair.
+    conn.execute("UPDATE groups SET status = 'delivered' WHERE id = ?", (sub,))
+    assert db.reconcile_settled_inject_outcomes(conn) == 1
+    assert conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (did,)).fetchone()["outcome"] == "success"
+
+
+def test_a_delegate_is_never_queued_for_redispatch(tmp_path):
+    """A Delegate has no worker to re-enqueue — its executor is the
+    group's own Strategist seat."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.noredispatch")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    _delegate(conn, p, group_id=top, produced_group_id=sub)
+    assert db.null_inject_redispatch_specs(conn) == []
+
+
+# ---------------------------------------------------------------------
+# The Strategist seat belongs to a group, not a problem
+# ---------------------------------------------------------------------
+
+def _stale(conn, group_id):
+    conn.execute(
+        "UPDATE groups SET last_routine_at = '2020-01-01T00:00:00+00:00'"
+        " WHERE id = ?", (group_id,))
+
+
+def _seats(conn):
+    return {(r["target_id"], r["target_kind"]) for r in conn.execute(
+        "SELECT target_id, target_kind FROM queue WHERE kind = 'Strategist'")}
+
+
+def test_sibling_groups_each_get_their_own_routine_seat(tmp_path):
+    """The whole point of the tree: two live groups work concurrently
+    instead of taking turns at one problem-wide seat."""
+    from Tooling.core.dispatcher import strategist_triggers
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.seats")
+    top = groups.ensure_top_group(conn, p)
+    a = groups.open_group(conn, problem=p, parent_group_id=top, charter="A")
+    b = groups.open_group(conn, problem=p, parent_group_id=top, charter="B")
+    for gid in (top, a, b):
+        _stale(conn, gid)
+    conn.commit()
+
+    strategist_triggers(conn, running=set(), interval_min=60.0)
+
+    assert _seats(conn) == {(str(top), "Group"), (str(a), "Group"),
+                            (str(b), "Group")}
+
+
+def test_a_running_group_does_not_block_its_sibling(tmp_path):
+    """Serialization is per group. A Strategist in flight for A must not
+    suppress B's seat — that would re-impose the old one-at-a-time
+    behaviour while looking like it had been fixed."""
+    from Tooling.core.dispatcher import strategist_triggers
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.concurrent")
+    top = groups.ensure_top_group(conn, p)
+    a = groups.open_group(conn, problem=p, parent_group_id=top, charter="A")
+    b = groups.open_group(conn, problem=p, parent_group_id=top, charter="B")
+    for gid in (top, a, b):
+        _stale(conn, gid)
+    conn.commit()
+
+    running = {(str(a), "Strategist", None)}
+    strategist_triggers(conn, running=running, interval_min=60.0)
+
+    seats = _seats(conn)
+    assert (str(b), "Group") in seats
+    assert (str(a), "Group") not in seats
+
+
+def test_a_finished_group_holds_no_seat(tmp_path):
+    from Tooling.core.dispatcher import strategist_triggers
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.done")
+    top = groups.ensure_top_group(conn, p)
+    a = groups.open_group(conn, problem=p, parent_group_id=top, charter="A")
+    for gid in (top, a):
+        _stale(conn, gid)
+    groups.set_status(conn, a, "delivered")
+    conn.commit()
+
+    strategist_triggers(conn, running=set(), interval_min=60.0)
+    assert (str(a), "Group") not in _seats(conn)
+
+
+def test_a_problem_without_a_top_group_is_healed_not_stranded(tmp_path):
+    """Every trigger keys on a group, so a problem with none has NO seat
+    at all and fails silently. The per-tick reconciler is the net."""
+    from Tooling.core.dispatcher import reconcile_stuck_states
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.stranded")
+    conn.commit()
+    assert groups.top_group(conn, p) is None
+    reconcile_stuck_states(conn, running=set())
+    assert groups.top_group(conn, p) is not None
+
+
+def test_a_legacy_problem_keyed_seat_still_resolves(tmp_path):
+    """Rows queued before v35 carry the problem name; they mean the top
+    group and must keep dispatching, not fail the worker thread."""
+    from Tooling.core.dispatcher import _strategist_target
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.legacy")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    assert _strategist_target(conn, p, "Problem") == (top, p)
+    assert _strategist_target(conn, str(top), "Group") == (top, p)
+    # Unresolvable rows: a vanished GROUP is garbage (ids never reused);
+    # an unknown problem NAME keeps the pre-v35 anti-wedge answer.
+    assert _strategist_target(conn, "99999", "Group") == (None, None)
+    assert _strategist_target(conn, "no.such", "Problem") == (None, None)
+
+
+def test_a_committed_batch_is_stamped_with_its_authoring_group(tmp_path):
+    """`strategist_decisions.group_id` is what routes the batch-done wake
+    back to the group that ordered the work."""
+    from Tooling.pipeline import strategist as _strategist
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.stamp")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    conn.commit()
+    d = _strategist.Decision(kind="Noop", reason="waiting")
+    _strategist.commit_decisions([d], conn, problem=p, tick=0,
+                                 trigger_kind="routine",
+                                 workspace=tmp_path, group_id=sub)
+    rows = conn.execute(
+        "SELECT group_id FROM strategist_decisions WHERE problem = ?",
+        (p,)).fetchall()
+    assert rows and all(int(r["group_id"]) == sub for r in rows)
+    # ...and the routine commit advanced THAT group's clock, not another's.
+    assert groups.get(conn, sub)["last_routine_at"] is not None
+    assert groups.get(conn, top)["last_routine_at"] is None
+
+
+# ---------------------------------------------------------------------
+# Delegate / ReturnToParent
+# ---------------------------------------------------------------------
+
+def _S():
+    from Tooling.pipeline import strategist as _s
+    return _s
+
+
+def _commit(conn, tmp_path, decisions, problem, group_id, *,
+            trigger="routine"):
+    return _S().commit_decisions(
+        decisions, conn, problem=problem, tick=0, trigger_kind=trigger,
+        workspace=tmp_path, group_id=group_id)
+
+
+def _verify(conn, decision, problem, group_id):
+    return _S().verify_decision(decision, conn, problem=problem,
+                                group_id=group_id)
+
+
+def test_delegate_opens_a_group_and_seats_it(tmp_path):
+    """The main shape: no target. The group starts from prose, and its
+    first seat is queued now — a fresh group's clock is NULL, which the
+    routine selector reads as due one full interval after daemon start,
+    so leaving it to T1 would stall a just-delegated burden for hours."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.deleg")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    d = _S().Decision(kind="Delegate", brief="Settle claim A: X > Y.")
+    out = _commit(conn, tmp_path, [d], p, top)[0]
+
+    kid = groups.children(conn, top)[0]
+    assert kid["charter"] == "Settle claim A: X > Y."
+    assert kid["anchor_goal_id"] is None
+    assert int(kid["opened_by"]) == out.decision_row_id
+    row = conn.execute(
+        "SELECT produced_group_id, batch_id, group_id, outcome"
+        " FROM strategist_decisions WHERE id = ?",
+        (out.decision_row_id,)).fetchone()
+    assert int(row["produced_group_id"]) == int(kid["id"])
+    assert int(row["group_id"]) == top
+    assert row["batch_id"] is not None
+    assert row["outcome"] is None            # settles when the group does
+    assert (str(kid["id"]), "Group") in _seats(conn)
+
+
+def test_delegate_with_a_target_anchors_it_as_attempting(tmp_path):
+    """The rescue shape. `attempting` is the only status that is both
+    undispatchable by BFS and ALIVE — `frozen`/`shelved` are parked and
+    would let T4 wake the parent every tick."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.rescue")
+    top = groups.ensure_top_group(conn, p)
+    g = _goal(conn, p, "stuck")
+    conn.commit()
+    d = _S().Decision(kind="Delegate", brief="Take over g_stuck.",
+                      target_id=g)
+    _commit(conn, tmp_path, [d], p, top)
+
+    kid = groups.children(conn, top)[0]
+    assert int(kid["anchor_goal_id"]) == g
+    assert db.get_goal(conn, g)["status"] == "attempting"
+    assert db.has_active_inflight_inject(conn, p) is True
+
+
+def test_delegate_verify_rejects_the_shapes_that_would_strand_work(
+        tmp_path):
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.dverify")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    # empty charter — the sub-group's Manifest cannot be blank
+    assert "charter" in _verify(
+        conn, S.Decision(kind="Delegate", brief="   "), p, top)
+    # byte-identical to a LIVE sibling = double dispatch
+    _commit(conn, tmp_path, [S.Decision(kind="Delegate", brief="claim A")],
+            p, top)
+    err = _verify(conn, S.Decision(kind="Delegate", brief="claim A"), p, top)
+    assert "duplicate" in err.lower()
+    # ...but the same charter after that group RETURNED is allowed: only
+    # the Adversary can judge whether the retry differs.
+    kid = groups.children(conn, top)[0]
+    groups.set_status(conn, int(kid["id"]), "returned")
+    assert _verify(
+        conn, S.Decision(kind="Delegate", brief="claim A"), p, top) == ""
+    # a settled goal has nothing for a group to work
+    done = _goal(conn, p, "done", status="proved")
+    assert "proved" in _verify(
+        conn, S.Decision(kind="Delegate", brief="c", target_id=done), p, top)
+    # one anchor, one group
+    g = _goal(conn, p, "g")
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief="own it", target_id=g)],
+            p, top)
+    assert "already anchors" in _verify(
+        conn, S.Decision(kind="Delegate", brief="mine too", target_id=g),
+        p, top)
+
+
+def test_the_top_group_cannot_return_to_a_parent(tmp_path):
+    """The structural wall. Not a prompt rule: the top group has no
+    parent, so the difficulty escape hatch cannot reach the human
+    channel — `RequestUserAmend` stays for a WRONG user file."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.topreturn")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    d = _S().Decision(kind="ReturnToParent", reason="too hard",
+                      payload={"flavour": "exhausted"})
+    err = _verify(conn, d, p, top)
+    assert "top group" in err and "no parent" in err
+
+
+def test_only_the_top_group_may_speak_to_the_human(tmp_path):
+    """The mirror of the ReturnToParent wall. `RequestUserAmend` sets
+    `awaiting_human`, which freezes the whole problem including every
+    sibling group — a sub-group reaching the human that way is the same
+    escape hatch through a side door with a larger blast radius."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.amend")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    conn.commit()
+    d = _S().Decision(
+        kind="RequestUserAmend", reason="Defs.lean has a typo",
+        payload={"file": "Defs.lean", "proposed_body": "def f := 1",
+                 "question": "is this what you meant?"})
+    err = _verify(conn, d, p, sub)
+    assert "TOP group" in err and "ReturnToParent" in err
+    assert _verify(conn, d, p, top) == ""
+
+
+def test_return_flavours_carry_their_own_evidence(tmp_path):
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.flavour")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    conn.commit()
+    S = _S()
+    assert "flavour" in _verify(
+        conn, S.Decision(kind="ReturnToParent", reason="r",
+                         payload={"flavour": "gave_up"}), p, sub)
+    # refuted without a kernel-checked negation is an opinion
+    assert "target_goal_id" in _verify(
+        conn, S.Decision(kind="ReturnToParent", reason="r",
+                         payload={"flavour": "refuted"}), p, sub)
+    open_g = _goal(conn, p, "neg")
+    assert "not 'proved'" in _verify(
+        conn, S.Decision(kind="ReturnToParent", reason="r", target_id=open_g,
+                         payload={"flavour": "refuted"}), p, sub)
+    conn.execute("UPDATE goals SET status = 'proved' WHERE id = ?",
+                 (open_g,))
+    assert _verify(
+        conn, S.Decision(kind="ReturnToParent", reason="r", target_id=open_g,
+                         payload={"flavour": "refuted"}), p, sub) == ""
+    # amend must actually propose a change
+    assert "proposed_charter" in _verify(
+        conn, S.Decision(kind="ReturnToParent", reason="r",
+                         payload={"flavour": "amend"}), p, sub)
+    assert "identical" in _verify(
+        conn, S.Decision(kind="ReturnToParent", reason="r",
+                         payload={"flavour": "amend",
+                                  "proposed_charter": "claim A"}), p, sub)
+
+
+def test_returning_settles_the_parents_delegate_and_parks_the_anchor(
+        tmp_path):
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.returning")
+    top = groups.ensure_top_group(conn, p)
+    g = _goal(conn, p, "anchor")
+    conn.commit()
+    S = _S()
+    out = _commit(conn, tmp_path,
+                  [S.Decision(kind="Delegate", brief="own it", target_id=g)],
+                  p, top)[0]
+    kid = int(groups.children(conn, top)[0]["id"])
+    conn.execute("DELETE FROM queue")         # ignore the child's own seat
+    conn.commit()
+
+    _commit(conn, tmp_path,
+            [S.Decision(kind="ReturnToParent", reason="three routes died",
+                        payload={"flavour": "exhausted"})],
+            p, kid, trigger="inject_batch_done")
+
+    assert groups.get(conn, kid)["status"] == "returned"
+    assert conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (out.decision_row_id,)).fetchone()["outcome"] == "failed:returned"
+    assert db.get_goal(conn, g)["status"] == "shelved"
+    assert db.has_active_inflight_inject(conn, p) is False
+    # The parent is woken by the ordinary batch-done relay.
+    assert (str(top), "Group") in _seats(conn)
+
+
+def test_a_batch_of_inject_plus_delegate_wakes_the_parent_once(tmp_path):
+    """End to end through the real commit path: same batch, two artifact
+    forms, one wake — and only after BOTH are terminal."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.mixed")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    outs = _commit(conn, tmp_path, [
+        S.Decision(kind="Inject", brief="mint lemma_x"),
+        S.Decision(kind="Delegate", brief="settle claim A"),
+    ], p, top)
+    assert outs[0].batch_id == outs[1].batch_id
+    kid = int(groups.children(conn, top)[0]["id"])
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+
+    groups.set_status(conn, kid, "delivered")
+    assert _seats(conn) == set()              # the Inject is still open
+
+    minted = _goal(conn, p, "lemma_x", status="proved")
+    conn.execute(
+        "UPDATE strategist_decisions SET produced_goal_id = ?"
+        " WHERE id = ?", (minted, outs[0].decision_row_id))
+    filled = db.propagate_inject_outcome_from_goal(conn, minted)
+    db.maybe_enqueue_inject_batch_done(conn, filled)
+    assert (str(top), "Group") in _seats(conn)
+
+
+# ---------------------------------------------------------------------
+# Stall is detected per group
+# ---------------------------------------------------------------------
+
+def test_group_stall_matches_problem_stall_when_alone(tmp_path):
+    """The alignment invariant. With one group the two predicates must
+    agree in every state — they have disagreed about one state three
+    times in this codebase, each time a livelock or a deadlock."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.alone")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    for setup in ("empty", "open_goal", "proved_goal"):
+        if setup == "open_goal":
+            g = _goal(conn, p, "og")
+            conn.execute("UPDATE goals SET detached = 1 WHERE id = ?", (g,))
+        elif setup == "proved_goal":
+            conn.execute("UPDATE goals SET status = 'proved'")
+        conn.commit()
+        assert (db.is_group_stalled(conn, p, top)
+                == db.is_problem_stalled(conn, p)), setup
+
+
+def test_group_ownership_agrees_in_bulk(tmp_path):
+    """`goals_by_group` is the bulk twin of `group_for_goal`; two
+    predicates that disagree about one node is the disease."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.agree")
+    top = groups.ensure_top_group(conn, p)
+    a = groups.open_group(conn, problem=p, parent_group_id=top, charter="A")
+    b = groups.open_group(conn, problem=p, parent_group_id=a, charter="B")
+    root = _goal(conn, p, "main", origin="root")
+    minted = _goal(conn, p, "minted")
+    _decision(conn, p, group_id=a, produced_goal_id=minted)
+    kid = _goal(conn, p, "kid")
+    _edge(conn, minted, kid)
+    anchor = _goal(conn, p, "anchor")
+    conn.execute("UPDATE groups SET anchor_goal_id = ? WHERE id = ?",
+                 (anchor, b))
+    below = _goal(conn, p, "below")
+    _edge(conn, anchor, below)
+    orphan = _goal(conn, p, "orphan")
+    conn.commit()
+
+    bulk = groups.goals_by_group(conn, p)
+    for gid in (root, minted, kid, anchor, below, orphan):
+        assert bulk[gid] == int(groups.group_for_goal(conn, p, gid)["id"]), gid
+    # ...and the slices are what the names say.
+    assert groups.goal_ids_in_group(conn, p, a) == {minted, kid}
+    assert groups.goal_ids_in_group(conn, p, b) == {anchor, below}
+    assert groups.goal_ids_in_group(conn, p, top) == {root, orphan}
+
+
+def test_a_stalled_child_wakes_itself_not_the_whole_problem(tmp_path):
+    """The direction the parent-side quiet rule does not cover: with a
+    sibling busy the PROBLEM is not stalled, so the problem-wide reading
+    wakes nobody — and when it does fire it wakes the top group rather
+    than the one that is stuck."""
+    from Tooling.core.dispatcher import strategist_triggers
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.childstall")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path, [
+        S.Decision(kind="Delegate", brief="busy line"),
+        S.Decision(kind="Delegate", brief="stuck line"),
+    ], p, top)
+    busy, stuck = (int(r["id"]) for r in groups.children(conn, top))
+    # The busy group has a dispatchable goal; the stuck one has nothing.
+    g = _goal(conn, p, "live")
+    conn.execute("UPDATE goals SET detached = 1 WHERE id = ?", (g,))
+    _decision(conn, p, group_id=busy, produced_goal_id=g)
+    conn.execute("DELETE FROM queue")          # drop the opening seats
+    for gid in (top, busy, stuck):
+        _stale(conn, gid)
+    conn.execute("UPDATE groups SET last_routine_at = NULL")  # isolate T4
+    conn.execute(
+        "UPDATE problems SET last_routine_at = ? WHERE name = ?",
+        (db.now(), p))
+    conn.commit()
+
+    # T1 is off (NULL clock is only due after a full interval from the
+    # daemon baseline), so any seat here is T4's.
+    strategist_triggers(conn, running=set(), interval_min=60.0,
+                        daemon_start_iso=db.now())
+
+    assert db.is_group_stalled(conn, p, stuck) is True
+    assert db.is_group_stalled(conn, p, busy) is False
+    assert db.is_group_stalled(conn, p, top) is False   # children in flight
+    assert _seats(conn) == {(str(stuck), "Group")}
+    # The problem-wide reading would have said "not stalled" and woken
+    # nobody at all.
+    assert db.is_problem_stalled(conn, p) is False
+
+
+# ---------------------------------------------------------------------
+# Programme / plan note / judge projection are per group
+# ---------------------------------------------------------------------
+
+def _prog(title="T"):
+    return (f"# {title}\n\n## Argument\na\n\n## Proof\np\n\n"
+            f"## Roadmap\nr\n")
+
+
+def test_each_group_owns_its_revision_chain_from_one(tmp_path):
+    from Tooling.state import programme
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.chains")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    conn.commit()
+    assert programme.record_pass(conn, p, _prog("top-1"), {}, [], 0, None,
+                                 group_id=top) == 1
+    assert programme.record_pass(conn, p, _prog("sub-1"), {}, [], 0, None,
+                                 group_id=sub) == 1
+    assert programme.record_pass(conn, p, _prog("top-2"), {}, [], 0, None,
+                                 group_id=top) == 2
+    assert programme.current_rev(conn, p, top)["rev"] == 2
+    assert programme.current_rev(conn, p, sub)["rev"] == 1
+    assert "sub-1" in programme.current_rev(conn, p, sub)["body"]
+
+
+def test_a_sub_groups_render_stays_out_of_the_problem_dir(tmp_path):
+    """PROGRAMME.md must keep meaning "the problem's argument" for every
+    existing reader — the human, the UI, the judge's projection."""
+    from Tooling.state import programme
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.render")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    conn.commit()
+    pdir = tmp_path / "pdir"
+    pdir.mkdir()
+    programme.record_pass(conn, p, _prog("top"), {}, [], 0, None,
+                          group_id=top)
+    programme.record_pass(conn, p, _prog("sub"), {}, [], 0, None,
+                          group_id=sub)
+    assert programme.render(conn, p, pdir, top) == pdir / "PROGRAMME.md"
+    out = programme.render(conn, p, pdir, sub)
+    assert out == pdir / ".groups" / str(sub) / "PROGRAMME.md"
+    assert "# top" in (pdir / "PROGRAMME.md").read_text(encoding="utf-8")
+    assert "# sub" in out.read_text(encoding="utf-8")
+
+
+def test_plan_notes_do_not_clobber_each_other(tmp_path):
+    """The note is a REWRITE by contract, so one shared file would mean
+    each group erasing the other's facts every wake."""
+    from Tooling.pipeline import _drafts
+    pdir = tmp_path / "pdir"
+    (pdir / ".drafts").mkdir(parents=True)
+    a = _drafts.plan_note_path(pdir, 7)
+    b = _drafts.plan_note_path(pdir, 9)
+    top = _drafts.plan_note_path(pdir)
+    assert len({a, b, top}) == 3
+    a.write_text("facts of 7", encoding="utf-8")
+    b.write_text("facts of 9", encoding="utf-8")
+    assert _drafts.read_plan_note(pdir, 7) == "facts of 7"
+    assert _drafts.read_plan_note(pdir, 9) == "facts of 9"
+    assert _drafts.read_plan_note(pdir) is None
+
+
+def test_the_judge_sees_the_charter_chain_but_not_for_the_top_group(
+        tmp_path):
+    """Criterion 3 otherwise only catches a claim leaning on the PARENT's
+    conclusion; on a deep tree circularity arrives a generation later."""
+    from Tooling.pipeline import adversary
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.charterdigest")
+    top = groups.ensure_top_group(conn, p)
+    a = groups.open_group(conn, problem=p, parent_group_id=top,
+                          charter="A: the growth bound")
+    b = groups.open_group(conn, problem=p, parent_group_id=a,
+                          charter="B: the recurrence step")
+    conn.commit()
+    assert adversary._charter_digest(conn, p, top) == ""
+    txt = adversary._charter_digest(conn, p, b)
+    assert "B: the recurrence step" in txt
+    assert "A: the growth bound" in txt        # the ancestor chain
+    assert "circular" in txt
+
+
+def test_the_judge_sees_charters_this_subtree_handed_back(tmp_path):
+    """Material, not a gate: whether a retry differs is a judgement about
+    mathematics, which a string comparison cannot make."""
+    from Tooling.pipeline import adversary
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.returneddigest")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path, [S.Decision(kind="Delegate",
+                                        brief="settle the p-adic bound")],
+            p, top)
+    dead = int(groups.children(conn, top)[0]["id"])
+    _commit(conn, tmp_path,
+            [S.Decision(kind="ReturnToParent",
+                        reason="valuation argument circular at step 3",
+                        payload={"flavour": "exhausted"})],
+            p, dead, trigger="inject_batch_done")
+    fresh = groups.open_group(conn, problem=p, parent_group_id=top,
+                              charter="settle the p-adic bound, again")
+    conn.commit()
+
+    txt = adversary._charter_digest(conn, p, fresh)
+    assert "settle the p-adic bound" in txt
+    assert "exhausted" in txt
+    assert "circular at step 3" in txt
+    assert "not a verdict" in txt.lower()
+
+
+def test_a_cousin_branchs_failures_stay_out_of_my_projection(tmp_path):
+    """Per-group projection isolation: only the failures on MY chain —
+    what the groups above me already tried — are mine to see. A cousin
+    branch's returned charter is another judge's business, and pulling
+    it in is exactly the cross-group leak the isolation ruling forbids."""
+    from Tooling.pipeline import adversary
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.cousins")
+    top = groups.ensure_top_group(conn, p)
+    S = _S()
+    # Two branches under the top group; the failure happens in branch A.
+    a = groups.open_group(conn, problem=p, parent_group_id=top,
+                          charter="branch A")
+    b = groups.open_group(conn, problem=p, parent_group_id=top,
+                          charter="branch B")
+    conn.commit()
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief="A's sub-line")], p, a)
+    dead = int(groups.children(conn, a)[0]["id"])
+    _commit(conn, tmp_path,
+            [S.Decision(kind="ReturnToParent", reason="A's line died",
+                        payload={"flavour": "exhausted"})],
+            p, dead, trigger="inject_batch_done")
+    conn.commit()
+
+    # A sees its own branch's failure; B — a cousin — must not.
+    assert "A's sub-line" in adversary._charter_digest(conn, p, a)
+    assert "A's sub-line" not in adversary._charter_digest(conn, p, b)
+
+
+def test_the_your_group_section_is_absent_for_the_top_group(tmp_path):
+    """Conditional by construction: today's single-group runs pay
+    nothing, and a reader is never shown a verb it cannot use."""
+    from Tooling.agent import phase2_context as ctx
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.section")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    conn.commit()
+    assert ctx._section_your_group(conn, p, top) == []
+    assert ctx._section_your_group(conn, p, None) == []
+    body = "\n".join(ctx._section_your_group(conn, p, sub))
+    assert "ReturnToParent" in body
+    assert "charter.md" in body
+    assert "not the problem" in body       # overrides the static Ingest line
+
+
+def test_rev_for_goal_falls_back_within_the_owning_group(tmp_path):
+    """The last-resort branch must not serve a sibling group's argument
+    to a worker."""
+    from Tooling.state import programme
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.revfallback")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    conn.commit()
+    programme.record_pass(conn, p, _prog("top"), {}, [], 0, None,
+                          group_id=top)
+    programme.record_pass(conn, p, _prog("sub"), {}, [], 0, None,
+                          group_id=sub)
+    owned = _goal(conn, p, "owned")
+    _decision(conn, p, group_id=sub, produced_goal_id=owned)
+    kid = _goal(conn, p, "kid")
+    _edge(conn, owned, kid)
+    conn.commit()
+    # No decision carries a batch_id here, so resolution reaches the
+    # fallback — which must land in the goal's OWN group.
+    assert "# sub" in programme.rev_for_goal(
+        conn, p, goal_id=kid)["body"]
+    stray = _goal(conn, p, "stray")
+    assert "# top" in programme.rev_for_goal(
+        conn, p, goal_id=stray)["body"]
+
+
+# ---------------------------------------------------------------------
+# A sub-group's Ingest is a delivery, not a terminal
+# ---------------------------------------------------------------------
+
+def _mark(conn, problem, goal_id, group_id):
+    conn.execute("UPDATE goals SET is_deliverable = 1 WHERE id = ?",
+                 (goal_id,))
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, target_id, payload,"
+        " created_at, updated_at)"
+        " VALUES (?, 0, 'routine', 'MarkDeliverable', ?, ?, '{}', 't', 't')",
+        (problem, group_id, goal_id))
+
+
+def test_deliverables_are_attributed_to_the_group_that_marked_them(
+        tmp_path):
+    """Otherwise the human's sign-off list would show every sub-group's
+    internal parts as things they are being asked to vouch for."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.deliv")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    mine = _goal(conn, p, "mine", status="proved")
+    theirs = _goal(conn, p, "theirs", status="proved")
+    _mark(conn, p, mine, top)
+    _mark(conn, p, theirs, sub)
+    conn.commit()
+    assert [r["id"] for r in db.deliverables(conn, problem=p,
+                                             group_id=top)] == [mine]
+    assert [r["id"] for r in db.deliverables(conn, problem=p,
+                                             group_id=sub)] == [theirs]
+    assert len(db.deliverables(conn, problem=p)) == 2   # unscoped is all
+
+
+def test_a_sub_group_ingest_delivers_without_touching_the_terminal(
+        tmp_path):
+    """Everything the problem-level Ingest does is terminal semantics —
+    the human pause, the harvest, the snapshot, the FSM edge. A group
+    handing its charter up must touch none of it."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.subingest")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    out = _commit(conn, tmp_path,
+                  [S.Decision(kind="Delegate", brief="settle claim A")],
+                  p, top)[0]
+    sub = int(groups.children(conn, top)[0]["id"])
+    brick = _goal(conn, p, "brick", status="proved")
+    _mark(conn, p, brick, sub)
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+
+    assert _verify(conn, S.Decision(kind="Ingest"), p, sub) == ""
+    _commit(conn, tmp_path, [S.Decision(kind="Ingest")], p, sub,
+            trigger="inject_batch_done")
+
+    assert groups.get(conn, sub)["status"] == "delivered"
+    row = conn.execute(
+        "SELECT ingested_at, state, ingest_signoff_pending FROM problems"
+        " WHERE name = ?", (p,)).fetchone()
+    assert row["ingested_at"] is None            # not the problem's exit
+    assert row["state"] == "active"
+    assert not row["ingest_signoff_pending"]     # no human was paused
+    assert conn.execute(
+        "SELECT COUNT(*) FROM queue WHERE kind = 'Librarian'"
+    ).fetchone()[0] == 0                         # no harvest
+    # ...and the parent was woken by the ordinary batch-done relay.
+    assert conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (out.decision_row_id,)).fetchone()["outcome"] == "success"
+    assert (str(top), "Group") in _seats(conn)
+
+
+def test_a_sub_group_cannot_deliver_a_charter_it_did_not_settle(tmp_path):
+    """The same gate the top group gets, one level down: charter is its
+    Manifest and its anchor is its root goal."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.subgate")
+    top = groups.ensure_top_group(conn, p)
+    g = _goal(conn, p, "anchor")
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief="own it", target_id=g)],
+            p, top)
+    anchored = int(groups.children(conn, top)[0]["id"])
+    assert "anchor" in _verify(conn, S.Decision(kind="Ingest"), p, anchored)
+    conn.execute("UPDATE goals SET status = 'proved' WHERE id = ?", (g,))
+    assert _verify(conn, S.Decision(kind="Ingest"), p, anchored) == ""
+    # The anchorless shape is gated on its OWN marked deliverables.
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief="prose only")], p, top)
+    bare = [int(r["id"]) for r in groups.children(conn, top)][-1]
+    assert "MarkDeliverable" in _verify(
+        conn, S.Decision(kind="Ingest"), p, bare)
+
+
+# ---------------------------------------------------------------------
+# v35 migration
+# ---------------------------------------------------------------------
+
+#: The v34 shape of the three tables v35 rebuilds — decision_kind without
+#: the two new kinds, target_kind without 'Group'.
+_V34_TABLES = """
+-- `groups` goes FIRST: dropping it runs the ON DELETE SET NULL action on
+-- strategist_decisions.group_id, which needs that table to still exist.
+DROP TABLE IF EXISTS groups;
+DROP TABLE IF EXISTS strategist_decisions;
+DROP TABLE IF EXISTS queue;
+DROP TABLE IF EXISTS pipelines;
+DROP TABLE IF EXISTS programme_revisions;
+CREATE TABLE programme_revisions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem    TEXT NOT NULL REFERENCES problems(name),
+    rev        INTEGER NOT NULL,
+    body       TEXT NOT NULL,
+    status     TEXT NOT NULL CHECK (status IN ('passed', 'rejected')),
+    verdict    TEXT,
+    dialogue   TEXT,
+    rounds     INTEGER NOT NULL DEFAULT 0,
+    batch_id   TEXT,
+    created_at TEXT NOT NULL,
+    discard_reason TEXT NULL
+);
+CREATE UNIQUE INDEX ux_programme_passed_rev
+    ON programme_revisions(problem, rev) WHERE status = 'passed';
+CREATE TABLE strategist_decisions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem             TEXT NOT NULL REFERENCES problems(name),
+    triggered_at_tick   INTEGER NOT NULL,
+    trigger_kind        TEXT NOT NULL
+                            CHECK(trigger_kind IN
+                                  ('first_launch','pending_review','routine',
+                                   'inject_batch_done','audit')),
+    decision_kind       TEXT NOT NULL
+                            CHECK(decision_kind IN
+                                  ('Inject','ConfirmShelve','Reopen',
+                                   'EmitDirective','InitializeDefs',
+                                   'RequestUserAmend','Noop','MarkDeliverable',
+                                   'Ingest','FetchPaper','AttemptDisproof')),
+    target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+    brief               TEXT NULL DEFAULT NULL,
+    reason              TEXT NULL DEFAULT NULL,
+    payload             TEXT NOT NULL DEFAULT '{}',
+    batch_id            TEXT NULL DEFAULT NULL,
+    produced_goal_id    INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+    produced_strategy_id INTEGER NULL DEFAULT NULL REFERENCES strategies(id),
+    outcome             TEXT NULL DEFAULT NULL,
+    outcome_detail      TEXT NULL DEFAULT NULL,
+    produced_kind       TEXT NULL,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE TABLE queue (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL
+                    CHECK(kind IN ('Builder','Backward','Verify',
+                                   'Strategist','Forward','Librarian',
+                                   'Scholar','Formalizer')),
+    target_id   TEXT NOT NULL,
+    target_kind TEXT NOT NULL DEFAULT 'Goal'
+                    CHECK(target_kind IN ('Goal','Strategy','Problem')),
+    priority    INTEGER NOT NULL DEFAULT 0,
+    decision_id INTEGER NULL DEFAULT NULL REFERENCES strategist_decisions(id),
+    problem     TEXT NOT NULL DEFAULT '',
+    payload     TEXT,
+    owner_pid   INTEGER,
+    leased_at   TEXT,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX idx_queue_priority ON queue(priority DESC, id ASC);
+CREATE TABLE pipelines (
+    id          TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL
+                    CHECK(kind IN ('Builder','Backward','Verify',
+                                   'Strategist','Forward','Librarian',
+                                   'Scholar','Formalizer')),
+    target_id   TEXT NOT NULL,
+    target_kind TEXT NOT NULL
+                    CHECK(target_kind IN ('Goal','Strategy','Problem')),
+    status      TEXT NOT NULL CHECK(status IN ('succeeded','failed')),
+    outcome     TEXT NOT NULL,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT NOT NULL
+);
+CREATE INDEX idx_pipelines_status ON pipelines(status);
+"""
+
+
+def _v34_db(tmp_path):
+    """A DB that looks like it was written before v35."""
+    conn = _conn(tmp_path, "v34.db")
+    conn.executescript(_V34_TABLES)
+    conn.execute("PRAGMA user_version = 34")
+    for name in ("Test.a", "Test.b"):
+        _problem(conn, name)
+    conn.execute(
+        "UPDATE problems SET last_routine_at = 'R1' WHERE name = 'Test.a'")
+    for name in ("Test.a", "Test.b"):
+        # Raw insert: the v34 table has no group_id column yet.
+        conn.execute(
+            "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+            " trigger_kind, decision_kind, payload, created_at, updated_at)"
+            " VALUES (?, 0, 'routine', 'Inject', '{}', 't', 't')", (name,))
+    conn.execute(
+        "INSERT INTO queue (kind, target_id, target_kind, problem, created_at)"
+        " VALUES ('Strategist', 'Test.a', 'Problem', 'Test.a', 't')")
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at, finished_at)"
+        " VALUES ('p1', 'Strategist', 'Test.a', 'Problem', 'succeeded',"
+        " 'ok', 't', 't')")
+    conn.execute(
+        "INSERT INTO programme_revisions (problem, rev, body, status,"
+        " rounds, created_at) VALUES ('Test.a', 1, '# T', 'passed', 0, 't')")
+    conn.commit()
+    return conn
+
+
+def test_v35_migrates_a_v34_db_without_losing_rows(tmp_path):
+    conn = _v34_db(tmp_path)
+    before = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+              for t in ("strategist_decisions", "queue", "pipelines",
+                        "programme_revisions")}
+    db_migrations.apply(conn)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 35
+    after = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+             for t in before}
+    assert before == after
+    # The pre-existing index survived the rebuild.
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index'"
+        " AND name='idx_queue_priority'").fetchone() is not None
+
+
+def test_v35_backfills_one_top_group_per_problem_with_its_clocks(tmp_path):
+    conn = _v34_db(tmp_path)
+    db_migrations.apply(conn)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM groups WHERE parent_group_id IS NULL"
+    ).fetchone()[0] == 2
+    assert groups.top_group(conn, "Test.a")["last_routine_at"] == "R1"
+    # Every pre-v35 row now belongs to its OWN problem's top group.
+    assert conn.execute(
+        "SELECT COUNT(*) FROM strategist_decisions d JOIN groups g"
+        "  ON g.id = d.group_id WHERE g.problem != d.problem"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM strategist_decisions WHERE group_id IS NULL"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM programme_revisions WHERE group_id IS NULL"
+    ).fetchone()[0] == 0
+
+
+def test_v35_widens_the_three_checks(tmp_path):
+    conn = _v34_db(tmp_path)
+    db_migrations.apply(conn)
+    top = groups.top_group(conn, "Test.a")["id"]
+    sub = groups.open_group(conn, problem="Test.a", parent_group_id=top,
+                            charter="claim A")
+    for kind in ("Delegate", "ReturnToParent"):
+        _decision(conn, "Test.a", group_id=sub, kind=kind)
+    conn.execute(
+        "INSERT INTO queue (kind, target_id, target_kind, problem,"
+        " created_at) VALUES ('Strategist', ?, 'Group', 'Test.a', 't')",
+        (str(sub),))
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at, finished_at)"
+        " VALUES ('p2', 'Strategist', ?, 'Group', 'succeeded', 'ok', 't', 't')",
+        (str(sub),))
+
+
+def test_v35_rekeys_the_programme_chain_index_to_the_group(tmp_path):
+    """Each group owns its own rev numbering from 1, so two groups may
+    both hold a passed rev 1 — which the problem-keyed v31 index forbade."""
+    conn = _v34_db(tmp_path)
+    db_migrations.apply(conn)
+    top = groups.top_group(conn, "Test.a")["id"]
+    sub = groups.open_group(conn, problem="Test.a", parent_group_id=top,
+                            charter="claim A")
+    conn.execute(
+        "INSERT INTO programme_revisions (problem, rev, body, status,"
+        " rounds, created_at, group_id)"
+        " VALUES ('Test.a', 1, '# sub', 'passed', 0, 't', ?)", (sub,))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO programme_revisions (problem, rev, body, status,"
+            " rounds, created_at, group_id)"
+            " VALUES ('Test.a', 1, '# dup', 'passed', 0, 't', ?)", (sub,))
+
+
+def test_v35_is_idempotent(tmp_path):
+    conn = _v34_db(tmp_path)
+    db_migrations.apply(conn)
+    snapshot = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                for t in ("strategist_decisions", "queue", "pipelines",
+                          "programme_revisions", "groups")}
+    db_migrations.apply(conn)
+    assert snapshot == {
+        t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+        for t in snapshot}
+
+
+def test_v35_refuses_to_guess_when_the_target_kind_check_drifted(tmp_path):
+    """A widening that cannot find what it expects must fail loud rather
+    than rebuild a table from a guessed shape (CLAUDE.md: rather fail
+    loudly than route around)."""
+    conn = _v34_db(tmp_path)
+    conn.executescript(
+        "DROP TABLE queue;"
+        " CREATE TABLE queue (id INTEGER PRIMARY KEY, kind TEXT,"
+        " target_id TEXT, target_kind TEXT CHECK(target_kind IN ('Goal')),"
+        " problem TEXT, created_at TEXT);")
+    with pytest.raises(RuntimeError, match="cannot widen"):
+        db_migrations.apply(conn)

@@ -885,7 +885,8 @@ def _plan_note_provenance(conn: sqlite3.Connection, problem: str) -> str:
 
 
 def _section_plan_note(conn: sqlite3.Connection, workspace: Path,
-                       problem: str) -> list[str]:
+                       problem: str,
+                       group_id: "int | None" = None) -> list[str]:
     """The Strategist's PRIVATE cross-wake plan note
     (`.drafts/strategist_plan.md`) — rendered here ONLY, never into worker
     contexts. The third channel next to the two worker-facing ones
@@ -898,7 +899,7 @@ def _section_plan_note(conn: sqlite3.Connection, workspace: Path,
     instead of an archaeology session."""
     from ..pipeline import _drafts
     problem_dir = db.problem_dir(workspace, problem)
-    text = _drafts.read_plan_note(problem_dir)
+    text = _drafts.read_plan_note(problem_dir, group_id)
     if not text or not text.strip():
         return []
     out = ["## Your plan note (private, cross-wake)", "",
@@ -1061,6 +1062,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
                                workspace: Path,
                                mfst: manifest.Manifest,
                                pending_review_id: int | None = None,
+                               group_id: "int | None" = None,
                                ) -> Path:
     """Write Context.md for the Strategist agent into attempts_dir.
 
@@ -1097,7 +1099,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     # never Reopens" was never closed by the agent on its own; surfacing
     # the cross-reference gives it a structured cue.
     section_names += ["stall_warning", "ingest_gate", "disproof_guidance",
-                      "programme", "directive",
+                      "your_group", "programme", "directive",
                       "plan_note", "inject_batches", "pending_reopens",
                       "active_goals", "failure_replay", "tree", "catalog",
                       "manifest_meta", "paper_index"]
@@ -1105,9 +1107,10 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_stall_warning(conn, problem),
         _section_ingest_gate(conn, problem),
         _section_disproof_guidance(conn, problem),
-        _section_programme_strategist(conn, problem),
+        _section_your_group(conn, problem, group_id),
+        _section_programme_strategist(conn, problem, group_id),
         _section_current_directive(conn, problem),
-        _section_plan_note(conn, workspace, problem),
+        _section_plan_note(conn, workspace, problem, group_id),
         _section_inject_batch_outcomes(conn, problem, workspace=workspace),
         _section_pending_reopens(conn, problem, trigger_kind),
         _section_active_goals(conn, workspace, problem),
@@ -1136,8 +1139,48 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     return out
 
 
+def _section_your_group(conn: sqlite3.Connection, problem: str,
+                        group_id: "int | None") -> list[str]:
+    """Conditional (v35): renders ONLY for a sub-group.
+
+    The static prompt is written for the group that faces the human, and
+    two of its statements are wrong one level down — `Ingest` is not the
+    problem's exit, and `RequestUserAmend` is not this group's channel.
+    Rather than scrub those from three prompts (they are correct for the
+    reader they were written for), the Context overrides them here: an
+    agent trusts the Context copy, so a dynamic section that enumerates
+    actions must agree with the static prompt or replace it explicitly.
+
+    Empty for the top group — the static prompt already says everything
+    true for it, so today's single-group runs pay nothing.
+    """
+    from ..state import groups as _groups
+    if group_id is None:
+        return []
+    me = _groups.get(conn, int(group_id))
+    if me is None or _groups.is_top(me):
+        return []
+    return [
+        "## Your group", "",
+        "Your charter and the chain above it: `charter.md`.", "",
+        "- `Ingest` here delivers your bricks upward and ends this "
+        "group, not the problem.",
+        "- `ReturnToParent` — `flavour ∈ "
+        "{\"refuted\",\"amend\",\"exhausted\"}`, `reason` (what was "
+        "tried, where it died, what was learned). `refuted` also takes "
+        "`target_goal_id`: the PROVED node carrying the negation. "
+        "`amend` also takes `proposed_charter`: the claim you believe "
+        "is provable.",
+        "- `RequestUserAmend` is not yours → "
+        "`ReturnToParent(amend)`, naming the file and what is wrong.",
+        "",
+    ]
+
+
 def _section_programme_strategist(conn: sqlite3.Connection,
-                                  problem: str) -> list[str]:
+                                  problem: str,
+                                  group_id: "int | None" = None
+                                  ) -> list[str]:
     """Research mode (research_mode_design.md §2): the current
     Programme rev inline — it is the commitment object your proposal
     revises (route/planning lives HERE, not in the plan note) — plus
@@ -1146,8 +1189,8 @@ def _section_programme_strategist(conn: sqlite3.Connection,
     import json as _json
     from ..state import programme as _programme
     try:
-        row = _programme.current_rev(conn, problem)
-        notice = _programme.rejection_notice(conn, problem)
+        row = _programme.current_rev(conn, problem, group_id)
+        notice = _programme.rejection_notice(conn, problem, group_id)
     except sqlite3.OperationalError:
         return []
     out: list[str] = []

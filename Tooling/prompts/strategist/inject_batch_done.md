@@ -17,6 +17,7 @@ Tools: Read / Write / Edit / Grep / `loogle(pattern)` / `validate_json(text)`. N
    - Brick landed but gap remains → `Inject` a new brick + `ConfirmShelve` to keep parked
    - Brick didn't land / proof direction was wrong → `ConfirmShelve` this goal + `Inject` a reframed angle on its upper goal
    - Permanently superseded → standalone `ConfirmShelve` (no paired Inject)
+   - A self-contained burden you cannot yet prove → `Delegate` while writing the Proof
 <!-- #endif -->
 
 - **Mark deliverables**: a landed minted node that satisfies the Manifest → `MarkDeliverable`; all marked → `Ingest`.
@@ -48,7 +49,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 **Write for the record, not the reviewer** — fold accepted criticisms into corrected text; no round numbers, no concession notes, no adversary attribution.
 
 - Every Inject brief names its Roadmap entry: a `Roadmap: <entry phrase>` line.
-- Every Inject is proven in the Proof — inject only what is fully argued; anything short of rigorous closure stays in the Roadmap awaiting a later batch. The brief names that claim, restated as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
+- Every Inject is proven in the Proof — inject only what is fully argued; anything short of rigorous closure stays in the Roadmap awaiting a later batch, or goes to a `Delegate`. The brief names that claim, restated as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
 - Mark formal↔informal claims not yet kernel-checked in the Roadmap.
 - Every route-moving batch carries ≥1 experiment — an Inject or an AttemptDisproof (MarkDeliverable/Ingest batches exempt). An AttemptDisproof probes a doubt; its absence needs no defense.
 - Before submitting, re-check your ## Proof for correctness: every step's direction and quantifier scope, and any step that assumes structure the hypothesis does not give.
@@ -60,7 +61,8 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
   - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never brief a mint with an alive goal's statement.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone (the batch still needs its ≥1 experiment). Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `EmitDirective` — `scope="problem:<name>"`, `body` or `body_file` (bare filename in your attempts dir — Write the text there, no JSON escaping), `reason`. Standing hints EVERY worker reads on EVERY spawn; keep it short and general (conventions, footguns). Your plans/progress go in `_plan.md`; goal-specific hints in an Inject brief.
-- `AttemptDisproof` — `target_goal_id`, `reason` (falsity evidence). For a user-requested claim you believe false; a typo → `RequestUserAmend` instead. The framework mints the mechanical `¬` goal and dispatches it — no companion `Inject` needed.
+- `AttemptDisproof` — `target_goal_id`, `reason` (falsity evidence). For a claim handed to you (Manifest or charter) you believe is false as meant; a file that fails to say what the user meant → `RequestUserAmend`. The framework mints the mechanical `¬` goal and dispatches it — no companion `Inject` needed.
+- `Delegate` — `brief` or `brief_file` (the charter: a precise claim the new group must settle), optional `target_goal_id`, optional `reason`. For a claim you cannot yet prove. Your Proof must be complete GIVEN it; it must not depend on your conclusion or any charter above you. With `target_goal_id`: that goal becomes the anchor.
 - `MarkDeliverable` — `target_goal_id`, optional `reason`. Flag a landed node as a top-level *deliverable*. Only a minted node (no-target Inject) can be marked, and only once it satisfies what the Manifest asked for. Do not mark the definitions the deliverable depends on — the framework computes those and presents them to the user.
 - `Ingest` — optional `reason`. The problem's only exit: emit once the Manifest is fully satisfied. Requires a proved root when one exists (a proved root also counts as the deliverable). Never in the same batch as its `MarkDeliverable`s — mark first; the framework re-wakes you immediately and you Ingest then. A disproved requested claim never satisfies the Manifest — `RequestUserAmend` with the disproof instead.
 

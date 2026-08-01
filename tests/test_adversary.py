@@ -703,6 +703,25 @@ def test_projection_stages_tree_cited_proofs_and_directive_body(
     assert f"→ {gid} (`tgt`, proved)" in dec
 
 
+def _rendered_subgroup_section() -> str:
+    """The conditional `## Your group` Context section as a sub-group
+    actually receives it — the other half of the Strategist's contract
+    since v35."""
+    import sqlite3 as _sqlite3
+    from Tooling.state import db as _db, groups as _groups
+    from Tooling.agent import phase2_context as _ctx
+    conn = _sqlite3.connect(":memory:")
+    conn.row_factory = _sqlite3.Row
+    _db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES ('p', 'Manifest.md', 't')")
+    top = _groups.ensure_top_group(conn, "p")
+    sub = _groups.open_group(conn, problem="p", parent_group_id=top,
+                             charter="c")
+    return "\n".join(_ctx._section_your_group(conn, "p", sub))
+
+
 def test_adversary_contract_section_matches_wake_prompts() -> None:
     """07-29 (A): the judge carries a verbatim copy of the Strategist's
     decision-kind contract so quoted contract clauses are checkable
@@ -713,8 +732,15 @@ def test_adversary_contract_section_matches_wake_prompts() -> None:
     07-31: the copy moved out of the inlined prompt into `_contract.md`,
     staged into the projection. Reference material does not belong in an
     instruction that is re-sent on every spawn; the drift guard follows
-    it."""
+    it.
+
+    08-02 (v35): `ReturnToParent` is a sub-group-only verb, so its
+    contract lives in the conditional `## Your group` Context section
+    rather than the static prompt (a reader who cannot use a verb should
+    not be shown it). The guard follows the text there too — the judge's
+    copy must still match whatever the Strategist was actually told."""
     import re as _re
+    import sqlite3 as _sqlite3
     root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
     section = (root / "adversary" / "_contract.md").read_text(
         encoding="utf-8")
@@ -722,6 +748,7 @@ def test_adversary_contract_section_matches_wake_prompts() -> None:
         (root / "strategist" / f).read_text(encoding="utf-8")
         for f in ("routine.md", "inject_batch_done.md",
                   "pending_review.md"))
+    wakes += _rendered_subgroup_section()
     body = section.split("\n\n`target_goal_id`")[0]
     blocks = _re.split(r"\n(?=- )", body)
     checked = 0

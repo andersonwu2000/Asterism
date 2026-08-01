@@ -195,7 +195,11 @@ _WATERMARKS = {
     # 2510→2520 (2026-07-19): dispatcher pool applies the gateway's
     # ram_clamped_pool formula (over-dispatch vs clamped slots read as
     # gateway death) — conscious bump.
-    "Tooling/core/dispatcher.py": 2520,
+    # 2520→2600 (2026-08-02): v35 per-group Strategist seat —
+    # `_enqueue_strategist` (the one row shape), `_strategist_target`
+    # (group→problem resolution incl. legacy rows) and the per-tick
+    # top-group self-heal. Conscious bump.
+    "Tooling/core/dispatcher.py": 2600,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
@@ -218,7 +222,9 @@ _WATERMARKS = {
     # cascade. The two helpers are 30 lines of code and a long WHY
     # (the incident + why the anti-stranding guarantee survives);
     # the reasoning belongs next to the predicate it justifies.
-    "Tooling/state/transitions.py": 1660,
+    # 1660→1700 (2026-08-02): v35 — a review wakes the group that owns
+    # the goal, not the problem. Conscious bump.
+    "Tooling/state/transitions.py": 1700,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.
@@ -285,7 +291,21 @@ _WATERMARKS = {
     # 3180→3220 (2026-07-18): _strategy_death_detail (dead-redispatch
     # WHY synthesized into outcome_detail; the Forward-decline parity
     # fix) — conscious bump.
-    "Tooling/state/db.py": 3220,
+    # 3220→3420 (2026-08-02): v35 discussion groups — the `groups` DDL,
+    # the two group pointers on strategist_decisions, 'Group' in the two
+    # target_kind CHECKs, and the batch machinery's third artifact
+    # (`BATCH_DECISION_KINDS` + `propagate_inject_outcome_from_group` +
+    # the group arm of `has_active_inflight_inject`). The store's
+    # accessors live in state/groups.py rather than here — the parts that
+    # stayed are the ones that belong beside the batch predicates they
+    # extend. Conscious bump.
+    # 3420→3540 (2026-08-02): v35 per-group Strategist seat —
+    # `groups_needing_t1` / `group_routine_due` (the clock moves to the
+    # group) and the group arm of the anti-idle predicate. Conscious bump.
+    # 3540→3660 (2026-08-02): v35 group-scoped stall — `is_group_stalled`
+    # + `_group_quiet` + `groups_stalled`, and the authoring-group clause
+    # the two in-flight predicates share. Conscious bump.
+    "Tooling/state/db.py": 3660,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,
@@ -301,7 +321,11 @@ _WATERMARKS = {
     # conscious bump.
     # 1815→1840 (2026-07-18): v32 produced_kind attribution column —
     # conscious bump.
-    "Tooling/state/db_migrations.py": 1950,
+    # 1950→2220 (2026-08-02): v35 discussion groups — three CHECK
+    # widenings (each a rebuild-and-copy, since SQLite cannot alter a
+    # CHECK in place) plus the top-group backfill. The chain grows by one
+    # block per schema version by design — conscious bump.
+    "Tooling/state/db_migrations.py": 2220,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

@@ -25,6 +25,13 @@ from Tooling.state import transitions as _tr
 
 P = "Test.wedge"
 
+def _top(conn, problem):
+    """The problem's top-group id as the queue stores it (v35: the
+    Strategist seat is keyed by group, not by problem)."""
+    from Tooling.state import groups as _g
+    return str(_g.ensure_top_group(conn, problem))
+
+
 
 def _conn(tmp_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(tmp_path / "asterism.db"))
@@ -199,7 +206,7 @@ def test_park_last_route_escalates_to_review(tmp_path: Path) -> None:
     assert str(g["status"]) == "pending_strategist_review"
     q = conn.execute(
         "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
-        " AND target_id = ?", (P,)).fetchone()
+        " AND target_id = ?", (_top(conn, P),)).fetchone()
     assert q["n"] == 1
     conn.close()
 
@@ -261,7 +268,7 @@ def test_promised_park_does_not_escalate_the_parent(tmp_path: Path) -> None:
     assert str(_db.get_goal(conn, pa)["status"]) == "attempting"
     q = conn.execute(
         "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
-        " AND target_id = ?", (P,)).fetchone()
+        " AND target_id = ?", (_top(conn, P),)).fetchone()
     assert q["n"] == 0                           # no churn wake
     conn.close()
 
@@ -339,7 +346,7 @@ def test_bfs_routes_over_budget_open_goal_to_review(
         "('Backward','Builder')").fetchone()["n"] == 0
     assert conn.execute(
         "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
-        " AND target_id = ?", (P,)).fetchone()["n"] == 1
+        " AND target_id = ?", (_top(conn, P),)).fetchone()["n"] == 1
     conn.close()
 
 

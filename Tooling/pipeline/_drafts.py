@@ -190,11 +190,21 @@ PLAN_NOTE_FILENAME = "_plan.md"
 PLAN_NOTE_SOFT_CAP = 16_000
 
 
-def plan_note_path(problem_dir: Path) -> Path:
-    return problem_dir / ".drafts" / "strategist_plan.md"
+def plan_note_path(problem_dir: Path,
+                   group_id: "int | None" = None) -> Path:
+    """The Strategist's private cross-wake note.
+
+    v35 — one note per GROUP: it holds that group's verified facts and
+    its own suspicions, and two groups sharing one file would overwrite
+    each other's on every wake (the note is a REWRITE by contract). The
+    top group keeps the original path so nothing that reads it moves."""
+    if group_id is None:
+        return problem_dir / ".drafts" / "strategist_plan.md"
+    return problem_dir / ".drafts" / f"strategist_plan_g{int(group_id)}.md"
 
 
-def persist_plan_note(*, problem_dir: Path, attempts_dir: Path) -> int | None:
+def persist_plan_note(*, problem_dir: Path, attempts_dir: Path,
+                      group_id: "int | None" = None) -> int | None:
     """Move a freshly-written `_plan.md` from the spawn sandbox into the
     cross-wake drafts slot (full overwrite — the note is a REWRITE by
     contract). Absent file = no update, the prior note stands. Returns
@@ -205,7 +215,7 @@ def persist_plan_note(*, problem_dir: Path, attempts_dir: Path) -> int | None:
         return None
     try:
         text = src.read_text(encoding="utf-8")
-        dst = plan_note_path(problem_dir)
+        dst = plan_note_path(problem_dir, group_id)
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_text(text, encoding="utf-8")
     except OSError:
@@ -213,8 +223,9 @@ def persist_plan_note(*, problem_dir: Path, attempts_dir: Path) -> int | None:
     return len(text)
 
 
-def read_plan_note(problem_dir: Path) -> str | None:
-    p = plan_note_path(problem_dir)
+def read_plan_note(problem_dir: Path,
+                   group_id: "int | None" = None) -> str | None:
+    p = plan_note_path(problem_dir, group_id)
     if not p.exists():
         return None
     try:

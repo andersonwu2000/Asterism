@@ -176,6 +176,61 @@ CREATE TABLE IF NOT EXISTS problems (
                                     'revoked'))
 );
 
+-- v35 (discussion_group_design.md) — a DISCUSSION GROUP: one charter, one
+-- Programme, one strategist/adversary loop, and the subtree it grows. The
+-- tree of groups lives inside ONE problem: a parent must cite its child's
+-- bricks and cross-problem citation is forbidden (`_cite_gate.py:123`), so
+-- groups are a partition of a problem, never recursive problems.
+--
+-- The TOP group of each problem is a real row with `parent_group_id IS
+-- NULL` — not a special case in the code. Its charter is `Manifest.md`
+-- (hence the empty default: the Manifest is read from disk, not copied
+-- here). Every pre-v35 row in the problem belongs to it.
+CREATE TABLE IF NOT EXISTS groups (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem         TEXT NOT NULL REFERENCES problems(name),
+    -- NULL = the problem's top group, the only one that faces a human.
+    -- ON DELETE CASCADE: a group cannot outlive its parent, and it makes
+    -- `asterism reset`'s blanket per-problem DELETE order-independent —
+    -- without it the self-FK trips mid-statement when a parent goes first.
+    parent_group_id INTEGER NULL DEFAULT NULL
+                        REFERENCES groups(id) ON DELETE CASCADE,
+    -- The charter: the mathematical claim this group was asked to settle,
+    -- verbatim from the parent's `Delegate` brief. Empty for the top group.
+    -- charter : sub-group :: Manifest : problem — that equation is what
+    -- lets a sub-group reuse every problem-level mechanism down to Ingest.
+    charter         TEXT NOT NULL DEFAULT '',
+    -- OPTIONAL anchor. The main shape (a proactively delegated burden) has
+    -- none: the group starts from prose and mints its own bricks, exactly
+    -- like a pure-NL problem (`cli.py:355`). Only the rescue shape — an
+    -- existing goal promoted to a group — carries one.
+    anchor_goal_id  INTEGER NULL DEFAULT NULL
+                        REFERENCES goals(id) ON DELETE SET NULL,
+    -- The parent's `Delegate` row. NULL for the top group. Both this and
+    -- `strategist_decisions.group_id` are SET NULL on delete: the two
+    -- tables point at each other, so any delete order would otherwise be
+    -- wrong in one direction (the reset path hits exactly this).
+    opened_by       INTEGER NULL DEFAULT NULL
+                        REFERENCES strategist_decisions(id)
+                        ON DELETE SET NULL,
+    -- 'active'    — working.
+    -- 'delivered' — Ingested upward; its bricks are the parent's to cite.
+    -- 'returned'  — handed the charter back (refuted / amend / exhausted).
+    -- 'closed'    — the parent retired it.
+    status          TEXT NOT NULL DEFAULT 'active'
+                        CHECK(status IN ('active', 'delivered',
+                                         'returned', 'closed')),
+    -- Per-group wake clocks. DUAL-WRITE WINDOW (Stage A→D): the readers
+    -- (`problems_needing_t1`, `_strategist_inflight`) still consult the
+    -- `problems` columns; these are backfilled and maintained so the flip
+    -- is a reader change, not a data migration. Stage D drops the problems
+    -- columns — until then, a divergence between the two is a bug.
+    last_routine_at    TEXT NULL DEFAULT NULL,
+    last_strategist_at TEXT NULL DEFAULT NULL,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS goals (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     problem     TEXT    NOT NULL REFERENCES problems(name),
@@ -343,8 +398,12 @@ CREATE TABLE IF NOT EXISTS pipelines (
                                    'Strategist','Forward','Librarian',
                                    'Scholar','Formalizer')),
     target_id   TEXT NOT NULL,
+    -- 'Group' (v35): a Strategist wake belongs to ONE discussion group, so
+    -- the seat is per group, not per problem. Pre-v35 Strategist rows are
+    -- 'Problem' and stay valid.
     target_kind TEXT NOT NULL
-                    CHECK(target_kind IN ('Goal','Strategy','Problem')),
+                    CHECK(target_kind IN ('Goal','Strategy','Problem',
+                                          'Group')),
     status      TEXT NOT NULL CHECK(status IN ('succeeded','failed')),
     outcome     TEXT NOT NULL,
     started_at  TEXT NOT NULL,
@@ -379,8 +438,11 @@ CREATE TABLE IF NOT EXISTS queue (
                                    'Strategist','Forward','Librarian',
                                    'Scholar','Formalizer')),
     target_id   TEXT NOT NULL,
+    -- 'Group' (v35): see the pipelines note — one Strategist seat per
+    -- discussion group is what lets sibling groups run concurrently.
     target_kind TEXT NOT NULL DEFAULT 'Goal'
-                    CHECK(target_kind IN ('Goal','Strategy','Problem')),
+                    CHECK(target_kind IN ('Goal','Strategy','Problem',
+                                          'Group')),
     priority    INTEGER NOT NULL DEFAULT 0,
     decision_id INTEGER NULL DEFAULT NULL REFERENCES strategist_decisions(id),
     -- v17 queue contract (task #3): `problem` scopes every row (scope-safe
@@ -489,11 +551,30 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                             -- (target_id=P, produced_goal_id=¬P). Belief is
                             -- never trusted — settling either way needs the
                             -- kernel.
+                            -- 'Delegate' (v35, discussion groups): hand a
+                            -- claim to a sub-group. Its own kind rather
+                            -- than a third Inject shape because the batch
+                            -- closure law is waived PER KIND, its produced
+                            -- artifact is a group (not a goal or strategy),
+                            -- its verify asks different questions, and it
+                            -- alone can end in a return.
+                            -- 'ReturnToParent' (v35): a sub-group hands the
+                            -- charter back — refuted / amend / exhausted.
+                            -- Structurally unavailable to the top group,
+                            -- which has no parent to return to; that is the
+                            -- wall keeping the difficulty escape hatch away
+                            -- from the human channel.
                             CHECK(decision_kind IN
                                   ('Inject','ConfirmShelve','Reopen',
                                    'EmitDirective','InitializeDefs',
                                    'RequestUserAmend','Noop','MarkDeliverable',
-                                   'Ingest','FetchPaper','AttemptDisproof')),
+                                   'Ingest','FetchPaper','AttemptDisproof',
+                                   'Delegate','ReturnToParent')),
+    -- v35 — which group AUTHORED this decision. Backfilled to the problem's
+    -- top group for every pre-v35 row. SET NULL on delete: see the note on
+    -- `groups.opened_by` — the two tables reference each other.
+    group_id            INTEGER NULL DEFAULT NULL
+                            REFERENCES groups(id) ON DELETE SET NULL,
     target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
     brief               TEXT NULL DEFAULT NULL,
     reason              TEXT NULL DEFAULT NULL,
@@ -529,6 +610,16 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
     -- empty strategy row).
     produced_strategy_id INTEGER NULL DEFAULT NULL
                             REFERENCES strategies(id) ON DELETE SET NULL,
+    -- produced_group_id (v35): a `Delegate` decision stores the group it
+    -- opened here — the THIRD form of produced work, alongside goal and
+    -- strategy. The parent's right to stay quiet is read off this column
+    -- (`has_active_inflight_inject`): a delegated burden with no anchor
+    -- goal has neither of the other two, so without this arm T4 would wake
+    -- the parent while its child is still working. The `outcome` fills
+    -- when the group reaches a terminal status (delivered / returned /
+    -- closed) — the same real-completion semantics the other two use.
+    produced_group_id   INTEGER NULL DEFAULT NULL
+                            REFERENCES groups(id) ON DELETE SET NULL,
     outcome             TEXT NULL DEFAULT NULL,
     outcome_detail      TEXT NULL DEFAULT NULL,
     created_at          TEXT NOT NULL,
@@ -614,6 +705,15 @@ CREATE TABLE IF NOT EXISTS kb_entries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+-- v35 — one top group per problem, pinned in the schema rather than
+-- trusted to the code that creates it (CLAUDE.md rule 6): a second
+-- parentless row for the same problem would fork the whole tree's notion
+-- of "who faces the human", silently.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_groups_top ON groups(problem)
+    WHERE parent_group_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_groups_problem ON groups(problem);
+CREATE INDEX IF NOT EXISTS idx_groups_parent ON groups(parent_group_id);
+CREATE INDEX IF NOT EXISTS idx_sd_group ON strategist_decisions(group_id);
 CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
 CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_sd_problem ON strategist_decisions(problem);
@@ -651,7 +751,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 34
+_CURRENT_USER_VERSION = 35
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -961,10 +1061,27 @@ def scholar_fetch_count(conn: sqlite3.Connection, problem: str) -> int:
 
 
 def deliverables(conn: sqlite3.Connection,
-                 problem: str | None = None) -> list[sqlite3.Row]:
+                 problem: str | None = None,
+                 group_id: "int | None" = None) -> list[sqlite3.Row]:
     """Goals flagged `is_deliverable=1`, optionally scoped to one
     problem, ordered by id. The review surface for the anchor+claim
-    flow."""
+    flow.
+
+    v35 — `group_id` narrows to the deliverables THAT group marked.
+    `is_deliverable` stays a plain "somebody marked it"; whose it is
+    comes from the `MarkDeliverable` decision, the same derivation goal
+    ownership uses. Without this the top-level sign-off surface would
+    list every sub-group's internal parts as things the human is being
+    asked to vouch for, and the anchor closure would follow them.
+    """
+    if group_id is not None:
+        return conn.execute(
+            "SELECT g.* FROM goals g WHERE g.is_deliverable = 1"
+            "  AND g.problem = ? AND EXISTS ("
+            "    SELECT 1 FROM strategist_decisions d"
+            "     WHERE d.decision_kind = 'MarkDeliverable'"
+            "       AND d.target_id = g.id AND d.group_id = ?)"
+            " ORDER BY g.id", (problem, int(group_id))).fetchall()
     if problem is None:
         return conn.execute(
             "SELECT * FROM goals WHERE is_deliverable = 1 ORDER BY id"
@@ -1512,6 +1629,61 @@ def problems_needing_t1(conn: sqlite3.Connection, *,
     return [str(r["name"]) for r in conn.execute(sql, tuple(args))]
 
 
+def groups_needing_t1(conn: sqlite3.Connection, *,
+                      max_age_sec: float,
+                      scope: str | None = None,
+                      since_iso: str | None = None,
+                      ) -> list[sqlite3.Row]:
+    """The per-GROUP routine clock (v35) — the seat source T1 dispatches
+    from. Returns `groups` rows (id, problem) whose `last_routine_at` is
+    older than `max_age_sec` of RUNNING time.
+
+    Same two departures as the problem-level original it replaces (read
+    the routine-only clock, no in-flight suppression) and the same
+    `since_iso` running-time baseline; see `problems_needing_t1` for why
+    each exists. What changes is the KEY: every group runs its own
+    cadence, which is what lets sibling groups work concurrently instead
+    of taking turns at one problem-wide seat.
+
+    Filters: the problem must not be at its Ingest terminal, and the
+    group itself must still be `active` — a delivered / returned / closed
+    group has no work and must not hold a seat.
+
+    While only top groups exist this returns exactly one row per problem
+    that `problems_needing_t1` would have named, so the switch is
+    behaviour-preserving.
+    """
+    max_age_days = max_age_sec / 86400.0
+    if since_iso is not None:
+        baseline_sql = ("max(julianday(coalesce(g.last_routine_at,"
+                        " '1970-01-01')), julianday(?))")
+        args: list = [since_iso, max_age_days]
+    else:
+        baseline_sql = "julianday(coalesce(g.last_routine_at, '1970-01-01'))"
+        args = [max_age_days]
+    sql = (
+        "SELECT g.id, g.problem"
+        " FROM groups g JOIN problems p ON p.name = g.problem"
+        " WHERE p.ingested_at IS NULL AND g.status = 'active'"
+        f"   AND julianday('now') - {baseline_sql} > ?"
+    )
+    if scope is not None:
+        sql += " AND g.problem LIKE ?"
+        args.append(scope)
+    sql += " ORDER BY g.problem, g.id"
+    return list(conn.execute(sql, tuple(args)))
+
+
+def group_routine_due(conn: sqlite3.Connection, group_id: int, *,
+                      max_age_sec: float,
+                      since_iso: str | None = None) -> bool:
+    """Is THIS group's routine clock due? The wake-side counterpart of
+    `groups_needing_t1` (which selects across all groups), used by the
+    spawn to classify its own trigger."""
+    return any(int(r["id"]) == int(group_id) for r in groups_needing_t1(
+        conn, max_age_sec=max_age_sec, since_iso=since_iso))
+
+
 def problems_with_pending_review(conn: sqlite3.Connection, *,
                                  scope: str | None = None
                                  ) -> list[str]:
@@ -1582,6 +1754,12 @@ def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
     NULL-outcome Inject whose worker died on infra failure (no artifact,
     target still open/attempting) wedges the problem via the in-flight
     active-check (`has_active_inflight_inject`) — so it must be redispatched.
+
+    `Delegate` is deliberately NOT included (v35): this function re-enqueues
+    a WORKER, and a delegated burden has none — its executor is the group's
+    own Strategist seat, so a lost seat is the seat mechanism's problem to
+    recover, not a re-dispatch. Widening the filter here would queue a
+    worker against a decision that never had one.
 
     Returns dicts: `{decision_id, problem, kind, target_id, target_kind}`."""
     sql = (
@@ -1742,15 +1920,112 @@ def _subtree_has_live_frontier(conn: sqlite3.Connection,
     raise ValueError(f"unknown frontier semantics {frontier!r}")
 
 
-def has_active_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
-    """True iff `problem` has a NULL-outcome Inject decision whose produced
+#: Decision kinds whose rows JOIN a batch (v35).
+#:
+#: The batch CYCLE itself is kind-blind: `maybe_enqueue_inject_batch_done`
+#: counts unfinished siblings by `batch_id` alone, so a new kind rides it
+#: for free as long as it is minted into the same batch and leaves
+#: `outcome` NULL until its work terminates. What is NOT free are the
+#: places that filter on the kind — this constant is their single
+#: definition, so a future kind cannot land in two of them and be
+#: forgotten in the third.
+#:
+#: `Delegate`'s produced work is a GROUP; `Inject`'s is a goal or a
+#: strategy. `null_inject_redispatch_specs` deliberately does NOT use this
+#: set: it re-enqueues a WORKER, and a Delegate has none — its executor is
+#: the group's own Strategist seat.
+BATCH_DECISION_KINDS = ("Inject", "Delegate")
+_BATCH_KINDS_SQL = "(" + ", ".join(
+    f"'{k}'" for k in BATCH_DECISION_KINDS) + ")"
+
+
+def propagate_inject_outcome_from_group(
+    conn: sqlite3.Connection, group_id: int,
+) -> int | None:
+    """When `group_id` reaches a terminal status, fill the outcome of the
+    `Delegate` decision that opened it — the group analogue of
+    `propagate_inject_outcome_from_goal` / `..._from_strategy`.
+
+    Mapping: 'delivered' → 'success' (the charter came back settled and
+    its bricks are the parent's to cite). 'returned' → 'failed:returned'
+    (the group handed the charter back; WHICH flavour — refuted / amend /
+    exhausted — is recorded on the `ReturnToParent` row, not compressed
+    into this enum). 'closed' → 'failed:closed' (the parent retired it).
+    'active' is not terminal and this is a no-op.
+
+    Note there is no group analogue of `shelved`: a group is either
+    working or done. That is why the mapping needs no reopenable case —
+    reviving a settled charter means opening a new group.
+
+    Returns the affected decision row id (caller may then fire
+    `maybe_enqueue_inject_batch_done`), or None. Idempotent via the
+    `outcome IS NULL` guard.
+    """
+    row = conn.execute(
+        "SELECT id FROM strategist_decisions"
+        " WHERE produced_group_id = ? AND outcome IS NULL",
+        (int(group_id),)).fetchone()
+    if row is None:
+        return None
+    g = conn.execute(
+        "SELECT status FROM groups WHERE id = ?", (int(group_id),)).fetchone()
+    if g is None:
+        return None
+    status = str(g["status"])
+    outcome = {"delivered": "success",
+               "returned": "failed:returned",
+               "closed": "failed:closed"}.get(status)
+    if outcome is None:
+        return None
+    conn.execute(
+        "UPDATE strategist_decisions SET outcome = ?, updated_at = ?"
+        " WHERE id = ? AND outcome IS NULL",
+        (outcome, now(), int(row["id"])))
+    return int(row["id"])
+
+
+def _group_clause(group_id: "int | None") -> str:
+    """Narrow a batch-decision scan to one AUTHORING group (v35). Empty
+    when no group is named, so the problem-wide readers are unchanged.
+
+    An UNATTRIBUTED row (`group_id IS NULL` — a hand-written row, or one
+    from before the v35 backfill) counts for every group. These
+    predicates all SUPPRESS a wake, and the safe direction for a
+    suppressor is to over-suppress: a missed stall is picked up by the
+    routine clock, while a false stall wakes an agent that has nothing
+    to do — the livelock class this file has paid for three times."""
+    return "" if group_id is None else         "   AND (sd.group_id = ? OR sd.group_id IS NULL)"
+
+
+def _group_args(problem: str, group_id: "int | None") -> tuple:
+    return (problem,) if group_id is None else (problem, int(group_id))
+
+
+def has_active_inflight_inject(conn: sqlite3.Connection, problem: str, *,
+                               group_id: "int | None" = None) -> bool:
+    """True iff `problem` has a NULL-outcome batch decision whose produced
     work is still genuinely ACTIVE:
 
       * `produced_goal_id`     → goal `open`, or `attempting` WITH a live
         dispatch frontier in its subtree (`_subtree_has_live_frontier`), OR
       * `produced_strategy_id` → strategy 'proposed' with >=1 subgoal that
         is open / pending_strategist_review, or attempting with a live
-        frontier.
+        frontier, OR
+      * `produced_group_id`    → a discussion group still 'active' (v35).
+
+    The group arm is what lets a parent group stay QUIET while its child
+    works. A delegated burden with no anchor goal has neither of the other
+    two artifacts, so without this arm the opening decision reads as
+    "produced work inactive" and T4 wakes the parent on every tick while
+    the child is mid-flight.
+
+    A bare status check is enough for a group, unlike the `attempting`
+    case above (which had to start recursing after the 2026-07-09 b6
+    wedge): a goal can sit `attempting` over an entirely parked subtree,
+    but there is no parked group status. An 'active' group always has its
+    own routine clock, so it always has a next wake — and if its subtree
+    collapses, its OWN T4 fires. From the parent's side that is correctly
+    still in flight.
 
     The precise notion of "an inject batch is still in flight", shared by the
     stall predicate (`is_problem_stalled` condition 4) and the T0 first_launch
@@ -1775,9 +2050,10 @@ def has_active_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
     for row in conn.execute(
         "SELECT g.id AS gid, g.status AS st FROM strategist_decisions sd"
         " JOIN goals g ON g.id = sd.produced_goal_id"
-        " WHERE sd.problem = ? AND sd.decision_kind = 'Inject'"
-        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL",
-        (problem,),
+        " WHERE sd.problem = ? AND sd.decision_kind IN " + _BATCH_KINDS_SQL +
+        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
+        + _group_clause(group_id),
+        _group_args(problem, group_id),
     ).fetchall():
         st = str(row["st"])
         if st == "open":
@@ -1790,10 +2066,10 @@ def has_active_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
         " JOIN strategies s ON s.id = sd.produced_strategy_id"
         " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
         " JOIN goals g ON g.id = ss.subgoal_id"
-        " WHERE sd.problem = ? AND sd.decision_kind = 'Inject'"
+        " WHERE sd.problem = ? AND sd.decision_kind IN " + _BATCH_KINDS_SQL +
         "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
-        "   AND s.status = 'proposed'",
-        (problem,),
+        "   AND s.status = 'proposed'" + _group_clause(group_id),
+        _group_args(problem, group_id),
     ).fetchall():
         st = str(row["st"])
         if st in ("open", "pending_strategist_review"):
@@ -1801,10 +2077,18 @@ def has_active_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
         if st == "attempting" and _subtree_has_live_frontier(
                 conn, int(row["gid"])):
             return True
-    return False
+    return conn.execute(
+        "SELECT 1 FROM strategist_decisions sd"
+        " JOIN groups gr ON gr.id = sd.produced_group_id"
+        " WHERE sd.problem = ? AND sd.decision_kind IN " + _BATCH_KINDS_SQL +
+        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
+        "   AND gr.status = 'active'" + _group_clause(group_id) + " LIMIT 1",
+        _group_args(problem, group_id),
+    ).fetchone() is not None
 
 
-def has_live_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
+def has_live_inflight_inject(conn: sqlite3.Connection, problem: str, *,
+                             group_id: "int | None" = None) -> bool:
     """True iff `problem` has a NULL-outcome Inject decision that is still
     LIVE in the sense the Strategist anti-idle gate needs: something will
     move WITHOUT a Strategist wake.
@@ -1829,14 +2113,36 @@ def has_live_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
     that moves without you" when the reader IS the Strategist. The
     third recurrence of the P13 "two predicates disagree on one state"
     disease (4284 spin → cond-4 deadlock → this); the alignment is now
-    pinned by test_stall_false_active.py's invariant tests."""
+    pinned by test_stall_false_active.py's invariant tests.
+
+    v35 — an ACTIVE discussion group is live here too, and it is the one
+    case where "moves without a Strategist wake" has to be read as
+    "without THIS Strategist's wake": a delegated group moves by its OWN
+    seat and its OWN routine clock. Without this arm a parent that
+    correctly delegated everything would have its `Noop` rejected on a
+    blocked root and be forced to invent work beside the burden it just
+    handed off. Note the group arm cannot ride the `gid IS NULL AND sid
+    IS NULL` branch above — that branch means "a worker is still
+    producing", which is a different claim that happens to give the same
+    answer today and would silently stop doing so the moment a Delegate
+    carried an anchor."""
+    if conn.execute(
+        "SELECT 1 FROM strategist_decisions sd"
+        " JOIN groups gr ON gr.id = sd.produced_group_id"
+        " WHERE sd.problem = ? AND sd.decision_kind IN " + _BATCH_KINDS_SQL +
+        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
+        "   AND gr.status = 'active'" + _group_clause(group_id) + " LIMIT 1",
+        _group_args(problem, group_id),
+    ).fetchone() is not None:
+        return True
     for row in conn.execute(
         "SELECT sd.produced_goal_id AS gid,"
         "       sd.produced_strategy_id AS sid"
         " FROM strategist_decisions sd"
         " WHERE sd.problem = ? AND sd.decision_kind = 'Inject'"
-        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL",
-        (problem,),
+        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
+        + _group_clause(group_id),
+        _group_args(problem, group_id),
     ).fetchall():
         if row["gid"] is None and row["sid"] is None:
             return True  # worker still producing — nothing to recurse on
@@ -1982,6 +2288,103 @@ def is_problem_stalled(conn: sqlite3.Connection, problem: str, *,
     if has_active_inflight_inject(conn, problem):
         return False
     return True
+
+
+def is_group_stalled(conn: sqlite3.Connection, problem: str,
+                     group_id: int, *,
+                     running: "set[tuple] | None" = None) -> bool:
+    """True iff THIS GROUP is structurally stalled (v35).
+
+    The group-scoped mirror of `is_problem_stalled`, and it exists for a
+    direction the parent-side quiet rule does not cover: when a CHILD
+    group runs out of moves, the problem-wide predicate either says
+    nothing (a sibling is busy, so the problem is not stalled) or wakes
+    the wrong group. Every condition narrows to the group's own slice of
+    the tree:
+
+      1. the group is still `active` and its problem has not Ingested
+         — a finished group is done, never stalled;
+      2. zero DISPATCHABLE open goals in its slice (alive-reachable, so
+         an orphan does not mask the stall — same reasoning as the
+         problem-level condition 2);
+      3. no in-flight worker on a goal in its slice;
+      4. no NULL-outcome batch decision THIS group authored whose
+         produced work is still active.
+
+    With one group per problem this returns exactly what
+    `is_problem_stalled` returns, which is what
+    `test_group_stall_matches_problem_stall_when_alone` pins — the two
+    must not drift, for the reason recorded on
+    `has_active_inflight_inject`.
+    """
+    from . import groups as _groups
+    row = _groups.get(conn, int(group_id))
+    if row is None or str(row["status"]) != _groups.ACTIVE:
+        return False
+    if problem_ingested(conn, problem):
+        return False
+    slice_ids = _groups.goal_ids_in_group(conn, problem, int(group_id))
+    if slice_ids:
+        marks = ",".join("?" * len(slice_ids))
+        if conn.execute(
+            f"WITH RECURSIVE {ALIVE_CTE_PER_PROBLEM}"
+            f" SELECT 1 FROM goals"
+            f" WHERE problem = ? AND status = 'open' AND id IN alive"
+            f"   AND id IN ({marks}) LIMIT 1",
+            (problem, problem, problem, *slice_ids),
+        ).fetchone() is not None:
+            return False
+        if not _group_quiet(conn, slice_ids, running=running):
+            return False
+    # Mint jobs are problem-targeted (no goal id yet), so they cannot be
+    # attributed to a slice — attribute them by the DECISION's group.
+    if conn.execute(
+        "SELECT 1 FROM queue q"
+        " LEFT JOIN strategist_decisions d ON d.id = q.decision_id"
+        " WHERE q.problem = ? AND q.kind IN ('Forward','Formalizer')"
+        "   AND q.target_kind = 'Problem'"
+        "   AND (d.group_id IS NULL OR d.group_id = ?) LIMIT 1",
+        (problem, int(group_id)),
+    ).fetchone() is not None:
+        return False
+    return not has_active_inflight_inject(conn, problem,
+                                          group_id=int(group_id))
+
+
+def _group_quiet(conn: sqlite3.Connection, goal_ids: "set[int]", *,
+                 running: "set[tuple] | None" = None) -> bool:
+    """`problem_quiet` narrowed to a set of goals (v35)."""
+    if not goal_ids:
+        return True
+    marks = ",".join("?" * len(goal_ids))
+    if conn.execute(
+        f"SELECT 1 FROM queue WHERE target_kind = 'Goal'"
+        f" AND kind IN ('Backward','Builder','Formalizer')"
+        f" AND CAST(target_id AS INTEGER) IN ({marks}) LIMIT 1",
+        tuple(goal_ids),
+    ).fetchone() is not None:
+        return False
+    run = running or set()
+    live = {str(t[0]) for t in run
+            if len(t) >= 2 and t[1] in ("Backward", "Builder", "Formalizer")}
+    return not any(str(g) in live for g in goal_ids)
+
+
+def groups_stalled(conn: sqlite3.Connection, *,
+                   scope: str | None = None,
+                   running: "set[tuple] | None" = None
+                   ) -> list[sqlite3.Row]:
+    """Every active group matching the structural stall signal (v35)."""
+    sql = ("SELECT g.id, g.problem FROM groups g"
+           " JOIN problems p ON p.name = g.problem"
+           " WHERE g.status = 'active' AND p.ingested_at IS NULL")
+    args: tuple = ()
+    if scope is not None:
+        sql += " AND g.problem LIKE ?"
+        args = (scope,)
+    return [r for r in conn.execute(sql + " ORDER BY g.problem, g.id", args)
+            if is_group_stalled(conn, str(r["problem"]), int(r["id"]),
+                                running=running)]
 
 
 def problem_quiet(conn: sqlite3.Connection, problem: str, *,
@@ -2430,8 +2833,8 @@ def maybe_enqueue_inject_batch_done(conn: sqlite3.Connection,
     referenced it.
     """
     row = conn.execute(
-        "SELECT batch_id, problem FROM strategist_decisions WHERE id = ?",
-        (decision_id,),
+        "SELECT batch_id, problem, group_id FROM strategist_decisions"
+        " WHERE id = ?", (decision_id,),
     ).fetchone()
     if row is None or row["batch_id"] is None:
         return
@@ -2444,14 +2847,24 @@ def maybe_enqueue_inject_batch_done(conn: sqlite3.Connection,
     ).fetchone()
     if int(pending["n"]) > 0:
         return
-    # Phase 6 — Strategist rows are problem-keyed (target_kind='Problem');
-    # the old root-goal lookup made pure-NL problems (no root) unwakeable.
+    # v35 — the wake goes to the group that AUTHORED the batch, not to
+    # the problem: a sibling group's batch completing is none of this
+    # group's business. Pre-v35 rows (group_id NULL) fall back to the
+    # problem's top group, which is what they always meant.
+    from . import groups as _groups
+    gid = row["group_id"]
+    if gid is None:
+        gid = _groups.ensure_top_group(conn, problem)
+    # Dedup on BOTH keys while legacy problem-keyed rows can still be in
+    # the queue — either one already covers this wake.
+    if is_in_queue(conn, target_id=str(int(gid)), kind="Strategist"):
+        return
     if is_in_queue(conn, target_id=problem, kind="Strategist"):
         return
     # Priority 20 — same band as T2 pending_review; batch completion is
     # an event-driven follow-up that supersedes routine T1 wall-clock.
-    enqueue(conn, kind="Strategist", target_id=problem, problem=problem,
-            target_kind="Problem", priority=20)
+    enqueue(conn, kind="Strategist", target_id=str(int(gid)),
+            problem=problem, target_kind="Group", priority=20)
 
 
 def reconcile_settled_inject_outcomes(
@@ -2500,12 +2913,14 @@ def reconcile_settled_inject_outcomes(
     untouched."""
     sql = (
         "SELECT sd.id, sd.produced_goal_id, sd.produced_strategy_id,"
-        "       g.status AS goal_status, s.status AS strat_status"
+        "       sd.produced_group_id, g.status AS goal_status,"
+        "       s.status AS strat_status, gr.status AS group_status"
         " FROM strategist_decisions sd"
         " LEFT JOIN goals g ON g.id = sd.produced_goal_id"
         " LEFT JOIN strategies s ON s.id = sd.produced_strategy_id"
-        " WHERE sd.decision_kind = 'Inject' AND sd.batch_id IS NOT NULL"
-        "   AND sd.outcome IS NULL"
+        " LEFT JOIN groups gr ON gr.id = sd.produced_group_id"
+        " WHERE sd.decision_kind IN " + _BATCH_KINDS_SQL +
+        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
     )
     args: tuple = ()
     if scope is not None:
@@ -2560,12 +2975,19 @@ def reconcile_settled_inject_outcomes(
             # stall predicate's active-check governs T4 suppression instead.
             filled = propagate_inject_outcome_from_goal(
                 conn, int(r["produced_goal_id"]))
+        elif r["produced_group_id"] is not None and \
+                str(r["group_status"]) in ("delivered", "returned", "closed"):
+            # v35 — a Delegate whose group finished but whose outcome never
+            # propagated. Every group terminal is HARD (no reopenable case,
+            # unlike a shelved goal), so the whole non-'active' set settles.
+            filled = propagate_inject_outcome_from_group(
+                conn, int(r["produced_group_id"]))
         if filled is not None:
             maybe_enqueue_inject_batch_done(conn, filled)
             resolved += 1
     if resolved:
         print(f"[reconcile] resolved {resolved} settled NULL-outcome "
-              f"Inject decision(s)", flush=True)
+              f"batch decision(s)", flush=True)
     return resolved
 
 

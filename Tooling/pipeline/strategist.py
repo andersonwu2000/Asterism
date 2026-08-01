@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from ..state import db, failures as _failures, transitions
+from ..state import groups as _groups
 from ..core import dispatcher as _dispatcher
 
 
@@ -51,7 +52,17 @@ DECISION_KINDS: frozenset[str] = frozenset({
     "Inject", "ConfirmShelve", "EmitDirective",
     "RequestUserAmend", "Noop", "MarkDeliverable", "Ingest",
     "FetchPaper", "AttemptDisproof",
+    # v35 (discussion_group_design.md) — hand a claim DOWN to a new
+    # sub-group, and hand a charter back UP to the parent group.
+    "Delegate", "ReturnToParent",
 })
+
+#: The three shapes a `ReturnToParent` can take. They differ in what the
+#: parent gets back, and each carries its own mechanical requirement —
+#: 'refuted' most of all: claiming a refutation without a kernel-checked
+#: negation is exactly the shape the framework never accepts on trust.
+RETURN_FLAVOURS: frozenset[str] = frozenset(
+    {"refuted", "amend", "exhausted"})
 
 
 def _as_bool(v: Any) -> bool:
@@ -75,9 +86,16 @@ TRIGGER_KINDS: frozenset[str] = frozenset({
 # batch must carry a Programme proposal (four sections in
 # `proposal.md`) and pass the Adversary.
 _PACKAGE_EXEMPT_KINDS: frozenset[str] = frozenset(
-    {"FetchPaper", "RequestUserAmend", "Noop"})
+    # `ReturnToParent` joins the hand-back family: the group is ending,
+    # so there is no next batch for a Programme revision to argue for.
+    {"FetchPaper", "RequestUserAmend", "Noop", "ReturnToParent"})
 _ENDGAME_KINDS: frozenset[str] = frozenset({"MarkDeliverable", "Ingest"})
-_EXPERIMENT_KINDS: frozenset[str] = frozenset({"Inject", "AttemptDisproof"})
+#: `Delegate` counts as this batch's experiment — handing a burden to a
+#: group IS dispatching work, and it is the one experiment whose result
+#: the Proof is NOT required to predict (see the closure-law carve-out
+#: in `verify_decision`).
+_EXPERIMENT_KINDS: frozenset[str] = frozenset(
+    {"Inject", "AttemptDisproof", "Delegate"})
 PROPOSAL_BASENAME = "proposal.md"
 
 
@@ -379,9 +397,25 @@ def _parse_one(obj: dict[str, Any]) -> tuple[Decision | None, str]:
 # Schema validation (self_verify stage)
 # ---------------------------------------------------------------------
 
+def _authoring_group(conn: sqlite3.Connection, problem: str,
+                     group_id: "int | None"):
+    """The group whose Strategist is emitting this batch.
+
+    `group_id` comes from the queue row that seated this wake. It is
+    optional only so hand-driven callers (tests, one-off scripts) keep
+    working: they mean the top group, which is what a problem's single
+    Strategist always was."""
+    if group_id is not None:
+        row = _groups.get(conn, int(group_id))
+        if row is not None:
+            return row
+    return _groups.top_group(conn, problem)
+
+
 def verify_decision(decision: Decision, conn: sqlite3.Connection,
                     *, problem: str,
-                    workspace: "Path | None" = None) -> str:
+                    workspace: "Path | None" = None,
+                    group_id: "int | None" = None) -> str:
     """Validate decision shape + cross-row constraints. Returns '' if
     OK, an error message string otherwise.
 
@@ -467,6 +501,110 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
     if k == "Noop":
         if not decision.reason or not str(decision.reason).strip():
             return "Noop requires non-empty reason"
+        return ""
+
+    if k == "Delegate":
+        # The charter IS the sub-group's Manifest — the fixed reference
+        # point its own Adversary judges against — so an empty or
+        # gestural one leaves the group with nothing to be judged on.
+        if not decision.brief or not str(decision.brief).strip():
+            return ("Delegate requires a `brief`: the charter — the "
+                    "claim this group exists to settle, stated precisely "
+                    "enough that 'is it settled?' has an answer")
+        charter = str(decision.brief).strip()
+        parent = _authoring_group(conn, problem, group_id)
+        if parent is None:
+            return ("Delegate has no authoring group; the problem's top "
+                    "group is missing (framework bug — a problem without "
+                    "one has no Strategist seat at all)")
+        # Byte-identical duplicate of a LIVE sibling: two groups working
+        # the same charter is double-dispatch, not parallelism. A charter
+        # a sibling RETURNED is deliberately allowed through — retrying a
+        # failed line is legitimate, and judging whether this attempt
+        # differs is the Adversary's call, not a string comparison's
+        # (the same reason task #112's dead-twin gate misfires).
+        dup = conn.execute(
+            "SELECT id FROM groups WHERE parent_group_id = ?"
+            "   AND status = 'active' AND charter = ?",
+            (int(parent["id"]), charter)).fetchone()
+        if dup is not None:
+            return (f"Delegate duplicates live group {dup['id']}: its "
+                    f"charter is byte-identical to this one. Wait for it, "
+                    f"or delegate the part it is NOT covering")
+        if decision.target_id is not None:
+            g = db.get_goal(conn, decision.target_id)
+            if g is None:
+                return f"target_goal_id={decision.target_id} not found"
+            if str(g["problem"]) != problem:
+                return (f"target goal belongs to problem {g['problem']!r}, "
+                        f"not this Strategist's {problem!r}")
+            if str(g["status"]) in ("proved", "disproved", "dead"):
+                return (f"target g{decision.target_id} is "
+                        f"{g['status']!r} — a settled goal has nothing "
+                        f"for a group to work")
+            anchored = conn.execute(
+                "SELECT id FROM groups WHERE anchor_goal_id = ?",
+                (int(g["id"]),)).fetchone()
+            if anchored is not None:
+                return (f"g{decision.target_id} already anchors group "
+                        f"{anchored['id']}; promote a different goal or "
+                        f"work through that group")
+        return ""
+
+    if k == "ReturnToParent":
+        me = _authoring_group(conn, problem, group_id)
+        if me is None:
+            return ("ReturnToParent has no authoring group (framework "
+                    "bug)")
+        # The structural wall: the top group has no parent to return to,
+        # so the difficulty escape hatch cannot reach the human channel.
+        # `RequestUserAmend` stays what it is — for a WRONG user file.
+        if _groups.is_top(me):
+            return ("ReturnToParent is not available to the top group: "
+                    "there is no parent to hand the charter back to. "
+                    "Difficulty is work, not a wrong user file — keep "
+                    "going, or delegate the part that is blocking you")
+        if str(me["status"]) != _groups.ACTIVE:
+            return (f"this group already reached {me['status']!r}; a "
+                    f"charter can only be handed back once")
+        flavour = decision.payload.get("flavour")
+        if flavour not in RETURN_FLAVOURS:
+            return (f"ReturnToParent.flavour must be one of "
+                    f"{sorted(RETURN_FLAVOURS)} (got {flavour!r})")
+        if not decision.reason or not str(decision.reason).strip():
+            return ("ReturnToParent requires a non-empty reason — the "
+                    "post-mortem the parent decides on: what was tried, "
+                    "where it died, what was learned")
+        if flavour == "refuted":
+            # A refutation is a mathematical claim like any other, and
+            # the framework never takes one on trust: name the proved
+            # brick that carries the negation.
+            if decision.target_id is None:
+                return ("ReturnToParent(refuted) requires "
+                        "`target_goal_id` — the PROVED node carrying the "
+                        "negation. A refutation asserted without one is "
+                        "an opinion")
+            g = db.get_goal(conn, decision.target_id)
+            if g is None:
+                return f"target_goal_id={decision.target_id} not found"
+            if str(g["problem"]) != problem:
+                return (f"target goal belongs to problem {g['problem']!r}, "
+                        f"not this Strategist's {problem!r}")
+            if str(g["status"]) != "proved":
+                return (f"ReturnToParent(refuted) target g{g['id']} is "
+                        f"{g['status']!r}, not 'proved' — settle it "
+                        f"first, or return `exhausted` instead")
+        if flavour == "amend":
+            proposed = decision.payload.get("proposed_charter")
+            if not isinstance(proposed, str) or not proposed.strip():
+                return ("ReturnToParent(amend) requires "
+                        "`proposed_charter`: the corrected claim you "
+                        "believe IS provable. Without one this is "
+                        "`exhausted`")
+            if proposed.strip() == str(me["charter"]).strip():
+                return ("ReturnToParent(amend).proposed_charter is "
+                        "identical to the charter you were given — say "
+                        "what should change, or return `exhausted`")
         return ""
 
     if k == "EmitDirective":
@@ -581,6 +719,30 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         # terminal judgment outright while it is unproved. (Manifest's
         # other requirements are SOFT — NL, only the Strategist can judge
         # them — so they are prompt-governed, not gated here.)
+        #
+        # v35 — a SUB-group's Ingest is a delivery upward, and the same
+        # gate applies one level down, because the same equation holds:
+        # charter is its Manifest and its ANCHOR is its root goal. So a
+        # rescue-shape group must prove its anchor; an anchorless one
+        # must have marked at least one deliverable of its own.
+        me = _authoring_group(conn, problem, group_id)
+        if me is not None and not _groups.is_top(me):
+            anchor = me["anchor_goal_id"]
+            if anchor is not None:
+                g = db.get_goal(conn, int(anchor))
+                if g is None or str(g["status"]) != "proved":
+                    return (f"Ingest is blocked: this group's anchor "
+                            f"g{anchor} is "
+                            f"{(g['status'] if g else 'missing')!r}, not "
+                            f"'proved'. Delivering a charter you have not "
+                            f"settled is what `ReturnToParent` is for")
+            elif not db.deliverables(conn, problem=problem,
+                                     group_id=int(me["id"])):
+                return ("Ingest requires at least one deliverable THIS "
+                        "group marked (`MarkDeliverable`) — the bricks "
+                        "the group above you will cite. Nothing marked "
+                        "means nothing was delivered")
+            return ""
         root = conn.execute(
             "SELECT status FROM goals WHERE problem = ? AND"
             " origin = 'root' LIMIT 1", (problem,)).fetchone()
@@ -664,6 +826,23 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         return ""
 
     if k == "RequestUserAmend":
+        # v35 — the mirror of the `ReturnToParent` wall. Only the group
+        # that FACES the human may speak to them, for two reasons: the
+        # side effect (`awaiting_human`) freezes the whole problem
+        # including every sibling group, and a sub-group cannot see the
+        # tree-wide context the human needs to judge the request. A
+        # sub-group that finds a user file genuinely wrong returns the
+        # charter with that finding; the parent carries it up, and the
+        # top group asks. Without this the difficulty escape hatch just
+        # walks in the side door — the one with the larger blast radius.
+        me = _authoring_group(conn, problem, group_id)
+        if me is not None and not _groups.is_top(me):
+            return ("RequestUserAmend is the TOP group's channel — it "
+                    "pauses the whole problem, siblings included, and "
+                    "the human needs context you cannot see from here. "
+                    "Return the charter instead (`ReturnToParent`), "
+                    "naming the file and what is wrong with it; the "
+                    "group above you carries it up.")
         if decision.payload.get("problem") and \
                 decision.payload["problem"] != problem:
             return (f"RequestUserAmend.problem mismatch: payload says "
@@ -715,7 +894,8 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
 def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                      *, problem: str,
                      workspace: "Path | None" = None,
-                     trigger_kind: str = "") -> str:
+                     trigger_kind: str = "",
+                     group_id: "int | None" = None) -> str:
     """Validate a multi-decision batch. Runs `verify_decision` on each
     item in declared order, then applies cross-decision invariants that
     only matter when multiple decisions land in the same call.
@@ -734,7 +914,7 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     non-empty — `commit_decisions` assumes verify passed.
     """
     for i, d in enumerate(decisions):
-        err = verify_decision(d, conn, problem=problem,
+        err = verify_decision(d, conn, problem=problem, group_id=group_id,
                               workspace=workspace)
         if err:
             return (f"decision #{i}: {err}" if len(decisions) > 1 else err)
@@ -945,10 +1125,15 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # ≥1 new piece of work, root or no root.
     if trigger_kind == "inject_batch_done":
         try:
-            _stalled = db.is_problem_stalled(conn, problem)
+            # v35 — ask about THIS group's slice: a sibling group's work
+            # is not this Strategist's excuse for a zero-delta batch.
+            _stalled = (db.is_group_stalled(conn, problem, group_id)
+                        if group_id is not None
+                        else db.is_problem_stalled(conn, problem))
         except Exception:  # noqa: BLE001 — predicate must not break verify
             _stalled = False
-        if _stalled and not db.has_live_inflight_inject(conn, problem):
+        if _stalled and not db.has_live_inflight_inject(
+                conn, problem, group_id=group_id):
             from ..state import transitions as _transitions
             if _transitions.predicted_batch_delta(conn, decisions) < 1:
                 return (
@@ -1016,7 +1201,8 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
             # inject whose worker has not yet registered its lemma is LIVE
             # here — we have no `running`-set visibility — so the Strategist
             # may Noop and wait instead of injecting overlapping work).
-            has_live_inflight = db.has_live_inflight_inject(conn, problem)
+            has_live_inflight = db.has_live_inflight_inject(
+                conn, problem, group_id=group_id)
             if not has_live_inflight:
                 rstat = str(root_row["status"])
                 rid = int(root_row["id"])
@@ -1267,9 +1453,154 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
     )
 
 
+def _commit_delegate(decision: Decision, conn: sqlite3.Connection,
+                     *, problem: str, tick: int, trigger_kind: str,
+                     group_id: "int | None",
+                     batch_id_override: str | None = None,
+                     step_index: int = 0,
+                     batch_size: int = 1) -> CommitOutcome:
+    """Open a sub-group and hand it the charter (v35).
+
+    The row rides the same batch as this wake's Injects, and its
+    `produced_group_id` is the batch's THIRD artifact form: the outcome
+    fills when the group reaches a terminal status, so a batch that
+    dispatched both a Formalizer and a group wakes the parent only once
+    BOTH are done.
+
+    Two shapes:
+      * no target — the main one. A burden delegated while writing the
+        Proof; the group starts from prose and mints its own bricks,
+        exactly like a pure-NL problem.
+      * `target_goal_id` — the rescue shape. The goal becomes the
+        group's ANCHOR and goes `attempting`: not dispatchable by BFS,
+        but alive, which is what lets the parent stay quiet (§5 of the
+        design doc).
+
+    Unlike an Inject, no worker is enqueued — the group's executor is
+    its own Strategist seat. That seat IS queued here rather than left
+    to the routine clock: a fresh group's clock is NULL, which the T1
+    selector reads as "due one full interval after daemon start", and a
+    just-delegated burden should not wait up to two hours to begin.
+    """
+    parent = _authoring_group(conn, problem, group_id)
+    if parent is None:                       # verify already rejected this
+        raise RuntimeError(f"Delegate on {problem!r} has no authoring group")
+    charter = str(decision.brief).strip()
+    target = (int(decision.target_id)
+              if decision.target_id is not None else None)
+    batch_id = batch_id_override or uuid.uuid4().hex
+    ts = db.now()
+
+    new_gid = _groups.open_group(
+        conn, problem=problem, parent_group_id=int(parent["id"]),
+        charter=charter, anchor_goal_id=target)
+    row_payload = {
+        "step_index": step_index,
+        "batch_size": batch_size,
+        "group_id": new_gid,
+    }
+    if target is not None:
+        row_payload["target_goal_id"] = target
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, target_id, brief, reason,"
+        " payload, batch_id, produced_group_id, produced_kind, outcome,"
+        " created_at, updated_at)"
+        " VALUES (?, ?, ?, 'Delegate', ?, ?, ?, ?, ?, ?, ?, 'group',"
+        " NULL, ?, ?)",
+        (problem, tick, trigger_kind, int(parent["id"]), target, charter,
+         decision.reason, json.dumps(row_payload, ensure_ascii=False),
+         batch_id, new_gid, ts, ts),
+    )
+    row_id = int(cur.lastrowid)
+    conn.execute("UPDATE groups SET opened_by = ? WHERE id = ?",
+                 (row_id, new_gid))
+    if target is not None:
+        # `attempting` — alive (so the parent's wait is legal) but not
+        # dispatchable by BFS. See the status table in the design doc:
+        # `frozen` and `shelved` are both PARKED and would let T4 wake
+        # the parent on every tick.
+        g = db.get_goal(conn, target)
+        if g is not None and str(g["status"]) != "attempting":
+            transitions.apply_goal_transition(
+                conn, target, "attempting", event="delegate_anchor")
+    _dispatcher._enqueue_strategist(conn, new_gid, problem, priority=10)
+    conn.commit()
+    print(f"[delegate] group {new_gid} opened under {parent['id']} "
+          f"({problem}): {charter[:80]}", flush=True)
+    return CommitOutcome(
+        decision_row_id=row_id,
+        enqueued_forward=False,
+        final_outcome="committed",
+        batch_id=batch_id,
+        batch_decision_row_ids=[row_id],
+    )
+
+
+def _commit_return_to_parent(decision: Decision, conn: sqlite3.Connection,
+                             *, problem: str, tick: int,
+                             trigger_kind: str,
+                             group_id: "int | None") -> CommitOutcome:
+    """Hand the charter back up (v35).
+
+    Setting the group's status to 'returned' is what fills the parent's
+    `Delegate` outcome and completes its batch — the parent is woken by
+    the ordinary batch-done relay, not by anything special here.
+
+    The anchor of a rescue-shape group goes back to `shelved`: parked,
+    revivable, and its cascade parks the failed subtree with it. The
+    parent decides what happens next; that is the whole point of handing
+    it back rather than deciding alone.
+    """
+    me = _authoring_group(conn, problem, group_id)
+    if me is None or _groups.is_top(me):     # verify already rejected this
+        raise RuntimeError(
+            f"ReturnToParent on {problem!r} has no parent group")
+    flavour = str(decision.payload.get("flavour"))
+    ts = db.now()
+    payload = dict(decision.payload)
+    payload["group_id"] = int(me["id"])
+    payload["charter"] = str(me["charter"])
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, target_id, reason,"
+        " payload, produced_group_id, outcome, outcome_detail,"
+        " created_at, updated_at)"
+        " VALUES (?, ?, ?, 'ReturnToParent', ?, ?, ?, ?, ?, 'committed',"
+        " ?, ?, ?)",
+        (problem, tick, trigger_kind, int(me["id"]),
+         decision.target_id, decision.reason,
+         json.dumps(payload, ensure_ascii=False), int(me["id"]),
+         flavour, ts, ts),
+    )
+    row_id = int(cur.lastrowid)
+    anchor = me["anchor_goal_id"]
+    if anchor is not None:
+        g = db.get_goal(conn, int(anchor))
+        if g is not None and str(g["status"]) in (
+                "open", "attempting", "pending_strategist_review", "frozen"):
+            transitions._set_goal_terminal_and_propagate(
+                conn, int(anchor), "shelved")
+            transitions._propagate_shelve(conn, int(anchor))
+    # Terminal status LAST: it fills the parent's Delegate outcome and
+    # may fire the batch-done wake, so everything the parent will read
+    # must already be written.
+    _groups.set_status(conn, int(me["id"]), "returned")
+    conn.commit()
+    print(f"[return] group {me['id']} returned to {me['parent_group_id']} "
+          f"({problem}, {flavour}): {str(decision.reason or '')[:80]}",
+          flush=True)
+    return CommitOutcome(
+        decision_row_id=row_id,
+        enqueued_forward=False,
+        final_outcome="committed",
+    )
+
+
 def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                      *, problem: str, tick: int, trigger_kind: str,
-                     workspace: Path) -> list[CommitOutcome]:
+                     workspace: Path,
+                     group_id: "int | None" = None) -> list[CommitOutcome]:
     """Execute a multi-decision batch in declared order.
 
     Caller must have already passed `verify_decisions`. All decisions
@@ -1289,8 +1620,21 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
 
     Returns one CommitOutcome per decision (same order).
     """
+    # v35 — stamp every row this batch writes with its AUTHORING group.
+    # Done as one post-pass keyed on "rows that did not exist before",
+    # rather than threading the id through a dozen per-kind INSERTs: a
+    # new decision kind then cannot be added and silently forget it, and
+    # rows written by nested helpers are covered too.
+    _before = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) FROM strategist_decisions"
+    ).fetchone()[0]
     inject_batch_id: str | None = None
-    n_inject = sum(1 for d in decisions if d.kind == "Inject")
+    # v35 — `Delegate` counts: a batch whose only experiment is a delegated
+    # burden must still get a batch_id, or nothing ever wakes the parent
+    # when the child group finishes. `db.BATCH_DECISION_KINDS` is the one
+    # definition of "rides the batch cycle".
+    n_inject = sum(1 for d in decisions
+                   if d.kind in db.BATCH_DECISION_KINDS)
     if n_inject:
         inject_batch_id = uuid.uuid4().hex
     # Real per-step indices: the audit payload's step_index was hardcoded
@@ -1301,13 +1645,14 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     step = 0
     for d in decisions:
         idx = step
-        if d.kind == "Inject":
+        if d.kind in db.BATCH_DECISION_KINDS:
             step += 1
         out.append(_commit_one(
             d, conn, problem=problem, tick=tick,
             trigger_kind=trigger_kind, workspace=workspace,
             inject_batch_id=inject_batch_id,
-            inject_step_index=idx, inject_batch_size=n_inject))
+            inject_step_index=idx, inject_batch_size=n_inject,
+            group_id=group_id))
     # Wake-clock touch — ONE point for the whole batch (task #119).
     # When each per-kind path touched last_strategist_at itself, the
     # early-return paths (Inject / FetchPaper / AttemptDisproof) never
@@ -1317,7 +1662,16 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # a strategist pump (b6_1 leg 6, 2026-07-25). A mid-batch raise
     # skips the touch: an un-acknowledged batch must not advance either
     # clock.
+    from ..state import groups as _groups
+    gid = group_id if group_id is not None else \
+        _groups.ensure_top_group(conn, problem)
+    conn.execute(
+        "UPDATE strategist_decisions SET group_id = ?"
+        " WHERE id > ? AND problem = ? AND group_id IS NULL",
+        (int(gid), int(_before), problem))
     db.update_problem_last_strategist_at(conn, problem)
+    _groups.touch_strategist(conn, int(gid),
+                             routine=(trigger_kind == "routine"))
     if trigger_kind == "routine":
         db.update_problem_last_routine_at(conn, problem)
     conn.commit()
@@ -1326,7 +1680,8 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
 
 def commit_decision(decision: Decision, conn: sqlite3.Connection,
                     *, problem: str, tick: int, trigger_kind: str,
-                    workspace: Path) -> CommitOutcome:
+                    workspace: Path,
+                    group_id: "int | None" = None) -> CommitOutcome:
     """Single-decision wrapper around `commit_decisions`. Preserved
     so existing callers (single-decision tests, anyone hand-driving
     one decision) keep their CommitOutcome-returning contract.
@@ -1334,6 +1689,7 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
     return commit_decisions(
         [decision], conn, problem=problem, tick=tick,
         trigger_kind=trigger_kind, workspace=workspace,
+        group_id=group_id,
     )[0]
 
 
@@ -1481,7 +1837,8 @@ def _commit_attempt_disproof(decision: Decision, conn: sqlite3.Connection,
 
 
 def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
-                   workspace: Path) -> None:
+                   workspace: Path,
+                   group_id: "int | None" = None) -> None:
     """Execute a Strategist `Ingest` decision's side effect (anchor+claim
     Phase 4).
 
@@ -1504,6 +1861,28 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     harvest is strictly Ingest-driven now."""
     from ..core import config as _config
     from ..state import manifest as _manifest
+    # v35 — a SUB-group's Ingest is a DELIVERY UPWARD, not a terminal.
+    # Everything below this branch is problem-terminal semantics: the
+    # human sign-off pause, the Library harvest, the regression
+    # milestone, the review snapshot, `problems.ingested_at` and the
+    # problem FSM edge. A group handing its charter back up must touch
+    # none of them — it would pause the whole problem for a human, or
+    # publish a snapshot of a tree that is still being built.
+    #
+    # What it does instead is one write: reaching 'delivered' fills the
+    # parent's `Delegate` outcome, which completes the parent's batch
+    # and wakes it through the ordinary relay. The bricks this group
+    # marked are then the parent's to cite.
+    me = _authoring_group(conn, problem, group_id)
+    if me is not None and not _groups.is_top(me):
+        _groups.set_status(conn, int(me["id"]), "delivered")
+        conn.commit()
+        marked = db.deliverables(conn, problem=problem,
+                                 group_id=int(me["id"]))
+        print(f"[strategist] Ingest({problem}): group {me['id']} "
+              f"delivered {len(marked)} brick(s) to group "
+              f"{me['parent_group_id']}", flush=True)
+        return
     # Decide the sign-off gate BEFORE publishing the terminal stamp.
     # `ingested_at` + a clear flag is what the Librarian selfstart path
     # reads as "approved, go" — so the flag must land in the same
@@ -1608,7 +1987,8 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
                 workspace: Path,
                 inject_batch_id: str | None,
                 inject_step_index: int = 0,
-                inject_batch_size: int = 1) -> CommitOutcome:
+                inject_batch_size: int = 1,
+                group_id: "int | None" = None) -> CommitOutcome:
     """Execute one decision's side effects + INSERT audit row.
 
     Caller must have already passed `verify_decision`. This is the
@@ -1629,6 +2009,21 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
             inject_batch_id=inject_batch_id,
             step_index=inject_step_index,
             batch_size=inject_batch_size,
+        )
+
+    if k == "Delegate":
+        return _commit_delegate(
+            decision, conn, problem=problem, tick=tick,
+            trigger_kind=trigger_kind, group_id=group_id,
+            batch_id_override=inject_batch_id,
+            step_index=inject_step_index,
+            batch_size=inject_batch_size,
+        )
+
+    if k == "ReturnToParent":
+        return _commit_return_to_parent(
+            decision, conn, problem=problem, tick=tick,
+            trigger_kind=trigger_kind, group_id=group_id,
         )
 
     if k == "Noop":
@@ -1700,7 +2095,8 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         # problem's `signoff: false` machine setting or config opts
         # into direct ingest); harvest to Library iff `library:`.
         # Falls through to the audit INSERT.
-        _commit_ingest(conn, problem=problem, workspace=workspace)
+        _commit_ingest(conn, problem=problem, workspace=workspace,
+                       group_id=group_id)
 
     elif k == "RequestUserAmend":
         # Atomic three-step: tmp write -> INSERT row -> rename
@@ -1834,7 +2230,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                    workspace: Path,
                    mfst: "Any",
                    pipeline_id: str,
-                   pending_review_id: int | None = None) -> "Any":
+                   pending_review_id: int | None = None,
+                   group_id: "int | None" = None) -> "Any":
     """Full Strategist pipeline (Phase 2 §2.4).
 
     Stages:
@@ -1888,7 +2285,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     compile_strategist_context(
         conn, problem=problem, trigger_kind=trigger_kind,
         attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
-        pending_review_id=pending_review_id,
+        pending_review_id=pending_review_id, group_id=group_id,
     )
 
     # Stage 2 — agent spawn. Mint a session id so the in-pipeline
@@ -1927,7 +2324,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # Persist the plan note BEFORE any outcome branching: the note is the
     # agent's memory of its own thinking — worth keeping even when the
     # spawn then fails parse/verify (and on rc!=0, if it got that far).
-    _persist_plan(problem_dir, attempts_dir)
+    _persist_plan(problem_dir, attempts_dir, group_id)
     if rc != 0:
         return PipelineResult(
             outcome="failed",
@@ -1988,7 +2385,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
         err = (resolve_directive_body_files(decisions, attempts_dir)
                or verify_decisions(decisions, conn, problem=problem,
                                    workspace=workspace,
-                                   trigger_kind=trigger_kind))
+                                   trigger_kind=trigger_kind,
+                                   group_id=group_id))
         err_is_rebuttal = False
         if not err and package_gate_applies(decisions, trigger_kind):
             proposal_body, sections, err = verify_proposal_package(
@@ -2004,12 +2402,14 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                     attempts_dir=attempts_dir, problem_dir=problem_dir,
                     conn=conn, problem=problem,
                     proposal_body=proposal_body, decisions=decisions,
-                    dialogue=dialogue, proof_warn=proof_warn)
+                    dialogue=dialogue, proof_warn=proof_warn,
+                    group_id=group_id)
                 if arc != 0:
                     _discard_proposal(
                         conn, problem, proposal_body, dialogue,
                         rounds_used,
-                        f"adversary spawn rc={arc}", attempts_dir)
+                        f"adversary spawn rc={arc}", attempts_dir,
+                        group_id=group_id)
                     return PipelineResult(
                         outcome="failed",
                         failure_reason=_rc_to_reason(arc),
@@ -2018,7 +2418,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                     _discard_proposal(
                         conn, problem, proposal_body, dialogue,
                         rounds_used,
-                        "adversary produced no ruling", attempts_dir)
+                        "adversary produced no ruling", attempts_dir,
+                        group_id=group_id)
                     return PipelineResult(
                         outcome="failed",
                         failure_reason="agent_no_output",
@@ -2055,7 +2456,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 # one line and re-derives blind (design §1/§3).
                 _discard_proposal(
                     conn, problem, proposal_body, dialogue, rounds_used,
-                    "adversary rebuttal", attempts_dir)
+                    "adversary rebuttal", attempts_dir,
+                    group_id=group_id)
                 return PipelineResult(
                     outcome="failed",
                     failure_reason="strategist_proposal_rejected",
@@ -2065,7 +2467,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                         "recorded in programme_revisions"))
             _discard_proposal(
                 conn, problem, proposal_body, dialogue, rounds_used,
-                "package verify rejected", attempts_dir)
+                "package verify rejected", attempts_dir,
+                group_id=group_id)
             return PipelineResult(
                 outcome="failed",
                 failure_reason="strategist_schema_invalid",
@@ -2099,11 +2502,12 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 _time.sleep(_adversary.INFRA_RETRY_BACKOFF_SEC)
                 continue
             break
-        _persist_plan(problem_dir, attempts_dir)  # retry may rewrite it
+        _persist_plan(problem_dir, attempts_dir, group_id)  # retry may rewrite it
         if rc2 != 0:
             _discard_proposal(
                 conn, problem, proposal_body, dialogue, rounds_used,
-                f"revision spawn rc={rc2}", attempts_dir)
+                f"revision spawn rc={rc2}", attempts_dir,
+                group_id=group_id)
             return PipelineResult(
                 outcome="failed",
                 failure_reason=_rc_to_reason(rc2),
@@ -2118,7 +2522,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             _discard_proposal(
                 conn, problem, proposal_body, dialogue, rounds_used,
                 "revision round produced no decision.json",
-                attempts_dir)
+                attempts_dir, group_id=group_id)
             return PipelineResult(
                 outcome="failed",
                 failure_reason="strategist_schema_invalid",
@@ -2140,6 +2544,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             commit_decisions(
                 decisions, conn, problem=problem, tick=tick,
                 trigger_kind=trigger_kind, workspace=workspace,
+                group_id=group_id,
             )
         except Exception as e:
             return PipelineResult(
@@ -2162,6 +2567,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
         outcomes = commit_decisions(
             decisions, conn, problem=problem, tick=tick,
             trigger_kind=trigger_kind, workspace=workspace,
+            group_id=group_id,
         )
     except Exception as e:
         # Commit must succeed once verify passed; any error here is
@@ -2181,10 +2587,11 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             (o.batch_id for o in outcomes if o.batch_id), None)
         _programme.record_pass(
             conn, problem, proposal_body, package_verdict, dialogue,
-            rounds_used, batch_id)
+            rounds_used, batch_id, group_id=group_id)
         conn.commit()
         try:
-            _programme.render(conn, problem, problem_dir)
+            _programme.render(conn, problem, problem_dir,
+                              group_id=group_id)
         except OSError as e:
             print(f"[strategist] PROGRAMME.md render failed: {e}",
                   flush=True)
@@ -2331,7 +2738,8 @@ def _discard_proposal(conn, problem: str,
                       proposal_body: "str | None",
                       dialogue: list, rounds_used: int,
                       reason: str,
-                      attempts_dir: "Path | None" = None) -> None:
+                      attempts_dir: "Path | None" = None,
+                      group_id: "int | None" = None) -> None:
     """Record a proposal that did NOT commit, whichever channel dropped
     it (Adversary refutation / package verify / revision spawn failure /
     unusable revision output).
@@ -2359,19 +2767,22 @@ def _discard_proposal(conn, problem: str,
     try:
         _programme.record_rejection(conn, problem, proposal_body,
                                     dialogue, rounds_used,
-                                    discard_reason=reason)
+                                    discard_reason=reason,
+                                    group_id=group_id)
         conn.commit()
     except Exception as e:  # noqa: BLE001 — audit record, never fatal
         print(f"[strategist] {problem}: discard record failed: "
               f"{type(e).__name__}: {e}", flush=True)
 
 
-def _persist_plan(problem_dir: Path, attempts_dir: Path) -> None:
+def _persist_plan(problem_dir: Path, attempts_dir: Path,
+                  group_id: "int | None" = None) -> None:
     """Persist the Strategist's `_plan.md` (private cross-wake note, see
     `_drafts.persist_plan_note`) + one telemetry line. Best-effort."""
     from . import _drafts
     n = _drafts.persist_plan_note(problem_dir=problem_dir,
-                                  attempts_dir=attempts_dir)
+                                  attempts_dir=attempts_dir,
+                                  group_id=group_id)
     if n is not None:
         over = (" (over soft cap)"
                 if n > _drafts.PLAN_NOTE_SOFT_CAP else "")

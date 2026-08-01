@@ -27,6 +27,7 @@ from Tooling.core.dispatcher import (
     strategist_triggers,
 )
 from Tooling.state import db
+from Tooling.state import groups
 
 
 @pytest.fixture
@@ -48,7 +49,19 @@ def _insert_problem(conn: sqlite3.Connection, *, name: str,
         (name, f"Problems/{name}/Manifest.md", db.now(),
          bootstrap_done, last_strategist_at, last_routine_at),
     )
+    # v35 — every problem has a top discussion group; `cli init` creates
+    # it in production and the Strategist seat is keyed on it, so a
+    # fixture without one is not a problem the daemon can wake.
+    gid = groups.ensure_top_group(conn, name)
+    conn.execute(
+        "UPDATE groups SET last_strategist_at = ?, last_routine_at = ?"
+        " WHERE id = ?", (last_strategist_at, last_routine_at, gid))
     conn.commit()
+
+
+def _top(conn: sqlite3.Connection, problem: str) -> str:
+    """The problem's top-group id as the queue stores it."""
+    return str(groups.top_group(conn, problem)["id"])
 
 
 def _insert_root(conn: sqlite3.Connection, problem: str,
@@ -105,8 +118,8 @@ def test_fresh_problem_stalls_and_wakes_strategist(
         " WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
-    assert q[0]["target_id"] == "alpha"
-    assert q[0]["target_kind"] == "Problem"
+    assert q[0]["target_id"] == _top(conn, "alpha")
+    assert q[0]["target_kind"] == "Group"
     assert q[0]["priority"] == 10
 
 
@@ -125,8 +138,8 @@ def test_fresh_pure_nl_problem_stalls_and_wakes_strategist(
         "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
-    assert q[0]["target_id"] == "alpha"
-    assert q[0]["target_kind"] == "Problem"
+    assert q[0]["target_id"] == _top(conn, "alpha")
+    assert q[0]["target_kind"] == "Group"
 
 
 def test_no_wake_when_dispatchable_goal_and_recent_routine(
@@ -182,12 +195,12 @@ def test_terminal_root_without_ingest_still_wakes(
 
     q = conn.execute(
         "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
-        " ORDER BY target_id"
+        " ORDER BY problem"
     ).fetchall()
     assert [(r["target_id"], r["target_kind"]) for r in q] == [
-        ("p_disproved", "Problem"),
-        ("p_proved", "Problem"),
-        ("p_shelved", "Problem"),
+        (_top(conn, "p_disproved"), "Group"),
+        (_top(conn, "p_proved"), "Group"),
+        (_top(conn, "p_shelved"), "Group"),
     ]
 
 
@@ -272,8 +285,8 @@ def test_fresh_problem_wake_deferred_while_inject_batch_in_flight(
         "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
-    assert q[0]["target_id"] == "alpha"
-    assert q[0]["target_kind"] == "Problem"
+    assert q[0]["target_id"] == _top(conn, "alpha")
+    assert q[0]["target_kind"] == "Group"
     assert root  # silence unused warning
 
 
@@ -297,8 +310,8 @@ def test_t1_enqueues_when_last_routine_at_is_stale(
         "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
-    assert q[0]["target_id"] == "alpha"
-    assert q[0]["target_kind"] == "Problem"
+    assert q[0]["target_id"] == _top(conn, "alpha")
+    assert q[0]["target_kind"] == "Group"
 
 
 def test_t1_skips_when_last_routine_at_is_recent(
@@ -332,7 +345,7 @@ def test_t1_not_reset_by_event_driven_last_strategist_at(
 
     q = conn.execute(
         "SELECT target_id FROM queue WHERE kind='Strategist'").fetchall()
-    assert [r["target_id"] for r in q] == ["alpha"]
+    assert [r["target_id"] for r in q] == [_top(conn, "alpha")]
 
 
 def test_t1_excludes_paused_time_via_daemon_start_baseline(
@@ -387,7 +400,7 @@ def test_t1_not_suppressed_by_inflight_inject_batch(
 
     q = conn.execute(
         "SELECT target_id FROM queue WHERE kind='Strategist'").fetchall()
-    assert [r["target_id"] for r in q] == ["alpha"]   # fired despite batch
+    assert [r["target_id"] for r in q] == [_top(conn, "alpha")]   # fired despite batch
 
 
 def test_t1_treats_null_last_strategist_as_eligible(
@@ -436,7 +449,7 @@ def test_t1_skips_ingested_problems(conn: sqlite3.Connection) -> None:
     strategist_triggers(conn, running=set(), interval_min=60.0)
     q = conn.execute(
         "SELECT target_id FROM queue WHERE kind='Strategist'").fetchall()
-    assert [r["target_id"] for r in q] == ["alpha"]
+    assert [r["target_id"] for r in q] == [_top(conn, "alpha")]
 
 
 # ---------------------------------------------------------------------
@@ -865,8 +878,8 @@ def test_t4_wakes_on_proved_root_until_ingested(
         "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
-    assert q[0]["target_id"] == "alpha"
-    assert q[0]["target_kind"] == "Problem"
+    assert q[0]["target_id"] == _top(conn, "alpha")
+    assert q[0]["target_kind"] == "Group"
 
     # Ingest committed → terminal → no further wake.
     conn.execute("DELETE FROM queue")
@@ -894,7 +907,7 @@ def test_t4_stall_wakes_pure_nl_problem_without_root(
         "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
     ).fetchall()
     assert [(r["target_id"], r["target_kind"]) for r in q] == [
-        ("alpha", "Problem")]
+        (_top(conn, "alpha"), "Group")]
 
 
 def test_t4_stall_not_masked_by_dispatchable_detached_goal(
@@ -1219,7 +1232,7 @@ def test_reconcile_enqueues_strategist_for_orphaned_pending_review(
         "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
     ).fetchall()
     assert [(r["target_id"], r["target_kind"]) for r in q] == [
-        ("alpha", "Problem")]
+        (_top(conn, "alpha"), "Group")]
 
 
 def test_reconcile_pending_review_pure_nl_problem_without_root(
@@ -1235,7 +1248,7 @@ def test_reconcile_pending_review_pure_nl_problem_without_root(
         "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
     ).fetchall()
     assert [(r["target_id"], r["target_kind"]) for r in q] == [
-        ("alpha", "Problem")]
+        (_top(conn, "alpha"), "Group")]
 
 
 def test_reconcile_pending_review_dedups_queue_and_inflight(

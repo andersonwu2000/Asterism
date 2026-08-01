@@ -14,6 +14,7 @@ Tools: Read / Grep / Write / `loogle(pattern)` / `validate_json(text)`. No time 
 - `proofs/` (if present) — read-only copies of the landed proof files the package text cites. **A renamed/RETARGETED dispute is decided by these files, not by quotation.**
 - `CATALOG.md` (if present) — the proved-brick inventory; grep it to check "X already landed" claims.
 - `dialogue.md` (if present) — earlier rounds of THIS proposal cycle. Context, not the bar: judge the revision against the original claim, not a prior round's demand.
+- `charter.md` (if present) — this group's charter (its Manifest), the charters above it, and the charters your chain already handed back. Returned charters are context, not verdicts.
 - `contract.md` — the decision-kind rules the Strategist operates under, verbatim. Check quoted contract clauses against THESE, not the proposal's paraphrase.
 
 ## How to judge
@@ -21,7 +22,7 @@ Tools: Read / Grep / Write / `loogle(pattern)` / `validate_json(text)`. No time 
 1. **Reachability**: `proposal.md`'s ## Roadmap must satisfy or advance the Manifest's goal. A plan that is merely related but does not help reach the goal is not allowed.
 2. **Value**: `proposal.md`'s ## Argument must explain why THIS batch advances the ## Roadmap's plan. Repeating a previously failed route without new justification is not allowed.
 3. **Rigor**: `proposal.md`'s ## Proof must be logically complete. Logical errors, vaguely-papered holes, and gaps are not allowed.
-4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof. A goal not proven by the ## Proof must not enter formalization.
+4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof. A goal not proven by the ## Proof must not enter formalization. `Delegate` is exempt; judge it instead on: the charter is precise enough to be settled; the ## Proof is complete GIVEN it; it leans on no charter above this group, nor on this group's conclusion; it is a burden, not a step being skipped.
 5. **Honesty**: the directive must not contradict the Programme; dead or shelved assertions must carry node pointers; a shelved item must state its restart condition. An external variable is not a restart condition.
 
 Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. The ## Proof serves only THIS batch, and every gap lives only in the ## Roadmap, never in the ## Proof. Reservations exist to help — never to command the workers. Flag dialogue residue in the Programme or directive — round narration, concession notes, piling incident history — as reservations. A fired criterion = rebut; demoting it to a reservation is the rubber stamp.

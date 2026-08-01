@@ -196,6 +196,10 @@ EVENTS: frozenset[str] = frozenset({
     "forward_lemma_proved", "forward_alias_proved", "forward_reuse_revive",
     # strategist
     "strategist_reopen", "strategist_unstall",
+    # discussion groups (v35) — a `Delegate` with a target promotes that
+    # goal to the new group's anchor and parks it `attempting`: alive
+    # (so the parent's wait is legal) but not dispatchable by BFS.
+    "delegate_anchor",
     # verify housekeeping + axiom-probe rollback
     "verify_proved", "verify_dead", "verify_reopen", "assembly_sorry_gate",
     "rollback_culprit", "rollback_upstream", "rollback_unsupersede",
@@ -229,9 +233,11 @@ def predicted_batch_delta(conn: sqlite3.Connection, decisions) -> int:
     for d in decisions:
         k = getattr(d, "kind", None)
         if k in ("Inject", "FetchPaper", "AttemptDisproof", "Ingest",
-                 "RequestUserAmend"):
-            # New dispatch (Inject/FetchPaper), a minted ¬P goal, or a
-            # problem-level edge (active→ingest_signoff / awaiting_human).
+                 "RequestUserAmend", "Delegate", "ReturnToParent"):
+            # New dispatch (Inject/FetchPaper/Delegate — a delegated
+            # burden is work handed to a new group, not a self-edge), a
+            # minted ¬P goal, or a lifecycle edge (active→ingest_signoff
+            # / awaiting_human / a group reaching a terminal status).
             n += 1
             continue
         gid = getattr(d, "target_id", None)
@@ -801,11 +807,22 @@ def _enqueue_strategist_review(conn: sqlite3.Connection,
     # the old root-goal lookup returned early on pure-NL problems (no
     # root), silently orphaning their reviews.
     problem = str(g["problem"])
+    # v35 — route to the group that OWNS this goal, not to the problem:
+    # a review is a question for whoever dispatched the work, and a
+    # sibling group cannot answer it. `group_for_goal` also skips a
+    # group that has already finished (no seat) in favour of its nearest
+    # working ancestor.
+    from . import groups as _groups
+    owner = _groups.group_for_goal(conn, problem, goal_id)
+    gid = int(owner["id"]) if owner is not None \
+        else _groups.ensure_top_group(conn, problem)
 
-    # Per-problem in-flight dedup: skip if a Strategist row already sits
-    # in the queue for this problem. dispatcher's main-loop in-memory
-    # `running` set covers active dispatches; this DB check covers
-    # queue-pending entries.
+    # In-flight dedup: skip if a Strategist row for this group already
+    # sits in the queue. dispatcher's main-loop in-memory `running` set
+    # covers active dispatches; this DB check covers queue-pending
+    # entries. The problem-keyed probe covers pre-v35 rows.
+    if db.is_in_queue(conn, target_id=str(gid), kind="Strategist"):
+        return
     if db.is_in_queue(conn, target_id=problem, kind="Strategist"):
         return
     # Wake legality (FSM P3): a non-active problem takes no seats. The
@@ -819,8 +836,8 @@ def _enqueue_strategist_review(conn: sqlite3.Connection,
     # routine/backstop. Without an explicit priority kwarg the default 0
     # would put T2 below Backward (=2) and Builder (=5), inverting the
     # spec.
-    db.enqueue(conn, kind="Strategist", target_id=problem,
-               target_kind="Problem", priority=20, problem=problem)
+    db.enqueue(conn, kind="Strategist", target_id=str(gid),
+               target_kind="Group", priority=20, problem=problem)
 
 
 def _has_hard_terminal_ancestor(conn: sqlite3.Connection,

@@ -21,6 +21,7 @@ from .. import agent, pipeline
 from . import config, fsutil, quota_wait
 from ..state import db, manifest, thresholds, transitions, tree
 from ..state import failures as _failures
+from ..state import groups as _groups
 from ..quality import prune, verify
 
 
@@ -442,28 +443,78 @@ def bfs_refill(conn: sqlite3.Connection,
 # Phase 2 — Strategist T0 / T1 triggers
 # ---------------------------------------------------------------------
 
-def _strategist_inflight(conn: sqlite3.Connection, problem: str,
+def _ensure_top_groups(conn: sqlite3.Connection, *,
+                       scope: str | None = None) -> None:
+    """Every live problem has a top group — the v35 invariant every seat
+    source depends on.
+
+    A problem without one has NO Strategist seat at all (each trigger
+    keys on a group) and the failure is silent. Both per-tick entry
+    points call this, so no seat source is left depending on the other
+    having run first: an ordering dependency whose breakage is invisible
+    is the same shape as the bug it guards against.
+    """
+    sql = ("SELECT p.name FROM problems p"
+           " WHERE p.ingested_at IS NULL AND NOT EXISTS ("
+           "   SELECT 1 FROM groups g WHERE g.problem = p.name"
+           "     AND g.parent_group_id IS NULL)")
+    args: tuple = ()
+    if scope is not None:
+        sql += " AND p.name LIKE ?"
+        args = (scope,)
+    rows = conn.execute(sql, args).fetchall()
+    if not rows:
+        return
+    for r in rows:
+        _groups.ensure_top_group(conn, str(r["name"]))
+    conn.commit()
+
+
+def _enqueue_strategist(conn: sqlite3.Connection, group_id: int,
+                        problem: str, *, priority: int) -> None:
+    """The ONE way a Strategist seat is queued (v35).
+
+    Every trigger goes through here so the row shape stays in one place:
+    the seat belongs to a GROUP (`target_kind='Group'`), while `problem`
+    keeps the row scope-safe for pop / flush / recovery."""
+    db.enqueue(conn, kind="Strategist", target_id=str(group_id),
+               target_kind="Group", priority=priority, problem=problem)
+
+
+def _strategist_inflight(conn: sqlite3.Connection, group_id: int,
                          running: "set[tuple]") -> bool:
-    """A Strategist for this problem is already running or queued — the
-    per-problem serialization invariant (one Strategist per problem at a
-    time; Strategist mutates problem-global state — `strategist_directive`
-    overwrite-on-write, goal/strategy status, cross-decision coherence — so
-    concurrent runs would race). Checks BOTH the in-memory `running` set
-    (in-flight) AND the DB queue (pending); the cascade-time
+    """A Strategist for this GROUP is already running or queued.
+
+    The serialization invariant is per group (v35), not per problem: a
+    group mutates its OWN Programme, plan note and clocks, and its own
+    slice of the goal tree, so two runs of the SAME group would race
+    while two different groups are exactly the concurrency the tree
+    exists to buy. Checks BOTH the in-memory `running` set (in-flight)
+    AND the DB queue (pending); the cascade-time
     `_enqueue_strategist_review` checked only the queue, which is the gap
     `reconcile_stuck_states` closes.
 
-    Phase 6 — Strategist rows are problem-keyed (target_id=problem name,
-    target_kind='Problem', mirroring Forward): the old root-goal key made
-    every trigger JOIN on origin='root', so a pure-NL problem (no root)
-    could never wake a Strategist. Running key is (target_id, kind,
-    decision_id); Strategist rows always have decision_id=None (never
-    spawned from an Inject), so a match by (problem, 'Strategist', *)
-    covers the invariant."""
+    Running key is (target_id, kind, decision_id) with target_id the
+    queue row's string; Strategist rows always have decision_id=None
+    (never spawned from an Inject), so matching on (group id, kind)
+    covers the invariant.
+
+    (Pre-v35 rows are problem-keyed with target_kind='Problem'. They are
+    resolved to the top group at pop time, so the only place that still
+    sees the old key is `is_in_queue` — hence the second probe, which
+    keeps a queued legacy row from being duplicated by a fresh one.)"""
+    key = str(group_id)
     in_running = any(
-        r[0] == problem and r[1] == "Strategist" for r in running
+        r[0] == key and r[1] == "Strategist" for r in running
     )
-    return (in_running
+    if in_running or db.is_in_queue(conn, target_id=key, kind="Strategist"):
+        return True
+    row = conn.execute("SELECT problem FROM groups WHERE id = ?",
+                       (int(group_id),)).fetchone()
+    if row is None:
+        return False
+    problem = str(row["problem"])
+    return (any(r[0] == problem and r[1] == "Strategist" for r in running)
             or db.is_in_queue(conn, target_id=problem, kind="Strategist"))
 
 
@@ -493,6 +544,8 @@ def reconcile_stuck_states(conn: sqlite3.Connection,
     already queued is skipped, so this never double-dispatches. That gating
     is the only thing this adds over the startup-recovery logic it shares
     (`db.null_inject_redispatch_specs`), which runs against a clean slate."""
+    _ensure_top_groups(conn, scope=scope)
+
     # 1 — pending_review: enqueue Strategist (spawn derives the trigger).
     from ..state import transitions as _transitions
     for prob in db.problems_with_pending_review(conn, scope=scope):
@@ -501,10 +554,10 @@ def reconcile_stuck_states(conn: sqlite3.Connection,
             continue
         if db.problem_has_awaiting_human(conn, prob):
             continue
-        if _strategist_inflight(conn, prob, running):
+        gid = _groups.ensure_top_group(conn, prob)
+        if _strategist_inflight(conn, gid, running):
             continue
-        db.enqueue(conn, kind="Strategist", target_id=prob,
-                   target_kind="Problem", priority=20, problem=prob)
+        _enqueue_strategist(conn, gid, prob, priority=20)
 
     # 1.5 — settled NULL-outcome Inject decisions: the produced goal/
     # strategy already terminated (or a Backward inject's strategy is
@@ -568,6 +621,7 @@ def strategist_triggers(conn: sqlite3.Connection,
     Called from `dispatcher.run` once per tick alongside `bfs_refill`.
     """
     max_age_sec = interval_min * 60.0
+    _ensure_top_groups(conn, scope=scope)
 
     # Wake legality (FSM P3): every seat source consults the ONE matrix
     # — a non-'active' problem (awaiting_human / ingest_signoff /
@@ -576,19 +630,23 @@ def strategist_triggers(conn: sqlite3.Connection,
     # dual-write window.
     from ..state import transitions as _transitions
 
-    # T1 — routine wake (own running-time cadence; see problems_needing_t1)
-    for prob in db.problems_needing_t1(
+    # T1 — routine wake. v35: the clock is per GROUP (`groups_needing_t1`),
+    # so sibling groups keep their own cadence instead of taking turns at
+    # one problem-wide seat. With only top groups this yields exactly the
+    # problems the old per-problem selector named.
+    for row in db.groups_needing_t1(
         conn, scope=scope, max_age_sec=max_age_sec,
         since_iso=daemon_start_iso,
     ):
+        prob = str(row["problem"])
+        gid = int(row["id"])
         if not _transitions.problem_accepts_wake(conn, prob, "routine"):
             continue
         if db.problem_has_awaiting_human(conn, prob):
             continue
-        if _strategist_inflight(conn, prob, running):
+        if _strategist_inflight(conn, gid, running):
             continue
-        db.enqueue(conn, kind="Strategist", target_id=prob,
-                   target_kind="Problem", priority=10, problem=prob)
+        _enqueue_strategist(conn, gid, prob, priority=10)
 
     # T4 — structural stall trigger.
     # Fires when a problem has no open goals (BFS has nothing to
@@ -605,13 +663,19 @@ def strategist_triggers(conn: sqlite3.Connection,
     # `_section_stall_warning` in phase2_context). Strategist prompt
     # has the corresponding rule: don't Noop when stall section is
     # present.
-    for prob in db.problems_stalled(conn, scope=scope, running=running):
+    # v35 — stall is detected PER GROUP. The problem-wide reading cannot
+    # see a child that ran out of moves while a sibling is busy (the
+    # problem is not stalled, so nobody wakes), and when it does fire it
+    # wakes the top group rather than the one that is actually stuck.
+    for _row in db.groups_stalled(conn, scope=scope, running=running):
+        prob = str(_row["problem"])
+        gid = int(_row["id"])
         if not _transitions.problem_accepts_wake(
                 conn, prob, "inject_batch_done"):
             continue
         if db.problem_has_awaiting_human(conn, prob):
             continue
-        if _strategist_inflight(conn, prob, running):
+        if _strategist_inflight(conn, gid, running):
             continue
         # Observability (user-requested 2026-07-04): the stall wake's
         # trigger_kind is deliberately conflated with inject_batch_done
@@ -620,9 +684,9 @@ def strategist_triggers(conn: sqlite3.Connection,
         # enqueue away whenever it got there first). grep '[stall-wake]'
         # to measure the accidental-stall rate.
         print(f"[stall-wake] T4 enqueued Strategist for {prob} "
-              f"(no batch-done relay covered this stall)", flush=True)
-        db.enqueue(conn, kind="Strategist", target_id=prob,
-                   target_kind="Problem", priority=10, problem=prob)
+              f"group {gid} (no batch-done relay covered this stall)",
+              flush=True)
+        _enqueue_strategist(conn, gid, prob, priority=10)
 
 
 # ---------------------------------------------------------------------
@@ -631,7 +695,8 @@ def strategist_triggers(conn: sqlite3.Connection,
 
 def _routine_due(conn: sqlite3.Connection, problem: str,
                  interval_min: float,
-                 since_iso: "str | None" = None) -> bool:
+                 since_iso: "str | None" = None,
+                 group_id: "int | None" = None) -> bool:
     """Per-problem mirror of `db.problems_needing_t1`'s clock (the
     derivation-side twin the routine trigger never had — user ruling
     2026-07-12: the periodic wake outranks event classification).
@@ -639,13 +704,24 @@ def _routine_due(conn: sqlite3.Connection, problem: str,
     `problems.last_routine_at` (bumped only by a routine commit) and
     `since_iso` (daemon start — down-time excluded); NULL anchor with a
     running daemon means "never routine'd", due `interval_min` after
-    start, exactly like the T1 enqueue side."""
+    start, exactly like the T1 enqueue side.
+
+    v35 — `group_id` reads THAT group's clock instead of the problem's,
+    keeping this twin aligned with the enqueue side now that the seat is
+    per group. The two must agree or a wake gets classified against a
+    clock that did not select it."""
     if not interval_min or interval_min <= 0:
         return False
-    row = conn.execute(
-        "SELECT last_routine_at FROM problems WHERE name = ?",
-        (problem,),
-    ).fetchone()
+    if group_id is not None:
+        row = conn.execute(
+            "SELECT last_routine_at FROM groups WHERE id = ?",
+            (int(group_id),),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT last_routine_at FROM problems WHERE name = ?",
+            (problem,),
+        ).fetchone()
     if row is None:
         return False
     anchor = row["last_routine_at"]
@@ -699,8 +775,37 @@ def _warn_consecutive_strategist(conn: sqlite3.Connection, problem: str,
         pass
 
 
+def _strategist_target(conn: sqlite3.Connection, target_id: str,
+                       target_kind: str) -> "tuple[int | None, str | None]":
+    """Resolve a queued Strategist row to `(group_id, problem)`.
+
+    v35 rows carry `target_kind='Group'` and the group id. Rows queued
+    before v35 (or by any caller that still speaks the old shape) carry
+    the problem name with `target_kind='Problem'`; those resolve to the
+    problem's top group, which is what they always meant. Returns
+    `(None, None)` when the row points at something that no longer
+    exists — the caller reports `problem_not_found` rather than crashing
+    the worker thread."""
+    if target_kind == "Group":
+        try:
+            gid = int(target_id)
+        except (TypeError, ValueError):
+            return None, None
+        row = conn.execute("SELECT problem FROM groups WHERE id = ?",
+                           (gid,)).fetchone()
+        if row is None:
+            return None, None
+        return gid, str(row["problem"])
+    problem = str(target_id)
+    if conn.execute("SELECT 1 FROM problems WHERE name = ?",
+                    (problem,)).fetchone() is None:
+        return None, None
+    return _groups.ensure_top_group(conn, problem), problem
+
+
 def _derive_strategist_trigger(conn: sqlite3.Connection,
                                 problem: str, *,
+                                group_id: "int | None" = None,
                                 routine_interval_min: float = 0.0,
                                 since_iso: "str | None" = None,
                                 ) -> tuple[str, int | None]:
@@ -741,7 +846,7 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
     ).fetchone()
     pending_id = int(pending_row["id"]) if pending_row else None
     if _routine_due(conn, problem, routine_interval_min,
-                    since_iso=since_iso):
+                    since_iso=since_iso, group_id=group_id):
         return ("routine", pending_id)
     unack_batches = db.unacknowledged_inject_batches(conn, problem)
     if unack_batches:
@@ -750,14 +855,19 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
         return ("pending_review", pending_id)
     # No running-set here (worker thread) — queue-only in-flight check;
     # a brief false-stall just classifies this wake as batch-done, which
-    # is benign (same context, stricter advance rule).
-    if db.is_problem_stalled(conn, problem):
+    # is benign (same context, stricter advance rule). v35 — ask about
+    # THIS group's slice, matching the T4 enqueue side.
+    stalled = (db.is_group_stalled(conn, problem, group_id)
+               if group_id is not None
+               else db.is_problem_stalled(conn, problem))
+    if stalled:
         return ("inject_batch_done", pending_id)
     return ("routine", pending_id)
 
 
 def _strategist_row_is_stale(conn: sqlite3.Connection,
-                             target_id: str, kind: str) -> bool:
+                             target_id: str, kind: str,
+                             target_kind: str = "Problem") -> bool:
     """A queued Strategist whose problem has already committed `Ingest`
     has nothing left to decide — it would only spawn, Noop, and advance
     `last_strategist_at`. The dispatcher drops such a popped row.
@@ -769,12 +879,26 @@ def _strategist_row_is_stale(conn: sqlite3.Connection,
     later revokes the Ingest (post-Ingest un-prove), the problem re-enters
     the live path and the normal triggers re-fire.
 
-    `target_id` of a Strategist row is the problem name
-    (target_kind='Problem').
+    v35 — a Strategist row is keyed by GROUP (`target_kind='Group'`,
+    `target_id` the group id); pre-v35 rows carry the problem name with
+    `target_kind='Problem'`. Both resolve through `_strategist_target`,
+    so the terminal check keeps asking the same question of the same
+    problem.
+
+    The two unresolvable cases are NOT symmetric. A `Group` row naming a
+    group that no longer exists is definitively garbage — group ids are
+    never reused, so nothing can bring it back, and spawning would only
+    fail. An unresolvable `Problem` row keeps the pre-v35 answer ("not
+    stale"): that branch is reached by a name, and refusing to drop on a
+    name we cannot resolve is the anti-wedge default it was given.
     """
     if kind != "Strategist":
         return False
-    return db.problem_ingested(conn, str(target_id))
+    kind_str = str(target_kind or "Problem")
+    _gid, problem = _strategist_target(conn, str(target_id), kind_str)
+    if problem is None:
+        return kind_str == "Group"
+    return db.problem_ingested(conn, problem)
 
 
 # ── run()-loop scheduling constants (hoisted from function locals, task #9) ──
@@ -956,8 +1080,12 @@ def _run_pipeline(workspace: Path,
             #     decision_id is the Strategist Inject row that spawned
             #     this Forward.
             if task_kind == "Strategist":
-                problem = target_id
-                if not _ensure_manifest(conn, manifests, problem):
+                # v35 — the seat belongs to a group; the row carries its
+                # id. Legacy 'Problem' rows resolve to the top group.
+                group_id, problem = _strategist_target(
+                    conn, target_id, target_kind)
+                if problem is None or not _ensure_manifest(
+                        conn, manifests, problem):
                     db.record_pipeline(
                         conn, pipeline_id=pipeline_id, kind=task_kind,
                         target_id=target_id, target_kind=target_kind,
@@ -968,7 +1096,7 @@ def _run_pipeline(workspace: Path,
                             "failed", "problem_not_found")
                 mfst = manifests[problem]
                 trigger, pending_id = _derive_strategist_trigger(
-                    conn, problem,
+                    conn, problem, group_id=group_id,
                     routine_interval_min=config.get(
                         "strategist.interval_min", default=120.0,
                         env_var="ASTERISM_STRATEGIST_INTERVAL_MIN",
@@ -983,6 +1111,7 @@ def _run_pipeline(workspace: Path,
                     workspace=workspace, mfst=mfst,
                     pipeline_id=pipeline_id,
                     pending_review_id=pending_id,
+                    group_id=group_id,
                 )
                 status = ("succeeded" if r.outcome in ("proved", "success")
                           else "failed")
@@ -2288,9 +2417,10 @@ def run(workspace: Path, *, once: bool = False,
             # Drop a queued Strategist whose problem already committed
             # Ingest (e.g. a wake that raced the terminal commit). It
             # would only spawn + Noop. See `_strategist_row_is_stale`.
-            if _strategist_row_is_stale(conn, target_id, kind):
-                print(f"[dispatch] skip Strategist Problem={target_id} "
-                      f"— already ingested", flush=True)
+            if _strategist_row_is_stale(conn, target_id, kind, target_kind):
+                print(f"[dispatch] skip Strategist "
+                      f"{target_kind}={target_id} — already ingested "
+                      f"(or its group is gone)", flush=True)
                 db.complete_queue_row(conn, qid)
                 continue
             # Lazy verify gate — must hold before any worker spawn.

@@ -758,6 +758,249 @@ def apply(conn: sqlite3.Connection) -> None:
                 " ADD COLUMN discard_reason TEXT NULL")
         conn.execute("PRAGMA user_version = 34")
         conn.commit()
+    if v < 35:
+        # v35 — the discussion group tree (discussion_group_design.md).
+        # Schema only: this step introduces the `groups` table and the
+        # columns that point at it, backfills one TOP group per problem
+        # (every pre-v35 row belongs to it), and widens the three CHECK
+        # constraints the new decision kinds and the per-group wake seat
+        # need. No behaviour changes here — the readers still run through
+        # the top group exactly as before.
+        _migrate_to_v35(conn)
+        conn.execute("PRAGMA user_version = 35")
+        conn.commit()
+
+
+def _migrate_to_v35(conn: sqlite3.Connection) -> None:
+    """v35 — discussion groups: new table, pointers, CHECK widenings.
+
+    Three CHECKs have to widen, and SQLite cannot alter a CHECK in
+    place, so each is a point-in-time rebuild-and-copy guarded by a
+    substring probe on the stored DDL (the v33 pattern):
+
+      * `strategist_decisions.decision_kind` — 'Delegate' /
+        'ReturnToParent'. The rebuild also adds `group_id` (which group
+        authored the decision) and `produced_group_id` (the group a
+        Delegate opened — the third form of produced work).
+      * `queue.target_kind` / `pipelines.target_kind` — 'Group', so a
+        Strategist seat can belong to one group instead of the whole
+        problem.
+
+    Backfill: one top group per problem (`parent_group_id IS NULL`),
+    carrying the problem's existing wake clocks, and every existing
+    programme revision / decision row pointed at it. After this step a
+    pre-v35 DB describes exactly the same tree it did before — as a
+    one-group tree.
+    """
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+
+    # 1 — the table itself (fresh DBs already have it from SCHEMA).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS groups (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            problem         TEXT NOT NULL REFERENCES problems(name),
+            parent_group_id INTEGER NULL DEFAULT NULL
+                                REFERENCES groups(id) ON DELETE CASCADE,
+            charter         TEXT NOT NULL DEFAULT '',
+            anchor_goal_id  INTEGER NULL DEFAULT NULL
+                                REFERENCES goals(id) ON DELETE SET NULL,
+            opened_by       INTEGER NULL DEFAULT NULL
+                                REFERENCES strategist_decisions(id)
+                                ON DELETE SET NULL,
+            status          TEXT NOT NULL DEFAULT 'active'
+                                CHECK(status IN ('active', 'delivered',
+                                                 'returned', 'closed')),
+            last_routine_at    TEXT NULL DEFAULT NULL,
+            last_strategist_at TEXT NULL DEFAULT NULL,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        )""")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_groups_top ON groups(problem)"
+        " WHERE parent_group_id IS NULL")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_groups_problem ON groups(problem)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_groups_parent"
+        " ON groups(parent_group_id)")
+
+    # 2 — programme_revisions.group_id (additive; the table is created by
+    #     the v30 step, so it exists by now on every DB that has one).
+    if "programme_revisions" in tables:
+        rcols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(programme_revisions)")}
+        if "group_id" not in rcols:
+            conn.execute(
+                "ALTER TABLE programme_revisions"
+                " ADD COLUMN group_id INTEGER NULL REFERENCES groups(id)")
+
+    # 3 — the three CHECK widenings.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        _v35_rebuild_strategist_decisions(conn)
+        _v35_rebuild_target_kind(conn, "queue")
+        _v35_rebuild_target_kind(conn, "pipelines")
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"v35 migration left FK violations: {fk_violations[:5]}")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+    # 4 — one top group per problem, carrying the problem's wake clocks.
+    ts = now()
+    for row in conn.execute("SELECT name FROM problems").fetchall():
+        problem = str(row[0])
+        if conn.execute(
+            "SELECT 1 FROM groups WHERE problem = ?"
+            " AND parent_group_id IS NULL", (problem,)
+        ).fetchone() is not None:
+            continue
+        clocks = conn.execute(
+            "SELECT last_routine_at, last_strategist_at FROM problems"
+            " WHERE name = ?", (problem,)).fetchone()
+        conn.execute(
+            "INSERT INTO groups (problem, parent_group_id, charter,"
+            " status, last_routine_at, last_strategist_at,"
+            " created_at, updated_at)"
+            " VALUES (?, NULL, '', 'active', ?, ?, ?, ?)",
+            (problem, clocks[0] if clocks else None,
+             clocks[1] if clocks else None, ts, ts))
+
+    # 5 — point every pre-v35 row at its problem's top group.
+    top_sql = ("(SELECT g.id FROM groups g WHERE g.problem = %s.problem"
+               "   AND g.parent_group_id IS NULL)")
+    conn.execute(
+        "UPDATE strategist_decisions SET group_id = "
+        + (top_sql % "strategist_decisions") + " WHERE group_id IS NULL")
+    if "programme_revisions" in tables:
+        conn.execute(
+            "UPDATE programme_revisions SET group_id = "
+            + (top_sql % "programme_revisions") + " WHERE group_id IS NULL")
+        # The chain-uniqueness invariant (v31) moves from the problem to
+        # the group: each group owns its own rev numbering from 1.
+        conn.execute("DROP INDEX IF EXISTS ux_programme_passed_rev")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_programme_passed_rev"
+            " ON programme_revisions(group_id, rev) WHERE status = 'passed'")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sd_group"
+        " ON strategist_decisions(group_id)")
+
+
+def _v35_rebuild_strategist_decisions(conn: sqlite3.Connection) -> None:
+    """Widen `decision_kind` and add the two group pointers."""
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table'"
+        " AND name='strategist_decisions'").fetchone()
+    if chk is None:
+        raise RuntimeError(
+            "v35: strategist_decisions is missing — a prior migration "
+            "crashed mid-rebuild; restore the DB from backup")
+    if "'Delegate'" in (chk[0] or ""):
+        return  # already rebuilt (idempotent)
+    # `produced_kind` arrived as a v32 ALTER, so it is not in any earlier
+    # CREATE statement — carry it explicitly or the copy drops it.
+    conn.executescript("""
+        CREATE TABLE _new_strategist_decisions (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            problem             TEXT NOT NULL REFERENCES problems(name),
+            triggered_at_tick   INTEGER NOT NULL,
+            trigger_kind        TEXT NOT NULL
+                                    CHECK(trigger_kind IN
+                                          ('first_launch','pending_review',
+                                           'routine','inject_batch_done',
+                                           'audit')),
+            decision_kind       TEXT NOT NULL
+                                    CHECK(decision_kind IN
+                                          ('Inject','ConfirmShelve','Reopen',
+                                           'EmitDirective','InitializeDefs',
+                                           'RequestUserAmend','Noop',
+                                           'MarkDeliverable','Ingest',
+                                           'FetchPaper','AttemptDisproof',
+                                           'Delegate','ReturnToParent')),
+            group_id            INTEGER NULL DEFAULT NULL
+                                    REFERENCES groups(id) ON DELETE SET NULL,
+            target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+            brief               TEXT NULL DEFAULT NULL,
+            reason              TEXT NULL DEFAULT NULL,
+            payload             TEXT NOT NULL DEFAULT '{}',
+            batch_id            TEXT NULL DEFAULT NULL,
+            produced_goal_id    INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                                    ON DELETE SET NULL,
+            produced_strategy_id INTEGER NULL DEFAULT NULL
+                                    REFERENCES strategies(id) ON DELETE SET NULL,
+            produced_group_id   INTEGER NULL DEFAULT NULL
+                                    REFERENCES groups(id) ON DELETE SET NULL,
+            outcome             TEXT NULL DEFAULT NULL,
+            outcome_detail      TEXT NULL DEFAULT NULL,
+            produced_kind       TEXT NULL DEFAULT NULL,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL
+        );
+        INSERT INTO _new_strategist_decisions
+            (id, problem, triggered_at_tick, trigger_kind, decision_kind,
+             target_id, brief, reason, payload, batch_id, produced_goal_id,
+             produced_strategy_id, outcome, outcome_detail, produced_kind,
+             created_at, updated_at)
+        SELECT id, problem, triggered_at_tick, trigger_kind, decision_kind,
+               target_id, brief, reason, payload, batch_id, produced_goal_id,
+               produced_strategy_id, outcome, outcome_detail, produced_kind,
+               created_at, updated_at
+        FROM strategist_decisions;
+        DROP TABLE strategist_decisions;
+        ALTER TABLE _new_strategist_decisions RENAME TO strategist_decisions;
+        CREATE INDEX IF NOT EXISTS idx_sd_problem
+            ON strategist_decisions(problem);
+        CREATE INDEX IF NOT EXISTS idx_sd_outcome
+            ON strategist_decisions(outcome);
+        CREATE INDEX IF NOT EXISTS idx_sd_batch_id
+            ON strategist_decisions(batch_id);
+    """)
+
+
+#: `queue` and `pipelines` differ only in the columns around the CHECK, so
+#: the widening is a textual one: take the stored DDL and add 'Group' to
+#: the target_kind enum. Rebuilding from a hand-copied schema would have to
+#: be kept in sync with two tables that other migrations also touch.
+_V35_TARGET_KIND_OLD = "('Goal','Strategy','Problem')"
+_V35_TARGET_KIND_NEW = "('Goal','Strategy','Problem','Group')"
+
+
+def _v35_rebuild_target_kind(conn: sqlite3.Connection, table: str) -> None:
+    """Add 'Group' to `table`.target_kind's CHECK, preserving every row."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?",
+        (table,)).fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"v35: {table} is missing — a prior migration crashed "
+            f"mid-rebuild; restore the DB from backup")
+    ddl = row[0] or ""
+    if "'Group'" in ddl:
+        return  # already widened (idempotent)
+    if _V35_TARGET_KIND_OLD not in ddl:
+        raise RuntimeError(
+            f"v35: cannot widen {table}.target_kind — the stored CHECK "
+            f"does not contain {_V35_TARGET_KIND_OLD}; schema drifted, "
+            f"widen it by hand rather than guessing")
+    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+    collist = ", ".join(cols)
+    indexes = [r[0] for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name = ?"
+        " AND sql IS NOT NULL", (table,)).fetchall()]
+    new_ddl = ddl.replace(_V35_TARGET_KIND_OLD, _V35_TARGET_KIND_NEW, 1)
+    # `CREATE TABLE [IF NOT EXISTS] "name"` → the temp name, first hit only.
+    new_ddl = new_ddl.replace(table, f"_new_{table}", 1)
+    conn.executescript(
+        f"{new_ddl};\n"
+        f"INSERT INTO _new_{table} ({collist})"
+        f" SELECT {collist} FROM {table};\n"
+        f"DROP TABLE {table};\n"
+        f"ALTER TABLE _new_{table} RENAME TO {table};\n")
+    for idx_sql in indexes:
+        conn.execute(idx_sql)
 
 
 def _migrate_to_v26(conn: sqlite3.Connection) -> None:

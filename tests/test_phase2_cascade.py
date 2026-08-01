@@ -36,6 +36,13 @@ from Tooling.core.dispatcher import (
 )
 from Tooling.state import db
 
+def _top(conn, problem):
+    """The problem's top-group id as the queue stores it (v35: the
+    Strategist seat is keyed by group, not by problem)."""
+    from Tooling.state import groups as _g
+    return str(_g.ensure_top_group(conn, problem))
+
+
 
 @pytest.fixture
 def conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
@@ -373,8 +380,8 @@ def test_enqueue_strategist_review_sets_status_and_queues(
         " WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
-    assert q[0]["target_id"] == "p"
-    assert q[0]["target_kind"] == "Problem"
+    assert q[0]["target_id"] == _top(conn, "p")
+    assert q[0]["target_kind"] == "Group"
     # Priority 20 per pipelines.md §2.1 (T2 > T1/T4=10); regression guard
     # against db.enqueue default=0 putting T2 below Backward / Builder.
     assert q[0]["priority"] == 20
@@ -745,8 +752,8 @@ def test_forward_cascade_with_batch_decision_fires_strategist(
         "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
-    assert q[0]["target_id"] == "p"
-    assert q[0]["target_kind"] == "Problem"
+    assert q[0]["target_id"] == _top(conn, "p")
+    assert q[0]["target_kind"] == "Group"
 
 
 def test_t2_pops_before_bfs(
@@ -775,7 +782,7 @@ def test_t2_pops_before_bfs(
     assert first is not None
     assert first["kind"] == "Strategist"
     assert first["priority"] == 20
-    assert first["target_id"] == "p"
+    assert first["target_id"] == _top(conn, "p")
 
 
 # ---------------------------------------------------------------------
@@ -1003,8 +1010,8 @@ def test_batch_full_completion_enqueues_one_strategist(
         " WHERE kind='Strategist'"
     ))
     assert len(q) == 1
-    assert q[0]["target_id"] == "p"
-    assert q[0]["target_kind"] == "Problem"
+    assert q[0]["target_id"] == _top(conn, "p")
+    assert q[0]["target_kind"] == "Group"
     assert q[0]["priority"] == 20
 
     # Re-fire cascade on the same last row (idempotent path); no second
@@ -1032,7 +1039,7 @@ def test_batch_done_fires_for_pure_nl_problem_without_root(
         "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
     ))
     assert [(r["target_id"], r["target_kind"]) for r in q] == [
-        ("p", "Problem")]
+        (_top(conn, "p"), "Group")]
 
 
 def test_batch_done_defers_until_produced_lemma_proved(
@@ -1103,8 +1110,8 @@ def test_batch_done_defers_until_produced_lemma_proved(
         " WHERE kind='Strategist'"
     ))
     assert len(q) == 1
-    assert q[0]["target_id"] == "p"
-    assert q[0]["target_kind"] == "Problem"
+    assert q[0]["target_id"] == _top(conn, "p")
+    assert q[0]["target_kind"] == "Group"
     assert root  # root exists but the wake is problem-keyed
 
 

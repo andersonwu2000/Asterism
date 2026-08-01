@@ -347,6 +347,12 @@ def init_problem(workspace: Path, problem: str, *,
             "INSERT INTO problems (name, manifest_path, created_at) VALUES (?, ?, ?)",
             (problem, str(mfst_path.relative_to(workspace).as_posix()), db.now()),
         )
+    # v35 — every problem has a top discussion group, its human-facing
+    # one. Unconditional (not gated on `existing`): a problem initialised
+    # before v35 and re-inited afterwards must acquire one too, and a
+    # problem without a group has no seat for its Strategist at all.
+    from ..state import groups as _groups
+    _groups.ensure_top_group(conn, problem)
 
     if statement is None:
         # Pure-NL: no root goal row. The problem starts with zero goals —
@@ -878,6 +884,11 @@ def wipe_problem_rows(conn, problem: str) -> "tuple[int, int]":
                  (problem,))
     conn.execute("DELETE FROM programme_revisions WHERE problem = ?",
                  (problem,))
+    # Discussion groups (v35). Order-independent by construction: the
+    # self-FK cascades to descendants and the two mutual references with
+    # strategist_decisions are both ON DELETE SET NULL — this table and
+    # that one point at each other, so no delete order is right for both.
+    conn.execute("DELETE FROM groups WHERE problem = ?", (problem,))
     conn.execute("DELETE FROM problems WHERE name = ?", (problem,))
     return len(gids), len(sids)
 

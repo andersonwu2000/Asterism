@@ -194,11 +194,92 @@ def _stage_proof_closure(proofs_src: Path, proj: Path,
     return len(staged)
 
 
+def _charter_digest(conn: sqlite3.Connection, problem: str,
+                    group_id: "int | None") -> str:
+    """`charter.md` — what a SUB-group is judged against (v35).
+
+    Three parts, all structured data rather than free text:
+
+      1. **this group's charter** — its Manifest. The fixed reference
+         point: does the proposal settle THIS claim?
+      2. **the ancestor chain** — every charter above it. Criterion 3
+         (non-circular) otherwise only catches a claim that leans on the
+         PARENT's conclusion, and on a deep tree circularity arrives a
+         generation later: C's charter being, in substance, grandparent
+         A's.
+      3. **charters this subtree already handed back** — with flavour and
+         post-mortem. Deliberately NOT a gate: re-attacking a failed line
+         is legitimate, and whether this attempt differs is a judgement
+         about mathematics, which a string comparison cannot make (the
+         same reason the dead-twin gate misfires, task #112). The judge
+         gets the material and decides on the `value` criterion.
+
+    Empty for the top group: its charter IS `Manifest.md`, already
+    staged, and it has no ancestors.
+    """
+    from ..state import groups as _groups
+    if group_id is None:
+        return ""
+    me = _groups.get(conn, int(group_id))
+    if me is None or _groups.is_top(me):
+        return ""
+    out = ["# Charter — what this group was asked to settle", "",
+           str(me["charter"]).strip(), ""]
+    chain = _groups.ancestors(conn, int(group_id))
+    above = [a for a in chain if not _groups.is_top(a)]
+    if above:
+        out += ["## Charters above this one", "",
+                "Your charter must not depend on any of these being "
+                "true — that is circular, however many generations "
+                "apart.", ""]
+        for i, a in enumerate(above, 1):
+            out += [f"{i}. (group {a['id']}) "
+                    f"{str(a['charter']).strip()}", ""]
+    # Scope: groups returned to ME or to one of MY ancestors — the
+    # failed attempts on this chain, which is what "my parent already
+    # tried this line" looks like. NOT problem-wide: a cousin branch's
+    # failures are none of this judge's business, and pulling them in
+    # would break the per-group projection isolation the design rests
+    # on. Strict "my own subtree" would be near-empty (a group just
+    # opened has no descendants), and the case that matters is exactly
+    # the sibling my parent tried before me.
+    chain = [int(group_id)] + [int(a["id"]) for a in
+                               _groups.ancestors(conn, int(group_id))]
+    marks = ",".join("?" * len(chain))
+    returned = conn.execute(
+        "SELECT g.id, g.charter, d.reason, d.payload"
+        "  FROM groups g"
+        "  LEFT JOIN strategist_decisions d"
+        "    ON d.produced_group_id = g.id"
+        "   AND d.decision_kind = 'ReturnToParent'"
+        f" WHERE g.problem = ? AND g.status = 'returned'"
+        f"   AND g.parent_group_id IN ({marks})"
+        " ORDER BY g.id", (problem, *chain)).fetchall()
+    if returned:
+        out += ["## Charters your chain already handed back", "",
+                "Context, not a verdict: a line that failed may be worth "
+                "re-attacking. Judge whether THIS attempt differs.", ""]
+        for r in returned:
+            flavour = ""
+            try:
+                flavour = str(json.loads(r["payload"] or "{}").get(
+                    "flavour") or "")
+            except (TypeError, ValueError):
+                pass
+            out += [f"- (group {r['id']}"
+                    + (f", {flavour}" if flavour else "") + ") "
+                    + str(r["charter"]).strip(),
+                    f"  - post-mortem: {str(r['reason'] or '(none)')}"]
+        out.append("")
+    return "\n".join(out)
+
+
 def build_projection(*, round_no: int, attempts_dir: Path,
                      problem_dir: Path, conn: sqlite3.Connection,
                      problem: str, proposal_body: str, decisions,
                      dialogue: list[dict[str, Any]],
-                     proof_warn: Optional[str]) -> Path:
+                     proof_warn: Optional[str],
+                     group_id: "int | None" = None) -> Path:
     """Assemble the whitelist verbatim into an isolated working dir."""
     from ..agent.phase2_context import _section_inject_batch_outcomes
     from ..state import programme
@@ -211,6 +292,9 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     manifest = problem_dir / "Manifest.md"
     if manifest.exists():
         shutil.copyfile(manifest, proj / "Manifest.md")
+    charter_text = _charter_digest(conn, problem, group_id)
+    if charter_text:
+        (proj / "charter.md").write_text(charter_text, encoding="utf-8")
     # Formal ground truth (user call 07-19): proposal claims cite the
     # actual Lean statement; without read-only copies the judge could
     # only check them against the Manifest's prose (07-19 feedback ×7
@@ -265,7 +349,7 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     # judge's first duty is checking the candidate's Argument against
     # them (判官必見源). Outcome lines reuse the exact section the
     # strategist context renders.
-    current = programme.current_rev(conn, problem)
+    current = programme.current_rev(conn, problem, group_id)
     outcome_lines = _section_inject_batch_outcomes(
         conn, problem, workspace=attempts_dir.parent.parent)
     (proj / "PROGRAMME.md").write_text(
@@ -378,7 +462,8 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
 def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
            conn: sqlite3.Connection, problem: str, proposal_body: str,
            decisions, dialogue: list[dict[str, Any]],
-           proof_warn: Optional[str]) -> tuple[
+           proof_warn: Optional[str],
+           group_id: "int | None" = None) -> tuple[
                Optional[dict[str, Any]], str, int]:
     """One adversarial round: fresh judge, projection-isolated.
 
@@ -399,7 +484,7 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
         round_no=round_no, attempts_dir=attempts_dir,
         problem_dir=problem_dir, conn=conn, problem=problem,
         proposal_body=proposal_body, decisions=decisions,
-        dialogue=dialogue, proof_warn=proof_warn)
+        dialogue=dialogue, proof_warn=proof_warn, group_id=group_id)
     prompt_path = PROMPT_DIR / "adversary" / "adversary.md"
 
     # One re-spawn on a missing/malformed verdict (cheap; a judge that

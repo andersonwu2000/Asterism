@@ -1552,8 +1552,8 @@ def test_propagate_inject_outcome_from_strategy_dead_fires_batch_done(
     # appeared (Phase 6: target_id=<problem name>, target_kind='Problem').
     q = conn.execute(
         "SELECT COUNT(*) AS n FROM queue"
-        " WHERE kind = 'Strategist' AND target_id = 'p'"
-        "   AND target_kind = 'Problem'",
+        " WHERE kind = 'Strategist' AND target_kind = 'Group'"
+        "   AND problem = 'p'",
     ).fetchone()
     assert int(q["n"]) == 1
     assert root  # root exists but the wake is problem-keyed
@@ -1662,8 +1662,8 @@ def test_inject_batch_done_waits_for_last_kind_in_mixed_batch(
     db.maybe_enqueue_inject_batch_done(conn, d_fwd)
     q2 = conn.execute(
         "SELECT COUNT(*) AS n FROM queue"
-        " WHERE kind = 'Strategist' AND target_id = 'p'"
-        "   AND target_kind = 'Problem'",
+        " WHERE kind = 'Strategist' AND target_kind = 'Group'"
+        "   AND problem = 'p'",
     ).fetchone()
     assert int(q2["n"]) == 1
     assert root  # root exists but the wake is problem-keyed

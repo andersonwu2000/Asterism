@@ -220,14 +220,17 @@ def test_cascade_agent_shelved_routes_to_strategist_review(
     row = db.get_goal(conn, gid)
     assert row["status"] == "pending_strategist_review"
     assert row["attempts"] == 1
-    # Strategist enqueued problem-keyed (target_id=<problem name>)
+    # Strategist enqueued group-keyed (v35: the seat belongs to the group
+    # that owns the goal — here the problem's top group).
+    from Tooling.state import groups as _g
     q = conn.execute(
-        "SELECT kind, target_id, target_kind FROM queue"
+        "SELECT kind, target_id, target_kind, problem FROM queue"
         " WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
-    assert q[0]["target_id"] == "p"
-    assert q[0]["target_kind"] == "Problem"
+    assert q[0]["target_id"] == str(_g.top_group(conn, "p")["id"])
+    assert q[0]["target_kind"] == "Group"
+    assert q[0]["problem"] == "p"
 
 
 # ---------------------------------------------------------------------
