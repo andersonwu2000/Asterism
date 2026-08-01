@@ -82,6 +82,11 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-31
+- Reworked the example material in the agents' prompts so it teaches the general shape of a decision rather than reciting fixes for specific past problems.
+- Fixed two validation bugs: restored a broken checker in the adversarial-critique step and made its critiques more complete, and closed a flaw where a JSON-format check could silently modify the data it inspected.
+- Changed agents to invoke their tools directly instead of going through a shell, removing a fragile layer of indirection.
+
 ### 2026-07-30
 - Added a soundness gate that blocks code-execution tricks in metaprogramming on every path a proof can be elaborated, closing a potential route to unsound proofs.
 - Integrated a new subscription-based provider giving access to Google's Gemini models, and fixed credential handling that could silently fall back to the wrong account.
