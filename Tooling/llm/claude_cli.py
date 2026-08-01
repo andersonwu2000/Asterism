@@ -1140,16 +1140,13 @@ class ClaudeCliProvider:
         # other persisted artifact is written by framework code, not
         # spawn tools). Reads keep the broad repo whitelist. Attempts
         # dir stays FIRST — the deny message points at roots[0].
+        # The roots themselves come from `envelope.envelope_for` — the
+        # same grants agy renders into its per-spawn settings.json, so a
+        # third provider inherits one definition instead of a third copy.
+        from .envelope import envelope_for
         from .spawn_guard import WRITE_ROOTS_ENV
-        write_roots = [str(req.attempts_dir)]
-        if req.kind in ("librarian", "migrate", "classify", "alias"):
-            write_roots.append(str(library_dir))
-        if req.kind == "paper_index":
-            # Its problem_dir IS Papers/<pid>, and the agent's contract
-            # is to write map.md there (papers/index.py re-stamps the
-            # frontmatter afterwards).
-            write_roots.append(str(req.problem_dir))
-        env[WRITE_ROOTS_ENV] = os.pathsep.join(write_roots)
+        env[WRITE_ROOTS_ENV] = envelope_for(
+            req, library_dir=library_dir).write_roots_env()
         # Per-spawn thinking-token cap (restored 2026-05-10 from 9d05d19).
         # Sonnet 4.6's adaptive thinking can produce 30-90K-character
         # single thinking blocks that hit Anthropic's max_tokens stop

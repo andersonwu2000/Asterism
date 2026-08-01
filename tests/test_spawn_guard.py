@@ -151,11 +151,29 @@ def test_write_family_kind_extras_and_env_absent(monkeypatch) -> None:
         REPO_ROOT / "Problems" / "p" / "_plan.md")}, CWD) is None
 
 
-def test_claude_cli_injects_write_roots() -> None:
-    src = (REPO_ROOT / "Tooling" / "llm" / "claude_cli.py").read_text(
-        encoding="utf-8")
-    assert "env[WRITE_ROOTS_ENV] = os.pathsep.join(write_roots)" in src
-    assert "write_roots = [str(req.attempts_dir)]" in src
+def test_claude_cli_injects_write_roots(tmp_path) -> None:
+    """The env var this guard parses must actually be produced, and its
+    first root must be the spawn's attempts dir (deny messages point at
+    roots[0]). Asserted through `envelope.envelope_for` — the shared
+    definition both providers render since 2026-08-01 — rather than by
+    matching a source line, which froze the moment the line moved."""
+    import inspect
+
+    from Tooling.llm import claude_cli
+    from Tooling.llm.base import LLMRequest
+    from Tooling.llm.envelope import envelope_for
+
+    att = tmp_path / ".attempts" / "pipe1"
+    att.mkdir(parents=True)
+    env_spec = envelope_for(LLMRequest(
+        kind="backward", prompt_path=tmp_path / "p.md",
+        problem_dir=tmp_path / "prob", attempts_dir=att, timeout_sec=60))
+    assert env_spec.write_roots[0] == att
+    assert env_spec.write_roots_env().split(os.pathsep)[0] == str(att)
+
+    src = inspect.getsource(claude_cli.ClaudeCliProvider.spawn)
+    assert "WRITE_ROOTS_ENV]" in src
+    assert "envelope_for(" in src
 
 
 # ---------- fail-open + hook protocol ----------

@@ -485,3 +485,120 @@ def test_capability_closure_is_what_retired_the_digest_layers() -> None:
         "a shell on the agy side reopens the write channel the "
         "user-file / proofs digest layers used to watch")
     assert "read_url(*)" in deny
+
+
+# ---------------------------------------------------------------------
+# Per-spawn capability envelope (2026-08-01)
+#
+# agy reads permissions and MCP servers from the home directory and
+# nowhere else — no config flag (`agy --help`), and its bundled docs give
+# only global and per-plugin scopes. So a per-spawn envelope IS a
+# per-spawn HOME. Probed the same day: agy authenticates fine under a
+# fake HOME (its credentials do not live there) and reaches an MCP server
+# configured there, with only the two config files present.
+# ---------------------------------------------------------------------
+
+def _envelope_req(tmp_path: Path, *, mcp: "Path | None") -> "object":
+    from Tooling.llm.base import LLMRequest
+    att = tmp_path / ".attempts" / "pipe1"
+    att.mkdir(parents=True, exist_ok=True)
+    return LLMRequest(kind="formalizer", prompt_path=tmp_path / "p.md",
+                      problem_dir=Path("D:/Asterism/Problems/x"),
+                      attempts_dir=att, timeout_sec=900,
+                      mcp_config_path=mcp)
+
+
+def test_spawn_home_narrows_the_write_root_to_this_spawn(
+    tmp_path: Path,
+) -> None:
+    """The global settings.json allowed `write_file(<repo>/.attempts)` —
+    every spawn could write every other spawn's sandbox. claude has been
+    per-pipeline since #128; this closes the same gap on agy."""
+    import json
+    from Tooling.llm import antigravity_cli as agy
+    req = _envelope_req(tmp_path, mcp=None)
+    home = agy._spawn_home(req)
+    assert home is not None
+    perms = json.loads(
+        (home / ".gemini" / "antigravity-cli" / "settings.json").read_text(
+            encoding="utf-8"))["permissions"]
+    writes = [a for a in perms["allow"] if a.startswith("write_file(")]
+    assert writes == [f"write_file({req.attempts_dir})"]
+    assert "command(*)" in perms["deny"] and "read_url(*)" in perms["deny"]
+    assert "mcp(*)" in perms["allow"]
+
+
+def test_spawn_home_carries_the_per_spawn_lsp_server(tmp_path: Path) -> None:
+    """The blocker this was built for: `mcp__lsp__validate_file` arrives
+    in a per-spawn config carrying that spawn's gateway session token,
+    and the provider used to drop it on the floor — a formalizer on agy
+    could not type-check a single line it wrote."""
+    import json
+    from Tooling.llm import antigravity_cli as agy
+    att = tmp_path / ".attempts" / "pipe1"
+    att.mkdir(parents=True)
+    cfg = att / "_mcp_config.json"
+    cfg.write_text(json.dumps({"mcpServers": {
+        "asterism_tools": {"command": "python"},
+        "lsp": {"type": "http", "url": "http://127.0.0.1:9/mcp",
+                "headers": {"X-Asterism-Session": "tok-42"}}}}),
+        encoding="utf-8")
+    home = agy._spawn_home(_envelope_req(tmp_path, mcp=cfg))
+    assert home is not None
+    servers = json.loads(
+        (home / ".gemini" / "config" / "mcp_config.json").read_text(
+            encoding="utf-8"))["mcpServers"]
+    assert set(servers) == {"asterism_tools", "lsp"}
+    assert servers["lsp"]["headers"]["X-Asterism-Session"] == "tok-42"
+
+
+def test_unbuildable_envelope_fails_loudly(tmp_path: Path) -> None:
+    """A config agy never reads looks exactly like a provider with no MCP
+    support (07-30). Never silent."""
+    from Tooling.llm import antigravity_cli as agy
+    att = tmp_path / ".attempts" / "pipe1"
+    att.mkdir(parents=True)
+    bad = att / "_mcp_config.json"
+    bad.write_text("{ this is not json", encoding="utf-8")
+    assert agy._spawn_home(_envelope_req(tmp_path, mcp=bad)) is None
+
+
+def test_spawn_env_points_every_home_variable_at_the_envelope(
+    tmp_path: Path,
+) -> None:
+    """Go's os.UserHomeDir reads USERPROFILE on Windows; other consumers
+    read HOME. Setting one is a silent half-move."""
+    from Tooling.llm import antigravity_cli as agy
+    home = tmp_path / "h"
+    env = agy._spawn_env(home)
+    assert env["HOME"] == str(home)
+    assert env["USERPROFILE"] == str(home)
+    assert env["HOMEDRIVE"] == home.drive
+
+
+def test_both_providers_read_one_definition_of_the_write_roots(
+    tmp_path: Path,
+) -> None:
+    """The point of `llm/envelope.py`: the grants are provider-
+    independent, only the dialect differs. A third backend inherits the
+    definition instead of adding a third copy."""
+    import inspect
+    import json
+    from Tooling.llm import antigravity_cli as agy
+    from Tooling.llm import claude_cli
+    from Tooling.llm.envelope import envelope_for
+
+    req = _envelope_req(tmp_path, mcp=None)
+    roots = envelope_for(req).write_roots
+    assert roots[0] == req.attempts_dir
+
+    home = agy._spawn_home(req)
+    perms = json.loads(
+        (home / ".gemini" / "antigravity-cli" / "settings.json").read_text(
+            encoding="utf-8"))["permissions"]["allow"]
+    assert [f"write_file({p})" for p in roots] == [
+        a for a in perms if a.startswith("write_file(")]
+
+    src = inspect.getsource(claude_cli.ClaudeCliProvider.spawn)
+    assert "envelope_for(" in src, (
+        "claude must consume the shared definition, not keep its own list")

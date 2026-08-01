@@ -223,6 +223,11 @@ RC_MISSING_CLI = 127
 #: fires first and it exits with an envelope we can classify.
 _SUBPROCESS_SLACK_SEC = 60
 
+#: This spawn's private HOME, inside its attempts dir — see
+#: `_spawn_home`. Under `attempts_dir` so the dispatcher's orphan sweep
+#: is already its cleanup.
+_SPAWN_HOME_DIRNAME = "_agy_home"
+
 #: Envelope-level phrases. Matched lowercased against status+error.
 _MISCONFIG_MARKERS = (
     "invalid model selection",
@@ -259,7 +264,78 @@ def legacy_oauth_creds_path() -> Path:
     return Path.home() / ".gemini" / "oauth_creds.json"
 
 
-def _spawn_env() -> "dict[str, str]":
+def _spawn_home(req: LLMRequest) -> "Path | None":
+    """Build this spawn's private HOME and return it, or None on failure.
+
+    agy reads its permissions and its MCP servers from files under the
+    home directory and from nowhere else: `agy --help` has no config
+    flag, and its bundled docs give exactly two scopes, global and
+    per-plugin (`builtin/skills/agy-customizations/docs/
+    mcp_servers.md`). A global file cannot express a per-spawn envelope —
+    with `dispatch.pool` > 1 four concurrent spawns would fight over one
+    gateway session token, and the LSP entry that carries
+    `mcp__lsp__validate_file` IS per-spawn. So the envelope becomes a
+    home directory.
+
+    MEASURED (2026-08-01, two probes): agy authenticates normally under a
+    fake HOME — its credentials do not live there — and reaches an MCP
+    server configured there. Only two files are needed; the install tree
+    (`bin`, `builtin`, `brain`) does NOT have to be copied and agy does
+    not re-provision. That is what makes this cheap enough to do per
+    spawn.
+
+    The home lives inside `attempts_dir`, so the dispatcher's existing
+    orphan-attempts sweep is its cleanup and no new machinery is owed."""
+    from .envelope import envelope_for
+    env_spec = envelope_for(req)
+    home = Path(req.attempts_dir) / _SPAWN_HOME_DIRNAME
+    try:
+        (home / ".gemini" / "config").mkdir(parents=True, exist_ok=True)
+        (home / ".gemini" / "antigravity-cli").mkdir(parents=True,
+                                                     exist_ok=True)
+        workspace = _workspace_of(req.problem_dir)
+        (home / ".gemini" / "antigravity-cli" / "settings.json").write_text(
+            json.dumps(_spawn_permissions(env_spec, workspace), indent=2),
+            encoding="utf-8")
+
+        servers: dict = {}
+        if env_spec.mcp_config_path is not None:
+            # The pipeline's per-spawn config: `asterism_tools` plus the
+            # `lsp` entry carrying this spawn's gateway session token.
+            servers = json.loads(env_spec.mcp_config_path.read_text(
+                encoding="utf-8")).get("mcpServers", {})
+        elif workspace is not None:
+            from ..pipeline import tools_mcp_entry
+            servers = {"asterism_tools": tools_mcp_entry(workspace)}
+        (home / ".gemini" / "config" / "mcp_config.json").write_text(
+            json.dumps({"mcpServers": servers}, indent=2), encoding="utf-8")
+    except (OSError, ValueError) as e:
+        print(f"[llm:agy] could not build the spawn's capability envelope "
+              f"at {home}: {e}", flush=True)
+        return None
+    return home
+
+
+def _spawn_permissions(env_spec, workspace: "Path | None") -> dict:
+    """agy's dialect of the envelope: `permissions.allow` / `deny`.
+
+    Same three grants claude gets via flags — read the workspace, write
+    only this spawn's roots, reach only our MCP tools — with the two
+    channel denies that make the tool list the whole capability surface
+    (AUTHORIZED OPERATIONS §3). Deny beats allow in agy, and an unmatched
+    action defaults to Ask which headless auto-denies, so listing the
+    write roots IS the fence: no `write_file(.attempts)` blanket any
+    more, one root per spawn."""
+    allow = [f"write_file({p})" for p in env_spec.write_roots]
+    allow.append("mcp(*)")
+    deny = ["command(*)", "read_url(*)"]
+    if workspace is not None:
+        allow.insert(0, f"read_file({workspace})")
+    return {"permissions": {"allow": allow, "deny": deny},
+            "trustedWorkspaces": ([str(workspace)] if workspace else [])}
+
+
+def _spawn_env(home: "Path | None" = None) -> "dict[str, str]":
     """Environment for an agy spawn: the inherited env plus PYTHONPATH.
 
     PYTHONPATH must carry the repo root or the advertised search tool
@@ -284,6 +360,13 @@ def _spawn_env() -> "dict[str, str]":
     env["PYTHONPATH"] = (
         str(repo) + os.pathsep + env["PYTHONPATH"]
         if env.get("PYTHONPATH") else str(repo))
+    if home is not None:
+        # All four, because Go's os.UserHomeDir reads USERPROFILE on
+        # Windows while other consumers read HOME.
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+        env["HOMEDRIVE"] = home.drive
+        env["HOMEPATH"] = str(home)[len(home.drive):]
     return env
 
 
@@ -499,6 +582,16 @@ class AntigravityCliProvider:
 
         model = _resolve_model(req.kind)
         ensure_mcp_config(req.problem_dir)
+        home = _spawn_home(req)
+        if home is None:
+            # Loud, not silent. The 07-30 lesson: a config agy never
+            # reads looks exactly like a provider with no MCP support,
+            # and a spawn that runs without `mcp__lsp__validate_file`
+            # cannot type-check a single line it writes.
+            _write_spawn_stderr(req.attempts_dir,
+                                "capability envelope could not be built",
+                                RC_MISCONFIGURED)
+            return RC_MISCONFIGURED
         prompt = self._build_prompt(req)
         print_timeout = max(60, int(req.timeout_sec or 900))
 
@@ -528,7 +621,7 @@ class AntigravityCliProvider:
                 cmd, timeout=print_timeout + _SUBPROCESS_SLACK_SEC,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
-                cwd=str(req.problem_dir), env=_spawn_env(),
+                cwd=str(req.problem_dir), env=_spawn_env(home),
                 creationflags=no_window_creationflags(),
             )
         except subprocess.TimeoutExpired:
