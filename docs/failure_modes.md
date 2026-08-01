@@ -195,10 +195,14 @@ commit 邊界之間會留下什麼 × 誰救」的窮舉結論；完整逐窗口
 | G2 attempts>dead_attempts | 帳面 drift | **明文接受**：attempts 是 threshold SoT 且該 LLM call 真發生過；dead_attempts 純 forensic |
 | H1 programme_revisions 寫入（v30） | rejection/pass row 與 batch link / PROGRAMME.md render 之間 | **未盤點**——依維護規則欠一次窗口分析（render 可自 DB 重導出、風險低；rejection row 半套待驗證） |
 | H2 problems.state FSM（v29） | problem transition 與連動寫入之間 | **未盤點**——`apply_problem_transition` 是唯一 mutator，crash 窗口待分析 |
+| H3 Delegate 開組序列（v35） | group INSERT → decision row → `opened_by` 回填 → 錨轉 attempting → 新組席位 enqueue，各步自帶 commit | 部分有救：席位丟失由 T1 兜底（新組鐘 NULL、一個 interval 內被撈）；「組已終態但 Delegate outcome NULL」由 **B**（`reconcile_settled_inject_outcomes` 的 group 分支，有測試）補。「有組無 opened_by」「錨已轉但 decision 未落」**待盤點** |
+| H4 ReturnToParent 序列（v35） | decision row → 錨 shelve+級聯 → `groups.set_status('returned')`（連鎖填父組 outcome + batch-done enqueue） | 同 H3：outcome 側由 B 補；中段半套**待盤點** |
+| H5 子組輕量 Ingest（v35） | `set_status('delivered')` 單寫+commit | 窗口極窄；outcome 側由 B 補 ✅ |
+| H6 charter 單一副本 | charter 只存 `groups` 表、無檔案側鏡像 | **明文接受**：不屬 proofs/ chokepoint 管轄、drift-check 不覆蓋；DB 即 SoT |
 | E 類補註 | mint 已改以 Formalizer kind 重排 | E1-E5 的救援結論不變，列名對應 forward 放置路徑 |
 
 維護規則：**新增傳播路徑（新的多 commit 序列）必須在本表加一行**、並三選一：指認既有救援層 /
-新增 S 謂詞 / 明文接受＋理由。（H1/H2 即依此規則掛帳、待盤點。）deferred：commit-fault-injection harness（對每條傳播入口掃
+新增 S 謂詞 / 明文接受＋理由。（H1/H2 與 H3/H4 的中段窗口即依此規則掛帳、待盤點。）deferred：commit-fault-injection harness（對每條傳播入口掃
 「第 N 次 commit 後 crash」、跑三層 reconcile 斷言 sweep 全綠）——等 S 上線觀察殘餘再決定。
 
 ---

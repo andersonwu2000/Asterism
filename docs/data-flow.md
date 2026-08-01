@@ -4,7 +4,8 @@
 靜態形狀（角色、不變量、schema）見 `docs/architecture.md`；失敗語彙的完整對照**只在**
 `docs/failure_modes.md` §2，本檔不重複。
 
-> 原寫於 2026-05-06；2026-07-29 對照代碼全面重寫（Formalizer 合併、research mode、常數校正）。
+> 原寫於 2026-05-06；2026-07-29 對照代碼全面重寫（Formalizer 合併、research mode、常數校正）；
+> 2026-08-02 補討論小組樹（v35、席位 per-group）。
 > 文中數值皆為**程式預設**；本 repo 的覆寫在 `Asterism.yaml`，以它為準。
 
 ---
@@ -54,7 +55,7 @@ agent 寫進 `.attempts/<pid>/` 的所有東西（不論成敗），在 `rmtree`
 | 5 | **exit check** | `all_problems_ingested` ∧ 無 Librarian 待辦 ∧ 無 outstanding harvest → daemon 退出 |
 | 5b | **quota-wait gate** | 訂閱額度確認耗盡 → 睡到 resets_at、暫停一切 spawn（DB 側 trigger 照跑；budget 鐘扣除等待時間） |
 | 6 | **bfs refill** | open goal 一律排 `Formalizer`；`attempts ≥ SHELVE_THRESHOLD` 的改送 strategist review、不派工 |
-| 7 | **strategist triggers** | 排 routine（T1）/ stall（T4）喚醒；wake 只投給 `problems.state='active'`（WAKE_LEGALITY） |
+| 7 | **strategist triggers** | 排 routine（T1）/ stall（T4）喚醒；v35 起**席位 per-group**（`groups_needing_t1` / `groups_stalled`、queue 列 `target_kind='Group'`；legacy Problem 列仍認）；wake 只投給 `problems.state='active'`（WAKE_LEGALITY） |
 | 7b | **reconcile_stuck_states** | per-tick 安全網：孤兒 pending_review / NULL-outcome Inject 修復 |
 | 7c | **lease sweep** | 釋放 owner 已死**或**逾 TTL（6h）的 leased queue row（Windows 會重用 PID，雙判準） |
 | 8 | **spawn** | 有空格就 pop queue、派 pipeline 進 worker thread |
@@ -192,16 +193,18 @@ decision_id。防亂提雙線：dedupe 擋重複、Strategist 自己在 failure 
 
 ### 3.3 Strategist
 
-`target_kind='Problem'`。**trigger 三種**（spawn 時判定，優先序 routine > inject_batch_done
-> pending_review > stall）：
+`target_kind='Group'`（v35 起席位屬於**組**；legacy `Problem` 列仍認、映射到頂層組）。
+**trigger 三種**（spawn 時判定，優先序 routine > inject_batch_done > pending_review >
+stall）：
 
 | trigger | 何時 |
 |---|---|
-| `routine` | 離上次 routine commit ≥ `strategist.interval_min`（預設 120 min；時鐘 anchor 排除 daemon down-time）。wake 第一階段先做 belief audit（v26 曾是獨立 `audit` trigger、2026-07-25 併入） |
-| `inject_batch_done` | 某 Inject batch 全部 outcome 落地；**或 spawn 時題為 structural stall**（fresh 題 / deadlock / root 已證待 Ingest 都算「empty batch done」） |
-| `pending_review` | goal 轉 `pending_strategist_review`（decline 上交或 attempts 達標） |
+| `routine` | 離上次 routine commit ≥ `strategist.interval_min`（預設 120 min；鐘住 `groups.last_routine_at`、per-group；problem 級舊鐘 dual-write 中、待 Stage D 退役）。wake 第一階段先做 belief audit |
+| `inject_batch_done` | 某 batch（Inject/Delegate 同吃一個批次帳）全部 outcome 落地；**或 spawn 時該組為 structural stall**（fresh 組 / deadlock / root 已證待 Ingest 都算「empty batch done」；牆態偵測 per-group、`is_group_stalled`） |
+| `pending_review` | goal 轉 `pending_strategist_review`（decline 上交或 attempts 達標）；路由到**擁有那顆 goal 的組** |
 
 所有 wake 先過 `problem_accepts_wake`：`problems.state` 非 `active` 一律拒收。
+同 problem 的多個組可各自持有席位；`_strategist_inflight` 以組為單位去重。
 
 **提案包 + Adversary 迴圈**（research mode，一律開啟）：
 
@@ -226,9 +229,11 @@ decision_id。防亂提雙線：dedupe 擋重複、Strategist 自己在 failure 
 | `EmitDirective` | 設 problem 常駐指令 |
 | `RequestUserAmend` | 寫 `.proposed_<file>` + problem 轉 `awaiting_human` |
 | `MarkDeliverable` | 標 deliverable（anchor+claim） |
-| `Ingest` | 蓋 `ingested_at`（唯一終態；root 在場未 proved 則框架拒絕）；library:true 再走 sign-off/harvest |
+| `Ingest` | **頂層組**：蓋 `ingested_at`（唯一終態；root 在場未 proved 則框架拒絕）；library:true 再走 sign-off/harvest。**子組**：輕量版——組標 `delivered`、喚醒父組，不碰簽核/harvest/problem FSM；閘=錨 proved（救援形狀）或本組標過 ≥1 deliverable（無錨形狀） |
 | `FetchPaper` | enqueue Scholar（payload 帶 query/reason；outcome 由 Scholar 回填） |
 | `AttemptDisproof` | 框架**機械**否定手術鑄 ¬P goal（不讓 LLM 改寫語句、防 strawman） |
+| `Delegate` | INSERT 新組（charter=brief）+ 立即排新組席位；帶 target 時錨轉 `attempting`。outcome 保持 NULL 至子組終態——與同批 Inject 共用批次帳、都終態才喚醒父組 |
+| `ReturnToParent` | 子組限定：組標 `returned`、救援錨落 `shelved`（含級聯）、父組 Delegate outcome=`failed:returned`、喚醒父組 |
 | `Noop` | 只 INSERT audit row |
 
 收尾：batch 層 touch `last_strategist_at`（routine 另 touch `last_routine_at`、才 re-arm

@@ -1,7 +1,7 @@
 # Asterism — 架構
 
 原寫於 2026-05-06；2026-07-03 對照代碼全面重寫；2026-07-29 漂移校正（Formalizer 合併、
-research mode、problem FSM、schema v33）。本檔講**概念形狀**：系統由哪些角色組成、
+research mode、problem FSM）；2026-08-02 補討論小組樹（v35）。本檔講**概念形狀**：系統由哪些角色組成、
 狀態存在哪、哪些不變量在撐著正確性。動態流程（tick 怎麼跑、pipeline 逐步）見
 `docs/data-flow.md`；失敗語彙見 `docs/failure_modes.md`；技術細節以代碼為準、動手時再讀。
 
@@ -47,10 +47,11 @@ sqlite（`goals` × `strategies` × `strategy_subgoals`），**DB 是單一真�
 sub-spawn，在投影目錄硬隔離下審提案包、產 `verdict.json`，框架從逐準則裁決推導
 放行/反駁（見下「研究模式」）。
 
-Strategist 決策九種（SoT：`strategist.py` `DECISION_KINDS`）：`Inject` /
+Strategist 決策十一種（SoT：`strategist.py` `DECISION_KINDS`）：`Inject` /
 `ConfirmShelve` / `EmitDirective` / `RequestUserAmend` / `MarkDeliverable` / `Ingest` /
 `FetchPaper` / `AttemptDisproof`（框架機械鑄 ¬P goal——信念不被信任、兩個方向都要
-kernel）/ `Noop`。觸發三種：`routine`（含 belief audit 第一階段）/ `pending_review` /
+kernel）/ `Delegate` / `ReturnToParent`（後兩種屬小組樹、見下；`ReturnToParent`
+子組限定）/ `Noop`。觸發三種：`routine`（含 belief audit 第一階段）/ `pending_review` /
 `inject_batch_done`（structural stall 的喚醒也歸這類——fresh 題、deadlock、root 已證待
 Ingest 都算「empty batch done」）。`Ingest` 是唯一終態：root 在場時未 proved 前框架硬性
 拒絕；`ingested_at` 驅動 T1/T4 活性、Librarian selfstart 與 daemon 退出。
@@ -69,8 +70,39 @@ Strategist 每批決策不再裸提交：一份**提案包**（`proposal.md`：`
 SoT（`PROGRAMME.md` 只是 render；v31 以 partial unique index 釘每 rev 至多一 passed）。
 **NL-first**（2026-07-25 起）：worker 以 Programme 的 `## Proof` 為前提工作，goal 對應
 不到任何 NL 步驟時以 `no_nl_correspondence` 上交、不發明數學。{`FetchPaper`,
-`RequestUserAmend`, `Noop`} 全豁免包閘；提案必附 ≥1 實驗（`Inject`/`AttemptDisproof`）。
-設計 SoT：`docs/internal/research_mode_design.md`、`nl_first_design.md`。
+`RequestUserAmend`, `Noop`, `ReturnToParent`} 全豁免包閘；提案必附 ≥1 實驗
+（`Inject`/`AttemptDisproof`/`Delegate`）。設計 SoT：
+`docs/internal/research_mode_design.md`、`nl_first_design.md`。
+
+### 討論小組樹（2026-08-02、v35）
+
+NL 論證層從「一份 Programme、一個 strategist、一個判官管整題」長成**一棵樹**：
+
+> 小組 = 一份 charter + 自己的 Programme + 自己的 strategist/判官迴圈 + 它底下的子樹。
+
+charter 是父組交派的一段自然語言宣稱——**charter 之於子組＝Manifest 之於整題**，
+子組因此沿用整題層全部機制一路到終局。小組是**同一 problem 內的分區**（跨 problem
+引用被 cite gate 禁止），不是遞迴的 problem；頂層組是 `groups` 表裡
+`parent_group_id IS NULL` 的真實列、每題唯一（partial unique index 釘住）、只有它對人。
+
+- **`Delegate`**：把一段自己還證不出的宣稱交派給新組（可帶 `target_goal_id` 當救援
+  錨、錨轉 `attempting`）。豁免判官封閉律準則 4——交派物本身就是論證；判官改審
+  charter 精確可判 / Proof 假設它成立後完整 / 不依賴任何祖先 charter 或本組結論 /
+  是重擔不是跳步。
+- **`ReturnToParent`**：子組交回（`refuted` 須指向 proved 的 ¬charter 磚 / `amend`
+  附建議新 charter / `exhausted` 附屍檢）。
+- **結構牆（都在 verifier 層）**：頂層組不得 `ReturnToParent`（無處可去——機器不把
+  難題丟回給人）；子組不得 `RequestUserAmend`（看不到 user 檔、走 `ReturnToParent`
+  由父組決定是否升級）。
+- **父組派完即安靜**：`Delegate` 與 `Inject` 同吃批次在飛帳（兩道在飛謂詞都認得
+  「活著的子組」為第三種產物——這條「同進兩道」有 invariant test 釘住），子組終態
+  才喚醒父組。子組的 `Ingest` 是輕量版（標 `delivered`、不碰簽核/harvest/problem
+  FSM）；交回標 `returned`、救援錨落回 `shelved`。
+- wake 席位、routine 鐘、牆態偵測、Programme 修訂鏈、plan note、判官投影全部
+  **per-group**；goal 的組歸屬是推導、不存欄位（錨優先 → 最近產出決策的作者組 →
+  頂層組；解析到非 active 組換最近 active 祖先）。
+
+設計 SoT：`docs/internal/discussion_group_design.md`。
 
 ---
 
@@ -78,7 +110,7 @@ SoT（`PROGRAMME.md` 只是 render；v31 以 partial unique index 釘每 rev 至
 
 | 形式 | 內容 |
 |---|---|
-| **DB**（`asterism.db`、sqlite WAL；版本號與表清單以 `state/db.py` `_CURRENT_USER_VERSION` 為準（撰稿時 v33、16 張表）；近代里程碑：v17 queue lease、v21 spawn_usage 計帳、v23 Scholar/FetchPaper、v25 AttemptDisproof、v28 user_file_history、v29 problem FSM、v30/v31 Programme 修訂鏈、v33 Formalizer 合併） | 整棵 graph、pipeline 歷史、dead attempt forensics、Strategist 決策、Programme 修訂、Librarian lifecycle、KB lessons、spawn 用量 |
+| **DB**（`asterism.db`、sqlite WAL；版本號與表清單以 `state/db.py` `_CURRENT_USER_VERSION` 為準（撰稿時 v35、17 張表）；近代里程碑：v17 queue lease、v21 spawn_usage 計帳、v23 Scholar/FetchPaper、v25 AttemptDisproof、v28 user_file_history、v29 problem FSM、v30/v31 Programme 修訂鏈、v33 Formalizer 合併、v35 討論小組樹） | 整棵 graph、pipeline 歷史、dead attempt forensics、Strategist 決策、Programme 修訂、小組樹、Librarian lifecycle、KB lessons、spawn 用量 |
 | **`Manifest.md`** | 唯一人手檔（§4） |
 | **`Defs.lean` / `Root.lean`** | problem 自訂定義 / 框架管的 root（§5） |
 | **`proofs/L_<slug>.lean`、`_strategy_s<sid>.lean`** | 每 sub-Goal 一檔、每 Strategy 一份組裝 patch |
@@ -91,8 +123,9 @@ DB↔檔一致。
 
 schema 是「程式碼即文件」：表定義在 `Tooling/state/db.py`、migration 全集在
 `state/db_migrations.py`。狀態 enum 的 SoT 在 `Tooling/state/transitions.py`
-（goal 8 態、strategy 5 態含 `stalled`、problem 5 態——見 §7），schema CHECK 由
-測試綁定、不會漂。
+（goal 8 態、strategy 5 態含 `stalled`、problem 5 態——見 §7）；group 4 態
+（`active`/`delivered`/`returned`/`closed`）由 `state/groups.py` `set_status` 單一
+驅動。schema CHECK 由測試綁定、不會漂。
 
 ---
 
@@ -325,6 +358,16 @@ Tooling/
 - sub-goal slug 全題唯一（`UNIQUE(problem, slug)`）；strategy 檔名/定理名 `s<sid>` 框架鎖定
 - `.attempts/<pid>/` unconditional rmtree、agent 輸出先打包進 `dead_attempts.artifacts`
 - Schema 修改要 bump user_version + 寫 migration
+
+**小組樹**
+- 每題恰一個頂層組（`parent_group_id IS NULL`、partial unique index）；頂層組是
+  真實列、不是代碼特例
+- 「活著的子組」作為第三種在飛產物，必須**同時**被 `has_active_inflight_inject`
+  （停滯側）與 `has_live_inflight_inject`（反閒置側）認得（invariant test 釘住；
+  兩者歷史上分歧過三次、每次都是 livelock/deadlock）
+- 頂層組不得 `ReturnToParent`；子組不得 `RequestUserAmend`（皆 verifier 駁回）
+- 子組 Ingest 不碰 `problems.ingested_at`/簽核/harvest/problem FSM
+- group 狀態轉移只走 `groups.set_status`
 
 **Strategist**
 - ConfirmShelve 與 goal-target Inject 不得指向同一 target 或其 descendant
