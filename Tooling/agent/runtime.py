@@ -198,8 +198,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
         timeout_sec = timeout_sec_override
     import time as _time
     _t0 = _time.monotonic()
-    _before = _artifact_snapshot(problem_dir, usage_workspace,
-                                 usage_problem)
+    _before = _repo_status(usage_workspace)
     rc = llm.get_provider(kind=kind).spawn(llm.LLMRequest(
         kind=kind,
         prompt_path=prompt_path,
@@ -228,16 +227,11 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     return rc
 
 
-#: The problem-dir files whose baseline is pinned (`user_file_history`
-#: + the root gate). Watched here, enforced there.
-_USER_FILES = ("Root.lean", "Defs.lean", "Manifest.md")
-
 #: Repo regions where a write DURING a spawn is expected, so a change
 #: there is not evidence of anything: the spawn sandboxes, the
 #: framework's own runtime state, the Scholar's shelf, the harvest
 #: target, and the benchmark ledger. `Problems/**/proofs/` needs no
-#: entry — it is gitignored, hence invisible to `_repo_status`, and is
-#: adjudicated by the per-lease footprint instead.
+#: entry — it is gitignored, hence invisible to `_repo_status`.
 _EXPECTED_WRITE_PREFIXES = (
     ".attempts/", ".asterism/", "Papers/", "Library/", "Benchmarks/",
 )
@@ -250,42 +244,6 @@ _EXPECTED_WRITE_PREFIXES = (
 _AUDIT_LEDGER = ".asterism/artifact_audit.jsonl"
 
 
-def _artifact_snapshot(problem_dir: Path, workspace: "Path | None",
-                       problem: "str | None") -> dict:
-    """One observation of everything the audit compares.
-
-    Three questions, three instruments, because no single one answers
-    all three (see `_artifact_audit` for what each layer is for)."""
-    return {
-        "user": _digests(problem_dir, _USER_FILES),
-        "proofs": _digests(problem_dir / "proofs", None),
-        "legit": _legit_proofs_writes(workspace, problem),
-        "repo": _repo_status(workspace),
-    }
-
-
-def _digests(base: Path, names: "tuple[str, ...] | None") -> "dict[str, str]":
-    """blake2b of `names` under `base`, or of every `*.lean` when None.
-
-    Hashes rather than mtimes: a rewrite with identical bytes is not a
-    change worth reporting, and mtime alone fires on tools that touch
-    without writing."""
-    import hashlib
-    out: "dict[str, str]" = {}
-    try:
-        files = ([base / n for n in names] if names
-                 else sorted(base.glob("*.lean")))
-    except OSError:
-        return out
-    for f in files:
-        try:
-            out[f.name] = hashlib.blake2b(f.read_bytes(),
-                                          digest_size=8).hexdigest()
-        except OSError:
-            pass
-    return out
-
-
 def _repo_status(workspace: "Path | None") -> "set[str]":
     """`git status --porcelain -uall`, as a line set.
 
@@ -293,13 +251,16 @@ def _repo_status(workspace: "Path | None") -> "set[str]":
     without enumerating a guarded list — and enumerations rot: the old
     check watched three files plus one `proofs/` dir, so a spawn writing
     into `Tooling/`, another problem, `lakefile.lean` or `Asterism.yaml`
-    was entirely unwatched. ~100ms measured on this repo (23 lines).
+    was entirely unwatched. ~50ms measured on this repo (22 lines).
 
-    Two blind spots, stated rather than papered over. A MODIFICATION to
+    Two blind spots, stated rather than papered over: a MODIFICATION to
     an untracked file yields no new line (its `??` line is already
-    there), which is exactly the case for every user file of a problem
-    that was never committed — hence the separate digests. And ignored
-    trees are invisible, which is why `proofs/` is a different layer."""
+    there), and ignored trees — `Problems/**/proofs/` above all — are
+    invisible. Both are covered by enforcement rather than observation:
+    the user-file baseline pin (`user_file_history` + root gate) and the
+    `state/proof_store` commit chokepoint + per-decl axiom gate +
+    `drift-check`. See `_artifact_audit` for why the two digest layers
+    that used to cover them were retired."""
     if workspace is None:
         return set()
     import subprocess
@@ -317,122 +278,65 @@ def _repo_status(workspace: "Path | None") -> "set[str]":
     return {ln for ln in r.stdout.splitlines() if ln.strip()}
 
 
-#: `_legit_proofs_writes` sentinel: every `proofs/` path is fair game
-#: this round. Widening beats failing — see the docstring.
-_PROOFS_ALL = "*"
-
-
-def _legit_proofs_writes(workspace: "Path | None",
-                         problem: "str | None") -> "set[str] | str":
-    """The `proofs/` files that in-flight work may legitimately change.
-
-    "Who wrote this file" has no answer from file snapshots: with
-    `dispatch.pool` > 1 the framework commits a sibling pipeline's work
-    through `state/proof_store` while this spawn runs, and on 2026-07-30
-    a decomposition legitimately rewrote its target's own file into an
-    alias — which the previous check called tampering and used to
-    discard an honest spawn's output.
-
-    "Does ANY live lease have business touching this file" does have an
-    answer, and the queue holds it. A Goal-targeted worker may change
-    its goal's file and its strategies' files; a Problem-targeted one
-    (mint, Librarian, harvest) sweeps the tree, so the honest answer for
-    it is "all of it".
-
-    Unknown lease kinds and unresolvable state WIDEN rather than
-    narrow. That direction is the whole lesson of the 07-30 misfire: a
-    model of legitimacy that is incomplete must be loud, never fatal,
-    or it spends its life failing honest work."""
-    if workspace is None or not problem:
-        return _PROOFS_ALL
-    from ..state import db as _db
-    allowed: "set[str]" = set()
-    try:
-        conn = _db.connect(workspace / "asterism.db")
-    except Exception:  # noqa: BLE001 — no DB (unit-test spawn, fresh tree)
-        return _PROOFS_ALL
-    try:
-        leases = conn.execute(
-            "SELECT target_id, target_kind FROM queue"
-            " WHERE owner_pid IS NOT NULL AND problem = ?",
-            (problem,)).fetchall()
-        for tid, tkind in leases:
-            if tkind != "Goal" or not str(tid).isdigit():
-                return _PROOFS_ALL
-            for (lp,) in conn.execute(
-                    "SELECT lean_path FROM goals WHERE id = ?", (tid,)):
-                if lp:
-                    allowed.add(Path(str(lp)).name)
-            for lp, sp in conn.execute(
-                    "SELECT lean_path, scratch_path FROM strategies"
-                    " WHERE goal_id = ?", (tid,)):
-                for p in (lp, sp):
-                    if p:
-                        allowed.add(Path(str(p)).name)
-    except Exception:  # noqa: BLE001 — schema drift must not fail a spawn
-        return _PROOFS_ALL
-    finally:
-        try:
-            conn.close()
-        except Exception:  # noqa: BLE001
-            pass
-    return allowed
-
-
 def _artifact_audit(*, kind: str, problem_dir: Path,
                     workspace: "Path | None", problem: "str | None",
-                    attempts_dir: Path, before: dict) -> "list[dict]":
-    """Report every write this spawn's window cannot account for.
+                    attempts_dir: Path,
+                    before: "set[str]") -> "list[dict]":
+    """Report repo paths that appeared during this spawn's window and
+    lie outside every region the framework writes to.
 
-    Replaces the sandbox rather than supplementing it (2026-07-30): the
-    claude side denies the write tools and fences Bash with
-    `ASTERISM_SPAWN_WRITE_ROOTS`, but the Antigravity side must run with
-    `command(*)` — its permission matcher takes an exact literal or `*`
-    and nothing between — and every command shells through powershell,
-    so a write channel there is unavoidable. Checking afterwards catches
-    a write through ANY channel: tool, shell, interpreter, MCP.
+    Scope note — this was THREE layers until 2026-08-01. The other two
+    hashed the problem's user files and every file in `proofs/` before
+    and after each spawn, and existed for one stated reason: the
+    Antigravity side then ran with `command(*)` allowed, every agy
+    command shells through powershell, and a shell is a write channel
+    that routes around the `write_file` deny rules. That premise is
+    gone. Both providers are now capability-closed — `command(*)` and
+    `read_url(*)` are DENIED on agy with `write_file` allowed only under
+    `.attempts/` (probe-verified), `DEFAULT_BASH_ALLOWED` is empty on
+    claude, and all agent capability goes through the framework-owned
+    MCP tool list. Neither layer ever enforced anything either: the
+    user-file pin and the commit chokepoint / axiom gate / `drift-check`
+    are the enforcement, and both digest sweeps grew with the proof tree
+    while answering a question nothing could act on. ~290 spawns of the
+    b6_1 leg under the closed model wrote zero ledger rows.
 
-    Three layers, because each answers a question the others cannot:
-      user files — no legitimate writer exists during a spawn, and the
-        pin (`user_file_history` + root gate) is what enforces it;
-      proofs/    — legitimacy is per-lease, not per-file (see
-        `_legit_proofs_writes`); gitignored, so git cannot see it;
-      the rest of the repo — the complement of the framework's own
-        output regions, via `git status`; catches `Tooling/`, other
-        problems, `lakefile.lean`, `Asterism.yaml`, which nothing
-        watched before.
+    So: DO NOT restore them without first re-opening a shell or a broad
+    write grant to an agent. If that ever happens, this docstring and
+    `git log` for this file are the recipe.
 
-    NOT a soundness mechanism, and no layer fails the spawn. A written
+    What survives is the layer the capability change does not touch,
+    because it does not watch the AGENT: the complement of the
+    framework's own output regions catches the framework itself writing
+    into `Tooling/`, another problem, `lakefile.lean` or `Asterism.yaml`
+    — a class nothing else observes.
+
+    The spawn's OWN problem dir is an expected region — root assembly,
+    a committed brick and a Defs edit all legitimately land there — so
+    it is added to the fixed list per call. Another problem's tree is
+    not, which is the distinction worth keeping. (Untracked problem
+    trees are invisible either way: `git status` already carries one
+    `??` line for the whole dir and writing inside adds none. So an
+    empty ledger says nothing about problems that were never
+    committed — `Problems/PutnamCmp/` throughout the b6_1 leg.)
+
+    NOT a soundness mechanism, and it never fails the spawn. A written
     proof still faces the commit chokepoint, the per-decl axiom gate and
-    the baseline pin; those decide. This layer turns "the fence held"
-    from an assumption into an observation, and records enough for a
-    revert to be written later without redoing the detection."""
-    after = _artifact_snapshot(problem_dir, workspace, problem)
+    the baseline pin; those decide. This turns "the fence held" from an
+    assumption into an observation, and records enough for a revert to
+    be written later without redoing the detection."""
+    expected = _EXPECTED_WRITE_PREFIXES
+    if workspace is not None:
+        try:
+            expected += (problem_dir.resolve().relative_to(
+                workspace.resolve()).as_posix() + "/",)
+        except (ValueError, OSError):  # problem dir outside the workspace
+            pass
     out: "list[dict]" = []
-
-    for name, was in sorted(before["user"].items()):
-        if after["user"].get(name) != was:
-            out.append({"layer": "user_file", "path": name,
-                        "why": "the pinned baseline has no writer while "
-                               "a spawn runs"})
-
-    widened = _PROOFS_ALL in (before["legit"], after["legit"])
-    if not widened:
-        # Union of the lease snapshots taken either side of the spawn: a
-        # lease released moments before the audit still legitimises the
-        # write it just made. Narrowing to "live right now" would
-        # reintroduce the same race in a new place.
-        allowed = set(before["legit"]) | set(after["legit"])
-        for name in sorted(set(before["proofs"]) | set(after["proofs"])):
-            if (before["proofs"].get(name) != after["proofs"].get(name)
-                    and name not in allowed):
-                out.append({"layer": "proofs", "path": f"proofs/{name}",
-                            "why": "no in-flight lease covers this file"})
-
-    appeared = after["repo"] - before["repo"]
+    appeared = _repo_status(workspace) - before
     for line in sorted(appeared):
         rel = line[3:].strip().strip('"')
-        if rel.startswith(_EXPECTED_WRITE_PREFIXES):
+        if rel.startswith(expected):
             continue
         out.append({"layer": "repo", "path": rel,
                     "why": "outside every expected write region"})

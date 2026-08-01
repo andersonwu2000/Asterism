@@ -343,14 +343,22 @@ def test_provider_resolves_by_config_name(monkeypatch: pytest.MonkeyPatch):
 
 
 # ---------------------------------------------------------------------
-# Artifact tripwire — the write control that replaces the sandbox
+# Artifact audit — the repo-complement observation
+#
+# Retired 2026-08-01: the user-file and `proofs/` digest layers. They
+# existed because agy then ran with `command(*)` allowed, and a shell is
+# a write channel that routes around the write_file deny rules. Both
+# providers are capability-closed now, and neither layer ever enforced
+# anything (the baseline pin and the commit chokepoint do). Their tests
+# went with them; `test_capability_closure_is_what_retired_the_digest_
+# layers` is the tripwire that fires if the premise comes back.
 # ---------------------------------------------------------------------
 
 def _audit_workspace(tmp_path: Path) -> "tuple[Path, Path]":
     """A git repo with one problem dir. Returns (workspace, problem_dir).
 
-    A real repo because the third layer's instrument IS `git status`:
-    stubbing it would test the stub."""
+    A real repo because the instrument IS `git status`: stubbing it
+    would test the stub."""
     import subprocess
     pdir = tmp_path / "Problems" / "p"
     (pdir / "proofs").mkdir(parents=True)
@@ -359,112 +367,16 @@ def _audit_workspace(tmp_path: Path) -> "tuple[Path, Path]":
     return tmp_path, pdir
 
 
-def _lease(workspace: Path, *, goal_id: int, lean_path: str,
-           target_kind: str = "Goal") -> None:
-    """Register goal `goal_id` and put a leased queue row on it."""
-    from Tooling.state import db as _db
-    conn = _db.connect(workspace / "asterism.db")
-    _db.init_schema(conn)
-    conn.execute(
-        "INSERT OR IGNORE INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'Problems/p/Manifest.md',"
-        " '2026-07-30T10:00:00Z')")
-    conn.execute(
-        "INSERT INTO goals (id, problem, slug, lean_path, statement,"
-        " kind, origin, status, depth, attempts, created_at, updated_at)"
-        " VALUES (?, 'p', 'g', ?, 'T', 'theorem', 'root', 'attempting',"
-        " 0, 0, '2026-07-30T10:00:00Z', '2026-07-30T10:00:00Z')",
-        (goal_id, lean_path))
-    conn.execute(
-        "INSERT INTO queue (kind, target_id, target_kind, priority,"
-        " problem, owner_pid, leased_at, created_at)"
-        " VALUES ('Formalizer', ?, ?, 10, 'p', 4242, '2026-07-30T10:00:00Z',"
-        " '2026-07-30T10:00:00Z')", (str(goal_id), target_kind))
-    conn.commit()
-    conn.close()
-
-
-def test_audit_is_silent_when_a_live_lease_covers_the_proof_file(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
-) -> None:
-    """The 07-30 misfire, pinned.
-
-    A Formalizer decomposed its goal; the framework rewrote that goal's
-    own proof file into an alias on the strategy — a legal commit
-    through `state/proof_store` — while a second dispatch on the same
-    goal was still inside its provider call. The old check compared file
-    snapshots, could not see WHO wrote, and replaced an honest spawn's
-    rc with `provider_misconfigured`. Legitimacy is per-lease: a file
-    the queue says someone is working on is fair game."""
-    from Tooling.agent import runtime
-    ws, pdir = _audit_workspace(tmp_path)
-    proof = pdir / "proofs" / "L_g.lean"
-    proof.write_text("theorem g : T := by sorry\n", encoding="utf-8")
-    _lease(ws, goal_id=7140,
-           lean_path="Problems/p/proofs/L_g.lean")
-
-    before = runtime._artifact_snapshot(pdir, ws, "p")
-    proof.write_text("def g := @s24112\n", encoding="utf-8")
-
-    assert runtime._artifact_audit(
-        kind="formalizer", problem_dir=pdir, workspace=ws, problem="p",
-        attempts_dir=tmp_path / ".attempts" / "x", before=before) == []
-    assert "artifact-audit" not in capsys.readouterr().out
-
-
-def test_audit_reports_a_proof_file_no_lease_covers(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
-) -> None:
-    """The case worth catching: a worker rewriting SOMEONE ELSE's proved
-    brick. No live lease covers that file, so no legitimate writer
-    exists — which is decidable even though "who wrote it" is not."""
-    from Tooling.agent import runtime
-    ws, pdir = _audit_workspace(tmp_path)
-    (pdir / "proofs" / "L_g.lean").write_text("mine\n", encoding="utf-8")
-    other = pdir / "proofs" / "L_someone_else.lean"
-    other.write_text("theorem done : T := trivial\n", encoding="utf-8")
-    _lease(ws, goal_id=7140, lean_path="Problems/p/proofs/L_g.lean")
-
-    before = runtime._artifact_snapshot(pdir, ws, "p")
-    other.write_text("theorem done : T := by sorry\n", encoding="utf-8")
-
-    found = runtime._artifact_audit(
-        kind="formalizer", problem_dir=pdir, workspace=ws, problem="p",
-        attempts_dir=tmp_path / ".attempts" / "x", before=before)
-    assert [v["layer"] for v in found] == ["proofs"]
-    assert found[0]["path"] == "proofs/L_someone_else.lean"
-    assert "artifact-audit" in capsys.readouterr().out
-
-
-def test_audit_reports_a_user_file_change(tmp_path: Path) -> None:
-    """The pinned baseline (`user_file_history` + the root gate) has no
-    writer while a spawn runs. Reported, not fatal: root assembly is a
-    framework write to the same file, and 07-30 taught what happens when
-    an incomplete model of legitimacy gets a fatal consequence."""
-    from Tooling.agent import runtime
-    ws, pdir = _audit_workspace(tmp_path)
-    (pdir / "Root.lean").write_text("stub\n", encoding="utf-8")
-
-    before = runtime._artifact_snapshot(pdir, ws, "p")
-    (pdir / "Root.lean").write_text("assembled\n", encoding="utf-8")
-
-    found = runtime._artifact_audit(
-        kind="formalizer", problem_dir=pdir, workspace=ws, problem="p",
-        attempts_dir=tmp_path / ".attempts" / "x", before=before)
-    assert [(v["layer"], v["path"]) for v in found] == [
-        ("user_file", "Root.lean")]
-
-
 def test_audit_covers_the_whole_repo_except_the_output_regions(
     tmp_path: Path,
 ) -> None:
-    """What the old enumeration missed entirely: a spawn writing into
-    `Tooling/`, another problem, or `Asterism.yaml` was unwatched,
-    because the guard listed three files and one dir. The complement of
-    the framework's own output regions is a rule instead of a list."""
+    """What an enumeration misses entirely: a write into `Tooling/`,
+    another problem, or `Asterism.yaml` was unwatched, because the old
+    guard listed three files and one dir. The complement of the
+    framework's own output regions is a rule instead of a list."""
     from Tooling.agent import runtime
     ws, pdir = _audit_workspace(tmp_path)
-    before = runtime._artifact_snapshot(pdir, ws, "p")
+    before = runtime._repo_status(ws)
 
     (ws / "Tooling").mkdir()
     (ws / "Tooling" / "hack.py").write_text("x = 1\n", encoding="utf-8")
@@ -478,33 +390,31 @@ def test_audit_covers_the_whole_repo_except_the_output_regions(
     found = runtime._artifact_audit(
         kind="strategist", problem_dir=pdir, workspace=ws, problem="p",
         attempts_dir=tmp_path / ".attempts" / "x", before=before)
-    paths = {v["path"] for v in found if v["layer"] == "repo"}
-    assert paths == {"Tooling/hack.py", "Problems/other/Root.lean"}
+    assert {v["path"] for v in found} == {"Tooling/hack.py",
+                                          "Problems/other/Root.lean"}
+    assert {v["layer"] for v in found} == {"repo"}
 
 
-def test_audit_widens_when_legitimacy_is_unknowable(tmp_path: Path) -> None:
-    """No DB, no problem name, or a Problem-level lease (mint, Librarian,
-    harvest — they sweep the tree) all mean the footprint cannot be
-    narrowed. Widen, never fail: an incomplete model of legitimacy that
-    is allowed to be fatal spends its life failing honest work, which is
-    exactly what happened on 07-30."""
+def test_audit_is_silent_when_only_output_regions_changed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The normal case, and the one the retired layers kept getting
+    wrong: a spawn writes its own sandbox and the framework commits a
+    proof, and nothing about that is worth a word."""
     from Tooling.agent import runtime
     ws, pdir = _audit_workspace(tmp_path)
-    proof = pdir / "proofs" / "L_g.lean"
-    proof.write_text("before\n", encoding="utf-8")
+    before = runtime._repo_status(ws)
 
-    assert runtime._legit_proofs_writes(ws, None) == runtime._PROOFS_ALL
-    assert runtime._legit_proofs_writes(ws, "p") == runtime._PROOFS_ALL
+    (ws / ".attempts").mkdir()
+    (ws / ".attempts" / "scratch.md").write_text("work\n", encoding="utf-8")
+    (pdir / "proofs" / "L_g.lean").write_text("theorem g : T := trivial\n",
+                                              encoding="utf-8")
+    (pdir / "Root.lean").write_text("assembled\n", encoding="utf-8")
 
-    _lease(ws, goal_id=7140, lean_path="Problems/p/proofs/L_g.lean",
-           target_kind="Problem")
-    assert runtime._legit_proofs_writes(ws, "p") == runtime._PROOFS_ALL
-
-    before = runtime._artifact_snapshot(pdir, ws, "p")
-    proof.write_text("after\n", encoding="utf-8")
     assert runtime._artifact_audit(
-        kind="librarian", problem_dir=pdir, workspace=ws, problem="p",
+        kind="formalizer", problem_dir=pdir, workspace=ws, problem="p",
         attempts_dir=tmp_path / ".attempts" / "x", before=before) == []
+    assert "artifact-audit" not in capsys.readouterr().out
 
 
 def test_audit_writes_a_durable_record_not_just_a_log_line(
@@ -517,9 +427,9 @@ def test_audit_writes_a_durable_record_not_just_a_log_line(
     import json
     from Tooling.agent import runtime
     ws, pdir = _audit_workspace(tmp_path)
-    (pdir / "Defs.lean").write_text("a\n", encoding="utf-8")
-    before = runtime._artifact_snapshot(pdir, ws, "p")
-    (pdir / "Defs.lean").write_text("b\n", encoding="utf-8")
+    before = runtime._repo_status(ws)
+    (ws / "Tooling").mkdir()
+    (ws / "Tooling" / "hack.py").write_text("x = 1\n", encoding="utf-8")
 
     runtime._artifact_audit(
         kind="formalizer", problem_dir=pdir, workspace=ws, problem="p",
@@ -531,7 +441,7 @@ def test_audit_writes_a_durable_record_not_just_a_log_line(
     assert len(rows) == 1
     assert rows[0]["kind"] == "formalizer"
     assert rows[0]["attempts_dir"] == "abc"
-    assert rows[0]["violations"][0]["path"] == "Defs.lean"
+    assert rows[0]["violations"][0]["path"] == "Tooling/hack.py"
 
 
 def test_no_audit_layer_can_fail_a_spawn() -> None:
@@ -543,3 +453,35 @@ def test_no_audit_layer_can_fail_a_spawn() -> None:
     src = Path(runtime.__file__).read_text(encoding="utf-8")
     audit_call = src.split("_artifact_audit(kind=kind")[1][:200]
     assert "return" not in audit_call.split("return rc")[0]
+
+
+def test_capability_closure_is_what_retired_the_digest_layers() -> None:
+    """The retirement's premise, pinned so it cannot rot silently.
+
+    The user-file and `proofs/` digest sweeps were dropped because no
+    agent has a shell or a broad write grant any more: agy denies
+    `command(*)`, and the claude side ships an empty Bash allowlist. If
+    either is reopened, the artifact audit no longer covers what it used
+    to and this test is the place that says so — restore the layers (see
+    `_artifact_audit`'s docstring and `git log` for runtime.py) or
+    justify the new posture."""
+    import json
+    from Tooling.llm import antigravity_cli as agy
+    from Tooling.llm import claude_cli
+
+    assert claude_cli.DEFAULT_BASH_ALLOWED == "", (
+        "a Bash allowlist reopens a write channel the audit no longer "
+        "watches")
+
+    # agy's grants live in the user's home, not the repo (they are a
+    # user decision — AUTHORIZED OPERATIONS §3). Check them when the
+    # machine has them; a CI box legitimately has no agy.
+    path = agy.permissions_path()
+    if not path.exists():
+        pytest.skip("no agy settings on this machine")
+    deny = json.loads(path.read_text(encoding="utf-8")).get(
+        "permissions", {}).get("deny", [])
+    assert "command(*)" in deny, (
+        "a shell on the agy side reopens the write channel the "
+        "user-file / proofs digest layers used to watch")
+    assert "read_url(*)" in deny
