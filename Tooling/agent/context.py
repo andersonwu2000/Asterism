@@ -1059,6 +1059,11 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
     # substitute a different argument for the one that authorised this
     # goal — the same drift this section was just pinned against.
     if current is not None and int(current["rev"]) != int(row["rev"]):
+        # The race actually happening, on the record. Silence here means
+        # the Programme never moved under anyone's feet in this run;
+        # a line means it did, and names who was riding the old argument.
+        print(f"[programme-pin] goal {goal_id}: authorised by rev "
+              f"{row['rev']}, current is {current['rev']}", flush=True)
         out += [f"Full Programme: `PROGRAMME.md` beside the problem "
                 f"files — note it renders rev {current['rev']}, which has "
                 f"moved on from the rev that authorised this goal. The "

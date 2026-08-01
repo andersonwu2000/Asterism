@@ -267,3 +267,33 @@ def test_rev_for_goal_falls_back_to_current(tmp_path):
     c.commit()
     assert programme.rev_for_goal(c, "p", goal_id=orphan)["rev"] == 1
     assert programme.rev_for_goal(c, "p")["rev"] == 1
+
+
+def test_rev_for_goal_takes_the_latest_authorisation_at_the_same_depth(
+    tmp_path,
+):
+    """A goal re-Injected later carries two producing decisions. The
+    live one is the latest — an older row must not drag the worker back
+    to a superseded argument, which is the one way this walk can be
+    WRONG rather than merely unhelpful (the cascade's other failure mode
+    is falling back to current_rev, i.e. the old behaviour)."""
+    c = _fresh(tmp_path)
+    programme.record_pass(c, "p", _body(proof="Step 1, first pass."),
+                          {"verdict": "pass"}, [], 0, "batch-1")
+    g = _authorised_goal(c, slug="twice", batch_id="batch-1",
+                         decision_id=None)
+    programme.record_pass(c, "p", _body(proof="Step 1, reframed."),
+                          {"verdict": "pass"}, [], 0, "batch-2")
+    # Re-Inject on the same goal: `produced_goal_id` is set again
+    # (produced_kind='redispatch'), so both rows sit at depth 0.
+    c.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, batch_id, target_id,"
+        " produced_goal_id, created_at, updated_at)"
+        " VALUES ('p', 0, 'routine', 'Inject', 'batch-2', ?, ?, ?, ?)",
+        (g, g, db.now(), db.now()))
+    c.commit()
+
+    row = programme.rev_for_goal(c, "p", goal_id=g)
+    assert row["rev"] == 2
+    assert "reframed" in row["body"]
