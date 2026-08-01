@@ -1046,6 +1046,72 @@ def test_citation_edges_from_strategy_scratch(workspace: Path) -> None:
     assert gp["proof_text"].startswith("theorem parent_thm")
 
 
+def test_goal_source_shows_the_working_text_not_the_stub(
+        workspace: Path) -> None:
+    """A node's own file is `:= by sorry` for its whole working life —
+    the decomposition lands in the ROUTE's file and a live attempt
+    exists only in a workarea. Clicking the star must show that work
+    (owner, 2026-08-01), labelled with what it is: an open route's
+    skeleton, an attempt mid-write, or the untouched statement."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    gid = db.insert_goal(conn, problem="p", slug="split_me",
+                         lean_path="Problems/p/proofs/L_split_me.lean",
+                         statement="True", origin="backward")
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, status, created_by,"
+        " created_at, scratch_path) VALUES (?, 'x', 'proposed', 'test', ?,"
+        " 'Problems/p/proofs/_strategy_s1.lean')", (gid, ts))
+    sid = int(cur.lastrowid)
+    conn.commit()
+    conn.close()
+    pdir = workspace / "Problems" / "p" / "proofs"
+    pdir.mkdir(parents=True)
+    (pdir / "L_split_me.lean").write_text(
+        "import Mathlib\ntheorem split_me : True := by sorry\n",
+        encoding="utf-8")
+    c = _client(workspace)
+
+    # no route file on disk yet → the honest fallback is its own file
+    g = c.get(f"/api/problems/p/goals/{gid}").json()
+    assert g["source_state"] == "own_file"
+    assert "sorry" in g["proof_text"]
+
+    # the open route's skeleton IS how the goal is split right now
+    (pdir / "_strategy_s1.lean").write_text(
+        "import Mathlib\ntheorem split_me : True := by\n"
+        "  have step : True := piece_one\n  exact step\n", encoding="utf-8")
+    g = c.get(f"/api/problems/p/goals/{gid}").json()
+    assert g["source_state"] == "open_route"
+    assert g["source_strategy_id"] == sid
+    assert "have step" in g["proof_text"]
+
+    # an agent writing right now outranks both — its draft is the only
+    # place that work exists until commit
+    wa = workspace / ".attempts" / "pid1"
+    wa.mkdir(parents=True)
+    (wa / "Context.md").write_text("# Context for goal split_me\n",
+                                   encoding="utf-8")
+    (wa / "patch.lean").write_text(
+        "import Mathlib\ntheorem split_me : True := by\n"
+        "  exact trivial_in_progress\n", encoding="utf-8")
+    g = c.get(f"/api/problems/p/goals/{gid}").json()
+    assert g["source_state"] == "in_flight"
+    assert g["source_path"] == ".attempts/pid1/patch.lean"
+    assert "trivial_in_progress" in g["proof_text"]
+
+    # a finished route still wins the label it earned
+    conn = _open_db(workspace)
+    conn.execute("UPDATE strategies SET status = 'succeeded' WHERE id = ?",
+                 (sid,))
+    conn.commit()
+    conn.close()
+    (pdir / "_strategy_s1.lean").touch()  # landed after the draft
+    g = c.get(f"/api/problems/p/goals/{gid}").json()
+    assert g["source_state"] == "winning_route"
+
+
 def test_papers_bookshelf_flow(workspace: Path) -> None:
     """Top-level bookshelf: browser upload (raw bytes, content-hash
     idempotent), list with bindings, read text + original, delete

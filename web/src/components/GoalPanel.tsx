@@ -57,6 +57,54 @@ function Attempt({ a }: { a: DeadAttempt }) {
   )
 }
 
+/** One quiet line naming what the source block below actually is.
+ * Silent for a landed proof — that is the case the reader assumes. */
+function SourceNote({
+  data,
+  onSelectStrategy,
+}: {
+  data: GoalDetail
+  onSelectStrategy?: (id: number) => void
+}) {
+  const sid = data.source_strategy_id ?? null
+  const route =
+    sid !== null && onSelectStrategy ? (
+      <button
+        className="font-mono underline decoration-edge-strong decoration-dotted underline-offset-2 transition-colors hover:text-ink"
+        onClick={() => onSelectStrategy(sid)}
+        title="open this route — its reasoning and its subgoals"
+      >
+        s{sid}
+      </button>
+    ) : sid !== null ? (
+      <span className="font-mono">s{sid}</span>
+    ) : null
+
+  if (data.source_state === 'open_route')
+    return (
+      <div className="mb-1.5 text-[11px] text-ink-faint">
+        how it is split right now — the skeleton of route {route}, still open. Its{' '}
+        <span title="engine term: sub-goal">pieces</span> are the stars below it.
+      </div>
+    )
+  if (data.source_state === 'in_flight')
+    return (
+      <div className="mb-1.5 text-[11px] text-ink-faint">
+        an agent is writing this right now — a draft in its scratch area, not yet
+        part of the proof.
+      </div>
+    )
+  if (data.source_state === 'own_file' && /\bsorry\b/.test(data.proof_text ?? ''))
+    // "nothing attempted" would be a lie next to a list of failed
+    // attempts — say only what the file shows: nothing LANDED
+    return (
+      <div className="mb-1.5 text-[11px] text-ink-faint">
+        the bare statement — no work has landed in this node's own file.
+      </div>
+    )
+  return null
+}
+
 export default function GoalPanel({
   problem,
   goalId,
@@ -147,6 +195,12 @@ export default function GoalPanel({
               )}
             </div>
             <SectionLabel>{data.proof_text ? 'source' : 'statement'}</SectionLabel>
+            {/* A node's own file is a `:= by sorry` stub for its whole
+                working life — the decomposition lives in the ROUTE's
+                file, a live attempt only in a workarea. The panel now
+                shows that text, so it must say which one it is (owner,
+                2026-08-01). */}
+            {data.proof_text && <SourceNote data={data} onSelectStrategy={onSelectStrategy} />}
             {/* no inner scroll: the panel body is the ONE scroll
                 context — a nested max-h pane read as double
                 scrollbars (owner). The import/open/namespace preamble

@@ -151,8 +151,14 @@ export interface DeadAttempt {
 export interface GoalDetail extends Omit<Goal, 'dead_attempts'> {
   /** declaration source — the proof file minus its import prelude */
   proof_text: string | null
-  /** the file proof_text was read from (winning route's scratch when present) */
+  /** the file proof_text was read from */
   source_path: string
+  /** what that text IS — a node's own file is a sorry stub for its
+   * whole working life, so the panel must say whether it is showing a
+   * finished proof, a live decomposition, or an attempt mid-write */
+  source_state?: 'winning_route' | 'open_route' | 'in_flight' | 'own_file'
+  /** the route the shown text belongs to (route states only) */
+  source_strategy_id?: number | null
   dead_attempts: DeadAttempt[]
   strategies: {
     id: number

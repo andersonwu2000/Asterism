@@ -741,13 +741,102 @@ def _disproof_links(conn: sqlite3.Connection,
     return out
 
 
+def goal_workarea_draft(workspace: Path, slug: str) -> "Path | None":
+    """Freshest .lean draft in the workarea serving goal `slug`
+    (matched by Context.md's '# Context for goal <slug>' heading —
+    only the owning agent's context carries it as a heading, so a
+    sibling merely CITING the slug never matches). The Formalizer
+    drafts `patch.lean` here and only lands at commit, so this is the
+    ONLY place its work exists until then — the run lane and the goal
+    panel both read it."""
+    marker = f"# Context for goal {slug}"
+    best: "Path | None" = None
+    best_m = -1.0
+    try:
+        entries = list((workspace / ".attempts").iterdir())
+    except OSError:
+        return None
+    for d in entries:
+        if d.name.startswith("_") or not d.is_dir():
+            continue
+        try:
+            ctx = (d / "Context.md").read_text(
+                encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if marker not in ctx:
+            continue
+        try:
+            for f in d.glob("*.lean"):
+                if f.name.startswith("_"):
+                    continue
+                mt = f.stat().st_mtime
+                if mt > best_m:
+                    best_m = mt
+                    best = f
+        except OSError:
+            continue
+    return best
+
+
+def _mtime_or(path: Path, default: float = -1.0) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return default
+
+
+def _goal_source(conn: sqlite3.Connection, workspace: Path,
+                 goal_id: int, slug: str,
+                 lean_path: str) -> "tuple[str, str, int | None]":
+    """(path, state, strategy_id) — WHICH text the panel should show for
+    this goal, and what that text is.
+
+    A node's own file is a `:= by sorry` stub for its whole working
+    life: the decomposition lands in the ROUTE's file and the live
+    attempt exists only in a workarea. Showing the stub told the reader
+    nothing about how the goal was actually split (owner, 2026-08-01).
+    Freshest meaningful text wins:
+
+      winning_route — the route that closed it (its scratch IS the proof)
+      open_route    — a route still open: how the goal is split right now
+      in_flight     — an attempt writing this minute (scratch; may vanish)
+      own_file      — no route, no draft: the goal's own file as it stands
+    """
+    src, state, sid = lean_path, "own_file", None
+    row = conn.execute(
+        "SELECT id, scratch_path, status FROM strategies"
+        " WHERE goal_id = ? AND scratch_path != ''"
+        # succeeded first, then the newest live route; a dead route's
+        # skeleton is forensics, reachable through its own panel
+        "   AND status IN ('succeeded', 'proposed')"
+        " ORDER BY (status = 'succeeded') DESC, id DESC LIMIT 1",
+        (goal_id,)).fetchone()
+    if row is not None and (workspace / str(row["scratch_path"])).is_file():
+        src = str(row["scratch_path"])
+        sid = int(row["id"])
+        state = ("winning_route" if str(row["status"]) == "succeeded"
+                 else "open_route")
+    draft = goal_workarea_draft(workspace, slug)
+    if draft is not None and _mtime_or(draft) > _mtime_or(workspace / src):
+        # same rule the run lane uses: while the draft is the fresher
+        # text, the draft IS the live view
+        try:
+            return (draft.relative_to(workspace).as_posix(),
+                    "in_flight", sid)
+        except ValueError:
+            pass
+    return src, state, sid
+
+
 def goal_detail(conn: sqlite3.Connection, problem: str,
                 goal_id: int,
                 workspace: "Path | None" = None) -> dict | None:
     """Goal drill-down: full row + dead-attempt forensics (most recent
     first, capped). With `workspace`, also the declaration source —
     the proof file minus its import prelude (a node IS its Lean text;
-    the panel shows `name : statement := proof` as written)."""
+    the panel shows `name : statement := proof` as written), picked by
+    `_goal_source` so a working node shows its work, not its stub."""
     g = conn.execute(
         "SELECT * FROM goals WHERE id = ? AND problem = ?",
         (goal_id, problem)).fetchone()
@@ -755,16 +844,10 @@ def goal_detail(conn: sqlite3.Connection, problem: str,
         return None
     proof_text = None
     src = g["lean_path"]
+    source_state, source_strategy_id = "own_file", None
     if workspace is not None:
-        # the winning route's scratch patch is the real proof — the
-        # goal's own file is often a two-line delegate
-        # (`def main := @...sNNN`); readers came for the tactics
-        win = conn.execute(
-            "SELECT scratch_path FROM strategies WHERE goal_id = ?"
-            " AND status = 'succeeded' AND scratch_path != ''"
-            " ORDER BY id DESC LIMIT 1", (goal_id,)).fetchone()
-        if win is not None:
-            src = win["scratch_path"]
+        src, source_state, source_strategy_id = _goal_source(
+            conn, workspace, goal_id, str(g["slug"]), str(g["lean_path"]))
         try:
             text = (workspace / str(src)).read_text(
                 encoding="utf-8", errors="replace")
@@ -834,10 +917,14 @@ def goal_detail(conn: sqlite3.Connection, problem: str,
         "created_at": str(g["created_at"]),
         "disproof_of": _disproof_links(conn, problem).get(int(g["id"])),
         "proof_text": proof_text,
-        # the file the source above was actually read from (the scratch
-        # when a winning route exists) — the panel's path label must
-        # name what it shows
+        # the file the source above was actually read from — the panel's
+        # path label must name what it shows
         "source_path": str(src),
+        # ...and WHAT it is: a proof, a live decomposition, an attempt
+        # in flight, or the node's own file. The reader cannot tell a
+        # route skeleton from a landed proof by looking at it.
+        "source_state": source_state,
+        "source_strategy_id": source_strategy_id,
         "dead_attempts": dead,
         "strategies": strategies,
     }

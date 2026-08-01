@@ -83,40 +83,9 @@ _CTX_TITLE_RE = re.compile(r"#\s*(\w+) context — (.+?)\s*$")
 _TRIGGER_RE = re.compile(r"`trigger_kind`:\s*(\w+)")
 
 
-def _goal_workarea_draft(workspace: Path, slug: str) -> "Path | None":
-    """Freshest .lean draft in the workarea serving goal `slug`
-    (matched by Context.md's '# Context for goal <slug>' heading —
-    only the owning agent's context carries it as a heading, so a
-    sibling merely CITING the slug never matches). The Formalizer
-    drafts `patch.lean` here and only lands at commit."""
-    marker = f"# Context for goal {slug}"
-    best: "Path | None" = None
-    best_m = -1.0
-    try:
-        entries = list((workspace / ".attempts").iterdir())
-    except OSError:
-        return None
-    for d in entries:
-        if d.name.startswith("_") or not d.is_dir():
-            continue
-        try:
-            ctx = (d / "Context.md").read_text(
-                encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        if marker not in ctx:
-            continue
-        try:
-            for f in d.glob("*.lean"):
-                if f.name.startswith("_"):
-                    continue
-                mt = f.stat().st_mtime
-                if mt > best_m:
-                    best_m = mt
-                    best = f
-        except OSError:
-            continue
-    return best
+#: the live in-flight draft for a goal — shared with the goal panel,
+#: which shows the same freshest text (state/data.py owns it)
+_goal_workarea_draft = _data.goal_workarea_draft
 
 
 def _scratch_drafts(workspace: Path) -> "list[tuple[str, str, float, Path]]":
