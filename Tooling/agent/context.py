@@ -1016,7 +1016,8 @@ def _section_prior_patch(kind: str | None, problem_dir: Path,
 
 def _section_programme_worker(conn: sqlite3.Connection, problem: str,
                               decision_id: "int | None",
-                              problem_dir: "Path | None" = None
+                              problem_dir: "Path | None" = None,
+                              goal_id: "int | None" = None,
                               ) -> list[str]:
     """NL-first worker premise (2026-07-25, user call — b6_1 leg 7:
     workers minted a d5-d13 variant mill because they could not SEE the
@@ -1026,7 +1027,14 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
     the problem dir (spawn cwd, inside the Read allowlist)."""
     from ..state import programme as _programme
     try:
-        row = _programme.current_rev(conn, problem)
+        # The rev that AUTHORISED this goal, not the latest one — see
+        # `programme.rev_for_goal`. A sibling branch's review can ship a
+        # new rev while this branch's sub-goals are still being
+        # auto-dispatched; reading the current rev then hands the worker
+        # an argument that never justified its goal.
+        row = _programme.rev_for_goal(conn, problem, goal_id=goal_id,
+                                      decision_id=decision_id)
+        current = _programme.current_rev(conn, problem)
     except sqlite3.OperationalError:
         return []
     if row is None:
@@ -1046,9 +1054,19 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
     out = [f"## Proof (Programme rev {row['rev']})", ""]
     if proof:
         out += [proof, ""]
-    out += ["Full Programme (Argument / Roadmap / adversary "
-            "reservations): `PROGRAMME.md` beside the problem files.",
-            ""]
+    # PROGRAMME.md on disk always renders the CURRENT rev. When that is
+    # not the rev above, say so rather than let the pointer quietly
+    # substitute a different argument for the one that authorised this
+    # goal — the same drift this section was just pinned against.
+    if current is not None and int(current["rev"]) != int(row["rev"]):
+        out += [f"Full Programme: `PROGRAMME.md` beside the problem "
+                f"files — note it renders rev {current['rev']}, which has "
+                f"moved on from the rev that authorised this goal. The "
+                f"`## Proof` above is the one you formalize against.", ""]
+    else:
+        out += ["Full Programme (Argument / Roadmap / adversary "
+                "reservations): `PROGRAMME.md` beside the problem files.",
+                ""]
     return out
 
 
@@ -1328,7 +1346,8 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         # problem-level standing (every cold-start); brief is per-decision
         # one-shot (only when Strategist Inject spawned this pipeline).
         _section_programme_worker(conn, str(goal["problem"]),
-                                  decision_id, problem_dir),
+                                  decision_id, problem_dir,
+                                  goal_id=int(goal["id"])),
         _section_strategist_directive(conn, str(goal["problem"])),
         _section_strategist_brief(conn, decision_id),
         _section_header(goal, workspace),

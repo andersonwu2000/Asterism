@@ -146,6 +146,83 @@ def next_rev_number(conn: sqlite3.Connection, problem: str) -> int:
     return (row["rev"] + 1) if row else 1
 
 
+#: Nearest authorising ancestor, self first. The goal tree has no
+#: parent column — an edge is `strategies.goal_id → strategy_subgoals
+#: → subgoal_id` — so walking up is a recursive join over the link
+#: table (`idx_ssg_subgoal` covers the step).
+_AUTHORISING_REV_SQL = """
+WITH RECURSIVE up(gid, depth) AS (
+  VALUES(?, 0)
+  UNION
+  SELECT s.goal_id, up.depth + 1
+    FROM strategy_subgoals ss
+    JOIN strategies s ON s.id = ss.strategy_id
+    JOIN up ON ss.subgoal_id = up.gid
+)
+SELECT pr.* FROM up
+  JOIN strategist_decisions d
+    ON CAST(d.produced_goal_id AS INTEGER) = up.gid
+  JOIN programme_revisions pr
+    ON pr.batch_id = d.batch_id AND pr.problem = ?
+ WHERE pr.status = 'passed'
+ ORDER BY up.depth ASC, d.id DESC
+ LIMIT 1
+"""
+
+
+def rev_for_goal(conn: sqlite3.Connection, problem: str, *,
+                 goal_id: "int | None" = None,
+                 decision_id: "int | None" = None
+                 ) -> Optional[sqlite3.Row]:
+    """The revision whose `## Proof` AUTHORISED this piece of work.
+
+    A worker must be shown the argument its goal was dispatched under,
+    not whatever the Programme has become since. The two diverge
+    routinely: a sibling branch triggers `pending_strategist_review`,
+    the Strategist ships a new rev, and meanwhile this branch's
+    sub-goals keep being auto-dispatched by the dispatcher without any
+    Strategist wake. Reading the CURRENT rev then produces either a
+    spurious `no_nl_correspondence` decline (the step is gone) or —
+    worse, because nothing reports it — a silent re-anchoring onto a
+    DIFFERENT step that happens to look apt.
+
+    It also restores the batch-closure law (#118) over time. That law
+    certifies "every claim this batch dispatches is fully argued in
+    THIS batch's Proof", which the Adversary checks once, at dispatch.
+    The tree it authorises outlives the check, so a mutable
+    problem-scoped Proof silently voids the guarantee for every node
+    already in flight. Pinning makes the certified pairing durable.
+
+    Consequence worth stating: retracting a step no longer stops the
+    work riding on it. That is correct — killing work is
+    `ConfirmShelve`'s job, an explicit decision the Adversary sees, not
+    a side effect of editing a document.
+
+    Resolution, most specific first:
+      1. `decision_id` — the batch that dispatched THIS spawn;
+      2. the nearest ancestor (self included) with a producing decision
+         — covers sub-goals the worker created, which have no decision
+         of their own but inherit their parent's authorisation;
+      3. `current_rev` — nothing above has one (fresh problem, or work
+         that predates the Programme).
+    """
+    if decision_id is not None:
+        row = conn.execute(
+            "SELECT pr.* FROM strategist_decisions d"
+            " JOIN programme_revisions pr"
+            "   ON pr.batch_id = d.batch_id AND pr.problem = ?"
+            " WHERE d.id = ? AND pr.status = 'passed'",
+            (problem, decision_id)).fetchone()
+        if row is not None:
+            return row
+    if goal_id is not None:
+        row = conn.execute(_AUTHORISING_REV_SQL,
+                           (int(goal_id), problem)).fetchone()
+        if row is not None:
+            return row
+    return current_rev(conn, problem)
+
+
 def record_pass(conn: sqlite3.Connection, problem: str, body: str,
                 verdict: dict[str, Any],
                 dialogue: list[dict[str, Any]],

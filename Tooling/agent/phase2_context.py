@@ -1344,17 +1344,20 @@ def _section_forward_history(conn: sqlite3.Connection,
     return out
 
 
-def _section_programme_proof(conn: sqlite3.Connection,
-                             problem: str) -> list[str]:
-    """The current passed revision's `## Proof` — the argued mathematics
-    this batch's mints are drawn from. Always renders (mirroring the
+def _section_programme_proof(conn: sqlite3.Connection, problem: str,
+                             decision_id: "int | None" = None) -> list[str]:
+    """The `## Proof` of the revision that DISPATCHED this mint — the
+    argued mathematics this batch's mints are drawn from. Always renders (mirroring the
     FORBIDDEN_LEMMAS precedent: intake.md references "the Programme
     `## Proof`" unconditionally, and a silently absent heading leaves
     the agent unsure whether it was empty or truncated)."""
     from ..state import programme as _programme
     header = "## Programme Proof"
     try:
-        row = _programme.current_rev(conn, problem)
+        # The rev that dispatched this mint, not the latest — a mint has
+        # no goal yet, so the decision IS the whole provenance. See
+        # `programme.rev_for_goal`.
+        row = _programme.rev_for_goal(conn, problem, decision_id=decision_id)
     except sqlite3.Error:
         row = None
     if not row:
@@ -1404,7 +1407,7 @@ def compile_forward_context(conn: sqlite3.Connection, *,
         # Programme; mints did not, so intake's falsification check had
         # no source independent of the brief (written by the same
         # Strategist whose transcription slips it exists to catch).
-        _section_programme_proof(conn, problem),
+        _section_programme_proof(conn, problem, decision_id),
         _section_library_inventory(conn, problem, attempts_dir),
         _section_forward_history(conn, problem),
         _section_active_goals(conn, workspace, problem),

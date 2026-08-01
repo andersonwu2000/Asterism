@@ -155,3 +155,115 @@ def test_render_header_and_reservations(tmp_path):
     assert "# Close the gcd gap" in text
     # No revision log in the render (design §2 round 8/11 ruling).
     assert "rev 0" not in text
+
+
+# ------------------------------------------------- authorising revision
+
+def _authorised_goal(c, *, slug, batch_id, decision_id, rev_body=None):
+    """Land a rev on `batch_id` and a goal the batch's decision produced."""
+    gid = db.insert_goal(c, problem="p", slug=slug,
+                         lean_path=f"Problems/p/proofs/L_{slug}.lean",
+                         statement=f"theorem {slug} : T", origin="forward",
+                         depth=1, status="open")
+    c.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, batch_id, produced_goal_id,"
+        " created_at, updated_at) VALUES ('p', 0, 'routine', 'Inject',"
+        " ?, ?, ?, ?)", (batch_id, gid, db.now(), db.now()))
+    c.commit()
+    return gid
+
+
+def test_rev_for_goal_pins_the_revision_that_authorised_the_work(tmp_path):
+    """The defect: a worker was shown whatever the Programme had become,
+    not the argument its goal was dispatched under. Branch B's sub-goals
+    keep being auto-dispatched while branch A's review ships a new rev,
+    so the Proof under the worker's feet changes with no decision and no
+    signal — either a spurious `no_nl_correspondence` decline, or a
+    silent re-anchor onto a different step.
+
+    Measured on the live SG tree before the fix: seven goals authorised
+    by revs 1/1/2/2/3/3/4, `current_rev` = 5 — every one of them would
+    have been handed rev 5."""
+    c = _fresh(tmp_path)
+    programme.record_pass(c, "p", _body(proof="Step 1: the pair exists."),
+                          {"verdict": "pass"}, [], 0, "batch-1")
+    g1 = _authorised_goal(c, slug="early", batch_id="batch-1",
+                          decision_id=None)
+    programme.record_pass(c, "p", _body(proof="Step 9: unrelated."),
+                          {"verdict": "pass"}, [], 0, "batch-2")
+    g2 = _authorised_goal(c, slug="late", batch_id="batch-2",
+                          decision_id=None)
+
+    assert programme.current_rev(c, "p")["rev"] == 2
+    assert programme.rev_for_goal(c, "p", goal_id=g1)["rev"] == 1
+    assert programme.rev_for_goal(c, "p", goal_id=g2)["rev"] == 2
+    assert "Step 1" in programme.rev_for_goal(c, "p", goal_id=g1)["body"]
+
+
+def test_rev_for_goal_inherits_through_worker_created_subgoals(tmp_path):
+    """A sub-goal the worker decomposed out has no decision of its own —
+    it was authorised by the same argument as its parent. Without the
+    upward walk this is exactly the case that silently re-anchors: the
+    dispatcher relays sub-goals with no Strategist wake at all."""
+    c = _fresh(tmp_path)
+    programme.record_pass(c, "p", _body(proof="Step 1: the pair exists."),
+                          {"verdict": "pass"}, [], 0, "batch-1")
+    parent = _authorised_goal(c, slug="parent", batch_id="batch-1",
+                              decision_id=None)
+    sid = db.insert_strategy(c, goal_id=parent,
+                             lean_path="Problems/p/proofs/L_parent.lean",
+                             scratch_path="Problems/p/proofs/_s.lean",
+                             proposal_md="-- split", created_by="pipe-1")
+    kid = db.insert_goal(c, problem="p", slug="kid",
+                         lean_path="Problems/p/proofs/L_kid.lean",
+                         statement="theorem kid : T", origin="backward",
+                         depth=2, status="open")
+    c.execute("INSERT INTO strategy_subgoals (strategy_id, subgoal_id,"
+              " position) VALUES (?, ?, 0)", (sid, kid))
+    c.commit()
+    programme.record_pass(c, "p", _body(proof="Step 9: unrelated."),
+                          {"verdict": "pass"}, [], 0, "batch-2")
+
+    assert programme.current_rev(c, "p")["rev"] == 2
+    assert programme.rev_for_goal(c, "p", goal_id=kid)["rev"] == 1
+
+
+def test_rev_for_goal_prefers_the_dispatching_decision(tmp_path):
+    """A re-Inject on an existing goal is a NEW authorisation. The spawn
+    it dispatched must read the rev that dispatched IT, which is why
+    `decision_id` outranks the goal's own provenance."""
+    c = _fresh(tmp_path)
+    programme.record_pass(c, "p", _body(proof="Step 1."),
+                          {"verdict": "pass"}, [], 0, "batch-1")
+    g = _authorised_goal(c, slug="revisited", batch_id="batch-1",
+                         decision_id=None)
+    programme.record_pass(c, "p", _body(proof="Step 2, reframed."),
+                          {"verdict": "pass"}, [], 0, "batch-2")
+    c.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, batch_id, target_id, created_at,"
+        " updated_at) VALUES ('p', 0, 'routine', 'Inject', 'batch-2', ?,"
+        " ?, ?)", (g, db.now(), db.now()))
+    did = int(c.execute("SELECT last_insert_rowid()").fetchone()[0])
+    c.commit()
+
+    assert programme.rev_for_goal(c, "p", goal_id=g)["rev"] == 1
+    assert programme.rev_for_goal(c, "p", goal_id=g,
+                                  decision_id=did)["rev"] == 2
+
+
+def test_rev_for_goal_falls_back_to_current(tmp_path):
+    """Nothing above has an authorisation — a fresh problem, or work
+    predating the Programme. Fall back rather than render nothing: the
+    worker premise section must not vanish."""
+    c = _fresh(tmp_path)
+    programme.record_pass(c, "p", _body(), {"verdict": "pass"}, [], 0,
+                          "batch-1")
+    orphan = db.insert_goal(c, problem="p", slug="orphan",
+                            lean_path="Problems/p/proofs/L_orphan.lean",
+                            statement="theorem orphan : T",
+                            origin="forward", depth=1, status="open")
+    c.commit()
+    assert programme.rev_for_goal(c, "p", goal_id=orphan)["rev"] == 1
+    assert programme.rev_for_goal(c, "p")["rev"] == 1
