@@ -884,3 +884,52 @@ def test_parse_verdict_tolerates_annotated_clear_and_fired() -> None:
         "1": "clearly fine", "2": "clear", "3": "clear",
         "4": "clear", "5": "clear"}}))
     assert bad is None and "criterion 1" in err2
+
+
+def test_projection_ships_the_strategists_context_verbatim(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """A proposal may quote `Context.md`, and a citation the judge
+    cannot open is a free pass (08-01 judge feedback): one round-1 fire
+    on "you misquoted contract.md" came back in round 2 re-attributed to
+    Context.md and had to be cleared unverified.
+
+    VERBATIM, not selected sections — a filtered copy lets the judge
+    fire on a line that exists but was withheld, which is the same
+    defect wearing framework colours, and a section allowlist rots the
+    first time someone adds a section. The Strategist's private plan
+    note rides along by design (user ruling 08-01): it is lazily
+    available, and a judge that sees "this route already died" in the
+    plan note while the proposal re-proposes it is a judge doing its
+    job."""
+    attempts = workspace / ".attempts" / "adv-ctx"
+    attempts.mkdir(parents=True)
+    pdir = workspace / "Problems" / "p"
+    body = ("## Framework stalled\n\nChoose one of: `Inject(...)`\n\n"
+            "## Your plan note (private, cross-wake)\n\nFacts: x died.\n")
+    (attempts / "Context.md").write_text(body, encoding="utf-8")
+
+    proj = adversary.build_projection(
+        round_no=1, attempts_dir=attempts, problem_dir=pdir,
+        conn=conn, problem="p", proposal_body=_PROPOSAL,
+        decisions=[_d("Inject", pipeline="Forward", brief="## Need\nx")],
+        dialogue=[], proof_warn=None)
+
+    assert (proj / "Context.md").read_text(encoding="utf-8") == body
+
+
+def test_projection_without_a_context_file_is_not_an_error(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Nothing in the package depends on it existing — a wake whose
+    Context was never written must still get a projection."""
+    attempts = workspace / ".attempts" / "adv-noctx"
+    attempts.mkdir(parents=True)
+    proj = adversary.build_projection(
+        round_no=1, attempts_dir=attempts,
+        problem_dir=workspace / "Problems" / "p",
+        conn=conn, problem="p", proposal_body=_PROPOSAL,
+        decisions=[_d("Inject", pipeline="Forward", brief="## Need\nx")],
+        dialogue=[], proof_warn=None)
+    assert not (proj / "Context.md").exists()
+    assert (proj / "proposal.md").exists()

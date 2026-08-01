@@ -212,7 +212,9 @@ def _section_stall_warning(conn: sqlite3.Connection,
         "",
         "**`Noop` is not appropriate while this section is present.**"
         " Choose one of: `Inject(target_goal_id=..., brief=...)`"
-        " (revive a `shelved` / `pending_strategist_review` goal), a"
+        " (work a `shelved` / `pending_strategist_review` / `frozen`"
+        " goal — `frozen` is the root before its first launch, and it"
+        " is the only dispatch path to it), a"
         " no-target `Inject` (mint the missing prerequisite), `Ingest` (every Manifest requirement is"
         " satisfied — the terminal judgment), `ConfirmShelve` (truly"
         " cannot proceed — followed by an Inject that pivots), or"

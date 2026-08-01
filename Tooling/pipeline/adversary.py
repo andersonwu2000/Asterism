@@ -233,6 +233,18 @@ def build_projection(*, round_no: int, attempts_dir: Path,
                 / "adversary" / "_contract.md")
     if contract.exists():
         shutil.copyfile(contract, proj / "contract.md")
+    # The Strategist's own Context.md, verbatim (08-01 judge feedback):
+    # a proposal may quote it, and a citation the judge cannot open is a
+    # free pass — one round-1 fire on "you misquoted contract.md" came
+    # back in round 2 re-attributed to Context.md and had to be cleared
+    # unverified. Whole file, not selected sections: a filtered copy
+    # would let the judge fire on a line that exists but was withheld,
+    # which is the same defect wearing framework colours, and a section
+    # allowlist rots the first time someone adds a section. Lazily
+    # available — it rides the projection, nothing is inlined.
+    ctx = attempts_dir / "Context.md"
+    if ctx.exists():
+        shutil.copyfile(ctx, proj / "Context.md")
     # CATALOG.md is lazily machine-generated per assembly and never
     # lives in problem_dir — generate it into the projection directly
     # (the old problem_dir copy was dead code: the judge could never

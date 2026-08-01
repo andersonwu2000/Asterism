@@ -15,3 +15,5 @@ The decision-kind rules the Strategist operates under — check quoted contract 
 - Framework: an Inject whose statement matches an existing in-problem goal is auto-reused, not minted fresh — a **proved** twin is aliased; an **alive / parked** twin links to it (the inject then rides that goal's lifecycle). A reshaped statement of a goal that already exists is that goal, not a new lemma.
 
 `target_goal_id` accepts integer id or slug.
+
+Goal statuses you will see in `TREE.md`: `open` / `attempting` are alive; `proved` / `disproved` / `dead` are terminal; `shelved` / `pending_strategist_review` are parked and revivable; **`frozen` is the root before its first launch** — not parked, never started. All three of the last kind are legal `Inject` targets, and for a frozen root that is its only dispatch path.
