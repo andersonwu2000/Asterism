@@ -20,10 +20,14 @@ import type { Programme } from '../lib/types'
 export function GroupPicker({
   data,
   group,
+  liveIds,
   onPick,
 }: {
   data: Programme
   group: number | null
+  /** groups with a strategist seated right now — the run-scoped mount
+   * knows this; the archive does not, and shows no dots */
+  liveIds?: number[]
   onPick: (id: number | null) => void
 }) {
   const groups = data.groups ?? []
@@ -35,22 +39,30 @@ export function GroupPicker({
       <span className="mr-1 text-[11px] text-ink-faint">arguing:</span>
       {groups.map((g) => {
         const on = g.is_top ? group === null : group === g.id
+        const livingHere = liveIds?.includes(g.id) ?? false
+        const settled = g.status !== 'active'
         return (
           <button
             key={g.id}
-            className={`max-w-64 truncate rounded-md border px-1.5 py-0.5 text-[11px] transition-colors ${
+            className={`flex max-w-64 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] transition-colors ${
               on
                 ? 'border-edge-strong text-ink'
                 : 'border-edge text-ink-faint hover:text-ink-dim'
             }`}
             onClick={() => onPick(g.is_top ? null : g.id)}
             title={
-              g.is_top
+              (g.is_top
                 ? "the problem's own argument"
-                : `a claim handed to its own group — ${g.status}\n\n${g.charter}`
+                : `a claim handed to its own group — ${g.status}\n\n${g.charter}`) +
+              (livingHere ? '\n\nits strategist is seated right now' : '')
             }
           >
-            {g.is_top ? 'the problem' : g.charter || `group ${g.id}`}
+            {livingHere && (
+              <span className="size-1 shrink-0 rounded-full bg-starlight" aria-hidden />
+            )}
+            <span className={`truncate ${settled ? 'line-through decoration-ink-faint/60' : ''}`}>
+              {g.is_top ? 'the problem' : g.charter || `group ${g.id}`}
+            </span>
           </button>
         )
       })}
@@ -96,15 +108,19 @@ function WhatChanged({ data }: { data: Programme }) {
 export default function ProgrammeView({
   data,
   group,
+  liveIds,
   onPickGroup,
   extra,
 }: {
   data: Programme
   group: number | null
+  liveIds?: number[]
   onPickGroup: (id: number | null) => void
   extra?: React.ReactNode
 }) {
-  const picker = <GroupPicker data={data} group={group} onPick={onPickGroup} />
+  const picker = (
+    <GroupPicker data={data} group={group} liveIds={liveIds} onPick={onPickGroup} />
+  )
   if (data.current === null)
     return (
       <div className="mx-auto max-w-3xl px-6 py-5">

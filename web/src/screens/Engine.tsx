@@ -5,6 +5,7 @@ import RunConsole, { CycleLine } from './Run'
 import { SettingsTab, UsageTab } from './Telemetry'
 import ManifestEditor from '../components/ManifestEditor'
 import ProgrammeView from '../components/ProgrammeView'
+import { cycleForGroup, defaultGroup, seatedGroups } from '../lib/programmeFocus'
 import { ErrorState, TabNav } from '../components/ui'
 import type { DaemonStatus, Programme, RunStatus } from '../lib/types'
 
@@ -92,14 +93,12 @@ function RunProgramme() {
   const { data: run } = usePoll<RunStatus>('/api/run', 5000)
   const [pick, setPick] = useState<number | null>(null)
   const problem = daemon?.scope ?? run?.problem ?? null
-  // the seated strategist's group — the argument being revised THIS
-  // minute; the owner's pick (once made) wins over the live seat
-  const seat = (run?.workers ?? []).find(
-    (w) => w.kind === 'Strategist' && w.group,
-  )
-  const live = seat?.group ?? null
-  const group = pick ?? (live && !live.is_top ? live.id : null)
-  const cycle = seat?.cycle ?? null
+  // Sibling groups run CONCURRENTLY (that is what the tree buys), so
+  // "the seated strategist" can be several — the selection and cycle
+  // laws live in lib/programmeFocus, tested there.
+  const workers = run?.workers ?? []
+  const liveIds = seatedGroups(workers).map((s) => s.group.id)
+  const group = pick ?? defaultGroup(workers)
   const { data, error } = usePoll<Programme>(
     problem
       ? `/api/problems/${encodeURIComponent(problem)}/programme` +
@@ -107,6 +106,10 @@ function RunProgramme() {
       : null,
     15000,
   )
+  // The cycle shown must belong to the argument ON SCREEN — matched by
+  // the resolved group id the server reports, so a sibling's round is
+  // never narrated over this body.
+  const cycle = cycleForGroup(workers, data?.group_id)
   if (!problem)
     return (
       <p className="mt-6 text-xs text-ink-faint">
@@ -124,6 +127,7 @@ function RunProgramme() {
       <ProgrammeView
         data={data}
         group={group}
+        liveIds={liveIds}
         onPickGroup={setPick}
         extra={
           cycle ? (
