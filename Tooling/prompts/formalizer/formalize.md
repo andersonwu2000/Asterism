@@ -25,7 +25,7 @@ Don't sink the turn into a single sticking point. Outsource on any of:
 - It is a free-standing, reusable lemma — worth its own name.
 - Closing it needs machinery of its own: induction, heavy case analysis, another domain's tools.
 
-Before outsourcing, check there is no existing replacement. Every outsourced sub-goal must be **strictly simpler** and as abstract as possible. Routine expansion of the argument is your job; bundling adjacent steps into one intermediate lemma is fine, but a sub-goal may not merely restate this goal or an unproved ancestor, and may not carry mathematics the Proof does not argue.
+Before outsourcing, check there is no existing replacement. Every outsourced sub-goal must be **strictly simpler** and as abstract as possible. Routine expansion of the argument is your job; bundling adjacent steps into one intermediate lemma is fine, but a sub-goal may not merely restate this goal or an unproved ancestor, and may not carry mathematics the Proof does not argue. Stub only what you will not prove this session; a step you can close yourself goes in `patch.lean` as a `have`, not a stub.
 
 To outsource:
 
