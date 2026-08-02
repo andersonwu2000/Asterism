@@ -708,6 +708,22 @@ def _robust_rmtree(path: Path, retries: int = 5,
         return False
 
 
+#: Everything `proofs/` may hold that belongs to a RUN rather than to the
+#: problem. One list, because the sweeper and the "did we forget to sweep"
+#: verifier both read it: they used to carry separate copies of the same
+#: tuple, so the check shared the sweeper's blind spot and could never
+#: report what the sweeper missed. It missed `patch.lean` — a Backward
+#: worker's sandbox output whose home is the attempts dir; one that landed
+#: here on 2026-07-14 outlived the SLC reset three weeks later, still
+#: importing four `L_*` modules the same reset had deleted.
+PROOFS_SWEEP_PATTERNS = (
+    "L_*.lean", "_strategy_*.lean",          # the problem's own bricks
+    "patch.lean", "new_*.lean",              # worker sandbox outputs
+    "*.backup", "*.verify_backup", "*.verify_backup_s*",
+    "*.lean.tmp", "*.lean.tmp_s*",           # verify staging, sid-keyed
+)
+
+
 def cmd_reset(args: argparse.Namespace) -> int:
     """Wipe one Problem's DB rows + on-disk `proofs/` files. User-owned
     files (`Manifest.md`, `Defs.lean`, `Root.lean`) and anything outside
@@ -923,9 +939,7 @@ def _reset_problem_files(workspace: Path, pdir: Path, problem: str,
         # `L_*.lean` orphan that Strategist `have`'d into a downstream
         # proof. `*.tmp` / `*.tmp_s*` are Verify's pre-replace staging
         # — also sid-keyed and never safe to keep across runs.
-        for pattern in ("L_*.lean", "_strategy_*.lean", "*.backup",
-                        "*.verify_backup", "*.verify_backup_s*",
-                        "*.lean.tmp", "*.lean.tmp_s*"):
+        for pattern in PROOFS_SWEEP_PATTERNS:
             for f in proofs_dir.glob(pattern):
                 if _robust_unlink(f):
                     deleted_files.append(f.name)
@@ -1024,9 +1038,7 @@ def _reset_problem_files(workspace: Path, pdir: Path, problem: str,
     # we forgot to sweep.
     leftovers: list[str] = []
     if proofs_dir.exists():
-        for pattern in ("L_*.lean", "_strategy_*.lean", "*.backup",
-                        "*.verify_backup", "*.verify_backup_s*",
-                        "*.lean.tmp", "*.lean.tmp_s*"):
+        for pattern in PROOFS_SWEEP_PATTERNS:
             for f in proofs_dir.glob(pattern):
                 leftovers.append(f"proofs/{f.name}")
     for name in ("LESSONS.md", "Root.lean.backup", "TREE.md"):

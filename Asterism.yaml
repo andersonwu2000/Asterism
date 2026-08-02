@@ -91,13 +91,16 @@ formalizer:
 
 strategist:
   provider: claude
-  model: claude-opus-5        # Planning is the highest-leverage spawn: one
+  model: claude-fable-5       # Planning is the highest-leverage spawn: one
                                # decomposition shapes the whole proof tree, so
                                # it gets the strongest available model. Fable 5
-                               # (Mythos, ~2x Opus) was the intended planner;
-                               # dropped to Opus 4.8 while that tier was down
-                               # (2026-06-13) and RESTORED here on its return
-                               # (2026-07-02, CLI-verified). Lowest-volume
+                               # (Mythos, ~2x Opus) was always the intended
+                               # planner; dropped to Opus 4.8 while that tier
+                               # was down (2026-06-13), and the 2026-07-02
+                               # "restore" only reached Opus 5. Actually on
+                               # Fable since 2026-08-02 (SLC — a real open
+                               # conjecture is where the planner tier pays),
+                               # CLI-verified the same day. Lowest-volume
                                # pipeline, so cost is negligible regardless.
                                # (InitializeDefs / RequestUserAmend / Inject.)
   interval_min: 120.0          # T1 routine cadence (default 120min; belief audit rides every routine wake)
@@ -167,4 +170,12 @@ scholar:
   model: claude-sonnet-5
 
 adversary:
-  model: claude-opus-5
+  model: claude-fable-5        # Tracks strategist.model deliberately: the
+                               # judge is the only gate on the argument
+                               # layer, so a judge below the author is the
+                               # structural rubber stamp. The 2026-08-02
+                               # seeded-defect probe showed criterion 3 hard
+                               # at a MODERATE difficulty band (3/3 caught,
+                               # `_spike/judge_lean_probe.py`); an open
+                               # conjecture is not that band. Both lowest-
+                               # volume pipelines — cost is negligible.

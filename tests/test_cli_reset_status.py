@@ -913,3 +913,33 @@ def test_utc_log_stamp_is_utc_and_z_suffixed():
         tzinfo=timezone.utc)
     delta = abs((datetime.now(timezone.utc) - parsed).total_seconds())
     assert delta < 120
+
+
+def test_reset_sweeps_worker_sandbox_output_from_proofs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`patch.lean` is a worker's sandbox output, never the problem's.
+
+    One that landed in `proofs/` on 2026-07-14 outlived the SLC reset
+    three weeks later, still importing four `L_*` modules the same reset
+    had just deleted. The sweeper's pattern list and the "did we forget
+    to sweep" verifier were separate copies of one tuple, so the check
+    could never report what the sweeper missed — they are one constant
+    now, and this pins the shapes."""
+    from Tooling.core import cli
+    assert "patch.lean" in cli.PROOFS_SWEEP_PATTERNS
+    assert "new_*.lean" in cli.PROOFS_SWEEP_PATTERNS
+
+    pdir = _setup_problem(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    cmd_init(argparse.Namespace(problem="wilson", force=True))
+    proofs = pdir / "proofs"
+    for name in ("patch.lean", "new_forward.lean"):
+        (proofs / name).write_text("import Mathlib\n", encoding="utf-8")
+    (proofs / "README.md").write_text("not a run artifact\n",
+                                      encoding="utf-8")
+
+    assert cmd_reset(argparse.Namespace(problem="wilson")) == 0
+    assert not (proofs / "patch.lean").exists()
+    assert not (proofs / "new_forward.lean").exists()
+    assert (proofs / "README.md").exists()
