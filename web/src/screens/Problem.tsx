@@ -4,7 +4,7 @@ import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
-import { onChatGoalHover, onChatGoalOpen, takePendingGoalOpen } from '../lib/chatFocus'
+import { onGoalHover, onGoalOpen, takePendingGoalOpen } from '../lib/goalFocus'
 import { goalStatusLabel } from '../lib/vocab'
 import { Button, ErrorState, StatusBadge, TabNav } from '../components/ui'
 import Constellation from '../components/Constellation'
@@ -420,14 +420,14 @@ export default function Problem({ name }: { name: string }) {
   const [routeHover, setRouteHover] = useState<number[] | null>(null)
   const [selectedStrategy, setSelectedStrategy] = useState<number | null>(null)
   const [fileToOpen, setFileToOpen] = useState<string | null>(null)
-  // stars lit from the chat drawer: hovering a [goal:…] citation in an
-  // answer lights the star (same text↔map law as route hover); clicking
-  // one selects it — takePendingGoalOpen survives the navigation when
-  // the citation pointed at a different problem's sky
+  // stars lit from elsewhere — a chat answer's [goal:…] citation, a
+  // run console lane: hovering lights the star (same text↔map law as
+  // route hover), clicking selects it. takePendingGoalOpen survives
+  // the navigation when the caller pointed at a sky not on screen.
   const [chatHoverSlug, setChatHoverSlug] = useState<string | null>(null)
   useEffect(
     () =>
-      onChatGoalHover((ref) =>
+      onGoalHover((ref) =>
         setChatHoverSlug(ref !== null && ref.problem === name ? ref.slug : null),
       ),
     [name],
@@ -444,7 +444,7 @@ export default function Problem({ name }: { name: string }) {
       return true
     }
     consume(takePendingGoalOpen(name))
-    return onChatGoalOpen(consume)
+    return onGoalOpen(consume)
   }, [data, name])
 
   if (loading) return <div className="late-fade p-8 text-sm text-ink-faint">Loading…</div>

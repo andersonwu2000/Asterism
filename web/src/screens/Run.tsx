@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
-import { onChatGoalHover, onChatGoalOpen } from '../lib/chatFocus'
+import { emitGoalOpen, onGoalHover, onGoalOpen } from '../lib/goalFocus'
 import { switchAccount } from '../lib/claudeAuth'
 import { duration } from '../lib/format'
 import { goalStatusLabel } from '../lib/vocab'
 import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
 import { renderInline, renderProse } from '../lib/prose'
-import { Link } from '../lib/router'
+import { Link, navigate } from '../lib/router'
 import { Button } from '../components/ui'
 import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
+import StrategyPanel from '../components/StrategyPanel'
 import LogTail from '../components/LogTail'
 import type { ConfigSetting, ProblemDetail, RunStatus, RunWorker } from '../lib/types'
 
@@ -167,6 +168,27 @@ function stableMdTail(tail: string, size: number): string {
   return tail
 }
 
+/** The name of the node an agent is on — a link that OPENS it rather
+ * than merely landing you near it. The console's own sky claims the
+ * open when it is showing that problem (you stay on the console); a
+ * lane on another problem navigates, and the problem screen selects
+ * the node on arrival. It used to jump to the problem page and select
+ * nothing, which is the worst of both (owner, 2026-08-02). */
+function GoalLink({ problem, slug }: { problem: string; slug: string }) {
+  return (
+    <button
+      className="max-w-72 truncate text-left font-mono text-xs text-ink-dim transition-colors hover:text-ink"
+      title={`${slug} — open this node`}
+      onClick={() => {
+        if (!emitGoalOpen({ problem, slug }))
+          navigate(`/problems/${encodeURIComponent(problem)}`)
+      }}
+    >
+      {slug}
+    </button>
+  )
+}
+
 /** One agent, one lane: what it is, what it's on, what it's writing. */
 function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; multi?: boolean }) {
   const quiet = w.file?.quiet_sec ?? null
@@ -178,13 +200,7 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
       <div className="flex items-baseline gap-2.5">
         <span className="text-xs font-medium text-ink">{w.kind.toLowerCase()}</span>
         {laneProblem ? (
-          <Link
-            to={`/problems/${encodeURIComponent(laneProblem)}`}
-            className="max-w-72 truncate font-mono text-xs text-ink-dim transition-colors hover:text-ink"
-            title={`${w.slug} — open ${laneProblem}`}
-          >
-            {w.slug}
-          </Link>
+          <GoalLink problem={laneProblem} slug={w.slug} />
         ) : (
           <span className="max-w-72 truncate font-mono text-xs text-ink-dim">{w.slug}</span>
         )}
@@ -357,7 +373,15 @@ export default function Run() {
     3000,
   )
   const [selGoal, setSelGoal] = useState<number | null>(null)
-  useEffect(() => setSelGoal(null), [focusProblem])
+  // routes open in the console too: reading a lane's goal and then its
+  // decomposition is one thought, and it used to cost a page change
+  const [selStrategy, setSelStrategy] = useState<number | null>(null)
+  const [routeHover, setRouteHover] = useState<number[] | null>(null)
+  const skyRef = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    setSelGoal(null)
+    setSelStrategy(null)
+  }, [focusProblem])
   // lane ↔ star umbilical: hovering an agent's lane lights the star
   // it is working (design round — the lanes and the sky were two
   // disconnected worlds)
@@ -368,18 +392,23 @@ export default function Run() {
   const [chatHoverSlug, setChatHoverSlug] = useState<string | null>(null)
   useEffect(
     () =>
-      onChatGoalHover((ref) =>
+      onGoalHover((ref) =>
         setChatHoverSlug(ref !== null && ref.problem === focusProblem ? ref.slug : null),
       ),
     [focusProblem],
   )
   useEffect(() => {
     if (!detail || focusProblem === null) return
-    return onChatGoalOpen((ref) => {
+    return onGoalOpen((ref) => {
       if (ref.problem !== focusProblem) return false
       const goal = detail.goals.find((x) => x.slug === ref.slug)
       if (goal === undefined) return false
       setSelGoal(goal.id)
+      setSelStrategy(null)
+      // the sky sits above the slots: opening a node from a lane
+      // must bring the thing it opened into view, or the click reads
+      // as having done nothing
+      skyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return true
     })
   }, [detail, focusProblem])
@@ -651,7 +680,7 @@ export default function Run() {
       {msg && <div className="mt-3 text-xs text-ink-dim">{msg}</div>}
 
       {detail && focusProblem && detail.goals.length > 0 && (
-        <section className="mt-6">
+        <section className="mt-6" ref={skyRef}>
           <div className="flex h-[52vh] overflow-hidden rounded-xl border border-edge bg-bg">
             <div className="relative min-w-0 flex-1">
               <Constellation
@@ -666,6 +695,7 @@ export default function Run() {
                 engineWorking={detail.engine_working}
                 highlightIds={
                   laneHover ??
+                  routeHover ??
                   (chatHoverSlug !== null
                     ? (() => {
                         const ids = detail.goals
@@ -677,11 +707,35 @@ export default function Run() {
                 }
               />
             </div>
+            {/* the same panels the problem page opens — a node's
+                routes, its subgoals and its dead attempts are all
+                readable HERE; leaving the console to read them was
+                the console's own link audit (owner, 2026-08-02) */}
             {selGoal !== null && (
               <GoalPanel
                 problem={focusProblem}
                 goalId={selGoal}
-                onClose={() => setSelGoal(null)}
+                onClose={() => {
+                  setSelGoal(null)
+                  setRouteHover(null)
+                }}
+                onSelectStrategy={(id) => {
+                  setSelStrategy(id)
+                  setSelGoal(null)
+                }}
+                onSelectGoal={setSelGoal}
+                onHoverGoals={setRouteHover}
+              />
+            )}
+            {selGoal === null && selStrategy !== null && (
+              <StrategyPanel
+                problem={focusProblem}
+                strategyId={selStrategy}
+                onClose={() => setSelStrategy(null)}
+                onSelectGoal={(id) => {
+                  setSelGoal(id)
+                  setSelStrategy(null)
+                }}
               />
             )}
           </div>
@@ -761,9 +815,15 @@ export default function Run() {
                             <span className="text-xs text-ink-dim">
                               {g.kind.toLowerCase()}
                             </span>
-                            <span className="max-w-72 truncate font-mono text-xs text-ink-faint">
-                              {g.slug}
-                            </span>
+                            {/* a receipt is the moment you most want to
+                                READ what landed — the name opens it */}
+                            {focusProblem ? (
+                              <GoalLink problem={focusProblem} slug={g.slug} />
+                            ) : (
+                              <span className="max-w-72 truncate font-mono text-xs text-ink-faint">
+                                {g.slug}
+                              </span>
+                            )}
                             <span className="tnum ml-auto text-[11px] text-ink-faint">
                               landed{held ? ` · ${held} on it` : ''}
                             </span>

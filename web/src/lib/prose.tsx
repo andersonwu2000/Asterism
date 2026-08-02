@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { navigate } from './router'
 import { Lean } from './lean'
 import { withMath } from './tex'
-import { emitChatGoalHover, emitChatGoalOpen } from './chatFocus'
+import { emitGoalHover, emitGoalOpen } from './goalFocus'
 
 /*
  * Markdown-lite for MACHINE-AUTHORED prose the human reads: chat
@@ -56,7 +56,7 @@ function renderCites(seg: string, keyBase: string): ReactNode[] {
         // sky claims the open in place (no navigation); otherwise the
         // pending-open survives the navigation and the problem screen
         // consumes it on arrival.
-        if (goal && emitChatGoalOpen(goal)) return
+        if (goal && emitGoalOpen(goal)) return
         navigate(to)
       }
       out.push(
@@ -69,8 +69,8 @@ function renderCites(seg: string, keyBase: string): ReactNode[] {
           onKeyDown={(e) => {
             if (e.key === 'Enter') open()
           }}
-          onMouseEnter={goal ? () => emitChatGoalHover(goal) : undefined}
-          onMouseLeave={goal ? () => emitChatGoalHover(null) : undefined}
+          onMouseEnter={goal ? () => emitGoalHover(goal) : undefined}
+          onMouseLeave={goal ? () => emitGoalHover(null) : undefined}
         >
           {t.label}
         </span>,
