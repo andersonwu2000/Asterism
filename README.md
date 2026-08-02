@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-01
+- Fixed a bug where the root goal of a frozen proof attempt was not recognized as ready for dispatch, and made sure the adversarial reviewer now receives the full context document when judging results.
+- Gave each spawned language-model agent its own restricted set of permissions, realized as an isolated per-agent environment.
+- Updated the web interface so a running proof task displays its actual working text instead of a placeholder.
+- Simplified the artifact-integrity audit by removing two redundant checksum layers while keeping the cross-check against the repository.
+
 ### 2026-07-31
 - Reworked the example material in the agents' prompts so it teaches the general shape of a decision rather than reciting fixes for specific past problems.
 - Fixed two validation bugs: restored a broken checker in the adversarial-critique step and made its critiques more complete, and closed a flaw where a JSON-format check could silently modify the data it inspected.
@@ -228,11 +234,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Funneled all remaining proof and status writes through single checked entry points, adding a lint rule to keep unaudited writes from creeping back in.
 - Fixed several bugs in merging finished proofs into the shared library, including mishandled universe declarations, false duplicate detection, and aliases that lost modifiers or could not be cited.
 - Rewrote the architecture documentation to match actual system behavior and tightened rules around how pipelines claim and use work slots.
-
-### 2026-07-02
-- Added a check that reads directly from the Lean kernel to record exactly which axioms and assumptions each proved result relies on.
-- Built a workflow to designate the intended theorems and then accept them behind a required human sign-off, or reject them so that everything built on a discarded result is automatically invalidated.
-- Fixed the archiving step to store only the approved theorems rather than everything reachable from the starting goal.
 
 <!-- ASTERISM-PROGRESS:END -->
 
