@@ -1665,6 +1665,30 @@ def test_v35_migrates_a_v34_db_without_losing_rows(tmp_path):
         " AND name='idx_queue_priority'").fetchone() is not None
 
 
+def test_init_schema_upgrades_a_v34_db_in_place(tmp_path):
+    """The path production actually takes, and the one every other
+    migration test here missed by calling `db_migrations.apply` directly.
+
+    `init_schema` runs SCHEMA *before* the migration chain. On an
+    existing DB `CREATE TABLE IF NOT EXISTS strategist_decisions` is a
+    no-op, so any SCHEMA statement naming a column that only a migration
+    adds kills the whole script — which is what an index on
+    `strategist_decisions(group_id)` in SCHEMA did to the live v34 DB
+    (2026-08-02). Indexes on a table SCHEMA itself creates are fine; that
+    is the distinction this pins.
+    """
+    conn = _v34_db(tmp_path)
+    db.init_schema(conn)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 35
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(strategist_decisions)")}
+    assert {"group_id", "produced_group_id"} <= cols
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index'"
+        " AND name='idx_sd_group'").fetchone() is not None
+    assert groups.top_group(conn, "Test.a") is not None
+
+
 def test_v35_backfills_one_top_group_per_problem_with_its_clocks(tmp_path):
     conn = _v34_db(tmp_path)
     db_migrations.apply(conn)

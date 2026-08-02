@@ -719,7 +719,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_groups_top ON groups(problem)
     WHERE parent_group_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_groups_problem ON groups(problem);
 CREATE INDEX IF NOT EXISTS idx_groups_parent ON groups(parent_group_id);
-CREATE INDEX IF NOT EXISTS idx_sd_group ON strategist_decisions(group_id);
+-- `idx_sd_group` is deliberately NOT here: SCHEMA runs BEFORE the
+-- migration chain, and on an existing DB `CREATE TABLE IF NOT EXISTS
+-- strategist_decisions` is a no-op — so the column this index needs does
+-- not exist yet and the whole script dies. The v35 step creates it,
+-- where the column is guaranteed. The three indexes above are safe only
+-- because SCHEMA itself creates `groups`.
 CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
 CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_sd_problem ON strategist_decisions(problem);
