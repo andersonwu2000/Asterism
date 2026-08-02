@@ -1726,6 +1726,28 @@ def test_v35_widens_the_three_checks(tmp_path):
         " outcome, started_at, finished_at)"
         " VALUES ('p2', 'Strategist', ?, 'Group', 'succeeded', 'ok', 't', 't')",
         (str(sub),))
+    conn.commit()
+    # The inserts above only prove "no IntegrityError was raised" — which is
+    # also what a CHECK that was DROPPED rather than WIDENED would give us.
+    # Assert the rows landed, then assert the constraint is still a
+    # constraint (widen-not-drop, mirroring test_v19/test_v20).
+    assert {r[0] for r in conn.execute(
+        "SELECT decision_kind FROM strategist_decisions WHERE group_id = ?",
+        (sub,))} == {"Delegate", "ReturnToParent"}
+    assert conn.execute(
+        "SELECT COUNT(*) FROM queue WHERE target_kind = 'Group'"
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM pipelines WHERE target_kind = 'Group'"
+    ).fetchone()[0] == 1
+    with pytest.raises(sqlite3.IntegrityError):
+        _decision(conn, "Test.a", group_id=sub, kind="NotADecisionKind")
+    conn.rollback()
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO queue (kind, target_id, target_kind, problem,"
+            " created_at) VALUES ('Strategist', '1', 'Herd', 'Test.a', 't')")
+    conn.rollback()
 
 
 def test_v35_rekeys_the_programme_chain_index_to_the_group(tmp_path):

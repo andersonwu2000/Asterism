@@ -255,13 +255,24 @@ def test_registry_has_no_self_edges():
 
 def test_canonical_states_round_trip_through_db_check(conn: sqlite3.Connection):
     # Every canonical state must be accepted by the goals.status /
-    # strategies.status CHECK constraint (a cheap binding sanity check; the
-    # exhaustive schema<->canonical equality is P4's job).
+    # strategies.status CHECK, and every NON-canonical one rejected. The
+    # positive half alone asserted nothing (the inserts either raise or
+    # they don't); without the negative half a widened CHECK that accepts
+    # anything would still pass. Exhaustive schema<->canonical equality
+    # lives in the *_match_schema_check pair below; this one guards the
+    # round trip through a real INSERT.
     for i, st in enumerate(sorted(transitions.GOAL_STATES)):
         _insert_goal(conn, status=st, slug=f"g{i}")
     g = _insert_goal(conn, status="open", slug="anchor")
     for st in sorted(transitions.STRATEGY_STATES):
         _insert_strategy(conn, goal_id=g, status=st)
+    stored = {r[0] for r in conn.execute(
+        "SELECT DISTINCT status FROM goals")}
+    assert transitions.GOAL_STATES <= stored
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_goal(conn, status="not_a_state", slug="rogue")
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_strategy(conn, goal_id=g, status="not_a_state")
 
 
 # --------------------------------------------------------------------------- #

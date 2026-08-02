@@ -223,6 +223,23 @@ class _FakePopen:
         return False
 
 
+def _silence_watchdog(monkeypatch: pytest.MonkeyPatch, mod) -> None:
+    """Neutralise the watchdog thread for argv-shape tests.
+
+    `_FakePopen` starts with `returncode=None`, so a watchdog-eligible
+    spawn (`session_id` set, not postmortem/inline) polls a process that
+    never exits: the loop sleeps 2s, then the dispatch thread pays
+    another `join(timeout=2)`. Nine tests in this file were spending
+    ~2s each on a thread whose behaviour they never assert on — the
+    watchdog's real contract (trap detection, completion grace, the
+    race re-check) is owned by test_watchdog_thinking_trap.py and
+    test_watchdog_rescue.py. Patching the target, not the process
+    state, keeps `poll()`/`wait()` semantics exactly as production
+    sees them."""
+    if hasattr(mod, "_watchdog"):
+        monkeypatch.setattr(mod, "_watchdog", lambda *a, **k: None)
+
+
 def _capture_cmd(monkeypatch: pytest.MonkeyPatch) -> list:
     """Patch claude_cli.subprocess.Popen to capture the cmd argv and
     return a successful fake Popen instance. claude_cli's spawn was
@@ -236,6 +253,7 @@ def _capture_cmd(monkeypatch: pytest.MonkeyPatch) -> list:
         return _FakePopen(rc=0, stdout="ok")
     monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "/fake/claude")
     monkeypatch.setattr(claude_cli.subprocess, "Popen", _fake_popen)
+    _silence_watchdog(monkeypatch, claude_cli)
     return captured
 
 
@@ -254,6 +272,7 @@ def _capture_call(monkeypatch: pytest.MonkeyPatch, *,
             return _FakePopen(rc=0, stdout="ok")
         monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/exe")
         monkeypatch.setattr(mod.subprocess, "Popen", _fake_popen)
+        _silence_watchdog(monkeypatch, mod)
         return calls
     elif module_name == "gemini_cli":
         from Tooling.llm import gemini_cli as mod
@@ -940,6 +959,7 @@ def test_claude_spawn_stale_session_returns_rc_125(
             rc=1, stdout="",
             stderr="No conversation found with session ID: abc123",
         ))
+    _silence_watchdog(monkeypatch, claude_cli)
     p = claude_cli.ClaudeCliProvider()
     rc = p.spawn(llm.LLMRequest(
         kind="builder",
@@ -1008,6 +1028,7 @@ def test_claude_spawn_stale_marker_only_on_retry(
             rc=1, stdout="",
             stderr="No conversation found with session ID: abc123",
         ))
+    _silence_watchdog(monkeypatch, claude_cli)
     p = claude_cli.ClaudeCliProvider()
     rc = p.spawn(llm.LLMRequest(
         kind="builder",

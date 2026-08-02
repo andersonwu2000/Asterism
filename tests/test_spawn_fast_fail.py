@@ -450,8 +450,11 @@ def test_bfs_refill_dispatches_when_cooldown_expired(
     import time
     from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn)
-    # Cooldown already in the past — should NOT block
-    cooldown_until = {(str(gid), "Builder"): time.time() - 1.0}
+    # Cooldown already in the past — should NOT block. The key must carry
+    # the kind bfs_refill actually dispatches (v33: always "Formalizer");
+    # a retired kind here never matches, and the test passes even if the
+    # cooldown check is deleted outright.
+    cooldown_until = {(str(gid), "Formalizer"): time.time() - 1.0}
     bfs_refill(conn, set(), cooldown_until)
     assert db.queue_size(conn) == 1
 

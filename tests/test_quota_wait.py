@@ -288,8 +288,13 @@ def test_breaker_consults_probe_before_exit():
 def test_pop_loop_and_refill_gate_on_quota_wait():
     src = inspect.getsource(dispatcher.run)
     assert "quota_waiting = quota_wait.tick" in src
-    assert "if not quota_waiting:" in src.split("bfs_refill(")[0].rsplit(
-        "# Refill queue", 1)[0] or "if not quota_waiting:" in src, (
+    # The gate must sit BETWEEN the section comment and the call. The
+    # earlier form took the text before the comment (never contains the
+    # gate — it is always false) and carried an `or <whole source>`
+    # fallback, so this assertion could not fail in either direction.
+    before_call = src.split("bfs_refill(")[0]
+    assert "if not quota_waiting:" in before_call.rsplit(
+        "# Refill queue", 1)[-1], (
         "bfs_refill must be gated on quota_waiting")
     assert "stopping or drifting or quota_waiting" in src, (
         "pop loop must not spawn during quota-wait")

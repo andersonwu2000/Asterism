@@ -72,9 +72,9 @@ def test_sweep_flags_each_window(conn):
     g_op = _goal(conn, "op", status="open")
     _strategy(conn, g_op, status="proposed")
     # attempting goal with no live strategy
-    _goal(conn, "att", status="attempting")
+    g_att = _goal(conn, "att", status="attempting")
     # unreachable zombie: open, not detached, no live chain to a root
-    _goal(conn, "zombie", status="open")
+    g_zombie = _goal(conn, "zombie", status="open")
     # revival pending: shelved goal whose alias target is proved
     g_x = _goal(conn, "canon", status="proved")
     g_sh = _goal(conn, "sh", status="shelved")
@@ -89,14 +89,14 @@ def test_sweep_flags_each_window(conn):
             sweep["live_strategy_terminal_goal"]] == [g_a3]
     assert [r["goal_id"] for r in
             sweep["open_with_proposed_strategy"]] == [g_op]
+    # 'att' only: g_a2 is attempting too but owns a succeeded strategy.
     assert [r["goal_id"] for r in
-            sweep["attempting_without_live_strategy"]] == [
-        # 'att' plus the terminal-window fixtures are filtered by status —
-        # only 'att' is attempting-without-live here
-        next(r["goal_id"] for r in
-             sweep["attempting_without_live_strategy"])]
+            sweep["attempting_without_live_strategy"]] == [g_att]
+    # Every alive (open/attempting), non-root, non-detached goal with no
+    # live chain to a root — exact, so a predicate that over-reports (e.g.
+    # stops excluding detached seeds or terminal goals) fails here.
     zombies = {r["goal_id"] for r in sweep["unreachable_alive_goal"]}
-    assert zombies >= {g_a2, g_op}  # unlinked non-detached non-root goals
+    assert zombies == {g_a2, g_op, g_att, g_zombie}
     assert [r["goal_id"] for r in sweep["revival_pending"]] == [g_sh]
 
 

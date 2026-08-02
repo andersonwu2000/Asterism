@@ -6,6 +6,7 @@ here. (attempts_dir scratch — patch.lean / new_*.lean / target — is exempt; 
 is not a DB-tracked proof artifact.)"""
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -79,9 +80,21 @@ def test_no_bare_atomic_write(path) -> None:
 
 
 @pytest.mark.parametrize("path", _CHOKEPOINT_FILES, ids=lambda p: p.name)
-def test_chokepoint_files_import_proof_store(path) -> None:
-    text = path.read_text(encoding="utf-8")
-    assert "proof_store" in text, f"{path.name} should use state.proof_store"
+def test_chokepoint_files_call_proof_store(path) -> None:
+    """A chokepoint file must actually CALL the store, not merely mention
+    it. The former `"proof_store" in text` was satisfied by any comment —
+    including the ones this very lint module tells people to write — so a
+    file that dropped its last real call still passed."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    called = {
+        n.func.attr for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        and isinstance(n.func.value, ast.Name)
+        and n.func.value.id.endswith("proof_store")
+    }
+    assert called, (
+        f"{path.name} names proof_store but never calls it — the "
+        "ownership-guarded write path is not actually in use here")
 
 
 # ---------------------------------------------------------------------
