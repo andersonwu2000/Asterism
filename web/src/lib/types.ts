@@ -89,6 +89,10 @@ export interface Decision {
   produced_strategy_id: number | null
   created_at: string
   updated_at: string
+  /** which discussion group decided this (v35; null pre-migration) */
+  group_id?: number | null
+  /** the group a Delegate opened */
+  produced_group_id?: number | null
 }
 
 export interface ProblemDetail {
@@ -119,6 +123,26 @@ export interface ProblemDetail {
   /** revision events for the timeline — a proposal cycle leaves no
    * decision row, so the argument was invisible there */
   programme_events: ProgrammeEvent[]
+  /** the discussion-group tree (v35); one entry (the top group) is the
+   * ordinary case and reads exactly as it did before groups existed */
+  groups?: Group[]
+}
+
+/** A discussion group (v35): one charter, one Programme, one
+ * strategist/adversary loop, and the subtree it grows. Every problem
+ * has a TOP group — itself, facing you — and may delegate burdens to
+ * sub-groups, which argue their own charter in parallel. */
+export interface Group {
+  id: number
+  problem: string
+  parent_id: number | null
+  /** the top group IS the problem; its charter is the Manifest */
+  is_top: boolean
+  /** the claim this group was handed (empty for the top group) */
+  charter: string
+  status: 'active' | 'delivered' | 'returned' | 'closed' | string
+  anchor_goal_id: number | null
+  created_at: string
 }
 
 export interface ProgrammeEvent {
@@ -137,6 +161,10 @@ export interface Programme {
     reservations: string[]
   } | null
   history: { rev: number; status: string; rounds: number; created_at: string }[]
+  /** which group's chain this is (null before any group exists) */
+  group_id?: number | null
+  /** every group in the problem — the others argue their own charters */
+  groups?: Group[]
 }
 
 export interface DeadAttempt {
@@ -255,6 +283,9 @@ export interface RunWorker {
   slug: string
   /** which problem this agent is on — a pattern scope runs several */
   problem?: string | null
+  /** the discussion group this agent speaks for (Strategist seats are
+   * per group since v35); null = not a group seat */
+  group?: Group | null
   statement: string | null
   leased_at: string | null
   /** Strategist only: why it woke (trigger_kind) — names the mode of

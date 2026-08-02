@@ -24,6 +24,11 @@ const KIND_CLS: Record<string, string> = {
   EmitDirective: 'text-ink-dim',
   FetchPaper: 'text-ink-dim',
   Noop: 'text-ink-faint',
+  // v35 — a handover of a claim changes who is arguing, which is
+  // structural news: it reads at Inject's weight, not a note's
+  Delegate: 'text-accent',
+  ReturnToParent: 'text-accent',
+  CloseGroup: 'text-ink-dim',
 }
 
 /* positive outcomes are the norm — they collapse to a quiet check so
@@ -50,6 +55,12 @@ const OUTCOME_LABEL: Record<string, string> = {
   verify_failed: 'verify failed',
   forward_no_new_goal: 'no new goal',
   shelved_produced: 'shelved',
+  // v35 — a delegated claim coming back unsettled is news, not an
+  // alarm: the engine files it under `failed:` for batch accounting,
+  // but returning a charter is a sanctioned move (the flavour —
+  // refuted / amend / exhausted — is on the ReturnToParent row)
+  'failed:returned': 'handed back',
+  'failed:closed': 'retired',
 }
 
 const OUTCOME_CLS: Record<string, string> = {

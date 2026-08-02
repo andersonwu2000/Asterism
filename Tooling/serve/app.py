@@ -413,11 +413,15 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         return {"path": path, "content": text}
 
     @app.get("/api/problems/{problem}/programme")
-    def problem_programme(problem: str) -> dict:
+    def problem_programme(problem: str, group: int | None = None) -> dict:
         """Research mode's argument layer: the current adversarially-
         passed Programme + its revision history (bodies of past/
         rejected rows stay in the DB — audit material, not page
-        furniture)."""
+        furniture).
+
+        `group` selects one discussion group's chain (v35); omitted, the
+        top group's — the problem's own argument. A group belonging to
+        another problem is a 404, not somebody else's Programme."""
         with _ro(workspace) as conn:
             known = conn.execute(
                 "SELECT 1 FROM problems WHERE name = ?",
@@ -425,10 +429,17 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             if known is None:
                 raise HTTPException(status_code=404,
                                     detail="unknown problem")
+            if group is not None:
+                card = _data.group_card(conn, group)
+                if card is None or card["problem"] != problem:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"group {group} is not part of {problem}")
             try:
-                return _data.programme(conn, problem)
+                return _data.programme(conn, problem, group)
             except sqlite3.OperationalError:
-                return {"current": None, "history": []}
+                return {"current": None, "history": [],
+                        "group_id": None, "groups": []}
 
     @app.get("/api/problems/{problem}/manifest")
     def manifest_get(problem: str) -> dict:

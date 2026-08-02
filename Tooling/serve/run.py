@@ -88,6 +88,38 @@ _TRIGGER_RE = re.compile(r"`trigger_kind`:\s*(\w+)")
 _goal_workarea_draft = _data.goal_workarea_draft
 
 
+def _pick_group_workarea(conn: sqlite3.Connection, cands: list,
+                         group: dict) -> "tuple | None":
+    """Which of several same-problem Strategist workareas belongs to
+    THIS group (v35).
+
+    A sub-group's context compile stages `charter.md` — the same bytes
+    the judge reads — so the charter identifies the workarea; the top
+    group stages none. Sibling groups run concurrently by design, and
+    without this the lanes would swap thinking with each other. Falls
+    back to the first candidate: a wake caught between mkdir and the
+    charter write is better shown against its problem than not at all.
+    """
+    if not cands:
+        return None
+    want = ""
+    if not group.get("is_top"):
+        try:
+            from ..state import groups as _groups
+            want = _groups.charter_digest(conn, str(group["problem"]),
+                                          int(group["id"]))
+        except (sqlite3.OperationalError, KeyError, ValueError):
+            want = ""
+    for t in cands:
+        try:
+            text = (t[3] / "charter.md").read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        if text.strip() == want.strip():
+            return t
+    return cands[0]
+
+
 def _scratch_drafts(workspace: Path) -> "list[tuple[str, str, float, Path]]":
     """(kind, problem, ctx_mtime, dir) for each live agent workarea
     under `.attempts/`, identified by its Context.md title line. A
@@ -364,9 +396,21 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
             sig = _data._goal_signature(
                 workspace, str(r["slug"] or ""), r["lean_path"],
                 r["statement"]) if r["slug"] is not None else None
+            # v35 — a Strategist seat belongs to a GROUP, so its
+            # target_id is a group id: without this the lane's identity
+            # line read as a bare number where the problem name used to
+            # be (live, sylvester_gallai 2026-08-02)
+            group = (_data.group_card(conn, int(r["tid"]))
+                     if str(r["tk"]) == "Group" and str(r["tid"]).isdigit()
+                     else None)
             lane: dict = {
                 "kind": str(r["kind"]),
-                "slug": r["slug"] if r["slug"] is not None else str(r["tid"]),
+                "slug": (r["slug"] if r["slug"] is not None
+                         else (group or {}).get("problem")
+                         or str(r["tid"])),
+                # the discussion group this agent speaks for (null = not
+                # a group seat). A sub-group's charter is its subject.
+                "group": group,
                 # which problem this agent is on — a pattern scope runs
                 # several at once and the cards were ambiguous
                 "problem": str(r["problem"]) if r["problem"] else None,
@@ -412,10 +456,17 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                 # same-kind lanes on one problem get distinct dirs.
                 if drafts is None:
                     drafts = _scratch_drafts(workspace)
-                match = next(
-                    (t for t in drafts
-                     if t[0] == lane["kind"] and t[1] == str(r["problem"])),
-                    None)
+                cands = [t for t in drafts
+                         if t[0] == lane["kind"]
+                         and t[1] == str(r["problem"])]
+                # v35 — sibling groups run concurrently, so one problem
+                # can have two Strategist workareas at once and "first
+                # match wins" would show each lane the other's thinking.
+                # The context compiler stages `charter.md` for a
+                # sub-group (and none for the top group), so the charter
+                # identifies the workarea exactly.
+                match = _pick_group_workarea(conn, cands, group) \
+                    if group is not None else (cands[0] if cands else None)
                 if match is not None:
                     drafts.remove(match)
                     # the Strategist's Context.md already names WHY it woke

@@ -25,23 +25,61 @@ type Tab = 'stars' | 'manifest' | 'programme' | 'goals' | 'timeline' | 'files'
  * asked; this is what the ENGINE currently argues. Read-only by
  * construction (the only writer is a passed proposal commit). */
 function ProgrammePanel({ problem }: { problem: string }) {
+  // a delegated claim is argued by its own group, with its own
+  // revision chain numbered from 1 (v35) — null = the problem's own
+  const [group, setGroup] = useState<number | null>(null)
   // 30s poll: revisions land once per strategist wake at most
   const { data, error } = usePoll<Programme>(
-    `/api/problems/${encodeURIComponent(problem)}/programme`,
+    `/api/problems/${encodeURIComponent(problem)}/programme` +
+      (group !== null ? `?group=${group}` : ''),
     30000,
   )
   if (error) return <ErrorState error={error} />
   if (!data) return null
+  const groups = data.groups ?? []
+  const others = groups.filter((g) => !g.is_top)
+  const picker = others.length > 0 && (
+    // only a problem that HAS delegated shows this — one group is the
+    // ordinary case and must read exactly as it did before
+    <div className="mb-4 flex flex-wrap items-center gap-1.5">
+      <span className="mr-1 text-[11px] text-ink-faint">arguing:</span>
+      {groups.map((g) => {
+        const on = g.is_top ? group === null : group === g.id
+        return (
+          <button
+            key={g.id}
+            className={`max-w-64 truncate rounded-md border px-1.5 py-0.5 text-[11px] transition-colors ${
+              on
+                ? 'border-edge-strong text-ink'
+                : 'border-edge text-ink-faint hover:text-ink-dim'
+            }`}
+            onClick={() => setGroup(g.is_top ? null : g.id)}
+            title={
+              g.is_top
+                ? "the problem's own argument"
+                : `a claim handed to its own group — ${g.status}\n\n${g.charter}`
+            }
+          >
+            {g.is_top ? 'the problem' : g.charter || `group ${g.id}`}
+          </button>
+        )
+      })}
+    </div>
+  )
   if (data.current === null)
     return (
-      <div className="px-6 py-10 text-sm text-ink-faint">
-        no programme yet — the first passed proposal will start the revision chain
+      <div className="mx-auto max-w-3xl px-6 py-5">
+        {picker}
+        <div className="py-6 text-sm text-ink-faint">
+          no programme yet — the first passed proposal will start the revision chain
+        </div>
       </div>
     )
   const cur = data.current
   const rejected = data.history.filter((h) => h.status === 'rejected').length
   return (
     <div className="mx-auto max-w-3xl px-6 py-5">
+      {picker}
       <div className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] text-ink-faint">
         <span
           className="text-ink-dim"

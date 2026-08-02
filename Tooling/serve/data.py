@@ -486,10 +486,18 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             })
 
     decisions = []
+    # v35 — group_id (who decided) and produced_group_id (what a
+    # Delegate opened) exist only post-migration; the timeline reads
+    # them when they are there and stays silent when they are not
+    _dcols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(strategist_decisions)")}
+    _gsel = ("" if "group_id" not in _dcols
+             else ", group_id, produced_group_id")
     for d in conn.execute(
             "SELECT id, batch_id, trigger_kind, decision_kind, target_id,"
             " brief, reason, payload, outcome, outcome_detail,"
             " produced_goal_id, produced_strategy_id, created_at, updated_at"
+            + _gsel +
             " FROM strategist_decisions WHERE problem = ?"
             " ORDER BY id DESC LIMIT 200", (problem,)):
         try:
@@ -511,6 +519,8 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             "produced_strategy_id": d["produced_strategy_id"],
             "created_at": str(d["created_at"]),
             "updated_at": str(d["updated_at"]),
+            "group_id": (d["group_id"] if _gsel else None),
+            "produced_group_id": (d["produced_group_id"] if _gsel else None),
         })
 
     # Dependency edges for Forward-built problems: strategies only exist
@@ -553,6 +563,7 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
         f.name for f in proofs_dir.glob("*.lean")) if proofs_dir.is_dir() \
         else []
 
+    top_group_id = _top_group_id(conn, problem)
     awaiting = db.problem_has_awaiting_human(conn, problem)
     stalled = db.is_problem_stalled(conn, problem)
     chip = _status_chip(
@@ -612,19 +623,36 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
         "proof_files": proof_files,
         # research mode (v30): the current Programme's rev, or null
         # before bootstrap — the UI shows the Programme tab only when
-        # there is a Programme to read
-        "programme_rev": _programme_rev(conn, problem),
+        # there is a Programme to read. v35: of the TOP group, whose
+        # argument is the problem's own (a sub-group's chain restarts
+        # at 1 and would otherwise overwrite this number).
+        "programme_rev": _programme_rev(conn, problem, top_group_id),
         # revision events for the timeline: a proposal cycle (passed OR
         # rejected) leaves no strategist_decisions row, so hours of
         # argument were invisible there — b6_1's founding proposal
         # survived 5 rounds and the timeline showed two Injects
         # (owner report, 2026-07-19)
-        "programme_events": _programme_events(conn, problem),
+        "programme_events": _programme_events(conn, problem, top_group_id),
+        # the discussion-group tree (v35): one charter, one Programme,
+        # one strategist/adversary loop each. A problem with only its
+        # top group reads exactly as it did before groups existed.
+        "groups": groups_of(conn, problem),
     }
 
 
-def _programme_events(conn: sqlite3.Connection,
-                      problem: str) -> "list[dict]":
+#: v35 — every group owns its own revision chain, numbered from 1. A
+#: problem-wide read therefore interleaves N chains and its "latest
+#: rev" is the max of unrelated numberings: rev 3 of one argument
+#: displayed as the successor of rev 2 of another. Every read below
+#: scopes to ONE group, defaulting to the top group — the one whose
+#: argument the problem page is about.
+def _group_clause(gid: "int | None") -> "tuple[str, tuple]":
+    return (" AND group_id = ?", (gid,)) if gid is not None else ("", ())
+
+
+def _programme_events(conn: sqlite3.Connection, problem: str,
+                      group_id: "int | None" = None) -> "list[dict]":
+    clause, args = _group_clause(group_id)
     try:
         return [{
             "rev": int(r["rev"]),
@@ -633,34 +661,45 @@ def _programme_events(conn: sqlite3.Connection,
             "created_at": str(r["created_at"]),
         } for r in conn.execute(
             "SELECT rev, status, rounds, created_at"
-            " FROM programme_revisions WHERE problem = ?"
-            " ORDER BY id DESC LIMIT 100", (problem,))]
+            " FROM programme_revisions WHERE problem = ?" + clause +
+            " ORDER BY id DESC LIMIT 100", (problem,) + args)]
     except sqlite3.OperationalError:
         return []  # pre-v30 DB
 
 
-def _programme_rev(conn: sqlite3.Connection, problem: str) -> "int | None":
+def _programme_rev(conn: sqlite3.Connection, problem: str,
+                   group_id: "int | None" = None) -> "int | None":
+    clause, args = _group_clause(group_id)
     try:
         row = conn.execute(
             "SELECT MAX(rev) FROM programme_revisions"
-            " WHERE problem = ? AND status = 'passed'", (problem,)).fetchone()
+            " WHERE problem = ? AND status = 'passed'" + clause,
+            (problem,) + args).fetchone()
         return int(row[0]) if row and row[0] is not None else None
     except sqlite3.OperationalError:
         return None  # pre-v30 DB opened read-only — no table, no tab
 
 
-def programme(conn: sqlite3.Connection, problem: str) -> dict:
+def programme(conn: sqlite3.Connection, problem: str,
+              group_id: "int | None" = None) -> dict:
     """The Programme page read: current passed revision (full body) +
     the whole revision history (passed AND rejected, no bodies — the
     audit dialogue stays in the DB; design §2 keeps the render clean).
 
     Verdict reservations ride along for the current rev: they are the
     Adversary's on-the-record caveats, exactly what a reader signing
-    off on the argument should see."""
+    off on the argument should see.
+
+    One GROUP's chain (v35) — `group_id` defaults to the top group, the
+    argument the problem page is about. `groups` names the others so a
+    reader can tell that a delegated burden is arguing elsewhere."""
+    if group_id is None:
+        group_id = _top_group_id(conn, problem)
+    clause, args = _group_clause(group_id)
     rows = conn.execute(
         "SELECT id, rev, status, verdict, rounds, created_at"
-        " FROM programme_revisions WHERE problem = ?"
-        " ORDER BY id DESC", (problem,)).fetchall()
+        " FROM programme_revisions WHERE problem = ?" + clause +
+        " ORDER BY id DESC", (problem,) + args).fetchall()
     history = [{
         "rev": int(r["rev"]),
         "status": str(r["status"]),
@@ -670,8 +709,8 @@ def programme(conn: sqlite3.Connection, problem: str) -> dict:
     cur = conn.execute(
         "SELECT rev, body, verdict, rounds, created_at"
         " FROM programme_revisions"
-        " WHERE problem = ? AND status = 'passed'"
-        " ORDER BY rev DESC LIMIT 1", (problem,)).fetchone()
+        " WHERE problem = ? AND status = 'passed'" + clause +
+        " ORDER BY rev DESC LIMIT 1", (problem,) + args).fetchone()
     current = None
     if cur is not None:
         reservations: "list[str]" = []
@@ -687,7 +726,8 @@ def programme(conn: sqlite3.Connection, problem: str) -> dict:
             "created_at": str(cur["created_at"]),
             "reservations": reservations,
         }
-    return {"current": current, "history": history}
+    return {"current": current, "history": history,
+            "group_id": group_id, "groups": groups_of(conn, problem)}
 
 
 # display-signature cache: mtime-keyed per lean file so the 3s detail
@@ -721,6 +761,80 @@ def _goal_signature(workspace: Path, slug: str,
         sig = None
     _SIG_CACHE[key] = (mtime, sig)
     return sig
+
+
+#: How much of a charter a display surface carries inline. The whole
+#: claim lives in the group's own read; a lane or a chip needs the
+#: subject, not the paragraph.
+_CHARTER_SNIP = 240
+
+
+def _charter_snippet(charter: str) -> str:
+    one = " ".join(str(charter or "").split())
+    return one[:_CHARTER_SNIP].rstrip() + "…" if len(one) > _CHARTER_SNIP \
+        else one
+
+
+def group_card(conn: sqlite3.Connection, group_id: int) -> "dict | None":
+    """The display identity of one discussion group (v35).
+
+    A group is one charter, one Programme, one strategist/adversary
+    loop. The TOP group is the problem itself facing a human — it has
+    no charter (its charter is the Manifest), and surfaces must not
+    dress it up as a delegated burden: with no sub-groups anywhere,
+    every display reads exactly as it did before groups existed.
+    """
+    try:
+        r = conn.execute(
+            "SELECT id, problem, parent_group_id, charter, status,"
+            " anchor_goal_id, created_at FROM groups WHERE id = ?",
+            (int(group_id),)).fetchone()
+    except sqlite3.OperationalError:
+        return None  # pre-v35 DB
+    if r is None:
+        return None
+    return {
+        "id": int(r["id"]),
+        "problem": str(r["problem"]),
+        "parent_id": (int(r["parent_group_id"])
+                      if r["parent_group_id"] is not None else None),
+        "is_top": r["parent_group_id"] is None,
+        "charter": _charter_snippet(r["charter"]),
+        "status": str(r["status"]),
+        "anchor_goal_id": (int(r["anchor_goal_id"])
+                           if r["anchor_goal_id"] is not None else None),
+        "created_at": str(r["created_at"]),
+    }
+
+
+def _top_group_id(conn: sqlite3.Connection, problem: str) -> "int | None":
+    """The problem's human-facing group — the one whose Programme and
+    revision numbering a problem-level read means."""
+    try:
+        r = conn.execute(
+            "SELECT id FROM groups WHERE problem = ?"
+            " AND parent_group_id IS NULL", (problem,)).fetchone()
+    except sqlite3.OperationalError:
+        return None  # pre-v35 DB: revisions are problem-wide, as before
+    return int(r["id"]) if r is not None else None
+
+
+def groups_of(conn: sqlite3.Connection, problem: str) -> "list[dict]":
+    """Every group in the problem, top first then by age — the tree a
+    reader needs to know exists before any of it can be shown."""
+    try:
+        rows = conn.execute(
+            "SELECT id FROM groups WHERE problem = ?"
+            " ORDER BY (parent_group_id IS NULL) DESC, id", (problem,)
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    out = []
+    for r in rows:
+        card = group_card(conn, int(r["id"]))
+        if card is not None:
+            out.append(card)
+    return out
 
 
 def _disproof_links(conn: sqlite3.Connection,

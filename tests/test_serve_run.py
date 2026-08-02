@@ -244,6 +244,78 @@ def test_run_strategist_lane_names_its_mode(
     assert lane["path"].endswith("_plan.md")
 
 
+def test_run_strategist_lane_names_its_group_not_a_row_id(
+        workspace: Path, monkeypatch) -> None:
+    """v35 — a Strategist seat belongs to a GROUP, so its queue row
+    targets a group id. The lane's identity line must stay the thing a
+    reader knows (the problem), with the group's charter naming the
+    subject when it is a delegated one; the raw id read as a bare
+    number where the problem name used to be (live, 2026-08-02)."""
+    from Tooling.state import groups as _groups
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    top = _groups.ensure_top_group(conn, "p")
+    sub = _groups.open_group(conn, problem="p", parent_group_id=top,
+                             charter="settle the pigeonhole bound")
+    db.enqueue(conn, kind="Strategist", target_id=str(sub),
+               target_kind="Group", problem="p")
+    conn.execute("UPDATE queue SET owner_pid = 4321, leased_at = ?"
+                 " WHERE kind = 'Strategist'", (db.now(),))
+    conn.commit()
+    conn.close()
+    _fake_daemon(monkeypatch, scope="p")
+    lane = _client(workspace).get("/api/run").json()["workers"][0]
+    assert lane["slug"] == "p"          # never the bare "17"
+    assert lane["group"]["id"] == sub
+    assert lane["group"]["is_top"] is False
+    assert lane["group"]["charter"] == "settle the pigeonhole bound"
+
+
+def test_run_sibling_group_lanes_do_not_swap_thinking(
+        workspace: Path, monkeypatch) -> None:
+    """v35 — sibling groups run concurrently BY DESIGN, so one problem
+    can have two Strategist workareas at once. Matching them by
+    (kind, problem) alone made the pairing arbitrary: each lane could
+    show the other group's plan note. The context compile stages
+    `charter.md` for a sub-group and none for the top group, so the
+    charter identifies the workarea."""
+    from Tooling.state import groups as _groups
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    top = _groups.ensure_top_group(conn, "p")
+    sub = _groups.open_group(conn, problem="p", parent_group_id=top,
+                             charter="settle the pigeonhole bound")
+    for gid in (top, sub):
+        db.enqueue(conn, kind="Strategist", target_id=str(gid),
+                   target_kind="Group", problem="p")
+    conn.execute("UPDATE queue SET owner_pid = 4321, leased_at = ?"
+                 " WHERE kind = 'Strategist'", (db.now(),))
+    conn.commit()
+    charter_md = _groups.charter_digest(conn, "p", sub)
+    conn.close()
+
+    # the sub-group's workarea is the one carrying charter.md
+    sub_wa = workspace / ".attempts" / "sub-one"
+    sub_wa.mkdir(parents=True)
+    (sub_wa / "Context.md").write_text("# Strategist context — p\n",
+                                       encoding="utf-8")
+    (sub_wa / "charter.md").write_text(charter_md, encoding="utf-8")
+    (sub_wa / "_plan.md").write_text("the pigeonhole route\n",
+                                     encoding="utf-8")
+    top_wa = workspace / ".attempts" / "top-one"
+    top_wa.mkdir(parents=True)
+    (top_wa / "Context.md").write_text("# Strategist context — p\n",
+                                       encoding="utf-8")
+    (top_wa / "_plan.md").write_text("the whole problem's route\n",
+                                     encoding="utf-8")
+
+    _fake_daemon(monkeypatch, scope="p")
+    lanes = _client(workspace).get("/api/run").json()["workers"]
+    by_group = {ln["group"]["id"]: ln for ln in lanes}
+    assert "whole problem" in by_group[top]["file"]["tail"]
+    assert "pigeonhole route" in by_group[sub]["file"]["tail"]
+
+
 def test_run_goal_lane_prefers_the_fresher_workarea_draft(
         workspace: Path, monkeypatch) -> None:
     """A Backward attempt drafts patch.lean in its workarea and lands

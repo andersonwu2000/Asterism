@@ -196,6 +196,17 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
             {w.problem.split('.').pop()}
           </span>
         )}
+        {/* a sub-group argues a delegated claim, not the problem's own:
+            say so, or two strategists on one problem read identically.
+            The top group IS the problem and wears no tag. */}
+        {w.group && !w.group.is_top && (
+          <span
+            className="shrink-0 rounded-md border border-edge px-1 py-px text-[10px] text-ink-faint"
+            title={`this agent argues a delegated claim, not the problem's own — engine term: discussion group ${w.group.id}`}
+          >
+            delegated
+          </span>
+        )}
         <span
           className="tnum ml-auto text-[11px] text-ink-faint"
           title="how long this agent has worked this goal (engine term: unit lease)"
@@ -224,6 +235,13 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
             </div>
           )
         })()}
+      {/* the charter IS what a sub-group's strategist is working on —
+          the same role the statement plays on a goal lane */}
+      {w.group && !w.group.is_top && w.group.charter && (
+        <div className="mt-1 text-[11px] text-ink-dim" title={w.group.charter}>
+          {renderInline(w.group.charter, `ch${w.group.id}`)}
+        </div>
+      )}
       {w.kind === 'Strategist' && w.cycle && <CycleLine cycle={w.cycle} />}
       {w.file ? (
         // the tail folds away (owner: the sky owns the space) — the

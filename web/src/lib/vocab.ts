@@ -61,6 +61,11 @@ const DECISION_KIND_LABEL: Record<string, string> = {
   Ingest: 'closed the problem',
   FetchPaper: 'fetched a paper',
   AttemptDisproof: 'tried a disproof',
+  // v35 — the discussion-group verbs. A delegation is a handover of a
+  // claim, not a dispatch of work: the words say who now owns it.
+  Delegate: 'handed off a claim',
+  ReturnToParent: 'handed the claim back',
+  CloseGroup: 'retired a group',
 }
 
 export function decisionKindLabel(kind: string): string {
@@ -80,6 +85,15 @@ const DECISION_KIND_TITLE: Record<string, string> = {
   FetchPaper: "engine term: FetchPaper — pulled a paper into the problem's sources",
   AttemptDisproof:
     'engine term: AttemptDisproof — dispatched an attempt to prove the negation instead',
+  Delegate:
+    'engine term: Delegate — handed a claim to a new discussion group, which argues its own' +
+    ' programme until it can deliver it back',
+  ReturnToParent:
+    'engine term: ReturnToParent — a group handed its charter back: refuted, needing an' +
+    ' amendment, or exhausted',
+  CloseGroup:
+    'engine term: CloseGroup — retired a group whose claim the route no longer needs' +
+    ' (difficulty is never the reason)',
 }
 
 export function decisionKindTitle(kind: string): string {
