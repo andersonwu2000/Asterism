@@ -127,6 +127,12 @@ GOAL_EDGES: frozenset[tuple[str, str]] = frozenset({
     # --- goal dispatched (worker picked up / backward decomposed) ---
     ("open", "attempting"),                   # bfs_refill / backward success has_live
     ("pending_strategist_review", "attempting"),
+    # v35 rescue shape: a `Delegate` with a target promotes that goal to
+    # the new group's anchor. "This goal keeps failing — give it a
+    # group" is the documented entry point, and the states it starts
+    # from are exactly the parked ones.
+    ("shelved", "attempting"),
+    ("frozen", "attempting"),
 
     # --- goal reopened (reset for a fresh attempt; no terminal reached) ---
     ("attempting", "open"),                   # strategy died, not exhausted
@@ -233,7 +239,8 @@ def predicted_batch_delta(conn: sqlite3.Connection, decisions) -> int:
     for d in decisions:
         k = getattr(d, "kind", None)
         if k in ("Inject", "FetchPaper", "AttemptDisproof", "Ingest",
-                 "RequestUserAmend", "Delegate", "ReturnToParent"):
+                 "RequestUserAmend", "Delegate", "ReturnToParent",
+                 "CloseGroup"):
             # New dispatch (Inject/FetchPaper/Delegate — a delegated
             # burden is work handed to a new group, not a self-edge), a
             # minted ¬P goal, or a lifecycle edge (active→ingest_signoff

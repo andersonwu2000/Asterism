@@ -233,6 +233,14 @@ def _problem_of_target(conn: sqlite3.Connection, target_id: str,
         # Strip a Librarian per-file suffix (problem\x1ffile); a plain
         # problem (Forward / phase-step Librarian) is returned unchanged.
         return _lib_decode(target_id)[0]
+    if target_kind == "Group":
+        # v35 — a Strategist row carries a GROUP id. Falling through to
+        # the goal lookup below would read it as a goal id and hand back
+        # whatever problem THAT goal belongs to, scoping an infra retry
+        # to an unrelated problem.
+        row = conn.execute("SELECT problem FROM groups WHERE id = ?",
+                           (int(target_id),)).fetchone()
+        return str(row["problem"]) if row is not None else None
     try:
         g = db.get_goal(conn, int(target_id))
     except (TypeError, ValueError):
@@ -554,10 +562,22 @@ def reconcile_stuck_states(conn: sqlite3.Connection,
             continue
         if db.problem_has_awaiting_human(conn, prob):
             continue
-        gid = _groups.ensure_top_group(conn, prob)
-        if _strategist_inflight(conn, gid, running):
-            continue
-        _enqueue_strategist(conn, gid, prob, priority=20)
+        # v35 — route to the group that OWNS the pending goal, exactly as
+        # the cascade-time path does. Two routes to two different homes
+        # for one event is the shape this file has paid for three times:
+        # the compensating path would seat the top group on a review only
+        # a sub-group can answer.
+        for r in conn.execute(
+            "SELECT id FROM goals WHERE problem = ?"
+            "   AND status = 'pending_strategist_review' ORDER BY id",
+            (prob,),
+        ).fetchall():
+            owner = _groups.group_for_goal(conn, prob, int(r["id"]))
+            gid = (int(owner["id"]) if owner is not None
+                   else _groups.ensure_top_group(conn, prob))
+            if _strategist_inflight(conn, gid, running):
+                continue
+            _enqueue_strategist(conn, gid, prob, priority=20)
 
     # 1.5 — settled NULL-outcome Inject decisions: the produced goal/
     # strategy already terminated (or a Backward inject's strategy is
@@ -838,17 +858,27 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
          re-stall → re-wake livelock (P13 2026-06-13 shape).
       5. `routine` — residual (a seat whose reason resolved meanwhile).
     """
-    pending_row = conn.execute(
+    # v35 — the lowest pending id in the PROBLEM may belong to another
+    # group; handing it over asks group A to adjudicate B's goal. Pick
+    # the lowest pending id this group actually owns.
+    pending_id = None
+    for r in conn.execute(
         "SELECT id FROM goals WHERE problem = ?"
-        "   AND status = 'pending_strategist_review'"
-        " ORDER BY id LIMIT 1",
+        "   AND status = 'pending_strategist_review' ORDER BY id",
         (problem,),
-    ).fetchone()
-    pending_id = int(pending_row["id"]) if pending_row else None
+    ).fetchall():
+        if group_id is None:
+            pending_id = int(r["id"])
+            break
+        owner = _groups.group_for_goal(conn, problem, int(r["id"]))
+        if owner is not None and int(owner["id"]) == int(group_id):
+            pending_id = int(r["id"])
+            break
     if _routine_due(conn, problem, routine_interval_min,
                     since_iso=since_iso, group_id=group_id):
         return ("routine", pending_id)
-    unack_batches = db.unacknowledged_inject_batches(conn, problem)
+    unack_batches = db.unacknowledged_inject_batches(
+        conn, problem, group_id)
     if unack_batches:
         return ("inject_batch_done", pending_id)
     if pending_id is not None:

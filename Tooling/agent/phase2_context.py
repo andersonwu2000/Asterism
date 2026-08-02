@@ -64,7 +64,8 @@ def _section_trigger(trigger_kind: str, pending_review_id: int | None,
 
 
 def _section_ingest_gate(conn: sqlite3.Connection,
-                         problem: str) -> list[str]:
+                         problem: str,
+                         group_id: "int | None" = None) -> list[str]:
     """Phase 6 — context-conditional Ingest availability note (design ④):
 
       - root exists, NOT proved → surface "Ingest is unavailable" (the
@@ -79,6 +80,28 @@ def _section_ingest_gate(conn: sqlite3.Connection,
         requirements are met") is the only voice — these notes would be
         pure noise once they stop being true.
     """
+    # v35 — a SUB-group's exit is gated on ITS anchor (or its own marked
+    # deliverables), never on the problem's root. Told otherwise, every
+    # sub-group of a rooted problem is informed on every wake that Ingest
+    # is unavailable, never delivers, and its parent's `Delegate` stays
+    # NULL forever — the parent then waits in silence for good.
+    from ..state import groups as _groups
+    me = _groups.get(conn, int(group_id)) if group_id is not None else None
+    if me is not None and not _groups.is_top(me):
+        anchor = me["anchor_goal_id"]
+        if anchor is None:
+            return []
+        g = db.get_goal(conn, int(anchor))
+        if g is None or str(g["status"]) == "proved":
+            return []
+        return [
+            "## Ingest availability",
+            "",
+            f"`Ingest` is unavailable — this group's anchor g{anchor} is "
+            f"not yet proved (status: `{g['status']}`). Settle it, or "
+            f"hand the charter back with `ReturnToParent`.",
+            "",
+        ]
     root = conn.execute(
         "SELECT status FROM goals WHERE problem = ? AND origin = 'root'"
         " LIMIT 1", (problem,)).fetchone()
@@ -158,7 +181,8 @@ def _section_disproof_guidance(conn: sqlite3.Connection,
 
 
 def _section_stall_warning(conn: sqlite3.Connection,
-                           problem: str) -> list[str]:
+                           problem: str,
+                           group_id: "int | None" = None) -> list[str]:
     """Structural stall detection (B-2 fix).
 
     Surfaces a header when:
@@ -186,7 +210,15 @@ def _section_stall_warning(conn: sqlite3.Connection,
     # (P13 2026-06-13). Context-compile owns no in-memory `running` set, so
     # this is a queue-only in-flight check (a worker mid-spawn briefly
     # suppresses the warning — harmless; the next compile re-checks).
-    if not db.is_problem_stalled(conn, problem):
+    # v35 — T4 detects a stall PER GROUP, so this must ask the same
+    # question of the same group. Left problem-wide it recreates the P13
+    # livelock exactly: a stalled sub-group is woken by T4, sees no stall
+    # warning, Noops, gets rejected by the advance gate, and T4 fires
+    # again.
+    stalled = (db.is_group_stalled(conn, problem, group_id)
+               if group_id is not None
+               else db.is_problem_stalled(conn, problem))
+    if not stalled:
         return []
     return [
         "## Framework stalled",
@@ -364,9 +396,66 @@ def _slugify_ident(name: str) -> str:
     return s.lower().replace("'", "")
 
 
+def _delegate_result_lines(conn: sqlite3.Connection,
+                           row: sqlite3.Row) -> list[str]:
+    """What a finished sub-group handed back: the bricks the parent may
+    now cite, or the charter it returned and why."""
+    gid = row["produced_group_id"]
+    if gid is None:
+        return ["  (the group row is gone; nothing to collect)"]
+    from ..state import groups as _groups
+    g = _groups.get(conn, int(gid))
+    if g is None:
+        return ["  (the group row is gone; nothing to collect)"]
+    charter = " ".join(str(g["charter"] or "").split())
+    if len(charter) > 300:
+        charter = charter[:300].rstrip() + "…"
+    out = [f"  DELEGATED group {gid} — charter: {charter}",
+           f"  status: `{g['status']}`"]
+    if str(g["status"]) == "delivered":
+        bricks = db.deliverables(conn, problem=str(g["problem"]),
+                                 group_id=int(gid))
+        if bricks:
+            names = ", ".join(f"`{b['slug']}`" for b in bricks)
+            out.append(f"  delivered, citable now: {names}")
+        else:
+            out.append("  delivered, but marked NO deliverable — nothing "
+                       "to cite; check what it landed before building on it")
+        return out
+    ret = conn.execute(
+        "SELECT reason, payload FROM strategist_decisions"
+        " WHERE produced_group_id = ?"
+        "   AND decision_kind = 'ReturnToParent'"
+        " ORDER BY id DESC LIMIT 1", (int(gid),)).fetchone()
+    if ret is None:
+        return out
+    flavour = ""
+    try:
+        flavour = str(json.loads(ret["payload"] or "{}").get("flavour") or "")
+    except (TypeError, ValueError):
+        pass
+    if flavour:
+        out.append(f"  handed back: `{flavour}`")
+    if flavour == "amend":
+        try:
+            proposed = str(json.loads(ret["payload"] or "{}").get(
+                "proposed_charter") or "")
+        except (TypeError, ValueError):
+            proposed = ""
+        if proposed:
+            out.append(f"  it proposes instead: {proposed}")
+    reason = " ".join(str(ret["reason"] or "").split())
+    if len(reason) > 800:
+        reason = reason[:800].rstrip() + "…"
+    if reason:
+        out.append(f"  post-mortem: {reason}")
+    return out
+
+
 def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                                    problem: str,
                                    workspace: "Path | None" = None,
+                                   group_id: "int | None" = None,
                                    ) -> list[str]:
     """Surface every Inject batch on this problem that completed since
     the last Strategist commit (`last_strategist_at` ratchet — see
@@ -399,7 +488,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     # growth_exponent re-mint). Rendered on the batch scoreboard — the
     # one wall the strategist already reads — bounded to 5 entries.
     decline_lines = _recent_decline_lines(conn, problem)
-    batch_ids = db.unacknowledged_inject_batches(conn, problem)
+    batch_ids = db.unacknowledged_inject_batches(conn, problem, group_id)
     if not batch_ids:
         return decline_lines
     out = ["## Completed Inject batches (newest first)", ""]
@@ -410,12 +499,13 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     rows = list(conn.execute(
         f"SELECT d.id, d.batch_id, d.brief, d.payload, d.outcome,"
         f" d.outcome_detail, d.updated_at, d.produced_kind,"
+        f" d.decision_kind, d.produced_group_id,"
         f" g.slug AS landed_slug, g.status AS landed_status,"
         f" g.statement AS landed_statement, g.lean_path AS landed_path"
         f" FROM strategist_decisions d"
         f" LEFT JOIN goals g ON g.id = d.produced_goal_id"
         f" WHERE d.batch_id IN ({placeholders})"
-        f"   AND d.decision_kind = 'Inject'"
+        f"   AND d.decision_kind IN ('Inject', 'Delegate')"
         f" ORDER BY MAX(d.updated_at) OVER (PARTITION BY d.batch_id) DESC,"
         f"          d.batch_id, d.id",
         batch_ids,
@@ -452,6 +542,15 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                 brief = brief[:1200].rstrip() + "…"
             outcome_text = r["outcome"] or "(no outcome)"
             out.append(f"- **step {idx}** outcome=`{outcome_text}`")
+            if str(r["decision_kind"]) == "Delegate":
+                # v35 — a delegated burden's result is the whole reason
+                # the parent was woken. Without this it reached the
+                # Strategist only as a daemon log line: the parent read
+                # "a batch completed" and could not see which bricks it
+                # may now cite, nor why a charter came back.
+                out += _delegate_result_lines(conn, r)
+                out.append("")
+                continue
             kind = str(r["produced_kind"] or "")
             if r["landed_slug"]:
                 # Full signature off the landed file when reachable
@@ -1099,19 +1198,23 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     # never Reopens" was never closed by the agent on its own; surfacing
     # the cross-reference gives it a structured cue.
     section_names += ["stall_warning", "ingest_gate", "disproof_guidance",
-                      "your_group", "programme", "directive",
+                      "your_group", "groups_in_flight", "programme",
+                      "directive",
                       "plan_note", "inject_batches", "pending_reopens",
                       "active_goals", "failure_replay", "tree", "catalog",
                       "manifest_meta", "paper_index"]
     sections += [
-        _section_stall_warning(conn, problem),
-        _section_ingest_gate(conn, problem),
+        _section_stall_warning(conn, problem, group_id),
+        _section_ingest_gate(conn, problem, group_id),
         _section_disproof_guidance(conn, problem),
         _section_your_group(conn, problem, group_id),
+        _section_groups_in_flight(conn, problem, group_id),
         _section_programme_strategist(conn, problem, group_id),
         _section_current_directive(conn, problem),
         _section_plan_note(conn, workspace, problem, group_id),
-        _section_inject_batch_outcomes(conn, problem, workspace=workspace),
+        _section_inject_batch_outcomes(conn, problem,
+                                       workspace=workspace,
+                                       group_id=group_id),
         _section_pending_reopens(conn, problem, trigger_kind),
         _section_active_goals(conn, workspace, problem),
         _section_failure_replay(conn, problem),
@@ -1131,12 +1234,83 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     parts: list[str] = [f"# Strategist context — {problem}", ""]
     for sect in sections:
         parts.extend(sect)
+    # v35 — the `## Your group` section points a sub-group at
+    # `charter.md`; the file has to be there. It existed only inside the
+    # JUDGE's projection, so the judge reviewed against the charter while
+    # the author worked from the whole problem's Manifest — two sides of
+    # one review reading different tasks.
+    _write_charter_file(conn, problem, attempts_dir, group_id)
     out = attempts_dir / "Context.md"
     out.write_text("\n".join(parts), encoding="utf-8")
     context.write_context_stats(
         attempts_dir, label=f"strategist {problem}",
         names=section_names, sections=sections)
     return out
+
+
+def _write_charter_file(conn: sqlite3.Connection, problem: str,
+                        attempts_dir: Path,
+                        group_id: "int | None") -> None:
+    """Stage `charter.md` beside Context.md for a sub-group — the same
+    bytes the judge gets, from the same renderer. Author and judge must
+    be reading one task."""
+    from ..state import groups as _groups
+    text = _groups.charter_digest(conn, problem, group_id)
+    if text:
+        (attempts_dir / "charter.md").write_text(text, encoding="utf-8")
+
+
+def _section_groups_in_flight(conn: sqlite3.Connection, problem: str,
+                              group_id: "int | None") -> list[str]:
+    """Conditional (v35): renders only when this group has live children.
+
+    Two jobs in one section. It is the parent's ONLY view of what it
+    delegated and is still waiting on — the batch-outcome scoreboard
+    lists finished work, so without this a parent knows a batch is open
+    but not which charters are out. And it carries `CloseGroup`, whose
+    usability depends on both halves: the verb is unusable without a
+    group id to name, and showing the verb to a group that has no
+    children is the same false affordance the `ReturnToParent` section
+    avoids. With no children the whole section disappears.
+    """
+    if group_id is None:
+        return []
+    from ..state import groups as _groups
+    kids = _groups.children(conn, int(group_id), active_only=True)
+    if not kids:
+        return []
+    out = ["## Your groups in flight", ""]
+    for k in kids:
+        charter = " ".join(str(k["charter"] or "").split())
+        if len(charter) > 200:
+            charter = charter[:200].rstrip() + "…"
+        age = _age_hint(str(k["created_at"] or ""))
+        out.append(f"- group {k['id']} — {charter}"
+                   + (f" (open {age})" if age else ""))
+    out += [
+        "",
+        "- `CloseGroup` — `target_group_id`, `reason`. Retire one when "
+        "your route no longer needs its charter. Difficulty is not a "
+        "reason — whether to give up is that group's call.",
+        "",
+    ]
+    return out
+
+
+def _age_hint(created_at: str) -> str:
+    """`2h14m` since an ISO stamp; empty when it cannot be parsed."""
+    from datetime import datetime, timezone
+    try:
+        started = datetime.fromisoformat(created_at)
+    except (TypeError, ValueError):
+        return ""
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    secs = (datetime.now(timezone.utc) - started).total_seconds()
+    if secs < 60:
+        return "just now"
+    mins = int(secs // 60)
+    return f"{mins // 60}h{mins % 60:02d}m" if mins >= 60 else f"{mins}m"
 
 
 def _section_your_group(conn: sqlite3.Connection, problem: str,

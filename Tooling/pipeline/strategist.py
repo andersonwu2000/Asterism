@@ -55,6 +55,9 @@ DECISION_KINDS: frozenset[str] = frozenset({
     # v35 (discussion_group_design.md) — hand a claim DOWN to a new
     # sub-group, and hand a charter back UP to the parent group.
     "Delegate", "ReturnToParent",
+    # The reverse of Delegate: a parent retires a child whose line its
+    # own route no longer needs.
+    "CloseGroup",
 })
 
 #: The three shapes a `ReturnToParent` can take. They differ in what the
@@ -549,6 +552,35 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                 return (f"g{decision.target_id} already anchors group "
                         f"{anchored['id']}; promote a different goal or "
                         f"work through that group")
+        return ""
+
+    if k == "CloseGroup":
+        me = _authoring_group(conn, problem, group_id)
+        if me is None:
+            return "CloseGroup has no authoring group (framework bug)"
+        target = decision.payload.get("target_group_id")
+        try:
+            target = int(target)
+        except (TypeError, ValueError):
+            return ("CloseGroup requires `target_group_id` — the child "
+                    "group you are retiring")
+        kid = _groups.get(conn, target)
+        if kid is None or str(kid["problem"]) != problem:
+            return f"group {target} not found in this problem"
+        # Own children only. A grandchild belongs to ITS parent, and a
+        # cousin to nobody here — reaching past one level would let a
+        # group cancel work it never commissioned and cannot judge.
+        if kid["parent_group_id"] is None or                 int(kid["parent_group_id"]) != int(me["id"]):
+            return (f"group {target} is not yours to close — you may "
+                    f"retire only the groups you opened")
+        if str(kid["status"]) != _groups.ACTIVE:
+            return (f"group {target} already reached "
+                    f"{kid['status']!r}; nothing to close")
+        if not decision.reason or not str(decision.reason).strip():
+            return ("CloseGroup requires a non-empty reason: what "
+                    "changed in YOUR route that makes this line "
+                    "unnecessary. Difficulty is not a reason — whether "
+                    "to give up is the group's own call")
         return ""
 
     if k == "ReturnToParent":
@@ -1185,7 +1217,12 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     ).fetchone()
     BLOCKED_STATES = ("shelved", "frozen", "pending_strategist_review")
     if root_row is not None and str(root_row["status"]) in BLOCKED_STATES:
-        has_action = any(d.kind == "Inject" for d in decisions)
+        # v35 — `Delegate` dispatches work just as `Inject` does, and
+        # the fresh-problem case the design leans on (first batch
+        # delegates a burden instead of working the frozen root) is
+        # EXACTLY this branch. Reading only 'Inject' here rejected it.
+        has_action = any(d.kind in db.BATCH_DECISION_KINDS
+                         for d in decisions)
         if not has_action:
             # A NULL-outcome Inject counts as in-flight ONLY if it is LIVE
             # — its produced goal is NOT parked. A `shelved`-produced inject
@@ -1274,7 +1311,8 @@ def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
                          trigger_kind: str,
                          inject_batch_id: str | None = None,
                          step_index: int = 0,
-                         batch_size: int = 1) -> CommitOutcome:
+                         batch_size: int = 1,
+                         group_id: "int | None" = None) -> CommitOutcome:
     """Commit one Strategist Inject decision. Dispatches to the
     pipeline-specific helper.
 
@@ -1300,12 +1338,14 @@ def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
         return _commit_inject_forward(
             decision, conn, problem=problem, tick=tick,
             trigger_kind=trigger_kind, batch_id_override=inject_batch_id,
-            step_index=step_index, batch_size=batch_size)
+            step_index=step_index, batch_size=batch_size,
+            group_id=group_id)
     return _commit_inject_redispatch(
         decision, conn, problem=problem, tick=tick,
         trigger_kind=trigger_kind, pipeline="Formalizer",
         batch_id_override=inject_batch_id,
-        step_index=step_index, batch_size=batch_size)
+        step_index=step_index, batch_size=batch_size,
+        group_id=group_id)
 
 
 def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
@@ -1313,7 +1353,8 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
                            trigger_kind: str,
                            batch_id_override: str | None = None,
                            step_index: int = 0,
-                           batch_size: int = 1) -> CommitOutcome:
+                           batch_size: int = 1,
+                           group_id: "int | None" = None) -> CommitOutcome:
     """Mint variant — 1 brief → 1 row + 1 Formalizer enqueue
     (target_kind=Problem).
 
@@ -1332,10 +1373,10 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
     }
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
-        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
-        " batch_id, outcome, created_at, updated_at)"
-        " VALUES (?, ?, ?, 'Inject', NULL, ?, ?, ?, ?, NULL, ?, ?)",
-        (problem, tick, trigger_kind, brief,
+        " trigger_kind, decision_kind, group_id, target_id, brief,"
+        " reason, payload, batch_id, outcome, created_at, updated_at)"
+        " VALUES (?, ?, ?, 'Inject', ?, NULL, ?, ?, ?, ?, NULL, ?, ?)",
+        (problem, tick, trigger_kind, group_id, brief,
          decision.reason, json.dumps(row_payload, ensure_ascii=False),
          batch_id, ts, ts),
     )
@@ -1362,6 +1403,7 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
                               batch_id_override: str | None = None,
                               step_index: int = 0,
                               batch_size: int = 1,
+                              group_id: "int | None" = None,
                               ) -> CommitOutcome:
     """Backward / Builder variant — 1 row + 1 enqueue on target goal.
 
@@ -1395,12 +1437,12 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
     }
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
-        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
-        " batch_id, produced_goal_id, produced_kind, outcome,"
-        " created_at, updated_at)"
-        " VALUES (?, ?, ?, 'Inject', ?, ?, ?, ?, ?, ?, 'redispatch',"
+        " trigger_kind, decision_kind, group_id, target_id, brief,"
+        " reason, payload, batch_id, produced_goal_id, produced_kind,"
+        " outcome, created_at, updated_at)"
+        " VALUES (?, ?, ?, 'Inject', ?, ?, ?, ?, ?, ?, ?, 'redispatch',"
         " NULL, ?, ?)",
-        (problem, tick, trigger_kind, target_id,
+        (problem, tick, trigger_kind, group_id, target_id,
          brief, decision.reason,
          json.dumps(row_payload, ensure_ascii=False),
          batch_id, target_id, ts, ts),
@@ -1586,10 +1628,79 @@ def _commit_return_to_parent(decision: Decision, conn: sqlite3.Connection,
     # may fire the batch-done wake, so everything the parent will read
     # must already be written.
     _groups.set_status(conn, int(me["id"]), "returned")
+    if flavour == "refuted":
+        # A refutation cannot wait for the batch. `refuted` means a step
+        # of the PARENT's Proof is now kernel-false, so every sibling
+        # still running under that Proof is working on an invalidated
+        # premise — and siblings dispatched in the same batch keep the
+        # batch open, so the ordinary relay would leave the parent
+        # asleep for up to a full routine interval. Same reasoning, and
+        # the same priority band, as a `pending_strategist_review`
+        # escalation. Not pumpable: every refutation costs a
+        # kernel-checked negation brick.
+        parent_id = int(me["parent_group_id"])
+        if not db.is_in_queue(conn, target_id=str(parent_id),
+                              kind="Strategist"):
+            db.enqueue(conn, kind="Strategist", target_id=str(parent_id),
+                       target_kind="Group", priority=20, problem=problem)
+            print(f"[return] refutation — woke parent group {parent_id} "
+                  f"immediately (batch not waited on)", flush=True)
     conn.commit()
     print(f"[return] group {me['id']} returned to {me['parent_group_id']} "
           f"({problem}, {flavour}): {str(decision.reason or '')[:80]}",
           flush=True)
+    return CommitOutcome(
+        decision_row_id=row_id,
+        enqueued_forward=False,
+        final_outcome="committed",
+    )
+
+
+def _commit_close_group(decision: Decision, conn: sqlite3.Connection,
+                        *, problem: str, tick: int, trigger_kind: str,
+                        group_id: "int | None") -> CommitOutcome:
+    """Retire a child group (v35). The reverse of `Delegate`.
+
+    A parent's Programme is alive: its route changes, and a burden it
+    delegated three revisions ago can stop mattering. Without this the
+    only way to stop that group is to wait for it to hit its own wall
+    and hand the charter back — the tokens in between buy nothing.
+
+    Reaching `closed` fills the opening `Delegate` outcome, so the
+    parent's batch completes through the ordinary relay. The child's
+    seat stops on its own: `groups_needing_t1` and `groups_stalled` both
+    select `status = 'active'` only. Workers already in flight finish
+    and write; nothing is torn out from under them.
+    """
+    me = _authoring_group(conn, problem, group_id)
+    target = int(decision.payload["target_group_id"])
+    kid = _groups.get(conn, target)
+    if me is None or kid is None:            # verify already rejected this
+        raise RuntimeError(f"CloseGroup({target}) on {problem!r} is invalid")
+    ts = db.now()
+    payload = dict(decision.payload)
+    payload["charter"] = str(kid["charter"])
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, reason, payload,"
+        " produced_group_id, outcome, created_at, updated_at)"
+        " VALUES (?, ?, ?, 'CloseGroup', ?, ?, ?, ?, 'committed', ?, ?)",
+        (problem, tick, trigger_kind, int(me["id"]), decision.reason,
+         json.dumps(payload, ensure_ascii=False), target, ts, ts),
+    )
+    row_id = int(cur.lastrowid)
+    anchor = kid["anchor_goal_id"]
+    if anchor is not None:
+        g = db.get_goal(conn, int(anchor))
+        if g is not None and str(g["status"]) in (
+                "open", "attempting", "pending_strategist_review", "frozen"):
+            transitions._set_goal_terminal_and_propagate(
+                conn, int(anchor), "shelved")
+            transitions._propagate_shelve(conn, int(anchor))
+    _groups.set_status(conn, target, "closed")
+    conn.commit()
+    print(f"[close] group {target} retired by {me['id']} ({problem}): "
+          f"{str(decision.reason or '')[:80]}", flush=True)
     return CommitOutcome(
         decision_row_id=row_id,
         enqueued_forward=False,
@@ -1665,10 +1776,22 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     from ..state import groups as _groups
     gid = group_id if group_id is not None else \
         _groups.ensure_top_group(conn, problem)
-    conn.execute(
-        "UPDATE strategist_decisions SET group_id = ?"
+    # Every per-kind INSERT writes `group_id` itself. This is the
+    # exhaustiveness CHECK, not the writer: a blind range UPDATE over
+    # "rows newer than my snapshot" is wrong the moment two groups of
+    # the same problem commit concurrently — which is exactly the
+    # concurrency the per-group seat just bought — because each would
+    # stamp the other's rows and every downstream reading (ownership,
+    # stall, deliverables) would follow the wrong group. Fail loud
+    # instead: a decision kind that forgets is a framework bug.
+    unstamped = conn.execute(
+        "SELECT COUNT(*) FROM strategist_decisions"
         " WHERE id > ? AND problem = ? AND group_id IS NULL",
-        (int(gid), int(_before), problem))
+        (int(_before), problem)).fetchone()[0]
+    if unstamped:
+        raise RuntimeError(
+            f"{unstamped} decision row(s) committed without a group_id "
+            f"on {problem!r} — a per-kind INSERT missed it")
     db.update_problem_last_strategist_at(conn, problem)
     _groups.touch_strategist(conn, int(gid),
                              routine=(trigger_kind == "routine"))
@@ -1695,6 +1818,7 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
 
 def _commit_fetch_paper(decision: Decision, conn: sqlite3.Connection,
                         *, problem: str, tick: int,
+                        group_id: "int | None" = None,
                         trigger_kind: str) -> CommitOutcome:
     """FetchPaper (paper v2, D11) — 1 audit row + 1 Scholar enqueue.
 
@@ -1709,10 +1833,10 @@ def _commit_fetch_paper(decision: Decision, conn: sqlite3.Connection,
     row_payload = {"query": query}
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
-        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
-        " outcome, created_at, updated_at)"
-        " VALUES (?, ?, ?, 'FetchPaper', NULL, NULL, ?, ?, NULL, ?, ?)",
-        (problem, tick, trigger_kind, decision.reason,
+        " trigger_kind, decision_kind, group_id, target_id, brief,"
+        " reason, payload, outcome, created_at, updated_at)"
+        " VALUES (?, ?, ?, 'FetchPaper', ?, NULL, NULL, ?, ?, NULL, ?, ?)",
+        (problem, tick, trigger_kind, group_id, decision.reason,
          json.dumps(row_payload, ensure_ascii=False), ts, ts),
     )
     row_id = int(cur.lastrowid)
@@ -1760,6 +1884,7 @@ def _header_lines(target_text: str) -> "list[str]":
 
 def _commit_attempt_disproof(decision: Decision, conn: sqlite3.Connection,
                              *, problem: str, tick: int,
+                             group_id: "int | None" = None,
                              trigger_kind: str,
                              workspace: Path) -> CommitOutcome:
     """AttemptDisproof (feature D) — audit row + mechanically-minted
@@ -1817,12 +1942,12 @@ def _commit_attempt_disproof(decision: Decision, conn: sqlite3.Connection,
     ts = db.now()
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
-        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
-        " produced_goal_id, produced_kind, outcome, created_at,"
-        " updated_at)"
-        " VALUES (?, ?, ?, 'AttemptDisproof', ?, NULL, ?, '{}', ?,"
+        " trigger_kind, decision_kind, group_id, target_id, brief,"
+        " reason, payload, produced_goal_id, produced_kind, outcome,"
+        " created_at, updated_at)"
+        " VALUES (?, ?, ?, 'AttemptDisproof', ?, ?, NULL, ?, '{}', ?,"
         " 'disproof', NULL, ?, ?)",
-        (problem, tick, trigger_kind, gid, decision.reason,
+        (problem, tick, trigger_kind, group_id, gid, decision.reason,
          neg_gid, ts, ts),
     )
     row_id = int(cur.lastrowid)
@@ -2001,6 +2126,8 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
     k = decision.kind
     outcome = "committed"
     enqueued_forward = False
+    if group_id is None:
+        group_id = _groups.ensure_top_group(conn, problem)
 
     if k == "Inject":
         return _commit_inject_batch(
@@ -2009,6 +2136,7 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
             inject_batch_id=inject_batch_id,
             step_index=inject_step_index,
             batch_size=inject_batch_size,
+            group_id=group_id,
         )
 
     if k == "Delegate":
@@ -2018,6 +2146,12 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
             batch_id_override=inject_batch_id,
             step_index=inject_step_index,
             batch_size=inject_batch_size,
+        )
+
+    if k == "CloseGroup":
+        return _commit_close_group(
+            decision, conn, problem=problem, tick=tick,
+            trigger_kind=trigger_kind, group_id=group_id,
         )
 
     if k == "ReturnToParent":
@@ -2184,10 +2318,10 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
     ts = db.now()
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
-        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
-        " batch_id, outcome, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (problem, tick, trigger_kind, decision.kind,
+        " trigger_kind, decision_kind, group_id, target_id, brief,"
+        " reason, payload, batch_id, outcome, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (problem, tick, trigger_kind, decision.kind, group_id,
          decision.target_id, decision.brief, decision.reason,
          json.dumps(payload_for_audit, ensure_ascii=False),
          inject_batch_id,

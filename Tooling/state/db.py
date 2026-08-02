@@ -560,6 +560,11 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                             -- alone can end in a return.
                             -- 'ReturnToParent' (v35): a sub-group hands the
                             -- charter back — refuted / amend / exhausted.
+                            -- 'CloseGroup' (v35): the reverse direction — a
+                            -- parent retires a child whose line its own route
+                            -- no longer needs. Not an experiment, so it can
+                            -- never be a batch's whole content: retiring work
+                            -- is not progress.
                             -- Structurally unavailable to the top group,
                             -- which has no parent to return to; that is the
                             -- wall keeping the difficulty escape hatch away
@@ -569,7 +574,8 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                                    'EmitDirective','InitializeDefs',
                                    'RequestUserAmend','Noop','MarkDeliverable',
                                    'Ingest','FetchPaper','AttemptDisproof',
-                                   'Delegate','ReturnToParent')),
+                                   'Delegate','ReturnToParent',
+                                   'CloseGroup')),
     -- v35 — which group AUTHORED this decision. Backfilled to the problem's
     -- top group for every pre-v35 row. SET NULL on delete: see the note on
     -- `groups.opened_by` — the two tables reference each other.
@@ -1528,7 +1534,9 @@ def update_problem_last_routine_at(conn: sqlite3.Connection,
 
 
 def unacknowledged_inject_batches(conn: sqlite3.Connection,
-                                  problem: str) -> list[str]:
+                                  problem: str,
+                                  group_id: "int | None" = None
+                                  ) -> list[str]:
     """Return batch_ids of Inject batches on this problem where every
     row's `outcome` is filled (batch fully terminated) AND the most
     recent row update is newer than the problem's last_strategist_at
@@ -1540,27 +1548,39 @@ def unacknowledged_inject_batches(conn: sqlite3.Connection,
     commit advances it, so subsequent batch-done queries naturally
     deduplicate without a per-row `acked_at` column.
 
-    NULL `last_strategist_at` (problem never had a Strategist commit)
-    behaves as 'all batches are unacknowledged' — coalesced to
+    NULL `last_strategist_at` (never had a Strategist commit) behaves as
+    'all batches are unacknowledged' — coalesced to
     '1970-01-01T00:00:00' so SQL comparison works.
+
+    v35 — with `group_id` both halves narrow to that group: the batches
+    it authored, ratcheted on ITS clock. Left problem-wide, one group's
+    commit acknowledges a sibling's completed batch on the sibling's
+    behalf, and the batch-done wake that forces a real advance is simply
+    skipped.
     """
+    sql = ("SELECT batch_id,"
+           "       SUM(CASE WHEN outcome IS NULL THEN 1 ELSE 0 END) AS pending,"
+           "       MAX(updated_at) AS last_update"
+           " FROM strategist_decisions"
+           " WHERE problem = ? AND batch_id IS NOT NULL")
+    args: tuple = (problem,)
+    if group_id is not None:
+        sql += " AND (group_id = ? OR group_id IS NULL)"
+        args = (problem, int(group_id))
     rows = conn.execute(
-        "SELECT batch_id,"
-        "       SUM(CASE WHEN outcome IS NULL THEN 1 ELSE 0 END) AS pending,"
-        "       MAX(updated_at) AS last_update"
-        " FROM strategist_decisions"
-        " WHERE problem = ? AND batch_id IS NOT NULL"
-        " GROUP BY batch_id"
-        " HAVING pending = 0",
-        (problem,),
-    ).fetchall()
+        sql + " GROUP BY batch_id HAVING pending = 0", args).fetchall()
     if not rows:
         return []
-    lsa_row = conn.execute(
-        "SELECT COALESCE(last_strategist_at, '1970-01-01T00:00:00+00:00')"
-        " AS lsa FROM problems WHERE name = ?",
-        (problem,),
-    ).fetchone()
+    if group_id is not None:
+        lsa_row = conn.execute(
+            "SELECT COALESCE(last_strategist_at,"
+            " '1970-01-01T00:00:00+00:00') AS lsa FROM groups WHERE id = ?",
+            (int(group_id),)).fetchone()
+    else:
+        lsa_row = conn.execute(
+            "SELECT COALESCE(last_strategist_at,"
+            " '1970-01-01T00:00:00+00:00') AS lsa FROM problems"
+            " WHERE name = ?", (problem,)).fetchone()
     lsa = str(lsa_row["lsa"]) if lsa_row else '1970-01-01T00:00:00+00:00'
     return [str(r["batch_id"]) for r in rows
             if str(r["last_update"]) > lsa]

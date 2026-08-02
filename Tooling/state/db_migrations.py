@@ -919,7 +919,8 @@ def _v35_rebuild_strategist_decisions(conn: sqlite3.Connection) -> None:
                                            'RequestUserAmend','Noop',
                                            'MarkDeliverable','Ingest',
                                            'FetchPaper','AttemptDisproof',
-                                           'Delegate','ReturnToParent')),
+                                           'Delegate','ReturnToParent',
+                                           'CloseGroup')),
             group_id            INTEGER NULL DEFAULT NULL
                                     REFERENCES groups(id) ON DELETE SET NULL,
             target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),

@@ -719,7 +719,10 @@ def _rendered_subgroup_section() -> str:
     top = _groups.ensure_top_group(conn, "p")
     sub = _groups.open_group(conn, problem="p", parent_group_id=top,
                              charter="c")
-    return "\n".join(_ctx._section_your_group(conn, "p", sub))
+    # `CloseGroup` lives in the parent-side conditional section, so the
+    # guard renders that one too — from a group that HAS a child.
+    return "\n".join(_ctx._section_your_group(conn, "p", sub)
+                     + _ctx._section_groups_in_flight(conn, "p", top))
 
 
 def test_adversary_contract_section_matches_wake_prompts() -> None:
@@ -798,8 +801,8 @@ def test_proposal_section_shared_lines_synced() -> None:
         for f in ("routine.md", "inject_batch_done.md",
                   "pending_review.md")}
     for needle in (
-        "Every route-moving batch carries ≥1 experiment — an Inject or "
-        "an AttemptDisproof",
+        "Every route-moving batch carries ≥1 experiment — an Inject, "
+        "a `Delegate`, or an AttemptDisproof",
         "its absence needs no defense",
         "**Write for the record, not the reviewer** — fold accepted "
         "criticisms into corrected text",

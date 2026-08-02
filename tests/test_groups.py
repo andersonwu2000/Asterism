@@ -930,7 +930,6 @@ def test_the_judge_sees_the_charter_chain_but_not_for_the_top_group(
         tmp_path):
     """Criterion 3 otherwise only catches a claim leaning on the PARENT's
     conclusion; on a deep tree circularity arrives a generation later."""
-    from Tooling.pipeline import adversary
     conn = _conn(tmp_path)
     p = _problem(conn, "Test.charterdigest")
     top = groups.ensure_top_group(conn, p)
@@ -939,8 +938,8 @@ def test_the_judge_sees_the_charter_chain_but_not_for_the_top_group(
     b = groups.open_group(conn, problem=p, parent_group_id=a,
                           charter="B: the recurrence step")
     conn.commit()
-    assert adversary._charter_digest(conn, p, top) == ""
-    txt = adversary._charter_digest(conn, p, b)
+    assert groups.charter_digest(conn, p, top) == ""
+    txt = groups.charter_digest(conn, p, b)
     assert "B: the recurrence step" in txt
     assert "A: the growth bound" in txt        # the ancestor chain
     assert "circular" in txt
@@ -949,7 +948,6 @@ def test_the_judge_sees_the_charter_chain_but_not_for_the_top_group(
 def test_the_judge_sees_charters_this_subtree_handed_back(tmp_path):
     """Material, not a gate: whether a retry differs is a judgement about
     mathematics, which a string comparison cannot make."""
-    from Tooling.pipeline import adversary
     conn = _conn(tmp_path)
     p = _problem(conn, "Test.returneddigest")
     top = groups.ensure_top_group(conn, p)
@@ -968,7 +966,7 @@ def test_the_judge_sees_charters_this_subtree_handed_back(tmp_path):
                               charter="settle the p-adic bound, again")
     conn.commit()
 
-    txt = adversary._charter_digest(conn, p, fresh)
+    txt = groups.charter_digest(conn, p, fresh)
     assert "settle the p-adic bound" in txt
     assert "exhausted" in txt
     assert "circular at step 3" in txt
@@ -980,7 +978,6 @@ def test_a_cousin_branchs_failures_stay_out_of_my_projection(tmp_path):
     what the groups above me already tried — are mine to see. A cousin
     branch's returned charter is another judge's business, and pulling
     it in is exactly the cross-group leak the isolation ruling forbids."""
-    from Tooling.pipeline import adversary
     conn = _conn(tmp_path)
     p = _problem(conn, "Test.cousins")
     top = groups.ensure_top_group(conn, p)
@@ -1001,8 +998,8 @@ def test_a_cousin_branchs_failures_stay_out_of_my_projection(tmp_path):
     conn.commit()
 
     # A sees its own branch's failure; B — a cousin — must not.
-    assert "A's sub-line" in adversary._charter_digest(conn, p, a)
-    assert "A's sub-line" not in adversary._charter_digest(conn, p, b)
+    assert "A's sub-line" in groups.charter_digest(conn, p, a)
+    assert "A's sub-line" not in groups.charter_digest(conn, p, b)
 
 
 def test_the_your_group_section_is_absent_for_the_top_group(tmp_path):
@@ -1149,6 +1146,385 @@ def test_a_sub_group_cannot_deliver_a_charter_it_did_not_settle(tmp_path):
     bare = [int(r["id"]) for r in groups.children(conn, top)][-1]
     assert "MarkDeliverable" in _verify(
         conn, S.Decision(kind="Ingest"), p, bare)
+
+
+# ---------------------------------------------------------------------
+# Independent-review regressions (2026-08-02)
+# ---------------------------------------------------------------------
+
+def test_a_delegate_only_batch_is_a_real_action(tmp_path):
+    """The scenario the design leans on — a fresh problem whose FIRST
+    batch delegates a burden instead of working the frozen root — was
+    the one the anti-idle gate rejected: it counted only `Inject`."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.delegonly")
+    top = groups.ensure_top_group(conn, p)
+    _goal(conn, p, "main", origin="root", status="frozen")
+    conn.commit()
+    S = _S()
+    err = S.verify_decisions(
+        [S.Decision(kind="Delegate", brief="settle claim A")], conn,
+        problem=p, group_id=top)
+    assert err == "", err
+
+
+def test_the_sub_group_actually_receives_its_charter(tmp_path):
+    """The Context tells a sub-group its charter is in `charter.md`. It
+    has to be there — otherwise the judge reviews against the charter
+    while the author works from the problem's Manifest."""
+    from Tooling.agent import phase2_context as ctx
+    from Tooling.state import manifest as _manifest
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.charterfile")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="settle the growth bound")
+    conn.commit()
+    attempts = tmp_path / "att"
+    attempts.mkdir()
+    (tmp_path / "Problems" / p).mkdir(parents=True, exist_ok=True)
+    ctx.compile_strategist_context(
+        conn, problem=p, trigger_kind="routine", attempts_dir=attempts,
+        workspace=tmp_path,
+        mfst=_manifest.Manifest(problem=p, statement=""),
+        group_id=sub)
+    assert (attempts / "charter.md").exists()
+    assert "settle the growth bound" in (
+        attempts / "charter.md").read_text(encoding="utf-8")
+
+
+def test_the_stall_warning_follows_the_group(tmp_path):
+    """T4 detects per group; the warning must too, or a stalled
+    sub-group is woken, sees nothing, Noops, is rejected, and T4 fires
+    again — the P13 livelock, rebuilt."""
+    from Tooling.agent import phase2_context as ctx
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.stallsec")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path, [
+        S.Decision(kind="Delegate", brief="busy"),
+        S.Decision(kind="Delegate", brief="stuck"),
+    ], p, top)
+    busy, stuck = (int(r["id"]) for r in groups.children(conn, top))
+    g = _goal(conn, p, "live")
+    conn.execute("UPDATE goals SET detached = 1 WHERE id = ?", (g,))
+    _decision(conn, p, group_id=busy, produced_goal_id=g)
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+    assert ctx._section_stall_warning(conn, p, stuck) != []
+    assert ctx._section_stall_warning(conn, p, busy) == []
+
+
+def test_the_ingest_hint_never_cites_the_problem_root_to_a_sub_group(
+        tmp_path):
+    """A rooted problem's sub-groups were told on every wake that Ingest
+    was unavailable, so they never delivered and their parents waited
+    forever."""
+    from Tooling.agent import phase2_context as ctx
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.ingesthint")
+    top = groups.ensure_top_group(conn, p)
+    _goal(conn, p, "main", origin="root", status="attempting")
+    bare = groups.open_group(conn, problem=p, parent_group_id=top,
+                             charter="prose only")
+    anchor = _goal(conn, p, "anchor", status="attempting")
+    anchored = groups.open_group(conn, problem=p, parent_group_id=top,
+                                 charter="own it", anchor_goal_id=anchor)
+    conn.commit()
+    assert ctx._section_ingest_gate(conn, p, top) != []      # root not proved
+    assert ctx._section_ingest_gate(conn, p, bare) == []     # not its gate
+    hint = "\n".join(ctx._section_ingest_gate(conn, p, anchored))
+    assert f"g{anchor}" in hint and "root" not in hint
+
+
+def test_sibling_commits_do_not_stamp_each_others_rows(tmp_path):
+    """group_id is written by each INSERT. A post-pass range UPDATE over
+    'rows newer than my snapshot' would cross-stamp the moment two
+    groups of one problem commit concurrently — the concurrency the
+    per-group seat exists to buy."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.stamprace")
+    top = groups.ensure_top_group(conn, p)
+    a = groups.open_group(conn, problem=p, parent_group_id=top, charter="A")
+    b = groups.open_group(conn, problem=p, parent_group_id=top, charter="B")
+    conn.commit()
+    S = _S()
+    # Interleave: B's rows land between A's snapshot and A's post-pass.
+    before = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) FROM strategist_decisions"
+    ).fetchone()[0]
+    _commit(conn, tmp_path, [S.Decision(kind="Noop", reason="b")], p, b)
+    _commit(conn, tmp_path, [S.Decision(kind="Noop", reason="a")], p, a)
+    rows = conn.execute(
+        "SELECT group_id, reason FROM strategist_decisions"
+        " WHERE id > ? ORDER BY id", (before,)).fetchall()
+    assert [(int(r["group_id"]), r["reason"]) for r in rows] == [
+        (b, "b"), (a, "a")]
+
+
+def test_a_group_keyed_queue_row_resolves_to_its_own_problem(tmp_path):
+    """Read as a goal id it would name whatever problem THAT goal
+    belongs to, scoping an infra retry to an unrelated problem."""
+    from Tooling.core.dispatcher import _problem_of_target
+    conn = _conn(tmp_path)
+    other = _problem(conn, "Test.other")
+    _goal(conn, other, "decoy")            # takes goal id 1
+    p = _problem(conn, "Test.mine")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    assert _problem_of_target(conn, str(top), "Group") == p
+    assert _problem_of_target(conn, "99999", "Group") is None
+
+
+def test_one_groups_commit_does_not_acknowledge_anothers_batch(tmp_path):
+    """The ack ratchet is per group. Shared, a sibling's commit hides a
+    completed batch and the advance-forcing wake is simply skipped."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.ack")
+    top = groups.ensure_top_group(conn, p)
+    a = groups.open_group(conn, problem=p, parent_group_id=top, charter="A")
+    b = groups.open_group(conn, problem=p, parent_group_id=top, charter="B")
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, batch_id, outcome,"
+        " payload, created_at, updated_at)"
+        " VALUES (?, 0, 'routine', 'Inject', ?, 'bA', 'success', '{}',"
+        " '2030-01-01', '2030-01-01')", (p, a))
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path, [S.Decision(kind="Noop", reason="x")], p, b)
+    assert db.unacknowledged_inject_batches(conn, p, a) == ["bA"]
+
+
+def test_the_parent_sees_what_came_back(tmp_path):
+    """The delivered bricks and the post-mortem reached the Strategist
+    only as a daemon log line — the parent was woken and could not see
+    which bricks it may now cite, nor why a charter came back."""
+    from Tooling.agent import phase2_context as ctx
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.material")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path, [
+        S.Decision(kind="Delegate", brief="claim A"),
+        S.Decision(kind="Delegate", brief="claim B"),
+    ], p, top)
+    good, bad = (int(r["id"]) for r in groups.children(conn, top))
+    brick = _goal(conn, p, "brick", status="proved")
+    _mark(conn, p, brick, good)
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+    _commit(conn, tmp_path, [S.Decision(kind="Ingest")], p, good,
+            trigger="inject_batch_done")
+    _commit(conn, tmp_path,
+            [S.Decision(kind="ReturnToParent",
+                        reason="the valuation step is circular",
+                        payload={"flavour": "amend",
+                                 "proposed_charter": "the weaker bound"})],
+            p, bad, trigger="inject_batch_done")
+
+    body = "\n".join(ctx._section_inject_batch_outcomes(
+        conn, p, group_id=top))
+    assert "`brick`" in body                    # citable now
+    assert "amend" in body
+    assert "valuation step is circular" in body
+    assert "the weaker bound" in body
+
+
+def test_promoting_a_parked_goal_to_an_anchor_is_a_declared_edge(tmp_path):
+    """"This goal keeps failing — give it a group" is the documented
+    rescue entry point, and the states it starts from are the parked
+    ones. Under CI's strict transitions an undeclared edge raises."""
+    import os
+    from Tooling.state import transitions as _t
+    assert ("shelved", "attempting") in _t.GOAL_EDGES
+    assert ("frozen", "attempting") in _t.GOAL_EDGES
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.promote")
+    top = groups.ensure_top_group(conn, p)
+    g = _goal(conn, p, "parked", status="shelved")
+    conn.commit()
+    old = os.environ.get("ASTERISM_STRICT_TRANSITIONS")
+    os.environ["ASTERISM_STRICT_TRANSITIONS"] = "1"
+    try:
+        _commit(conn, tmp_path,
+                [_S().Decision(kind="Delegate", brief="own it",
+                               target_id=g)], p, top)
+    finally:
+        if old is None:
+            os.environ.pop("ASTERISM_STRICT_TRANSITIONS", None)
+        else:
+            os.environ["ASTERISM_STRICT_TRANSITIONS"] = old
+    assert db.get_goal(conn, g)["status"] == "attempting"
+
+
+def test_the_reconciler_routes_a_review_to_the_same_group_as_the_cascade(
+        tmp_path):
+    """Two routes to two different homes for one event is the shape this
+    file has paid for three times."""
+    from Tooling.core.dispatcher import reconcile_stuck_states
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.route")
+    top = groups.ensure_top_group(conn, p)
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="claim A")
+    g = _goal(conn, p, "mine", status="pending_strategist_review")
+    conn.execute("UPDATE goals SET detached = 1 WHERE id = ?", (g,))
+    _decision(conn, p, group_id=sub, produced_goal_id=g)
+    conn.commit()
+    reconcile_stuck_states(conn, running=set())
+    assert (str(sub), "Group") in _seats(conn)
+    assert (str(top), "Group") not in _seats(conn)
+
+
+# ---------------------------------------------------------------------
+# CloseGroup, and the one return that cannot wait for its batch
+# ---------------------------------------------------------------------
+
+def test_a_refutation_wakes_the_parent_without_waiting_for_the_batch(
+        tmp_path):
+    """`refuted` means a step of the PARENT's Proof is kernel-false. Its
+    siblings from the same batch keep that batch open, so the ordinary
+    relay would leave the parent asleep for up to a routine interval
+    while they work on an invalidated premise."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.fastwake")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path, [
+        S.Decision(kind="Delegate", brief="claim A"),
+        S.Decision(kind="Delegate", brief="claim B"),
+    ], p, top)
+    a, b = (int(r["id"]) for r in groups.children(conn, top))
+    neg = _goal(conn, p, "neg", status="proved")
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+
+    # B is still active, so the batch is NOT complete.
+    _commit(conn, tmp_path,
+            [S.Decision(kind="ReturnToParent", reason="counterexample",
+                        target_id=neg,
+                        payload={"flavour": "refuted"})],
+            p, a, trigger="inject_batch_done")
+    assert groups.get(conn, b)["status"] == "active"
+    assert (str(top), "Group") in _seats(conn)
+
+
+@pytest.mark.parametrize("flavour", ["amend", "exhausted"])
+def test_a_soft_return_still_rides_the_batch(tmp_path, flavour):
+    """"This line did not work" is exactly what the batch report is for
+    — only a refutation earns the interrupt."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, f"Test.soft{flavour}")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path, [
+        S.Decision(kind="Delegate", brief="claim A"),
+        S.Decision(kind="Delegate", brief="claim B"),
+    ], p, top)
+    a, _b = (int(r["id"]) for r in groups.children(conn, top))
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+    payload = {"flavour": flavour}
+    if flavour == "amend":
+        payload["proposed_charter"] = "a weaker claim A"
+    _commit(conn, tmp_path,
+            [S.Decision(kind="ReturnToParent", reason="died at step 3",
+                        payload=payload)],
+            p, a, trigger="inject_batch_done")
+    assert _seats(conn) == set()
+
+
+def test_a_parent_can_retire_a_child_whose_line_it_no_longer_needs(
+        tmp_path):
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.close")
+    top = groups.ensure_top_group(conn, p)
+    g = _goal(conn, p, "anchor")
+    conn.commit()
+    S = _S()
+    out = _commit(conn, tmp_path,
+                  [S.Decision(kind="Delegate", brief="own it",
+                              target_id=g)], p, top)[0]
+    kid = int(groups.children(conn, top)[0]["id"])
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+
+    _commit(conn, tmp_path, [
+        S.Decision(kind="CloseGroup",
+                   reason="rev 4 routes around this entirely",
+                   payload={"target_group_id": kid})], p, top)
+
+    assert groups.get(conn, kid)["status"] == "closed"
+    assert conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (out.decision_row_id,)).fetchone()["outcome"] == "failed:closed"
+    assert db.get_goal(conn, g)["status"] == "shelved"
+    assert db.has_active_inflight_inject(conn, p) is False
+
+
+def test_closing_reaches_only_your_own_children(tmp_path):
+    """A grandchild belongs to ITS parent; reaching past one level would
+    let a group cancel work it never commissioned and cannot judge."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.closescope")
+    top = groups.ensure_top_group(conn, p)
+    mid = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="A")
+    leaf = groups.open_group(conn, problem=p, parent_group_id=mid,
+                             charter="A1")
+    conn.commit()
+    S = _S()
+    d = S.Decision(kind="CloseGroup", reason="r",
+                   payload={"target_group_id": leaf})
+    assert "not yours to close" in _verify(conn, d, p, top)
+    assert _verify(conn, d, p, mid) == ""
+    # ...and a group already finished has nothing to close.
+    groups.set_status(conn, leaf, "returned")
+    assert "already reached" in _verify(conn, d, p, mid)
+
+
+def test_the_parent_can_see_what_it_is_waiting_on(tmp_path):
+    """`CloseGroup` needs a group id to name, and the parent had no
+    surface listing its live children at all — the batch scoreboard only
+    shows finished work. The section that carries the verb carries the
+    list, and both disappear when there is nothing to close."""
+    from Tooling.agent import phase2_context as ctx
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.inflight")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    assert ctx._section_groups_in_flight(conn, p, top) == []
+    S = _S()
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief="settle the p-adic bound")],
+            p, top)
+    kid = int(groups.children(conn, top)[0]["id"])
+    body = "\n".join(ctx._section_groups_in_flight(conn, p, top))
+    assert f"group {kid}" in body
+    assert "settle the p-adic bound" in body
+    assert "CloseGroup" in body
+    # A finished child drops off, and with the last one the section goes.
+    groups.set_status(conn, kid, "delivered")
+    assert ctx._section_groups_in_flight(conn, p, top) == []
+    # A childless sub-group never sees the verb either.
+    sub = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="x")
+    assert ctx._section_groups_in_flight(conn, p, sub) == []
+
+
+def test_retiring_work_is_not_progress(tmp_path):
+    """`CloseGroup` is deliberately NOT an experiment: a batch that only
+    retires groups still fails the >=1-experiment rule, so a stuck
+    parent cannot close its child and call that an advance."""
+    S = _S()
+    assert "CloseGroup" not in S._EXPERIMENT_KINDS
+    assert "CloseGroup" not in S._PACKAGE_EXEMPT_KINDS
 
 
 # ---------------------------------------------------------------------
