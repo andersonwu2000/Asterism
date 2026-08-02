@@ -957,6 +957,12 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 kind="alias" if alias_committed else "minted",
             )
             if outcome.status == "proved":
+                # Fills the outcome only. The batch-done relay is NOT
+                # fired here: this runs mid-pipeline (revival linkage and
+                # dedupe still follow), so waking the Strategist now
+                # would race its own worker. `cascade_one`'s Forward arm
+                # fires it once the pipeline result lands — see the
+                # already-filled branch there.
                 db.propagate_inject_outcome_from_goal(
                     conn, outcome.goal_id)
 

@@ -1536,13 +1536,31 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             # Backward leaf-bypass-cites the sorry → axiom_probe
             # rollback (the residue_thm 2026-05-19 failure mode).
             row = conn.execute(
-                "SELECT produced_goal_id FROM strategist_decisions"
+                "SELECT produced_goal_id, outcome FROM strategist_decisions"
                 " WHERE id = ?", (decision_id,),
             ).fetchone()
             if row is not None and row["produced_goal_id"] is not None:
-                # Sorry-bearing Forward: defer outcome until the lemma
-                # terminates. inject_batch_done will fire at that time.
-                pass
+                # The produced goal owns this decision's outcome now.
+                # Two shapes reach here, and only one of them is the
+                # sorry-bearing lemma the deferral was written for:
+                #
+                #  * outcome still NULL — the lemma is `:= by sorry`.
+                #    Leave it: `propagate_inject_outcome_from_goal` fills
+                #    it when the goal terminates and fires the relay from
+                #    there.
+                #  * outcome ALREADY filled — the brick landed proved in
+                #    one shot (or an alias landed), so forward.py filled
+                #    it at commit time and the goal, being terminal, will
+                #    never transition again. Nothing has fired the relay
+                #    for this row and nothing ever will, so it must fire
+                #    HERE or the batch completes in silence: the
+                #    Strategist is then woken only by T4's stall backstop
+                #    and reads `## Framework stalled` on a batch where
+                #    every brick succeeded (SG 2026-08-02). The produced-
+                #    goal link became unconditional in e9e55599, which is
+                #    when this second shape started arriving.
+                if row["outcome"] is not None:
+                    _maybe_enqueue_inject_batch_done(conn, decision_id)
             else:
                 _record_inject_decision_outcome(
                     conn, decision_id, outcome, failure_reason,

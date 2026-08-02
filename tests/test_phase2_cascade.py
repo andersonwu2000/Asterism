@@ -1263,6 +1263,45 @@ def test_null_batch_id_row_records_outcome_but_no_batch_trigger(
     assert q["n"] == 0
 
 
+def test_one_shot_proved_brick_still_closes_its_batch(
+    conn: sqlite3.Connection,
+) -> None:
+    """The best case must still fire the batch-done relay.
+
+    A Forward brick that lands proved in ONE shot fills its own decision
+    outcome at commit time (`forward.py`, since the produced-goal link
+    became unconditional in e9e55599) and its goal never transitions
+    again — so the goal-side relay never runs for it either. If the
+    cascade also stays silent, a batch of such bricks completes with
+    nobody woken and only T4's stall backstop rescues the run: the
+    Strategist then wakes reading `## Framework stalled` on a batch
+    where every brick succeeded (SG 2026-08-02, 4 of 6 `[stall-wake]`).
+    """
+    _insert_goal(conn, slug="main", origin="root", status="attempting")
+    ids = _seed_inject_batch_rows(conn, batch_id="batch-oneshot", count=2)
+
+    for i, did in enumerate(ids):
+        g = _insert_goal(conn, slug=f"brick{i}", origin="forward",
+                         status="proved")
+        # Exactly what forward.py does once the brick commits proved.
+        db.set_inject_decision_produced_goal(conn, did, g, kind="minted")
+        db.propagate_inject_outcome_from_goal(conn, g)
+        # Then the pipeline result reaches the cascade.
+        cascade_one(conn, pipeline_id=f"pid{i}", kind="Formalizer",
+                    target_id="p", target_kind="Problem",
+                    outcome="proved", decision_id=did)
+
+    pending = conn.execute(
+        "SELECT COUNT(*) AS n FROM strategist_decisions"
+        " WHERE batch_id = 'batch-oneshot' AND outcome IS NULL"
+    ).fetchone()["n"]
+    assert pending == 0
+    rows = conn.execute(
+        "SELECT target_id FROM queue WHERE kind='Strategist'"
+    ).fetchall()
+    assert [r["target_id"] for r in rows] == [_top(conn, "p")]
+
+
 def test_unacknowledged_inject_batches_helper(
     conn: sqlite3.Connection,
 ) -> None:
