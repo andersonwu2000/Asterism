@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { usePoll } from '../lib/api'
 import { Link } from '../lib/router'
-import RunConsole from './Run'
+import RunConsole, { CycleLine } from './Run'
 import { SettingsTab, UsageTab } from './Telemetry'
 import ManifestEditor from '../components/ManifestEditor'
-import { TabNav } from '../components/ui'
-import type { DaemonStatus, RunStatus } from '../lib/types'
+import ProgrammeView from '../components/ProgrammeView'
+import { ErrorState, TabNav } from '../components/ui'
+import type { DaemonStatus, Programme, RunStatus } from '../lib/types'
 
 /*
  * Engine — the machine's one door (owner, 2026-07-14: Run + Settings
@@ -19,7 +20,7 @@ import type { DaemonStatus, RunStatus } from '../lib/types'
  * content — one container, no extra rules.
  */
 
-export type EngineTab = 'console' | 'manifest' | 'settings' | 'usage'
+export type EngineTab = 'console' | 'manifest' | 'programme' | 'settings' | 'usage'
 
 const TABS: { id: EngineTab; label: string; href: string; title?: string }[] = [
   { id: 'console', label: 'Console', href: '/engine' },
@@ -28,6 +29,12 @@ const TABS: { id: EngineTab; label: string; href: string; title?: string }[] = [
     label: 'Manifest',
     href: '/engine/manifest',
     title: 'steer the live run — saved instructions reach the next agent, no restart',
+  },
+  {
+    id: 'programme',
+    label: 'Programme',
+    href: '/engine/programme',
+    title: "what the engine currently argues — its own case for the route it is taking",
   },
   { id: 'settings', label: 'Settings', href: '/engine/settings' },
   { id: 'usage', label: 'Usage', href: '/engine/usage' },
@@ -73,6 +80,66 @@ function SteerManifest() {
   )
 }
 
+/** The argument face: the SAME Programme the problem page archives,
+ * read while the machine argues it. Two things the archive has no use
+ * for ride along — the live proposal↔reviewer cycle, and which group
+ * is actually seated right now (the tab follows the run, so a watcher
+ * never has to pick). Owner, 2026-08-02: during a run this is the most
+ * readable account of where the work is — more so than opening stars
+ * one Lean statement at a time. */
+function RunProgramme() {
+  const { data: daemon } = usePoll<DaemonStatus>('/api/daemon', 3000)
+  const { data: run } = usePoll<RunStatus>('/api/run', 5000)
+  const [pick, setPick] = useState<number | null>(null)
+  const problem = daemon?.scope ?? run?.problem ?? null
+  // the seated strategist's group — the argument being revised THIS
+  // minute; the owner's pick (once made) wins over the live seat
+  const seat = (run?.workers ?? []).find(
+    (w) => w.kind === 'Strategist' && w.group,
+  )
+  const live = seat?.group ?? null
+  const group = pick ?? (live && !live.is_top ? live.id : null)
+  const cycle = seat?.cycle ?? null
+  const { data, error } = usePoll<Programme>(
+    problem
+      ? `/api/problems/${encodeURIComponent(problem)}/programme` +
+          (group !== null ? `?group=${group}` : '')
+      : null,
+    15000,
+  )
+  if (!problem)
+    return (
+      <p className="mt-6 text-xs text-ink-faint">
+        No run in focus — open a problem on the{' '}
+        <Link to="/" className="underline decoration-edge-strong underline-offset-2 hover:text-ink">
+          Board
+        </Link>{' '}
+        to read its programme there.
+      </p>
+    )
+  if (error) return <ErrorState error={error} />
+  if (!data) return null
+  return (
+    <div className="mt-4">
+      <ProgrammeView
+        data={data}
+        group={group}
+        onPickGroup={setPick}
+        extra={
+          cycle ? (
+            <div className="mb-4 rounded-xl border border-edge bg-surface px-3.5 py-2.5">
+              <div className="text-[11px] tracking-wider text-ink-faint uppercase">
+                being revised right now
+              </div>
+              <CycleLine cycle={cycle} />
+            </div>
+          ) : null
+        }
+      />
+    </div>
+  )
+}
+
 export default function Engine({ tab }: { tab: EngineTab }) {
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
@@ -80,6 +147,7 @@ export default function Engine({ tab }: { tab: EngineTab }) {
       <TabNav className="mt-3" tabs={TABS} active={tab} />
       {tab === 'console' && <RunConsole />}
       {tab === 'manifest' && <SteerManifest />}
+      {tab === 'programme' && <RunProgramme />}
       {tab === 'settings' && (
         <div className="mt-5">
           <SettingsTab />

@@ -107,7 +107,7 @@ const STRATEGIST_MODE: Record<string, string> = {
  * with the adversarial reviewer lives in files the plan note never
  * touches — without this line the card reads as half an hour of
  * silence (owner, 2026-07-18). */
-function CycleLine({ cycle }: { cycle: NonNullable<RunWorker['cycle']> }) {
+export function CycleLine({ cycle }: { cycle: NonNullable<RunWorker['cycle']> }) {
   const dur = cycle.since_sec !== null ? duration(cycle.since_sec) : null
   const text =
     cycle.phase === 'proposing'

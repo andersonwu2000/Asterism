@@ -409,7 +409,7 @@ function Shell() {
           ) : section === 'engine' ? (
             <Engine
               tab={
-                (['manifest', 'settings', 'usage'].includes(
+                (['manifest', 'programme', 'settings', 'usage'].includes(
                   route.segments[1] ?? '',
                 )
                   ? route.segments[1]

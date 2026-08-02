@@ -3,7 +3,6 @@ import { apiPost, usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
 import { relTime } from '../lib/format'
 import { Lean } from '../lib/lean'
-import { renderProse } from '../lib/prose'
 import { splitSignature } from '../lib/leanSig'
 import { onChatGoalHover, onChatGoalOpen, takePendingGoalOpen } from '../lib/chatFocus'
 import { goalStatusLabel } from '../lib/vocab'
@@ -12,6 +11,7 @@ import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
 import StrategyPanel from '../components/StrategyPanel'
 import DecisionTimeline from '../components/DecisionTimeline'
+import ProgrammeView from '../components/ProgrammeView'
 import FileViewer from '../components/FileViewer'
 import ManifestEditor from '../components/ManifestEditor'
 import RunControl from '../components/RunControl'
@@ -36,88 +36,7 @@ function ProgrammePanel({ problem }: { problem: string }) {
   )
   if (error) return <ErrorState error={error} />
   if (!data) return null
-  const groups = data.groups ?? []
-  const others = groups.filter((g) => !g.is_top)
-  const picker = others.length > 0 && (
-    // only a problem that HAS delegated shows this — one group is the
-    // ordinary case and must read exactly as it did before
-    <div className="mb-4 flex flex-wrap items-center gap-1.5">
-      <span className="mr-1 text-[11px] text-ink-faint">arguing:</span>
-      {groups.map((g) => {
-        const on = g.is_top ? group === null : group === g.id
-        return (
-          <button
-            key={g.id}
-            className={`max-w-64 truncate rounded-md border px-1.5 py-0.5 text-[11px] transition-colors ${
-              on
-                ? 'border-edge-strong text-ink'
-                : 'border-edge text-ink-faint hover:text-ink-dim'
-            }`}
-            onClick={() => setGroup(g.is_top ? null : g.id)}
-            title={
-              g.is_top
-                ? "the problem's own argument"
-                : `a claim handed to its own group — ${g.status}\n\n${g.charter}`
-            }
-          >
-            {g.is_top ? 'the problem' : g.charter || `group ${g.id}`}
-          </button>
-        )
-      })}
-    </div>
-  )
-  if (data.current === null)
-    return (
-      <div className="mx-auto max-w-3xl px-6 py-5">
-        {picker}
-        <div className="py-6 text-sm text-ink-faint">
-          no programme yet — the first passed proposal will start the revision chain
-        </div>
-      </div>
-    )
-  const cur = data.current
-  const rejected = data.history.filter((h) => h.status === 'rejected').length
-  return (
-    <div className="mx-auto max-w-3xl px-6 py-5">
-      {picker}
-      <div className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] text-ink-faint">
-        <span
-          className="text-ink-dim"
-          title="the revision chain: each passed proposal advances the Programme by one rev"
-        >
-          rev {cur.rev}
-        </span>
-        <span title="how many criticism rounds this revision survived before the adversarial reviewer let it pass">
-          {cur.rounds === 0
-            ? 'passed adversarial review unchallenged'
-            : `passed after ${cur.rounds} round${cur.rounds === 1 ? '' : 's'} of adversarial review`}
-        </span>
-        <span>{relTime(cur.created_at)}</span>
-        {rejected > 0 && (
-          <span title="proposals the adversarial reviewer discarded outright — their drafts and the full criticism stay in the engine's records">
-            {rejected} rejected along the way
-          </span>
-        )}
-      </div>
-      {cur.reservations.length > 0 && (
-        <div className="mb-4 rounded-xl border border-edge bg-surface px-3.5 py-2.5">
-          <div className="mb-1 text-[11px] tracking-wider text-ink-faint uppercase">
-            reviewer's reservations — caveats it passed WITH, on the record
-          </div>
-          <ul className="space-y-1 pl-4 text-[12px] text-ink-dim">
-            {cur.reservations.map((r, i) => (
-              <li key={i} className="list-disc marker:text-ink-faint">
-                {r}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <div className="text-sm leading-relaxed text-ink-dim">
-        {renderProse(cur.body, { mode: 'document' })}
-      </div>
-    </div>
-  )
+  return <ProgrammeView data={data} group={group} onPickGroup={setGroup} />
 }
 
 /* proved is the settled majority — it reads quiet; color is spent on

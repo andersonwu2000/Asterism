@@ -726,7 +726,20 @@ def programme(conn: sqlite3.Connection, problem: str,
             "created_at": str(cur["created_at"]),
             "reservations": reservations,
         }
-    return {"current": current, "history": history,
+    # The PREVIOUS passed body — the only thing that answers "what did
+    # this wake actually change in the argument". Rejected drafts stay
+    # out of it deliberately: the chain of what the machine COMMITTED
+    # to is the story; discarded proposals are audit material.
+    previous = None
+    if cur is not None:
+        prev = conn.execute(
+            "SELECT rev, body FROM programme_revisions"
+            " WHERE problem = ? AND status = 'passed' AND rev < ?" + clause +
+            " ORDER BY rev DESC LIMIT 1",
+            (problem, int(cur["rev"])) + args).fetchone()
+        if prev is not None:
+            previous = {"rev": int(prev["rev"]), "body": str(prev["body"])}
+    return {"current": current, "previous": previous, "history": history,
             "group_id": group_id, "groups": groups_of(conn, problem)}
 
 

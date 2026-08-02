@@ -438,7 +438,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             try:
                 return _data.programme(conn, problem, group)
             except sqlite3.OperationalError:
-                return {"current": None, "history": [],
+                return {"current": None, "previous": None, "history": [],
                         "group_id": None, "groups": []}
 
     @app.get("/api/problems/{problem}/manifest")

@@ -134,7 +134,18 @@ function Fold({ rows }: { rows: DiffRow[] }) {
   )
 }
 
-export default function DiffView({ left, right }: { left: string; right: string }) {
+export default function DiffView({
+  left,
+  right,
+  label = 'current → proposed',
+}: {
+  left: string
+  right: string
+  /** what the two sides ARE — the amend review's default is one case;
+   * a Programme diff is one revision against the next, and reusing
+   * the amend wording there said the wrong thing about both */
+  label?: string
+}) {
   const rows = useMemo(() => lineDiff(left, right), [left, right])
   const chunks = useMemo(() => chunkRows(rows), [rows])
   const changed = rows.filter((r) => r.type !== 'same').length
@@ -151,7 +162,7 @@ export default function DiffView({ left, right }: { left: string; right: string 
   return (
     <div className="overflow-hidden rounded-lg border border-edge">
       <div className="flex items-center gap-2 border-b border-edge bg-surface-2 px-3 py-1 text-[11px] text-ink-faint">
-        <span>current → proposed</span>
+        <span>{label}</span>
         {changed > 0 && <span className="tnum">· {changed} changed lines</span>}
       </div>
       {/* re-check on fold clicks: opening one grows scrollHeight */}
