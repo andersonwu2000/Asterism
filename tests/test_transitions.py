@@ -547,7 +547,11 @@ from pathlib import Path as _Path  # noqa: E402
 # (e.g. int(target_id)); every apply_* call passes event=, so non-greedy pairs
 # each call with its own (nearest-following) event= label.
 _APPLY_EVENT_RE = re.compile(
-    r"apply_(?:goal|strategy|problem)_transition\(.*?event=[\"']([^\"']+)[\"']",
+    # `groups.set_status` is the group FSM's checked mutator — it plays the
+    # role `apply_*_transition` plays for the other three entities, so its
+    # labels belong to the same taxonomy.
+    r"(?:apply_(?:goal|strategy|problem)_transition|set_status)"
+    r"\(.*?event=[\"']([^\"']+)[\"']",
     re.DOTALL,
 )
 

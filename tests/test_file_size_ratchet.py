@@ -224,7 +224,10 @@ _WATERMARKS = {
     # the reasoning belongs next to the predicate it justifies.
     # 1660→1700 (2026-08-02): v35 — a review wakes the group that owns
     # the goal, not the problem. Conscious bump.
-    "Tooling/state/transitions.py": 1700,
+    # +10, 2026-08-02: GROUP_EDGES + its three event labels. The fourth
+    # entity's transition law belongs beside the other three — splitting it
+    # out would put one FSM somewhere no reader of this module would look.
+    "Tooling/state/transitions.py": 1710,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.

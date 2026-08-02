@@ -343,17 +343,32 @@ def open_group(conn: sqlite3.Connection, *, problem: str,
 
 
 def set_status(conn: sqlite3.Connection, group_id: int,
-               status: str) -> None:
-    """The single sanctioned status mutator.
+               status: str, *, event: str = "") -> None:
+    """The single sanctioned status mutator, and the group FSM's chokepoint.
 
     Reaching a terminal status is what fills the opening `Delegate` row's
     outcome, which in turn completes the parent's batch and wakes it — the
     same real-completion semantics a produced goal or strategy carries.
     Driving that write anywhere else would strand the parent.
+
+    The edge is validated against `transitions.GROUP_EDGES` (v35 follow-up).
+    Goals, strategies and problems have had declared edge tables since the
+    incidents that motivated them; groups shipped with an enum and this
+    chokepoint but no law, so nothing said a terminal group may not be
+    resurrected or terminated twice — and a group's terminal write has a
+    SIDE EFFECT the other entities' do not, waking the parent. The check
+    lives here rather than in a separate `apply_group_transition` because
+    this function is already the one door, and a second entry point is
+    exactly what the other three had to grow lints to prevent.
     """
     if status not in STATUSES:
         raise ValueError(
             f"unknown group status {status!r}; expected one of {STATUSES}")
+    from . import transitions as _t
+    row = conn.execute(
+        "SELECT status FROM groups WHERE id = ?", (int(group_id),)).fetchone()
+    frm = str(row["status"]) if row is not None else None
+    _t._check("group", frm, status, _t.GROUP_EDGES, event)
     conn.execute(
         "UPDATE groups SET status = ?, updated_at = ? WHERE id = ?",
         (status, now(), int(group_id)))

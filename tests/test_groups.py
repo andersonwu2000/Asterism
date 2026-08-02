@@ -1793,3 +1793,75 @@ def test_v35_refuses_to_guess_when_the_target_kind_check_drifted(tmp_path):
         " problem TEXT, created_at TEXT);")
     with pytest.raises(RuntimeError, match="cannot widen"):
         db_migrations.apply(conn)
+
+
+# ---------------------------------------------------------------------
+# FSM (v35 follow-up) — declared edges, same law as the other entities
+# ---------------------------------------------------------------------
+
+def test_group_edges_are_exactly_the_three_terminal_verbs():
+    """`active` is the only non-terminal state and it is left exactly once.
+
+    Pinned as a set, not a count: a fourth edge is a design change that
+    must be argued, and re-entry into `active` is the one shape the table
+    exists to forbid — `reconcile_settled_inject_outcomes` reads every
+    non-'active' status as settled and the terminal write wakes the
+    parent, so a resurrected group runs on behind a parent already told
+    it finished."""
+    from Tooling.state import transitions
+    assert transitions.GROUP_EDGES == frozenset({
+        ("active", "delivered"),
+        ("active", "returned"),
+        ("active", "closed"),
+    })
+    assert not [e for e in transitions.GROUP_EDGES if e[1] == "active"]
+
+
+@pytest.mark.parametrize("first,second", [
+    ("delivered", "closed"),    # parent retires a group that already left
+    ("returned", "delivered"),
+    ("closed", "returned"),
+])
+def test_a_terminal_group_cannot_move_again(tmp_path, monkeypatch, first,
+                                            second):
+    monkeypatch.setenv("ASTERISM_STRICT_TRANSITIONS", "1")
+    from Tooling.state import transitions
+    conn = _conn(tmp_path)
+    p = _problem(conn)
+    top = groups.ensure_top_group(conn, p)
+    gid = groups.open_group(conn, problem=p, parent_group_id=top, charter="c")
+    groups.set_status(conn, gid, first, event=f"group_{first}")
+    with pytest.raises(transitions.IllegalTransition):
+        groups.set_status(conn, gid, second, event=f"group_{second}")
+    assert groups.get(conn, gid)["status"] == first
+
+
+def test_group_resurrection_is_rejected(tmp_path, monkeypatch):
+    """The shape with a live victim: `delivered` already filled the
+    parent's `Delegate` outcome and woke it, so re-activating the child
+    leaves the parent believing the burden is settled."""
+    monkeypatch.setenv("ASTERISM_STRICT_TRANSITIONS", "1")
+    from Tooling.state import transitions
+    conn = _conn(tmp_path)
+    p = _problem(conn)
+    top = groups.ensure_top_group(conn, p)
+    gid = groups.open_group(conn, problem=p, parent_group_id=top, charter="c")
+    groups.set_status(conn, gid, "delivered", event="group_delivered")
+    with pytest.raises(transitions.IllegalTransition):
+        groups.set_status(conn, gid, "active", event="group_delivered")
+
+
+def test_group_status_write_stays_on_the_one_door(tmp_path):
+    """No module outside the store may UPDATE groups.status — the check
+    lives in `set_status`, so a second writer is a silent bypass of the
+    FSM (the reason goals/strategies grew a chokepoint lint)."""
+    import re as _re
+    from pathlib import Path as _P
+    root = _P(__file__).resolve().parent.parent / "Tooling"
+    pat = _re.compile(r"UPDATE\s+groups\s+SET[^\"']*\bstatus\s*=",
+                      _re.I | _re.S)
+    offenders = [
+        str(f.relative_to(root)) for f in root.rglob("*.py")
+        if f.name != "groups.py" and pat.search(f.read_text(encoding="utf-8"))
+    ]
+    assert not offenders, f"groups.status written outside the store: {offenders}"

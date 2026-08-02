@@ -179,6 +179,18 @@ STRATEGY_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("succeeded", "proposed"),     # upstream strategy reverted for re-verify
 })
 
+GROUP_EDGES: frozenset[tuple[str, str]] = frozenset({
+    # A group leaves `active` exactly once, by one of the three verbs, and
+    # never comes back: `reconcile_settled_inject_outcomes` reads every
+    # non-'active' status as settled, and reaching one fills the opening
+    # `Delegate`'s outcome and wakes the parent. A resurrection would leave
+    # a parent already woken while its child runs on — which is the class
+    # this table exists to make unrepresentable.
+    ("active", "delivered"),   # sub-group Ingest — bricks are the parent's
+    ("active", "returned"),    # ReturnToParent (refuted / amend / exhausted)
+    ("active", "closed"),      # the parent retired it (CloseGroup)
+})
+
 # ---------------------------------------------------------------------------
 # Checked mutators
 # ---------------------------------------------------------------------------
@@ -206,6 +218,8 @@ EVENTS: frozenset[str] = frozenset({
     # goal to the new group's anchor and parks it `attempting`: alive
     # (so the parent's wait is legal) but not dispatchable by BFS.
     "delegate_anchor",
+    # ... and the three verbs that retire one (`groups.set_status`)
+    "group_delivered", "group_returned", "group_closed",
     # verify housekeeping + axiom-probe rollback
     "verify_proved", "verify_dead", "verify_reopen", "assembly_sorry_gate",
     "rollback_culprit", "rollback_upstream", "rollback_unsupersede",

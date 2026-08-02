@@ -1654,7 +1654,8 @@ def _commit_return_to_parent(decision: Decision, conn: sqlite3.Connection,
     # Terminal status LAST: it fills the parent's Delegate outcome and
     # may fire the batch-done wake, so everything the parent will read
     # must already be written.
-    _groups.set_status(conn, int(me["id"]), "returned")
+    _groups.set_status(conn, int(me["id"]), "returned",
+                       event="group_returned")
     if flavour == "refuted":
         # A refutation cannot wait for the batch. `refuted` means a step
         # of the PARENT's Proof is now kernel-false, so every sibling
@@ -1724,7 +1725,7 @@ def _commit_close_group(decision: Decision, conn: sqlite3.Connection,
             transitions._set_goal_terminal_and_propagate(
                 conn, int(anchor), "shelved")
             transitions._propagate_shelve(conn, int(anchor))
-    _groups.set_status(conn, target, "closed")
+    _groups.set_status(conn, target, "closed", event="group_closed")
     conn.commit()
     print(f"[close] group {target} retired by {me['id']} ({problem}): "
           f"{str(decision.reason or '')[:80]}", flush=True)
@@ -2027,7 +2028,8 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     # marked are then the parent's to cite.
     me = _authoring_group(conn, problem, group_id)
     if me is not None and not _groups.is_top(me):
-        _groups.set_status(conn, int(me["id"]), "delivered")
+        _groups.set_status(conn, int(me["id"]), "delivered",
+                           event="group_delivered")
         conn.commit()
         marked = db.deliverables(conn, problem=problem,
                                  group_id=int(me["id"]))
