@@ -1328,6 +1328,28 @@ def _resync_buffer_from_disk(meta: "SessionMetadata") -> "str | None":
                         "disk_lines": disk.count("\n") + 1})
 
 
+_SCOPE_OPEN_RE = re.compile(
+    r"^\s*(?:noncomputable\s+)?(?:namespace|section)\b")
+_SCOPE_END_RE = re.compile(r"^\s*end\b")
+
+
+def _scope_balance(text: str) -> int:
+    """`namespace`/`section` openers minus `end` closers.
+
+    Purely syntactic, which is the point: it is correct the instant the
+    splice lands, whereas the elaborator's diagnostics in the same
+    response may still describe the PREVIOUS version. Two agents in one
+    run replaced a whole file, dropped its `end <namespace>`, and only
+    learned about it a round-trip later (2026-08-02 feedback x2)."""
+    opens = closes = 0
+    for line in text.split("\n"):
+        if _SCOPE_OPEN_RE.match(line):
+            opens += 1
+        elif _SCOPE_END_RE.match(line):
+            closes += 1
+    return opens - closes
+
+
 def _editor_line_count(text: str) -> int:
     """Line count as an editor shows it: the empty element after a
     trailing newline is NOT a line (bbe7169 — counting it let a range
@@ -1385,9 +1407,14 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
         return json.dumps({"error":
             f"start_line {start_line} out of range 1..{n_lines}"})
     if end_line < start_line or end_line > n_lines:
+        # Say what to pass, not only what was wrong: three agents in one
+        # run read this message against `Read`'s output — which shows the
+        # slot after a trailing newline as a further line — and each spent
+        # a round-trip probing the boundary (2026-08-02 feedback x3).
         return json.dumps({"error":
             f"end_line {end_line} out of range {start_line}..{n_lines}"
-            f" (the file has {n_lines} lines)"})
+            f" (the file has {n_lines} lines; a trailing newline is not a"
+            f" line — pass end_line={n_lines} to replace through the end)"})
 
     # Editor-sanity normalization (agent_feedback ~30 reports):
     # CRLF → LF, and ONE trailing newline stripped — a block ending in
@@ -1409,6 +1436,18 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
                  + replacement
                  + lines[end_line:])
     new_content = "\n".join(new_lines)
+
+    # Scope tripwire: report only a balance THIS edit broke, so a
+    # mid-repair file does not nag.
+    _scope_warn: "str | None" = None
+    _bal_after = _scope_balance(new_content)
+    if _bal_after != 0 and _scope_balance(meta.file_content) == 0:
+        _scope_warn = (
+            f"this edit left {abs(_bal_after)} unclosed "
+            f"`namespace`/`section` — add the matching `end`"
+            if _bal_after > 0 else
+            f"this edit left {abs(_bal_after)} `end` more than there are "
+            f"`namespace`/`section` openers")
 
     # Metaprogramming gate — BEFORE the mirror/disk write-through, so a
     # blocked edit leaves neither the buffer nor the file carrying it.
@@ -1517,6 +1556,8 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
         response["citation"] = _cite
     if _locked_warn is not None:
         response["locked_signature"] = _locked_warn
+    if _scope_warn is not None:
+        response["scope_warning"] = _scope_warn
     dur = time.perf_counter() - t0
     _log_for(meta, {"event": "tool_call", "name": "apply_edit",
                     "args": {"start_line": start_line,
@@ -2154,8 +2195,13 @@ def validate_file(content: str) -> str:
         content, meta.problem, meta.workspace, meta.target_path.parent,
         extra_opens=_harvest_open_lines(meta.file_content))
     # 07-29 feedback: an agent read these as "my file was edited".
+    # 08-02 feedback: and read the list as the file's FINAL imports, so a
+    # sibling import it had written itself looked stripped. These are the
+    # lines that still need ADDING — one already in the file needs none.
     response["commit_header"]["note"] = (
-        "framework injects these at commit; do not write them")
+        "what the framework ADDS at commit; do not write these yourself. "
+        "Imports already in your file are kept, and are absent here only "
+        "because nothing needs adding")
     # Submission mirror (#8 / P2): the commit-time citation + annotation gates,
     # surfaced here so a clean Lean elaboration that would still be bounced at
     # commit is flagged pre-commit. Separate from `diagnostics` (Lean) so the

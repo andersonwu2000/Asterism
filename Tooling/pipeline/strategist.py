@@ -174,8 +174,10 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
                 + " | ".join(f"`{p}`" for p in phrases)) if phrases else ""
         return None, None, (
             " — ".join(parts)
-            + ". Copy an entry's leading phrase verbatim (no appended "
-              "prose), or add the entry. Fix every brief listed above."
+            + ". The test is a plain substring match against your "
+              "`## Roadmap` section — no entry shape is required. Copy an "
+              "entry's leading phrase verbatim (no appended prose), or add "
+              "the entry. Fix every brief listed above."
             + tail)
     return body, sections, None
 
@@ -183,22 +185,47 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
 _ROADMAP_ENTRY_RE = _re.compile(r"^\s*(?:\d+[.)]|[-*])\s+(.+?)\s*$")
 
 
+def _clean_roadmap_phrase(text: str) -> str:
+    """Leading phrase of a Roadmap line: cut at the first dash, shed
+    surrounding emphasis and a trailing colon, bound the length.
+
+    Every step trims from an END only, which is what keeps the result a
+    SUBSTRING of the line — and the acceptance test is
+    substring-in-Roadmap, so a phrase offered here is always one the gate
+    accepts. Deleting `*` everywhere (the old `.replace`) failed that:
+    `4-7. *dst basics*` became `4-7. dst basics`, which appears nowhere in
+    the Roadmap, so the rejection's own remedy was a second dead end
+    (`test_roadmap_offered_phrases_are_accepted_verbatim`)."""
+    head = _re.split(r"\s+[—–-]{1,2}\s+", text, maxsplit=1)[0]
+    return head.strip().strip("*").strip().rstrip(":")[:80].strip()
+
+
 def _roadmap_entry_phrases(roadmap: str, cap: int = 12) -> list[str]:
-    """Leading phrase of each `## Roadmap` entry, for the rejection
-    message's 'here is what would be accepted' tail. Heuristic and
-    display-only — the acceptance test stays substring-in-Roadmap."""
-    out: list[str] = []
+    """Citable phrases from the `## Roadmap`, for the rejection message's
+    'here is what would be accepted' tail. Heuristic and display-only —
+    the acceptance test stays substring-in-Roadmap.
+
+    Entry-shaped lines (`- x`, `3. x`) come first, then every other
+    non-heading line. Offering ONLY entry-shaped lines silently emptied
+    this list whenever the author's Roadmap used a shape the regex
+    misses — a bold paragraph, or a `4–7.` range head whose en dash
+    breaks `\\d+[.)]`. The tail then vanished and the rejection became a
+    pure prohibition: two Strategist wakes each spent a full round-trip
+    reverse-engineering an entry-shape rule that does not exist
+    (2026-08-02 feedback x2). A gate that blocks must show the way out."""
+    entries: list[str] = []
+    others: list[str] = []
     for line in roadmap.splitlines():
-        m = _ROADMAP_ENTRY_RE.match(line)
-        if m is None:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
             continue
-        head = _re.split(r"\s+[—–-]{1,2}\s+", m.group(1), maxsplit=1)[0]
-        head = head.replace("**", "").replace("*", "").strip().rstrip(":")
-        if head and head not in out:
-            out.append(head)
-        if len(out) >= cap:
-            break
-    return out
+        m = _ROADMAP_ENTRY_RE.match(line)
+        head = _clean_roadmap_phrase(m.group(1) if m else stripped)
+        bucket = entries if m else others
+        if head and head not in bucket:
+            bucket.append(head)
+    out = entries + [p for p in others if p not in entries]
+    return out[:cap]
 
 
 def _format_rebuttal(verdict: dict, round_no: int,

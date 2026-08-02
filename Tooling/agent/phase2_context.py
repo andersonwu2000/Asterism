@@ -63,9 +63,49 @@ def _section_trigger(trigger_kind: str, pending_review_id: int | None,
     return lines
 
 
+def _axiom_certification_note(conn: sqlite3.Connection,
+                              mfst: "manifest.Manifest | None",
+                              problem: str) -> list[str]:
+    """What the machine already checked about axioms, rendered exactly
+    when `Ingest` becomes reachable (2026-08-02 feedback).
+
+    The Manifest states the axiom obligation explicitly, but `.lake/build`
+    is outside the Strategist's readable roots, so the one wake that has
+    to certify it could only argue it by grepping sources for `sorry` and
+    left a `SUSPECT:` line on its own exit gate. The probe it wanted to
+    run has ALREADY run: `#print axioms <= whitelist` is the definition of
+    `goals.status='proved'` here, not a later audit (`pipeline/_axiom.py`;
+    `tests/test_axiom_invariant.py` pins every proved-producing pipeline
+    to the shared gate). Stating that turns a hand-argued obligation into
+    a citable machine fact — the Strategist is not being asked to
+    re-adjudicate a kernel gate."""
+    n = conn.execute(
+        "SELECT COUNT(*) FROM goals WHERE problem = ? AND status = 'proved'",
+        (problem,)).fetchone()[0]
+    if not n:
+        return []
+    wl = (manifest.effective_axioms(mfst, problem=problem)
+          if mfst is not None else [])
+    wl_txt = ", ".join(f"`{a}`" for a in wl) if wl else "(none listed)"
+    return [
+        "## Axiom certification (already machine-checked)",
+        "",
+        f"All {n} goal(s) this problem shows as `proved` cleared "
+        f"`#print axioms` against its whitelist before the status flipped "
+        f"— that gate IS the definition of `proved`, and `sorryAx` can "
+        f"never be whitelisted. In force: {wl_txt}.",
+        "",
+        "Cite this for `Ingest`'s axiom obligation. You have no"
+        " `.lake/build` access and are not expected to re-run the probe.",
+        "",
+    ]
+
+
 def _section_ingest_gate(conn: sqlite3.Connection,
                          problem: str,
-                         group_id: "int | None" = None) -> list[str]:
+                         group_id: "int | None" = None,
+                         mfst: "manifest.Manifest | None" = None,
+                         ) -> list[str]:
     """Phase 6 — context-conditional Ingest availability note (design ④):
 
       - root exists, NOT proved → surface "Ingest is unavailable" (the
@@ -106,7 +146,7 @@ def _section_ingest_gate(conn: sqlite3.Connection,
         "SELECT status FROM goals WHERE problem = ? AND origin = 'root'"
         " LIMIT 1", (problem,)).fetchone()
     if root is None or str(root["status"]) == "proved":
-        return []
+        return _axiom_certification_note(conn, mfst, problem)
     lines = [
         "## Ingest availability",
         "",
@@ -1205,7 +1245,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
                       "manifest_meta", "paper_index"]
     sections += [
         _section_stall_warning(conn, problem, group_id),
-        _section_ingest_gate(conn, problem, group_id),
+        _section_ingest_gate(conn, problem, group_id, mfst=mfst),
         _section_disproof_guidance(conn, problem),
         _section_your_group(conn, problem, group_id),
         _section_groups_in_flight(conn, problem, group_id),
@@ -1368,6 +1408,13 @@ def _section_programme_strategist(conn: sqlite3.Connection,
     except sqlite3.OperationalError:
         return []
     out: list[str] = []
+    # Judge dialogue is rendered in its OWN top-level section, after the
+    # rev text and never inside it (2026-08-02 judge feedback): appended
+    # bare under `## Programme` it read as Programme prose, so the file on
+    # disk ended at the risk register while this view carried three more
+    # lines — and the same judge is told to penalise dialogue residue in
+    # the Programme. The framework must not author what it prosecutes.
+    reservations: list[str] = []
     if row is None:
         out += ["## Programme", "",
                 "(none yet — the proposal you deliver this wake founds "
@@ -1380,13 +1427,15 @@ def _section_programme_strategist(conn: sqlite3.Connection,
             verdict = _json.loads(row["verdict"] or "{}")
         except ValueError:
             verdict = {}
-        reservations = verdict.get("reservations") or []
-        if reservations:
-            out += ["Adversary reservations on this rev:"]
-            out += [f"- {r}" for r in reservations]
-            out.append("")
+        reservations = [str(r) for r in (verdict.get("reservations") or [])]
     if notice:
         out += ["### Previous proposal rejected", "", notice, ""]
+    if reservations:
+        out += [f"## Adversary reservations on rev {row['rev']}", "",
+                "Advisory notes from the judge that passed it — not part"
+                " of the Programme text above.", ""]
+        out += [f"- {r}" for r in reservations]
+        out.append("")
     return out
 
 

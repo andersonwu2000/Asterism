@@ -703,6 +703,38 @@ def test_projection_stages_tree_cited_proofs_and_directive_body(
     assert f"→ {gid} (`tgt`, proved)" in dec
 
 
+def test_projection_stages_a_cited_strategy_assembly(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """A cited `proofs/` file that is not a brick must still be staged.
+
+    The import closure reaches a `_strategy_s<N>.lean` only from an alias
+    stub that imports it, so a ROOT assembly — which nothing imports — was
+    unreachable while the seed glob was `L_*.lean`. On an Ingest package
+    that is the one file both load-bearing claims are about, and the SG
+    judge (2026-08-02) had to leave the exit gate's own assembly as an
+    unverified reservation."""
+    attempts = workspace / ".attempts" / "adv-assembly"
+    attempts.mkdir(parents=True)
+    pdir = workspace / "Problems" / "p"
+    (pdir / "proofs" / "_strategy_s99.lean").write_text(
+        "theorem main : True := trivial\n", encoding="utf-8")
+    (pdir / "proofs" / "_strategy_s12.lean").write_text(
+        "theorem other : True := trivial\n", encoding="utf-8")
+    conn.commit()
+
+    proj = adversary.build_projection(
+        round_no=1, attempts_dir=attempts, problem_dir=pdir,
+        conn=conn, problem="p",
+        proposal_body=(_PROPOSAL + "\nthe root assembles in "
+                       "`proofs/_strategy_s99.lean`, sorry-free"),
+        decisions=[_d("Ingest")], dialogue=[], proof_warn=None)
+    assert (proj / "proofs" / "_strategy_s99.lean").exists()
+    # Still citation-scoped: an assembly the package never names does not
+    # ride along.
+    assert not (proj / "proofs" / "_strategy_s12.lean").exists()
+
+
 def _rendered_subgroup_section() -> str:
     """The conditional `## Your group` Context section as a sub-group
     actually receives it — the other half of the Strategist's contract

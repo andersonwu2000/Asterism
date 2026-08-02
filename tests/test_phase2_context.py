@@ -1303,6 +1303,34 @@ def test_ingest_gate_states_the_ordering_cost_ungated(
     assert "Backward" not in text and "Builder" not in text
 
 
+def test_ingest_gate_states_the_axiom_gate_once_reachable(
+    workspace: Path, conn: sqlite3.Connection, mfst: manifest.Manifest,
+) -> None:
+    """The exit gate must not ask for a certification it also hides.
+
+    `.lake/build` is outside the Strategist's readable roots, so the one
+    wake that has to certify the Manifest's axiom obligation could only
+    grep sources for `sorry` and left a `SUSPECT:` line on its own
+    `Ingest` (2026-08-02 feedback). The probe it wanted has already run —
+    `#print axioms <= whitelist` IS the definition of `proved` here — so
+    the section states that instead, and only once Ingest is reachable."""
+    _insert_problem(conn)
+    root = _insert_root(conn)
+    mfst.axioms_whitelist = ["propext", "Classical.choice"]
+    # Root unproved: this is the "unavailable" note, not the certification.
+    blocked = "\n".join(
+        phase2_context._section_ingest_gate(conn, "p", mfst=mfst))
+    assert "Axiom certification" not in blocked
+
+    db.update_goal_status(conn, root, "proved")
+    conn.commit()
+    text = "\n".join(
+        phase2_context._section_ingest_gate(conn, "p", mfst=mfst))
+    assert "## Axiom certification (already machine-checked)" in text
+    assert "`propext`" in text and "`Classical.choice`" in text
+    assert "not expected to re-run the probe" in text
+
+
 def test_strategist_surfaces_carry_no_retired_pipeline_names(
     workspace: Path, conn: sqlite3.Connection, mfst: manifest.Manifest,
     tmp_path: Path,

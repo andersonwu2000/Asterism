@@ -1989,3 +1989,23 @@ def test_editor_line_count_one_law() -> None:
     assert _editor_line_count("a") == 1
     assert _editor_line_count("") == 0
     assert _editor_line_count("\n") == 1
+
+
+def test_scope_balance_counts_namespace_and_section() -> None:
+    """The syntactic scope counter behind apply_edit's `scope_warning`.
+
+    It exists because the elaborator's diagnostics in the same response
+    can still describe the PREVIOUS version, while this is correct the
+    instant the splice lands. Two agents in one run replaced a whole file,
+    dropped its `end <namespace>`, and learned about it a round-trip later
+    (2026-08-02 feedback x2)."""
+    from Tooling.lsp.gateway import _scope_balance
+    closed = ("import Mathlib\n\nnamespace P.q\n\n"
+              "theorem t : True := trivial\n\nend P.q\n")
+    assert _scope_balance(closed) == 0
+    assert _scope_balance(closed.replace("end P.q\n", "")) == 1
+    assert _scope_balance("noncomputable section\n") == 1
+    assert _scope_balance("end P.q\n") == -1
+    # `end` inside a word, and a patch with no scopes at all, are zero.
+    assert _scope_balance("theorem ending : True := trivial\n") == 0
+    assert _scope_balance("") == 0

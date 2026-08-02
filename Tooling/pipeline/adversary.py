@@ -157,6 +157,15 @@ _PROOFS_IMPORT_RE = re.compile(
     r"^import\s+[\w.]*\.proofs\.([\w]+)\s*$", re.M)
 
 
+def _package_cites(stem: str, package_text: str) -> bool:
+    """Does the package name this `proofs/` file? Either by its own stem
+    (`_strategy_s24155`) or, for a brick, by the bare slug the prompts
+    tell everyone to cite (`L_dst` → `dst`)."""
+    names = [stem] + ([stem[2:]] if stem.startswith("L_") else [])
+    return any(re.search(rf"\b{re.escape(n)}\b", package_text)
+               for n in names if n)
+
+
 def _stage_proof_closure(proofs_src: Path, proj: Path,
                          seeds: list[Path]) -> int:
     """Copy the cited proof files AND what their imports reach.
@@ -304,15 +313,22 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     # Cited landed proofs (07-29 judge feedback ×6): the artifacts the
     # package's claims cite must be checkable inside the sandbox — a
     # RETARGETED dispute's only deciding document is the landed file.
-    # Any on-disk proofs/L_<slug>.lean whose slug the package text
-    # mentions rides along read-only. Cap 20 with a loud log (no
-    # silent caps).
+    # Any on-disk proofs/ file the package text mentions rides along
+    # read-only. Cap 20 with a loud log (no silent caps).
+    #
+    # The seed glob is `*.lean`, not `L_*.lean` (2026-08-02): the closure
+    # below reaches a `_strategy_s<N>.lean` only from an alias stub that
+    # imports it, so an assembly nothing imports — the ROOT's — could
+    # never be staged at all. On an Ingest package that is the single
+    # file both load-bearing claims (statement fidelity, axiom
+    # exhaustion) are about: the SG judge could grep-verify 18 of 19
+    # sources and had to leave the exit gate's own assembly as an
+    # unverified reservation.
     proofs_src = problem_dir / "proofs"
     if proofs_src.is_dir():
         package_text = proposal_body + "\n" + decisions_text
-        seeds = [f for f in sorted(proofs_src.glob("L_*.lean"))
-                 if re.search(rf"\b{re.escape(f.stem[2:])}\b",
-                              package_text)]
+        seeds = [f for f in sorted(proofs_src.glob("*.lean"))
+                 if _package_cites(f.stem, package_text)]
         _stage_proof_closure(proofs_src, proj, seeds)
     if dialogue:
         (proj / "dialogue.md").write_text(_dialogue_digest(dialogue),

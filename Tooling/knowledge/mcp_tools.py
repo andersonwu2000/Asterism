@@ -44,12 +44,14 @@ mcp = FastMCP("asterism_tools")
 @mcp.tool()
 def loogle(pattern: str = "", query: str = "",
            limit: int = _loogle.DEFAULT_LIMIT) -> str:
-    """Search Mathlib by TYPE PATTERN (loogle.lean-lang.org).
+    """Search Mathlib (loogle.lean-lang.org).
 
-    Pass the pattern as `pattern` (or `query` — both work).
-    Use `_` for a wildcard term and `?x` for a named hole:
-      `Nat.factorial _ = _`, `?p.Prime → ∏ _ ∈ _, _ = -1`,
-      `List.sum, List.map`.
+    Pass the search as `pattern` (or `query` — both work):
+      - by type, `_` a wildcard and `?x` a named hole:
+        `Nat.factorial _ = _`, `?p.Prime → ∏ _ ∈ _, _ = -1`
+      - by constant(s) mentioned: `List.sum, List.map`
+      - by exact name, to recover a signature: `sq_pos_of_ne_zero`
+      - by name substring, quoted: `"sq_pos_of"`
 
     Returns one line per hit: `name :: type [module]`. No hits is a
     valid answer — refine the pattern rather than retrying it verbatim.
