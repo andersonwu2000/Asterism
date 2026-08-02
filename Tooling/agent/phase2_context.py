@@ -492,10 +492,58 @@ def _delegate_result_lines(conn: sqlite3.Connection,
     return out
 
 
+BATCHES_COMPANION = "BATCHES.md"
+
+
+def _write_batches_companion(attempts_dir: "Path | None",
+                             order: "list[str]",
+                             grouped: "dict[str, list[sqlite3.Row]]",
+                             step_idx) -> bool:
+    """`BATCHES.md` — every completed step's brief and worker reply, whole.
+
+    The inline scoreboard used to carry both bodies cut at 1200 bytes, and
+    SG briefs run 1.2-9.5KB, so the cut landed mid-sentence — once on the
+    exact line the Adversary had criticised (2026-08-02 feedback). An
+    arbitrary truncation is the worst of the two options: it costs the
+    budget of a long quotation and delivers the reliability of a short one.
+
+    Lazily loaded, so there is nothing to truncate (operator ruling): the
+    same pattern as `CATALOG.md` / `LESSONS.md` / `PAST_*.md`. What stays
+    inline is what cannot be re-derived by reading a file — outcome,
+    attribution, the landed signature."""
+    if attempts_dir is None:
+        return False
+    lines = ["# Completed Inject batches — full briefs and replies",
+             "_Machine-generated per spawn. The inline"
+             " `## Completed Inject batches` section carries the"
+             " scoreboard; the untruncated text lives here._", ""]
+    for bid in order:
+        lines.append(f"## Batch `{bid[:8]}`")
+        lines.append("")
+        for r in sorted(grouped[bid], key=step_idx):
+            lines.append(f"### step {step_idx(r)} — outcome"
+                         f" `{r['outcome'] or '(none)'}`")
+            if r["landed_slug"]:
+                lines.append(f"landed `{r['landed_slug']}`"
+                             f" — `{r['landed_path'] or '?'}`")
+            lines += ["", "#### brief", "",
+                      str(r["brief"] or "(none)").strip(), ""]
+            detail = str(r["outcome_detail"] or "").strip()
+            if detail:
+                lines += ["#### worker reply", "", detail, ""]
+    try:
+        (attempts_dir / BATCHES_COMPANION).write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
 def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                                    problem: str,
                                    workspace: "Path | None" = None,
                                    group_id: "int | None" = None,
+                                   attempts_dir: "Path | None" = None,
                                    ) -> list[str]:
     """Surface every Inject batch on this problem that completed since
     the last Strategist commit (`last_strategist_at` ratchet — see
@@ -565,6 +613,11 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                        .get("step_index", 0))
         except (ValueError, TypeError):
             return 0
+
+    lazy = _write_batches_companion(attempts_dir, order, grouped, _step_idx)
+    if lazy:
+        out += [f"Full brief and worker reply per step:"
+                f" `{BATCHES_COMPANION}`, beside this file.", ""]
 
     for bid in order:
         steps = grouped[bid]
@@ -680,12 +733,24 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                     "  landed: (nothing attributed to this step — the "
                     "brick may have landed renamed/merged; grep "
                     "CATALOG.md before treating it as landed)")
-            out.append(f"  brief: {brief}")
+            if r["landed_path"]:
+                # Where the landed idioms live. The strategist had to
+                # hunt for `proofs/L_line_param.lean` to confirm a
+                # tactic was available (2026-08-02); naming the path
+                # makes that one hop instead of a search.
+                out.append(f"  file: `{r['landed_path']}`")
             detail = (r["outcome_detail"] or "").strip()
-            if detail:
-                if len(detail) > 1200:
-                    detail = detail[:1200].rstrip() + "…"
-                out.append(f"  why: {detail}")
+            if lazy:
+                out.append(
+                    f"  brief + reply: `{BATCHES_COMPANION}` step {idx}"
+                    if detail else
+                    f"  brief: `{BATCHES_COMPANION}` step {idx}")
+            else:
+                out.append(f"  brief: {brief}")
+                if detail:
+                    if len(detail) > 1200:
+                        detail = detail[:1200].rstrip() + "…"
+                    out.append(f"  why: {detail}")
         out.append("")
     out.extend(decline_lines)
     return out
@@ -1254,7 +1319,8 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_plan_note(conn, workspace, problem, group_id),
         _section_inject_batch_outcomes(conn, problem,
                                        workspace=workspace,
-                                       group_id=group_id),
+                                       group_id=group_id,
+                                       attempts_dir=attempts_dir),
         _section_pending_reopens(conn, problem, trigger_kind),
         _section_active_goals(conn, workspace, problem),
         _section_failure_replay(conn, problem),

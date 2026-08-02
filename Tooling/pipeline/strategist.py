@@ -2037,6 +2037,22 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
               f"delivered {len(marked)} brick(s) to group "
               f"{me['parent_group_id']}", flush=True)
         return
+    # Tripwire, not a gate (operator ruling 2026-08-02 — log only, the
+    # human is not asked). `ingested_at` is what `groups_stalled` and
+    # `is_group_stalled` filter on, so the instant the TOP group Ingests,
+    # every still-`active` sub-group stops being woken: no T4, no error,
+    # nothing. Whether the right rule is wait / auto-close / refuse is a
+    # design question deliberately left open until a real group tree has
+    # run — but the framework must not do it in silence, and this line is
+    # the evidence that decision will be made from.
+    if me is not None:
+        live = _groups.children(conn, int(me["id"]), active_only=True)
+        if live:
+            print(f"[ingest-orphans] {problem}: top-group Ingest with "
+                  f"{len(live)} sub-group(s) still active "
+                  f"({', '.join(str(g['id']) for g in live)}) — they stop "
+                  f"being woken once `ingested_at` is stamped",
+                  flush=True)
     # Decide the sign-off gate BEFORE publishing the terminal stamp.
     # `ingested_at` + a clear flag is what the Librarian selfstart path
     # reads as "approved, go" — so the flag must land in the same

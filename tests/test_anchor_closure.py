@@ -542,3 +542,42 @@ def test_anchor_closure_live_kernel_walk():
                        for n in pnames), f"internal-detail leaked: {pnames}"
     finally:
         shutil.rmtree(src.parent, ignore_errors=True)
+
+
+def test_top_ingest_names_the_sub_groups_it_orphans(conn, tmp_path, capsys):
+    """A top-group Ingest with live children must not be silent.
+
+    `ingested_at` is what `groups_stalled` / `is_group_stalled` filter on,
+    so the instant it is stamped every still-`active` sub-group stops
+    being woken — no T4, no error. Whether the right rule is wait /
+    auto-close / refuse is deliberately open until a real group tree has
+    run (operator ruling 2026-08-02: log it, do not gate on it); this
+    line is the evidence that decision gets made from."""
+    from Tooling.pipeline.strategist import _commit_ingest
+    from Tooling.state import groups as _groups
+    conn.execute("INSERT INTO problems(name,manifest_path,created_at)"
+                 " VALUES ('P.orph','P.orph/Manifest.md',?)", (_db.now(),))
+    conn.commit()
+    pdir = _db.problem_dir(tmp_path, "P.orph")
+    pdir.mkdir(parents=True)
+    (pdir / "Manifest.md").write_text(
+        "---\nproblem: P.orph\nlibrary: false\nsignoff: false\n---\n# P\n",
+        encoding="utf-8")
+    top = _groups.ensure_top_group(conn, "P.orph")
+    kid = _groups.open_group(conn, problem="P.orph", parent_group_id=top,
+                             charter="settle the lemma")
+    conn.commit()
+
+    _commit_ingest(conn, problem="P.orph", workspace=tmp_path)
+    out = capsys.readouterr().out
+    assert "[ingest-orphans]" in out
+    assert str(kid) in out
+
+    # ... and stays quiet once nothing is live.
+    _db.set_ingest_signoff_pending(conn, "P.orph", False)
+    conn.execute("UPDATE problems SET state='active', ingested_at=NULL"
+                 " WHERE name='P.orph'")
+    _groups.set_status(conn, kid, "delivered", event="group_delivered")
+    conn.commit()
+    _commit_ingest(conn, problem="P.orph", workspace=tmp_path)
+    assert "[ingest-orphans]" not in capsys.readouterr().out

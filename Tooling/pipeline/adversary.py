@@ -280,9 +280,13 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     # them (判官必見源). Outcome lines reuse the exact section the
     # strategist context renders.
     current = programme.current_rev(conn, problem, group_id)
+    # `attempts_dir=proj` so the judge gets the same lazy companion the
+    # strategist does — the briefs it is checking the Argument against are
+    # the ones under judgement, and a 1200-byte cut through them is how
+    # a judge came to quote a sentence that ended mid-clause (08-02).
     outcome_lines = _section_inject_batch_outcomes(
         conn, problem, workspace=attempts_dir.parent.parent,
-        group_id=group_id)
+        group_id=group_id, attempts_dir=proj)
     (proj / "PROGRAMME.md").write_text(
         (current["body"] if current is not None else
          "(no Programme yet — this cycle's proposal is rev 1; judge it "

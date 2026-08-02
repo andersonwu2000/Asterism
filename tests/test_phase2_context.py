@@ -1353,3 +1353,61 @@ def test_strategist_surfaces_carry_no_retired_pipeline_names(
     for dead in ("Inject(Backward", "Inject(Builder", "Inject(Forward)",
                  "Backward/Builder"):
         assert dead not in out, dead
+
+
+def test_batch_outcomes_go_lazy_instead_of_truncating(
+    workspace: Path, conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """The brief and the worker's reply move to `BATCHES.md`, whole.
+
+    Inline they were cut at 1200 bytes, and briefs run 1.2-9.5KB — the cut
+    landed mid-sentence, once on the exact line the Adversary had
+    criticised (2026-08-02). Lazily loaded there is nothing to truncate
+    (operator ruling), which is the pattern CATALOG / LESSONS / PAST_*
+    already use. The scoreboard stays inline: it is what cannot be
+    re-derived from a file."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    long_brief = "Roadmap: the brick\n## Need\n" + ("x" * 4000) + "\nTAILMARK"
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, brief, payload, batch_id, outcome,"
+        " outcome_detail, created_at, updated_at)"
+        " VALUES ('p', 0, 'routine', 'Inject', ?, '{}', 'b-lazy',"
+        "         'success', ?, ?, ?)",
+        (long_brief, "why " + ("y" * 4000) + " REPLYMARK",
+         db.now(), db.now()))
+    conn.commit()
+
+    attempts = tmp_path / "_att_lazy"
+    attempts.mkdir()
+    text = "\n".join(phase2_context._section_inject_batch_outcomes(
+        conn, "p", attempts_dir=attempts))
+
+    companion = attempts / phase2_context.BATCHES_COMPANION
+    assert companion.exists()
+    body = companion.read_text(encoding="utf-8")
+    # whole, both halves, no ellipsis
+    assert "TAILMARK" in body and "REPLYMARK" in body
+    # the inline section points at it and does NOT carry the bodies
+    assert phase2_context.BATCHES_COMPANION in text
+    assert "TAILMARK" not in text and "REPLYMARK" not in text
+    assert len(text) < 1200, f"scoreboard should stay small:\n{text}"
+
+
+def test_batch_outcomes_still_render_without_an_attempts_dir(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """No companion to write → the old inline shape, so a caller that
+    cannot host a file still gets the record rather than nothing."""
+    _insert_problem(conn)
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, brief, payload, batch_id, outcome,"
+        " created_at, updated_at)"
+        " VALUES ('p', 0, 'routine', 'Inject', 'INLINEMARK', '{}',"
+        "         'b-inline', 'success', ?, ?)", (db.now(), db.now()))
+    conn.commit()
+    text = "\n".join(
+        phase2_context._section_inject_batch_outcomes(conn, "p"))
+    assert "INLINEMARK" in text
