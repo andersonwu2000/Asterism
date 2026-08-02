@@ -10,7 +10,7 @@ Time budget: {timeout_min} minutes.
 
 Four MCP tools talk to a live Lean server already holding **your `new_forward.lean` sandbox**:
 
-- `mcp__lsp__apply_edit(start_line, end_line, new_text)` / `goal_at(line, col)` / `errors_at(line=None)` — edit, read a goal, list diagnostics.
+- `mcp__lsp__apply_edit(start_line, end_line, new_text)` / `goal_at(line, col)` / `errors_at(line=None)` — edit, read a goal, list diagnostics. `apply_edit` already returns diagnostics; use `errors_at` to re-check without editing, or when a response carries `elaborating`.
 - `mcp__lsp__validate_file(content)` — elaborate a standalone candidate; a leading `sorry` is OK.
 
 Write your declaration into the namespace body, then validate until only sorry warnings remain.
@@ -36,7 +36,7 @@ end Problems.<problem>
 
 - Edit only `new_forward.lean`, one declaration per invocation — do NOT create other `new_*.lean` files.
 - `<slug>`: `[a-z][a-z0-9_]*`, ≤ 60 chars, descriptive. Read from the declaration head, not the filename. A slug colliding with an existing `proofs/L_*.lean` hard-fails the commit — pick a fresh name (Grep `proofs/` if unsure).
-- When the problem ships `Defs.lean`: `def` / `structure` / `class` slugs must NOT take a symbol name the Manifest statement references — statement vocabulary belongs to the user-owned `Defs.lean`.
+- When the problem ships `Defs.lean`: `def` / `structure` / `class` slugs must NOT take a name `Defs.lean` already defines — that vocabulary is user-owned.
 - Keep the seeded imports; add `import` lines only to cite proved siblings or Library modules.
 - If the proof is easy, prove it directly — it must then be sorry-free and `validate_file`-clean.
 
@@ -64,7 +64,7 @@ end Problems.<problem>
 
 ## Stop signals
 
-Ship as `:= by sorry` the moment a proof attempt doesn't close on the first try or you're picking specific values / case orderings. Type-check via `validate_file` and exit.
+Ship a **theorem** as `:= by sorry` the moment a proof attempt doesn't close on the first try or you're picking specific values / case orderings. Type-check via `validate_file` and exit.
 
 ## Lemma discovery
 
