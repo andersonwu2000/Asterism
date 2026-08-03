@@ -1130,15 +1130,28 @@ def _plan_note_provenance(conn: sqlite3.Connection, problem: str) -> str:
             f"{rev_txt} · {str(row['created_at'])[:16]}._")
 
 
+PLAN_NOTE_COMPANION = "_plan_full.md"
+
+
 def _section_plan_note(conn: sqlite3.Connection, workspace: Path,
                        problem: str,
-                       group_id: "int | None" = None) -> list[str]:
+                       group_id: "int | None" = None,
+                       attempts_dir: "Path | None" = None) -> list[str]:
     """The Strategist's PRIVATE cross-wake plan note
     (`.drafts/strategist_plan.md`) — rendered here ONLY, never into worker
     contexts. The third channel next to the two worker-facing ones
     (standing directive broadcast / one-shot Inject brief): its curated
     world-model previously leaked into the directive and taxed every
-    worker spawn. Soft cap = one warning line, nothing harder.
+    worker spawn.
+
+    Lazy since 2026-08-04 (operator ruling; #2 context growth source at
+    ~6-10KB and climbing toward the 16KB soft cap): the full note rides
+    beside Context.md as `_plan_full.md` — the same pattern as
+    `BATCHES.md`/`CATALOG.md` — and the inline render keeps only what
+    cannot wait for a Read: the provenance line (the phantom-batch
+    two-line compare) and the `SUSPECT:` lines (adjudicate-first duty).
+    The REWRITE contract is unaffected: the agent Reads the companion,
+    then writes the fresh `_plan.md` as always.
 
     Rendered under `_plan_note_provenance` — the framework's line on
     what actually committed, so a phantom batch is a two-line compare
@@ -1153,7 +1166,25 @@ def _section_plan_note(conn: sqlite3.Connection, workspace: Path,
     if len(text) > _drafts.PLAN_NOTE_SOFT_CAP:
         out += [f"_⚠ {len(text)} chars — past the useful size; rewrite it "
                 f"down to what still matters._", ""]
-    out += [text.strip(), ""]
+    lazy = False
+    if attempts_dir is not None:
+        try:
+            (attempts_dir / PLAN_NOTE_COMPANION).write_text(
+                text, encoding="utf-8")
+            lazy = True
+        except OSError:
+            pass
+    if not lazy:
+        out += [text.strip(), ""]
+        return out
+    suspects = [ln for ln in text.splitlines() if "SUSPECT:" in ln]
+    out.append(f"Full note ({len(text)} chars): `{PLAN_NOTE_COMPANION}`, "
+               "beside this file — Read it before you rewrite `_plan.md` "
+               "(the rewrite contract is unchanged).")
+    if suspects:
+        out += ["", "`SUSPECT:` lines awaiting adjudication:"]
+        out += [f"- {ln.strip()}" for ln in suspects[:12]]
+    out.append("")
     return out
 
 
@@ -1358,7 +1389,8 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_groups_in_flight(conn, problem, group_id),
         _section_programme_strategist(conn, problem, group_id),
         _section_current_directive(conn, problem),
-        _section_plan_note(conn, workspace, problem, group_id),
+        _section_plan_note(conn, workspace, problem, group_id,
+                           attempts_dir=attempts_dir),
         _section_inject_batch_outcomes(conn, problem,
                                        workspace=workspace,
                                        group_id=group_id,

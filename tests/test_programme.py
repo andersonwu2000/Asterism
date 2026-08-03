@@ -90,6 +90,15 @@ def test_length_warning_thresholds():
     assert warn and "ARGUMENT LENGTH WARNING" in warn
     assert "PROOF LENGTH" not in warn
 
+    # Roadmap-specific warn (2026-08-04, SLC growth curve: ~600B/rev
+    # with closed arcs still itemized) — fires below the blunt
+    # whole-document threshold.
+    body = _body(roadmap="r" * (programme.ROADMAP_WARN_CHARS + 1))
+    long_rm, _ = programme.parse_proposal(body)
+    warn = programme.length_warning(long_rm, body)
+    assert warn and "ROADMAP LENGTH WARNING" in warn
+    assert "PROPOSAL LENGTH" not in warn and "PROOF LENGTH" not in warn
+
     body = _body(roadmap="r" * (programme.DOC_WARN_CHARS + 1))
     long_doc, _ = programme.parse_proposal(body)
     warn = programme.length_warning(long_doc, body)

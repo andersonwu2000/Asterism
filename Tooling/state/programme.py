@@ -37,6 +37,13 @@ PROGRAMME_BASENAME = "PROGRAMME.md"
 # healthy 4.8×).
 PROOF_WARN_CHARS = 10_000
 ARGUMENT_WARN_CHARS = 3_000
+#: The Roadmap may be the largest section (it is the route, the only
+#: home for gaps, AND the closure ledger) — so its threshold matches the
+#: Proof's, not the Argument's. Chosen against the SLC growth curve
+#: (2026-08-04): 4.1K→6.1K→9.6K→11.3K over 13 revs at ~600B/rev, with
+#: closed arcs still itemized — 10K fires exactly when distillation is
+#: overdue, and before the blunt 25K whole-document warning.
+ROADMAP_WARN_CHARS = 10_000
 DOC_WARN_CHARS = 25_000
 
 _SECTION_ORDER = ("## Argument", "## Proof", "## Roadmap")
@@ -191,6 +198,14 @@ def length_warning(sections: dict[str, str],
             f"{ARGUMENT_WARN_CHARS}). The Argument says why THIS batch "
             "— one screen. Cut narrative; mathematics belongs in the "
             "Proof, the route in the Roadmap.")
+    r = len(sections.get("roadmap", ""))
+    if r > ROADMAP_WARN_CHARS:
+        warns.append(
+            f"⚠ ROADMAP LENGTH WARNING: {r} chars (threshold "
+            f"{ROADMAP_WARN_CHARS}). Distill the settled: a closed line "
+            "collapses to its conclusion, a dead instantiation to one "
+            "closure line with its restart condition. Entries carried "
+            "verbatim across revisions are the mass to cut.")
     d = len(body) if body is not None else sum(
         len(v) for v in sections.values())
     if d > DOC_WARN_CHARS:

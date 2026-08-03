@@ -1049,6 +1049,34 @@ def test_plan_note_section_renders_and_warns_over_cap(
         encoding="utf-8")
 
 
+def test_plan_note_is_lazy_when_attempts_dir_given(
+    workspace: Path, conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """2026-08-04 operator ruling (#2 context growth source): with an
+    attempts_dir the full note rides as `_plan_full.md` beside
+    Context.md; inline keeps only the provenance line, the pointer,
+    and the `SUSPECT:` lines. Without an attempts_dir (legacy callers)
+    the full inline render stands."""
+    from Tooling.pipeline import _drafts
+    _insert_problem(conn)
+    pdir = workspace / "Problems" / "p"
+    (pdir / ".drafts").mkdir(parents=True, exist_ok=True)
+    note = ("## Facts\n- lemma A proved (s12)\n"
+            "- SUSPECT: the wall is only in the g=2 case\n"
+            "long body " * 50)
+    _drafts.plan_note_path(pdir).write_text(note, encoding="utf-8")
+    att = tmp_path / "att"
+    att.mkdir()
+    text = "\n".join(phase2_context._section_plan_note(
+        conn, workspace, "p", attempts_dir=att))
+    companion = att / phase2_context.PLAN_NOTE_COMPANION
+    assert companion.read_text(encoding="utf-8") == note
+    assert "_plan_full.md" in text
+    assert "SUSPECT: the wall is only in the g=2 case" in text
+    assert "long body" not in text          # the bulk stays lazy
+    assert "lemma A proved" not in text     # non-SUSPECT facts too
+
+
 def test_plan_note_carries_framework_provenance(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
