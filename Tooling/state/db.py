@@ -1674,6 +1674,15 @@ def groups_needing_t1(conn: sqlite3.Connection, *,
     group itself must still be `active` — a delivered / returned / closed
     group has no work and must not hold a seat.
 
+    A group with a live child group is WAITING, and a waiting group's
+    periodic clock is FROZEN (operator ruling 2026-08-03): the parent
+    delegated the work, so a routine there audits nothing and burns a
+    fable wake — three children working seven hours used to buy the
+    parent three empty routines. Event wakes (pending_review, the
+    batch-done relay when the delegate settles) are untouched; on the
+    last child's terminal transition `groups.set_status` restarts the
+    parent's cadence so the frozen time never counts as overdue.
+
     While only top groups exist this returns exactly one row per problem
     that `problems_needing_t1` would have named, so the switch is
     behaviour-preserving.
@@ -1690,6 +1699,9 @@ def groups_needing_t1(conn: sqlite3.Connection, *,
         "SELECT g.id, g.problem"
         " FROM groups g JOIN problems p ON p.name = g.problem"
         " WHERE p.ingested_at IS NULL AND g.status = 'active'"
+        "   AND NOT EXISTS (SELECT 1 FROM groups ch"
+        "                   WHERE ch.parent_group_id = g.id"
+        "                     AND ch.status = 'active')"
         f"   AND julianday('now') - {baseline_sql} > ?"
     )
     if scope is not None:

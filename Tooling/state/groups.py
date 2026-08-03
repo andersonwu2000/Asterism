@@ -377,6 +377,19 @@ def set_status(conn: sqlite3.Connection, group_id: int,
         filled = _db.propagate_inject_outcome_from_group(conn, int(group_id))
         if filled is not None:
             _db.maybe_enqueue_inject_batch_done(conn, filled)
+        # A parent with live children is WAITING and its routine clock
+        # is frozen (`groups_needing_t1` skips it). Restart the cadence
+        # here — the freeze's release point — so the waiting hours never
+        # read as overdue: without this, a 7-hour delegation would fire
+        # a routine the instant the last child settles, right on top of
+        # the batch-done relay wake that settling already enqueues.
+        parent_row = conn.execute(
+            "SELECT parent_group_id FROM groups WHERE id = ?",
+            (int(group_id),)).fetchone()
+        if parent_row is not None and parent_row["parent_group_id"] is not None:
+            conn.execute(
+                "UPDATE groups SET last_routine_at = ? WHERE id = ?",
+                (now(), int(parent_row["parent_group_id"])))
 
 
 def touch_strategist(conn: sqlite3.Connection, group_id: int, *,

@@ -1373,6 +1373,46 @@ def test_a_delivered_groups_programme_rides_up_as_a_companion(tmp_path):
     assert name not in bare
 
 
+def test_a_waiting_parents_routine_clock_is_frozen(tmp_path):
+    """Operator ruling 2026-08-03: a group with a live child group is
+    WAITING — it delegated the work, so a routine wake there audits
+    nothing. Its periodic clock must not come due while any child is
+    active; the child's own clock is unaffected."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.freeze")
+    top = groups.ensure_top_group(conn, p)
+    child = groups.open_group(conn, problem=p, parent_group_id=top,
+                              charter="C")
+    conn.commit()
+    due = {int(r["id"]) for r in db.groups_needing_t1(
+        conn, max_age_sec=0.0)}
+    assert top not in due          # waiting parent: frozen
+    assert child in due            # working child: its own cadence
+
+
+def test_child_settling_restarts_the_parents_cadence(tmp_path):
+    """The freeze releases through the one door: when the last child
+    reaches a terminal status, the parent's `last_routine_at` restarts —
+    the waiting hours never read as overdue, so no routine fires on top
+    of the batch-done relay the settling already enqueues."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.thaw")
+    top = groups.ensure_top_group(conn, p)
+    child = groups.open_group(conn, problem=p, parent_group_id=top,
+                              charter="C")
+    conn.execute("UPDATE groups SET last_routine_at = '2020-01-01'"
+                 " WHERE id = ?", (top,))
+    conn.commit()
+    groups.set_status(conn, child, "delivered", event="group_delivered")
+    conn.commit()
+    due = {int(r["id"]) for r in db.groups_needing_t1(
+        conn, max_age_sec=3600.0)}
+    assert top not in due          # cadence restarted, not overdue
+    ts = conn.execute("SELECT last_routine_at FROM groups WHERE id = ?",
+                      (top,)).fetchone()[0]
+    assert ts > "2020-01-01"
+
+
 def test_promoting_a_parked_goal_to_an_anchor_is_a_declared_edge(tmp_path):
     """"This goal keeps failing — give it a group" is the documented
     rescue entry point, and the states it starts from are the parked

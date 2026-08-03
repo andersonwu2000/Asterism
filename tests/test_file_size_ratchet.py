@@ -308,7 +308,10 @@ _WATERMARKS = {
     # 3540→3660 (2026-08-02): v35 group-scoped stall — `is_group_stalled`
     # + `_group_quiet` + `groups_stalled`, and the authoring-group clause
     # the two in-flight predicates share. Conscious bump.
-    "Tooling/state/db.py": 3660,
+    # 3660→3670 (2026-08-03): waiting-parent routine freeze — the
+    # active-children NOT EXISTS clause in `groups_needing_t1` and its
+    # freeze-semantics docstring (operator ruling). Conscious bump.
+    "Tooling/state/db.py": 3670,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,
