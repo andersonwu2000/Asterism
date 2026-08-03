@@ -315,7 +315,9 @@ _WATERMARKS = {
     # 3660→3670 (2026-08-03): waiting-parent routine freeze — the
     # active-children NOT EXISTS clause in `groups_needing_t1` and its
     # freeze-semantics docstring (operator ruling). Conscious bump.
-    "Tooling/state/db.py": 3670,
+    # 3670→3680 (2026-08-04): `is_in_queue` poison-row exclusion (the
+    # 08-03 stall class, dedup edge). Conscious bump.
+    "Tooling/state/db.py": 3680,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,

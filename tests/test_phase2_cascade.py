@@ -1406,6 +1406,37 @@ def test_strategist_infra_retry_never_enqueues_a_poison_row(
     assert "SKIPPED re-queue" in captured.out
 
 
+def test_is_in_queue_ignores_poison_rows(conn: sqlite3.Connection) -> None:
+    """The deadlock's second edge: a scoped pop can never dispatch an
+    empty-problem row, so counting it as 'in queue' converts one bad
+    row into permanent T1/T4 suppression for its target."""
+    conn.execute(
+        "INSERT INTO queue (kind, target_id, target_kind, priority,"
+        " problem, created_at) VALUES ('Strategist', '42', 'Group', 10,"
+        " '', ?)", (db.now(),))
+    conn.commit()
+    assert db.is_in_queue(conn, target_id="42", kind="Strategist") is False
+
+
+def test_recovery_sweeps_poison_rows_regardless_of_scope(
+    conn: sqlite3.Connection, capsys,
+) -> None:
+    """recovery's scoped clean filters `problem LIKE scope`, which is
+    exactly why the 08-03 poison row survived every restart — an empty
+    problem matches no scope. The poison sweep must run scope-blind."""
+    from Tooling.state import recovery
+    conn.execute(
+        "INSERT INTO queue (kind, target_id, target_kind, priority,"
+        " problem, created_at) VALUES ('Strategist', '42', 'Group', 10,"
+        " '', ?)", (db.now(),))
+    conn.commit()
+    recovery.recover_at_startup(conn, scope="Some.other_problem")
+    n = conn.execute(
+        "SELECT COUNT(*) FROM queue WHERE problem = ''").fetchone()[0]
+    assert n == 0
+    assert "POISON" in capsys.readouterr().out
+
+
 def test_cascade_strategist_success_does_not_re_enqueue(
     conn: sqlite3.Connection,
 ) -> None:

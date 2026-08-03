@@ -3106,8 +3106,13 @@ def is_in_queue(conn: sqlite3.Connection, *, target_id: str,
     every refill-side dedup re-enqueues a duplicate while it runs. Same-
     process live-pipeline check additionally lives in dispatcher's
     in-memory _running set."""
+    # Empty-problem rows are POISON (2026-08-03 stall): a scoped pop can
+    # never dispatch them, so counting them here turns one bad row into
+    # a permanent T1/T4 suppression for its target. A poison row must
+    # not read as "in queue".
     row = conn.execute(
-        "SELECT 1 FROM queue WHERE target_id = ? AND kind = ? LIMIT 1",
+        "SELECT 1 FROM queue WHERE target_id = ? AND kind = ?"
+        " AND problem IS NOT NULL AND problem != '' LIMIT 1",
         (target_id, kind),
     ).fetchone()
     return row is not None

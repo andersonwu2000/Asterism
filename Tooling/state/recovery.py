@@ -77,6 +77,19 @@ def recover_at_startup(conn: sqlite3.Connection,
     # Unscoped (scope=None) still means "the whole workspace is mine", but
     # live leases are respected even then.
     from ..agent.sandbox import _pid_alive
+    # Poison rows first, scope-blind: a row with an empty `problem`
+    # belongs to NO scope, so the scoped clean below can never reach it
+    # — which is how one survived every restart on 08-03 and, via
+    # `is_in_queue`, suppressed T1+T4 for its group for 3h20m. Any
+    # startup may delete them: they are undispatchable under every
+    # scoped pop and re-derivable by whoever legitimately needs a wake.
+    poison = conn.execute(
+        "DELETE FROM queue WHERE problem IS NULL OR problem = ''"
+    ).rowcount
+    if poison:
+        print(f"[dispatcher] recovery: swept {poison} POISON queue "
+              f"row(s) with an empty problem — see the 2026-08-03 "
+              f"stall post-mortem", flush=True)
     _scope_sql = "" if scope is None else " AND problem LIKE ?"
     _scope_args: tuple = () if scope is None else (scope,)
     queue_cleared = conn.execute(
