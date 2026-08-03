@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-02
+- Designed and introduced a tree structure for organizing the collaborative discussion groups that work on a proof, then closed eleven gaps an independent review found and folded the design into the documentation.
+- Extended the web interface so a proof attempt's argument can be read live while it is still running, following the new group structure.
+- Fixed an assortment of smaller bugs in prompt wording, database schema, and run bookkeeping, including pinning each worker to the exact revision that authorized its goal.
+- Repaired seven tests that had silently become unable to fail and added coverage for a tie-breaking edge case.
+
 ### 2026-08-01
 - Fixed a bug where the root goal of a frozen proof attempt was not recognized as ready for dispatch, and made sure the adversarial reviewer now receives the full context document when judging results.
 - Gave each spawned language-model agent its own restricted set of permissions, realized as an isolated per-agent environment.
@@ -228,12 +234,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Centralized the check that marks a theorem as proved at a single chokepoint and closed a gap where declarations containing incomplete proofs could slip past validation.
 - Reworked task scheduling so each problem is tracked through to one well-defined terminal state, with the database schema and tests updated to match.
 - Hardened the infrastructure with startup checks of the framework's assumptions about Lean's interface, a crash-consistency audit, unified configuration handling, and refactored scheduling, retry, and proof-assembly plumbing.
-
-### 2026-07-03
-- Extended the axiom-soundness check to run at more decision points, including after every rewrite that follows a library merge, so no proof is accepted that silently depends on extra axioms.
-- Funneled all remaining proof and status writes through single checked entry points, adding a lint rule to keep unaudited writes from creeping back in.
-- Fixed several bugs in merging finished proofs into the shared library, including mishandled universe declarations, false duplicate detection, and aliases that lost modifiers or could not be cited.
-- Rewrote the architecture documentation to match actual system behavior and tightened rules around how pipelines claim and use work slots.
 
 <!-- ASTERISM-PROGRESS:END -->
 
