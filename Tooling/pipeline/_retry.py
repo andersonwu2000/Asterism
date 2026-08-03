@@ -193,6 +193,7 @@ class SpawnCtx:
 
 def _build_fresh_rescue_stage2_prompt(
     attempts_dir: Path, jsonl_copied: bool, rescue_min: int,
+    template: str = "_shared/fresh_rescue_stage2.md",
 ) -> str:
     """Stage-2 prompt: agent Reads broken jsonl, ships-or-bails.
 
@@ -219,7 +220,7 @@ def _build_fresh_rescue_stage2_prompt(
             "The previous session's log was not recoverable. Work "
             f"from `{attempts_dir}/Context.md` alone."
         )
-    return _render_prompt("_shared/fresh_rescue_stage2.md",
+    return _render_prompt(template,
                           LOG_NOTE=log_note,
                           ATTEMPTS_DIR=str(attempts_dir),
                           RESCUE_MIN=str(rescue_min))
@@ -377,6 +378,7 @@ def _run_fresh_sid_combined_takeover(
     attempts_dir: Path, workspace: Path | None,
     spawn_fn: SpawnFn, parse_fn: ParseFn,
     postmortem_fn: "PostmortemFn | None" = None,
+    rescue_template: str = "_shared/fresh_rescue_stage2.md",
 ) -> _TakeoverOutcome:
     """Single-stage fresh-sid takeover used by both thinking-trap
     paths (watchdog STUCK_THINKING and subprocess timeout-trap).
@@ -414,7 +416,8 @@ def _run_fresh_sid_combined_takeover(
     # (option d: write `_progress.md` only). The agent gets ~7 min
     # to either ship or write progress note.
     combined_prompt = _build_fresh_rescue_stage2_prompt(
-        attempts_dir, jsonl_copied, combined_min)
+        attempts_dir, jsonl_copied, combined_min,
+        template=rescue_template)
     sid_combined = str(uuid.uuid4())
     print(f"[fresh-rescue combined] broken_sid={broken_sid[:8]} → "
           f"fresh_sid={sid_combined[:8]} budget={combined_budget}s "
@@ -565,8 +568,16 @@ def run_with_session_retries(
     death_fn: "DeathFn | None" = None,
     decision_id: int | None = None,
     initial_sid: str | None = None,
+    rescue_template: str = "_shared/fresh_rescue_stage2.md",
 ) -> PipelineResult:
     """Run a kind-agnostic in-pipeline retry loop.
+
+    `rescue_template`: the fresh-sid takeover's ship-or-bail menu. The
+    default menu is GOAL-job shaped (patch.lean / stubs / leaf-bypass);
+    a pipeline whose parse reads different artifacts (Forward mint:
+    `new_forward.lean` only) must pass its own template, or every
+    rescue ships files the parse never looks at (feedback 107 — mint
+    rescues were structurally unable to succeed).
 
     `initial_sid` (staged pipeline, Formalizer): a session the caller
     already opened (intake turn). The first spawn resumes it as a
@@ -917,6 +928,7 @@ def run_with_session_retries(
                     attempts_dir=attempts_dir, workspace=workspace,
                     spawn_fn=spawn_fn, parse_fn=parse_fn,
                     postmortem_fn=postmortem_fn,
+                    rescue_template=rescue_template,
                 )
                 sid = outcome.last_sid
                 if outcome.terminal_result is not None:
@@ -987,6 +999,7 @@ def run_with_session_retries(
                 attempts_dir=attempts_dir, workspace=workspace,
                 spawn_fn=spawn_fn, parse_fn=parse_fn,
                 postmortem_fn=postmortem_fn,
+                rescue_template=rescue_template,
             )
             sid = outcome.last_sid
             if outcome.terminal_result is not None:
@@ -1054,6 +1067,7 @@ def run_lsp_edit_loop(
     decision_id: int | None = None,
     release_session_after: bool = False,
     initial_sid: str | None = None,
+    rescue_template: str = "_shared/fresh_rescue_stage2.md",
 ) -> PipelineResult:
     """Shared LSP edit-mode spawn loop — the one place the cold-seed +
     `_write_mcp_config` + `spawn_llm` + `run_with_session_retries` +
@@ -1110,7 +1124,7 @@ def run_lsp_edit_loop(
             postmortem_fn=postmortem_fn or (lambda _sid: None),
             workspace=workspace, reflection_fn=reflection_fn,
             feedback_fn=feedback_fn, death_fn=death_fn, decision_id=decision_id,
-            initial_sid=initial_sid)
+            initial_sid=initial_sid, rescue_template=rescue_template)
     finally:
         if release_session_after:
             _release_session(attempts_dir)

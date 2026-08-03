@@ -1072,6 +1072,10 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
             feedback_fn=forward_feedback,
             decision_id=decision_id,
             initial_sid=intake_sid,
+            # Mint's parse reads `new_forward.lean` only — the default
+            # goal-shaped rescue menu (patch.lean / stubs / leaf-bypass)
+            # ships files this pipeline never looks at (feedback 107).
+            rescue_template="_shared/fresh_rescue_stage2_mint.md",
         )
     # #4 — surface a Forward decline's `## Why` to the originating Inject
     # decision so its next inject_batch_done wake reads WHY the brief was

@@ -56,6 +56,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 - Every Inject brief names its Roadmap entry: a `Roadmap: <entry phrase>` line.
 - Every Inject is proven in the Proof — inject only what is fully argued; anything short of rigorous closure stays in the Roadmap awaiting a later batch, or goes to a `Delegate`. The brief names that claim, restated as a precise mathematical statement; the worker settles the Lean shape — the claim must not drift.
 - Boldness lives in the Roadmap — name candidate constructions and hypotheses there, labeled as hypotheses; rigor lives in the Proof — a candidate enters it only once its argument is closed.
+- Name Roadmap entries by phrase, never by position — numbers change as revisions reorder entries.
 - Mark formal↔informal claims not yet kernel-checked in the Roadmap.
 - Every route-moving batch carries ≥1 experiment — an Inject, a `Delegate`, or an AttemptDisproof (Ingest batches exempt). Retiring work is not an experiment. An AttemptDisproof probes a doubt; its absence needs no defense.
 - Before submitting, re-check your ## Proof for correctness: every step's direction and quantifier scope, and any step that assumes structure the hypothesis does not give.

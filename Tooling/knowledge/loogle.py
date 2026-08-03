@@ -11,7 +11,13 @@ Agent-facing entry point (invoked through the restricted Bash tool):
     python -m Tooling.knowledge.loogle '?p.Prime → ∏ _ ∈ _, _ = -1'
 
 Output format: top-K matches, one per line:
-    <name>  ::  <type>  [<module>]
+    <name>  ::  <type>  [<module>]  [in pin]
+
+Every hit is annotated with PIN TRUTH (`pin_check`): loogle indexes
+live Mathlib, the project builds a pinned revision, and the gap
+shipped two phantom-lemma deliverables (task #149). The annotation is
+mechanical (elaborator probe, cached per pin), so "loogle showed it"
+and "the pin has it" can never drift apart again.
 
 `header` line preserved so agent sees Loogle's parse hint when 0
 matches. On network failure: prints diagnosis to stderr, rc=1 so
@@ -75,6 +81,9 @@ def _format(data: dict, *, limit: int) -> str:
     if not hits:
         out.append("(no hits — try a less specific or different pattern)")
         return "\n".join(out)
+    shown = [h.get("name", "?") for h in hits[:limit]]
+    from . import pin_check
+    verdicts = pin_check.check_names(shown)
     out.append(f"--- showing {min(limit, len(hits))} of {count} hits ---")
     for h in hits[:limit]:
         name = h.get("name", "?")
@@ -84,7 +93,14 @@ def _format(data: dict, *, limit: int) -> str:
             typ = typ.lstrip(":").strip()
         module = h.get("module", "?")
         # Single-line per hit; agent reads this top-down
-        out.append(f"{name}  ::  {typ}  [{module}]")
+        out.append(f"{name}  ::  {typ}  [{module}]  "
+                   f"{pin_check.label(verdicts.get(name))}")
+    if any(v is False for v in verdicts.values()):
+        out.append(
+            "NOTE: loogle indexes LIVE Mathlib; this project builds a "
+            "pinned older revision. `NOT in pin under this name` means "
+            "the fully-qualified name does not elaborate against the "
+            "pin — do not cite it; search the pin for the analogue.")
     return "\n".join(out)
 
 

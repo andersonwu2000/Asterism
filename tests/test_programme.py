@@ -301,54 +301,36 @@ def test_rev_for_goal_takes_the_latest_authorisation_at_the_same_depth(
 
 # ------------------------------------------- Roadmap citation rejection
 
-def _reject(roadmap: str, cite: str, tmp_path: Path) -> str:
-    """The `Roadmap: <phrase>` gate's rejection text for a brief citing
-    `cite` against a proposal whose `## Roadmap` is `roadmap`."""
+def test_roadmap_tag_content_is_never_string_matched(tmp_path):
+    """The `Roadmap:` line's CONTENT is a semantic citation the
+    Adversary judges — the verifier must not test it against the
+    free-prose Roadmap. The old plain-substring gate was free-text
+    detection (forbidden by the design rules) and bounced whole
+    batches five times over phrasing (2026-08-03 feedback #4,
+    operator ruling: the Roadmap stays pure NL)."""
     from types import SimpleNamespace
     from Tooling.pipeline import strategist
+    roadmap = "**Dispatched this batch: the root Inject.**"
     (tmp_path / "proposal.md").write_text(
         _body(roadmap=roadmap), encoding="utf-8")
     d = SimpleNamespace(kind="Inject", target_id=None,
-                        brief=f"Roadmap: {cite}\n## Need\nx")
-    _body_txt, _sections, err = strategist.verify_proposal_package(
-        [d], tmp_path)
-    assert err, "expected the citation gate to reject"
-    return err
+                        brief="Roadmap: Genus-1 model — Brick 1, "
+                              "the gluing word\n## Need\nx")
+    _b, _s, err = strategist.verify_proposal_package([d], tmp_path)
+    assert err is None, f"phrase mismatch must not bounce a batch: {err}"
 
 
-def test_roadmap_rejection_always_offers_phrases(tmp_path):
-    """A blocked brief must be shown what WOULD be accepted.
-
-    The offer list used to be entry-shaped lines only, so a Roadmap
-    written as a bold paragraph — or with a `4-7.` range head whose en
-    dash breaks the numbered-entry regex — offered nothing, the tail
-    vanished, and the
-    rejection became a pure prohibition. Two Strategist wakes each lost a
-    round-trip inventing an entry-shape rule that does not exist
-    (2026-08-02 feedback x2)."""
-    for roadmap in ("**Dispatched this batch: the root Inject.**",
-                    "4–7. *dst basics* — comm, nonneg, sq",
-                    "plain prose with no marker at all"):
-        err = _reject(roadmap, "nothing like this", tmp_path)
-        assert "Phrases your `## Roadmap` offers:" in err, roadmap
-        assert "no entry shape is required" in err, roadmap
-
-
-def test_roadmap_offered_phrases_are_accepted_verbatim(tmp_path):
-    """Every phrase the rejection offers must itself pass the gate —
-    otherwise the way out it points at is a second dead end."""
+def test_roadmap_tag_line_is_still_required(tmp_path):
+    """Presence of the `Roadmap:` line is a structured signal and stays
+    mechanical: an Inject brief without one is rejected, and the
+    message says what to add."""
+    from types import SimpleNamespace
     from Tooling.pipeline import strategist
-    roadmap = ("**Dispatched: the root Inject.**\n"
-               "4–7. *dst basics* — comm, nonneg, sq\n"
-               "- the descent step\n")
-    for phrase in strategist._roadmap_entry_phrases(roadmap):
-        (tmp_path / "proposal.md").write_text(
-            _body(roadmap=roadmap), encoding="utf-8")
-        from types import SimpleNamespace
-        d = SimpleNamespace(kind="Inject", target_id=None,
-                            brief=f"Roadmap: {phrase}\n## Need\nx")
-        _b, _s, err = strategist.verify_proposal_package([d], tmp_path)
-        assert err is None, f"offered phrase {phrase!r} was rejected: {err}"
+    (tmp_path / "proposal.md").write_text(_body(), encoding="utf-8")
+    d = SimpleNamespace(kind="Inject", target_id=None,
+                        brief="## Need\nx")
+    _b, _s, err = strategist.verify_proposal_package([d], tmp_path)
+    assert err is not None and "Roadmap: <entry phrase>" in err
 
 
 # --------------------------------------------- Conventions (RS-B, 08-03)

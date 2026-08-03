@@ -134,11 +134,15 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
             "AttemptDisproof) — thinking runs inside the wake; the "
             "commit is how the argument touches the machine. (Endgame "
             "batches carrying MarkDeliverable/Ingest are exempt.)")
-    # P2 — every Inject brief names its Roadmap entry (parse-level
-    # existence check; experiments trace to the argument they test).
-    roadmap_lc = sections["roadmap"].lower()
+    # P2 — every Inject brief names its Roadmap entry. Presence of the
+    # `Roadmap:` line is a structured signal and stays mechanical;
+    # whether the cited phrase truly corresponds to a Roadmap entry is
+    # a SEMANTIC question and belongs to the Adversary (criteria 1/4).
+    # The old plain-substring match against the free-prose Roadmap was
+    # a gate detecting free text — the design rules forbid exactly that
+    # — and it bounced whole batches five times over phrasing
+    # (2026-08-03 feedback #4, operator ruling: Roadmap stays pure NL).
     missing: list[str] = []      # briefs with no `Roadmap:` line at all
-    unmatched: list[str] = []    # briefs whose phrase isn't in the Roadmap
     n = 0
     for d in decisions:
         if d.kind != "Inject":
@@ -153,79 +157,13 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
                 break
         if not tag:
             missing.append(label)
-        elif tag.lower() not in roadmap_lc:
-            unmatched.append(f"{label} cites `{tag}`")
-    # 07-29 feedback: reporting only the FIRST offender cost one
-    # rejection round-trip per brief when the mistake was systematic
-    # (all three briefs had prose appended to the entry phrase), and the
-    # message never showed which phrases would be accepted.
-    if missing or unmatched:
-        parts = []
-        if missing:
-            parts.append(
-                "these Inject briefs carry no `Roadmap: <entry phrase>` "
-                "line: " + ", ".join(missing))
-        if unmatched:
-            parts.append(
-                "these cite a phrase no `## Roadmap` line contains: "
-                + "; ".join(unmatched))
-        phrases = _roadmap_entry_phrases(sections["roadmap"])
-        tail = ("\nPhrases your `## Roadmap` offers: "
-                + " | ".join(f"`{p}`" for p in phrases)) if phrases else ""
+    if missing:
         return None, None, (
-            " — ".join(parts)
-            + ". The test is a plain substring match against your "
-              "`## Roadmap` section — no entry shape is required. Copy an "
-              "entry's leading phrase verbatim (no appended prose), or add "
-              "the entry. Fix every brief listed above."
-            + tail)
+            "these Inject briefs carry no `Roadmap: <entry phrase>` "
+            "line: " + ", ".join(missing)
+            + ". Every experiment names the Roadmap entry it tests — "
+              "add the line to each brief listed above.")
     return body, sections, None
-
-
-_ROADMAP_ENTRY_RE = _re.compile(r"^\s*(?:\d+[.)]|[-*])\s+(.+?)\s*$")
-
-
-def _clean_roadmap_phrase(text: str) -> str:
-    """Leading phrase of a Roadmap line: cut at the first dash, shed
-    surrounding emphasis and a trailing colon, bound the length.
-
-    Every step trims from an END only, which is what keeps the result a
-    SUBSTRING of the line — and the acceptance test is
-    substring-in-Roadmap, so a phrase offered here is always one the gate
-    accepts. Deleting `*` everywhere (the old `.replace`) failed that:
-    `4-7. *dst basics*` became `4-7. dst basics`, which appears nowhere in
-    the Roadmap, so the rejection's own remedy was a second dead end
-    (`test_roadmap_offered_phrases_are_accepted_verbatim`)."""
-    head = _re.split(r"\s+[—–-]{1,2}\s+", text, maxsplit=1)[0]
-    return head.strip().strip("*").strip().rstrip(":")[:80].strip()
-
-
-def _roadmap_entry_phrases(roadmap: str, cap: int = 12) -> list[str]:
-    """Citable phrases from the `## Roadmap`, for the rejection message's
-    'here is what would be accepted' tail. Heuristic and display-only —
-    the acceptance test stays substring-in-Roadmap.
-
-    Entry-shaped lines (`- x`, `3. x`) come first, then every other
-    non-heading line. Offering ONLY entry-shaped lines silently emptied
-    this list whenever the author's Roadmap used a shape the regex
-    misses — a bold paragraph, or a `4–7.` range head whose en dash
-    breaks `\\d+[.)]`. The tail then vanished and the rejection became a
-    pure prohibition: two Strategist wakes each spent a full round-trip
-    reverse-engineering an entry-shape rule that does not exist
-    (2026-08-02 feedback x2). A gate that blocks must show the way out."""
-    entries: list[str] = []
-    others: list[str] = []
-    for line in roadmap.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        m = _ROADMAP_ENTRY_RE.match(line)
-        head = _clean_roadmap_phrase(m.group(1) if m else stripped)
-        bucket = entries if m else others
-        if head and head not in bucket:
-            bucket.append(head)
-    out = entries + [p for p in others if p not in entries]
-    return out[:cap]
 
 
 def _format_rebuttal(verdict: dict, round_no: int,

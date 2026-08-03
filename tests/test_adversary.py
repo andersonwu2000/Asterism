@@ -111,37 +111,38 @@ def test_package_requires_file_and_experiment(tmp_path: Path):
     body, sections, err = strategist.verify_proposal_package(
         [_d("AttemptDisproof")], tmp_path)
     assert err is None
-    # Inject briefs must name an existing Roadmap entry (P2 check).
+    # Inject briefs must carry a `Roadmap:` line (P2 presence check).
     body, sections, err = strategist.verify_proposal_package(
         [_d("Inject", brief="## Need\nx")], tmp_path)
     assert body is None and "Roadmap:" in err
+    # The line's CONTENT is the Adversary's semantic call — the old
+    # substring match against the free-prose Roadmap is retired
+    # (2026-08-03 ruling: the Roadmap stays pure NL).
     body, sections, err = strategist.verify_proposal_package(
         [_d("Inject", brief="Roadmap: no such entry\n## Need\nx")],
         tmp_path)
-    assert body is None and "no such entry" in err
+    assert err is None
     body, sections, err = strategist.verify_proposal_package(
         [_d("Inject", brief="Roadmap: the brick\n## Need\nx")], tmp_path)
     assert err is None
 
 
 def test_roadmap_tag_rejection_lists_every_offender(tmp_path: Path):
-    """07-29 feedback: the check returned on the FIRST bad brief and
-    never showed the accepted phrases, so one systematic mistake cost a
-    rejection round-trip per brief. Report all offenders + echo the
-    Roadmap's own entry phrases."""
+    """07-29 feedback: report ALL offenders in one message, not one per
+    round-trip. Only MISSING lines offend now — a phrase that doesn't
+    substring-match the Roadmap is the Adversary's semantic call, not a
+    parse rejection (2026-08-03 ruling: the Roadmap stays pure NL)."""
     (tmp_path / "proposal.md").write_text(
         "# Step\n## Argument\nWhy.\n## Proof\nHolds.\n"
         "## Roadmap\n1. **the brick** — brief-ready\n"
         "2. **the wall** — later\n", encoding="utf-8")
     body, _s, err = strategist.verify_proposal_package(
         [_d("Inject", brief="Roadmap: the brick, then some prose\n## Need\nx"),
-         _d("Inject", target_id="g7", brief="Roadmap: also wrong\n## Need\ny"),
+         _d("Inject", target_id="g7", brief="## Need\ny"),
          _d("Inject", brief="## Need\nz")], tmp_path)
     assert body is None
-    assert "the brick, then some prose" in err and "also wrong" in err
-    assert "target `g7`" in err            # offenders identified
-    assert "Inject #3" in err              # the tagless one too
-    assert "`the brick`" in err and "`the wall`" in err  # accepted phrases
+    assert "target `g7`" in err and "Inject #3" in err   # both tagless ones
+    assert "the brick, then some prose" not in err       # phrase not policed
 
 
 # ------------------------------------------------- verdict contract
