@@ -437,9 +437,22 @@ def _slugify_ident(name: str) -> str:
 
 
 def _delegate_result_lines(conn: sqlite3.Connection,
-                           row: sqlite3.Row) -> list[str]:
+                           row: sqlite3.Row,
+                           attempts_dir: "Path | None" = None,
+                           ) -> list[str]:
     """What a finished sub-group handed back: the bricks the parent may
-    now cite, or the charter it returned and why."""
+    now cite, or the charter it returned and why.
+
+    RS-D (research_mission_design.md §3.3) — a delivered group's final
+    passed Programme revision is its NL report upward: what it came to
+    believe and why, in the child's own argued prose. Bricks alone are
+    the WHAT; the parent also needs the WHY to compose them without
+    re-deriving the child's reasoning. Rides as a lazy companion
+    (`PROGRAMME_G<id>.md`, same pattern as `BATCHES.md`), so nothing is
+    truncated and nothing is inlined. The judge projection re-renders
+    this section with `attempts_dir=proj`, so the judge gets the same
+    file. A returned group's plan note stays on disk as archaeology —
+    its upward report is the ReturnToParent post-mortem below."""
     gid = row["produced_group_id"]
     if gid is None:
         return ["  (the group row is gone; nothing to collect)"]
@@ -461,6 +474,8 @@ def _delegate_result_lines(conn: sqlite3.Connection,
         else:
             out.append("  delivered, but marked NO deliverable — nothing "
                        "to cite; check what it landed before building on it")
+        out += _delivered_programme_companion(conn, str(g["problem"]),
+                                              int(gid), attempts_dir)
         return out
     ret = conn.execute(
         "SELECT reason, payload FROM strategist_decisions"
@@ -490,6 +505,33 @@ def _delegate_result_lines(conn: sqlite3.Connection,
     if reason:
         out.append(f"  post-mortem: {reason}")
     return out
+
+
+def _delivered_programme_companion(conn: sqlite3.Connection, problem: str,
+                                   gid: int,
+                                   attempts_dir: "Path | None",
+                                   ) -> list[str]:
+    """Write `PROGRAMME_G<gid>.md` beside Context.md and return the
+    pointer lines. Best-effort: no rev (delivered before writing one)
+    or no attempts_dir (worker-facing render) → no pointer, silently."""
+    if attempts_dir is None:
+        return []
+    from ..state import programme as _programme
+    rev = _programme.current_rev(conn, problem, int(gid))
+    if rev is None:
+        return []
+    name = f"PROGRAMME_G{int(gid)}.md"
+    body = str(rev["body"] or "").strip()
+    text = (f"# Group {int(gid)} — final Programme (rev {rev['rev']})\n"
+            "_The delivered group's last passed revision: its own argued"
+            " account of what it established and why. Machine-copied per"
+            " spawn._\n\n" + body + "\n")
+    try:
+        (attempts_dir / name).write_text(text, encoding="utf-8")
+    except OSError:
+        return []
+    return [f"  its final Programme (rev {rev['rev']}) — the argued"
+            f" account behind those bricks: `{name}`, beside this file"]
 
 
 BATCHES_COMPANION = "BATCHES.md"
@@ -641,7 +683,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                 # Strategist only as a daemon log line: the parent read
                 # "a batch completed" and could not see which bricks it
                 # may now cite, nor why a charter came back.
-                out += _delegate_result_lines(conn, r)
+                out += _delegate_result_lines(conn, r, attempts_dir)
                 out.append("")
                 continue
             kind = str(r["produced_kind"] or "")

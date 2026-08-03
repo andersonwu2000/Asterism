@@ -1334,6 +1334,45 @@ def test_the_parent_sees_what_came_back(tmp_path):
     assert "the weaker bound" in body
 
 
+def test_a_delivered_groups_programme_rides_up_as_a_companion(tmp_path):
+    """RS-D — bricks are the WHAT; the child's final passed Programme
+    rev is the WHY, and the parent gets it whole as a lazy companion
+    (`PROGRAMME_G<id>.md`), never truncated inline."""
+    from Tooling.agent import phase2_context as ctx
+    from Tooling.state import programme
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.upward")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path, [S.Decision(kind="Delegate", brief="claim A")],
+            p, top)
+    child = int(groups.children(conn, top)[0]["id"])
+    body_text = ("## Focus\nthe claim\n\n## Proof\nbecause the lattice"
+                 " argument closes it\n\n## Roadmap\n1. done\n")
+    programme.record_pass(conn, p, body_text, {}, [], 1, None,
+                          group_id=child)
+    brick = _goal(conn, p, "brick", status="proved")
+    _mark(conn, p, brick, child)
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+    _commit(conn, tmp_path, [S.Decision(kind="Ingest")], p, child,
+            trigger="inject_batch_done")
+
+    attempts = tmp_path / ".attempts" / "wake"
+    attempts.mkdir(parents=True)
+    body = "\n".join(ctx._section_inject_batch_outcomes(
+        conn, p, group_id=top, attempts_dir=attempts))
+    name = f"PROGRAMME_G{child}.md"
+    assert name in body                          # pointer line inline
+    companion = (attempts / name).read_text(encoding="utf-8")
+    assert "the lattice argument closes it" in companion
+    # Worker-facing renders pass no attempts_dir — no pointer, no file.
+    bare = "\n".join(ctx._section_inject_batch_outcomes(
+        conn, p, group_id=top))
+    assert name not in bare
+
+
 def test_promoting_a_parked_goal_to_an_anchor_is_a_declared_edge(tmp_path):
     """"This goal keeps failing — give it a group" is the documented
     rescue entry point, and the states it starts from are the parked
