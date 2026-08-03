@@ -103,6 +103,15 @@ const STRATEGIST_MODE: Record<string, string> = {
   routine: 'fresh eyes on the whole problem — auditing its beliefs, then re-deciding the plan',
 }
 
+/** The wake's first turn (2026-08-03): before it plans anything the
+ * strategist does the bookkeeping — which finished results are the
+ * problem's claims, which cited papers to pull. Un-judged and
+ * mechanical, and it can hold the seat for minutes, which is why the
+ * lane has to say it: the console showed "nothing on disk yet" for
+ * the whole turn, its worst possible reading of a working machine. */
+const ADMIN_TURN_LINE =
+  'putting the record straight first — marking finished claims, pulling cited papers; the planning turn follows'
+
 /** The proposal↔reviewer cycle, narrated (research mode): the
  * strategist's main deliverable is the Programme, and the argument
  * with the adversarial reviewer lives in files the plan note never
@@ -258,6 +267,18 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
           {renderInline(w.group.charter, `ch${w.group.id}`)}
         </div>
       )}
+      {/* a status line, not a fallback: the admin turn often runs with
+          the PREVIOUS wake's plan note still on disk, and the lane
+          would then tail that old file and say nothing about the turn
+          actually running */}
+      {w.kind === 'Strategist' && w.stage === 'admin' && (
+        <div
+          className="mt-1.5 text-[11px] text-ink-dim"
+          title="engine term: the wake's admin turn — registry operations only (marking deliverables, fetching papers), un-judged; the adversary reviews the mathematics turn that follows"
+        >
+          {ADMIN_TURN_LINE}
+        </div>
+      )}
       {w.kind === 'Strategist' && w.cycle && <CycleLine cycle={w.cycle} />}
       {w.file ? (
         // the tail folds away (owner: the sky owns the space) — the
@@ -297,8 +318,10 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
       ) : (
         <div className="mt-2 text-[11px] text-ink-faint">
           {w.kind === 'Strategist'
-            ? (STRATEGIST_MODE[w.mode ?? ''] ??
-              'reading the state, deciding the next moves — nothing on disk yet')
+            ? w.stage === 'admin'
+              ? '' /* the status line above already says what this turn is */
+              : (STRATEGIST_MODE[w.mode ?? ''] ??
+                'reading the state, deciding the next moves — nothing on disk yet')
             : /* one worker turns the argued proof into Lean since the
                  v33 merge; Forward/Backward/Builder lanes only appear
                  on historical rows now */

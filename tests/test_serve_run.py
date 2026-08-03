@@ -271,6 +271,42 @@ def test_run_strategist_lane_names_its_group_not_a_row_id(
     assert lane["group"]["charter"] == "settle the pigeonhole bound"
 
 
+def test_run_strategist_lane_names_the_admin_turn(
+        workspace: Path, monkeypatch) -> None:
+    """The wake runs in two turns (2026-08-03): the ADMIN turn works in
+    `<workarea>/admin/` and the wake's OWN Context.md is not compiled
+    until it finishes. The lane matched workareas by that root file
+    only, so for the whole admin turn — up to
+    `strategist.admin_timeout_sec`, ten minutes — the console found no
+    workarea and said "nothing on disk yet" about a working machine."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    db.enqueue(conn, kind="Strategist", target_id="p",
+               target_kind="Problem", problem="p")
+    conn.execute("UPDATE queue SET owner_pid = 4321, leased_at = ?"
+                 " WHERE kind = 'Strategist'", (db.now(),))
+    conn.commit()
+    conn.close()
+    wa = workspace / ".attempts" / "wake-1"
+    (wa / "admin").mkdir(parents=True)
+    (wa / "admin" / "Context.md").write_text(
+        "# Admin context — p\n\n## Deliverables\n\nMarked: (none)\n",
+        encoding="utf-8")
+    _fake_daemon(monkeypatch, scope="p")
+
+    lane = _client(workspace).get("/api/run").json()["workers"][0]
+    assert lane["kind"] == "Strategist"   # one seat, two turns
+    assert lane["stage"] == "admin"
+
+    # the wake's own context lands → the lane moves to the math turn
+    (wa / "Context.md").write_text(
+        "# Strategist context — p\n\n## Trigger\n\n"
+        "`trigger_kind`: routine\n", encoding="utf-8")
+    lane = _client(workspace).get("/api/run").json()["workers"][0]
+    assert lane["stage"] == "math"
+    assert lane["mode"] == "routine"
+
+
 def test_run_sibling_group_lanes_do_not_swap_thinking(
         workspace: Path, monkeypatch) -> None:
     """v35 — sibling groups run concurrently BY DESIGN, so one problem

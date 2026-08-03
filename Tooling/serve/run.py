@@ -120,14 +120,26 @@ def _pick_group_workarea(conn: sqlite3.Connection, cands: list,
     return cands[0]
 
 
-def _scratch_drafts(workspace: Path) -> "list[tuple[str, str, float, Path]]":
-    """(kind, problem, ctx_mtime, dir) for each live agent workarea
-    under `.attempts/`, identified by its Context.md title line. A
-    Forward worker's bricks live ONLY here until they land (no goal
-    row, no lean_path — its lane looked forever idle while the LSP was
-    hard at work; owner, 2026-07-09). Presentation only: a workarea
-    rmtree'd mid-scan just drops out."""
-    out: list[tuple[str, str, float, Path]] = []
+#: The strategist wake runs in two turns (2026-08-03): the ADMIN turn
+#: works in `<workarea>/admin/` and the wake's own Context.md is not
+#: compiled until it finishes. Its title says `Admin`, and the lane it
+#: belongs to is the Strategist's — the two turns are one seat.
+_ADMIN_SUBDIR = "admin"
+
+
+def _scratch_drafts(workspace: Path) -> "list[tuple[str, str, float, Path, str]]":
+    """(kind, problem, ctx_mtime, dir, stage) for each live agent
+    workarea under `.attempts/`, identified by its Context.md title
+    line. A Forward worker's bricks live ONLY here until they land (no
+    goal row, no lean_path — its lane looked forever idle while the LSP
+    was hard at work; owner, 2026-07-09). Presentation only: a workarea
+    rmtree'd mid-scan just drops out.
+
+    `stage` is 'admin' while the wake is in its first turn (registry
+    work, up to `strategist.admin_timeout_sec` — ten minutes of blank
+    lane before this), else ''.
+    """
+    out: list[tuple[str, str, float, Path, str]] = []
     try:
         entries = list((workspace / ".attempts").iterdir())
     except OSError:
@@ -135,14 +147,20 @@ def _scratch_drafts(workspace: Path) -> "list[tuple[str, str, float, Path]]":
     for d in entries:
         if d.name.startswith("_") or not d.is_dir():
             continue
-        ctx = d / "Context.md"
-        try:
-            with ctx.open(encoding="utf-8", errors="replace") as f:
-                m = _CTX_TITLE_RE.match(f.readline())
-            if m:
-                out.append((m.group(1), m.group(2), ctx.stat().st_mtime, d))
-        except OSError:
-            continue
+        for sub, stage in ((d, ""), (d / _ADMIN_SUBDIR, "admin")):
+            ctx = sub / "Context.md"
+            try:
+                with ctx.open(encoding="utf-8", errors="replace") as f:
+                    m = _CTX_TITLE_RE.match(f.readline())
+                if m is None:
+                    continue
+                # the admin turn's own title is `Admin context — …`; the
+                # LANE it belongs to is the Strategist's seat
+                kind = "Strategist" if stage == "admin" else m.group(1)
+                out.append((kind, m.group(2), ctx.stat().st_mtime, d, stage))
+                break  # the wake's own context wins once it exists
+            except OSError:
+                continue
     out.sort(key=lambda t: t[2])
     return out
 
@@ -421,6 +439,10 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                 # Strategist only: WHY it woke (trigger_kind from its
                 # Context.md) — 'reviewing results' vs 'routine look'
                 "mode": None,
+                # Strategist only: WHICH TURN of the wake this is —
+                # 'admin' (registry pass) or 'math' (the judged loop).
+                # Null on other kinds and on a pre-split workarea.
+                "stage": None,
             }
             if r["lean_path"]:
                 rel = str(r["lean_path"])
@@ -474,6 +496,7 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                     # says which mode this think is, not just "thinking"
                     # (owner, 2026-07-12). Read-side only, like the title.
                     if lane["kind"] == "Strategist":
+                        lane["stage"] = match[4] or "math"
                         try:
                             head = (match[3] / "Context.md").read_text(
                                 encoding="utf-8", errors="replace")[:4000]
