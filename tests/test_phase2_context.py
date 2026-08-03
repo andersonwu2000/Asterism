@@ -1411,3 +1411,43 @@ def test_batch_outcomes_still_render_without_an_attempts_dir(
     text = "\n".join(
         phase2_context._section_inject_batch_outcomes(conn, "p"))
     assert "INLINEMARK" in text
+
+
+def test_workers_receive_conventions_on_both_dispatch_paths(
+    workspace: Path, conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """RS-B: the Conventions section reaches BOTH worker shapes.
+
+    Goal jobs resolve through the goal's owning group; mints resolve
+    through the Inject decision's authoring group. The mint path matters
+    doubly: the old directive was never in the mint section list at all
+    — SLC's namespace convention was briefed, unfollowed, and retired as
+    'unfollowed' while a brick died on exactly that gap."""
+    from Tooling.state import programme, groups
+    from Tooling.agent import context as worker_context
+    _insert_problem(conn)
+    top = groups.ensure_top_group(conn, "p")
+    programme.record_pass(
+        conn, "p",
+        "# T\n## Argument\na\n## Proof\np\n## Roadmap\nr\n"
+        "## Conventions\nNEVER nest a namespace\n",
+        verdict={}, dialogue=[], rounds=0, batch_id=None, group_id=top)
+
+    # Mint path: decision row carries the authoring group.
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, brief, payload,"
+        " created_at, updated_at)"
+        " VALUES ('p', 0, 'routine', 'Inject', ?, '## Need\nx', '{}',"
+        " ?, ?)", (top, db.now(), db.now()))
+    did = int(cur.lastrowid)
+    conn.commit()
+    lines = phase2_context._section_conventions_for_decision(conn, "p", did)
+    text = "\n".join(lines)
+    assert "NEVER nest a namespace" in text
+
+    # Goal-job path: goal → owning group → same conventions.
+    gid = _insert_root(conn)
+    lines2 = worker_context._section_strategist_directive(
+        conn, "p", goal_id=gid)
+    assert "NEVER nest a namespace" in "\n".join(lines2)

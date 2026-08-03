@@ -684,22 +684,29 @@ def test_event_trigger_never_bumps_routine_clock(
     assert p["last_routine_at"] is None
 
 
-def test_commit_emitdirective_writes_problem_directive(
+def test_emitdirective_is_retired_at_verify_and_fenced_at_commit(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
+    """RS-B (research_mission_design.md §3.1): standing worker guidance
+    moved into the Programme's `## Conventions` section. Verify teaches
+    the successor; the commit branch is a loud fence, not a writer —
+    reaching it means a verify path let the retired kind through."""
     _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "EmitDirective", "scope": "problem:p",
         "body": "Prefer L_x", "reason": "shift",
     }))
-    strategist.commit_decision(
-        d, conn, problem="p", tick=1, trigger_kind="routine",
-        workspace=workspace,
-    )
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert "retired" in err and "## Conventions" in err
+    with pytest.raises(RuntimeError, match="retired"):
+        strategist.commit_decision(
+            d, conn, problem="p", tick=1, trigger_kind="routine",
+            workspace=workspace,
+        )
     p = conn.execute(
         "SELECT strategist_directive FROM problems WHERE name='p'"
     ).fetchone()
-    assert p["strategist_directive"] == "Prefer L_x"
+    assert not (p["strategist_directive"] or "")
 
 
 def test_commit_inject_forward_enqueues_with_decision_id(
@@ -1061,14 +1068,24 @@ def test_synchronous_decisions_write_outcome_success_at_commit(
     db.update_goal_status(conn, sub, "shelved")
     conn.commit()
 
-    # ConfirmShelve + Reopen + EmitDirective + Noop, paired with an
-    # Inject so they all carry a shared batch_id (worst-case shape).
+    # ConfirmShelve + MarkDeliverable + Noop, paired with an Inject so
+    # they all carry a shared batch_id (worst-case shape).
+    # MarkDeliverable stands where the retired EmitDirective used to
+    # (RS-B): a synchronous sibling whose row must not wedge the batch
+    # NULL-open.
+    proved = db.insert_goal(
+        conn, problem="p", slug="done_brick",
+        lean_path="Problems/p/proofs/L_done_brick.lean", statement="T",
+        origin="forward",
+    )
+    db.update_goal_status(conn, proved, "proved")
+    conn.commit()
     cs, _ = strategist.parse_decision(json.dumps({
         "kind": "ConfirmShelve", "target_goal_id": sub, "reason": "x",
     }))
     ed, _ = strategist.parse_decision(json.dumps({
-        "kind": "EmitDirective", "scope": "problem:p",
-        "body": "Note.", "reason": "doc",
+        "kind": "MarkDeliverable", "target_goal_id": proved,
+        "reason": "doc",
     }))
     noop, _ = strategist.parse_decision(json.dumps({
         "kind": "Noop", "reason": "pacing",
@@ -1113,7 +1130,7 @@ def test_synchronous_decisions_write_outcome_success_at_commit(
     ed_row = _row(out_b[0].decision_row_id)
     noop_row = _row(out_b[1].decision_row_id)
     ij_row_b = _row(out_b[2].decision_row_id)
-    for r, kind in ((ed_row, "EmitDirective"), (noop_row, "Noop")):
+    for r, kind in ((ed_row, "MarkDeliverable"), (noop_row, "Noop")):
         assert r["decision_kind"] == kind
         assert r["outcome"] == "success", (
             f"{kind} row should write outcome='success' at commit; "
@@ -1786,8 +1803,11 @@ def test_verify_decisions_rejects_noop_alone_when_root_shelved_no_inflight(
 def test_verify_decisions_rejects_emit_directive_alone_when_root_shelved(
     conn: sqlite3.Connection,
 ) -> None:
-    """EmitDirective is articulation, not action — same lazy pattern
-    as Noop when root is shelved with nothing in flight."""
+    """The #85 pump shape (EmitDirective-only batch on a shelved root)
+    is now unrepresentable one gate EARLIER: the kind itself is retired
+    (RS-B). The anti-idle property it used to leak stays guarded by the
+    Noop-shape tests; this pins that the retired kind cannot re-enter
+    the batch at all."""
     root = _insert_root(conn)
     db.update_goal_status(conn, root, "shelved")
     ds, _ = strategist.parse_decisions(json.dumps([
@@ -1795,7 +1815,7 @@ def test_verify_decisions_rejects_emit_directive_alone_when_root_shelved(
          "body": "Avoid X route.", "reason": "lock in learning"},
     ]))
     err = strategist.verify_decisions(ds, conn, problem="p")
-    assert "Inject" in err and "shelved" in err.lower()
+    assert "retired" in err and "## Conventions" in err
 
 
 def test_verify_decisions_accepts_noop_when_root_shelved_but_inflight_forward(
@@ -2101,44 +2121,43 @@ def test_verify_decisions_rejects_confirmshelve_paired_only_with_request_user_am
     assert "ConfirmShelve" in err and "alone" in err.lower()
 
 
-def test_verify_decisions_rejects_confirmshelve_paired_only_with_emit_directive(
+def test_verify_decisions_rejects_confirmshelve_paired_only_with_fetch_paper(
     conn: sqlite3.Connection,
 ) -> None:
-    """EmitDirective is articulation, not action. ConfirmShelve must
-    pair with at least one Inject or Reopen — writing a note about why
-    a goal is shelved doesn't actually dispatch a fresh attempt or
-    redirect focus to another goal. (EmitDirective IS allowed as an
-    EXTRA on top of an Inject/Reopen — see
-    test_verify_decisions_accepts_three_decision_batch_with_directive.)"""
+    """Literature intake is not action. ConfirmShelve must pair with at
+    least one Inject or Reopen — fetching a survey about the wall does
+    not dispatch a fresh attempt or redirect focus to another goal.
+    (Previously pinned with the retired EmitDirective as the
+    non-qualifying partner; the property is about ANY articulation-only
+    sibling, so FetchPaper carries it now.)"""
     root = _insert_root(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "EmitDirective", "scope": "problem:p",
-         "body": "Primitive-existence route is a Mathlib TODO; future "
-                 "strategies should avoid it.",
+        {"kind": "FetchPaper", "query": "survey of the blocked route",
          "reason": "record learning before shelving"},
         {"kind": "ConfirmShelve", "target_goal_id": root,
-         "reason": "two Reopens failed; defer to the new directive"},
+         "reason": "two Reopens failed; read up before retrying"},
     ]))
     err = strategist.verify_decisions(ds, conn, problem="p")
     assert "ConfirmShelve" in err and "action" in err.lower()
 
 
-def test_verify_decisions_accepts_three_decision_batch_with_directive(
+def test_verify_decisions_accepts_three_decision_batch_with_fetch_paper(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    """EmitDirective as an EXTRA on top of an Inject/Reopen + ConfirmShelve
-    is fine — the action requirement is satisfied by the Inject;
-    EmitDirective is bonus learning capture."""
+    """FetchPaper as an EXTRA on top of an Inject + ConfirmShelve is
+    fine — the action requirement is satisfied by the Inject; the fetch
+    is bonus context intake. (Held the retired EmitDirective before
+    RS-B; the property is that an articulation sibling never poisons a
+    batch that DOES carry action.)"""
     root = _insert_root(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "Inject", "pipeline": "Forward",
          "brief": "## Need\nalternative angle around the blocked gap"},
         {"kind": "ConfirmShelve", "target_goal_id": root,
          "reason": "current direction exhausted"},
-        {"kind": "EmitDirective", "scope": "problem:p",
-         "body": "Avoid Cauchy-on-simply-connected reformulations.",
-         "reason": "lock in the learning so future strategists "
-                   "do not retry equivalent forms"},
+        {"kind": "FetchPaper",
+         "query": "Cauchy on simply connected reformulations survey",
+         "reason": "context for the pivot"},
     ]))
     assert strategist.verify_decisions(ds, conn, problem="p") == ""
 

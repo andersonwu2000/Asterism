@@ -349,3 +349,58 @@ def test_roadmap_offered_phrases_are_accepted_verbatim(tmp_path):
                             brief=f"Roadmap: {phrase}\n## Need\nx")
         _b, _s, err = strategist.verify_proposal_package([d], tmp_path)
         assert err is None, f"offered phrase {phrase!r} was rejected: {err}"
+
+
+# --------------------------------------------- Conventions (RS-B, 08-03)
+
+def test_conventions_section_is_optional_and_parsed(tmp_path):
+    """`## Conventions` is the retired EmitDirective's successor: optional,
+    after `## Roadmap`, may be empty-absent but not misplaced."""
+    body = _body() + "## Conventions\n- cite by CATALOG name\n- no nested namespace\n"
+    sections, err = programme.parse_proposal(body)
+    assert err is None
+    assert "cite by CATALOG name" in sections["conventions"]
+    # absent → empty string, not an error
+    sections2, err2 = programme.parse_proposal(_body())
+    assert err2 is None and sections2["conventions"] == ""
+    # misplaced (before Roadmap) → teaching rejection
+    bad = ("# T\n## Argument\na\n## Proof\np\n"
+           "## Conventions\nc\n## Roadmap\nr\n")
+    _s, err3 = programme.parse_proposal(bad)
+    assert err3 and "after `## Roadmap`" in err3
+
+
+def test_conventions_for_group_walks_the_ancestor_chain(tmp_path):
+    """A sub-group's workers inherit every convention above them,
+    problem-wide first — the v35 asymmetry (problem-level directive vs
+    per-group Programme) closed."""
+    c = _fresh(tmp_path)
+    from Tooling.state import groups
+    top = groups.ensure_top_group(c, "p")
+    kid = groups.open_group(c, problem="p", parent_group_id=top,
+                            charter="settle the lemma")
+    programme.record_pass(
+        c, "p", _body() + "## Conventions\nTOP RULE\n",
+        verdict={}, dialogue=[], rounds=0, batch_id=None, group_id=top)
+    programme.record_pass(
+        c, "p", _body() + "## Conventions\nKID RULE\n",
+        verdict={}, dialogue=[], rounds=0, batch_id=None, group_id=kid)
+    text = programme.conventions_for_group(c, "p", kid)
+    assert "TOP RULE" in text and "KID RULE" in text
+    assert text.index("TOP RULE") < text.index("KID RULE")
+    # the top group sees only its own
+    assert "KID RULE" not in programme.conventions_for_group(c, "p", top)
+
+
+def test_emit_directive_is_retired(tmp_path):
+    """New EmitDirective decisions are rejected with a teaching message
+    pointing at the Conventions section; the DB CHECK keeps the value
+    for historical rows (v35 lesson — never strand old data)."""
+    from types import SimpleNamespace
+    from Tooling.pipeline.strategist import verify_decision
+    c = _fresh(tmp_path)
+    d = SimpleNamespace(kind="EmitDirective", target_id=None, brief=None,
+                        reason="r", payload={"scope": "problem:p",
+                                             "body": "do X"})
+    err = verify_decision(d, c, problem="p")
+    assert "retired" in err and "## Conventions" in err

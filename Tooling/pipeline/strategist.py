@@ -667,13 +667,15 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         return ""
 
     if k == "EmitDirective":
-        scope = decision.payload.get("scope")
-        body = decision.payload.get("body")
-        if not isinstance(scope, str) or not scope.startswith("problem:"):
-            return f"EmitDirective.scope must be 'problem:<name>' (got {scope!r})"
-        if not isinstance(body, str) or not body.strip():
-            return "EmitDirective requires non-empty body"
-        return ""
+        # Retired 2026-08-03 (research_mission_design.md §3.1): every
+        # directive on record carried conventions or process lessons,
+        # and keeping them in a second document let a directive
+        # contradict the brief it governed. One source now.
+        return ("EmitDirective is retired — standing worker guidance "
+                "lives in the Programme: add or revise a "
+                "`## Conventions` section in this revision's "
+                "proposal.md instead (it is optional, comes after "
+                "`## Roadmap`, and workers receive it verbatim)")
 
     if k == "ConfirmShelve":
         if decision.target_id is None:
@@ -2210,9 +2212,11 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         pass
 
     elif k == "EmitDirective":
-        db.set_problem_strategist_directive(
-            conn, problem, str(decision.payload.get("body", "")).strip()
-        )
+        # verify_decision rejects the retired kind before commit; reaching
+        # here means a verify bypass — fail loudly, never write.
+        raise RuntimeError(
+            "EmitDirective is retired (Conventions section) but reached "
+            "commit — a verify path let it through")
 
     elif k == "ConfirmShelve":
         gid = int(decision.target_id)  # type: ignore[arg-type]

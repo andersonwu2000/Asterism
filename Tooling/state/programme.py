@@ -41,6 +41,16 @@ DOC_WARN_CHARS = 25_000
 
 _SECTION_ORDER = ("## Argument", "## Proof", "## Roadmap")
 
+#: Optional fourth section (research_mission_design.md §3.1, 2026-08-03):
+#: standing conventions for workers — the successor of the retired
+#: `EmitDirective` channel. Every prior directive on record carried
+#: conventions or process lessons, never mathematics the Programme
+#: lacked, and keeping them in a second document is what let a directive
+#: contradict the brief it governed (SLC rev 4 → two substitution
+#: incidents). One source now: conventions live in the revision the
+#: judge already audits, and workers receive exactly this section.
+CONVENTIONS_HEADER = "## Conventions"
+
 
 # ---------------------------------------------------------------------
 # Proposal parsing / validation
@@ -68,12 +78,13 @@ def parse_proposal(body: str) -> tuple[Optional[dict[str, str]], Optional[str]]:
         return None, "programme `# <Title>` line is empty"
 
     positions: dict[str, int] = {}
+    known = _SECTION_ORDER + (CONVENTIONS_HEADER,)
     for idx, ln in enumerate(lines):
         stripped = ln.rstrip()
-        if stripped in _SECTION_ORDER:
+        if stripped in known:
             if stripped in positions:
-                return None, (f"duplicate `{stripped}` section; each of "
-                              "Argument/Proof/Roadmap appears exactly once")
+                return None, (f"duplicate `{stripped}` section; each "
+                              "section appears at most once")
             positions[stripped] = idx
     missing = [h for h in _SECTION_ORDER if h not in positions]
     if missing:
@@ -83,18 +94,80 @@ def parse_proposal(body: str) -> tuple[Optional[dict[str, str]], Optional[str]]:
     if idxs != sorted(idxs):
         return None, ("programme sections out of order; required order is "
                       "`## Argument`, `## Proof`, `## Roadmap`")
+    # `## Conventions` is OPTIONAL and, when present, comes last: it is
+    # standing material (unordered rules workers receive verbatim), not
+    # part of the route — after the Roadmap keeps the four argued
+    # sections contiguous.
+    if CONVENTIONS_HEADER in positions and \
+            positions[CONVENTIONS_HEADER] < idxs[-1]:
+        return None, ("`## Conventions` must come after `## Roadmap` — "
+                      "it is standing worker guidance, not route")
 
-    bounds = idxs + [len(lines)]
-    sections = {"title": title}
-    for name, start, end in zip(("argument", "proof", "roadmap"),
-                                bounds[:-1], bounds[1:]):
+    ordered = sorted(positions.items(), key=lambda kv: kv[1])
+    bounds = [i for _, i in ordered] + [len(lines)]
+    sections = {"title": title, "conventions": ""}
+    names = {"## Argument": "argument", "## Proof": "proof",
+             "## Roadmap": "roadmap", CONVENTIONS_HEADER: "conventions"}
+    for (header, start), end in zip(ordered, bounds[1:]):
         text = "\n".join(lines[start + 1:end]).strip()
-        if not text:
-            header = _SECTION_ORDER[("argument", "proof",
-                                     "roadmap").index(name)]
+        if not text and header != CONVENTIONS_HEADER:
             return None, f"programme `{header}` section is empty"
-        sections[name] = text
+        sections[names[header]] = text
     return sections, None
+
+
+def extract_conventions(body: "str | None") -> str:
+    """The `## Conventions` section of a revision body, or ''.
+
+    Works on stored bodies (already contract-validated at record time),
+    so a plain header split suffices — the parse_proposal duplicate /
+    ordering guards ran before the body was stored."""
+    if not body:
+        return ""
+    lines = str(body).splitlines()
+    out: list[str] = []
+    inside = False
+    for ln in lines:
+        stripped = ln.rstrip()
+        if stripped == CONVENTIONS_HEADER:
+            inside = True
+            continue
+        if inside and stripped.startswith("## "):
+            break
+        if inside:
+            out.append(ln)
+    return "\n".join(out).strip()
+
+
+def conventions_for_group(conn: sqlite3.Connection, problem: str,
+                          group_id: "int | None") -> str:
+    """Standing conventions in force for work owned by `group_id`:
+    the ancestor chain's sections top-down, then the group's own —
+    problem-wide rules first, the nearest group's refinements last.
+
+    The successor of the retired `EmitDirective` channel
+    (research_mission_design.md §3.1). Fixes the v35 asymmetry where the
+    directive was problem-level while Programmes are per-group: a
+    sub-group's workers now inherit every charter-line convention above
+    them instead of reading one problem-wide blob."""
+    chain: list[int] = []
+    if group_id is not None:
+        try:
+            from . import groups as _groups
+            chain = [int(g["id"]) for g in
+                     reversed(_groups.ancestors(conn, int(group_id)))]
+        except Exception:
+            chain = []
+        chain.append(int(group_id))
+    else:
+        chain = [None]  # type: ignore[list-item]
+    parts: list[str] = []
+    for gid in chain:
+        row = current_rev(conn, problem, gid)
+        text = extract_conventions(row["body"]) if row is not None else ""
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts).strip()
 
 
 def length_warning(sections: dict[str, str],

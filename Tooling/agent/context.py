@@ -1076,15 +1076,31 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
 
 
 def _section_strategist_directive(conn: sqlite3.Connection,
-                                  problem: str) -> list[str]:
-    """Render `problems.strategist_directive` as a top-level Context.md
-    section if non-empty. Standing directive — applies to every pipeline
-    cold-start (Backward / Builder / Forward) until Strategist overwrites
-    with another EmitDirective / Reopen-with-directive commit.
+                                  problem: str,
+                                  goal_id: "int | None" = None) -> list[str]:
+    """Standing worker guidance, from its two sources (2026-08-03,
+    research_mission_design.md §3.1):
 
-    Empty / NULL directive → returns []. No-op if the `problems` row's
-    Phase 2 columns are absent (pre-migration DB).
-    """
+      1. the owning group chain's `## Conventions` Programme sections
+         (top group first, nearest group last) — the successor of the
+         retired `EmitDirective`;
+      2. `problems.strategist_directive` — now the OPERATOR/legacy note
+         channel only (`reject-ingest` writes here; the strategist can
+         no longer). Rendered under its old header while non-empty.
+
+    Both conditional on content; either may be absent."""
+    out: list[str] = []
+    try:
+        from ..state import programme as _programme
+        from ..state import groups as _groups
+        row = (_groups.group_for_goal(conn, problem, int(goal_id))
+               if goal_id is not None else None)
+        gid = int(row["id"]) if row is not None else None
+        conv = _programme.conventions_for_group(conn, problem, gid)
+    except Exception:
+        conv = ""
+    if conv:
+        out += ["## Conventions (standing)", "", conv, ""]
     try:
         row = conn.execute(
             "SELECT strategist_directive FROM problems WHERE name = ?",
@@ -1092,18 +1108,14 @@ def _section_strategist_directive(conn: sqlite3.Connection,
         ).fetchone()
     except sqlite3.OperationalError:
         # Pre-Phase 2 schema (column missing).
-        return []
+        return out
     if row is None:
-        return []
+        return out
     directive = row["strategist_directive"]
     if directive is None or not str(directive).strip():
-        return []
-    return [
-        "## Strategist directive",
-        "",
-        str(directive).strip(),
-        "",
-    ]
+        return out
+    out += ["## Strategist directive", "", str(directive).strip(), ""]
+    return out
 
 
 def _section_strategist_brief(conn: sqlite3.Connection,
@@ -1353,7 +1365,8 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_programme_worker(conn, str(goal["problem"]),
                                   decision_id, problem_dir,
                                   goal_id=int(goal["id"])),
-        _section_strategist_directive(conn, str(goal["problem"])),
+        _section_strategist_directive(conn, str(goal["problem"]),
+                                      goal_id=int(goal["id"])),
         _section_strategist_brief(conn, decision_id),
         _section_header(goal, workspace),
         _section_library_available(conn, mfst),

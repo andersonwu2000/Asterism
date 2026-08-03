@@ -1701,6 +1701,32 @@ def _section_programme_proof(conn: sqlite3.Connection, problem: str,
     return [f"{header} (rev {row['rev']})", "", proof, ""]
 
 
+def _section_conventions_for_decision(conn: sqlite3.Connection,
+                                      problem: str,
+                                      decision_id: "int | None"
+                                      ) -> list[str]:
+    """`## Conventions (standing)` for a mint spawn, resolved through the
+    Inject decision's authoring group (goal jobs resolve through the
+    goal's owning group instead — `context._section_strategist_directive`)."""
+    gid: "int | None" = None
+    if decision_id is not None:
+        try:
+            row = conn.execute(
+                "SELECT group_id FROM strategist_decisions WHERE id = ?",
+                (int(decision_id),)).fetchone()
+            gid = int(row["group_id"]) if row and row["group_id"] else None
+        except sqlite3.OperationalError:
+            gid = None
+    try:
+        from ..state import programme as _programme
+        conv = _programme.conventions_for_group(conn, problem, gid)
+    except Exception:
+        conv = ""
+    if not conv:
+        return []
+    return ["## Conventions (standing)", "", conv, ""]
+
+
 def compile_forward_context(conn: sqlite3.Connection, *,
                             problem: str, decision_id: int | None,
                             attempts_dir: Path,
@@ -1729,12 +1755,19 @@ def compile_forward_context(conn: sqlite3.Connection, *,
     (The Strategist context still inlines the full tree; it plans over
     the whole structure.)
     """
-    section_names = ["forward_brief", "programme_proof",
+    section_names = ["forward_brief", "conventions", "programme_proof",
                      "library_inventory",
                      "forward_history", "active_goals", "manifest_meta",
                      "manifest_forbidden", "paper_index"]
     sections: list[list[str]] = [
         _section_forward_brief(conn, decision_id),
+        # Standing conventions (research_mission_design.md §3.1). Mint
+        # workers NEVER received the old directive — the section list
+        # here simply did not carry it, which is how SLC's namespace
+        # convention could be briefed, unfollowed, and retired as
+        # "unfollowed" while one brick died on exactly that gap. The
+        # authoring group comes off the Inject decision row.
+        _section_conventions_for_decision(conn, problem, decision_id),
         # NL-first on the mint arm (07-30 audit): goal jobs carry the
         # Programme; mints did not, so intake's falsification check had
         # no source independent of the brief (written by the same
