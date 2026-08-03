@@ -1365,6 +1365,47 @@ def test_cascade_strategist_infra_failure_re_enqueues(
     assert "[strategist-retry]" in captured.out
 
 
+def test_strategist_infra_retry_resolves_a_group_targets_problem(
+    conn: sqlite3.Connection, capsys,
+) -> None:
+    """2026-08-03 SLC 3h20m stall: v35 strategist targets are
+    Group-keyed but `_queue_problem_of` only knew Problem/Goal, so the
+    fast-fail retry enqueued `problem=''` — a POISON row a scoped pop
+    can never claim while `is_in_queue` still counts it, suppressing
+    T1 and T4 for the group forever. The retry row must carry the
+    group's real problem."""
+    from Tooling.state import groups
+    top = groups.ensure_top_group(conn, "p")
+    conn.commit()
+    cascade_one(
+        conn, pipeline_id="pid-strat-group-infra",
+        kind="Strategist", target_id=str(top), target_kind="Group",
+        outcome="failed", failure_reason="spawn_fast_fail",
+    )
+    row = conn.execute(
+        "SELECT problem FROM queue WHERE kind='Strategist'"
+        " AND target_id=?", (str(top),)).fetchone()
+    assert row is not None and row["problem"] == "p"
+
+
+def test_strategist_infra_retry_never_enqueues_a_poison_row(
+    conn: sqlite3.Connection, capsys,
+) -> None:
+    """An unresolvable target must NOT be re-enqueued with an empty
+    problem — skip loudly and leave the wake to the T4 backstop."""
+    cascade_one(
+        conn, pipeline_id="pid-strat-poison",
+        kind="Strategist", target_id="999999", target_kind="Group",
+        outcome="failed", failure_reason="spawn_fast_fail",
+    )
+    n = conn.execute(
+        "SELECT COUNT(*) FROM queue WHERE kind='Strategist'"
+        " AND (problem IS NULL OR problem = '')").fetchone()[0]
+    assert n == 0
+    captured = capsys.readouterr()
+    assert "SKIPPED re-queue" in captured.out
+
+
 def test_cascade_strategist_success_does_not_re_enqueue(
     conn: sqlite3.Connection,
 ) -> None:

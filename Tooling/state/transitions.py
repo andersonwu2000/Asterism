@@ -770,14 +770,23 @@ _maybe_enqueue_inject_batch_done = db.maybe_enqueue_inject_batch_done
 def _queue_problem_of(conn: sqlite3.Connection, target_id,
                       target_kind: str) -> str:
     """The `problem` a queue row belongs to (v17 scope column). Problem-
-    keyed targets carry it verbatim; Goal targets resolve via their row.
-    Empty string on unresolvable ids — such a row is scope-orphaned and
-    swept by the next startup like any stale row (never a crash here:
-    enqueue happens mid-cascade)."""
+    keyed targets carry it verbatim; Goal and Group targets resolve via
+    their rows.
+
+    Returning '' is POISON, not merely scope-orphaned (2026-08-03
+    post-mortem, SLC 3h20m silent stall): a scoped pop filters
+    `problem LIKE scope` so the row can never dispatch, but
+    `is_in_queue` matches it anyway, so `_strategist_inflight` reads
+    the group as busy and BOTH T1 and T4 skip it forever — and the
+    startup sweep the old docstring promised cleared 0 rows. The Group
+    branch was missing (v35 made strategist targets Group-keyed; this
+    resolver still knew only Problem/Goal). Callers must not enqueue
+    on ''."""
     if target_kind == "Problem":
         return str(target_id)
+    table = "groups" if target_kind == "Group" else "goals"
     try:
-        row = conn.execute("SELECT problem FROM goals WHERE id = ?",
+        row = conn.execute(f"SELECT problem FROM {table} WHERE id = ?",
                            (int(target_id),)).fetchone()
     except (TypeError, ValueError):
         return ""
@@ -1526,14 +1535,21 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 " WHERE id = ?", (decision_id,),
             ).fetchone()
             if row is not None and row["produced_goal_id"] is None:
-                db.enqueue(conn, kind="Formalizer", target_id=target_id,
-                           target_kind=target_kind, priority=20,
-                           decision_id=decision_id,
-                           problem=_queue_problem_of(
-                               conn, target_id, target_kind))
-                print(f"[forward-retry] re-queued {target_kind}="
-                      f"{target_id} decision_id={decision_id} after "
-                      f"{failure_reason}", flush=True)
+                _problem = _queue_problem_of(conn, target_id, target_kind)
+                if _problem:
+                    db.enqueue(conn, kind="Formalizer",
+                               target_id=target_id,
+                               target_kind=target_kind, priority=20,
+                               decision_id=decision_id,
+                               problem=_problem)
+                    print(f"[forward-retry] re-queued {target_kind}="
+                          f"{target_id} decision_id={decision_id} after "
+                          f"{failure_reason}", flush=True)
+                else:
+                    # Same poison-row guard as the Strategist branch.
+                    print(f"[forward-retry] SKIPPED re-queue for "
+                          f"{target_kind}={target_id}: problem "
+                          f"unresolvable", flush=True)
             return
         if (decision_id is not None
                 and not is_infra
@@ -1694,12 +1710,24 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         # → failed → g3246 stuck in pending_review with no recovery
         # for 30+ min until the next T1 wake.
         if outcome == "failed" and is_infra:
-            db.enqueue(conn, kind="Strategist", target_id=target_id,
-                       target_kind=target_kind, priority=20,
-                       problem=_queue_problem_of(
-                           conn, target_id, target_kind))
-            print(f"[strategist-retry] re-queued {target_kind}={target_id}"
-                  f" after {failure_reason}", flush=True)
+            _problem = _queue_problem_of(conn, target_id, target_kind)
+            if _problem:
+                db.enqueue(conn, kind="Strategist", target_id=target_id,
+                           target_kind=target_kind, priority=20,
+                           problem=_problem)
+                print(f"[strategist-retry] re-queued "
+                      f"{target_kind}={target_id}"
+                      f" after {failure_reason}", flush=True)
+            else:
+                # An empty problem would be a POISON row: unpoppable
+                # under a scoped run yet visible to `is_in_queue`, so it
+                # suppresses T1/T4 for this target forever (2026-08-03
+                # SLC stall). Skip the retry and say so — the T4 stall
+                # backstop re-wakes the group within a tick.
+                print(f"[strategist-retry] SKIPPED re-queue for "
+                      f"{target_kind}={target_id}: problem unresolvable "
+                      f"— leaving the wake to the T4 stall backstop",
+                      flush=True)
         return
 
     # Verify removed as a worker_kind. Strategy verification + parent
