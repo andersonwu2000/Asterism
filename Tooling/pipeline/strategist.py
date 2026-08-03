@@ -952,11 +952,47 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
     return f"verify_decision: unhandled kind {k!r}"
 
 
+#: Wake split (research_mission_design.md §3.2, 2026-08-03). Turn A
+#: (admin, un-judged, fail-open) owns registry operations; Turn M
+#: (mathematics, adversary-judged) owns everything that moves the route
+#: or asserts a mathematical verdict. `RequestUserAmend` and `Noop` are
+#: deliberately in both: an amend can be discovered mathematically (a
+#: kernel-checked ¬P in hand) or clerically (the file is malformed).
+ADMIN_TURN_KINDS: frozenset[str] = frozenset(
+    {"MarkDeliverable", "FetchPaper", "RequestUserAmend", "Noop"})
+MATH_TURN_KINDS: frozenset[str] = frozenset(
+    {"Inject", "Delegate", "AttemptDisproof", "ConfirmShelve",
+     "CloseGroup", "ReturnToParent", "Ingest", "RequestUserAmend",
+     "Noop",
+     # retired — flows through to the per-kind teaching rejection
+     "EmitDirective"})
+
+
+def _turn_whitelist_error(kind: str, turn: "str | None") -> str:
+    """'' when `kind` may appear in `turn`; a teaching rejection
+    otherwise. turn=None is the legacy single-turn wake (tests, and any
+    caller that has not opted into the split) — everything passes."""
+    if turn is None:
+        return ""
+    if turn == "admin" and kind not in ADMIN_TURN_KINDS:
+        return (f"{kind} belongs to the MATH turn — the admin turn "
+                f"handles only "
+                f"{', '.join(sorted(ADMIN_TURN_KINDS))}. Leave route "
+                f"and verdict decisions to the math turn that follows.")
+    if turn == "math" and kind not in MATH_TURN_KINDS:
+        return (f"{kind} belongs to the ADMIN turn (it ran before this "
+                f"one and runs again next wake) — this turn owns the "
+                f"mathematics: "
+                f"{', '.join(sorted(MATH_TURN_KINDS - {'EmitDirective'}))}.")
+    return ""
+
+
 def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                      *, problem: str,
                      workspace: "Path | None" = None,
                      trigger_kind: str = "",
-                     group_id: "int | None" = None) -> str:
+                     group_id: "int | None" = None,
+                     turn: "str | None" = None) -> str:
     """Validate a multi-decision batch. Runs `verify_decision` on each
     item in declared order, then applies cross-decision invariants that
     only matter when multiple decisions land in the same call.
@@ -975,8 +1011,9 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     non-empty — `commit_decisions` assumes verify passed.
     """
     for i, d in enumerate(decisions):
-        err = verify_decision(d, conn, problem=problem, group_id=group_id,
-                              workspace=workspace)
+        err = (_turn_whitelist_error(d.kind, turn)
+               or verify_decision(d, conn, problem=problem,
+                                  group_id=group_id, workspace=workspace))
         if err:
             return (f"decision #{i}: {err}" if len(decisions) > 1 else err)
 
@@ -1138,6 +1175,13 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # re-arming until the set empties), not the periodic survey's.
     # Forcing the discharge here would bounce every periodic wake on a
     # busy tree (the parse-fail pump shape, e1ecc5c).
+    if turn == "admin":
+        # The admin turn's remit ends at registry operations: the
+        # review-discharge and stall-advance pressures below exist to
+        # force ROUTE movement, which is the math turn's burden — this
+        # wake's math turn runs next and faces both gates in full.
+        return ""
+
     pending_review_ids: set[int] = set()
     if trigger_kind != "routine":
         pending_review_ids = {
@@ -1171,8 +1215,8 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                 f"(force-reopens the goal), OR\n"
                 f"  - AttemptDisproof(target_goal_id=...) — if you now "
                 f"suspect the statement is false.\n"
-                f"EmitDirective may accompany these, but cannot be the "
-                f"whole batch."
+                f"Other decisions may accompany these, but cannot be "
+                f"the whole batch."
             )
 
     # Cross-decision: stall-advance (problem FSM design §3.1,
@@ -1741,7 +1785,8 @@ def _commit_close_group(decision: Decision, conn: sqlite3.Connection,
 def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                      *, problem: str, tick: int, trigger_kind: str,
                      workspace: Path,
-                     group_id: "int | None" = None) -> list[CommitOutcome]:
+                     group_id: "int | None" = None,
+                     touch_clocks: bool = True) -> list[CommitOutcome]:
     """Execute a multi-decision batch in declared order.
 
     Caller must have already passed `verify_decisions`. All decisions
@@ -1822,11 +1867,16 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
         raise RuntimeError(
             f"{unstamped} decision row(s) committed without a group_id "
             f"on {problem!r} — a per-kind INSERT missed it")
-    db.update_problem_last_strategist_at(conn, problem)
-    _groups.touch_strategist(conn, int(gid),
-                             routine=(trigger_kind == "routine"))
-    if trigger_kind == "routine":
-        db.update_problem_last_routine_at(conn, problem)
+    # touch_clocks=False is the ADMIN turn (wake split §3.2): the wake's
+    # clocks belong to the MATH turn that follows — an admin commit that
+    # advanced them would let a wake whose math half failed read as
+    # "strategist ran", starving the retry pressure.
+    if touch_clocks:
+        db.update_problem_last_strategist_at(conn, problem)
+        _groups.touch_strategist(conn, int(gid),
+                                 routine=(trigger_kind == "routine"))
+        if trigger_kind == "routine":
+            db.update_problem_last_routine_at(conn, problem)
     conn.commit()
     return out
 
@@ -2408,6 +2458,104 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
 # Outer entry — full agent integration
 # ---------------------------------------------------------------------
 
+#: rcs the admin turn must surface to the caller instead of degrading
+#: (quota burn / teardown) — same set and rationale as intake's.
+_ADMIN_INFRA_RCS = None  # resolved lazily from llm.base to avoid import cost
+
+
+def run_admin_turn(conn: sqlite3.Connection, *, problem: str,
+                   trigger_kind: str, tick: int, workspace: Path,
+                   mfst: "Any", attempts_dir: Path,
+                   group_id: "int | None" = None) -> "str | None":
+    """Turn A of the wake split (research_mission_design.md §3.2):
+    registry operations only — MarkDeliverable / FetchPaper /
+    RequestUserAmend / Noop — un-judged, fail-open, before the math
+    turn.
+
+    Returns None (math turn proceeds), 'frozen' (an amend committed;
+    the problem is awaiting_human, the wake ends here), or an infra
+    failure_reason string the caller must convert into the pipeline's
+    usual infra result (quota / shutdown must not degrade into a cold
+    math spawn).
+
+    Fail-open like the formalizer intake: a broken admin turn never
+    blocks the mathematics — registry work re-arises next wake.
+    """
+    from .. import agent
+    from ..core import config
+    from . import PROMPT_DIR
+    from ..agent.phase2_context import compile_admin_context
+    from ..llm.base import SpawnRC
+
+    admin_dir = attempts_dir / "admin"
+    admin_dir.mkdir(parents=True, exist_ok=True)
+    prompt_path = PROMPT_DIR / "strategist" / "admin.md"
+    if not prompt_path.exists():
+        print(f"[strategist] {problem}: admin prompt missing "
+              f"({prompt_path}) — skipping the admin turn", flush=True)
+        return None
+    compile_admin_context(conn, problem=problem, attempts_dir=admin_dir,
+                          workspace=workspace, mfst=mfst,
+                          group_id=group_id)
+    timeout = config.get(
+        "strategist.admin_timeout_sec", default=600,
+        env_var="ASTERISM_STRATEGIST_ADMIN_TIMEOUT_SEC", cast=int,
+    )
+    sid = str(uuid.uuid4())
+    rc = agent.spawn_llm(
+        kind="strategist", prompt_path=prompt_path,
+        problem_dir=db.problem_dir(workspace, problem),
+        attempts_dir=admin_dir, session_id=sid,
+        timeout_sec_override=timeout,
+    )
+    if rc in (SpawnRC.QUOTA_EXHAUSTED, SpawnRC.MISSING_DEP,
+              SpawnRC.SHUTDOWN):
+        return _rc_to_reason(rc)
+    if rc != 0:
+        print(f"[strategist] {problem}: admin turn rc={rc} — "
+              f"fail-open, math turn proceeds", flush=True)
+        return None
+    decision_path = admin_dir / "admin.json"
+    if not decision_path.exists():
+        print(f"[strategist] {problem}: admin turn wrote no admin.json "
+              f"— fail-open", flush=True)
+        return None
+    try:
+        text = decision_path.read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"[strategist] {problem}: admin.json unreadable ({e}) — "
+              f"fail-open", flush=True)
+        return None
+    decisions, perr = parse_decisions(text)
+    if perr or not decisions:
+        print(f"[strategist] {problem}: admin turn parse failed "
+              f"({perr or 'empty'}) — fail-open", flush=True)
+        return None
+    verr = verify_decisions(decisions, conn, problem=problem,
+                            workspace=workspace,
+                            trigger_kind=trigger_kind,
+                            group_id=group_id, turn="admin")
+    if verr:
+        # No revision loop on the admin turn: its work is mechanical and
+        # re-arises next wake; a bounce is logged, never fatal.
+        print(f"[strategist] {problem}: admin batch rejected — {verr}",
+              flush=True)
+        return None
+    if all(d.kind == "Noop" for d in decisions):
+        return None
+    commit_decisions(decisions, conn, problem=problem, tick=tick,
+                     trigger_kind=trigger_kind, workspace=workspace,
+                     group_id=group_id, touch_clocks=False)
+    kinds = ", ".join(d.kind for d in decisions)
+    print(f"[strategist] {problem}: admin turn committed [{kinds}]",
+          flush=True)
+    if db.problem_has_awaiting_human(conn, problem):
+        # An amend landed: the problem is frozen for the user; running
+        # the math turn now would plan against a statement under repair.
+        return "frozen"
+    return None
+
+
 def run_strategist(conn: sqlite3.Connection, *, problem: str,
                    trigger_kind: str, tick: int,
                    workspace: Path,
@@ -2463,6 +2611,24 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 f"{prompt_path}"
             ),
         )
+
+    # Stage 0 — the ADMIN turn (wake split, research_mission_design.md
+    # §3.2): registry operations first, so the math turn plans over the
+    # settled tree (marks landed, papers fetched). Skipped on
+    # pending_review — that wake is a single goal's verdict, pure math.
+    if trigger_kind in ("routine", "inject_batch_done"):
+        admin_out = run_admin_turn(
+            conn, problem=problem, trigger_kind=trigger_kind, tick=tick,
+            workspace=workspace, mfst=mfst, attempts_dir=attempts_dir,
+            group_id=group_id)
+        if admin_out == "frozen":
+            # An amend committed — the problem waits on the user; the
+            # math turn would plan against a statement under repair.
+            return PipelineResult(outcome="success")
+        if admin_out is not None:
+            return PipelineResult(
+                outcome="failed", failure_reason=admin_out,
+                failure_detail="admin turn infra failure")
 
     # Stage 1 — Context.md
     compile_strategist_context(
@@ -2569,7 +2735,12 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                or verify_decisions(decisions, conn, problem=problem,
                                    workspace=workspace,
                                    trigger_kind=trigger_kind,
-                                   group_id=group_id))
+                                   group_id=group_id,
+                                   # The main wake loop IS the math turn
+                                   # on every trigger; pending_review has
+                                   # no admin half but its verdicts are
+                                   # all math-turn kinds anyway.
+                                   turn="math"))
         err_is_rebuttal = False
         if not err and package_gate_applies(decisions, trigger_kind):
             proposal_body, sections, err = verify_proposal_package(

@@ -23,6 +23,13 @@ from Tooling.pipeline import adversary, strategist
 from Tooling.state import db, manifest, programme
 
 
+@pytest.fixture(autouse=True)
+def _admin_turn_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    # RS-C: the wake's admin turn (Turn A) spawns before the math turn;
+    # these tests count math-turn spawns, so skip the admin stage.
+    monkeypatch.setattr(strategist, "run_admin_turn", lambda *a, **kw: None)
+
+
 @pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)

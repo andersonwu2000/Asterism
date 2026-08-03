@@ -63,6 +63,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "strategist.interval_min": "T1 routine wake cadence (ASTERISM_STRATEGIST_INTERVAL_MIN; 120.0)",
     "strategist.verify_retry": "strategist verify/Adversary revision rounds per wake (ASTERISM_STRATEGIST_VERIFY_RETRY; 6)",
     "strategist.timeout_sec": "strategist wake spawn cap — hang guard, not a work budget (ASTERISM_STRATEGIST_TIMEOUT_SEC; 10800)",
+    "strategist.admin_timeout_sec": "admin turn (Turn A) spawn cap — registry ops only, small on purpose (600)",
     "adversary.timeout_sec": "adversary spawn cap — hang guard, not a work budget (ASTERISM_ADVERSARY_TIMEOUT_SEC; 7200)",
     "verify.olean_warm": "background olean warmer kill switch #103 (ASTERISM_OLEAN_WARM; True)",
     "lessons.reflection_enabled": "reflection spawn kill switch (ASTERISM_LESSONS_REFLECTION_ENABLED; True)",

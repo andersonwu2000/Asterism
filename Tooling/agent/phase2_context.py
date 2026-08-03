@@ -1701,6 +1701,42 @@ def _section_programme_proof(conn: sqlite3.Connection, problem: str,
     return [f"{header} (rev {row['rev']})", "", proof, ""]
 
 
+def compile_admin_context(conn: sqlite3.Connection, *, problem: str,
+                          attempts_dir: Path, workspace: Path,
+                          mfst: manifest.Manifest,
+                          group_id: "int | None" = None) -> Path:
+    """Context.md for the wake's ADMIN turn (research_mission_design.md
+    §3.2): registry state only — deliverable candidates, current marks,
+    papers, the Manifest's deliverable spec. Deliberately free of the
+    Programme-authoring surfaces: the isolation IS the contract-diet
+    (each turn sees only its own world)."""
+    parts: list[str] = [f"# Admin context — {problem}", ""]
+    marked = list(conn.execute(
+        "SELECT slug FROM goals WHERE problem = ? AND is_deliverable = 1"
+        " ORDER BY id", (problem,)))
+    candidates = list(conn.execute(
+        "SELECT id, slug, statement FROM goals"
+        " WHERE problem = ? AND status = 'proved'"
+        "   AND origin = 'forward' AND COALESCE(is_deliverable, 0) = 0"
+        " ORDER BY id", (problem,)))
+    parts += ["## Deliverables", ""]
+    parts.append("Marked: " + (", ".join(f"`{r['slug']}`" for r in marked)
+                               if marked else "(none)"))
+    if candidates:
+        parts += ["", "Proved, unmarked (MarkDeliverable candidates — "
+                  "mark only top-level claims, never vocabulary):", ""]
+        for r in candidates:
+            stmt = " ".join(str(r["statement"] or "").split())[:160]
+            parts.append(f"- g{r['id']} `{r['slug']}` — `{stmt}`")
+    parts.append("")
+    parts.extend(_section_manifest_meta(mfst, workspace, problem))
+    parts.extend(context._section_paper_index(mfst, workspace, conn,
+                                              attempts_dir=attempts_dir))
+    out = attempts_dir / "Context.md"
+    out.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
+    return out
+
+
 def _section_conventions_for_decision(conn: sqlite3.Connection,
                                       problem: str,
                                       decision_id: "int | None"
