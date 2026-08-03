@@ -1023,12 +1023,19 @@ def test_strategist_prompts_share_decision_kind_vocabulary() -> None:
     # Noop removed from inject_batch_done.md 2026-07-11 (b6 wake pump): the
     # batch-done wake carries the mandatory-advance rule, so a Noop there was
     # never a legal answer — same retirement pattern as Reopen.
+    # EmitDirective retired 2026-08-03 (RS-B/RS-E): standing worker guidance
+    # lives in the Programme's `## Conventions` section; no prompt may still
+    # offer the kind.
     expected_kinds = {
-        "routine": {"Inject", "ConfirmShelve", "EmitDirective",
+        "routine": {"Inject", "ConfirmShelve", "Delegate",
                     "AttemptDisproof", "RequestUserAmend", "Noop"},
-        "pending_review": {"Inject", "ConfirmShelve"},
-        "inject_batch_done": {"Inject", "ConfirmShelve"},
+        "pending_review": {"Inject", "ConfirmShelve", "Delegate"},
+        "inject_batch_done": {"Inject", "ConfirmShelve", "Delegate"},
     }
+    for tk in expected_kinds:
+        text = (PROMPT_DIR / "strategist" / f"{tk}.md").read_text(
+            encoding="utf-8")
+        assert "EmitDirective" not in text, f"{tk}.md re-offers a retired kind"
     prompt_dir = PROMPT_DIR / "strategist"
     for tk, kinds in expected_kinds.items():
         text = (prompt_dir / f"{tk}.md").read_text(encoding="utf-8")
