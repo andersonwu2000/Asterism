@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-03
+- Split the planning agent's periodic review into two passes — one for administrative housekeeping and one for actual mathematical reasoning — and made the administrative pass visible in the monitoring console.
+- Paused a waiting goal's time budget while its subgoals are being worked on, so parent goals no longer expire during delegated work.
+- Fixed the system to report library-search results accurately to the prover, and added recovery options for stalled proof attempts.
+- Reorganized the prompt materials into a structured research-mission format with a shared conventions section, and let a finished subproblem's summary flow back to its parent on demand.
+
 ### 2026-08-02
 - Designed and introduced a tree structure for organizing the collaborative discussion groups that work on a proof, then closed eleven gaps an independent review found and folded the design into the documentation.
 - Extended the web interface so a proof attempt's argument can be read live while it is still running, following the new group structure.
@@ -228,12 +234,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Added a Hilbert-style propositional calculus benchmark whose target is the deduction theorem, alongside other small test problems.
 - Fixed several reliability bugs, including a Windows command-line length limit that silently killed large prompts and a background process that refused to shut down after fatal errors.
 - Strengthened the infrastructure with a CI tier that runs against a real Lean toolchain, a versioned record of already-proved problems for regression checking, and a lemma library index consolidated into the database.
-
-### 2026-07-04
-- Replaced fragile text-pattern extraction of Lean declarations with direct queries to the Lean compiler and language server, so theorem names and definitions are now read from ground truth.
-- Centralized the check that marks a theorem as proved at a single chokepoint and closed a gap where declarations containing incomplete proofs could slip past validation.
-- Reworked task scheduling so each problem is tracked through to one well-defined terminal state, with the database schema and tests updated to match.
-- Hardened the infrastructure with startup checks of the framework's assumptions about Lean's interface, a crash-consistency audit, unified configuration handling, and refactored scheduling, retry, and proof-assembly plumbing.
 
 <!-- ASTERISM-PROGRESS:END -->
 
