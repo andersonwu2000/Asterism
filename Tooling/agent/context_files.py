@@ -15,6 +15,7 @@ Read pattern:
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Iterable
@@ -44,9 +45,41 @@ PAST_DEAD_STRATEGIES_FILENAME = "PAST_DEAD_STRATEGIES.md"
 _COMPANION_STDERR_BUDGET = 4000
 
 
+#: The agent's parting note is bound to ≤200 words by the rescue
+#: contract; the cap only guards against a run-away write.
+_AGENT_NOTE_BUDGET = 3000
+
+
+def _agent_note_from_artifacts(dead: sqlite3.Row) -> str | None:
+    """The dying spawn's own `_progress.md`, already preserved verbatim
+    in `dead_attempts.artifacts` by `collect_artifacts` — it was just
+    never rendered (2026-08-04 operator finding: the failure history
+    carried only framework autopsies; the agent's voice reached the
+    NEXT attempt via the overwrite-only drafts slot and no one else).
+    Reading it from artifacts makes every past attempt's note visible
+    retroactively, at zero schema cost, in this LAZY file only."""
+    try:
+        raw = dead["artifacts"]
+    except (IndexError, KeyError):
+        return None
+    if not raw:
+        return None
+    try:
+        note = json.loads(raw).get("_progress.md")
+    except (TypeError, ValueError):
+        return None
+    if not note or not str(note).strip():
+        return None
+    note = str(note).strip()
+    if len(note) > _AGENT_NOTE_BUDGET:
+        note = note[:_AGENT_NOTE_BUDGET] + "\n…(truncated)"
+    return note
+
+
 def render_attempt_block(idx: int, dead: sqlite3.Row) -> str:
     """Per-attempt section: failure_reason header + smart-truncated
-    failure_detail + (optional) raw proposal_md."""
+    failure_detail + the agent's own parting note + (optional) raw
+    proposal_md."""
     lines: list[str] = []
     lines.append(
         f"### Attempt {idx} ({dead['pipeline_id'][:12]}): "
@@ -57,6 +90,10 @@ def render_attempt_block(idx: int, dead: sqlite3.Row) -> str:
             dead["failure_detail"], budget=_COMPANION_STDERR_BUDGET,
             force_reorder=True)
         lines.extend(["", "```", truncated, "```"])
+    note = _agent_note_from_artifacts(dead)
+    if note:
+        lines.extend(["", "Agent note (its own `_progress.md`, written "
+                      "as the attempt ended):", "```", note, "```"])
     if dead["proposal_md"]:
         # proposal_md is the agent's own prose (PROPOSAL.md) — no
         # lake noise to strip. Include verbatim.

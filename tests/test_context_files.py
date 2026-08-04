@@ -146,6 +146,31 @@ def test_write_past_attempts_creates_file_with_full_content(
     assert "agent_timeout" in text
 
 
+def test_past_attempts_surface_the_agents_own_note(tmp_path: Path) -> None:
+    """2026-08-04 operator finding: the failure history carried only
+    framework autopsies — the dying agent's `_progress.md` was already
+    preserved verbatim in dead_attempts.artifacts but never rendered,
+    so its voice reached only the NEXT attempt (overwrite-only drafts
+    slot) and vanished from history. The lazy companion must show it;
+    rows without artifacts (legacy) must not crash."""
+    import json as _json
+    deads = [
+        _row(pipeline_id="pid-1234567890ab", failure_reason="agent_timeout",
+             failure_detail="rc=124 salvage parse ...", proposal_md="",
+             artifacts=_json.dumps({
+                 "_progress.md": "converging on gcd descent; blocked on "
+                                 "ReflTransGen.lift start-point simp",
+                 "patch.lean": "-- half proof"})),
+        _row(pipeline_id="pid-2345678901bc", failure_reason="agent_timeout",
+             failure_detail="rc=124", proposal_md=""),   # no artifacts key
+    ]
+    out = context_files.write_past_attempts(deads, tmp_path)
+    text = out.read_text(encoding="utf-8")
+    assert "blocked on ReflTransGen.lift start-point simp" in text
+    assert "Agent note" in text
+    assert "half proof" not in text        # only the note, not every artifact
+
+
 def test_write_past_attempts_empty_returns_none(tmp_path: Path) -> None:
     """No deads → no file written, no clutter."""
     assert context_files.write_past_attempts([], tmp_path) is None

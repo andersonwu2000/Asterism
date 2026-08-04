@@ -120,7 +120,7 @@ def direct_attempts(conn: sqlite3.Connection,
     placeholders = ",".join(["?"] * len(_NON_AGENT_REASONS))
     rows = conn.execute(
         f"SELECT id, target_id, target_kind, pipeline_id, failure_reason, "
-        f"       failure_detail, proposal_md, ts "
+        f"       failure_detail, proposal_md, artifacts, ts "
         f"FROM dead_attempts "
         f"WHERE target_kind = 'Goal' AND target_id = ? "
         f"  AND failure_reason NOT IN ({placeholders}) "
