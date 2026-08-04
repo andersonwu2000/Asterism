@@ -44,6 +44,12 @@ ARGUMENT_WARN_CHARS = 3_000
 #: closed arcs still itemized — 10K fires exactly when distillation is
 #: overdue, and before the blunt 25K whole-document warning.
 ROADMAP_WARN_CHARS = 10_000
+#: Conventions are the EXPENSIVE section: the Roadmap rides only the
+#: strategist and judge, but Conventions ride every worker spawn whole.
+#: 4K is generous for "short and general"; at SLC rev 19 the section hit
+#: 5.9K carrying near-verbatim duplicates of lesson-KB entries (the two
+#: learning loops write the same footgun twice — 2026-08-04 audit).
+CONVENTIONS_WARN_CHARS = 4_000
 DOC_WARN_CHARS = 25_000
 
 _SECTION_ORDER = ("## Argument", "## Proof", "## Roadmap")
@@ -206,6 +212,14 @@ def length_warning(sections: dict[str, str],
             "collapses to its conclusion, a dead instantiation to one "
             "closure line with its restart condition. Entries carried "
             "verbatim across revisions are the mass to cut.")
+    cv = len(sections.get("conventions", ""))
+    if cv > CONVENTIONS_WARN_CHARS:
+        warns.append(
+            f"⚠ CONVENTIONS LENGTH WARNING: {cv} chars (threshold "
+            f"{CONVENTIONS_WARN_CHARS}). Conventions ride EVERY worker "
+            "spawn — a fact the lesson KB or CATALOG already carries is "
+            "double billing; keep only what is universal and nowhere "
+            "else.")
     d = len(body) if body is not None else sum(
         len(v) for v in sections.values())
     if d > DOC_WARN_CHARS:

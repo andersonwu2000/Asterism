@@ -99,6 +99,16 @@ def test_length_warning_thresholds():
     assert warn and "ROADMAP LENGTH WARNING" in warn
     assert "PROPOSAL LENGTH" not in warn and "PROOF LENGTH" not in warn
 
+    # Conventions warn (2026-08-04): the section rides EVERY worker
+    # spawn, so its threshold is the tightest of the four.
+    body = (_body() + "## Conventions\n"
+            + "c" * (programme.CONVENTIONS_WARN_CHARS + 1) + "\n")
+    long_cv, err = programme.parse_proposal(body)
+    assert err is None
+    warn = programme.length_warning(long_cv, body)
+    assert warn and "CONVENTIONS LENGTH WARNING" in warn
+    assert "ROADMAP LENGTH" not in warn
+
     body = _body(roadmap="r" * (programme.DOC_WARN_CHARS + 1))
     long_doc, _ = programme.parse_proposal(body)
     warn = programme.length_warning(long_doc, body)

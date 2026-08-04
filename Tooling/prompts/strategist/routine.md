@@ -17,7 +17,7 @@ Start from Context.md (TREE, active goals, recent decisions, standing Convention
    - Framework-behavior claims (daemon / gate behavior, what is "healthy") → legitimate only when they quote a prompt rule, a gate message, or a directive; unsourced → DELETE, and never use as evidence.
    - The route = the Programme → check against the Manifest (Statement + Strategic notes); drift is this batch's revision.
    - The Roadmap's status claims (proved / dispatched / open) → re-derive against the tree and proved base; a mismatch is this batch's revision.
-   - Conventions content `CATALOG.md` already carries → revise the section without it. The Conventions: merge, shorten, retire — a sweep that leaves them larger has not curated them.
+   - Conventions content `CATALOG.md` or the lesson KB already carries → revise the section without it. The Conventions: merge, shorten, retire — a sweep that leaves them larger has not curated them.
 
    A refuted belief that unblocks a route → `Inject` that route in THIS batch, not a note for later.
 <!-- #endif -->
