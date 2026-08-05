@@ -148,11 +148,19 @@ def test_roadmap_tag_rejection_lists_every_offender(tmp_path: Path):
 # ------------------------------------------------- verdict contract
 
 def _criteria(**fired: str) -> dict:
-    """All-clear criteria dict, with named criteria fired."""
+    """All-clear criteria dict, with named criteria fired. Criterion 1
+    carries its mandatory naming (#159: bare clear on \"1\" is
+    malformed)."""
     c = {k: "clear" for k in adversary.CRITERIA_KEYS}
+    c["1"] = "clear: the closer entry — one prerequisite stands"
     for k, reason in fired.items():
         c[k.lstrip("c")] = f"fired: {reason}"
     return c
+
+
+def _clear_criteria_json() -> str:
+    """Minimal valid all-clear verdict.json for spawn stubs."""
+    return json.dumps({"criteria": _criteria()})
 
 
 def test_parse_verdict_derives_ruling():
@@ -171,6 +179,25 @@ def test_parse_verdict_derives_ruling():
     assert err == "" and v["verdict"] == "rebut"
     assert v["criticisms"] == ["[criterion 3] weak step 5"]
     assert v["reservations"] == ["note"]
+
+
+def test_criterion_one_never_takes_a_bare_clear():
+    """#159: ten SLC revs cleared criterion 1 with the bare word — the
+    attention-forcing device (name the MAIN-claim entry + remaining
+    distance) was bypassed by the output template, on the one criterion
+    built to catch a main claim orbiting untouched. Mechanical: bare
+    clear on "1" is malformed; other criteria keep bare clear."""
+    bare = {k: "clear" for k in adversary.CRITERIA_KEYS}
+    v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
+    assert v is None and "criterion 1" in err and "naming" in err
+    # Punctuation-only annotation is still bare.
+    bare["1"] = "clear: "
+    v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
+    assert v is None and "criterion 1" in err
+    # A real naming passes.
+    bare["1"] = "clear: entry closing the main claim — two steps stand"
+    v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
+    assert err == "" and v["verdict"] == "pass"
 
 
 def test_parse_verdict_contract():
@@ -630,7 +657,7 @@ def test_judge_reads_proofs_in_place(
     def fake_spawn(**kw):
         seen.update(kw)
         (Path(kw["attempts_dir"]) / "verdict.json").write_text(
-            json.dumps({"criteria": {str(i): "clear" for i in range(1, 6)}}),
+            _clear_criteria_json(),
             encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
@@ -912,7 +939,7 @@ def test_review_retries_infra_rc_and_keeps_the_proposal(
         if calls["n"] == 1:
             return 1                      # provider blip → spawn_fast_fail
         (Path(kw["attempts_dir"]) / "verdict.json").write_text(
-            json.dumps({"criteria": {str(i): "clear" for i in range(1, 6)}}),
+            _clear_criteria_json(),
             encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)

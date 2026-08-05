@@ -131,8 +131,9 @@ def test_run_strategist_inject_enqueues_forward(
             # verdict — auto-pass so this test stays about the Inject
             # commit path.
             (kw["attempts_dir"] / "verdict.json").write_text(
-                json.dumps({"criteria": {str(i): "clear"
-                                         for i in range(1, 6)},
+                json.dumps({"criteria": {
+                    "1": "clear: the closer entry — nothing stands",
+                    **{str(i): "clear" for i in range(2, 6)}},
                             "reservations": []}),
                 encoding="utf-8")
             return 0

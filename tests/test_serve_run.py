@@ -448,7 +448,10 @@ def _verdict_json(**criteria: str) -> str:
     every rebut as `passed`."""
     import json as _json
     from Tooling.pipeline.adversary import CRITERIA_KEYS
-    body = {"criteria": {k: criteria.get(f"c{k}", "clear")
+    body = {"criteria": {k: criteria.get(
+                             f"c{k}",
+                             "clear: closer entry — nothing stands"
+                             if k == "1" else "clear")
                          for k in CRITERIA_KEYS},
             "reservations": []}
     return _json.dumps(body)

@@ -317,6 +317,18 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
         # hit. The DISCRIMINATOR is the leading word (word-boundary, so
         # "clearly…" stays malformed); suffix prose is tolerated.
         if re.match(r"clear\b", s, re.IGNORECASE):
+            # #159 (2026-08-04): criterion 1's judgment IS the naming —
+            # the entry that closes the MAIN claim and the remaining
+            # distance. Ten SLC revs cleared it with the bare word,
+            # leaving the attention device without an auditable trace,
+            # on the one criterion built to catch a main claim orbiting
+            # untouched. Mechanical, not honor-system: bare clear on
+            # "1" is malformed.
+            if k == "1" and not s[len("clear"):].strip(" -—–:"):
+                return None, (
+                    "criterion 1 never takes a bare \"clear\" — its "
+                    "judgment IS the naming: `\"clear: <entry that "
+                    "closes the MAIN claim> — <what still stands>\"`")
             continue
         if re.match(r"fired\b", s, re.IGNORECASE):
             reason = (s.split(":", 1)[1].strip() if ":" in s

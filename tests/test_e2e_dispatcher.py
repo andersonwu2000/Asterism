@@ -178,8 +178,9 @@ def test_e2e_root_proved_through_dispatcher(
         elif kind == "adversary":
             import json as _json
             (attempts / "verdict.json").write_text(
-                _json.dumps({"criteria": {str(i): "clear"
-                                          for i in range(1, 6)},
+                _json.dumps({"criteria": {
+                    "1": "clear: the closer entry — nothing stands",
+                    **{str(i): "clear" for i in range(2, 6)}},
                              "reservations": []}),
                 encoding="utf-8")
         return 0

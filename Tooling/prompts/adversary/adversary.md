@@ -33,11 +33,13 @@ Write `verdict.json` in your working directory — adjudicate EVERY criterion, o
 
 ```json
 {"criteria": {
-   "1": "clear",
+   "1": "clear: <the entry that closes the MAIN claim> — <what still stands between this batch and it>",
    "2": "fired: <concrete, load-bearing objection — name the step / brief / closure it targets, and where possible suggest the discriminating experiment>",
    "3": "clear", "4": "clear", "5": "clear"},
  "reservations": ["<advisory note — shown to the next Strategist wake; only for concerns that fire no criterion>"]}
 ```
+
+Criterion 1 never takes a bare `clear` — its judgment IS the naming, so the line carries it either way.
 
 The verdict is not yours to write: the framework derives it — any `fired` = rebut (your fired lines go verbatim to the Strategist), all `clear` = pass. A defect you can name belongs on its criterion's line, not in a reservation.
 
