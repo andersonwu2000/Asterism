@@ -640,14 +640,18 @@ def test_projection_does_not_stage_proofs(
     assert not (proj / "proofs").exists()
 
 
-def test_judge_reads_proofs_in_place(
+def test_judge_reads_proofs_and_papers_in_place(
     workspace: Path, conn: sqlite3.Connection, monkeypatch,
 ) -> None:
-    """The staging replacement: the spawn carries a read-only grant on
-    the REAL proofs dir (`extra_read_dirs`) and the prompt's
-    `{proofs_dir}` placeholder is substituted with that concrete path —
-    a judge told to decide RETARGETED disputes "by these files" must be
-    able to open every one of them, not a curated subset."""
+    """The staging replacement: the spawn carries read-only grants on
+    the REAL proofs dir and the paper shelf (`extra_read_dirs`) and the
+    prompt's `{proofs_dir}` / `{papers_dir}` placeholders are
+    substituted with the concrete paths — a judge told to decide
+    RETARGETED and faithfulness-to-the-paper disputes "by these files"
+    must be able to open every one of them, not a curated subset (the
+    old SLC judge accepted a paper-grounded load-bearing claim on
+    consistency with a prior judge's pointer because Papers/ sat
+    outside its readable roots — rev 5 reservation, g368)."""
     from Tooling.pipeline import adversary as adv
     attempts = workspace / ".attempts" / "adv-inplace"
     attempts.mkdir(parents=True)
@@ -669,10 +673,13 @@ def test_judge_reads_proofs_in_place(
     assert rc == 0 and verdict is not None
 
     proofs_dir = (pdir / "proofs").resolve()
-    assert seen["extra_read_dirs"] == (proofs_dir,)
+    papers_dir = (workspace / "Papers").resolve()
+    assert seen["extra_read_dirs"] == (proofs_dir, papers_dir)
     rendered = Path(seen["prompt_path"]).read_text(encoding="utf-8")
     assert adv.PROOFS_DIR_PLACEHOLDER not in rendered
+    assert adv.PAPERS_DIR_PLACEHOLDER not in rendered
     assert proofs_dir.as_posix() in rendered
+    assert papers_dir.as_posix() in rendered
 
 
 # ---------------------------------------------------------------------

@@ -149,9 +149,11 @@ def _dialogue_digest(dialogue: list[dict[str, Any]]) -> str:
     return "\n".join(out)
 
 
-#: The judge's `{proofs_dir}` prompt placeholder — substituted with the
-#: problem's landed proofs directory at spawn time (`review` below).
+#: The judge's `{proofs_dir}` / `{papers_dir}` prompt placeholders —
+#: substituted with the problem's landed proofs directory and the
+#: workspace paper shelf at spawn time (`review` below).
 PROOFS_DIR_PLACEHOLDER = "{proofs_dir}"
+PAPERS_DIR_PLACEHOLDER = "{papers_dir}"
 
 
 def build_projection(*, round_no: int, attempts_dir: Path,
@@ -378,18 +380,27 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
         problem_dir=problem_dir, conn=conn, problem=problem,
         proposal_body=proposal_body, decisions=decisions,
         dialogue=dialogue, proof_warn=proof_warn, group_id=group_id)
-    # The judge reads the landed proofs IN PLACE (user call 2026-08-04;
-    # staging retired — see build_projection). The prompt names the
-    # concrete directory: substitute the placeholder and hand the spawn
-    # the rendered copy (same move as the worker prompts'
-    # `__FEEDBACK_PATH__`). The write fence is untouched — the grant is
-    # read-only and proofs/ is not a write root.
+    # The judge reads the landed proofs and the paper shelf IN PLACE
+    # (user calls 2026-08-04/05; staging retired — see build_projection).
+    # Papers joined 08-05: the old SLC judge accepted a paper-grounded
+    # load-bearing claim "on consistency with the prior judge's pointer"
+    # because Papers/ sat outside its readable roots (rev 5 reservation,
+    # g368) — and a paper-driven run makes faithfulness-to-the-paper
+    # claims load-bearing every rev. Both are ground truth, not
+    # strategist narrative; reading them in place widens no independence
+    # boundary. The prompt names the concrete directories: substitute
+    # the placeholders and hand the spawn the rendered copy (same move
+    # as the worker prompts' `__FEEDBACK_PATH__`). The write fence is
+    # untouched — the grants are read-only and neither is a write root.
+    workspace = attempts_dir.parent.parent
     proofs_dir = (problem_dir / "proofs").resolve()
+    papers_dir = (workspace / "Papers").resolve()
     prompt_src = PROMPT_DIR / "adversary" / "adversary.md"
     prompt_path = attempts_dir / "_adversary_prompt.md"
     prompt_path.write_text(
-        prompt_src.read_text(encoding="utf-8").replace(
-            PROOFS_DIR_PLACEHOLDER, proofs_dir.as_posix()),
+        prompt_src.read_text(encoding="utf-8")
+        .replace(PROOFS_DIR_PLACEHOLDER, proofs_dir.as_posix())
+        .replace(PAPERS_DIR_PLACEHOLDER, papers_dir.as_posix()),
         encoding="utf-8")
 
     # One re-spawn on a missing/malformed verdict (cheap; a judge that
@@ -417,9 +428,10 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
             # has X" claims, and that was its only shell use. The config
             # lands INSIDE the projection so the isolation is unchanged.
             mcp_config_path=_tools_cfg,
-            # Read-only, in place (claude renders it as Read/Grep allow
-            # patterns; agy's reads are already workspace-wide).
-            extra_read_dirs=(proofs_dir,),
+            # Read-only, in place (claude renders them as Read/Grep
+            # allow patterns + --add-dir; agy's reads are already
+            # workspace-wide).
+            extra_read_dirs=(proofs_dir, papers_dir),
             # The projection dir breaks the standard attempts layout —
             # attribute the judge's cost explicitly or the spawn_usage
             # row is silently dropped (invisible-judge class, 07-18).
