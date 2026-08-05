@@ -1704,6 +1704,47 @@ def _spawn_handoff_successor(workspace: Path, scope: "str | None") -> None:
               f"daemon by hand (`asterism daemon start`)", flush=True)
 
 
+def scope_mismatch_reason(workspace: Path,
+                          scope: str) -> "str | None":
+    """#158 pre-flight: None when `scope` (SQL LIKE, the same pattern
+    dispatch filters on) matches at least one REGISTERED problem;
+    otherwise a teaching refusal message.
+
+    A no-match scope can never dispatch anything — the daemon boots,
+    patrols an empty set forever, and the idle is indistinguishable
+    from health (08-04 SLC: `reset` deletes the problems row; two
+    restarts idled ~20min before the missing `init` was noticed).
+    Registration — not goals — is the right predicate: a freshly
+    init'd problem has no goals yet but is legitimately dispatchable
+    (the Strategist bootstraps it).
+
+    Read-only raw connection on purpose: this runs in the START
+    caller's process while a daemon may be live, and a pre-flight must
+    neither write nor auto-migrate (`db.connect` migrates)."""
+    import sqlite3 as _sqlite3
+    db_file = workspace / db.DB_PATH
+    try:
+        conn = _sqlite3.connect(
+            f"file:{db_file.as_posix()}?mode=ro", uri=True, timeout=5)
+        try:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM problems WHERE name LIKE ?",
+                (scope,)).fetchone()[0]
+        finally:
+            conn.close()
+    except _sqlite3.OperationalError:
+        # No DB file / no problems table — same answer as 0 matches:
+        # nothing is registered under this scope.
+        n = 0
+    if n:
+        return None
+    return (f"REFUSING to start: --scope {scope!r} matches no registered "
+            f"problem — dispatch would idle forever and look healthy. "
+            f"If this problem was just reset, `asterism reset` deletes "
+            f"its registration: run `asterism init <problem>` first, "
+            f"then start again (or fix the scope pattern).")
+
+
 def run(workspace: Path, *, once: bool = False,
         scope: str | None = None) -> int:
     pid_lock = _acquire_singleton_lock(workspace)
@@ -1838,6 +1879,21 @@ def run(workspace: Path, *, once: bool = False,
     # is the long-running consumer of the DB on a workspace that
     # was init'd against an earlier schema version.
     db.init_schema(conn)
+    # #158 authoritative check (the daemon-side twin of the
+    # `daemon_start` pre-flight — this one also covers direct `run`
+    # invocations and the code-drift handoff successor). Raising, not
+    # returning: the CLI's except-path records the message in
+    # daemon-exit.txt, so `daemon status` names the cause.
+    if scope:
+        _n_in_scope = conn.execute(
+            "SELECT COUNT(*) FROM problems WHERE name LIKE ?",
+            (scope,)).fetchone()[0]
+        if not _n_in_scope:
+            raise RuntimeError(
+                f"--scope {scope!r} matches no registered problem — "
+                f"dispatch would idle forever and look healthy. If this "
+                f"problem was just reset, run `asterism init <problem>` "
+                f"to re-register it, then start again.")
     # Restore the Librarian chain fail cap across restarts (#92 B#3): a stuck
     # unit's tally persists so it STALLs instead of looping forever.
     st.librarian_fail_counts.update(db.librarian_fail_counts_all(conn))

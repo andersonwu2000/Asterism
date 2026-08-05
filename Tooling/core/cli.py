@@ -1851,6 +1851,16 @@ def daemon_start(workspace: Path, *, scope: "str | None" = None,
         return 1, (f"config unparseable — refusing to start on defaults: "
                    f"{_cfg_err}. Fix Asterism.yaml (or the python env) "
                    "and retry.")
+    # #158: a scope matching no registered problem can never dispatch —
+    # the daemon would boot and idle forever, indistinguishable from
+    # health (08-04 SLC: `reset` deletes the problems row; two restarts
+    # idled ~20min before the missing `init` was noticed). Refuse here,
+    # in the caller's face; dispatcher.run re-checks for direct `run`
+    # invocations and the code-drift handoff successor.
+    if scope:
+        _mismatch = _disp.scope_mismatch_reason(workspace, scope)
+        if _mismatch:
+            return 1, _mismatch
     deadline = _time.time() + wait_lock_sec
     while True:
         refusal: "str | None" = None

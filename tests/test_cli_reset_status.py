@@ -705,6 +705,18 @@ def _daemon_ns(action, **kw):
     return argparse.Namespace(**base)
 
 
+def _register_problem(workspace, name="Logic.p"):
+    """#158 precondition: `daemon start --scope X` now refuses unless X
+    LIKE-matches a registered problem, so scoped-start tests seed one."""
+    from Tooling.state import db as _db
+    c = _db.connect(workspace / "asterism.db")
+    _db.init_schema(c)
+    c.execute("INSERT INTO problems (name, manifest_path, created_at,"
+              " bootstrap_done) VALUES (?, '', ?, 1)", (name, _db.now()))
+    c.commit()
+    c.close()
+
+
 def test_daemon_status_no_daemon(tmp_path, monkeypatch, capsys):
     import json
     from Tooling.core.cli import cmd_daemon
@@ -804,10 +816,71 @@ def test_daemon_start_refuses_while_start_marker_fresh(
     (tmp_path / ".asterism").mkdir()
     (tmp_path / ".asterism" / "daemon-starting.txt").write_text(
         "x", encoding="utf-8")
+    _register_problem(tmp_path)
     monkeypatch.chdir(tmp_path)
     rc = cmd_daemon(_daemon_ns("start", scope="Logic.p"))
     assert rc == 1
     assert "already starting" in capsys.readouterr().out
+
+
+def test_daemon_start_refuses_scope_matching_no_registered_problem(
+        tmp_path, monkeypatch, capsys):
+    """#158: a scope that LIKE-matches no registered problem can never
+    dispatch — the daemon would boot and idle forever, and the idle is
+    indistinguishable from health (08-04 SLC: `reset` deleted the
+    problems row, two restarts idled ~20min). The start must refuse
+    with the way out named, not hand back a healthy-looking pid."""
+    from Tooling.core.cli import cmd_daemon
+    (tmp_path / "Problems").mkdir()
+    monkeypatch.chdir(tmp_path)
+    # No DB at all — nothing is registered.
+    rc = cmd_daemon(_daemon_ns("start", scope="Topology.ghost"))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "matches no registered problem" in out
+    assert "asterism init" in out          # the teaching way-out
+    # A registered-but-different problem still refuses…
+    _register_problem(tmp_path, name="Logic.p")
+    rc = cmd_daemon(_daemon_ns("start", scope="Topology.ghost"))
+    assert rc == 1
+    assert "matches no registered problem" in capsys.readouterr().out
+
+
+def test_daemon_start_scope_check_uses_like_semantics(
+        tmp_path, monkeypatch, capsys):
+    """The pre-flight must accept exactly what dispatch would filter on:
+    the scope is an SQL LIKE pattern, so `Logic.%` matches `Logic.p`."""
+    import subprocess
+    from Tooling.core.cli import cmd_daemon
+
+    class _P:
+        pid = 4242
+        def communicate(self, timeout=None):
+            return b"4242\n", b""
+    (tmp_path / "Problems").mkdir()
+    _register_problem(tmp_path, name="Logic.p")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: _P())
+    assert cmd_daemon(_daemon_ns("start", scope="Logic.%")) == 0
+
+
+def test_dispatcher_run_refuses_unregistered_scope(tmp_path, monkeypatch):
+    """The daemon-side authoritative twin of the start pre-flight: it
+    also covers direct `run` invocations and the code-drift handoff
+    successor. Raising (not returning) routes the message into
+    daemon-exit.txt via the CLI's except-path, so `daemon status`
+    names the cause."""
+    import pytest as _pytest
+    from Tooling.core import dispatcher as _disp
+    (tmp_path / "Problems").mkdir()
+    monkeypatch.chdir(tmp_path)
+    _register_problem(tmp_path, name="Logic.p")
+    with _pytest.raises(RuntimeError, match="matches no registered"):
+        _disp.run(tmp_path, once=True, scope="Topology.ghost")
+    # The registered problem passes the same gate (reason is None).
+    assert _disp.scope_mismatch_reason(tmp_path, "Logic.p") is None
+    assert _disp.scope_mismatch_reason(tmp_path, "Logic.%") is None
+    assert _disp.scope_mismatch_reason(tmp_path, "Geo.%") is not None
 
 
 def test_daemon_force_stop_cleans_residue(tmp_path, monkeypatch, capsys):
@@ -874,6 +947,7 @@ def test_daemon_start_spawns_detached_and_writes_log_pointer(
     from Tooling.core.cli import cmd_daemon
     from Tooling.core import dispatcher as disp
     (tmp_path / "Problems").mkdir()
+    _register_problem(tmp_path)          # scope pre-flight (#158)
     monkeypatch.chdir(tmp_path)
     disp.stop_file_path(tmp_path).parent.mkdir(exist_ok=True)
     disp.stop_file_path(tmp_path).write_text("stale", encoding="utf-8")

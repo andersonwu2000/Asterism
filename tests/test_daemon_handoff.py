@@ -27,6 +27,18 @@ class _FakeRelay:
         return b"4242\n", b""
 
 
+def _register_problem(workspace: Path, name: str = "p") -> None:
+    """#158 precondition: a scoped `daemon_start` refuses unless the
+    scope LIKE-matches a registered problem."""
+    from Tooling.state import db as _db
+    c = _db.connect(workspace / "asterism.db")
+    _db.init_schema(c)
+    c.execute("INSERT INTO problems (name, manifest_path, created_at,"
+              " bootstrap_done) VALUES (?, '', ?, 1)", (name, _db.now()))
+    c.commit()
+    c.close()
+
+
 def test_daemon_start_spawns_through_a_relay_on_windows(
         tmp_path: Path, monkeypatch) -> None:
     """The daemon must not be the caller's child: on Windows the spawn
@@ -43,6 +55,7 @@ def test_daemon_start_spawns_through_a_relay_on_windows(
     monkeypatch.setattr(_cli, "_daemon_live_pid", lambda ws: None)
     import subprocess
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    _register_problem(tmp_path)
     rc, msg = _cli.daemon_start(tmp_path, scope="p")
     assert rc == 0
     argv, kw = calls[0]
@@ -66,6 +79,7 @@ def test_daemon_start_wait_lock_retries_until_the_lock_frees(
     monkeypatch.setattr(subprocess, "Popen",
                         lambda *a, **k: _FakeRelay())
     monkeypatch.setattr(time, "sleep", lambda s: None)
+    _register_problem(tmp_path)
     rc, msg = _cli.daemon_start(tmp_path, scope="p", wait_lock_sec=30.0)
     assert rc == 0
 

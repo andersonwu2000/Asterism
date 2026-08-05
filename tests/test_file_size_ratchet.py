@@ -199,7 +199,10 @@ _WATERMARKS = {
     # `_enqueue_strategist` (the one row shape), `_strategist_target`
     # (group→problem resolution incl. legacy rows) and the per-tick
     # top-group self-heal. Conscious bump.
-    "Tooling/core/dispatcher.py": 2600,
+    # 2600→2660 (2026-08-04): #158 — scope_mismatch_reason pre-flight +
+    # the in-run authoritative twin (a scope matching no registered
+    # problem must refuse loudly, not idle forever). Conscious bump.
+    "Tooling/core/dispatcher.py": 2660,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
