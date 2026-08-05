@@ -341,6 +341,16 @@ def rev_for_goal(conn: sqlite3.Connection, problem: str, *,
         owner = _groups.group_for_goal(conn, problem, int(goal_id))
         if owner is not None:
             group_id = int(owner["id"])
+    if group_id is None and decision_id is not None:
+        # A decision whose batch has no passed rev yet (path 1 missed)
+        # still names its group — without this, a mint dispatched by a
+        # sub-group's very first batch falls through to the problem-wide
+        # max rev, i.e. a SIBLING group's argument (#164 class).
+        d = conn.execute(
+            "SELECT group_id FROM strategist_decisions WHERE id = ?",
+            (decision_id,)).fetchone()
+        if d is not None and d["group_id"] is not None:
+            group_id = int(d["group_id"])
     return current_rev(conn, problem, group_id)
 
 

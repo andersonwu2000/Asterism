@@ -288,6 +288,37 @@ def test_rev_for_goal_falls_back_to_current(tmp_path):
     assert programme.rev_for_goal(c, "p")["rev"] == 1
 
 
+def test_rev_for_goal_decision_fallback_stays_in_the_decisions_group(
+        tmp_path):
+    """#164 class: v35 chains are per group. A decision whose batch has
+    no passed rev yet must fall back to ITS group's current rev — the
+    problem-wide max is a SIBLING group's argument (top chain at rev 2
+    here, so the old fallback would hand the child's mint 'Top step 2')."""
+    from Tooling.state import groups as groups_store
+    c = _fresh(tmp_path)
+    top = groups_store.ensure_top_group(c, "p")
+    programme.record_pass(c, "p", _body(proof="Top step 1."),
+                          {"verdict": "pass"}, [], 0, "t1", group_id=top)
+    programme.record_pass(c, "p", _body(proof="Top step 2."),
+                          {"verdict": "pass"}, [], 0, "t2", group_id=top)
+    child = groups_store.open_group(c, problem="p", parent_group_id=top,
+                                    charter="settle the sub-claim")
+    programme.record_pass(c, "p", _body(proof="Child step."),
+                          {"verdict": "pass"}, [], 0, "c1", group_id=child)
+    # An infra-retry shape: the child's decision rides a batch id with
+    # no programme_revisions row, so resolution paths 1-2 both miss.
+    c.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, batch_id, group_id, created_at,"
+        " updated_at) VALUES ('p', 0, 'routine', 'Inject',"
+        " 'unreviewed-batch', ?, ?, ?)", (child, db.now(), db.now()))
+    did = int(c.execute("SELECT last_insert_rowid()").fetchone()[0])
+    c.commit()
+
+    row = programme.rev_for_goal(c, "p", decision_id=did)
+    assert "Child step." in row["body"]
+
+
 def test_rev_for_goal_takes_the_latest_authorisation_at_the_same_depth(
     tmp_path,
 ):

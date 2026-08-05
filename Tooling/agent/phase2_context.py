@@ -1102,7 +1102,8 @@ def _section_failure_replay(conn: sqlite3.Connection,
     return out
 
 
-def _plan_note_provenance(conn: sqlite3.Connection, problem: str) -> str:
+def _plan_note_provenance(conn: sqlite3.Connection, problem: str,
+                          group_id: "int | None" = None) -> str:
     """The framework's own record of what the last wake actually landed:
     last committed batch id + current Programme rev.
 
@@ -1117,11 +1118,19 @@ def _plan_note_provenance(conn: sqlite3.Connection, problem: str) -> str:
     the check crash-proof (a killed wake writes no footer) and immune
     to the agent's own rewrites."""
     from ..state import programme as _programme
-    row = conn.execute(
-        "SELECT batch_id, created_at FROM strategist_decisions"
-        " WHERE problem = ? AND batch_id IS NOT NULL"
-        " ORDER BY id DESC LIMIT 1", (problem,)).fetchone()
-    rev = _programme.current_rev(conn, problem)
+    # v35 — the plan note is per group, so its provenance line must be
+    # too: a sub-group Strategist stamped with the TOP group's last
+    # batch + rev count would read every one of its own wakes as a
+    # phantom batch (#164 class). group_id=None keeps the problem-wide
+    # read for pre-v35 rows.
+    q = ("SELECT batch_id, created_at FROM strategist_decisions"
+         " WHERE problem = ? AND batch_id IS NOT NULL")
+    args: tuple = (problem,)
+    if group_id is not None:
+        q += " AND group_id = ?"
+        args = (problem, int(group_id))
+    row = conn.execute(q + " ORDER BY id DESC LIMIT 1", args).fetchone()
+    rev = _programme.current_rev(conn, problem, group_id)
     rev_txt = (f"Programme rev {rev['rev']}" if rev is not None
                else "no Programme rev")
     if row is None:
@@ -1162,7 +1171,7 @@ def _section_plan_note(conn: sqlite3.Connection, workspace: Path,
     if not text or not text.strip():
         return []
     out = ["## Your plan note (private, cross-wake)", "",
-           _plan_note_provenance(conn, problem), ""]
+           _plan_note_provenance(conn, problem, group_id), ""]
     if len(text) > _drafts.PLAN_NOTE_SOFT_CAP:
         out += [f"_⚠ {len(text)} chars — past the useful size; rewrite it "
                 f"down to what still matters._", ""]

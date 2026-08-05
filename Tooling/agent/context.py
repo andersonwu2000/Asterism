@@ -1026,6 +1026,7 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
     pointer covers the rest; it resolves because PROGRAMME.md sits in
     the problem dir (spawn cwd, inside the Read allowlist)."""
     from ..state import programme as _programme
+    from ..state import groups as _groups
     try:
         # The rev that AUTHORISED this goal, not the latest one — see
         # `programme.rev_for_goal`. A sibling branch's review can ship a
@@ -1034,19 +1035,39 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
         # an argument that never justified its goal.
         row = _programme.rev_for_goal(conn, problem, goal_id=goal_id,
                                       decision_id=decision_id)
-        current = _programme.current_rev(conn, problem)
     except sqlite3.OperationalError:
         return []
     if row is None:
         return []
+    # v35 — revision chains are PER GROUP, each numbered from 1. "Has
+    # the Programme moved on?" is only meaningful within the goal's own
+    # chain: comparing against the problem-wide max rev told a
+    # sub-group's worker its (only) rev had been superseded by the TOP
+    # group's chain (SLC 08-04: goal 7309, group 370 rev 1, reported
+    # against group 368's rev 27 — #164).
+    try:
+        gid = row["group_id"]
+    except (IndexError, KeyError):
+        gid = None
+    try:
+        current = _programme.current_rev(conn, problem, gid)
+        top = _groups.top_group(conn, problem)
+    except sqlite3.OperationalError:
+        current, top = None, None
+    top_id = int(top["id"]) if top is not None else None
+    # The group's own render target — the TOP group keeps PROGRAMME.md
+    # in the problem dir; sub-groups render under .groups/<id>/ (both
+    # inside the worker's Read allowlist, cwd = problem dir).
+    prog_rel = _programme.PROGRAMME_BASENAME
+    if gid is not None and top_id is not None and int(gid) != top_id:
+        prog_rel = f".groups/{int(gid)}/{_programme.PROGRAMME_BASENAME}"
     # The pointer must resolve (design §2 P1 acceptance point): the
     # pass-commit render is best-effort, so a fresh checkout / failed
     # render can leave a rev in the DB with no file on disk. Re-render
     # idempotently before advertising it.
-    if problem_dir is not None and not (
-            problem_dir / _programme.PROGRAMME_BASENAME).exists():
+    if problem_dir is not None and not (problem_dir / prog_rel).exists():
         try:
-            _programme.render(conn, problem, problem_dir)
+            _programme.render(conn, problem, problem_dir, gid)
         except OSError:
             pass
     sections, _err = _programme.parse_proposal(str(row["body"] or ""))
@@ -1054,23 +1075,25 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
     out = [f"## Proof (Programme rev {row['rev']})", ""]
     if proof:
         out += [proof, ""]
-    # PROGRAMME.md on disk always renders the CURRENT rev. When that is
-    # not the rev above, say so rather than let the pointer quietly
-    # substitute a different argument for the one that authorised this
-    # goal — the same drift this section was just pinned against.
+    # PROGRAMME.md on disk always renders the group's CURRENT rev. When
+    # that is not the rev above, say so rather than let the pointer
+    # quietly substitute a different argument for the one that
+    # authorised this goal — the same drift this section was just
+    # pinned against.
     if current is not None and int(current["rev"]) != int(row["rev"]):
         # The race actually happening, on the record. Silence here means
         # the Programme never moved under anyone's feet in this run;
         # a line means it did, and names who was riding the old argument.
         print(f"[programme-pin] goal {goal_id}: authorised by rev "
-              f"{row['rev']}, current is {current['rev']}", flush=True)
-        out += [f"Full Programme: `PROGRAMME.md` beside the problem "
+              f"{row['rev']}, current is {current['rev']}"
+              f" (group {gid})", flush=True)
+        out += [f"Full Programme: `{prog_rel}` beside the problem "
                 f"files — note it renders rev {current['rev']}, which has "
                 f"moved on from the rev that authorised this goal. The "
                 f"`## Proof` above is the one you formalize against.", ""]
     else:
-        out += ["Full Programme (Argument / Roadmap / adversary "
-                "reservations): `PROGRAMME.md` beside the problem files.",
+        out += [f"Full Programme (Argument / Roadmap / adversary "
+                f"reservations): `{prog_rel}` beside the problem files.",
                 ""]
     return out
 
