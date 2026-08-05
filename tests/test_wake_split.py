@@ -72,11 +72,20 @@ def test_math_turn_rejects_admin_kinds(conn: sqlite3.Connection) -> None:
     ]))
     err = strategist.verify_decisions(ds, conn, problem="p", turn="math")
     assert "ADMIN turn" in err
-    ds2, _ = strategist.parse_decisions(json.dumps([
+
+
+def test_fetch_paper_is_a_math_turn_kind(conn: sqlite3.Connection) -> None:
+    """#163: the need for a paper surfaces in the Roadmap, which the
+    admin turn's context never renders — 30+ SLC revs carried a survey
+    entry and fetched nothing. A fetch is a route decision; it lives in
+    the math turn and the admin turn refuses it."""
+    ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "FetchPaper", "query": "q", "reason": "r"},
     ]))
-    err2 = strategist.verify_decisions(ds2, conn, problem="p", turn="math")
-    assert "ADMIN turn" in err2
+    assert strategist.verify_decisions(
+        ds, conn, problem="p", turn="math") == ""
+    err = strategist.verify_decisions(ds, conn, problem="p", turn="admin")
+    assert "MATH turn" in err
 
 
 def test_both_turns_accept_the_shared_kinds(conn: sqlite3.Connection,

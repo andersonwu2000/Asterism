@@ -896,12 +896,17 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
 #: or asserts a mathematical verdict. `RequestUserAmend` and `Noop` are
 #: deliberately in both: an amend can be discovered mathematically (a
 #: kernel-checked ¬P in hand) or clerically (the file is malformed).
+#: `FetchPaper` moved A→M (#163, 2026-08-04): the need for a paper
+#: surfaces in the Roadmap, which the admin turn's context never
+#: renders — 30+ SLC revs carried a survey entry and fetched nothing.
+#: A fetch is a route decision (an unverified literature claim the
+#: route leans on), so it belongs with the route.
 ADMIN_TURN_KINDS: frozenset[str] = frozenset(
-    {"MarkDeliverable", "FetchPaper", "RequestUserAmend", "Noop"})
+    {"MarkDeliverable", "RequestUserAmend", "Noop"})
 MATH_TURN_KINDS: frozenset[str] = frozenset(
     {"Inject", "Delegate", "AttemptDisproof", "ConfirmShelve",
      "CloseGroup", "ReturnToParent", "Ingest", "RequestUserAmend",
-     "Noop",
+     "Noop", "FetchPaper",
      # retired — flows through to the per-kind teaching rejection
      "EmitDirective"})
 
@@ -2406,9 +2411,8 @@ def run_admin_turn(conn: sqlite3.Connection, *, problem: str,
                    mfst: "Any", attempts_dir: Path,
                    group_id: "int | None" = None) -> "str | None":
     """Turn A of the wake split (research_mission_design.md §3.2):
-    registry operations only — MarkDeliverable / FetchPaper /
-    RequestUserAmend / Noop — un-judged, fail-open, before the math
-    turn.
+    registry operations only — MarkDeliverable / RequestUserAmend /
+    Noop — un-judged, fail-open, before the math turn.
 
     Returns None (math turn proceeds), 'frozen' (an amend committed;
     the problem is awaiting_human, the wake ends here), or an infra
