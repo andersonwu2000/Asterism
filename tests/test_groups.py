@@ -520,14 +520,21 @@ def test_a_committed_batch_is_stamped_with_its_authoring_group(tmp_path):
     sub = groups.open_group(conn, problem=p, parent_group_id=top,
                             charter="claim A")
     conn.commit()
-    d = _strategist.Decision(kind="Noop", reason="waiting")
-    _strategist.commit_decisions([d], conn, problem=p, tick=0,
+    # FetchPaper rides along: its per-kind INSERT was the ONE call site
+    # that dropped group_id (2026-08-05, first post-v35 fetch tripped
+    # the exhaustiveness invariant mid-commit and the raise cost the
+    # judged founding rev).
+    ds = [_strategist.Decision(kind="Noop", reason="waiting"),
+          _strategist.Decision(kind="FetchPaper", reason="frontier check",
+                               payload={"query": "Thurston 1982"})]
+    _strategist.commit_decisions(ds, conn, problem=p, tick=0,
                                  trigger_kind="routine",
                                  workspace=tmp_path, group_id=sub)
     rows = conn.execute(
-        "SELECT group_id FROM strategist_decisions WHERE problem = ?",
-        (p,)).fetchall()
-    assert rows and all(int(r["group_id"]) == sub for r in rows)
+        "SELECT decision_kind, group_id FROM strategist_decisions"
+        " WHERE problem = ?", (p,)).fetchall()
+    assert {str(r["decision_kind"]) for r in rows} == {"Noop", "FetchPaper"}
+    assert all(int(r["group_id"]) == sub for r in rows)
     # ...and the routine commit advanced THAT group's clock, not another's.
     assert groups.get(conn, sub)["last_routine_at"] is not None
     assert groups.get(conn, top)["last_routine_at"] is None

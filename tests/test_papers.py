@@ -475,12 +475,22 @@ def test_fetchpaper_verify_and_commit(tmp_path: Path) -> None:
     conn.execute("DELETE FROM problem_papers")
     conn.commit()
     # Commit: audit row first, queue row carries decision_id + payload.
+    # group_id must land on the audit row (2026-08-05: this was the ONE
+    # per-kind INSERT call site that dropped it — the first post-v35
+    # FetchPaper tripped the batch group invariant mid-commit and the
+    # raise cost the judged founding rev).
+    from Tooling.state import groups as _groups
+    gid = _groups.ensure_top_group(conn, "Test.px")
     out = _commit_fetch_paper(d, conn, problem="Test.px", tick=1,
-                              trigger_kind="routine")
+                              trigger_kind="routine", group_id=gid)
     row = conn.execute(
         "SELECT * FROM queue WHERE kind='Scholar'").fetchone()
     assert row is not None
     assert int(row["decision_id"]) == out.decision_row_id
+    drow = conn.execute(
+        "SELECT group_id FROM strategist_decisions WHERE id = ?",
+        (out.decision_row_id,)).fetchone()
+    assert drow is not None and int(drow["group_id"]) == gid
     import json
     payload = json.loads(row["payload"])
     assert payload["query"].startswith("Thurston")

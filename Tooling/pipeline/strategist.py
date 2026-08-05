@@ -2089,9 +2089,13 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         # Paper v2 (D11): own commit path — audit row FIRST so the
         # Scholar queue row carries decision_id (Inject pattern; the
         # dispatcher fills this decision's `outcome` on completion).
+        # group_id threads through like every sibling (2026-08-05: the
+        # one call site that dropped it — the first post-v35 FetchPaper
+        # tripped the batch group invariant and the RAISE cost the
+        # judged founding rev; caught by the invariant, live).
         return _commit_fetch_paper(
             decision, conn, problem=problem, tick=tick,
-            trigger_kind=trigger_kind)
+            trigger_kind=trigger_kind, group_id=group_id)
 
     elif k == "Ingest":
         # Terminal judgment → pause for human sign-off (unless the
