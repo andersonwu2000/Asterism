@@ -87,7 +87,7 @@ def test_gate_shape():
         [_d("RequestUserAmend")], "pending_review")
     # Any route-moving kind arms the gate — including EmitDirective
     # (the drift side door) and the endgame kinds.
-    for kind in ("Inject", "AttemptDisproof", "ConfirmShelve",
+    for kind in ("Inject", "ConfirmShelve",
                  "MarkDeliverable", "Ingest", "EmitDirective"):
         assert strategist.package_gate_applies(
             [_d(kind), _d("Noop")], "routine"), kind
@@ -107,9 +107,9 @@ def test_package_requires_file_and_experiment(tmp_path: Path):
     body, sections, err = strategist.verify_proposal_package(
         [_d("Ingest")], tmp_path)
     assert err is None and body == _PROPOSAL
-    # AttemptDisproof counts as the experiment (no brief → no tag rule).
+    # Delegate counts as the experiment.
     body, sections, err = strategist.verify_proposal_package(
-        [_d("AttemptDisproof")], tmp_path)
+        [_d("Delegate", brief="settle the sub-claim")], tmp_path)
     assert err is None
     # Inject briefs must carry a `Roadmap:` line (P2 presence check).
     body, sections, err = strategist.verify_proposal_package(
@@ -874,21 +874,18 @@ def test_plan_note_rewrite_step_synced_and_names_attempts_dir() -> None:
 
 def test_proposal_section_shared_lines_synced() -> None:
     """07-29 programme readback: both SG and cube strategists misread
-    'Carry ≥1' as '≥1 AttemptDisproof per route-moving batch' (the gate
-    counts Inject or AttemptDisproof — strategist._EXPERIMENT_KINDS) and
-    paid a recurring defense paragraph in every revision; passed
-    revisions also carried round-numbered concession narration. The
-    corrective lines stay byte-identical across the three wake
-    prompts."""
+    'Carry ≥1' as a per-batch quota and paid a recurring defense
+    paragraph in every revision; passed revisions also carried
+    round-numbered concession narration. The corrective lines stay
+    byte-identical across the three wake prompts."""
     root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
     texts = {
         f: (root / "strategist" / f).read_text(encoding="utf-8")
         for f in ("routine.md", "inject_batch_done.md",
                   "pending_review.md")}
     for needle in (
-        "Every route-moving batch carries ≥1 experiment — an Inject, "
-        "a `Delegate`, or an AttemptDisproof",
-        "its absence needs no defense",
+        "Every route-moving batch carries ≥1 experiment — an Inject "
+        "or a `Delegate`",
         "**Write for the record, not the reviewer** — fold accepted "
         "criticisms into corrected text",
     ):

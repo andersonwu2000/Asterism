@@ -1028,14 +1028,17 @@ def test_strategist_prompts_share_decision_kind_vocabulary() -> None:
     # offer the kind.
     expected_kinds = {
         "routine": {"Inject", "ConfirmShelve", "Delegate",
-                    "AttemptDisproof", "RequestUserAmend", "Noop"},
+                    "RequestUserAmend", "Noop"},
         "pending_review": {"Inject", "ConfirmShelve", "Delegate"},
         "inject_batch_done": {"Inject", "ConfirmShelve", "Delegate"},
     }
     for tk in expected_kinds:
         text = (PROMPT_DIR / "strategist" / f"{tk}.md").read_text(
             encoding="utf-8")
-        assert "EmitDirective" not in text, f"{tk}.md re-offers a retired kind"
+        # AttemptDisproof retired 2026-08-04, same pattern.
+        for retired in ("EmitDirective", "AttemptDisproof"):
+            assert retired not in text, \
+                f"{tk}.md re-offers a retired kind ({retired})"
     prompt_dir = PROMPT_DIR / "strategist"
     for tk, kinds in expected_kinds.items():
         text = (prompt_dir / f"{tk}.md").read_text(encoding="utf-8")

@@ -252,12 +252,12 @@ def predicted_batch_delta(conn: sqlite3.Connection, decisions) -> int:
     n = 0
     for d in decisions:
         k = getattr(d, "kind", None)
-        if k in ("Inject", "FetchPaper", "AttemptDisproof", "Ingest",
+        if k in ("Inject", "FetchPaper", "Ingest",
                  "RequestUserAmend", "Delegate", "ReturnToParent",
                  "CloseGroup"):
             # New dispatch (Inject/FetchPaper/Delegate — a delegated
-            # burden is work handed to a new group, not a self-edge), a
-            # minted ¬P goal, or a lifecycle edge (active→ingest_signoff
+            # burden is work handed to a new group, not a self-edge),
+            # or a lifecycle edge (active→ingest_signoff
             # / awaiting_human / a group reaching a terminal status).
             n += 1
             continue

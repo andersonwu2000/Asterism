@@ -170,54 +170,33 @@ def _section_ingest_gate(conn: sqlite3.Connection,
 
 def _section_disproof_guidance(conn: sqlite3.Connection,
                                problem: str) -> list[str]:
-    """Feature D — context-conditional falsity triage. Rendered only
-    when the problem shows falsity signals (a `disproved` goal, an
-    `agent_infeasible` decline, or an AttemptDisproof in flight /
-    settled), so healthy problems never see it (prompt stays static).
+    """Context-conditional falsity triage. Rendered only when the
+    problem shows falsity signals (a `disproved` goal), so healthy
+    problems never see it (prompt stays static). AttemptDisproof
+    retired 2026-08-04 — the bet is expressed with a negation mint.
     """
     signals = conn.execute(
         "SELECT EXISTS(SELECT 1 FROM goals WHERE problem = ? AND"
-        "  status = 'disproved')"
-        " OR EXISTS(SELECT 1 FROM strategist_decisions WHERE problem = ?"
-        "  AND decision_kind = 'AttemptDisproof')",
-        (problem, problem)).fetchone()[0]
+        "  status = 'disproved')", (problem,)).fetchone()[0]
     if not signals:
         return []
-    lines = [
+    return [
         "## Falsity triage",
         "",
         "A goal here is believed false. Triage before spending:",
         "- Looks like a USER TYPO (sign/bound/quantifier plainly "
         "misstated) → `RequestUserAmend` with the suggested fix; don't "
         "burn compute disproving a typo.",
-        "- STRUCTURAL doubt about a user-requested claim "
-        "(counterexample sketch, failing special case) → "
-        "`{\"kind\": \"AttemptDisproof\", \"target_goal_id\": <id>, "
-        "\"reason\": \"<the evidence>\"}` — the framework mints the "
-        "mechanical ¬ goal; the kernel settles it, not belief.",
+        "- STRUCTURAL doubt about a claim (counterexample sketch, "
+        "failing special case) → `Inject` a Forward mint stating the "
+        "precise negation or the counterexample; the kernel settles "
+        "it, not belief. A kernel-settled disproof of a USER claim "
+        "goes back via `RequestUserAmend` — never `Ingest` over it.",
         "- Merely HARD → keep proving; difficulty is not falsity.",
         "- Inner (non-deliverable) sub-goals believed false usually "
         "mean the DECOMPOSITION is wrong — re-decompose, don't disprove.",
         "",
     ]
-    settled = conn.execute(
-        "SELECT d.target_id AS t, gn.slug AS ns, gp.slug AS ps,"
-        " gp.status AS ts"
-        " FROM strategist_decisions d"
-        " JOIN goals gn ON gn.id = d.produced_goal_id"
-        " JOIN goals gp ON gp.id = d.target_id"
-        " WHERE d.problem = ? AND d.decision_kind = 'AttemptDisproof'"
-        " AND gn.status = 'proved'", (problem,)).fetchall()
-    for row in settled:
-        lines += [
-            f"SETTLED FALSE: `{row['ps']}` — its negation `{row['ns']}` "
-            f"is kernel-proved. `Ingest` is blocked while the target is "
-            f"pursued: `RequestUserAmend` to hand the disproof back to "
-            f"the user (attach `{row['ns']}`), or retire the target if "
-            f"the user already amended.",
-            "",
-        ]
-    return lines
 
 
 def _section_stall_warning(conn: sqlite3.Connection,

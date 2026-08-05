@@ -497,7 +497,9 @@ def test_predicted_batch_delta_counts_transitions_not_kinds(
         return _tr.predicted_batch_delta(conn, list(ds))
 
     assert delta(Decision(kind="Inject")) == 1
-    assert delta(Decision(kind="AttemptDisproof", target_id=g_open)) == 1
+    # AttemptDisproof retired 2026-08-04 — no longer a state-moving kind
+    # (the verifier rejects it before commit anyway).
+    assert delta(Decision(kind="AttemptDisproof", target_id=g_open)) == 0
     assert delta(Decision(kind="Ingest")) == 1
     assert delta(Decision(kind="RequestUserAmend")) == 1
     assert delta(Decision(kind="Noop")) == 0

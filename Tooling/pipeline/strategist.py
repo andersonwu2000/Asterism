@@ -51,6 +51,13 @@ from ..core import dispatcher as _dispatcher
 DECISION_KINDS: frozenset[str] = frozenset({
     "Inject", "ConfirmShelve", "EmitDirective",
     "RequestUserAmend", "Noop", "MarkDeliverable", "Ingest",
+    # "AttemptDisproof" retired 2026-08-04 (kept parseable, like
+    # EmitDirective, so the verifier can teach the way out): one use
+    # all-time — its own acceptance test. The bet-against-a-claim move
+    # is expressed with the general machinery instead: Inject a Forward
+    # mint of the precise negation / counterexample; a sub-group hands
+    # a refuted charter back via ReturnToParent(refuted); a false USER
+    # claim goes to RequestUserAmend with the disproof attached.
     "FetchPaper", "AttemptDisproof",
     # v35 (discussion_group_design.md) — hand a claim DOWN to a new
     # sub-group, and hand a charter back UP to the parent group.
@@ -98,7 +105,7 @@ _ENDGAME_KINDS: frozenset[str] = frozenset({"MarkDeliverable", "Ingest"})
 #: the Proof is NOT required to predict (see the closure-law carve-out
 #: in `verify_decision`).
 _EXPERIMENT_KINDS: frozenset[str] = frozenset(
-    {"Inject", "AttemptDisproof", "Delegate"})
+    {"Inject", "Delegate"})
 PROPOSAL_BASENAME = "proposal.md"
 
 
@@ -131,7 +138,7 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
     if not (kinds & _ENDGAME_KINDS) and not (kinds & _EXPERIMENT_KINDS):
         return None, None, (
             "a proposal must carry at least one experiment (Inject or "
-            "AttemptDisproof) — thinking runs inside the wake; the "
+            "Delegate) — thinking runs inside the wake; the "
             "commit is how the argument touches the machine. (Endgame "
             "batches carrying MarkDeliverable/Ingest are exempt.)")
     # P2 — every Inject brief names its Roadmap entry. Presence of the
@@ -676,40 +683,16 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         return ""
 
     if k == "AttemptDisproof":
-        # Feature D: the Strategist suspects a user-requested claim is
-        # FALSE. The framework mints ¬P MECHANICALLY (never an LLM
-        # restatement — a re-stated negation could be a strawman).
-        # Prop-only: negating a data-def is meaningless. Scope = any
-        # theorem-kind goal (deliverable claims + hand-written root).
-        if decision.target_id is None:
-            return "AttemptDisproof requires target_goal_id"
-        g = db.get_goal(conn, decision.target_id)
-        if g is None:
-            return f"target_goal_id={decision.target_id} not found"
-        if str(g["problem"]) != problem:
-            return (f"target goal belongs to problem {g['problem']!r}, "
-                    f"not this Strategist's {problem!r}")
-        if str(g["kind"]) != "theorem":
-            return (f"AttemptDisproof target must be a claim "
-                    f"(kind='theorem'); goal {decision.target_id} is "
-                    f"kind={g['kind']!r} — negating data is meaningless")
-        if str(g["status"]) == "proved":
-            return (f"AttemptDisproof target g{decision.target_id} is "
-                    f"already proved — a disproof attempt now would be "
-                    f"hunting a contradiction; if you distrust the "
-                    f"proof, tell the human instead")
-        if not decision.reason or not str(decision.reason).strip():
-            return ("AttemptDisproof requires non-empty reason (the "
-                    "structural falsity evidence — counterexample "
-                    "sketch / failing special case)")
-        prior = conn.execute(
-            "SELECT id FROM strategist_decisions WHERE decision_kind ="
-            " 'AttemptDisproof' AND target_id = ? AND outcome IS NULL",
-            (int(decision.target_id),)).fetchone()
-        if prior is not None:
-            return (f"AttemptDisproof already in flight for goal "
-                    f"{decision.target_id} (decision {prior['id']})")
-        return ""
+        # Retired 2026-08-04 (one use all-time — its own acceptance
+        # test; the real counterexample work always went through mints).
+        # The general machinery expresses the same bet.
+        return ("AttemptDisproof is retired — bet against a claim with "
+                "the general machinery: `Inject` a Forward mint stating "
+                "the precise negation (or a counterexample construction) "
+                "and let the kernel settle it. A sub-group hands a "
+                "refuted charter back via `ReturnToParent(refuted)` "
+                "naming that proved node; a false USER claim goes to "
+                "`RequestUserAmend` with the disproof attached")
 
     if k == "Ingest":
         # Phase 6 — Ingest is the ONLY terminal (Done fused into it).
@@ -776,52 +759,12 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                     f"does not agree with the DB, so the snapshot would "
                     f"describe something that is not there. A human must "
                     f"resolve it (`asterism drift-check`)")
-        # Feature D — a PROVED negation of a still-pursued target blocks
-        # the terminal judgment: the user asked for P and the kernel
-        # says ¬P; the honest exit is RequestUserAmend (hand the
-        # disproof back), not Ingest. Released once the target is
-        # retired (shelved/dead/disproved — the user amended, or the
-        # negation was adopted as the deliverable). Both-proved is a
-        # CONSISTENCY ALARM: an axiom leak or framework bug upstream.
-        settled = conn.execute(
-            "SELECT d.id AS did, d.target_id AS t, gp.status AS ts,"
-            " gn.slug AS ns"
-            " FROM strategist_decisions d"
-            " JOIN goals gn ON gn.id = d.produced_goal_id"
-            " JOIN goals gp ON gp.id = d.target_id"
-            " WHERE d.problem = ? AND d.decision_kind = 'AttemptDisproof'"
-            " AND gn.status = 'proved'", (problem,)).fetchall()
-        for row in settled:
-            if str(row["ts"]) == "proved":
-                print(f"[strategist] CONSISTENCY ALARM: goal "
-                      f"g{row['t']} and its negation {row['ns']} are "
-                      f"BOTH proved — axiom leak or framework bug; "
-                      f"tell the operator immediately", flush=True)
-                return (f"Ingest blocked: g{row['t']} and its negation "
-                        f"are both proved — consistency alarm, human "
-                        f"must investigate")
-            if str(row["ts"]) in ("open", "attempting", "frozen",
-                                  "pending_strategist_review"):
-                return (f"Ingest blocked: negation of g{row['t']} is "
-                        f"proved ({row['ns']}) while the target is "
-                        f"still pursued — RequestUserAmend to hand the "
-                        f"disproof back, or retire the target")
-            # 返回用戶 enforcement (decision-pure, user call 2026-07-08):
-            # a kernel-settled disproof requires one user round-trip
-            # AFTER it — a RequestUserAmend resolved later than this
-            # AttemptDisproof decision (ordered by decision id; no
-            # Manifest text guessing).
-            amended = conn.execute(
-                "SELECT 1 FROM strategist_decisions WHERE problem = ?"
-                " AND decision_kind = 'RequestUserAmend'"
-                " AND outcome IN ('accepted', 'consumed')"
-                " AND id > ? LIMIT 1",
-                (problem, int(row["did"]))).fetchone()
-            if amended is None:
-                return (f"Ingest blocked: the disproof of g{row['t']} "
-                        f"({row['ns']}) has not been handed back — "
-                        f"RequestUserAmend first; Ingest after the "
-                        f"user responds")
+        # (The AttemptDisproof-linked disproof gate retired with the
+        # kind, 2026-08-04 — no mechanically-linked negation pairs can
+        # be minted anymore. The invariant "a disproved requested claim
+        # never satisfies the Manifest" survives in the contract line
+        # plus the judge's reachability criterion: a refuted main claim
+        # leaves no Roadmap entry that could close it.)
         return ""
 
     if k == "RequestUserAmend":
@@ -904,11 +847,11 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
 ADMIN_TURN_KINDS: frozenset[str] = frozenset(
     {"MarkDeliverable", "RequestUserAmend", "Noop"})
 MATH_TURN_KINDS: frozenset[str] = frozenset(
-    {"Inject", "Delegate", "AttemptDisproof", "ConfirmShelve",
+    {"Inject", "Delegate", "ConfirmShelve",
      "CloseGroup", "ReturnToParent", "Ingest", "RequestUserAmend",
      "Noop", "FetchPaper",
-     # retired — flows through to the per-kind teaching rejection
-     "EmitDirective"})
+     # retired — flow through to the per-kind teaching rejections
+     "EmitDirective", "AttemptDisproof"})
 
 
 def _turn_whitelist_error(kind: str, turn: "str | None") -> str:
@@ -1102,7 +1045,7 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # Cross-decision: review-discharge (2026-07-11, b6 wake-pump). While
     # ANY goal sits in `pending_strategist_review`, the batch must contain
     # at least one decision TARGETING one of them (ConfirmShelve / Reopen /
-    # Inject / AttemptDisproof on that goal) — pending_review means "the
+    # Inject on that goal) — pending_review means "the
     # framework cannot progress without your verdict on THIS goal", and
     # `reconcile_stuck_states` re-wakes every tick until the set empties.
     # A batch that leaves every reviewed goal untouched (the EmitDirective-
@@ -1155,9 +1098,9 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                 f"goal stays revivable), OR\n"
                 f"  - Inject(target_goal_id=...) — "
                 f"keep it alive and re-attack it with a fresh brief "
-                f"(force-reopens the goal), OR\n"
-                f"  - AttemptDisproof(target_goal_id=...) — if you now "
-                f"suspect the statement is false.\n"
+                f"(force-reopens the goal); if you now suspect the "
+                f"statement is false, Inject a mint of its negation "
+                f"instead.\n"
                 f"Other decisions may accompany these, but cannot be "
                 f"the whole batch."
             )
@@ -1199,7 +1142,7 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                     "whose outcome most changes your Thesis.\n"
                     "Commit the work as: `Inject` (a genuinely new angle) "
                     "/ `ConfirmShelve` (a live goal) paired with an "
-                    "`Inject` / `AttemptDisproof` / `MarkDeliverable` (a "
+                    "`Inject` / `MarkDeliverable` (a "
                     "PROVED forward node) then `Ingest`. "
                     "`RequestUserAmend` ONLY if a user file is factually "
                     "WRONG — difficulty or a missing API is work, not "
@@ -1784,7 +1727,7 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
             group_id=group_id))
     # Wake-clock touch — ONE point for the whole batch (task #119).
     # When each per-kind path touched last_strategist_at itself, the
-    # early-return paths (Inject / FetchPaper / AttemptDisproof) never
+    # early-return paths (Inject / FetchPaper) never
     # learned about the ROUTINE clock: a pure-Inject routine batch left
     # last_routine_at NULL, T1 read "never routine'd", and a fresh
     # routine wake was enqueued the instant the previous one finished —
@@ -1869,114 +1812,6 @@ def _commit_fetch_paper(decision: Decision, conn: sqlite3.Connection,
         decision_id=row_id, problem=problem,
         payload={"query": query, "reason": str(decision.reason or "")})
     conn.commit()
-    return CommitOutcome(
-        decision_row_id=row_id,
-        enqueued_forward=False,
-        final_outcome="committed",
-    )
-
-
-def _negation_statement(target_text: str) -> "str | None":
-    """MECHANICAL negation surgery (feature D): from the target's own
-    file text, extract `<binders> : <conclusion>`, close it to
-    ∀-form, and wrap in `¬ (...)`. No LLM touches the statement — a
-    re-stated negation could be a strawman, which would make the whole
-    settle semantics unsound. Returns None when the signature can't be
-    extracted (caller surfaces the error; never guesses)."""
-    from ..quality.dedupe import _extract_full_signature, _to_forall_form
-    sig = _extract_full_signature(target_text)
-    if not sig:
-        return None
-    return f"¬ ({_to_forall_form(sig)})"
-
-
-def _header_lines(target_text: str) -> "list[str]":
-    """The target file's import/open header — the vocabulary surface the
-    negation statement needs (comment lines skipped)."""
-    out = []
-    for ln in target_text.splitlines():
-        s = ln.strip()
-        if s.startswith("import ") or s.startswith("open "):
-            out.append(ln)
-        elif s.startswith(("theorem ", "lemma ", "def ", "structure ",
-                           "class ", "inductive ", "instance ",
-                           "noncomputable ", "@[")):
-            break
-    return out
-
-
-def _commit_attempt_disproof(decision: Decision, conn: sqlite3.Connection,
-                             *, problem: str, tick: int,
-                             group_id: "int | None" = None,
-                             trigger_kind: str,
-                             workspace: Path) -> CommitOutcome:
-    """AttemptDisproof (feature D) — audit row + mechanically-minted
-    ¬P goal (linkage: decision.target_id=P, produced_goal_id=¬P;
-    zero schema — the pair lives in the decision row, and the Ingest
-    gate / consistency alarm query it there).
-
-    The ¬P goal is a normal open goal (origin='forward', detached).
-    BFS dispatches it to the Formalizer like anything else; no new
-    pipeline."""
-    gid = int(decision.target_id)  # type: ignore[arg-type]
-    g = db.get_goal(conn, gid)
-    target_path = workspace / str(g["lean_path"])
-    try:
-        target_text = target_path.read_text(encoding="utf-8")
-    except OSError as e:
-        raise RuntimeError(
-            f"AttemptDisproof: cannot read target file {target_path}: {e}")
-    neg = _negation_statement(target_text)
-    if neg is None:
-        raise RuntimeError(
-            f"AttemptDisproof: could not extract g{gid}'s signature from "
-            f"{target_path} — negation must be mechanical; aborting "
-            f"rather than guessing")
-
-    slug = f"not_{g['slug']}"[:60]
-    header = _header_lines(target_text)
-    body = "\n".join(
-        header
-        + ["",
-           f"namespace Problems.{problem}",
-           "",
-           f"-- AttemptDisproof (framework-minted): mechanical negation "
-           f"of `{g['slug']}`.",
-           f"theorem {slug} : {neg} := by sorry",
-           "",
-           f"end Problems.{problem}",
-           ""])
-    from ..state import proof_store
-    proofs_dir = db.problem_dir(workspace, problem) / "proofs"
-    proofs_dir.mkdir(parents=True, exist_ok=True)
-    dest = proofs_dir / f"L_{slug}.lean"
-    if dest.exists():
-        raise RuntimeError(
-            f"AttemptDisproof: {dest} already exists (slug collision)")
-    proof_store.place_proof(
-        conn, workspace, goal_id=None,
-        rel_path=dest.relative_to(workspace).as_posix(), content=body)
-    neg_gid = db.insert_goal(
-        conn, problem=problem, slug=slug,
-        lean_path=dest.relative_to(workspace).as_posix(),
-        statement=neg, origin="forward", depth=0,
-        kind="theorem",
-    )
-    ts = db.now()
-    cur = conn.execute(
-        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
-        " trigger_kind, decision_kind, group_id, target_id, brief,"
-        " reason, payload, produced_goal_id, produced_kind, outcome,"
-        " created_at, updated_at)"
-        " VALUES (?, ?, ?, 'AttemptDisproof', ?, ?, NULL, ?, '{}', ?,"
-        " 'disproof', NULL, ?, ?)",
-        (problem, tick, trigger_kind, group_id, gid, decision.reason,
-         neg_gid, ts, ts),
-    )
-    row_id = int(cur.lastrowid)
-    conn.commit()
-    print(f"[strategist] AttemptDisproof(g{gid}) → minted {slug} "
-          f"(g{neg_gid}): {neg[:100]}", flush=True)
     return CommitOutcome(
         decision_row_id=row_id,
         enqueued_forward=False,
@@ -2257,14 +2092,6 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         return _commit_fetch_paper(
             decision, conn, problem=problem, tick=tick,
             trigger_kind=trigger_kind)
-
-    elif k == "AttemptDisproof":
-        # Feature D: own commit path — mints the mechanical ¬P goal
-        # (linkage rides the decision row: target_id=P,
-        # produced_goal_id=¬P).
-        return _commit_attempt_disproof(
-            decision, conn, problem=problem, tick=tick,
-            trigger_kind=trigger_kind, workspace=workspace)
 
     elif k == "Ingest":
         # Terminal judgment → pause for human sign-off (unless the

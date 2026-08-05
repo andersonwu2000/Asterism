@@ -44,7 +44,7 @@ Start from Context.md (TREE, active goals, recent decisions, standing Convention
 
 ## Programme proposal
 
-Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelve / Ingest) ships a Programme revision: Write `proposal.md` (bare filename, in your attempts dir) —
+Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships a Programme revision: Write `proposal.md` (bare filename, in your attempts dir) —
 
     # <Title>       one line: this batch's goal
     ## Argument     why THIS batch: what the latest outcomes showed, why these experiments advance the Roadmap
@@ -69,7 +69,7 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
 - Boldness lives in the Roadmap — name candidate constructions and hypotheses there, labeled as hypotheses; rigor lives in the Proof — a candidate enters it only once its argument is closed.
 - Name Roadmap entries by phrase, never by position — numbers change as revisions reorder entries.
 - Mark formal↔informal claims not yet kernel-checked in the Roadmap.
-- Every route-moving batch carries ≥1 experiment — an Inject, a `Delegate`, or an AttemptDisproof (Ingest batches exempt). Retiring work is not an experiment. An AttemptDisproof probes a doubt; its absence needs no defense.
+- Every route-moving batch carries ≥1 experiment — an Inject or a `Delegate` (Ingest batches exempt). Retiring work is not an experiment.
 - Before submitting, re-check your ## Proof for correctness: every step's direction and quantifier scope, and any step that assumes structure the hypothesis does not give.
 - A fresh, isolated **Adversary** judges the package (proposal + briefs) before dispatch.
 
@@ -78,7 +78,6 @@ Any batch that moves the route (contains Inject / AttemptDisproof / ConfirmShelv
   - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself — steer with the brief's mathematics, not a mode.
   - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never brief a mint with an alive goal's statement.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone (the batch still needs its ≥1 experiment). Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
-- `AttemptDisproof` — `target_goal_id`, `reason` (falsity evidence). For a claim handed to you (Manifest or charter) you believe is false as meant; a file that fails to say what the user meant → `RequestUserAmend`. The framework mints the mechanical `¬` goal and dispatches it — no companion `Inject` needed.
 - `Delegate` — `brief` or `brief_file` (the charter: a precise claim the new group must settle), optional `target_goal_id`, optional `reason`. For a claim you cannot yet prove. Your Proof must be complete GIVEN it; it must not depend on your conclusion or any charter above you. With `target_goal_id`: that goal becomes the anchor. Several plausible routes, none yet provable → one group per route, in the same batch; competing hypotheses are a portfolio, not a queue.
 - `FetchPaper` — `query` (citation or description), `reason`. A route leaning on an unverified literature claim — this is open, this is known — fetches before spending batches on it. Papers calibrate the Roadmap; they are not a proof to transcribe.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md", "Root.lean"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong.
