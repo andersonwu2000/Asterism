@@ -20,9 +20,23 @@ from pathlib import Path
 
 FETCH_HOST_WHITELIST = frozenset({
     "arxiv.org", "export.arxiv.org",
+    # Publisher-run open archives (2026-08-05, user call): the classical
+    # 3-manifold literature largely predates arXiv (Hass 1987 died
+    # paper_unfetchable with the AMS PDF as its only open copy), and the
+    # non-PDF-response refusal already rejects any paywall page loudly.
+    "www.ams.org", "ams.org",
+    "projecteuclid.org", "www.projecteuclid.org",
+    "msp.org", "www.msp.org",
 })
 MAX_FETCH_BYTES = 50 * 1024 * 1024
-MAX_SCHOLAR_FETCHES_PER_PROBLEM = 5
+# 5 → 20 (2026-08-05, user call): a research-grade survey legitimately
+# needs 7+ papers (SLC restart hit 6 in its first two batches and the
+# cap would have killed the LAST in-flight bind — possibly Louder, the
+# highest-value fetch). Papers on the shelf are lazy-loaded assets —
+# readers pay only for what they open — and every fetch now rides the
+# judged math turn, so the mechanical cap is a runaway backstop, not
+# the budget.
+MAX_SCHOLAR_FETCHES_PER_PROBLEM = 20
 
 # New-style (2007+) `2605.23679` and old-style `math/0601146` /
 # `math.GT/0601146` arXiv ids both resolve to arxiv.org/pdf/<id>.

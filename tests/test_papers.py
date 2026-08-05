@@ -332,9 +332,11 @@ def test_arxiv_id_resolution_old_and_new_style() -> None:
 
 
 def test_fetch_refuses_non_whitelisted_host(tmp_path: Path) -> None:
+    # (www.ams.org joined the whitelist 2026-08-05 — publisher-run open
+    # archives; a random host still refuses.)
     from Tooling.papers import fetch
     with pytest.raises(ValueError, match="not fetch-whitelisted"):
-        fetch.fetch_and_shelve(tmp_path, "https://www.ams.org/x.pdf",
+        fetch.fetch_and_shelve(tmp_path, "https://evil.example.com/x.pdf",
                                problem=None, reason=None)
 
 
