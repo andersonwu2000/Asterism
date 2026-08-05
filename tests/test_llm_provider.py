@@ -2133,3 +2133,38 @@ def test_cold_prompt_context_clause_only_when_file_exists(tmp_path) -> None:
     (tmp_path / "Context.md").write_text("ctx", encoding="utf-8")
     out2 = claude_cli._build_cold_prompt(req)
     assert "read context at" in out2 and "Context.md" in out2
+
+
+def test_allowed_tools_renders_extra_read_dirs(tmp_path) -> None:
+    """`extra_read_dirs` (2026-08-04, judge reads proofs/ in place):
+    each extra dir becomes a Read + Grep allow pattern, on the adversary
+    branch and the general branch alike. Without the pattern the grant
+    does not exist — claude's permission model is allowlist-only here."""
+    from Tooling.llm import claude_cli
+    ws = tmp_path / "ws"
+    proj = ws / ".attempts" / "pid" / "adversary" / "r1"
+    proj.mkdir(parents=True)
+    proofs = ws / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+
+    req = llm.LLMRequest(
+        kind="adversary", prompt_path=proj / "prompt.md",
+        problem_dir=proj, attempts_dir=proj, timeout_sec=60,
+        extra_read_dirs=(proofs,))
+    out = claude_cli._compose_allowed_tools(req)
+    assert f"Read({proofs.as_posix()}/**)" in out
+    assert f"Grep({proofs.as_posix()}/**)" in out
+
+    # The general (worker) branch renders them too.
+    req2 = llm.LLMRequest(
+        kind="backward", prompt_path=proj / "prompt.md",
+        problem_dir=ws / "Problems" / "p", attempts_dir=proj,
+        timeout_sec=60, extra_read_dirs=(proofs,))
+    assert f"Read({proofs.as_posix()}/**)" in \
+        claude_cli._compose_allowed_tools(req2)
+
+    # And absence stays absence — no stray patterns.
+    req3 = llm.LLMRequest(
+        kind="adversary", prompt_path=proj / "prompt.md",
+        problem_dir=proj, attempts_dir=proj, timeout_sec=60)
+    assert "proofs" not in claude_cli._compose_allowed_tools(req3)

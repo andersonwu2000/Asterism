@@ -114,6 +114,16 @@ class LLMRequest:
                     living `Tooling.lsp_gateway` HTTP server). Builder
                     + Backward pipelines set this; Reflection leaves
                     it None.
+      extra_read_dirs: additional directories the spawn may Read/Grep
+                    beyond its kind's standard scope. Adversary sets
+                    this to the problem's landed `proofs/` (2026-08-04,
+                    user call): the projection's cited-file staging +
+                    cap truncated the judge's evidence late in a big
+                    problem; landed proofs are ground truth, not
+                    strategist narrative, so reading them in place
+                    widens no independence boundary. Read-only — the
+                    write fence is untouched. Providers whose reads are
+                    already workspace-wide (agy) need no rendering.
       inline_prompt: When set, the provider sends this string verbatim
                     as the `-p` payload to claude (bypasses the normal
                     template loading from `prompt_path`). Used for
@@ -139,6 +149,7 @@ class LLMRequest:
     continuation: bool = False
     mcp_config_path: Path | None = None
     inline_prompt: str | None = None
+    extra_read_dirs: "tuple[Path, ...] | None" = None
     # Conditional-block flags for the prompt template (D8 2026-07-24):
     # `<!-- #if name -->…<!-- #endif -->` blocks render only when
     # flags[name] is truthy; absent flag (or None) keeps the block.

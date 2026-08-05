@@ -412,6 +412,82 @@ def test_context_surfaces(workspace: Path, conn: sqlite3.Connection):
     assert rendered.exists()
 
 
+def test_worker_section_pins_within_the_goals_own_group(
+        workspace: Path, conn: sqlite3.Connection):
+    """#164: revision chains are per group, each numbered from 1, so
+    "has the Programme moved on?" must be asked of the goal's OWN
+    chain. Live defect (SLC 08-04): goal 7309, authorised by sub-group
+    370's only rev (1), was told the Programme had "moved on" to the
+    TOP group's rev 27 — and pointed at the top group's PROGRAMME.md."""
+    from Tooling.agent import context as wctx
+    from Tooling.state import groups as groups_store
+
+    top = groups_store.ensure_top_group(conn, "p")
+    for n in range(3):
+        programme.record_pass(conn, "p", _PROPOSAL, {"verdict": "pass"},
+                              [], 0, f"top-b{n}", group_id=top)
+    child = groups_store.open_group(conn, problem="p",
+                                    parent_group_id=top,
+                                    charter="settle the Hopf claim")
+    programme.record_pass(
+        conn, "p",
+        _PROPOSAL.replace("The route holds.", "The child route holds."),
+        {"verdict": "pass"}, [], 0, "child-b1", group_id=child)
+    g = db.insert_goal(conn, problem="p", slug="child_brick",
+                       lean_path="Problems/p/proofs/L_child_brick.lean",
+                       statement="theorem child_brick : T",
+                       origin="forward", depth=1, status="open")
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, batch_id, group_id,"
+        " produced_goal_id, created_at, updated_at)"
+        " VALUES ('p', 0, 'inject_batch_done', 'Inject', 'child-b1', ?,"
+        " ?, ?, ?)", (child, g, db.now(), db.now()))
+    conn.commit()
+
+    pdir = workspace / "Problems" / "p"
+    w = "\n".join(wctx._section_programme_worker(conn, "p", None, pdir,
+                                                 goal_id=g))
+    # The child's chain is at rev 1 = the authorising rev: no false
+    # "moved on" warning stamped with a sibling chain's rev number.
+    assert "The child route holds." in w
+    assert "moved on" not in w
+    # The pointer names the child group's own render, and it resolves.
+    assert f".groups/{child}/PROGRAMME.md" in w
+    assert (pdir / ".groups" / str(child) / "PROGRAMME.md").exists()
+
+
+def test_plan_note_provenance_is_group_scoped(
+        workspace: Path, conn: sqlite3.Connection):
+    """#164 class: the plan note is per group, so its provenance stamp
+    must be too — a sub-group Strategist stamped with the TOP group's
+    last batch + rev count would read every one of its own wakes as a
+    phantom batch."""
+    from Tooling.agent import phase2_context
+    from Tooling.state import groups as groups_store
+
+    top = groups_store.ensure_top_group(conn, "p")
+    programme.record_pass(conn, "p", _PROPOSAL, {"verdict": "pass"},
+                          [], 0, "top-b1", group_id=top)
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, batch_id, group_id, created_at,"
+        " updated_at) VALUES ('p', 0, 'routine', 'Inject', 'top-b1', ?,"
+        " ?, ?)", (top, db.now(), db.now()))
+    child = groups_store.open_group(conn, problem="p",
+                                    parent_group_id=top,
+                                    charter="settle the sub-claim")
+    conn.commit()
+
+    line_top = phase2_context._plan_note_provenance(conn, "p", top)
+    assert "top-b1" in line_top and "rev 1" in line_top
+    # The fresh child has NO batches and NO revs of its own — its
+    # provenance must say so, not echo the parent's history.
+    line_child = phase2_context._plan_note_provenance(conn, "p", child)
+    assert "no batch committed" in line_child
+    assert "no Programme rev" in line_child
+
+
 # ------------------------------------------------------- projection
 
 def test_projection_contents(
@@ -512,58 +588,64 @@ def test_projection_directive_absent_says_so(
     assert "(none" in (proj / "directive.md").read_text(encoding="utf-8")
 
 
-def test_projection_stages_strategy_files_behind_alias_stubs(
+def test_projection_does_not_stage_proofs(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    """A cited brick's `L_<slug>.lean` is often just
-    `def slug := @...s<N>`; the tactic proof lives in the
-    `_strategy_s<N>.lean` it imports. Staging only `L_*` made the
-    prompt's "a RETARGETED dispute is decided by these files" a dead
-    promise — the judge got an alias line and was permission-blocked
-    from the real proof (07-29 SG judge feedback). Import edges are
-    followed, transitively."""
+    """Staging retired (user call 2026-08-04): the judge reads the
+    problem's `proofs/` in place. The cited-file selection + cap-20
+    systematically truncated the evidence late in a big problem (SLC:
+    43 of 63 reachable files NOT staged at Ingest-adjacent rounds) —
+    every curation rule was itself the defect, so no copies at all."""
     pdir = workspace / "Problems" / "p"
-    proofs = pdir / "proofs"
-    (proofs / "L_brick_a.lean").write_text(
-        "import Problems.p.proofs._strategy_s24103\n"
-        "def brick_a := @Problems.p.s24103\n", encoding="utf-8")
-    (proofs / "_strategy_s24103.lean").write_text(
-        "import Problems.p.proofs.L_helper\n"
-        "theorem s24103 : True := by exact trivial\n", encoding="utf-8")
-    (proofs / "L_helper.lean").write_text(
-        "theorem helper : True := trivial\n", encoding="utf-8")
-    (proofs / "L_unrelated.lean").write_text("-- not cited\n",
-                                             encoding="utf-8")
-    attempts = workspace / ".attempts" / "adv-closure"
+    (pdir / "proofs" / "L_cited.lean").write_text(
+        "def cited : Prop := True\n", encoding="utf-8")
+    attempts = workspace / ".attempts" / "adv-nostage"
     attempts.mkdir(parents=True)
 
     proj = adversary.build_projection(
-        round_no=1, attempts_dir=attempts, problem_dir=pdir,
-        conn=conn, problem="p", proposal_body=_PROPOSAL,
+        round_no=1, attempts_dir=attempts,
+        problem_dir=pdir, conn=conn, problem="p",
+        proposal_body=_PROPOSAL + "\nuses cited in the argument",
         decisions=[_d("Inject", pipeline="Forward",
-                      brief="cite `brick_a`")],
+                      brief="cite `cited`")],
         dialogue=[], proof_warn=None)
 
-    staged = {f.name for f in (proj / "proofs").iterdir()}
-    assert staged == {"L_brick_a.lean", "_strategy_s24103.lean",
-                      "L_helper.lean"}
+    assert not (proj / "proofs").exists()
 
 
-def test_proof_staging_cap_is_loud(
-    workspace: Path, conn: sqlite3.Connection,
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+def test_judge_reads_proofs_in_place(
+    workspace: Path, conn: sqlite3.Connection, monkeypatch,
 ) -> None:
-    """A bounded closure must announce what it dropped (CLAUDE.md: no
-    silent caps)."""
-    proofs = workspace / "Problems" / "p" / "proofs"
-    for i in range(4):
-        (proofs / f"L_b{i}.lean").write_text("-- x\n", encoding="utf-8")
-    monkeypatch.setattr(adversary, "PROOF_STAGING_CAP", 2)
-    n = adversary._stage_proof_closure(
-        proofs, workspace / "proj",
-        sorted(proofs.glob("L_b*.lean")))
-    assert n == 2
-    assert "staging cap" in capsys.readouterr().out
+    """The staging replacement: the spawn carries a read-only grant on
+    the REAL proofs dir (`extra_read_dirs`) and the prompt's
+    `{proofs_dir}` placeholder is substituted with that concrete path —
+    a judge told to decide RETARGETED disputes "by these files" must be
+    able to open every one of them, not a curated subset."""
+    from Tooling.pipeline import adversary as adv
+    attempts = workspace / ".attempts" / "adv-inplace"
+    attempts.mkdir(parents=True)
+    pdir = workspace / "Problems" / "p"
+    seen = {}
+
+    def fake_spawn(**kw):
+        seen.update(kw)
+        (Path(kw["attempts_dir"]) / "verdict.json").write_text(
+            json.dumps({"criteria": {str(i): "clear" for i in range(1, 6)}}),
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    verdict, err, rc = adv.review(
+        round_no=1, attempts_dir=attempts, problem_dir=pdir, conn=conn,
+        problem="p", proposal_body=_PROPOSAL, decisions=[], dialogue=[],
+        proof_warn=None)
+    assert rc == 0 and verdict is not None
+
+    proofs_dir = (pdir / "proofs").resolve()
+    assert seen["extra_read_dirs"] == (proofs_dir,)
+    rendered = Path(seen["prompt_path"]).read_text(encoding="utf-8")
+    assert adv.PROOFS_DIR_PLACEHOLDER not in rendered
+    assert proofs_dir.as_posix() in rendered
 
 
 # ---------------------------------------------------------------------
@@ -670,22 +752,19 @@ def test_projection_catalog_matches_strategist_view_nested_problem(
     assert (sdir / "CATALOG.md").read_text(encoding="utf-8") == cat
 
 
-def test_projection_stages_tree_cited_proofs_and_directive_body(
+def test_projection_stages_tree_and_directive_body(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    """07-29 judge feedback batch: TREE.md rides along; landed proof
-    files the package text cites are staged read-only; the directive
+    """07-29 judge feedback batch: TREE.md rides along; the directive
     BODY (payload['body'] on real Decisions — `.body` only ever existed
     on test fixtures) reaches decisions.md; goal targets are annotated
-    (slug, status) since CATALOG carries names, not ids."""
+    (slug, status) since CATALOG carries names, not ids. (The staged
+    proofs copies this test once covered were retired 2026-08-04 —
+    the judge now reads proofs/ in place.)"""
     attempts = workspace / ".attempts" / "adv-stage"
     attempts.mkdir(parents=True)
     pdir = workspace / "Problems" / "p"
     (pdir / "TREE.md").write_text("# t\nmain  (frozen)\n", encoding="utf-8")
-    (pdir / "proofs" / "L_cited_brick.lean").write_text(
-        "def cited_brick : Prop := True\n", encoding="utf-8")
-    (pdir / "proofs" / "L_unrelated.lean").write_text(
-        "def unrelated : Prop := True\n", encoding="utf-8")
     gid = db.insert_goal(conn, problem="p", slug="tgt",
                          lean_path="Problems/p/proofs/L_tgt.lean",
                          statement="T", origin="forward", status="proved")
@@ -701,46 +780,12 @@ def test_projection_stages_tree_cited_proofs_and_directive_body(
     proj = adversary.build_projection(
         round_no=1, attempts_dir=attempts, problem_dir=pdir,
         conn=conn, problem="p",
-        proposal_body=_PROPOSAL + "\nuses cited_brick in the argument",
+        proposal_body=_PROPOSAL,
         decisions=decisions, dialogue=[], proof_warn=None)
     assert (proj / "TREE.md").exists()
-    assert (proj / "proofs" / "L_cited_brick.lean").exists()
-    assert not (proj / "proofs" / "L_unrelated.lean").exists()
     dec = (proj / "decisions.md").read_text(encoding="utf-8")
     assert "DIRECTIVE BODY LINE" in dec
     assert f"→ {gid} (`tgt`, proved)" in dec
-
-
-def test_projection_stages_a_cited_strategy_assembly(
-    workspace: Path, conn: sqlite3.Connection,
-) -> None:
-    """A cited `proofs/` file that is not a brick must still be staged.
-
-    The import closure reaches a `_strategy_s<N>.lean` only from an alias
-    stub that imports it, so a ROOT assembly — which nothing imports — was
-    unreachable while the seed glob was `L_*.lean`. On an Ingest package
-    that is the one file both load-bearing claims are about, and the SG
-    judge (2026-08-02) had to leave the exit gate's own assembly as an
-    unverified reservation."""
-    attempts = workspace / ".attempts" / "adv-assembly"
-    attempts.mkdir(parents=True)
-    pdir = workspace / "Problems" / "p"
-    (pdir / "proofs" / "_strategy_s99.lean").write_text(
-        "theorem main : True := trivial\n", encoding="utf-8")
-    (pdir / "proofs" / "_strategy_s12.lean").write_text(
-        "theorem other : True := trivial\n", encoding="utf-8")
-    conn.commit()
-
-    proj = adversary.build_projection(
-        round_no=1, attempts_dir=attempts, problem_dir=pdir,
-        conn=conn, problem="p",
-        proposal_body=(_PROPOSAL + "\nthe root assembles in "
-                       "`proofs/_strategy_s99.lean`, sorry-free"),
-        decisions=[_d("Ingest")], dialogue=[], proof_warn=None)
-    assert (proj / "proofs" / "_strategy_s99.lean").exists()
-    # Still citation-scoped: an assembly the package never names does not
-    # ride along.
-    assert not (proj / "proofs" / "_strategy_s12.lean").exists()
 
 
 def _rendered_subgroup_section() -> str:

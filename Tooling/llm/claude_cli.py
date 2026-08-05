@@ -703,10 +703,21 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     # does NOT need quoting either — pattern boundaries are pulled by
     # balanced parens, not whitespace. Verified empirically; the
     # pre-quoting attempt broke the Bash pattern's existing test.
+    # Any spawn may carry additional read-only directories beyond its
+    # kind's standard scope (req.extra_read_dirs; the Adversary's
+    # landed-proofs grant is the first user — see LLMRequest).
+    extra_reads = [
+        pat for d in (req.extra_read_dirs or ())
+        for pat in (f"Read({Path(d).as_posix()}/**)",
+                    f"Grep({Path(d).as_posix()}/**)")
+    ]
     # Adversary (research_mode_design.md §3) — projection isolation:
     # the judge's whole world is its assembled directory (problem_dir
-    # IS the projection); no Library/Papers/mathlib surfaces. Loogle
-    # stays available for checking "mathlib has X" claims.
+    # IS the projection) plus the problem's landed `proofs/` in place
+    # (extra_read_dirs, 2026-08-04 — the cited-file staging + cap
+    # truncated the judge's evidence on big problems); no
+    # Library/Papers/mathlib surfaces. Loogle stays available for
+    # checking "mathlib has X" claims.
     if req.kind == "adversary":
         return " ".join(p for p in [
             os.environ.get("ASTERISM_CLAUDE_ALLOWED_BASH",
@@ -714,6 +725,7 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
             f"Read({problem}/**)",
             f"Read({attempts}/**)",
             f"Grep({problem}/**)",
+            *extra_reads,
             *(_TOOLS_MCP_PATTERNS
               if req.mcp_config_path is not None else ()),
         ] if p)
@@ -739,6 +751,7 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
         # narrowed pattern keeps the allowlist self-consistent.
         f"Grep({problem}/**)",
         f"Grep({packages}/**)",
+        *extra_reads,
     ]
     # Library/ is the Librarian (cleanup/migrate) pipeline's working set: it
     # reads/greps sibling Library files for cross-file alignment + call sites.
@@ -1052,6 +1065,18 @@ class ClaudeCliProvider:
             ["--add-dir", str(papers_dir)] if papers_dir.is_dir() else [])
         if req.kind == "adversary":
             add_dir_papers = []
+        # extra_read_dirs (LLMRequest): explicit read-only grants beyond
+        # the kind's standard scope, rendered BOTH ways — the permission
+        # trust boundary is `cwd ∪ --add-dir` and the Read/Grep
+        # allowlist only takes effect inside it (see packages_dir note
+        # above). Placed after the adversary zeroing on purpose: the
+        # landed-proofs grant is the judge's one sanctioned exception
+        # to projection isolation (2026-08-04). Read-only stays true
+        # via the write fence (proofs/ is not a write root).
+        add_dir_extra: list[str] = []
+        for _extra in (req.extra_read_dirs or ()):
+            if Path(_extra).is_dir():
+                add_dir_extra += ["--add-dir", str(_extra)]
         # MCP config — Builder pipeline (Phase 1 LSP swap) sets
         # mcp_config_path to a JSON file describing the LSP MCP
         # server. claude spawns the server itself as a child process
@@ -1126,6 +1151,7 @@ class ClaudeCliProvider:
             *add_dir_packages,
             *add_dir_library,
             *add_dir_papers,
+            *add_dir_extra,
             *mcp_flags,
             *output_flags,
             *session_flags,

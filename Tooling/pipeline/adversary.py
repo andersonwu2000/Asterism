@@ -149,58 +149,9 @@ def _dialogue_digest(dialogue: list[dict[str, Any]]) -> str:
     return "\n".join(out)
 
 
-#: Total proof files the projection stages (cited seeds + the files
-#: their imports reach). Cap is loud, never silent (CLAUDE.md).
-PROOF_STAGING_CAP = 20
-
-_PROOFS_IMPORT_RE = re.compile(
-    r"^import\s+[\w.]*\.proofs\.([\w]+)\s*$", re.M)
-
-
-def _package_cites(stem: str, package_text: str) -> bool:
-    """Does the package name this `proofs/` file? Either by its own stem
-    (`_strategy_s24155`) or, for a brick, by the bare slug the prompts
-    tell everyone to cite (`L_dst` → `dst`)."""
-    names = [stem] + ([stem[2:]] if stem.startswith("L_") else [])
-    return any(re.search(rf"\b{re.escape(n)}\b", package_text)
-               for n in names if n)
-
-
-def _stage_proof_closure(proofs_src: Path, proj: Path,
-                         seeds: list[Path]) -> int:
-    """Copy the cited proof files AND what their imports reach.
-
-    A cited brick's `L_<slug>.lean` is often just
-    `def slug := @...s<N>` — the tactic proof lives in the
-    `_strategy_s<N>.lean` it imports. Staging only the `L_` stubs made
-    the prompt's "a RETARGETED dispute is decided by these files, not
-    by quotation" unfulfillable: the judge got an alias line and was
-    permission-blocked from the real file (07-29 SG judge feedback).
-    Follows `import ...proofs.<name>` edges breadth-first, so an alias
-    stub drags its strategy file (and a strategy file its cited
-    siblings) into the projection."""
-    queue = list(seeds)
-    staged: set[str] = set()
-    while queue:
-        f = queue.pop(0)
-        if f.name in staged or not f.is_file():
-            continue
-        if len(staged) >= PROOF_STAGING_CAP:
-            print(f"[adversary] proof staging cap "
-                  f"({PROOF_STAGING_CAP}) hit — {len(queue) + 1} "
-                  f"reachable file(s) NOT staged, starting with "
-                  f"{f.name}", flush=True)
-            break
-        (proj / "proofs").mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(f, proj / "proofs" / f.name)
-        staged.add(f.name)
-        try:
-            text = f.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for mod in _PROOFS_IMPORT_RE.findall(text):
-            queue.append(proofs_src / f"{mod}.lean")
-    return len(staged)
+#: The judge's `{proofs_dir}` prompt placeholder — substituted with the
+#: problem's landed proofs directory at spawn time (`review` below).
+PROOFS_DIR_PLACEHOLDER = "{proofs_dir}"
 
 
 def build_projection(*, round_no: int, attempts_dir: Path,
@@ -314,26 +265,14 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     (proj / "decisions.md").write_text(decisions_text, encoding="utf-8")
     (proj / "directive.md").write_text(
         _standing_directive_digest(conn, problem), encoding="utf-8")
-    # Cited landed proofs (07-29 judge feedback ×6): the artifacts the
-    # package's claims cite must be checkable inside the sandbox — a
-    # RETARGETED dispute's only deciding document is the landed file.
-    # Any on-disk proofs/ file the package text mentions rides along
-    # read-only. Cap 20 with a loud log (no silent caps).
-    #
-    # The seed glob is `*.lean`, not `L_*.lean` (2026-08-02): the closure
-    # below reaches a `_strategy_s<N>.lean` only from an alias stub that
-    # imports it, so an assembly nothing imports — the ROOT's — could
-    # never be staged at all. On an Ingest package that is the single
-    # file both load-bearing claims (statement fidelity, axiom
-    # exhaustion) are about: the SG judge could grep-verify 18 of 19
-    # sources and had to leave the exit gate's own assembly as an
-    # unverified reservation.
-    proofs_src = problem_dir / "proofs"
-    if proofs_src.is_dir():
-        package_text = proposal_body + "\n" + decisions_text
-        seeds = [f for f in sorted(proofs_src.glob("*.lean"))
-                 if _package_cites(f.stem, package_text)]
-        _stage_proof_closure(proofs_src, proj, seeds)
+    # Landed proofs are NOT staged (user call 2026-08-04): the judge
+    # reads the problem's `proofs/` in place via a read-only grant
+    # (`extra_read_dirs` on the spawn — see `review`). The prior
+    # cited-file staging + cap-20 systematically truncated the evidence
+    # late in a big problem (SLC: 43 of 63 reachable files NOT staged
+    # at Ingest-adjacent rounds), and every curation rule was itself
+    # the defect. proofs/ is landed ground truth, not strategist
+    # narrative — reading it in place widens no independence boundary.
     if dialogue:
         (proj / "dialogue.md").write_text(_dialogue_digest(dialogue),
                                           encoding="utf-8")
@@ -427,7 +366,19 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
         problem_dir=problem_dir, conn=conn, problem=problem,
         proposal_body=proposal_body, decisions=decisions,
         dialogue=dialogue, proof_warn=proof_warn, group_id=group_id)
-    prompt_path = PROMPT_DIR / "adversary" / "adversary.md"
+    # The judge reads the landed proofs IN PLACE (user call 2026-08-04;
+    # staging retired — see build_projection). The prompt names the
+    # concrete directory: substitute the placeholder and hand the spawn
+    # the rendered copy (same move as the worker prompts'
+    # `__FEEDBACK_PATH__`). The write fence is untouched — the grant is
+    # read-only and proofs/ is not a write root.
+    proofs_dir = (problem_dir / "proofs").resolve()
+    prompt_src = PROMPT_DIR / "adversary" / "adversary.md"
+    prompt_path = attempts_dir / "_adversary_prompt.md"
+    prompt_path.write_text(
+        prompt_src.read_text(encoding="utf-8").replace(
+            PROOFS_DIR_PLACEHOLDER, proofs_dir.as_posix()),
+        encoding="utf-8")
 
     # One re-spawn on a missing/malformed verdict (cheap; a judge that
     # produced no usable ruling twice is a wake-level failure), plus a
@@ -454,6 +405,9 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
             # has X" claims, and that was its only shell use. The config
             # lands INSIDE the projection so the isolation is unchanged.
             mcp_config_path=_tools_cfg,
+            # Read-only, in place (claude renders it as Read/Grep allow
+            # patterns; agy's reads are already workspace-wide).
+            extra_read_dirs=(proofs_dir,),
             # The projection dir breaks the standard attempts layout —
             # attribute the judge's cost explicitly or the spawn_usage
             # row is silently dropped (invisible-judge class, 07-18).

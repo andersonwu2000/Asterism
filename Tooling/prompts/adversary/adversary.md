@@ -11,7 +11,7 @@ Tools: Read / Grep / Write / `loogle(pattern)` / `validate_json(text)`. No time 
 - `directive.md` (if present) — the operator's standing directive for this problem (human-written); context, not a criterion.
 - `Root.lean` / `Defs.lean` (if present) — the formal statement and definitions. **Check claims about the formal goal against these, not the Manifest's prose.**
 - `TREE.md` (if present) — the live goal tree (names + statuses); check tree-shape and status claims here.
-- `proofs/` (if present) — read-only copies of the landed proof files the package text cites. **A renamed/RETARGETED dispute is decided by these files, not by quotation.**
+- `{proofs_dir}` — the problem's landed proof files, all of them, readable in place. **A renamed/RETARGETED dispute is decided by these files, not by quotation.**
 - `CATALOG.md` (if present) — the proved-brick inventory; grep it to check "X already landed" claims.
 - `dialogue.md` (if present) — earlier rounds of THIS proposal cycle. Context, not the bar: judge the revision against the original claim, not a prior round's demand.
 - `charter.md` (if present) — this group's charter (its Manifest), the charters above it, and the charters your chain already handed back. Returned charters are context, not verdicts.

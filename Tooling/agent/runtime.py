@@ -141,7 +141,8 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
               usage_workspace: Path | None = None,
               usage_problem: str | None = None,
               usage_pipeline_id: str | None = None,
-              prompt_flags: "dict[str, bool] | None" = None) -> int:
+              prompt_flags: "dict[str, bool] | None" = None,
+              extra_read_dirs: "tuple[Path, ...] | None" = None) -> int:
     """Dispatch to the configured LLM provider for one agent invocation.
 
     Provider is resolved per-kind: `ASTERISM_<KIND>_PROVIDER` →
@@ -215,6 +216,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
         mcp_config_path=mcp_config_path,
         inline_prompt=inline_prompt,
         prompt_flags=prompt_flags,
+        extra_read_dirs=extra_read_dirs,
     ))
     _record_spawn_usage(kind=kind, attempts_dir=attempts_dir,
                         problem_dir=problem_dir,
