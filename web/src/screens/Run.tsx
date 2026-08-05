@@ -7,6 +7,7 @@ import { goalStatusLabel } from '../lib/vocab'
 import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
 import { renderInline, renderProse } from '../lib/prose'
+import { scopedRows } from '../lib/quota'
 import { Link, navigate } from '../lib/router'
 import { Button } from '../components/ui'
 import Constellation from '../components/Constellation'
@@ -344,10 +345,18 @@ function QuotaMeter({
   label,
   pct,
   resetsAt,
+  title,
+  quiet,
 }: {
   label: string
   pct: number
   resetsAt: string | null
+  /** what this window IS, for the rows that are not self-evident */
+  title?: string
+  /** a real ceiling that is not the one currently binding — readable,
+   * but it must not compete with the window that will actually stop
+   * the run */
+  quiet?: boolean
 }) {
   const clamped = Math.max(0, Math.min(100, pct))
   // pinned to en-US: the UI speaks English — a system-locale weekday
@@ -361,15 +370,25 @@ function QuotaMeter({
       })
     : null
   return (
-    <div className="flex items-center gap-3">
-      <span className="w-32 shrink-0 text-xs text-ink-dim">{label}</span>
+    <div className="flex items-center gap-3" title={title}>
+      <span
+        className={`w-32 shrink-0 truncate text-xs ${quiet ? 'text-ink-faint' : 'text-ink-dim'}`}
+      >
+        {label}
+      </span>
       <div className="h-1 flex-1 overflow-hidden rounded-full bg-surface-2">
         <div
-          className={`h-full ${clamped >= 85 ? 'bg-warn' : 'bg-starlight/60'}`}
+          className={`h-full ${
+            clamped >= 85 && !quiet ? 'bg-warn' : quiet ? 'bg-starlight/25' : 'bg-starlight/60'
+          }`}
           style={{ width: `${clamped}%` }}
         />
       </div>
-      <span className="tnum w-10 text-right text-xs text-ink">{Math.round(clamped)}%</span>
+      <span
+        className={`tnum w-10 text-right text-xs ${quiet ? 'text-ink-dim' : 'text-ink'}`}
+      >
+        {Math.round(clamped)}%
+      </span>
       <span className="tnum w-28 text-[11px] text-ink-faint">
         {resets ? `resets ${resets}` : ''}
       </span>
@@ -920,16 +939,30 @@ export default function Run() {
                   <QuotaMeter key={label} label={label} pct={w.utilization} resetsAt={w.resets_at} />
                 ),
             )}
-            {data.quota.scoped
-              .filter((s) => s.is_active)
-              .map((s) => (
-                <QuotaMeter
-                  key={s.name}
-                  label={`${s.name} · week`}
-                  pct={s.percent}
-                  resetsAt={s.resets_at}
-                />
-              ))}
+            {/* Per-model weekly caps: whatever the account reports,
+                whatever it is called. Anthropic decides which model
+                carries one (it was Sonnet's, it is Fable's now) and
+                whether one exists at all, so this list is never
+                hard-coded and simply disappears when the plan stops
+                reporting one. `is_active` marks the cap currently
+                BINDING, not the cap's existence — filtering on it made
+                a real reading blink in and out (owner, two accounts
+                showing different rows, 2026-08-03). */}
+            {scopedRows(data.quota.scoped).map((s) => (
+              <QuotaMeter
+                key={s.name}
+                label={`${s.name} · week`}
+                pct={s.percent}
+                resetsAt={s.resets_at}
+                quiet={!s.is_active}
+                title={
+                  `${s.name}: a per-model weekly cap your plan reports.` +
+                  (s.is_active
+                    ? ' It is the limit binding your spend right now.'
+                    : ' Another window is binding right now; this one is still counting.')
+                }
+              />
+            ))}
           </div>
         </section>
       )}
