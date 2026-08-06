@@ -1901,6 +1901,57 @@ def test_apply_edit_rejects_range_on_phantom_trailing_line(
     assert (tmp_path / "x.lean").read_text(encoding="utf-8") == content
 
 
+def test_apply_edit_accepts_minus_one_as_end_of_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """2026-08-06 feedback ×3: replacing through the tail cost a probe
+    round-trip just to learn the line count, and the count agents guess
+    off `Read` is one too many whenever the file ends in a newline."""
+    content = "line one\nline two\nend Problems.p\n"
+    (tmp_path / "x.lean").write_text(content, encoding="utf-8")
+    backend = _DiagBackend()
+    ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
+    lsp_gateway._state.sessions["tok-A"].file_content = content
+    try:
+        out = json.loads(asyncio.run(lsp_gateway.apply_edit(2, -1, "two\nend")))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert "error" not in out
+    # `-1` resolved to the editor's line count (3), so line two onward
+    # was replaced — the file's own trailing newline is preserved.
+    assert (tmp_path / "x.lean").read_text(
+        encoding="utf-8") == "line one\ntwo\nend\n"
+
+
+def test_apply_edit_reports_the_goal_at_both_ends(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """2026-08-06 feedback ×6 (both arms): after a multi-line
+    replacement the agent needs the state at the END of what it wrote
+    (the new `sorry` / next open goal); returning only the region's top
+    forced a second `goal_at` on every tactic iteration, against a ~46s
+    elaboration latency. Single-line edits still carry one goal — both
+    ends are the same query."""
+    content = "line one\nline two\nend Problems.p\n"
+    (tmp_path / "x.lean").write_text(content, encoding="utf-8")
+    backend = _DiagBackend()
+    ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
+    lsp_gateway._state.sessions["tok-A"].file_content = content
+    try:
+        multi = json.loads(asyncio.run(
+            lsp_gateway.apply_edit(1, 1, "a\nb\nc")))
+        lsp_gateway._state.sessions["tok-A"].file_content = content
+        (tmp_path / "x.lean").write_text(content, encoding="utf-8")
+        single = json.loads(asyncio.run(lsp_gateway.apply_edit(1, 1, "a")))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert "goal_at_edit_start" in multi
+    assert "goal_at_edit_end" in multi
+    assert "goal_at_edit_end" not in single
+
+
 def test_apply_edit_carries_citation_mirror(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

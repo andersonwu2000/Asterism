@@ -1369,12 +1369,14 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
     replace a single line. new_text may contain multiple lines (use
     literal newlines).
 
-    Lean re-elaborates after the edit; the response includes the proof
-    goal at line=start_line col=2, plus diagnostics.
+    Lean re-elaborates after the edit; the response carries the proof
+    goal at BOTH ends of the replacement (`goal_at_edit_start` /
+    `goal_at_edit_end`), plus diagnostics.
 
     Args:
       start_line: 1-indexed inclusive start of region to replace.
-      end_line:   1-indexed inclusive end of region to replace.
+      end_line:   1-indexed inclusive end of region to replace, or -1
+                  for "through the end of the file".
       new_text:   Replacement text (may be multi-line).
     """
     _recv_ts = _ts_now()
@@ -1403,6 +1405,13 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     lines = meta.file_content.split("\n")
     n_lines = _editor_line_count(meta.file_content)
+    # `-1` = through the end of file (2026-08-06 feedback ×3). Without a
+    # sentinel a whole-tail replace costs a probe round-trip just to
+    # learn the line count — and the count agents guess from `Read` is
+    # off by one whenever the file ends in a newline, which is the same
+    # boundary the error message below already had to explain.
+    if end_line == -1:
+        end_line = n_lines
     if start_line < 1 or start_line > n_lines:
         return json.dumps({"error":
             f"start_line {start_line} out of range 1..{n_lines}"})
@@ -1509,6 +1518,23 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
             goal_text = _summarize_goal(result)
         except Exception as e:
             goal_text = f"<plainGoal failed: {type(e).__name__}: {e}>"
+        # The goal at the END of what was just written (2026-08-06
+        # feedback ×6, both arms): after a multi-line replacement the
+        # agent wants the state at the new `sorry` / next open goal, and
+        # `goal_at_edit_start` is the state at the top of the region —
+        # so every tactic iteration paid a second `goal_at` round-trip
+        # against a ~46s elaboration latency. Skipped when the edit is a
+        # single line (both ends are the same query) or a deletion.
+        goal_end_text: "str | None" = None
+        end_line_after = start_line + len(replacement) - 1
+        if replacement and end_line_after > start_line:
+            try:
+                q_end = _merged_line_for(line_map, end_line_after)
+                goal_end_text = _summarize_goal(backend.plain_goal(
+                    slot.slot_path, line=q_end - 1, character=2,
+                    timeout=15))
+            except Exception as e:
+                goal_end_text = f"<plainGoal failed: {type(e).__name__}: {e}>"
         # Slot now has this pipeline's NEW content didChanged in.
         slot.content_pipeline_id = meta.pipeline_id
         slot.line_map = line_map
@@ -1545,6 +1571,8 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
         "post_edit_region": post_edit_region,
         "goal_at_edit_start": goal_text,
         "diagnostics": formatted,
+        **({"goal_at_edit_end": goal_end_text}
+           if goal_end_text is not None else {}),
         "diagnostic_count": _n_diags,
         "_server_recv_ts": _recv_ts,
         "_server_send_ts": _ts_now(),
@@ -2239,6 +2267,16 @@ def validate_file(content: str) -> str:
     so = _stale_olean_submission(content, meta.problem, meta.workspace)
     if so is not None:
         submission["stale_oleans"] = so
+    # Top-level `ok` is the LEAN verdict only (zero errors, no timeout);
+    # the submission gates are the COMMIT verdict and were readable only
+    # by walking into `submission`. Two workers keyed on `ok` and shipped
+    # something commit then bounced (2026-08-06 feedback). Say it at the
+    # top level too — the two axes stay separate, but a clean elaboration
+    # can no longer read as "good to ship" while a gate is failing.
+    _failing = sorted(k for k, v in submission.items()
+                      if isinstance(v, dict) and v.get("ok") is False)
+    if _failing:
+        response["commit_will_reject"] = _failing
     response["submission"] = submission
     _log_for(meta, {"event": "tool_call", "name": "validate_file",
                     "args": {"content_lines": full_content.count("\n") + 1},
