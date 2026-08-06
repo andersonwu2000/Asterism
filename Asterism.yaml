@@ -86,12 +86,28 @@ dispatch:
 # EVERY worker spawn. sonnet-5 (user ruling 2026-07-29): the opus tier
 # stays on strategist/adversary where one decision shapes the tree.
 formalizer:
-  provider: claude
-  model: claude-sonnet-5
+  provider: antigravity        # SG-mirror layout (user 2026-08-06, second half
+  model: gemini-3.6-flash-high # of the Frankl run): Gemini does the throughput
+                               # work — write the Lean for a brief the NL layer
+                               # already argued and the judge already passed.
+                               # Its recorded failure mode is asserting its own
+                               # unchecked mathematics, which this seat never
+                               # asks for. Precedent: the 2026-07-30 SG run on
+                               # exactly this split closed in 91m32s with zero
+                               # dead attempts.
 
 strategist:
-  provider: claude
-  model: claude-fable-5       # Planning is the highest-leverage spawn: one
+  provider: claude             # Back on the opus tier 2026-08-06 after the
+  model: claude-opus-5         # Gemini author hit its ceiling on the open
+                               # segment: g382 rev 3 burned all 10 rounds and
+                               # the whole wake on a FALSE briefed theorem
+                               # (`5|K| <= 2*sum|K_x|`, refuted by the path
+                               # configuration), re-skinned three times without
+                               # checking it against a small case. Gemini's
+                               # earlier win (Gilmer 1/100, 33 bricks, zero
+                               # dead attempts) stands — the ceiling is the
+                               # open segment, not the model.
+  # model: claude-fable-5      # Planning is the highest-leverage spawn: one
                                # decomposition shapes the whole proof tree, so
                                # it gets the strongest available model. Fable 5
                                # (Mythos, ~2x Opus) was always the intended
@@ -170,12 +186,17 @@ scholar:
   model: claude-sonnet-5
 
 adversary:
-  model: claude-fable-5        # Tracks strategist.model deliberately: the
-                               # judge is the only gate on the argument
-                               # layer, so a judge below the author is the
-                               # structural rubber stamp. The 2026-08-02
-                               # seeded-defect probe showed criterion 3 hard
-                               # at a MODERATE difficulty band (3/3 caught,
-                               # `_spike/judge_lean_probe.py`); an open
-                               # conjecture is not that band. Both lowest-
-                               # volume pipelines — cost is negligible.
+  model: claude-opus-5         # The judge is the only gate on the argument
+                               # layer, so it must not sit below the author.
+                               # The 2026-08-02 seeded-defect probe showed
+                               # criterion 3 hard at a MODERATE difficulty
+                               # band (3/3, `_spike/judge_lean_probe.py`) on
+                               # exactly this model; re-run 2026-08-06 after
+                               # the strategist moved to Gemini reproduced it
+                               # (D1/D2 fired, D3 detected to the monomial).
+                               # gemini-3.6-flash-high scored 1/3 on the same
+                               # harness — it reads statements, not arguments
+                               # — so the judge seat stays claude. Fable's
+                               # weekly cap is also what stalled the 08-06
+                               # run; opus draws on the shared window.
+                               # Lowest-volume pipeline — cost negligible.

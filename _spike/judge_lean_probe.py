@@ -27,10 +27,13 @@ the full findings: docs/internal/adjudicated_requests.md.
 """
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import sqlite3
 import sys
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 from pathlib import Path
 from types import SimpleNamespace
 
