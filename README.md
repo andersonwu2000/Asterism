@@ -228,12 +228,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Moved harvesting of proved definitions into the shared library behind an explicit human sign-off step, and reworked the library so it reads like a textbook.
 - Shipped a Windows installer with a browser-based setup wizard, and overhauled the run-monitoring console and proof-graph visualizations for readability and performance.
 
-### 2026-07-06
-- Built a browser interface for the framework, with a dashboard of running problems, an interactive proof-tree view for each one, a queue for decisions needing human review, and a control panel for the background proving process.
-- Refined the interface's visual design through dozens of iteration passes, including an external design audit, a full color-palette overhaul, and accessibility and layout fixes.
-- Added a pipeline for ingesting research papers and tracing proof claims back to their sources, exercised on two new test problems about traces of SL(2,ℤ) monodromy matrices.
-- Fixed assorted backend issues, including a race condition that could bypass a final sign-off check, and added per-run token accounting to the database.
-
 <!-- ASTERISM-PROGRESS:END -->
 
 
