@@ -345,8 +345,10 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
 }
 
 /** One subscription window: a thin bar that brightens as it fills,
- * with the reset moment — spend against the REAL ceiling. */
-function QuotaMeter({
+ * with the reset moment — spend against the REAL ceiling. Exported:
+ * the Account page reads the same meters as the account's allowance,
+ * one renderer under two framings (2026-08-07). */
+export function QuotaMeter({
   label,
   pct,
   resetsAt,

@@ -1,14 +1,15 @@
-import { Fragment, useState } from 'react'
+﻿import { Fragment, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { weightedBurn } from '../lib/burn'
 import { compactNumber, duration } from '../lib/format'
+import { Link } from '../lib/router'
 import { Button, SectionLabel, Select } from '../components/ui'
-import { logout, switchAccount } from '../lib/claudeAuth'
-import type { ConfigSetting, Meta, RunStatus, UsageProblem } from '../lib/types'
+import type { ConfigSetting, RunStatus, UsageProblem } from '../lib/types'
 
-/** Settings — the machine room: account, model/knob config, and the
- * all-time usage ledger. Liveness, lanes, burn-of-the-run and the
- * engine log live on the Run console (#/run). */
+/** The Engine page's two quiet faces: the machine's knobs, and the
+ * all-time usage ledger. Accounts and appearance are the console's
+ * own and live at #/settings; liveness, lanes and the engine log live
+ * on the Console tab. */
 
 
 function ConfigPanel() {
@@ -276,69 +277,11 @@ function inner(
   )
 }
 
-/** The Claude account — who pays the quota. Switching mid-run is a
- * supported move (owner: quota reset): running agents keep the
- * session they hold, new spawns use the next login, and the plan
- * meters flip to the new account by themselves. */
-function AccountPanel() {
-  const { data: meta, refresh } = usePoll<Meta>('/api/meta', 5000)
-  const [msg, setMsg] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  if (!meta) return null
-  const c = meta.claude
-  const run = async (fn: () => Promise<string>) => {
-    setBusy(true)
-    try {
-      setMsg(await fn())
-    } catch (e) {
-      setMsg(String((e as Error).message))
-    } finally {
-      setBusy(false)
-      refresh()
-    }
-  }
-  return (
-    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-edge bg-surface px-4 py-3">
-      <span
-        className={`h-2 w-2 rounded-full ${c.logged_in ? 'bg-ok' : 'bg-warn'}`}
-        aria-hidden
-      />
-      <span className="text-xs text-ink">
-        {c.logged_in
-          ? `Claude Code logged in${c.subscription ? ` · ${c.subscription} plan` : ''}`
-          : c.installed
-            ? 'Claude Code is not logged in'
-            : 'Claude Code is not installed'}
-      </span>
-      {c.installed && (
-        <span className="ml-auto flex items-center gap-2">
-          <button
-            className="cursor-pointer rounded-lg border border-edge bg-surface-2 px-2.5 py-1 text-xs text-ink transition-colors hover:bg-surface-3 disabled:opacity-50"
-            disabled={busy}
-            onClick={() => void run(switchAccount)}
-            title="log this account out and open the login window for another — running agents keep their session; new work uses the new account"
-          >
-            Switch account
-          </button>
-          {c.logged_in && (
-            <button
-              className="cursor-pointer rounded-lg border border-edge px-2.5 py-1 text-xs text-ink-dim transition-colors hover:text-ink disabled:opacity-50"
-              disabled={busy}
-              onClick={() => void run(logout)}
-            >
-              Log out
-            </button>
-          )}
-        </span>
-      )}
-      {msg && <span className="w-full text-[11px] text-ink-faint">{msg}</span>}
-    </div>
-  )
-}
-
-/** The knobs + account face of the Engine page. Config is read once
- * at run start (the banner says so while a run is live); the Manifest
- * tab next door is the hot-reloaded lever. */
+/** The MACHINE's knobs. Config is read once at run start (the banner
+ * says so while a run is live); the Manifest tab next door is the
+ * hot-reloaded lever. The account moved to the console's own Settings
+ * page (owner, 2026-08-07): which model a role uses is the engine's
+ * business, but who is paying for it is yours. */
 export function SettingsTab() {
   const { data: daemon } = usePoll<{ running: boolean }>('/api/daemon', 5000)
   return (
@@ -350,16 +293,17 @@ export function SettingsTab() {
           <span className="text-ink">~1 min</span>, nothing is interrupted).
         </div>
       )}
-      <div className="flex flex-col gap-6">
-        <section>
-          <SectionLabel>account</SectionLabel>
-          <AccountPanel />
-        </section>
-        <section>
-          <SectionLabel>settings</SectionLabel>
-          <ConfigPanel />
-        </section>
-      </div>
+      <ConfigPanel />
+      <p className="mt-4 text-[11px] text-ink-faint">
+        Accounts and appearance live in{' '}
+        <Link
+          to="/settings"
+          className="underline decoration-edge-strong underline-offset-2 hover:text-ink"
+        >
+          Settings
+        </Link>{' '}
+        — these knobs steer the machine, not the console.
+      </p>
     </div>
   )
 }

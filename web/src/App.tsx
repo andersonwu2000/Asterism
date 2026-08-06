@@ -9,6 +9,7 @@ import LibraryChapterScreen from './screens/LibraryChapter'
 import New from './screens/New'
 import Papers, { PaperReader } from './screens/Papers'
 import Problem from './screens/Problem'
+import Settings from './screens/Settings'
 import Engine from './screens/Engine'
 import type { EngineTab } from './screens/Engine'
 import ChatDrawer from './components/ChatDrawer'
@@ -149,6 +150,18 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M4 4l8 1.5M12 5.5l-5 6" stroke="currentColor" strokeWidth="0.8" opacity="0.45" />
     </svg>
   ),
+  account: (
+    // a single figure — the one person the console answers to
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="8" cy="5.6" r="2.6" stroke="currentColor" strokeWidth="1.1" />
+      <path
+        d="M2.9 13.6c.6-2.6 2.6-4 5.1-4s4.5 1.4 5.1 4"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+      />
+    </svg>
+  ),
   inbox: (
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
       <path
@@ -277,7 +290,7 @@ function Shell() {
         : {
             engine: 'Engine',
             run: 'Engine',
-            settings: 'Engine',
+            settings: 'Settings',
             telemetry: 'Engine',
             library: 'Library',
             papers: 'Papers',
@@ -402,6 +415,21 @@ function Shell() {
           />
         </nav>
         <div className="mt-auto flex flex-col gap-1">
+          {/* what is not the engine's — accounts, appearance — sits
+              with the other personal controls at the foot, not inside
+              the machine room (owner, 2026-08-07) */}
+          <NavItem
+            to="/settings"
+            icon="account"
+            label="Settings"
+            active={section === 'settings'}
+            warn={meta?.claude ? !meta.claude.logged_in : false}
+            title={
+              meta?.claude && !meta.claude.logged_in
+                ? 'not signed in — every run fails at its first spawn'
+                : undefined
+            }
+          />
           <ThemeChip />
           <AskChip
             open={chatOpen}
@@ -449,8 +477,12 @@ function Shell() {
           ) : section === 'run' ? (
             // legacy routes keep working — same machine, new door
             <Engine tab="console" />
-          ) : section === 'settings' || section === 'telemetry' ? (
-            <Engine tab="settings" />
+          ) : section === 'settings' ? (
+            // NOT the engine's knobs (those are #/engine/settings):
+            // this is the console's own — accounts, appearance
+            <Settings />
+          ) : section === 'telemetry' ? (
+            <Engine tab="usage" />
           ) : section === 'problems' && route.segments[1] ? (
             <Problem name={route.segments[1]} />
           ) : (

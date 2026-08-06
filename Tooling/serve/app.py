@@ -262,8 +262,45 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             "daemon": daemon_status(workspace),
             "inbox_count": inbox_n,
             "claude": _claude_status(),
+            "antigravity": _agy_status(),
             "lean_ready": _lean_ready(),
         }
+
+    def _agy_status() -> dict:
+        """The OTHER account the framework can spend: Antigravity
+        (`agy`), the subscription path to Gemini models.
+
+        What is knowable from here is narrower than for Claude, and the
+        page must not pretend otherwise: agy's credentials do not live
+        in a file we can read (a spawn authenticates from a fake HOME
+        just fine), so there is no `logged_in` to report. What IS
+        knowable — and what a reader actually needs — is whether the
+        CLI exists and whether any role is pointed at it, because a
+        role on `provider: antigravity` with no `agy` installed is a
+        run that fails at its first spawn.
+        """
+        from ..llm.antigravity_cli import resolve_agy_executable
+        from ..core import config as _cfg
+        roles: list[dict] = []
+        for role in ("strategist", "adversary", "formalizer", "presearch",
+                     "librarian", "scholar", "explainer"):
+            try:
+                prov = _cfg.get(f"{role}.provider",
+                                env_var=f"ASTERISM_{role.upper()}_PROVIDER",
+                                legacy_env=("ASTERISM_LLM_PROVIDER",),
+                                default="claude", workspace=workspace)
+            except Exception:  # noqa: BLE001 — display garnish only
+                continue
+            if str(prov) == "antigravity":
+                try:
+                    model = _cfg.get(f"{role}.model",
+                                     env_var=f"ASTERISM_{role.upper()}_MODEL",
+                                     default="", workspace=workspace)
+                except Exception:  # noqa: BLE001
+                    model = ""
+                roles.append({"role": role, "model": str(model) or None})
+        exe = resolve_agy_executable()
+        return {"installed": exe is not None, "path": exe, "roles": roles}
 
     _lean_ready_memo: dict = {"at": 0.0, "value": None}
 
