@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react'
+﻿import { useEffect, useId, useState } from 'react'
 import { Lean } from '../lib/lean'
 import { LeanEditor } from './LeanEditor'
 import { useLeanSession, type LeanCursor } from '../lib/leanSession'
@@ -53,7 +53,7 @@ export function DiagList({ diags }: { diags: EvalDiag[] }) {
         ) : (
           <pre
             key={i}
-            className="overflow-x-auto rounded-lg border border-edge bg-white/[0.02] px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink"
+            className="overflow-x-auto rounded-lg border border-edge bg-wash px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink"
           >
             <Lean code={d.message} />
           </pre>
@@ -113,7 +113,7 @@ export function LeanProbe({
   const hasInfo = status !== '' || goalText != null || diags.length > 0
   return (
     <div className="mt-2 ml-[22px] max-w-4xl">
-      <div className="rounded-lg border border-edge bg-white/[0.02]">
+      <div className="rounded-lg border border-edge bg-wash">
         <LeanEditor
           value={code}
           onChange={setCode}

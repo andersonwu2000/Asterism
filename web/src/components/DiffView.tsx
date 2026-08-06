@@ -55,9 +55,9 @@ function Line({
     <div
       className={`flex min-w-0 px-2 whitespace-pre-wrap ${
         tone === 'del'
-          ? 'bg-white/[0.025] text-ink-dim'
+          ? 'bg-wash text-ink-dim'
           : tone === 'add'
-            ? 'bg-white/[0.07] text-ink'
+            ? 'bg-wash-2 text-ink'
             : 'text-ink-dim'
       }`}
     >
@@ -78,7 +78,7 @@ function Line({
                   className={`rounded-[2px] ${
                     tone === 'del'
                       ? 'text-ink-dim line-through decoration-ink-faint/70'
-                      : 'bg-white/15 text-ink'
+                      : 'bg-wash-3 text-ink'
                   }`}
                 >
                   {s.text}

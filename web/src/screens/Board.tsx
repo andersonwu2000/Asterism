@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+﻿import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { usePoll } from '../lib/api'
 import { Link, navigate } from '../lib/router'
@@ -51,7 +51,7 @@ function ProgressBar({
   const rest = Math.max(0, total - proved - open)
   return (
     <div
-      className="flex h-1 overflow-hidden rounded-full bg-white/10"
+      className="flex h-1 overflow-hidden rounded-full bg-wash-3"
       style={{ width: w }}
       title={`${proved} proved · ${open} open${rest > 0 ? ` · ${rest} shelved/dead` : ''} of ${total}`}
     >

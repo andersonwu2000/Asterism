@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+﻿import { useMemo, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { leafOf, moduleOf, relTime } from '../lib/format'
 import { Link } from '../lib/router'
@@ -244,7 +244,7 @@ function DeclEntry({
       {d.signature && !probing && (
         <div className="group/sig relative mt-2 ml-[22px] max-w-4xl">
           <pre
-            className="overflow-x-auto rounded-lg border border-edge bg-white/[0.02] px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink"
+            className="overflow-x-auto rounded-lg border border-edge bg-wash px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink"
             title={d.signature}
           >
             <Lean code={conciseSignature(d.signature, short)} declHead />
@@ -723,7 +723,7 @@ export default function LibraryChapterScreen({ problem }: { problem: string }) {
                   what this chapter proves
                 </span>
               </div>
-              <div className="mt-2 overflow-x-auto rounded-xl border border-edge-strong bg-white/[0.02] px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink">
+              <div className="mt-2 overflow-x-auto rounded-xl border border-edge-strong bg-wash px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink">
                 <Lean code={data.root.statement} />
               </div>
             </div>

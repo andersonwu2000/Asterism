@@ -2,9 +2,17 @@
 
 /*
  * Asterism theme — night-sky minimal.
- * Single dark theme (charter §7). Depth = stepped surface lightness
- * (base → surface → raised → overlay, ~4% per layer), never shadows;
- * borders are white-alpha so they read consistently across layers.
+ * Depth = stepped surface lightness (base → surface → raised →
+ * overlay, ~4% per layer), never shadows; borders are alpha so they
+ * read consistently across layers.
+ *
+ * TWO ends of one scale (2026-08-07): the block below is the dark end
+ * and the `[data-theme='light']` block near it is the light one. Every
+ * law in DESIGN.md survives the flip because both ladders invert
+ * together — loudest ink is still the one furthest from the page, a
+ * settled thing still recedes toward it. NOTHING in a component may
+ * hardcode white or black: `--color-wash*` are the alpha plates, and
+ * they carry the flip.
  */
 @theme {
   /* Achromatic star-atlas palette (owner call: hues jumped — an atlas
@@ -20,6 +28,14 @@
   --color-surface-3: #1e1e23;
   --color-edge: rgba(255, 255, 255, 0.07);
   --color-edge-strong: rgba(255, 255, 255, 0.15);
+
+  /* alpha plates: a wash that lifts a block off whatever surface it
+     sits on (code blocks, diff rows, meter tracks). Alpha, not a step
+     of the ladder, because they compose at any depth — and tokens,
+     not literals, because they must invert with the theme. */
+  --color-wash: rgba(255, 255, 255, 0.02);
+  --color-wash-2: rgba(255, 255, 255, 0.05);
+  --color-wash-3: rgba(255, 255, 255, 0.12);
 
   /* text ladder */
   --color-ink: #ededf0;
@@ -58,6 +74,49 @@
   --font-display: "Fraunces Variable", Georgia, serif;
 }
 
+/* The light end of the same scale. Only the palette moves: the
+   elevation ladder still RISES toward the reader (white paper, panels
+   a touch whiter than the page), the ink ladder still runs loudest →
+   quietest, and `star`/`starlight` — the sky's light — become the
+   sky's INK, so "the living carry the light" reads as "the living
+   carry the ink" without a single component changing.
+
+   Code hues keep their hue and drop lightness to ~40-45%: the dusty
+   crimson that reads on #0a0a0c is invisible on paper. */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --color-bg: #f2f2ef;
+  --color-surface: #f8f8f6;
+  --color-surface-2: #fdfdfc;
+  --color-surface-3: #ffffff;
+  --color-edge: rgba(16, 16, 20, 0.1);
+  --color-edge-strong: rgba(16, 16, 20, 0.2);
+  --color-wash: rgba(16, 16, 20, 0.03);
+  --color-wash-2: rgba(16, 16, 20, 0.06);
+  --color-wash-3: rgba(16, 16, 20, 0.14);
+
+  --color-ink: #1a1a1e;
+  --color-ink-dim: #55575e;
+  --color-ink-faint: #85878e;
+
+  --color-star: #1f1f24;
+  --color-starlight: #101014;
+
+  --color-accent: #4a4c54;
+  --color-warn: #101014;
+  --color-danger: #101014;
+  --color-ok: #62646c;
+  --color-destruct: #a33a35;
+
+  --color-syn-kw: #a33e52;
+  --color-syn-decl: #2f6392;
+  --color-syn-sort: #1f7a63;
+  --color-syn-str: #4c7333;
+  --color-syn-num: #8a5b1f;
+  --color-syn-attr: #6a4fa3;
+}
+
 /* Fraunces axes: keep the sharp modern cut (low SOFT, no WONK) so it
    reads observatory-engraving, not bakery-sign. */
 .font-display {
@@ -75,10 +134,10 @@ body,
   height: 100%;
 }
 
-/* the console is dark — telling the UA makes NATIVE surfaces (the
-   select's dropdown list, scrollbars it owns, form controls) render
-   dark too: the open menu was an OS-white slab in a black page
-   (owner, 2026-07-14) */
+/* telling the UA which end we are on makes NATIVE surfaces (the
+   select's dropdown list, scrollbars it owns, form controls) follow:
+   the open menu was an OS-white slab in a black page (owner,
+   2026-07-14). The light block above flips this to `light`. */
 html {
   color-scheme: dark;
 }

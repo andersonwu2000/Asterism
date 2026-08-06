@@ -1442,13 +1442,16 @@ export default function Constellation({
           </radialGradient>
           {/* atmosphere: two faint nebulae + a vignette, screen-space so
               they sit behind the sky rather than inside it */}
+          {/* the atmosphere is drawn in INK, not in white: on the light
+              end of the scale a white nebula over white paper is
+              nothing at all (2026-08-07) */}
           <radialGradient id="nebula-a" cx="30%" cy="24%" r="55%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.028" />
-            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="0%" stopColor="var(--color-ink)" stopOpacity="0.028" />
+            <stop offset="100%" stopColor="var(--color-ink)" stopOpacity="0" />
           </radialGradient>
           <radialGradient id="nebula-b" cx="76%" cy="72%" r="50%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.02" />
-            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="0%" stopColor="var(--color-ink)" stopOpacity="0.02" />
+            <stop offset="100%" stopColor="var(--color-ink)" stopOpacity="0" />
           </radialGradient>
           {/* Citation direction, drawn ONLY on focused arcs (see the
               edge layer's `touched` gate): a slender chevron at the

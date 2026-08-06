@@ -12,6 +12,8 @@ import Problem from './screens/Problem'
 import Engine from './screens/Engine'
 import type { EngineTab } from './screens/Engine'
 import ChatDrawer from './components/ChatDrawer'
+import { currentTheme, setTheme } from './lib/theme'
+import type { Theme } from './lib/theme'
 import type { Meta } from './lib/types'
 
 /** The explainer's door — the one utility slot at the sidebar's foot
@@ -40,6 +42,33 @@ function AskChip({
       </span>
       <span className="flex-1 text-left">ask</span>
       {streaming && !open && <span className="bg-ok h-1.5 w-1.5 animate-pulse rounded-full" />}
+    </button>
+  )
+}
+
+/** Light / dark, at the sidebar's foot beside the ask chip: a global
+ * preference belongs where every screen can reach it (a reader flips
+ * it when the room's light changes, not when they happen to be on one
+ * page). Half-lit disc — the same glyph the notes site uses. */
+function ThemeChip() {
+  const [theme, setLocal] = useState<Theme>(() => currentTheme())
+  const flip = () => {
+    const next: Theme = theme === 'dark' ? 'light' : 'dark'
+    setTheme(next)
+    setLocal(next)
+  }
+  return (
+    <button
+      onClick={flip}
+      className="group flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] text-ink-dim transition-colors duration-150 hover:bg-surface-2/60 hover:text-ink"
+      title={`switch to the ${theme === 'dark' ? 'light' : 'dark'} end of the scale`}
+    >
+      <span className="text-ink-faint group-hover:text-ink-dim" aria-hidden>
+        ◐
+      </span>
+      {/* the label is what the click DOES, not what is on screen —
+          the copy law: say what happens next */}
+      <span className="flex-1 text-left">{theme === 'dark' ? 'light' : 'dark'}</span>
     </button>
   )
 }
@@ -373,6 +402,7 @@ function Shell() {
           />
         </nav>
         <div className="mt-auto flex flex-col gap-1">
+          <ThemeChip />
           <AskChip
             open={chatOpen}
             streaming={chatStreaming}

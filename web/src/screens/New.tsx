@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { apiGet, apiPost } from '../lib/api'
 import { navigate } from '../lib/router'
 import { Button } from '../components/ui'
@@ -243,7 +243,7 @@ export default function New() {
             <DiagList diags={check.parts.root ?? []} />
           </div>
           {check.phase !== 'idle' && (
-            <div className="rounded-lg border border-edge bg-white/[0.02]">
+            <div className="rounded-lg border border-edge bg-wash">
               <div className="flex items-baseline gap-2 border-b border-edge px-3 py-1.5">
                 <span className="text-[10px] tracking-widest text-ink-faint uppercase">
                   goal at cursor

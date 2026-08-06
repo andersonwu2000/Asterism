@@ -6,6 +6,25 @@ this before writing or changing UI. Architecture and stack live in
 `docs/internal/frontend_design.md`; this file is the visual language
 only, and only the settled parts of it.
 
+## Two ends of one scale (2026-08-07)
+
+The language is achromatic and it now has a **light end**. Everything
+below is written for the dark end and holds unchanged on the light
+one, because both ladders invert together: the elevation ladder still
+RISES toward the reader, and the ink ladder still runs loudest →
+quietest. `star`/`starlight` are the sky's light in the dark and its
+ink in the light; "the living carry the light" reads as "the living
+carry the ink" with no component changed.
+
+**No component may hardcode white or black.** Use the tokens —
+`--color-wash{,-2,-3}` are the alpha plates (code blocks, diff rows,
+meter tracks) and they carry the flip. A literal `bg-white/[0.02]` is
+invisible on paper; that is how this rule was learned.
+
+The choice is one attribute on `<html>` (`data-theme`), applied
+before first paint by an inline script in `index.html`, stored in
+localStorage, and defaulting to the system preference.
+
 ## Ink
 
 - The chrome is **achromatic** — greys, black, white. No color

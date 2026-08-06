@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode, SelectHTMLAttributes } from 'react'
+﻿import type { ButtonHTMLAttributes, ReactNode, SelectHTMLAttributes } from 'react'
 import type { ProblemStatus } from '../lib/types'
 import { ApiError } from '../lib/api'
 import { Link } from '../lib/router'
@@ -122,7 +122,7 @@ export function Select({
  * (needs input / sign-off), red = broken or destructive only. */
 const STATUS_CHIP: Record<ProblemStatus, { label: string; cls: string; dot: string }> = {
   proving: { label: 'proving', cls: 'text-accent bg-accent/10', dot: 'bg-accent animate-pulse' },
-  paused: { label: 'paused', cls: 'text-ink-dim bg-white/[0.04]', dot: 'bg-ink-dim' },
+  paused: { label: 'paused', cls: 'text-ink-dim bg-wash-2', dot: 'bg-ink-dim' },
   awaiting_human: { label: 'needs input', cls: 'bg-warn text-bg font-semibold', dot: 'bg-bg' },
   stalled: { label: 'stalled', cls: 'text-danger bg-danger/10', dot: 'bg-danger' },
   idle: { label: 'idle', cls: 'text-ink-faint', dot: 'bg-ink-faint/60' },

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+﻿import { useMemo, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { moduleOf } from '../lib/format'
 import { Link } from '../lib/router'
@@ -88,7 +88,7 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
   const leaf = ns ? p.problem.slice(ns.length + 1) : p.problem
 
   return (
-    <div className="relative rounded-xl border border-edge bg-white/[0.015] px-1 pt-1" style={{ width: w }}>
+    <div className="relative rounded-xl border border-edge bg-wash px-1 pt-1" style={{ width: w }}>
       <svg width={w} height={h} className="block">
         {/* generous invisible hit areas — 1.5px stars are not targets */}
         {stars.map((s, i) => (
