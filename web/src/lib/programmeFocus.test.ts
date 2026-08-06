@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cycleForGroup, defaultGroup } from './programmeFocus'
+import { cycleForGroup, defaultGroup, resolveGroup } from './programmeFocus'
 import type { Group, RunWorker } from './types'
 
 const group = (id: number, is_top: boolean): Group => ({
@@ -54,6 +54,25 @@ describe('which argument the run-scoped Programme opens on', () => {
     expect(
       defaultGroup([strategist(group(7, false)), strategist(group(8, false))]),
     ).toBe(null)
+  })
+})
+
+describe("the reader's choice vs the run's default", () => {
+  const seated = [strategist(group(7, false))]
+
+  it('follows the run until the reader chooses', () => {
+    expect(resolveGroup(undefined, seated)).toBe(7)
+  })
+
+  it('honours a choice of the problem itself while a sub-group runs', () => {
+    // the bug: `pick ?? defaultGroup(...)` folded "chose the problem"
+    // into "made no choice", so the chip could not be selected at all
+    // and the top group's Programme was unreachable
+    expect(resolveGroup(null, seated)).toBe(null)
+  })
+
+  it('honours a choice of a group nobody is sitting in', () => {
+    expect(resolveGroup(9, seated)).toBe(9)
   })
 })
 

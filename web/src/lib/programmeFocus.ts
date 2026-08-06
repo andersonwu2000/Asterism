@@ -31,6 +31,27 @@ export function defaultGroup(workers: RunWorker[]): number | null {
 }
 
 /**
+ * The chain to show: the reader's choice when they have made one,
+ * otherwise the run's own default.
+ *
+ * The three states are distinct and MUST stay so. `undefined` is "no
+ * choice yet — follow the run"; `null` is "the problem's own
+ * argument", which is a real choice and must not be re-resolved into
+ * whatever sub-group happens to be seated. Collapsing the two with
+ * `pick ?? defaultGroup(...)` made the "the problem" chip a no-op
+ * whenever exactly one sub-group had a strategist seated — the reader
+ * was locked out of the top group's Programme entirely (owner,
+ * 2026-08-06: union_closed's top group held rev 2 while the screen
+ * insisted the delegated group had none).
+ */
+export function resolveGroup(
+  pick: number | null | undefined,
+  workers: RunWorker[],
+): number | null {
+  return pick === undefined ? defaultGroup(workers) : pick
+}
+
+/**
  * The cycle to narrate above a body — the one belonging to the chain
  * actually on screen (`resolvedGroupId` is the server's answer to
  * "which chain did I return"). A sibling's round narrated over this

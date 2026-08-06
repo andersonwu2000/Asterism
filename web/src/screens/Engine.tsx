@@ -5,7 +5,7 @@ import RunConsole, { CycleLine } from './Run'
 import { SettingsTab, UsageTab } from './Telemetry'
 import ManifestEditor from '../components/ManifestEditor'
 import ProgrammeView from '../components/ProgrammeView'
-import { cycleForGroup, defaultGroup, seatedGroups } from '../lib/programmeFocus'
+import { cycleForGroup, resolveGroup, seatedGroups } from '../lib/programmeFocus'
 import { ErrorState, TabNav } from '../components/ui'
 import type { DaemonStatus, Programme, RunStatus } from '../lib/types'
 
@@ -91,14 +91,16 @@ function SteerManifest() {
 function RunProgramme() {
   const { data: daemon } = usePoll<DaemonStatus>('/api/daemon', 3000)
   const { data: run } = usePoll<RunStatus>('/api/run', 5000)
-  const [pick, setPick] = useState<number | null>(null)
+  // three states, not two: undefined = follow the run, null = the
+  // reader chose the problem's own argument, a number = that group
+  const [pick, setPick] = useState<number | null | undefined>(undefined)
   const problem = daemon?.scope ?? run?.problem ?? null
   // Sibling groups run CONCURRENTLY (that is what the tree buys), so
   // "the seated strategist" can be several — the selection and cycle
   // laws live in lib/programmeFocus, tested there.
   const workers = run?.workers ?? []
   const liveIds = seatedGroups(workers).map((s) => s.group.id)
-  const group = pick ?? defaultGroup(workers)
+  const group = resolveGroup(pick, workers)
   const { data, error } = usePoll<Programme>(
     problem
       ? `/api/problems/${encodeURIComponent(problem)}/programme` +
