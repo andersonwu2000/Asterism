@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any  # noqa: F401 — used in string annotations (mfst/return)
 
+from . import _presearch
 from ..state import assemble, db, metaprog, proof_store, transitions
 from ..state import manifest as _manifest_mod
 
@@ -983,6 +984,12 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         )
         for s_id in revivals:
             db.set_alias_target(conn, s_id, outcome.goal_id)
+        # Hand this brick's pre-search to the goal the mint just made,
+        # so a prove step on it reuses the search instead of paying for
+        # a second one (user call 2026-08-07: once per brick).
+        if decision_id is not None:
+            _presearch.adopt_for_goal(problem_dir, decision_id,
+                                      outcome.goal_id)
         return PipelineResult(
             outcome="proved" if outcome.status == "proved" else "success",
             failure_reason="",
@@ -1014,43 +1021,50 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
     # "the claim has no backing in the Proof" must be catchable before
     # any Lean work. Same degrade-gracefully contract as the goal-job
     # intake (a broken intake never blocks the mint).
-    from ._intake import run_intake
-    from ..llm.base import SpawnRC as _SpawnRC
-    intake_sid: "str | None" = None
-    result: "PipelineResult | None" = None
-    compile_forward_context(
-        conn, problem=problem, decision_id=decision_id,
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
-    )
-    target.write_text(
-        _forward_seed_scaffold(problem=problem, workspace=workspace),
-        encoding="utf-8",
-    )
-    intake = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=attempts_dir,
-                        problem_dir=problem_dir, workspace=workspace,
-                        label=f"mint inject{decision_id or '?'} {problem}")
-    if intake.infra_rc is not None:
-        _infra_map = {
-            _SpawnRC.SHUTDOWN: ("daemon_shutdown", "intake spawn aborted"),
-            _SpawnRC.MISSING_DEP: ("missing_dep", "intake spawn: CLI missing"),
-            _SpawnRC.QUOTA_EXHAUSTED: ("quota_exhausted",
-                                       "intake spawn: quota / rate limit"),
-        }
-        reason, detail = _infra_map[intake.infra_rc]
-        result = PipelineResult(outcome="failed", failure_reason=reason,
-                                failure_detail=detail)
-    elif intake.declined is not None:
-        # Mint declines ride the existing Forward decline shape
-        # (`agent_declined` + the `agent declined (<kind>): why` detail
-        # format) so the Inject outcome stash below keeps working.
-        reason, note = intake.declined
-        result = PipelineResult(
-            outcome="failed", failure_reason="agent_declined",
-            failure_detail=f"agent declined ({reason}): {note}")
-        print(f"[intake] mint inject{decision_id or '?'} {problem}: "
-              f"declined ({reason}) — {note[:160]}", flush=True)
-    else:
-        intake_sid = intake.sid
+    from . import _stages
+
+    def _compile_ctx() -> None:
+        compile_forward_context(
+            conn, problem=problem, decision_id=decision_id,
+            attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        )
+
+    def _mint_presearch() -> None:
+        # One pre-search per brick: run on THIS arm keyed by the Inject
+        # (a mint has no goal yet), and handed to the goal the mint
+        # creates by `adopt_for_goal` at commit — so the prove step
+        # reuses it instead of paying for a second search.
+        if decision_id is None:
+            return
+        row = conn.execute(
+            "SELECT brief FROM strategist_decisions WHERE id = ?",
+            (decision_id,)).fetchone()
+        brief = str((row["brief"] if row else "") or "")
+        _presearch.ensure_mint_presearch(
+            decision_id=decision_id,
+            statement=_presearch.claim_from_brief(brief),
+            slug=_presearch.slug_from_brief(brief),
+            problem=problem, workspace=workspace,
+            problem_dir=problem_dir, attempts_dir=attempts_dir,
+            prompt_dir=PROMPT_DIR, conn=conn)
+
+    result, intake_sid = _stages.run_prework(
+        _stages.Arm(
+            label=f"mint inject{decision_id or '?'} {problem}",
+            compile_context=_compile_ctx,
+            seed=lambda: target.write_text(
+                _forward_seed_scaffold(problem=problem, workspace=workspace),
+                encoding="utf-8"),
+            presearch=_mint_presearch,
+            # Mint declines ride the Forward decline shape
+            # (`agent_declined` + "agent declined (<kind>): why") because
+            # the Inject outcome stash below parses that text.
+            decline_result=lambda reason, note: PipelineResult(
+                outcome="failed", failure_reason="agent_declined",
+                failure_detail=f"agent declined ({reason}): {note}"),
+        ),
+        prompt_dir=PROMPT_DIR, attempts_dir=attempts_dir,
+        problem_dir=problem_dir, workspace=workspace)
 
     if result is None:
         result = run_lsp_edit_loop(

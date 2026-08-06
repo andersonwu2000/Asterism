@@ -864,61 +864,49 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     # Context for the intake turn deliberately predates presearch — a
     # declined goal must not pay the search; after `proceed`, presearch
     # runs and Context.md is recompiled with the candidate section.
-    from ._intake import run_intake
-    from ..llm.base import SpawnRC as _SpawnRC
-    intake_sid: "str | None" = None
-    result: "PipelineResult | None" = None
-    # Pre-intake moot guard: mirror the retry helper's pre-loop budget
-    # check so an over-budget goal (BFS dispatch race) exits before the
-    # intake spawn spends anything. Inject-driven dispatches carry a
-    # fresh budget (decision_id) and skip this.
-    if decision_id is None and (
-            thresholds.SHELVE_THRESHOLD - int(goal["attempts"])) <= 0:
-        print(f"[retry-moot] g{goal_id} pre-intake: attempts="
-              f"{int(goal['attempts'])} >= shelve_threshold="
-              f"{thresholds.SHELVE_THRESHOLD}; status={goal['status']}",
-              flush=True)
-        result = PipelineResult(outcome="moot")
-    if result is None:
+    from . import _stages
+
+    def _compile_ctx() -> None:
         context.compile_context(conn, goal=goal, mfst=mfst,
                                 attempts_dir=attempts_dir,
                                 strategy_id=strategy_id,
                                 kind="backward",
                                 decision_id=decision_id)
-        (attempts_dir / "patch.lean").write_text(skeleton, encoding="utf-8")
-        intake = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=attempts_dir,
-                            problem_dir=problem_dir, workspace=workspace,
-                            label=f"g{goal_id} {goal['slug']}")
-        if intake.infra_rc is not None:
-            _infra_map = {
-                _SpawnRC.SHUTDOWN: ("daemon_shutdown",
-                                    "intake spawn aborted"),
-                _SpawnRC.MISSING_DEP: ("missing_dep",
-                                       "intake spawn: CLI missing"),
-                _SpawnRC.QUOTA_EXHAUSTED: ("quota_exhausted",
-                                           "intake spawn: quota / rate limit"),
-            }
-            reason, detail = _infra_map[intake.infra_rc]
-            result = PipelineResult(outcome="failed", failure_reason=reason,
-                                    failure_detail=detail)
-        elif intake.declined is not None:
-            reason, note = intake.declined
-            result = PipelineResult(
+
+    def _moot_guard() -> "PipelineResult | None":
+        # Mirror the retry helper's pre-loop budget check so an
+        # over-budget goal (BFS dispatch race) exits before the intake
+        # spawn spends anything. Inject-driven dispatches carry a fresh
+        # budget (decision_id) and skip this.
+        if decision_id is not None:
+            return None
+        if (thresholds.SHELVE_THRESHOLD - int(goal["attempts"])) > 0:
+            return None
+        print(f"[retry-moot] g{goal_id} pre-intake: attempts="
+              f"{int(goal['attempts'])} >= shelve_threshold="
+              f"{thresholds.SHELVE_THRESHOLD}; status={goal['status']}",
+              flush=True)
+        return PipelineResult(outcome="moot")
+
+    result, intake_sid = _stages.run_prework(
+        _stages.Arm(
+            label=f"g{goal_id} {goal['slug']}",
+            compile_context=_compile_ctx,
+            seed=lambda: (attempts_dir / "patch.lean").write_text(
+                skeleton, encoding="utf-8"),
+            presearch=lambda: _presearch.ensure_presearch(
+                goal=goal, workspace=workspace, problem_dir=problem_dir,
+                attempts_dir=attempts_dir, prompt_dir=PROMPT_DIR, conn=conn),
+            # Goal-arm declines drive the cascade, so they keep their own
+            # reason vocabulary (the mint arm renders the Forward shape).
+            decline_result=lambda reason, note: PipelineResult(
                 outcome="failed",
                 failure_reason=DECLINE_TO_FAILURE_REASON.get(reason, reason),
-                failure_detail=f"intake decline: {note}")
-            print(f"[intake] g{goal_id} {goal['slug']}: declined "
-                  f"({reason}) — {note[:160]}", flush=True)
-        else:
-            intake_sid = intake.sid
-            _presearch.ensure_presearch(
-                goal=goal, workspace=workspace, problem_dir=problem_dir,
-                attempts_dir=attempts_dir, prompt_dir=PROMPT_DIR, conn=conn)
-            context.compile_context(conn, goal=goal, mfst=mfst,
-                                    attempts_dir=attempts_dir,
-                                    strategy_id=strategy_id,
-                                    kind="backward",
-                                    decision_id=decision_id)
+                failure_detail=f"intake decline: {note}"),
+            pre_intake_guard=_moot_guard,
+        ),
+        prompt_dir=PROMPT_DIR, attempts_dir=attempts_dir,
+        problem_dir=problem_dir, workspace=workspace)
 
     try:
         # Task #8: Backward was the last pipeline hand-rolling the spawn

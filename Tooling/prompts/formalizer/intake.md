@@ -24,4 +24,4 @@ or
  "note": "<candidate counterexample: specific values + a one-line check>"}
 ```
 
-If you cannot find the assignment's backing in the Proof, decline — don't invent the mathematics. If a concrete instance breaks the statement itself, decline `unprovable` with the counterexample in the note — fresh eyes catch transcription slips the argument layer cannot see. Any other defect → proceed; the work turn carries the full decline vocabulary. For goal assignments the framework runs lemma pre-search after intake; candidates arrive with the work turn.
+If you cannot find the assignment's backing in the Proof, decline — don't invent the mathematics. If a concrete instance breaks the statement itself, decline `unprovable` with the counterexample in the note — fresh eyes catch transcription slips the argument layer cannot see. Any other defect → proceed; the work turn carries the full decline vocabulary. The framework runs lemma pre-search after intake; candidates arrive with the work turn.

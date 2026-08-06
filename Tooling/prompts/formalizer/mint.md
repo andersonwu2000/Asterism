@@ -70,4 +70,6 @@ Ship a **theorem** as `:= by sorry` the moment a proof attempt doesn't close on 
 
 Never use any name in FORBIDDEN_LEMMAS.
 
+`## Candidate lemmas` (Context.md) first — pre-searched and `#check`-verified — then Mathlib.
+
 Mathlib is at `.lake/packages/mathlib/Mathlib/` (names drift across versions; verify before citing) — Grep (`(theorem|lemma) <name>\b`) or `loogle('<pattern>')`.
