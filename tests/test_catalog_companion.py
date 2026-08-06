@@ -107,9 +107,37 @@ def test_companion_extracts_full_signature_and_resolves_alias(tmp_path):
     # forward: binders + hypotheses present, proof body absent
     assert "theorem fwd_brick (f : Nat) (hf : f = 1)" in body
     assert "simp [hf]" not in body
-    # backward: alias resolved, strategy signature with binders shown
-    assert "theorem s42 (G : Type) [Mul G]" in body
+    # backward: alias resolved, strategy signature with binders shown —
+    # under the CITABLE head, not the alias target's `s<N>` (2026-08-07,
+    # user call). The block is what agents copy from, and the file's own
+    # header tells them never to cite the inner s<N>; printing it there
+    # made the catalog contradict itself (16 of 52 Frankl entries, and
+    # the run's Programme copied `s24218` out of one and was rebutted).
+    assert "theorem bwd_brick (G : Type) [Mul G]" in body
+    assert "s42" not in body
     assert "sorry" not in body
+
+
+def test_pointer_surfaces_carry_the_absolute_path(conn, tmp_path):
+    """2026-08-06 feedback ×5: "read-only companion beside this
+    Context.md" was true and still cost workers a directory hunt — the
+    worker's cwd is the PROBLEM dir, the companion sits in the attempts
+    dir. Every per-spawn pointer prints the path instead."""
+    _goal(conn, "brick_a")
+    attempts = tmp_path / "ws" / ".attempts" / "pid"
+    attempts.mkdir(parents=True)
+    abs_path = ctx.catalog_companion_path(attempts)
+    assert abs_path.endswith("/.attempts/pid/CATALOG.md")
+
+    surfaces = [
+        ctx._section_catalog_pointer(conn, "P", attempts),
+        phase2_context._section_catalog_index_strategist(conn, "P", attempts),
+        phase2_context._section_library_inventory(conn, "P", attempts),
+    ]
+    for lines in surfaces:
+        body = "\n".join(lines)
+        assert abs_path in body
+        assert "beside this Context.md" not in body
 
 
 def test_companion_empty_kb_writes_nothing(conn, tmp_path):

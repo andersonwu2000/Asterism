@@ -21,6 +21,7 @@ without the section (mirrors how reflection / drafts swallow errors).
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from pathlib import Path
 
@@ -45,6 +46,66 @@ _SOURCE_TAG = {"mathlib": "Mathlib", "library": "Library",
 def presearch_path(problem_dir: Path, goal_id: int) -> Path:
     """Persistent per-node cache: the rendered candidate section."""
     return problem_dir / ".presearch" / f"g{goal_id}.md"
+
+
+def mint_presearch_path(problem_dir: Path, decision_id: int) -> Path:
+    """Cache for a mint, which has no goal yet — the Inject decision is
+    the only stable key at that point. `adopt_for_goal` renames it to
+    the goal key at commit so the prove step reuses it instead of
+    spawning a second search (user call 2026-08-07: one pre-search per
+    brick, shared by the mint and prove steps)."""
+    return problem_dir / ".presearch" / f"inject{decision_id}.md"
+
+
+#: how much of an Inject brief may become the search key
+_CLAIM_CAP = 2000
+#: section heads strategists write the statement under, best first
+_CLAIM_HEADS = ("## Declarations", "## Claim", "## Statement")
+
+
+def claim_from_brief(brief: str) -> str:
+    """The statement the mint will transcribe, taken from the Inject
+    brief — a mint has no goal row to read it off.
+
+    `## Declarations` (exact Lean) beats `## Claim` (prose + Lean), and
+    both beat the whole brief, which also carries `## Strategy & Hints`
+    — feeding those to the searcher drags it toward the route the
+    Strategist already guessed instead of the statement."""
+    if not brief:
+        return ""
+    for head in _CLAIM_HEADS:
+        i = brief.find(head)
+        if i < 0:
+            continue
+        rest = brief[i + len(head):]
+        nxt = re.search(r"^## ", rest, re.M)
+        body = (rest[:nxt.start()] if nxt else rest).strip()
+        if body:
+            return body[:_CLAIM_CAP]
+    return brief.strip()[:_CLAIM_CAP]
+
+
+def slug_from_brief(brief: str) -> str:
+    """The brick slug the brief commissions (`Mint brick \\`slug\\``),
+    used only to keep the searcher from proposing the very thing being
+    minted. Empty when the brief does not name one — harmless."""
+    m = re.search(r"[Mm]int\s+brick\s+`(?:L_)?([A-Za-z0-9_]+)`", brief or "")
+    return m.group(1) if m else ""
+
+
+def adopt_for_goal(problem_dir: Path, decision_id: int,
+                   goal_id: int) -> None:
+    """Re-key a mint's cached pre-search onto the goal the mint just
+    created. Best-effort: a miss simply means the prove step runs its
+    own search, which is the pre-2026-08-07 behaviour."""
+    src = mint_presearch_path(problem_dir, decision_id)
+    dst = presearch_path(problem_dir, goal_id)
+    try:
+        if src.is_file() and not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.replace(dst)
+    except OSError:
+        pass
 
 
 def _presearch_enabled(workspace: Path | None) -> bool:
@@ -267,7 +328,49 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
         gid = int(goal["id"])
     except Exception:  # noqa: BLE001
         return None
-    cache = presearch_path(problem_dir, gid)
+    try:
+        statement = str(goal["statement"] or "").strip()
+        slug = str(goal["slug"])
+        problem = str(goal["problem"] or "")
+    except Exception:  # noqa: BLE001
+        return None
+    return _ensure(cache=presearch_path(problem_dir, gid),
+                   label=f"g{gid}", statement=statement,
+                   exclude_slug=slug, problem=problem,
+                   workspace=workspace, problem_dir=problem_dir,
+                   attempts_dir=attempts_dir, prompt_dir=prompt_dir,
+                   conn=conn)
+
+
+def ensure_mint_presearch(*, decision_id: int, statement: str, slug: str,
+                          problem: str, workspace: Path, problem_dir: Path,
+                          attempts_dir: Path, prompt_dir: Path,
+                          conn=None) -> Path | None:
+    """Pre-search for a MINT, which runs before its goal exists.
+
+    The mint invents the declaration from the Inject brief and then
+    proves it, so it needs candidates exactly as much as the prove step
+    does — but `compile_forward_context` carried no section and nothing
+    on this arm ever searched, while `formalize.md` told both arms to
+    read `## Candidate lemmas` first. Workers re-derived Mathlib by hand
+    and said so 5× in one run's feedback (2026-08-06).
+
+    Statement source is the brief's `## Claim` (what the mint
+    transcribes), not a goal row — hence the separate entry point.
+    `adopt_for_goal` hands the result to the prove step, so this stays
+    ONE search per brick (user call 2026-08-07)."""
+    return _ensure(cache=mint_presearch_path(problem_dir, decision_id),
+                   label=f"inject{decision_id}", statement=statement,
+                   exclude_slug=slug, problem=problem,
+                   workspace=workspace, problem_dir=problem_dir,
+                   attempts_dir=attempts_dir, prompt_dir=prompt_dir,
+                   conn=conn)
+
+
+def _ensure(*, cache: Path, label: str, statement: str, exclude_slug: str,
+            problem: str, workspace: Path, problem_dir: Path,
+            attempts_dir: Path, prompt_dir: Path,
+            conn=None) -> Path | None:
     try:
         if cache.is_file() and cache.read_text(encoding="utf-8").strip():
             return cache  # once-per-node cache hit (across dispatches/retries)
@@ -279,7 +382,6 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
     if not template.exists():
         return None
     try:
-        statement = str(goal["statement"] or "").strip()
         if not statement:
             return None
         timeout = _timeout_sec(workspace)
@@ -321,13 +423,8 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
         raw = json.loads(out_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             return None
-        _problem = ""
-        try:
-            _problem = str(goal["problem"] or "")
-        except Exception:  # noqa: BLE001 — enrichment key is optional
-            _problem = ""
         verified = _verify(raw, workspace, problem_dir, conn=conn,
-                           exclude_slug=str(goal["slug"]), problem=_problem)
+                           exclude_slug=exclude_slug, problem=problem)
         # Ran-but-dry is INFORMATION (agent_feedback: an absent section is
         # indistinguishable from "presearch never ran", so provers re-search
         # from scratch). Cache an explicit dry section; infra failures above
@@ -337,5 +434,5 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
         cache.write_text(section, encoding="utf-8")
         return cache
     except Exception as exc:  # noqa: BLE001 — never break dispatch
-        print(f"[presearch] g{gid}: skipped — {exc}", flush=True)
+        print(f"[presearch] {label}: skipped — {exc}", flush=True)
         return None

@@ -392,7 +392,19 @@ def _catalog_signature(workspace: Path, lean_path: str,
                     / f"_strategy_{sid}.lean").read_text(encoding="utf-8")
         except OSError:
             return None
-        return _decl_signature(text, sid)
+        sig = _decl_signature(text, sid)
+        # Print the CITABLE head, not the alias target's `s<N>`
+        # (2026-08-07, user call). The block is what agents copy from,
+        # and it read `theorem s24218 ...` under a `## bin_entropy_pair
+        # _bound` heading whose own file header says "never cite the
+        # inner s<N>" — 16 of 52 entries on Frankl, and the run's own
+        # Programme wrote "bin_entropy_pair_bound (theorem s24218)"
+        # off it and was rebutted. `def <slug> := @<sid>` makes the two
+        # definitionally the same statement, so swapping the head keeps
+        # the signature true while making it copy-safe.
+        if sig is not None:
+            sig = re.sub(r"\b" + re.escape(sid) + r"\b", slug, sig, count=1)
+        return sig
     return _decl_signature(text, slug)
 
 
@@ -502,6 +514,19 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
     return rows
 
 
+def catalog_companion_path(attempts_dir: Path) -> str:
+    """Where `CATALOG.md` actually is, absolute.
+
+    "read-only companion beside this Context.md" was true and still cost
+    five workers a directory hunt in one run (2026-08-06 feedback: "did
+    not exist in the working directory", "forced a blind grep of
+    proofs/", "two wasted find calls"): the worker's cwd is the PROBLEM
+    dir, the companion sits in the attempts dir, and resolving "beside"
+    means joining a path the agent only ever saw in its spawn header.
+    Print the path instead of describing it."""
+    return (attempts_dir / CATALOG_COMPANION).as_posix()
+
+
 def _section_catalog_pointer(conn: sqlite3.Connection, problem: str,
                              attempts_dir: Path) -> list[str]:
     """Backward/Builder surface: two-line pointer only. These workers
@@ -513,8 +538,8 @@ def _section_catalog_pointer(conn: sqlite3.Connection, problem: str,
     return [
         "## Proved catalog",
         f"_All {len(rows)} proved bricks of this problem are citable;"
-        f" exact statements live in `{CATALOG_COMPANION}` (read-only"
-        " companion, beside this Context.md). Read an entry there"
+        f" exact statements live in `{catalog_companion_path(attempts_dir)}`"
+        " (read-only; NOT in your cwd). Read an entry there"
         " BEFORE citing it — never"
         " re-derive a landed brick. Pre-search candidates (when"
         " present) are the curated subset for THIS goal._",

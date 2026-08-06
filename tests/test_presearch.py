@@ -117,6 +117,67 @@ def test_section_present_when_cache_exists(tmp_path):
     assert context._section_presearch_candidates(pdir, 999) == []
 
 
+def test_claim_from_brief_prefers_declarations_over_hints():
+    """The mint has no goal row, so its search key comes off the Inject
+    brief (2026-08-07). `## Declarations` (exact Lean) wins, and
+    `## Strategy & Hints` must NOT ride along — feeding the searcher the
+    Strategist's guessed route biases it away from the statement."""
+    brief = (
+        "Roadmap: entry\n\n## Need\nMint brick `L_foo_bar` in `proofs/...`.\n\n"
+        "## Declarations\n`theorem foo_bar (n : Nat) : n + 0 = n`\n\n"
+        "## Strategy & Hints\nUse `Nat.add_zero`; try `simp`.\n")
+    claim = _presearch.claim_from_brief(brief)
+    assert "theorem foo_bar" in claim
+    assert "Nat.add_zero" not in claim
+    assert "Mint brick" not in claim
+
+
+def test_claim_from_brief_falls_back_to_claim_then_whole_brief():
+    assert "F.card" in _presearch.claim_from_brief(
+        "## Need\nx\n\n## Claim\nFor union-closed F: F.card ≤ 2 * k\n")
+    assert _presearch.claim_from_brief("no sections here") == "no sections here"
+    assert _presearch.claim_from_brief("") == ""
+
+
+def test_slug_from_brief_strips_the_file_prefix():
+    assert _presearch.slug_from_brief(
+        "## Need\nMint brick `L_foo_bar` in `proofs/L_foo_bar.lean`.") == "foo_bar"
+    assert _presearch.slug_from_brief("Mint brick `plain_slug`.") == "plain_slug"
+    assert _presearch.slug_from_brief("nothing here") == ""
+
+
+def test_adopt_for_goal_hands_the_mint_search_to_the_prove_step(tmp_path):
+    """One pre-search per brick (user call 2026-08-07): the mint runs it
+    keyed on its Inject, and the goal it creates inherits the cache, so
+    `ensure_presearch` on that goal hits instead of spawning a second
+    search."""
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / ".presearch").mkdir(parents=True)
+    src = _presearch.mint_presearch_path(pdir, 42)
+    src.write_text("## Candidate lemmas\n\n- `Foo.bar`\n", encoding="utf-8")
+
+    _presearch.adopt_for_goal(pdir, 42, 7)
+
+    assert not src.exists()
+    dst = _presearch.presearch_path(pdir, 7)
+    assert "Foo.bar" in dst.read_text(encoding="utf-8")
+    # the goal arm now cache-hits: no spawn, even with the module's
+    # spawn entry point left untouched
+    assert _presearch.ensure_presearch(
+        goal={"id": 7, "statement": "x = x", "slug": "s", "problem": "p"},
+        workspace=tmp_path, problem_dir=pdir, attempts_dir=tmp_path,
+        prompt_dir=tmp_path) == dst
+
+
+def test_adopt_for_goal_never_clobbers_an_existing_goal_cache(tmp_path):
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / ".presearch").mkdir(parents=True)
+    _presearch.mint_presearch_path(pdir, 42).write_text("mint", encoding="utf-8")
+    _presearch.presearch_path(pdir, 7).write_text("goal", encoding="utf-8")
+    _presearch.adopt_for_goal(pdir, 42, 7)
+    assert _presearch.presearch_path(pdir, 7).read_text(encoding="utf-8") == "goal"
+
+
 def test_verify_attaches_sibling_status_and_statement(tmp_path):
     """agent_feedback 2026-07-09/10 (91 entries): in-problem candidates
     carry their DB status + a one-line statement, so a DISPROVED sibling

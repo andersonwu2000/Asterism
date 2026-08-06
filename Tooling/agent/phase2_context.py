@@ -1597,8 +1597,8 @@ def _section_catalog_index_strategist(conn: sqlite3.Connection,
     out = [
         "## Proved catalog (index)",
         f"_{len(rows)} landed bricks — full list & exact statements in"
-        f" `{context.CATALOG_COMPANION}` (read-only companion beside"
-        " this Context.md, machine-generated from what actually landed"
+        f" `{context.catalog_companion_path(attempts_dir)}`"
+        " (read-only, NOT in your cwd; machine-generated from what actually landed"
         " — never drifts from pipeline renames; grep it by slug; every"
         " worker gets its own copy beside its Context.md, so cite it by"
         " bare name in briefs). Copy signatures from there into"
@@ -1701,7 +1701,8 @@ def _section_library_inventory(conn: sqlite3.Connection, problem: str,
         # points at a file the worker was told nothing about.
         if context.alive_goal_rows(conn, problem):
             return [header, "", "(none yet — but"
-                    f" `{context.CATALOG_COMPANION}` lists this problem's"
+                    f" `{context.catalog_companion_path(attempts_dir)}`"
+                    " lists this problem's"
                     " alive goals: a mint matching one is discarded,"
                     " citing one is legal.)", ""]
         return [header, "", "(none yet)", ""]
@@ -1712,8 +1713,8 @@ def _section_library_inventory(conn: sqlite3.Connection, problem: str,
     out = [
         header,
         f"_{len(rows)} proved bricks — full list & exact statements in"
-        f" `{context.CATALOG_COMPANION}` (read-only companion beside"
-        " this Context.md; grep it by slug). Read an entry there BEFORE"
+        f" `{context.catalog_companion_path(attempts_dir)}`"
+        " (read-only, NOT in your cwd; grep it by slug). Read an entry there BEFORE"
         f" citing it or proposing anything similar."
         f" The {len(recent)} newest:_",
         "",
@@ -1832,6 +1833,22 @@ def _section_conventions_for_decision(conn: sqlite3.Connection,
     return ["## Conventions (standing)", "", conv, ""]
 
 
+def _section_mint_presearch(problem_dir: Path,
+                            decision_id: "int | None") -> list[str]:
+    """The mint's cached `## Candidate lemmas`. Pure file-read of
+    `.presearch/inject<N>.md`; [] when absent so the section shows up
+    only once the search has run."""
+    if decision_id is None:
+        return []
+    from ..pipeline import _presearch
+    path = _presearch.mint_presearch_path(problem_dir, int(decision_id))
+    try:
+        text = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+    except OSError:
+        text = ""
+    return [text, ""] if text else []
+
+
 def compile_forward_context(conn: sqlite3.Connection, *,
                             problem: str, decision_id: int | None,
                             attempts_dir: Path,
@@ -1861,7 +1878,7 @@ def compile_forward_context(conn: sqlite3.Connection, *,
     the whole structure.)
     """
     section_names = ["forward_brief", "conventions", "programme_proof",
-                     "library_inventory",
+                     "library_inventory", "presearch",
                      "forward_history", "active_goals", "manifest_meta",
                      "manifest_forbidden", "paper_index"]
     sections: list[list[str]] = [
@@ -1879,6 +1896,15 @@ def compile_forward_context(conn: sqlite3.Connection, *,
         # Strategist whose transcription slips it exists to catch).
         _section_programme_proof(conn, problem, decision_id),
         _section_library_inventory(conn, problem, attempts_dir),
+        # Candidate lemmas (2026-08-07, user call). `formalize.md` tells
+        # BOTH arms to read this section first, but the mint arm never
+        # rendered one and nothing on it ever searched — 5 workers in
+        # one run reported re-deriving Mathlib by hand, one of them
+        # spending most of its budget on it. Written by
+        # `ensure_mint_presearch` between intake and the work turn;
+        # empty until then, and on the retry compile the cache hits.
+        _section_mint_presearch(db.problem_dir(workspace, problem),
+                                decision_id),
         _section_forward_history(conn, problem),
         _section_active_goals(conn, workspace, problem),
         _section_manifest_meta(mfst, workspace, problem),
