@@ -10,11 +10,15 @@ export default function ListField({
   hint,
   values,
   onChange,
+  inline = false,
 }: {
   label: string
   hint: string
   values: string[]
   onChange: (v: string[]) => void
+  /** label on the same line, in sentence case — for a settings block
+   * that would otherwise stack four shouting eyebrows (2026-08-07) */
+  inline?: boolean
 }) {
   const [draft, setDraft] = useState('')
   const add = () => {
@@ -23,10 +27,14 @@ export default function ListField({
     setDraft('')
   }
   return (
-    <div>
-      <div className="mb-1 text-[11px] font-medium tracking-widest text-ink-faint uppercase">
-        {label}
-      </div>
+    <div className={inline ? 'flex flex-wrap items-center gap-2' : ''}>
+      {inline ? (
+        <span className="w-40 shrink-0 text-xs text-ink-dim">{label}</span>
+      ) : (
+        <div className="mb-1 text-[11px] font-medium tracking-widest text-ink-faint uppercase">
+          {label}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-1.5">
         {values.map((v) => (
           <span

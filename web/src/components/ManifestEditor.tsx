@@ -77,13 +77,12 @@ function PapersBlock({ problem }: { problem: string }) {
 
   return (
     <div className="mt-6">
-      <div className="mb-1 text-[11px] font-medium tracking-widest text-ink-faint uppercase">
+      <div
+        className="mb-2 text-[11px] font-medium tracking-widest text-ink-faint uppercase"
+        title="the engine reads bound papers for definitions and proof routes. Bindings are DB rows, not Manifest text, so they keep working even while a pending amend locks the editor above."
+      >
         papers
       </div>
-      <p className="mb-2 text-[11px] text-ink-faint">
-        the engine reads bound papers for definitions and proof routes — bindings apply even
-        while an amend locks the editor above
-      </p>
       {bindings === null && err === null ? (
         <div className="late-fade text-xs text-ink-faint">Loading…</div>
       ) : bindings !== null && bindings.length === 0 ? (
@@ -254,80 +253,73 @@ export default function ManifestEditor({
           .
         </div>
       )}
+      {/* One subject per block. The editor IS the page — it needs no
+          eyebrow announcing itself — and the three settings under it
+          were three shouting eyebrows for what is really one small
+          group (owner: cluttered, 2026-08-07). */}
       <fieldset disabled={data.pending_amend} className="flex flex-col gap-4">
-        <div>
-          <div
-            className="mb-1 text-[11px] font-medium tracking-widest text-ink-faint uppercase"
-            title="engine term: hot-reloaded — a save takes effect at the next agent launch; nothing restarts"
-          >
-            instructions — plain language; saves apply from the next agent onward
-          </div>
-          <MarkdownEditor
-            value={body}
-            onChange={(v) => {
-              setBody(v)
-              touch()
-            }}
-          />
-        </div>
-        <label
-          className={`flex items-center gap-2 text-xs text-ink-dim ${bridged ? 'opacity-60' : ''}`}
-          title={bridged ? "settled — this problem's work is already in the Library" : undefined}
-        >
-          <input
-            type="checkbox"
-            checked={settings.library}
-            disabled={bridged}
-            onChange={(e) => {
-              setSettings({ ...settings, library: e.target.checked })
-              touch()
-            }}
-          />
-          harvest finished work into the Library
-          {bridged && <span className="text-[10px] text-ink-faint">· settled — already in the Library</span>}
-        </label>
-        <ListField
-          label="forbidden lemmas"
-          hint="add pattern (e.g. sperner*)"
-          values={settings.forbidden_lemmas}
+        <MarkdownEditor
+          value={body}
           onChange={(v) => {
-            setSettings({ ...settings, forbidden_lemmas: v })
+            setBody(v)
             touch()
           }}
         />
-        {/* the axiom gate is FIXED AT CREATION (server enforces 409):
-            the gate re-reads it per validation, so a mid-life edit
-            would re-tune soundness under live proofs — display only */}
-        <div>
-          <div className="mb-1 flex items-baseline gap-2 text-[11px] font-medium tracking-widest text-ink-faint uppercase">
-            axiom whitelist
-            <span className="font-normal tracking-normal normal-case">
-              — fixed when the problem is created; set it on the New problem form
-            </span>
-          </div>
-          {settings.axioms_whitelist.length === 0 ? (
-            <span className="text-xs text-ink-faint">
-              empty — the gate admits nothing beyond the kernel's defaults
-            </span>
-          ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {settings.axioms_whitelist.map((a) => (
-                <span
-                  key={a}
-                  className="rounded-full border border-edge bg-surface px-2 py-0.5 font-mono text-[11px] text-ink-dim"
-                >
-                  {a}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
         <div className="flex items-center gap-3">
           <Button variant="primary" disabled={busy || !dirty} onClick={() => void save()}>
             {busy ? 'Saving…' : 'Save'}
           </Button>
-          {saved && <span className="text-[11px] text-ink-faint">saved — the engine picks it up on its next tick</span>}
+          <span className="text-[11px] text-ink-faint">
+            {saved
+              ? 'saved — the engine picks it up on its next tick'
+              : 'plain language; a save reaches the next agent, nothing restarts'}
+          </span>
           {error && <span className="text-[11px] text-ink-dim">{error}</span>}
+        </div>
+        <div className="flex flex-col gap-2.5 rounded-xl border border-edge bg-surface px-3.5 py-3">
+          <label
+            className={`flex items-center gap-2 text-xs text-ink-dim ${bridged ? 'opacity-60' : ''}`}
+            title={bridged ? "settled — this problem's work is already in the Library" : undefined}
+          >
+            <input
+              type="checkbox"
+              checked={settings.library}
+              disabled={bridged}
+              onChange={(e) => {
+                setSettings({ ...settings, library: e.target.checked })
+                touch()
+              }}
+            />
+            harvest finished work into the Library
+            {bridged && (
+              <span className="text-[10px] text-ink-faint">· already in the Library</span>
+            )}
+          </label>
+          <ListField
+            inline
+            label="forbidden lemmas"
+            hint="add pattern (e.g. sperner*)"
+            values={settings.forbidden_lemmas}
+            onChange={(v) => {
+              setSettings({ ...settings, forbidden_lemmas: v })
+              touch()
+            }}
+          />
+          {/* the axiom gate is FIXED AT CREATION (server enforces 409):
+              the gate re-reads it per validation, so a mid-life edit
+              would re-tune soundness under live proofs. Read-only, so
+              it reads as a fact, not as a control you may not touch */}
+          <div
+            className="flex flex-wrap items-center gap-2"
+            title="fixed when the problem is created — the gate re-reads it on every validation, so changing it mid-life would re-tune soundness under proofs that already passed. Set it on the New problem form."
+          >
+            <span className="w-40 shrink-0 text-xs text-ink-dim">axioms admitted</span>
+            <span className="font-mono text-[11px] text-ink-faint">
+              {settings.axioms_whitelist.length === 0
+                ? "the kernel's defaults, nothing more"
+                : settings.axioms_whitelist.join(' · ')}
+            </span>
+          </div>
         </div>
       </fieldset>
       {/* NOTE: outside the fieldset on purpose — paper bindings are DB
