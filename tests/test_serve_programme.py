@@ -55,7 +55,7 @@ def test_programme_empty_before_bootstrap(workspace: Path) -> None:
     c = TestClient(create_app(workspace))
     r = c.get("/api/problems/Test.rm/programme")
     assert r.status_code == 200
-    assert r.json() == {"current": None, "previous": None, "history": [],
+    assert r.json() == {"current": None, "history": [],
                         "group_id": None, "charter": None, "groups": []}
     # and the detail advertises no tab
     assert c.get("/api/problems/Test.rm").json()["programme_rev"] is None
@@ -98,16 +98,10 @@ def test_programme_reads_one_group_never_interleaves(
     assert [(g["id"], g["is_top"], g["charter"]) for g in top_read["groups"]] \
         == [(top, True, ""), (sub, False, "settle the sub-claim")]
 
-    # "what changed" is the previous PASSED body of the SAME chain
-    assert top_read["previous"] == {"rev": 1, "body": _BODY_V1}
-
     sub_read = c.get(f"/api/problems/Test.rm/programme?group={sub}").json()
     assert sub_read["current"]["rev"] == 1
     assert sub_read["current"]["reservations"] == ["sub caveat"]
     assert [h["rev"] for h in sub_read["history"]] == [1]
-    # rev 1 of its own chain has no predecessor — never the top
-    # group's rev 1, which is a different argument entirely
-    assert sub_read["previous"] is None
 
     # the problem's own number is the top group's, never a sub-group's
     detail = c.get("/api/problems/Test.rm").json()

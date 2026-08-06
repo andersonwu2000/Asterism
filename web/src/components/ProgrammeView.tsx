@@ -1,10 +1,8 @@
 import { useState } from 'react'
-import { relTime } from '../lib/format'
 import { emitGoalOpen } from '../lib/goalFocus'
 import { charterTitle, groupMeta, treeRows } from '../lib/groupTree'
 import { renderProse } from '../lib/prose'
 import { navigate } from '../lib/router'
-import DiffView from './DiffView'
 import type { Programme } from '../lib/types'
 
 /*
@@ -106,32 +104,67 @@ export function GroupTree({
   )
 }
 
-/** Why this argument exists: the claim its parent handed it, verbatim
- * from the Delegate brief. It is the fixed point its own adversary
- * judges against, so a reader of the group's Programme needs it — and
- * it is a paragraph, which is why it is a block here and not the
- * label it used to be (owner, 2026-08-07). */
-function Charter({ text }: { text: string }) {
-  const [open, setOpen] = useState(false)
+/** Everything standing AROUND the argument, in ONE card: the claim
+ * this group was handed, and the caveats its reviewer passed it with.
+ * They are context on the same footing, and three separate boxes
+ * above the body read as clutter (owner, 2026-08-07). Each half shows
+ * only when it exists — the problem's own argument was handed
+ * nothing, and an unchallenged revision carries no reservations. */
+function Around({
+  charter,
+  reservations,
+}: {
+  charter?: string | null
+  reservations: string[]
+}) {
+  const [full, setFull] = useState(false)
+  if (!charter && reservations.length === 0) return null
+  // the charter's first paragraph IS the claim; the rest is the
+  // parent's reasoning about it, one click away
+  const lead = (charter ?? '').split(/\n{2,}/).find((p) => p.trim() !== '') ?? ''
+  const hasMore = (charter ?? '').trim().length > lead.trim().length
   return (
-    <details
-      className="mb-4 rounded-xl border border-edge bg-surface px-3.5 py-2.5"
-      open={open}
-      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
-    >
-      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] tracking-wider text-ink-faint uppercase">
-        <span
-          className={`inline-block text-[9px] transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
-          aria-hidden
-        >
-          ▸
-        </span>
-        the claim this group was handed — what its reviewer judges against
-      </summary>
-      <div className="mt-2 text-[12.5px] leading-relaxed text-ink-dim">
-        {renderProse(text, { mode: 'document' })}
-      </div>
-    </details>
+    <div className="mb-5 rounded-xl border border-edge bg-surface px-3.5 py-2.5">
+      {charter && (
+        <>
+          <div className="mb-1 text-[11px] tracking-wider text-ink-faint uppercase">
+            the claim it was handed
+          </div>
+          {/* chat mode, not document: a charter opens with its own
+              `# Charter: …` heading, and a display-face title inside
+              a context card competes with the argument's real title
+              right below it */}
+          <div className="text-[12.5px] leading-relaxed text-ink-dim">
+            {renderProse(full ? charter : lead, { mode: 'chat' })}
+          </div>
+          {hasMore && (
+            <button
+              className="mt-1 text-[11px] text-ink-faint transition-colors hover:text-ink-dim"
+              onClick={() => setFull((v) => !v)}
+            >
+              {full ? 'less' : 'the whole charter'}
+            </button>
+          )}
+        </>
+      )}
+      {charter && reservations.length > 0 && (
+        <div className="my-2.5 border-t border-edge" />
+      )}
+      {reservations.length > 0 && (
+        <>
+          <div className="mb-1 text-[11px] tracking-wider text-ink-faint uppercase">
+            reviewer's reservations — caveats it passed with
+          </div>
+          <ul className="space-y-1 pl-4 text-[12px] text-ink-dim">
+            {reservations.map((r, i) => (
+              <li key={i} className="list-disc marker:text-ink-faint">
+                {r}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
   )
 }
 
@@ -198,41 +231,6 @@ function ReturnedBricks({
   )
 }
 
-/** What the last accepted revision changed in the argument. Folded by
- * default: the body below is the thing to read, this answers "what
- * moved since I last looked" — the question a watcher actually has. */
-function WhatChanged({ data }: { data: Programme }) {
-  const [open, setOpen] = useState(false)
-  const prev = data.previous
-  const cur = data.current
-  if (!prev || !cur) return null
-  return (
-    <div className="mb-4">
-      <button
-        className="flex items-center gap-1.5 text-[11px] text-ink-faint transition-colors hover:text-ink-dim"
-        onClick={() => setOpen((v) => !v)}
-      >
-        <span
-          className={`inline-block text-[9px] transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
-          aria-hidden
-        >
-          ▸
-        </span>
-        what rev {cur.rev} changed — against rev {prev.rev}
-      </button>
-      {open && (
-        <div className="mt-2">
-          <DiffView
-            left={prev.body}
-            right={cur.body}
-            label={`rev ${prev.rev} → rev ${cur.rev}`}
-          />
-        </div>
-      )}
-    </div>
-  )
-}
-
 export default function ProgrammeView({
   data,
   group,
@@ -271,7 +269,7 @@ export default function ProgrammeView({
         {picker}
         <div className={reading}>
           {extra}
-          {data.charter && <Charter text={data.charter} />}
+          <Around charter={data.charter} reservations={[]} />
           <div className="py-6 text-sm text-ink-faint">
             no programme yet — the first passed proposal will start the revision chain
           </div>
@@ -280,47 +278,16 @@ export default function ProgrammeView({
       </div>
     )
   const cur = data.current
-  const rejected = data.history.filter((h) => h.status === 'rejected').length
   return (
     <div className="mx-auto max-w-3xl px-6 py-5">
       {picker}
       <div className={reading}>
-      <div className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] text-ink-faint">
-        <span
-          className="text-ink-dim"
-          title="the revision chain: each passed proposal advances the Programme by one rev"
-        >
-          rev {cur.rev}
-        </span>
-        <span title="how many criticism rounds this revision survived before the adversarial reviewer let it pass">
-          {cur.rounds === 0
-            ? 'passed adversarial review unchallenged'
-            : `passed after ${cur.rounds} round${cur.rounds === 1 ? '' : 's'} of adversarial review`}
-        </span>
-        <span>{relTime(cur.created_at)}</span>
-        {rejected > 0 && (
-          <span title="proposals the adversarial reviewer discarded outright — their drafts and the full criticism stay in the engine's records">
-            {rejected} rejected along the way
-          </span>
-        )}
-      </div>
+      {/* the revision's own vital signs (rev, rounds survived, age,
+          discarded drafts) came off the page: the tree already names
+          the rev, and a reader of the STANDING argument does not read
+          its provenance (owner, 2026-08-07) */}
       {extra}
-      {data.charter && <Charter text={data.charter} />}
-      <WhatChanged data={data} />
-      {cur.reservations.length > 0 && (
-        <div className="mb-4 rounded-xl border border-edge bg-surface px-3.5 py-2.5">
-          <div className="mb-1 text-[11px] tracking-wider text-ink-faint uppercase">
-            reviewer's reservations — caveats it passed WITH, on the record
-          </div>
-          <ul className="space-y-1 pl-4 text-[12px] text-ink-dim">
-            {cur.reservations.map((r, i) => (
-              <li key={i} className="list-disc marker:text-ink-faint">
-                {r}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <Around charter={data.charter} reservations={cur.reservations} />
       <div className="text-sm leading-relaxed text-ink-dim">
         {renderProse(cur.body, { mode: 'document' })}
       </div>

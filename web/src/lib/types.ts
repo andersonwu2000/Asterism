@@ -176,9 +176,6 @@ export interface Programme {
     created_at: string
     reservations: string[]
   } | null
-  /** the previous PASSED body of the same chain — what the current rev
-   * changed the argument FROM; null for a chain's first revision */
-  previous?: { rev: number; body: string } | null
   history: { rev: number; status: string; rounds: number; created_at: string }[]
   /** which group's chain this is (null before any group exists) */
   group_id?: number | null
