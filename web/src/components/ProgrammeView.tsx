@@ -55,43 +55,83 @@ export function GroupTree({
         return (
           <button
             key={g.id}
-            className={`flex w-full items-baseline gap-2 rounded-md px-1.5 py-1 text-left text-[11px] transition-colors ${
-              on ? 'bg-surface text-ink' : 'text-ink-faint hover:text-ink-dim'
+            className={`block w-full rounded-md px-1.5 py-1 text-left transition-colors ${
+              on ? 'bg-surface' : 'hover:bg-surface/60'
             }`}
             onClick={() => onPick(g.is_top ? null : g.id)}
             title={
-              (g.is_top
+              g.is_top
                 ? "the problem's own argument — what it did not hand out"
-                : `handed out as its own group\n\n${g.charter}`) +
-              (seated ? '\n\nits strategist is seated right now' : '')
+                : 'a claim handed out as its own group'
             }
           >
             <span
-              className="flex min-w-0 items-baseline gap-1.5"
+              className="block min-w-0"
               style={{ paddingLeft: `${depth * 14}px` }}
             >
-              {depth > 0 && (
-                <span className="shrink-0 text-ink-faint/50" aria-hidden>
-                  └
-                </span>
-              )}
-              {seated && (
+              {/* title line: what the argument calls itself */}
+              <span className="flex min-w-0 items-baseline gap-1.5">
+                {depth > 0 && (
+                  <span className="shrink-0 text-[11px] text-ink-faint/50" aria-hidden>
+                    └
+                  </span>
+                )}
+                {seated && (
+                  <span
+                    className="size-1 shrink-0 translate-y-[-2px] rounded-full bg-starlight"
+                    aria-hidden
+                  />
+                )}
                 <span
-                  className="size-1 shrink-0 translate-y-[-1px] rounded-full bg-starlight"
-                  aria-hidden
-                />
-              )}
-              <span className={`truncate ${on ? '' : 'text-ink-dim'}`}>
-                {charterTitle(g)}
+                  className={`truncate text-[12px] ${on ? 'text-ink' : 'text-ink-dim'}`}
+                >
+                  {charterTitle(g)}
+                </span>
               </span>
-            </span>
-            <span className="tnum ml-auto shrink-0 text-ink-faint">
-              {groupMeta(g, livePhase?.[g.id])}
+              {/* and under it, where it came from and how it stands —
+                  a subtitle, not a column fighting the title for width
+                  (owner, 2026-08-07) */}
+              <span
+                className={`tnum block truncate text-[10.5px] text-ink-faint ${
+                  depth > 0 ? 'pl-[13px]' : ''
+                }`}
+              >
+                {groupMeta(g, livePhase?.[g.id])}
+              </span>
             </span>
           </button>
         )
       })}
     </div>
+  )
+}
+
+/** Why this argument exists: the claim its parent handed it, verbatim
+ * from the Delegate brief. It is the fixed point its own adversary
+ * judges against, so a reader of the group's Programme needs it — and
+ * it is a paragraph, which is why it is a block here and not the
+ * label it used to be (owner, 2026-08-07). */
+function Charter({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <details
+      className="mb-4 rounded-xl border border-edge bg-surface px-3.5 py-2.5"
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] tracking-wider text-ink-faint uppercase">
+        <span
+          className={`inline-block text-[9px] transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
+          aria-hidden
+        >
+          ▸
+        </span>
+        the claim this group was handed — what its reviewer judges against
+      </summary>
+      <div className="mt-2 text-[12.5px] leading-relaxed text-ink-dim">
+        {renderProse(text, { mode: 'document' })}
+      </div>
+    </details>
   )
 }
 
@@ -201,6 +241,7 @@ export default function ProgrammeView({
   onPickGroup,
   extra,
   brickHome,
+  stale,
 }: {
   data: Programme
   group: number | null
@@ -209,6 +250,10 @@ export default function ProgrammeView({
   onPickGroup: (id: number | null) => void
   extra?: React.ReactNode
   brickHome?: string
+  /** the shown argument is the PREVIOUS selection, still on screen
+   * while the chosen one loads — the tree stays put and only the
+   * reading fades, instead of the whole panel blinking out */
+  stale?: boolean
 }) {
   const picker = (
     <GroupTree
@@ -219,15 +264,19 @@ export default function ProgrammeView({
       onPick={onPickGroup}
     />
   )
+  const reading = stale ? 'opacity-40 transition-opacity duration-150' : ''
   if (data.current === null)
     return (
       <div className="mx-auto max-w-3xl px-6 py-5">
         {picker}
-        {extra}
-        <div className="py-6 text-sm text-ink-faint">
-          no programme yet — the first passed proposal will start the revision chain
+        <div className={reading}>
+          {extra}
+          {data.charter && <Charter text={data.charter} />}
+          <div className="py-6 text-sm text-ink-faint">
+            no programme yet — the first passed proposal will start the revision chain
+          </div>
+          <ReturnedBricks data={data} group={group} brickHome={brickHome} />
         </div>
-        <ReturnedBricks data={data} group={group} brickHome={brickHome} />
       </div>
     )
   const cur = data.current
@@ -235,6 +284,7 @@ export default function ProgrammeView({
   return (
     <div className="mx-auto max-w-3xl px-6 py-5">
       {picker}
+      <div className={reading}>
       <div className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] text-ink-faint">
         <span
           className="text-ink-dim"
@@ -255,6 +305,7 @@ export default function ProgrammeView({
         )}
       </div>
       {extra}
+      {data.charter && <Charter text={data.charter} />}
       <WhatChanged data={data} />
       {cur.reservations.length > 0 && (
         <div className="mb-4 rounded-xl border border-edge bg-surface px-3.5 py-2.5">
@@ -274,6 +325,7 @@ export default function ProgrammeView({
         {renderProse(cur.body, { mode: 'document' })}
       </div>
       <ReturnedBricks data={data} group={group} brickHome={brickHome} />
+      </div>
     </div>
   )
 }

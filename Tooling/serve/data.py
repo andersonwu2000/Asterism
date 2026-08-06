@@ -739,8 +739,19 @@ def programme(conn: sqlite3.Connection, problem: str,
             (problem, int(cur["rev"])) + args).fetchone()
         if prev is not None:
             previous = {"rev": int(prev["rev"]), "body": str(prev["body"])}
+    # The charter of the group being READ, in full — the reason this
+    # argument exists at all. The cards carry a snippet for labels;
+    # the whole claim belongs in the reading, not in a tooltip.
+    charter = None
+    if group_id is not None:
+        row = conn.execute(
+            "SELECT charter, parent_group_id FROM groups WHERE id = ?",
+            (int(group_id),)).fetchone()
+        if row is not None and row["parent_group_id"] is not None:
+            charter = str(row["charter"] or "") or None
     return {"current": current, "previous": previous, "history": history,
-            "group_id": group_id, "groups": groups_of(conn, problem)}
+            "group_id": group_id, "charter": charter,
+            "groups": groups_of(conn, problem)}
 
 
 # display-signature cache: mtime-keyed per lean file so the 3s detail
@@ -780,6 +791,20 @@ def _goal_signature(workspace: Path, slug: str,
 #: claim lives in the group's own read; a lane or a chip needs the
 #: subject, not the paragraph.
 _CHARTER_SNIP = 240
+
+
+def _programme_title(body: str) -> "str | None":
+    """The Programme's own `# Title` line — what the argument calls
+    itself. Falls back to the first prose line for a body that opens
+    without one; None when there is nothing to read."""
+    for raw in body.splitlines():
+        line = raw.strip()
+        if line == "":
+            continue
+        if line.startswith("#"):
+            line = line.lstrip("#").strip()
+        return line[:160] or None
+    return None
 
 
 def _charter_snippet(charter: str) -> str:
@@ -862,6 +887,18 @@ def _group_lineage(conn: sqlite3.Connection, problem: str,
         if row is not None:
             card["opened_at_rev"] = int(row["rev"])
     card["rev"] = _programme_rev(conn, problem, gid)
+    # A group NAMES itself in its Programme's title line; the charter
+    # is the reason it was handed the burden, which is a paragraph and
+    # a poor label (owner, 2026-08-07). The charter still travels — as
+    # a block inside the group's own read.
+    card["title"] = None
+    if card["rev"] is not None:
+        row = conn.execute(
+            "SELECT body FROM programme_revisions"
+            " WHERE problem = ? AND group_id = ? AND status = 'passed'"
+            " ORDER BY rev DESC LIMIT 1", (problem, gid)).fetchone()
+        if row is not None:
+            card["title"] = _programme_title(str(row["body"] or ""))
     bricks = conn.execute(
         "SELECT g.slug AS slug, g.id AS id, g.status AS status"
         "  FROM strategist_decisions d JOIN goals g"

@@ -58,7 +58,21 @@ export interface PollState<T> {
   error: ApiError | Error | null
   /** True only before the first response arrives. */
   loading: boolean
+  /** `keepPrevious` only: `data` is the PREVIOUS resource's, and the
+   * one asked for is still in flight. Surfaces must say so. */
+  stale: boolean
   refresh: () => void
+}
+
+export interface PollOpts {
+  /** Keep showing the previous resource while the next one loads.
+   * OFF by default and deliberately so — a screen that swaps its
+   * subject must not show the old subject's data as if it were the
+   * new one. Opt in where the surrounding page is unchanged and only
+   * a panel swaps (the Programme's group switch), and render `stale`
+   * visibly: the alternative there is the whole panel unmounting,
+   * which reads as a flash (owner, 2026-08-07). */
+  keepPrevious?: boolean
 }
 
 /**
@@ -66,10 +80,15 @@ export interface PollState<T> {
  * data on transient errors so the UI doesn't flicker; `error` reflects
  * the most recent attempt.
  */
-export function usePoll<T>(path: string | null, intervalMs = 2000): PollState<T> {
+export function usePoll<T>(
+  path: string | null,
+  intervalMs = 2000,
+  opts: PollOpts = {},
+): PollState<T> {
   const [data, setData] = useState<T | null>(null)
   const [error, setError] = useState<ApiError | Error | null>(null)
   const [loading, setLoading] = useState(true)
+  const [stale, setStale] = useState(false)
   const [tick, setTick] = useState(0)
   const lastPath = useRef(path)
 
@@ -77,11 +96,13 @@ export function usePoll<T>(path: string | null, intervalMs = 2000): PollState<T>
     if (path === null) return
     // Navigating to a different resource must not show the previous one's
     // data while the first response is in flight (refreshes of the same
-    // path keep old data so the UI doesn't flicker).
+    // path keep old data so the UI doesn't flicker) — unless the caller
+    // opts into keeping it and SAYS it is stale.
     if (lastPath.current !== path) {
       lastPath.current = path
-      setData(null)
       setError(null)
+      if (opts.keepPrevious) setStale(true)
+      else setData(null)
     }
     // Cancellation is per effect run — a shared ref would be resurrected
     // by the next run, leaving the old poll loop alive and racing.
@@ -92,6 +113,7 @@ export function usePoll<T>(path: string | null, intervalMs = 2000): PollState<T>
         const d = await apiGet<T>(path)
         if (cancelled) return
         setData(d)
+        setStale(false)
         setError(null)
       } catch (e) {
         if (cancelled) return
@@ -109,8 +131,11 @@ export function usePoll<T>(path: string | null, intervalMs = 2000): PollState<T>
       cancelled = true
       if (timer !== undefined) clearTimeout(timer)
     }
+    // opts.keepPrevious is read on the path-change branch only; a
+    // caller flipping it mid-life is not a case worth re-running for
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, intervalMs, tick])
 
   const refresh = useCallback(() => setTick((t) => t + 1), [])
-  return { data, error, loading, refresh }
+  return { data, error, loading, stale, refresh }
 }

@@ -56,7 +56,7 @@ def test_programme_empty_before_bootstrap(workspace: Path) -> None:
     r = c.get("/api/problems/Test.rm/programme")
     assert r.status_code == 200
     assert r.json() == {"current": None, "previous": None, "history": [],
-                        "group_id": None, "groups": []}
+                        "group_id": None, "charter": None, "groups": []}
     # and the detail advertises no tab
     assert c.get("/api/problems/Test.rm").json()["programme_rev"] is None
 

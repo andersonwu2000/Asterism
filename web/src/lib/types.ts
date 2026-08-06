@@ -149,6 +149,9 @@ export interface Group {
   opened_at_rev?: number | null
   /** this group's own current revision; every chain numbers from 1 */
   rev?: number | null
+  /** the title of that revision — what the argument calls itself;
+   * null until its first passed proposal (the charter stands in) */
+  title?: string | null
   /** goals its strategist commissioned, and how many are proved —
    * ownership of a subtree folds into the parent when a group
    * delivers, this record does not */
@@ -179,6 +182,9 @@ export interface Programme {
   history: { rev: number; status: string; rounds: number; created_at: string }[]
   /** which group's chain this is (null before any group exists) */
   group_id?: number | null
+  /** the claim the group being read was handed, in full; null for the
+   * problem's own argument (nobody handed it anything) */
+  charter?: string | null
   /** every group in the problem — the others argue their own charters */
   groups?: Group[]
 }

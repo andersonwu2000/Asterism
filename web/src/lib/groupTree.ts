@@ -46,11 +46,15 @@ export function treeRows(groups: Group[] | undefined | null): TreeRow[] {
   return out
 }
 
-/** A charter is a paragraph; a tree row needs a name. Take its title
- * line and drop the decoration the strategist writes around it
- * (`# Charter: …`, `Roadmap: …`) — the full text stays one hover away. */
+/** What a row is CALLED: the argument's own title, the way any
+ * document names itself. The charter is the reason it was handed the
+ * burden — a paragraph, and a poor label (owner, 2026-08-07); it
+ * stands in only until the group's first revision names it, and it
+ * appears in full inside that group's own read. */
 export function charterTitle(g: Group): string {
   if (g.is_top) return 'the problem'
+  const titled = (g.title ?? '').trim()
+  if (titled !== '') return titled
   const first = (g.charter || '')
     .split('\n')
     .map((l) => l.trim())
@@ -77,7 +81,8 @@ export function groupState(g: Group, phase?: string): string {
  * chain, what it is doing, how much it has built. */
 export function groupMeta(g: Group, phase?: string): string {
   const bits: string[] = []
-  if (!g.is_top && g.opened_at_rev != null) bits.push(`from rev ${g.opened_at_rev}`)
+  if (!g.is_top && g.opened_at_rev != null)
+    bits.push(`handed out of rev ${g.opened_at_rev}`)
   bits.push(g.rev != null ? `rev ${g.rev}` : 'no rev yet')
   if (!g.is_top) bits.push(groupState(g, phase))
   else if (phase) bits.push(phase)

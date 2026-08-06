@@ -29,14 +29,17 @@ function ProgrammePanel({ problem }: { problem: string }) {
   // revision chain numbered from 1 (v35) — null = the problem's own
   const [group, setGroup] = useState<number | null>(null)
   // 30s poll: revisions land once per strategist wake at most
-  const { data, error } = usePoll<Programme>(
+  const { data, error, stale } = usePoll<Programme>(
     `/api/problems/${encodeURIComponent(problem)}/programme` +
       (group !== null ? `?group=${group}` : ''),
     30000,
+    { keepPrevious: true },
   )
   if (error) return <ErrorState error={error} />
   if (!data) return null
-  return <ProgrammeView data={data} group={group} onPickGroup={setGroup} />
+  return (
+    <ProgrammeView data={data} group={group} onPickGroup={setGroup} stale={stale} />
+  )
 }
 
 /* proved is the settled majority — it reads quiet; color is spent on

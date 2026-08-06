@@ -77,7 +77,9 @@ describe('the row line', () => {
       rev: 7,
       bricks: 10,
     })
-    expect(groupMeta(row)).toBe('from rev 3 · rev 7 · between wakes · 10 bricks')
+    expect(groupMeta(row)).toBe(
+      'handed out of rev 3 · rev 7 · between wakes · 10 bricks',
+    )
   })
 
   it('shows the live argument phase over the resting status', () => {
@@ -88,7 +90,7 @@ describe('the row line', () => {
 
   it('does not pretend a fresh group has a revision', () => {
     expect(groupMeta(g({ id: 9, parent_id: 1, opened_at_rev: 6 }))).toBe(
-      'from rev 6 · no rev yet · between wakes',
+      'handed out of rev 6 · no rev yet · between wakes',
     )
   })
 

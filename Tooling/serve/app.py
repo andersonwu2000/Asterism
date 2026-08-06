@@ -439,7 +439,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                 return _data.programme(conn, problem, group)
             except sqlite3.OperationalError:
                 return {"current": None, "previous": None, "history": [],
-                        "group_id": None, "groups": []}
+                        "group_id": None, "charter": None, "groups": []}
 
     @app.get("/api/problems/{problem}/manifest")
     def manifest_get(problem: str) -> dict:

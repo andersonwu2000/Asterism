@@ -113,12 +113,15 @@ function RunProgramme() {
       : 'thinking'
   }
   const group = resolveGroup(pick, workers)
-  const { data, error } = usePoll<Programme>(
+  const { data, error, stale } = usePoll<Programme>(
     problem
       ? `/api/problems/${encodeURIComponent(problem)}/programme` +
           (group !== null ? `?group=${group}` : '')
       : null,
     15000,
+    // switching branch swaps ONE panel on an otherwise unchanged page:
+    // unmounting it read as a flash (owner, 2026-08-07)
+    { keepPrevious: true },
   )
   // The cycle shown must belong to the argument ON SCREEN — matched by
   // the resolved group id the server reports, so a sibling's round is
@@ -144,6 +147,7 @@ function RunProgramme() {
         liveIds={liveIds}
         livePhase={livePhase}
         onPickGroup={setPick}
+        stale={stale}
         // a brick opens on the Engine's OWN sky — the console is one
         // tab away, and leaving the Engine to read a node it can show
         // is the defect the link audit removed
