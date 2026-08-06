@@ -94,6 +94,10 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
       className={`cursor-pointer border-b border-edge/60 transition-colors duration-150 hover:bg-surface ${
         dense ? 'h-8' : 'h-9'
       }`}
+      /* the clock stays reachable but stops counting at the reader: a
+         visible age column reads as a deadline the engine is holding
+         you to (owner, 2026-08-07) */
+      title={p.last_event ? `last event ${relTime(p.last_event)}` : undefined}
       onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}
     >
       <td className={dense ? 'pr-4 pl-7' : 'pr-4 pl-3'}>
@@ -142,8 +146,8 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
           <StatusBadge status={p.status} />
         )}
       </td>
-      <td className="pr-4">
-        <span className="flex items-center gap-2.5">
+      <td className="pr-3">
+        <span className="flex items-center justify-end gap-2.5">
           {/* a FULL bar carries nothing the N/N doesn't — bars are for
               campaigns still in motion */}
           {!(p.goals.total > 0 && p.goals.open === 0 && p.goals.proved === p.goals.total) && (
@@ -152,22 +156,8 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
           <GoalCounts p={p} />
         </span>
       </td>
-      <td className="tnum pr-3 text-right text-xs whitespace-nowrap text-ink-faint">
-        {/* a blocking request's age is the product's most important
-            number — escalate it instead of whispering it */}
-        {needsAction && ageDays(p.last_event) >= 2 ? (
-          <span className="font-medium text-warn">waiting {ageDays(p.last_event)}d</span>
-        ) : (
-          relTime(p.last_event)
-        )}
-      </td>
     </tr>
   )
-}
-
-function ageDays(iso: string | null): number {
-  if (!iso) return 0
-  return Math.floor((Date.now() - Date.parse(iso)) / 86400_000)
 }
 
 function SectionRow({
@@ -181,7 +171,7 @@ function SectionRow({
 }) {
   return (
     <tr>
-      <td colSpan={4} className="pt-5 pb-1.5 pl-3">
+      <td colSpan={3} className="pt-5 pb-1.5 pl-3">
         <span className="text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
           {label}
         </span>
@@ -244,6 +234,7 @@ function ClusterRow({
   return (
     <tr
       className="h-9 cursor-pointer border-b border-edge/60 transition-colors duration-150 hover:bg-surface"
+      title={c.lastEvent ? `last event ${relTime(c.lastEvent)}` : undefined}
       onClick={onToggle}
     >
       <td className="pr-4 pl-3">
@@ -273,15 +264,12 @@ function ClusterRow({
           <span className="tnum text-[11px] text-star/70">{c.bridged} in Library ◆</span>
         )}
       </td>
-      <td className="pr-4">
+      <td className="pr-3 text-right">
         {/* the professor's unit is PROBLEMS, not the engine's goal sum */}
         <span className="tnum text-xs whitespace-nowrap text-ink-faint">
           {c.items.filter((p) => p.status === 'ingested' || p.status === 'bridged').length}
           /{c.items.length} done
         </span>
-      </td>
-      <td className="tnum pr-3 text-right text-xs whitespace-nowrap text-ink-faint">
-        {relTime(c.lastEvent)}
       </td>
     </tr>
   )
@@ -456,7 +444,7 @@ export default function Board() {
         {filtering && <span className="text-xs text-ink-faint">{sorted.length} shown</span>}
       </div>
       {/* table-fixed + truncating name cell: long mono names must not
-          push "last event" off a laptop screen (main clips overflow) */}
+          push the quantities off a laptop screen (main clips overflow) */}
       {(
         <table className="w-full table-fixed border-collapse text-left">
           {/* the opaque paint lives on the TH cells: with
@@ -467,10 +455,7 @@ export default function Board() {
             <tr className="border-b border-edge text-xs text-ink-faint">
               <th className="bg-bg py-2 pr-4 pl-3 font-medium">problem</th>
               <th className="w-[120px] bg-bg py-2 pr-4 font-medium">status</th>
-              <th className="w-[230px] bg-bg py-2 pr-4 font-medium">progress</th>
-              <th className="w-[80px] bg-bg py-2 pr-3 text-right font-medium whitespace-nowrap">
-                last event
-              </th>
+              <th className="w-[230px] bg-bg py-2 pr-3 text-right font-medium">progress</th>
             </tr>
           </thead>
           {filtering ? (
@@ -484,7 +469,7 @@ export default function Board() {
                 /* a typo must not read as an empty workspace — the
                    Library's no-match line, same voice */
                 <tr>
-                  <td colSpan={4} className="py-14 text-center text-xs text-ink-faint">
+                  <td colSpan={3} className="py-14 text-center text-xs text-ink-faint">
                     No problem matches “{query.trim()}”. Esc clears the filter.
                   </td>
                 </tr>
