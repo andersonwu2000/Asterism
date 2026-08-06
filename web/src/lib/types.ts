@@ -143,6 +143,19 @@ export interface Group {
   status: 'active' | 'delivered' | 'returned' | 'closed' | string
   anchor_goal_id: number | null
   created_at: string
+  /** the PARENT's revision whose batch handed this claim out — what
+   * ties the argument's document to its tree (absent on the top
+   * group, which was handed nothing) */
+  opened_at_rev?: number | null
+  /** this group's own current revision; every chain numbers from 1 */
+  rev?: number | null
+  /** goals its strategist commissioned, and how many are proved —
+   * ownership of a subtree folds into the parent when a group
+   * delivers, this record does not */
+  bricks?: number
+  bricks_proved?: number
+  /** a delivered group's proved bricks: what the parent may now cite */
+  delivered_bricks?: { id: number; slug: string }[]
 }
 
 export interface ProgrammeEvent {

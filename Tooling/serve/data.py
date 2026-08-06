@@ -832,9 +832,59 @@ def _top_group_id(conn: sqlite3.Connection, problem: str) -> "int | None":
     return int(r["id"]) if r is not None else None
 
 
+#: bricks listed per delivered group — the block names what a finished
+#: group handed up; beyond this it stops being a list and becomes a
+#: file, and the count still tells the truth.
+_BRICKS_SHOWN = 40
+
+
+def _group_lineage(conn: sqlite3.Connection, problem: str,
+                   card: dict) -> dict:
+    """Where a group sits in the ARGUMENT, not just in the tree.
+
+    `opened_at_rev` is the revision of the parent whose batch delegated
+    this claim — the one fact that ties the document to the tree: a
+    reader of rev 6 can see that rev 2 and rev 3 each handed a burden
+    out and whether it came back. `rev` is the group's OWN chain (every
+    group numbers from 1). `bricks` are the goals its strategist
+    commissioned — which survives delivery, unlike subtree ownership
+    (a delivered group's goals fold into its parent's).
+    """
+    gid = int(card["id"])
+    card["opened_at_rev"] = None
+    if card.get("parent_id") is not None:
+        row = conn.execute(
+            "SELECT r.rev AS rev FROM groups g"
+            " JOIN strategist_decisions d ON d.id = g.opened_by"
+            " JOIN programme_revisions r ON r.batch_id = d.batch_id"
+            "  AND r.problem = d.problem AND r.group_id = d.group_id"
+            " WHERE g.id = ? LIMIT 1", (gid,)).fetchone()
+        if row is not None:
+            card["opened_at_rev"] = int(row["rev"])
+    card["rev"] = _programme_rev(conn, problem, gid)
+    bricks = conn.execute(
+        "SELECT g.slug AS slug, g.id AS id, g.status AS status"
+        "  FROM strategist_decisions d JOIN goals g"
+        "    ON g.id = d.produced_goal_id"
+        " WHERE d.problem = ? AND d.group_id = ?"
+        "   AND d.produced_goal_id IS NOT NULL"
+        " ORDER BY d.id", (problem, gid)).fetchall()
+    proved = [{"id": int(b["id"]), "slug": str(b["slug"])}
+              for b in bricks if str(b["status"]) == "proved"]
+    card["bricks"] = len(bricks)
+    card["bricks_proved"] = len(proved)
+    # only a group that has HANDED ITS WORK UP carries the list: that
+    # is the reading ("what may I cite now"); a group still arguing is
+    # read through its own Programme, not through a brick inventory
+    card["delivered_bricks"] = (proved[:_BRICKS_SHOWN]
+                                if card["status"] == "delivered" else [])
+    return card
+
+
 def groups_of(conn: sqlite3.Connection, problem: str) -> "list[dict]":
     """Every group in the problem, top first then by age — the tree a
-    reader needs to know exists before any of it can be shown."""
+    reader needs to know exists before any of it can be shown, each
+    carrying where it came from and what it produced."""
     try:
         rows = conn.execute(
             "SELECT id FROM groups WHERE problem = ?"
@@ -846,7 +896,7 @@ def groups_of(conn: sqlite3.Connection, problem: str) -> "list[dict]":
     for r in rows:
         card = group_card(conn, int(r["id"]))
         if card is not None:
-            out.append(card)
+            out.append(_group_lineage(conn, problem, card))
     return out
 
 

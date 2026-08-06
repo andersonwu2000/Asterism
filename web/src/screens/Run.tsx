@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
-import { emitGoalOpen, onGoalHover, onGoalOpen } from '../lib/goalFocus'
+import {
+  emitGoalOpen,
+  onGoalHover,
+  onGoalOpen,
+  takePendingGoalOpen,
+} from '../lib/goalFocus'
 import { switchAccount } from '../lib/claudeAuth'
 import { duration } from '../lib/format'
 import { goalStatusLabel } from '../lib/vocab'
@@ -441,8 +446,8 @@ export default function Run() {
   )
   useEffect(() => {
     if (!detail || focusProblem === null) return
-    return onGoalOpen((ref) => {
-      if (ref.problem !== focusProblem) return false
+    const claim = (ref: { problem: string; slug: string } | null): boolean => {
+      if (ref === null || ref.problem !== focusProblem) return false
       const goal = detail.goals.find((x) => x.slug === ref.slug)
       if (goal === undefined) return false
       setSelGoal(goal.id)
@@ -452,7 +457,12 @@ export default function Run() {
       // as having done nothing
       skyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return true
-    })
+    }
+    // an open requested from ANOTHER Engine tab (a delivered brick on
+    // the Programme page) arrives before this screen exists — the
+    // console is a sky like any other and consumes it on mount
+    claim(takePendingGoalOpen(focusProblem))
+    return onGoalOpen(claim)
   }, [detail, focusProblem])
   useTick(1000)
   const logPulse = useLogPulse(Boolean(data?.daemon.running))

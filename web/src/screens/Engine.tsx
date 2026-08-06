@@ -99,7 +99,19 @@ function RunProgramme() {
   // "the seated strategist" can be several — the selection and cycle
   // laws live in lib/programmeFocus, tested there.
   const workers = run?.workers ?? []
-  const liveIds = seatedGroups(workers).map((s) => s.group.id)
+  const seats = seatedGroups(workers)
+  const liveIds = seats.map((s) => s.group.id)
+  // each seated group's argument phase, so the tree says what every
+  // branch is doing without opening them one at a time
+  const livePhase: Record<number, string> = {}
+  for (const s of seats) {
+    const c = s.worker.cycle
+    livePhase[s.group.id] = c
+      ? c.phase === 'proposing'
+        ? 'proposing'
+        : `round ${c.round} ${c.phase}`
+      : 'thinking'
+  }
   const group = resolveGroup(pick, workers)
   const { data, error } = usePoll<Programme>(
     problem
@@ -130,7 +142,12 @@ function RunProgramme() {
         data={data}
         group={group}
         liveIds={liveIds}
+        livePhase={livePhase}
         onPickGroup={setPick}
+        // a brick opens on the Engine's OWN sky — the console is one
+        // tab away, and leaving the Engine to read a node it can show
+        // is the defect the link audit removed
+        brickHome="/engine"
         extra={
           cycle ? (
             <div className="mb-4 rounded-xl border border-edge bg-surface px-3.5 py-2.5">

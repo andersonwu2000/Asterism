@@ -121,6 +121,68 @@ def test_programme_reads_one_group_never_interleaves(
                  ).status_code == 404
 
 
+def test_group_cards_carry_their_lineage(workspace: Path) -> None:
+    """A group card says where in the ARGUMENT it was handed out
+    (`opened_at_rev` — the parent revision whose batch delegated it),
+    what its own chain has reached, and what it built. Subtree
+    ownership folds into the parent when a group delivers; the
+    commissioned-brick record does not, which is why the display reads
+    that instead (owner, 2026-08-07)."""
+    from Tooling.state import groups as _groups
+    conn = _open_db(workspace)
+    _add_problem(conn)
+    top = _groups.ensure_top_group(conn, "Test.rm")
+    prog.record_pass(conn, "Test.rm", _BODY_V1, {"reservations": []}, [],
+                     rounds=0, batch_id="b1", group_id=top)
+    prog.record_pass(conn, "Test.rm", _BODY_V2, {"reservations": []}, [],
+                     rounds=0, batch_id="b2", group_id=top)
+    sub = _groups.open_group(conn, problem="Test.rm", parent_group_id=top,
+                             charter="# Charter: settle the sub-claim")
+    # the Delegate row is what ties the group to the revision: its
+    # batch is the one rev 2 authorised
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, produced_group_id,"
+        " batch_id, created_at, updated_at) VALUES (?, 0, 'routine',"
+        " 'Delegate', ?, ?, 'b2', ?, ?)",
+        ("Test.rm", top, sub, db.now(), db.now()))
+    conn.execute("UPDATE groups SET opened_by = ? WHERE id = ?",
+                 (int(cur.lastrowid), sub))
+    # two commissioned bricks, one proved
+    for slug, status in (("brick_a", "proved"), ("brick_b", "open")):
+        gid = db.insert_goal(conn, problem="Test.rm", slug=slug,
+                             lean_path=f"Problems/Test.rm/proofs/{slug}.lean",
+                             statement="True", origin="forward")
+        if status == "proved":
+            conn.execute("UPDATE goals SET status='proved' WHERE id=?", (gid,))
+        conn.execute(
+            "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+            " trigger_kind, decision_kind, group_id, produced_goal_id,"
+            " created_at, updated_at) VALUES (?, 0, 'routine', 'Inject',"
+            " ?, ?, ?, ?)", ("Test.rm", sub, gid, db.now(), db.now()))
+    conn.commit()
+    conn.close()
+    c = TestClient(create_app(workspace))
+    cards = {g["id"]: g for g in
+             c.get("/api/problems/Test.rm/programme").json()["groups"]}
+
+    assert cards[top]["opened_at_rev"] is None   # nobody handed it out
+    assert cards[top]["rev"] == 2
+    assert cards[sub]["opened_at_rev"] == 2      # out of the parent's rev 2
+    assert cards[sub]["rev"] is None             # its own chain is empty
+    assert cards[sub]["bricks"] == 2
+    assert cards[sub]["bricks_proved"] == 1
+    # the inventory of what came home is for a group that HAS come home
+    assert cards[sub]["delivered_bricks"] == []
+    conn = _open_db(workspace)
+    _groups.set_status(conn, sub, "delivered", event="ingest")
+    conn.commit()
+    conn.close()
+    cards = {g["id"]: g for g in
+             c.get("/api/problems/Test.rm/programme").json()["groups"]}
+    assert [b["slug"] for b in cards[sub]["delivered_bricks"]] == ["brick_a"]
+
+
 def test_programme_chain_and_rejections(workspace: Path) -> None:
     conn = _open_db(workspace)
     _add_problem(conn)
