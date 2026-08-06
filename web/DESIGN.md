@@ -64,6 +64,12 @@ the ladder via `::picker(select)` where supported.
 - Dead/shelved = very faint residue, never hidden. **The sky is always
   complete** — ink inversion is the only focus mechanism; no hide/
   filter toggles.
+- **Settled things recede; they are never struck through.** The same
+  law outside the sky (the Programme's discussion tree): a finished
+  branch dims, a filled glyph says work came home and a hollow one
+  says nothing did. `line-through` is spent — it means DELETED text
+  in a diff, so striking a delivered thing would call its success a
+  retraction (owner, 2026-08-07).
 
 ## Interaction
 

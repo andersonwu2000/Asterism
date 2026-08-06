@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { emitGoalOpen } from '../lib/goalFocus'
-import { charterTitle, groupMeta, treeRows } from '../lib/groupTree'
+import { charterTitle, groupMeta, groupTone, treeRows } from '../lib/groupTree'
+import type { GroupTone } from '../lib/groupTree'
 import { renderProse } from '../lib/prose'
 import { navigate } from '../lib/router'
 import type { Programme } from '../lib/types'
@@ -22,6 +23,37 @@ import type { Programme } from '../lib/types'
  * revision, and what each has built. Indentation IS the delegation —
  * a flat chip row read as three peer things when they are one
  * argument that handed pieces of itself out (owner, 2026-08-07). */
+/** The row's state as a glyph, in the sky's own terms: a filled disc
+ * carries light while it is alive, a settled one recedes, and a
+ * hollow ring is a branch that came back with nothing. Same idiom as
+ * a star — no new device, and no line through anything. */
+function GroupGlyph({ tone }: { tone: GroupTone }) {
+  const hollow = tone === 'settled'
+  const color =
+    tone === 'live' || tone === 'idle'
+      ? 'var(--color-starlight)'
+      : 'var(--color-ink-faint)'
+  return (
+    <svg
+      width="7"
+      height="7"
+      viewBox="0 0 8 8"
+      className="mt-[5px] shrink-0"
+      style={{ opacity: tone === 'live' ? 1 : tone === 'idle' ? 0.7 : 0.5 }}
+      aria-hidden
+    >
+      <circle
+        cx="4"
+        cy="4"
+        r={hollow ? 2.6 : 3}
+        fill={hollow ? 'none' : color}
+        stroke={hollow ? color : 'none'}
+        strokeWidth="1.2"
+      />
+    </svg>
+  )
+}
+
 export function GroupTree({
   data,
   group,
@@ -49,7 +81,7 @@ export function GroupTree({
       </div>
       {rows.map(({ group: g, depth }) => {
         const on = g.is_top ? group === null : group === g.id
-        const seated = liveIds?.includes(g.id) ?? false
+        const tone = groupTone(g, liveIds?.includes(g.id) ?? false)
         return (
           <button
             key={g.id}
@@ -68,20 +100,21 @@ export function GroupTree({
               style={{ paddingLeft: `${depth * 14}px` }}
             >
               {/* title line: what the argument calls itself */}
-              <span className="flex min-w-0 items-baseline gap-1.5">
+              <span className="flex min-w-0 items-start gap-1.5">
                 {depth > 0 && (
-                  <span className="shrink-0 text-[11px] text-ink-faint/50" aria-hidden>
+                  <span className="shrink-0 text-[11px] leading-5 text-ink-faint/50" aria-hidden>
                     └
                   </span>
                 )}
-                {seated && (
-                  <span
-                    className="size-1 shrink-0 translate-y-[-2px] rounded-full bg-starlight"
-                    aria-hidden
-                  />
-                )}
+                <GroupGlyph tone={tone} />
                 <span
-                  className={`truncate text-[12px] ${on ? 'text-ink' : 'text-ink-dim'}`}
+                  className={`truncate text-[12px] ${
+                    tone === 'live' || on
+                      ? 'text-ink'
+                      : tone === 'idle'
+                        ? 'text-ink-dim'
+                        : 'text-ink-faint'
+                  }`}
                 >
                   {charterTitle(g)}
                 </span>

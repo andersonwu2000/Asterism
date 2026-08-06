@@ -66,6 +66,29 @@ export function charterTitle(g: Group): string {
   return cleaned === '' ? `group ${g.id}` : cleaned
 }
 
+/** How loudly a row should read.
+ *
+ * The sky's law, applied to the tree: light belongs to what is still
+ * alive, and what is settled RECEDES (`Constellation.nodeStyle` — a
+ * proved star dims to 45% while anything is live, shelved sits at
+ * 0.45 opacity). Nothing there is struck through, and nothing here
+ * should be either: this UI already spends `line-through` on deleted
+ * text in a diff, so striking a delivered group would say it was
+ * retracted when it succeeded (owner, 2026-08-07).
+ *
+ *   live      — a strategist is seated in it this minute
+ *   idle      — alive, between wakes
+ *   delivered — settled, and its bricks came home (filled, receded)
+ *   settled   — handed back or retired: nothing came home (hollow)
+ */
+export type GroupTone = 'live' | 'idle' | 'delivered' | 'settled'
+
+export function groupTone(g: Group, seated: boolean): GroupTone {
+  if (g.status === 'delivered') return 'delivered'
+  if (g.status !== 'active') return 'settled'
+  return seated ? 'live' : 'idle'
+}
+
 /** What this group is doing, in the reader's words: its live argument
  * phase when a strategist is seated, else where it ended up. */
 export function groupState(g: Group, phase?: string): string {

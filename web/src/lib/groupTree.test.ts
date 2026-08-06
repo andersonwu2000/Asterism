@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { charterTitle, groupMeta, groupState, treeRows } from './groupTree'
+import {
+  charterTitle,
+  groupMeta,
+  groupState,
+  groupTone,
+  treeRows,
+} from './groupTree'
 import type { Group } from './types'
 
 const g = (over: Partial<Group> & { id: number }): Group => ({
@@ -65,6 +71,30 @@ describe('naming a charter', () => {
 
   it('falls back to the id rather than an empty row', () => {
     expect(charterTitle(g({ id: 7, charter: '   \n\n' }))).toBe('group 7')
+  })
+})
+
+describe('how loudly a row reads', () => {
+  it('gives the light to what is still alive', () => {
+    expect(groupTone(g({ id: 1, status: 'active' }), true)).toBe('live')
+    expect(groupTone(g({ id: 1, status: 'active' }), false)).toBe('idle')
+  })
+
+  it('lets a delivered branch recede without striking it out', () => {
+    // `line-through` means DELETED text in this UI (the diff view);
+    // a delivered group succeeded, and the sky dims what is settled
+    // rather than crossing it off
+    expect(groupTone(g({ id: 1, status: 'delivered' }), false)).toBe('delivered')
+  })
+
+  it('separates "came home settled" from "came back with nothing"', () => {
+    expect(groupTone(g({ id: 1, status: 'returned' }), false)).toBe('settled')
+    expect(groupTone(g({ id: 1, status: 'closed' }), false)).toBe('settled')
+  })
+
+  it('never calls a terminal group live, whatever a stale lane says', () => {
+    // a seat can linger in the poll after the group settles
+    expect(groupTone(g({ id: 1, status: 'delivered' }), true)).toBe('delivered')
   })
 })
 
