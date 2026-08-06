@@ -23,6 +23,7 @@ lines go to the strategist via the retry channel), all `clear` → pass.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import re
 import shutil
@@ -211,7 +212,36 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     # available — it rides the projection, nothing is inlined.
     ctx = attempts_dir / "Context.md"
     if ctx.exists():
-        shutil.copyfile(ctx, proj / "Context.md")
+        # Label it, same move as the PROGRAMME weld below and for the
+        # same reason: judged against the wrong referent it manufactures
+        # defects. This file is the author's snapshot, frozen when the
+        # wake spawned; `TREE.md` / `CATALOG.md` beside it are LIVE and
+        # rebuilt every round. A long debate (7 and 10 rounds, 60-90min,
+        # 2026-08-06) widens that gap monotonically while sibling groups
+        # land bricks, and the judge then fires criterion 5 on "roadmap
+        # says landed, TREE says open" — a contradiction the packet
+        # itself created. The judge said so in its own feedback 5×
+        # ("a stale snapshot shipped alongside live TREE/CATALOG, which
+        # manufactures exactly the status-drift defects the adversary
+        # keeps firing"; "no stated precedence"). The evidence stays
+        # byte-identical below the label, so quotations remain checkable.
+        try:
+            _taken = _dt.datetime.fromtimestamp(
+                ctx.stat().st_mtime, tz=_dt.timezone.utc,
+            ).strftime("%Y-%m-%d %H:%M UTC")
+        except OSError:
+            _taken = "unknown"
+        (proj / "Context.md").write_text(
+            "_(Framework label — not part of the file. This is the"
+            f" author's context SNAPSHOT, taken {_taken} when the wake"
+            " spawned; it is what the author saw. `TREE.md` and"
+            " `CATALOG.md` in this projection are LIVE, rebuilt for this"
+            " round. Where the two disagree about what has landed, the"
+            " live files are authoritative and the difference is this"
+            " packet's timing — not a defect in the proposal. Judge the"
+            " proposal's claims against the live files; use this"
+            " snapshot to check what the author quotes.)_\n\n"
+            + ctx.read_text(encoding="utf-8"), encoding="utf-8")
     # CATALOG.md is lazily machine-generated per assembly and never
     # lives in problem_dir — generate it into the projection directly
     # (the old problem_dir copy was dead code: the judge could never

@@ -1061,7 +1061,18 @@ def test_projection_ships_the_strategists_context_verbatim(
         decisions=[_d("Inject", pipeline="Forward", brief="## Need\nx")],
         dialogue=[], proof_warn=None)
 
-    assert (proj / "Context.md").read_text(encoding="utf-8") == body
+    shipped = (proj / "Context.md").read_text(encoding="utf-8")
+    # The author's text rides CONTIGUOUS and complete — nothing filtered,
+    # nothing rewritten, so every quotation stays checkable.
+    assert shipped.endswith(body)
+    # Above it, a framework label naming what this file is (2026-08-07):
+    # a snapshot frozen at spawn, shipped next to LIVE TREE/CATALOG. The
+    # judge fired criterion 5 on that gap 5× in one run and said so in
+    # its own feedback; same move as the PROGRAMME weld label.
+    label = shipped[:-len(body)]
+    assert "Framework label" in label
+    assert "SNAPSHOT" in label
+    assert "live files are authoritative" in label
 
 
 def test_projection_without_a_context_file_is_not_an_error(
