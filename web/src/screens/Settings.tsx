@@ -187,30 +187,38 @@ function Allowance() {
   )
 }
 
+/** One control, on the right where a setting's value belongs: a
+ * segmented pill whose lit half IS the current end of the scale
+ * (owner, 2026-08-07 — two loose buttons read as two things to press,
+ * not as one value). */
 function Appearance() {
   const [theme, setLocal] = useState<Theme>(() => currentTheme())
+  const pick = (t: Theme) => {
+    setTheme(t)
+    setLocal(t)
+  }
   return (
     <Row>
-      <Label>appearance</Label>
-      <div className="flex items-center gap-2">
-        {(['dark', 'light'] as const).map((t) => (
-          <button
-            key={t}
-            className={`cursor-pointer rounded-lg border px-2.5 py-1 text-xs transition-colors ${
-              theme === t
-                ? 'border-edge-strong text-ink'
-                : 'border-edge text-ink-faint hover:text-ink-dim'
-            }`}
-            onClick={() => {
-              setTheme(t)
-              setLocal(t)
-            }}
-          >
-            {t}
-          </button>
-        ))}
-        <span className="ml-2 text-[11px] text-ink-faint">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-xs text-ink">Appearance</span>
+        <span className="text-[11px] text-ink-faint">
           one achromatic language, two ends of its lightness scale
+        </span>
+        <span className="ml-auto flex overflow-hidden rounded-lg border border-edge">
+          {(['dark', 'light'] as const).map((t) => (
+            <button
+              key={t}
+              className={`cursor-pointer px-2.5 py-1 text-xs transition-colors ${
+                theme === t
+                  ? 'bg-surface-3 text-ink'
+                  : 'text-ink-faint hover:text-ink-dim'
+              }`}
+              onClick={() => pick(t)}
+              aria-pressed={theme === t}
+            >
+              {t}
+            </button>
+          ))}
         </span>
       </div>
     </Row>

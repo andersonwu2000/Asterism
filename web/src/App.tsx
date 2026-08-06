@@ -13,8 +13,6 @@ import Settings from './screens/Settings'
 import Engine from './screens/Engine'
 import type { EngineTab } from './screens/Engine'
 import ChatDrawer from './components/ChatDrawer'
-import { currentTheme, setTheme } from './lib/theme'
-import type { Theme } from './lib/theme'
 import type { Meta } from './lib/types'
 
 /** The explainer's door — the one utility slot at the sidebar's foot
@@ -43,33 +41,6 @@ function AskChip({
       </span>
       <span className="flex-1 text-left">ask</span>
       {streaming && !open && <span className="bg-ok h-1.5 w-1.5 animate-pulse rounded-full" />}
-    </button>
-  )
-}
-
-/** Light / dark, at the sidebar's foot beside the ask chip: a global
- * preference belongs where every screen can reach it (a reader flips
- * it when the room's light changes, not when they happen to be on one
- * page). Half-lit disc — the same glyph the notes site uses. */
-function ThemeChip() {
-  const [theme, setLocal] = useState<Theme>(() => currentTheme())
-  const flip = () => {
-    const next: Theme = theme === 'dark' ? 'light' : 'dark'
-    setTheme(next)
-    setLocal(next)
-  }
-  return (
-    <button
-      onClick={flip}
-      className="group flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] text-ink-dim transition-colors duration-150 hover:bg-surface-2/60 hover:text-ink"
-      title={`switch to the ${theme === 'dark' ? 'light' : 'dark'} end of the scale`}
-    >
-      <span className="text-ink-faint group-hover:text-ink-dim" aria-hidden>
-        ◐
-      </span>
-      {/* the label is what the click DOES, not what is on screen —
-          the copy law: say what happens next */}
-      <span className="flex-1 text-left">{theme === 'dark' ? 'light' : 'dark'}</span>
     </button>
   )
 }
@@ -150,18 +121,6 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M4 4l8 1.5M12 5.5l-5 6" stroke="currentColor" strokeWidth="0.8" opacity="0.45" />
     </svg>
   ),
-  account: (
-    // a single figure — the one person the console answers to
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <circle cx="8" cy="5.6" r="2.6" stroke="currentColor" strokeWidth="1.1" />
-      <path
-        d="M2.9 13.6c.6-2.6 2.6-4 5.1-4s4.5 1.4 5.1 4"
-        stroke="currentColor"
-        strokeWidth="1.1"
-        strokeLinecap="round"
-      />
-    </svg>
-  ),
   inbox: (
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
       <path
@@ -185,7 +144,8 @@ const ICONS: Record<string, ReactNode> = {
     </svg>
   ),
   settings: (
-    // two sliders — the machine room's knobs (three read as noise at 15px)
+    // two sliders — the things you set (three read as noise at 15px).
+    // Kept from the pre-merge sidebar: Settings is a destination again
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
       <path d="M2 5.5h12M2 10.5h12" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" opacity="0.55" />
       <circle cx="10" cy="5.5" r="1.7" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1.1" />
@@ -383,7 +343,9 @@ function Shell() {
             active={
               section === 'engine' ||
               section === 'run' ||
-              section === 'settings' ||
+              // NOT 'settings': that alias used to mean this page and
+              // now belongs to the console's own Settings, which lit
+              // two nav rows at once until this line caught up
               section === 'telemetry'
             }
             live={(d?.running || d?.starting) ?? false}
@@ -413,14 +375,12 @@ function Shell() {
             active={section === 'inbox'}
             badge={meta?.inbox_count}
           />
-        </nav>
-        <div className="mt-auto flex flex-col gap-1">
-          {/* what is not the engine's — accounts, appearance — sits
-              with the other personal controls at the foot, not inside
-              the machine room (owner, 2026-08-07) */}
+          {/* a destination like any other — the accounts and the
+              console's own look. Not a foot utility: the foot is for
+              things that ACT on the page you are on (owner) */}
           <NavItem
             to="/settings"
-            icon="account"
+            icon="settings"
             label="Settings"
             active={section === 'settings'}
             warn={meta?.claude ? !meta.claude.logged_in : false}
@@ -430,7 +390,8 @@ function Shell() {
                 : undefined
             }
           />
-          <ThemeChip />
+        </nav>
+        <div className="mt-auto flex flex-col gap-1">
           <AskChip
             open={chatOpen}
             streaming={chatStreaming}
