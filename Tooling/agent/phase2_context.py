@@ -906,20 +906,27 @@ def _section_pending_reopens(conn: sqlite3.Connection,
         FROM latest_cs lcs
         JOIN strategist_decisions cs ON cs.id = lcs.cs_decision_id
         WHERE cs.batch_id NOT IN (
-            -- exclude batches still in-flight: any Inject sibling
-            -- with outcome NULL means the promise hasn't landed yet
+            -- exclude batches still in-flight: any Inject OR Delegate
+            -- sibling with outcome NULL means the promise hasn't landed
+            -- yet ('Delegate' joined the promise-carrier set 2026-08-06,
+            -- mirroring transitions._awaiting_promised_batch: a park
+            -- waiting on a sub-group's charter surfaced as "due" the
+            -- moment the batch's mints resolved, prompting a re-park
+            -- adjudication of a non-question)
             SELECT batch_id FROM strategist_decisions
             WHERE problem = ?
-              AND decision_kind = 'Inject'
+              AND decision_kind IN ('Inject', 'Delegate')
               AND batch_id IS NOT NULL
               AND outcome IS NULL
         )
         AND EXISTS (
-            -- and the batch must contain at least one Inject — pure
-            -- ConfirmShelve+Reopen batches carry no promise to wait on
+            -- and the batch must contain at least one promise carrier —
+            -- pure ConfirmShelve+Reopen batches carry no promise to
+            -- wait on (a shelve batched with only a Delegate IS a
+            -- promise: the group's result is what it waits for)
             SELECT 1 FROM strategist_decisions sib
             WHERE sib.batch_id = cs.batch_id
-              AND sib.decision_kind = 'Inject'
+              AND sib.decision_kind IN ('Inject', 'Delegate')
         )
         AND NOT EXISTS (
             -- and Strategist hasn't already addressed this completed

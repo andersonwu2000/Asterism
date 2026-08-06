@@ -689,6 +689,62 @@ def test_pending_reopens_suppresses_when_promised_batch_inflight(
     assert lines == []
 
 
+def test_pending_reopens_waits_on_a_live_delegate(
+    conn: sqlite3.Connection,
+) -> None:
+    """v35 seam (2026-08-06, live on the Frankl opener): a park waiting
+    on a sub-group is a promise too. With only 'Inject' counted, the
+    batch's mints resolving made the shelved goal surface as "due"
+    while the Delegate (the actual wait target) was still open. A
+    Delegate with outcome NULL suppresses surfacing; its terminal
+    outcome (filled by the group's terminal transition) makes the
+    promise due. A shelve batched with ONLY a Delegate is also a
+    promise batch."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    ts = db.now()
+    # Case A: mint landed, delegate still open → suppressed.
+    g1 = _seed_shelved_goal(conn, slug="g_waits_group")
+    _seed_confirmshelve_with_inject_batch(
+        conn, goal_id=g1, batch_id="batch-dlg",
+        inject_outcomes=["success"])
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, batch_id, outcome, payload,"
+        " created_at, updated_at)"
+        " VALUES ('p', 0, 'inject_batch_done', 'Delegate', 'batch-dlg',"
+        " NULL, '{}', ?, ?)", (ts, ts))
+    conn.commit()
+    assert phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done") == []
+    # Group terminal → outcome filled → due, surfaces.
+    conn.execute(
+        "UPDATE strategist_decisions SET outcome='failed:returned'"
+        " WHERE decision_kind='Delegate' AND batch_id='batch-dlg'")
+    conn.commit()
+    body = "\n".join(phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done"))
+    assert "g_waits_group" in body
+    # Case B: shelve batched with ONLY a Delegate is promise-bearing.
+    g2 = _seed_shelved_goal(conn, slug="g_delegate_only")
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, batch_id, outcome,"
+        " payload, created_at, updated_at)"
+        " VALUES ('p', 0, 'inject_batch_done', 'ConfirmShelve', ?,"
+        " 'batch-dlg2', 'success', '{}', ?, ?)", (str(g2), ts, ts))
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, batch_id, outcome, payload,"
+        " created_at, updated_at)"
+        " VALUES ('p', 0, 'inject_batch_done', 'Delegate', 'batch-dlg2',"
+        " NULL, '{}', ?, ?)", (ts, ts))
+    conn.commit()
+    body2 = "\n".join(phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done"))
+    assert "g_delegate_only" not in body2   # group live → waiting
+
+
 def test_pending_reopens_suppresses_after_already_addressed(
     conn: sqlite3.Connection,
 ) -> None:

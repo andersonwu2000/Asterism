@@ -1029,9 +1029,21 @@ def _awaiting_promised_batch(conn: sqlite3.Connection,
         " ORDER BY id DESC LIMIT 1", (goal_id,)).fetchone()
     if row is None or not row["batch_id"]:
         return False
+    # 'Delegate' joined the promise-carrier set 2026-08-06 (v35 seam,
+    # live on the Frankl opener): a park waiting on a sub-group's
+    # charter is a promise exactly like a park waiting on minted
+    # helpers — the group's terminal transition fills the Delegate
+    # row's outcome and completes this batch (state.groups.set_status),
+    # so the continuity guarantee is the same as the Inject case. With
+    # only 'Inject' counted, the mint resolved in minutes, the predicate
+    # read "no live promise", and the root was handed to a review wake
+    # to adjudicate a non-question — the exact cascade b047b910 killed,
+    # resurfacing through kind-enumeration (the failure mode
+    # `predicted_batch_delta`'s comment names).
     return conn.execute(
         "SELECT 1 FROM strategist_decisions"
-        " WHERE batch_id = ? AND decision_kind = 'Inject'"
+        " WHERE batch_id = ?"
+        "   AND decision_kind IN ('Inject', 'Delegate')"
         "   AND outcome IS NULL LIMIT 1",
         (str(row["batch_id"]),)).fetchone() is not None
 

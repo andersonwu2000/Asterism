@@ -273,6 +273,53 @@ def test_promised_park_does_not_escalate_the_parent(tmp_path: Path) -> None:
     conn.close()
 
 
+def _delegate_row(conn, *, batch: str, outcome: str | None) -> int:
+    """A Delegate sibling — a park waiting on a sub-group's charter.
+    `outcome=None` = the group is still active; group terminal fills it
+    (state.groups.set_status)."""
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, batch_id, outcome,"
+        " created_at, updated_at)"
+        " VALUES (?, 0, 'pending_review', 'Delegate', ?, ?, ?, ?)",
+        (P, batch, outcome, _db.now(), _db.now()))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def test_park_waiting_on_a_delegate_keeps_the_parent_waiting(
+        tmp_path: Path) -> None:
+    """v35 seam, live on the Frankl opener (2026-08-06): the batch's
+    mint resolved in minutes while the Delegate (the actual wait
+    target, the entropy sub-group) stayed open — with only 'Inject'
+    counted as a promise carrier the root was handed to a review wake
+    to adjudicate a non-question, the exact cascade b047b910 killed.
+    A Delegate with outcome NULL is a live promise; the group's
+    terminal transition fills it and completes the batch."""
+    conn = _conn(tmp_path)
+    pa = _goal(conn, "pa", status="attempting")
+    sp = _strategy(conn, pa, "proposed")
+    leaf = _goal(conn, "pleaf", status="shelved", origin="backward")
+    _link(conn, sp, leaf)
+    _confirm_shelve(conn, leaf, batch="promise-d")
+    _mint_inject(conn, batch="promise-d", outcome="success")   # landed
+    _delegate_row(conn, batch="promise-d", outcome=None)       # group live
+
+    assert _tr._awaiting_promised_batch(conn, leaf)
+    _tr._maybe_stall_parent_strategies(conn, leaf)
+    s = conn.execute("SELECT status FROM strategies WHERE id = ?",
+                     (sp,)).fetchone()
+    assert str(s["status"]) == "proposed"        # still waiting
+    assert str(_db.get_goal(conn, pa)["status"]) == "attempting"
+
+    # Group reaches terminal → outcome filled → promise DUE.
+    conn.execute(
+        "UPDATE strategist_decisions SET outcome='failed:returned'"
+        " WHERE decision_kind='Delegate' AND batch_id='promise-d'")
+    conn.commit()
+    assert not _tr._awaiting_promised_batch(conn, leaf)
+
+
 def test_park_without_a_promise_still_escalates(tmp_path: Path) -> None:
     """No promise (ConfirmShelve batched with no Inject) → unchanged
     2026-07-09 behaviour: stall + escalate, or the goal is stranded
