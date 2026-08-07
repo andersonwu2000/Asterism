@@ -119,7 +119,10 @@ const EVENT_LABEL: Record<string, string> = {
   dead: 'dead',
   frozen: 'frozen',
   for_review: 'for review',
-  deliverable: 'claimed',
+  // "claimed" read as somebody claiming something — the reader's first
+  // question was what it meant (owner, 2026-08-07). `deliverable` is
+  // the word the Manifest and the sky's ◈ already use for this.
+  deliverable: 'deliverable',
   ingested: 'closed',
   rev: 'rev',
   proposal: 'proposal',
@@ -151,7 +154,9 @@ const EVENT_TITLE: Record<string, string> = {
   dead: 'out of attempts',
   frozen: 'held out of play — the root after you amended its statement',
   for_review: 'handed to the strategist to judge',
-  deliverable: 'flagged as one of the claims this problem promises',
+  deliverable:
+    'engine term: MarkDeliverable — this result became one of the claims the' +
+    ' problem promises, and one of the things you sign off on',
   ingested: "the finished work was accepted as the problem's final state",
   rev: 'a Programme revision was adopted — the standing argument changed',
   proposal: 'a revision the adversarial reviewer rejected — editing, not a change of record',

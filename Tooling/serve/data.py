@@ -822,12 +822,19 @@ def _ev(at: str, kind: str, *, object_kind: str = "problem",
         n: "int | None" = None, note: "str | None" = None,
         body: "str | None" = None, approx: bool = False,
         eid: str = "", batch_id: "str | None" = None,
-        group_id: "int | None" = None) -> dict:
+        group_id: "int | None" = None,
+        object_group_id: "int | None" = None) -> dict:
+    # `group_id` = which ARGUMENT this event belongs to (v35). A problem
+    # under real load runs several discussion groups at once — 7 on
+    # simple_loop_conjecture, 4 on union_closed — and their bricks
+    # interleave in one stream with nothing to tell them apart.
+    # `object_group_id` is different: the group a handover row is ABOUT.
     return {
         "at": at, "kind": kind, "object_kind": object_kind,
         "label": label, "goal_id": goal_id, "n": n, "note": note,
         "body": body, "approx": approx, "id": eid,
         "batch_id": batch_id, "group_id": group_id,
+        "object_group_id": object_group_id,
     }
 
 
@@ -1008,7 +1015,7 @@ def _decision_events(conn: sqlite3.Connection, problem: str,
             gid = None
         if gid not in by_id:
             gid = None
-        okind, label, group_id = "problem", problem, None
+        okind, label, obj_group = "problem", problem, None
         if gid is not None:
             okind, label = "goal", str(by_id[gid]["slug"])
         elif kind == "FetchPaper":
@@ -1018,15 +1025,15 @@ def _decision_events(conn: sqlite3.Connection, problem: str,
             okind = "group"
             g = d["produced_group_id"] if "produced_group_id" \
                 in d.keys() else None
-            group_id = int(g) if g is not None else (
+            obj_group = int(g) if g is not None else (
                 int(payload["group_id"]) if isinstance(
                     payload.get("group_id"), int) else None)
             # a group NAMES itself in its Programme's title; its charter
             # is a paragraph and a poor label (same law as the tree)
-            card = _group_lineage(conn, problem, group_card(conn, group_id)) \
-                if group_id else None
+            card = _group_lineage(conn, problem, group_card(conn, obj_group)) \
+                if obj_group else None
             label = (card or {}).get("title") or (card or {}).get(
-                "charter") or (f"group {group_id}" if group_id else problem)
+                "charter") or (f"group {obj_group}" if obj_group else problem)
         elif verb == "asked":
             # a dispatch whose brick does not exist yet (failed or still
             # in flight) — name what was ASKED FOR, or the row is anonymous
@@ -1037,12 +1044,50 @@ def _decision_events(conn: sqlite3.Connection, problem: str,
         if kind == "ReturnToParent" and payload.get("flavour"):
             note = f"{payload['flavour']} — {reason}" if reason \
                 else str(payload["flavour"])
+        own = d["group_id"] if "group_id" in d.keys() else None
         out.append(_ev(
             str(d["created_at"]), verb, object_kind=okind, label=label,
             goal_id=gid, note=note, body=brief or None,
             eid=f"d{int(d['id'])}", batch_id=d["batch_id"],
-            group_id=group_id))
+            group_id=int(own) if own is not None else None,
+            object_group_id=obj_group))
     return out
+
+
+def _goal_arguments(conn: sqlite3.Connection, problem: str,
+                    dec_rows: "list[sqlite3.Row]",
+                    goals: "list[dict]") -> "dict[int, int]":
+    """goal id → the discussion group whose argument it serves.
+
+    A commissioned brick inherits the group of the decision that asked
+    for it. A subgoal nobody commissioned — cut out of a larger goal by
+    a decomposition — serves the same argument as the goal it was cut
+    from, so the attribution propagates down the strategy edges.
+    """
+    if "group_id" not in (dec_rows[0].keys() if dec_rows else ()):
+        return {}
+    arg: "dict[int, int]" = {}
+    ids = {int(g["id"]) for g in goals}
+    for d in dec_rows:
+        gid, own = d["produced_goal_id"], d["group_id"]
+        if gid is not None and own is not None and int(gid) in ids:
+            arg[int(gid)] = int(own)
+    parent: "dict[int, int]" = {}
+    for r in conn.execute(
+            "SELECT e.subgoal_id AS sub, s.goal_id AS parent"
+            "  FROM strategy_subgoals e JOIN strategies s"
+            "    ON s.id = e.strategy_id"):
+        if int(r["sub"]) in ids and int(r["parent"]) in ids:
+            parent[int(r["sub"])] = int(r["parent"])
+    for gid in ids - set(arg):
+        seen, cur = set(), gid
+        while cur in parent and cur not in seen:
+            seen.add(cur)
+            cur = parent[cur]
+            if cur in arg:
+                arg[gid] = arg[cur]
+                break
+    return arg
 
 
 def problem_events(conn: sqlite3.Connection, problem: str) -> dict:
@@ -1061,7 +1106,7 @@ def problem_events(conn: sqlite3.Connection, problem: str) -> dict:
     _dcols = {r[1] for r in conn.execute(
         "PRAGMA table_info(strategist_decisions)")}
     _gsel = "" if "produced_group_id" not in _dcols \
-        else ", produced_group_id"
+        else ", produced_group_id, group_id"
     dec_rows = conn.execute(
         "SELECT id, batch_id, decision_kind, target_id, brief, reason,"
         " payload, outcome, produced_goal_id, created_at, updated_at"
@@ -1091,15 +1136,39 @@ def problem_events(conn: sqlite3.Connection, problem: str) -> dict:
     # the argument's own landmarks — only revisions that LANDED ride the
     # default stream; a rejected proposal is a round of editing, not a
     # change to the record (owner, 2026-08-07)
-    for r in _programme_events(conn, problem, _top_group_id(conn, problem)):
+    top = _top_group_id(conn, problem)
+    # A revision NAMES itself in its own `# Title` — "programme" for
+    # every row said only which surface it came from, not what changed
+    # (owner, 2026-08-07). substr: the title is the first non-empty
+    # line, and a body runs to tens of KB.
+    titles: "dict[int, str]" = {}
+    try:
+        for r in conn.execute(
+                "SELECT rev, substr(body, 1, 400) AS head FROM"
+                " programme_revisions WHERE problem = ? AND group_id IS ?"
+                " AND status = 'passed'", (problem, top)):
+            t = _programme_title(str(r["head"] or ""))
+            if t:
+                titles[int(r["rev"])] = t
+    except sqlite3.OperationalError:
+        pass
+    for r in _programme_events(conn, problem, top):
         passed = r["status"] == "passed"
         events.append(_ev(
             r["created_at"], "rev" if passed else "proposal",
-            object_kind="programme", label="programme", n=r["rev"],
+            object_kind="programme",
+            label=titles.get(r["rev"], "programme"), n=r["rev"],
             note=(None if r["rounds"] == 0 else
                   f"{r['rounds']} round{'' if r['rounds'] == 1 else 's'}"
                   " of review"),
-            eid=f"p{r['rev']}-{r['created_at']}"))
+            eid=f"p{r['rev']}-{r['created_at']}", group_id=top))
+
+    # which argument each event serves — a decision knows its own group;
+    # everything derived from a goal inherits the goal's
+    arg = _goal_arguments(conn, problem, dec_rows, goals)
+    for e in events:
+        if e["group_id"] is None and e["goal_id"] is not None:
+            e["group_id"] = arg.get(int(e["goal_id"]))
 
     # newest first; within one timestamp, later-in-life first — a brick
     # minted and landed inside the same minute must not read as having
@@ -1118,7 +1187,15 @@ def problem_events(conn: sqlite3.Connection, problem: str) -> dict:
         log_since = str(row[0]) if row and row[0] is not None else None
     except sqlite3.OperationalError:
         log_since = None
-    return {"events": events, "log_since": log_since}
+    # names for the argument lenses. A problem with only its top group
+    # reads exactly as it did before groups existed — the UI shows no
+    # lens at all — so this list is furniture only when it is > 1.
+    groups = [{
+        "id": g["id"], "is_top": g["is_top"],
+        "label": g.get("title") or g.get("charter") or f"group {g['id']}",
+        "status": g["status"],
+    } for g in groups_of(conn, problem)]
+    return {"events": events, "log_since": log_since, "groups": groups}
 
 
 # display-signature cache: mtime-keyed per lean file so the 3s detail

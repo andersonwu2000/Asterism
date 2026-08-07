@@ -190,7 +190,20 @@ export interface TimelineEvent {
   approx: boolean
   id: string
   batch_id: string | null
+  /** which ARGUMENT this event serves (v35 discussion group) — a
+   * problem under load runs several at once and their bricks
+   * interleave. Not a column: the verb column already carries the
+   * news, so this lives in the expansion (owner, 2026-08-07). */
   group_id: number | null
+  /** the group a handover row is ABOUT (Delegate / ReturnToParent) */
+  object_group_id: number | null
+}
+
+export interface TimelineGroup {
+  id: number
+  is_top: boolean
+  label: string
+  status: string
 }
 
 export interface Programme {

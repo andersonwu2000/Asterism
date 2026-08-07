@@ -261,6 +261,57 @@ def test_a_revival_is_news_a_worker_picking_it_up_is_not(
     assert "attempting" not in kinds
 
 
+def test_a_brick_carries_the_argument_it_serves(workspace: Path) -> None:
+    """v35 — a problem under load argues several groups at once (7 on
+    simple_loop_conjecture) and their bricks interleave in one stream.
+    A commissioned brick inherits its decision's group; a subgoal
+    nobody commissioned serves the same argument as the goal it was
+    cut out of."""
+    from Tooling.state import groups as _groups
+    conn = _open_db(workspace)
+    top = _groups.ensure_top_group(conn, "p")
+    sub_group = _groups.open_group(conn, problem="p", parent_group_id=top,
+                                   charter="settle the sub-claim")
+    brick = _goal(conn, "brick_a")
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, brief, reason, payload,"
+        " outcome, produced_goal_id, created_at, updated_at)"
+        " VALUES ('p', 0, 'routine', 'Inject', ?, '', '', '{}',"
+        " 'success', ?, ?, ?)", (sub_group, brick, db.now(), db.now()))
+    # a decomposition cuts a subgoal out of that brick
+    child = _goal(conn, "sub_a", origin="backward")
+    sid = db.insert_strategy(conn, goal_id=brick,
+                             lean_path="proofs/brick_a.lean",
+                             scratch_path="", created_by="test")
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=child, position=0)
+    conn.commit()
+    conn.close()
+    d = _events(workspace)
+    assert {g["id"] for g in d["groups"]} == {top, sub_group}
+    by_label = {(e["label"], e["kind"]): e["group_id"] for e in d["events"]}
+    assert by_label[("brick_a", "asked")] == sub_group
+    assert by_label[("sub_a", "opened")] == sub_group
+
+
+def test_a_revision_row_is_titled_by_the_revision(workspace: Path) -> None:
+    """"programme" on every row said which surface it came from, not
+    what changed. A revision names itself in its own `# Title`."""
+    from Tooling.state import groups as _groups
+    from Tooling.state import programme as prog
+    conn = _open_db(workspace)
+    top = _groups.ensure_top_group(conn, "p")
+    prog.record_pass(conn, "p", "# Park the open core; mint the engine\n\n"
+                     "## Argument\nA.\n\n## Proof\nT.\n\n## Roadmap\nR.",
+                     {"reservations": []}, [], 0, None, group_id=top)
+    conn.commit()
+    conn.close()
+    revs = [e for e in _events(workspace)["events"] if e["kind"] == "rev"]
+    assert len(revs) == 1
+    assert revs[0]["label"] == "Park the open core; mint the engine"
+    assert revs[0]["n"] == 1
+
+
 def test_newest_first_and_a_brick_is_asked_for_before_it_lands(
         workspace: Path) -> None:
     """Mint and landing inside one clock minute must not read as a

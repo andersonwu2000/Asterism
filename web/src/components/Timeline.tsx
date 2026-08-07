@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { EVENT_CLS, eventLabel, eventTitle, failureLabel } from '../lib/vocab'
-import type { TimelineEvent } from '../lib/types'
+import type { TimelineEvent, TimelineGroup } from '../lib/types'
 
 /*
  * The Timeline is a LOG, not a narrative: every row reads
@@ -69,6 +69,7 @@ const QUIET_KINDS = new Set(['hiccup', 'proposal'])
 function Row({
   e,
   following,
+  argument,
   onFollow,
   onOpenGoal,
   onOpenProgramme,
@@ -77,12 +78,15 @@ function Row({
   /** the log is filtered to this object — the header names it, so the
    * row must not say it a third and fourth time */
   following: boolean
+  /** which argument this event serves — null on a problem running a
+   * single group, where naming it on every row would be noise */
+  argument: string | null
   onFollow: (label: string) => void
   onOpenGoal?: (id: number) => void
   onOpenProgramme?: () => void
 }) {
   const [open, setOpen] = useState(false)
-  const expandable = Boolean(e.body || e.note)
+  const expandable = Boolean(e.body || e.note || argument)
   const note = e.kind === 'attempt' || e.kind === 'hiccup'
     ? failureLabel(e.note ?? '')
     : e.note
@@ -156,6 +160,17 @@ function Row({
       </div>
       {open && (
         <div className="mx-2 mt-1 mb-2 ml-[9.4rem] rounded-lg border border-edge bg-surface px-3 py-2">
+          {argument && (
+            /* which argument this brick serves. A column would cost
+               width on every problem to answer a question only
+               multi-group problems raise (owner, 2026-08-07) */
+            <div
+              className="mb-1.5 text-[11px] text-ink-faint"
+              title="the discussion group whose programme commissioned this — a problem under load argues several at once"
+            >
+              for <span className="text-ink-dim">{argument}</span>
+            </div>
+          )}
           {note && <div className="mb-1.5 text-xs text-ink-dim">{note}</div>}
           {e.body && (
             <pre className="font-mono text-[11px] whitespace-pre-wrap text-ink-faint">
@@ -198,6 +213,7 @@ export default function Timeline({
   const { data, error, loading } = usePoll<{
     events: TimelineEvent[]
     log_since: string | null
+    groups: TimelineGroup[]
   }>(`/api/problems/${encodeURIComponent(problem)}/events`, 15000, {
     keepPrevious: true,
   })
@@ -207,6 +223,15 @@ export default function Timeline({
 
   const all = useMemo(() => data?.events ?? [], [data])
   const since = data?.log_since ?? null
+  // one group is the ordinary case and reads exactly as it did before
+  // groups existed — the argument is named only where there is a
+  // choice of arguments to name (v35's standing law)
+  const argOf = useMemo(() => {
+    const gs = data?.groups ?? []
+    if (gs.length < 2) return () => null
+    const by = new Map(gs.map((g) => [g.id, g.label]))
+    return (id: number | null) => (id === null ? null : (by.get(id) ?? null))
+  }, [data])
 
   if (loading && all.length === 0)
     return <div className="late-fade px-4 py-8 text-center text-xs text-ink-faint">Loading…</div>
@@ -317,6 +342,7 @@ export default function Timeline({
             <Row
               e={e}
               following={follow !== null}
+              argument={argOf(e.group_id)}
               onFollow={(l) => setFollow(l)}
               onOpenGoal={onSelectGoal}
               onOpenProgramme={onOpenProgramme}
