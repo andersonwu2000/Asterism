@@ -478,9 +478,10 @@ def _delegate_result_lines(conn: sqlite3.Connection,
             proposed = ""
         if proposed:
             out.append(f"  it proposes instead: {proposed}")
+    # Whole: a returned charter's post-mortem is why the delegation came
+    # back, and it is the single input to deciding what to do next. One
+    # per return, so the surface is bounded by count.
     reason = " ".join(str(ret["reason"] or "").split())
-    if len(reason) > 800:
-        reason = reason[:800].rstrip() + "…"
     if reason:
         out.append(f"  post-mortem: {reason}")
     return out
@@ -682,8 +683,12 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                         stmt = ""
                 if not stmt:
                     stmt = " ".join(str(r["landed_statement"] or "").split())
-                if len(stmt) > 300:
-                    stmt = stmt[:300].rstrip() + "…"
+                # Whole, no cut. This signature is the EVIDENCE for
+                # "is this what I briefed" — the judgement the regex
+                # used to pretend to make (removed 2026-08-07). A
+                # signature clipped at 300 chars is exactly the state in
+                # which a reader cannot tell, which is how the framework
+                # ended up guessing on its behalf in the first place.
                 # v32 attribution: say HOW the artifact relates to the
                 # brief instead of making the Strategist guess (#3 —
                 # the success-without-landing / renamed-landing pair).
@@ -711,44 +716,25 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                         f"  redispatch of goal `{r['landed_slug']}` "
                         f"(status={r['landed_status']})" + settled_note)
                 else:
+                    # Delivered-vs-briefed is YOUR call, not a regex's
+                    # (user ruling 2026-08-07: no mechanical checking of
+                    # natural language). What stood here searched the
+                    # brief's prose for the landed slug and cried
+                    # RETARGETED when it missed — so the framework's own
+                    # convention (briefs name the FILE `L_<slug>`, the
+                    # theorem lands as `<slug>`) tripped it on correct
+                    # work, 24 complaints in one run, each telling the
+                    # reader to diff a brick that matched its brief. It
+                    # was a patch over a different defect anyway: the
+                    # Strategist could not judge for itself because both
+                    # artifacts reached it truncated. They no longer do —
+                    # the signature below is whole and the brief is whole
+                    # in BATCHES.md, so the comparison is available to
+                    # the one reader who can actually read.
                     out.append(
                         f"  landed: `{r['landed_slug']}` "
                         f"(status={r['landed_status']})"
                         + (f" — `{stmt}`" if stmt else ""))
-                    # Delivered-vs-briefed (a5 run: `outcome=success`
-                    # read as "the brief was delivered" while the worker
-                    # had shipped a different declaration; the
-                    # strategist kept a hand tally to compensate). The
-                    # UNTRUNCATED brief never naming the landed slug is
-                    # the mechanical tell.
-                    full_brief = str(r["brief"] or "")
-                    slug = str(r["landed_slug"])
-                    if full_brief and not re.search(
-                            rf"\b{re.escape(slug)}\b", full_brief):
-                        # 07-29: a briefed camelCase name whose slug
-                        # normalization equals the landed slug is a
-                        # RENAME the framework can attribute itself —
-                        # the bare RETARGETED flag cost a full batch of
-                        # forensics + an adversary round for a
-                        # mechanically-derivable fact.
-                        briefed = next(
-                            (m for m in re.findall(
-                                r"`([A-Za-z][A-Za-z0-9_']*)`", full_brief)
-                             if _slugify_ident(m) == slug), None)
-                        if briefed:
-                            out.append(
-                                f"  RENAMED: briefed `{briefed}` landed "
-                                f"as `{slug}` — the slug charset is "
-                                "[a-z0-9_], the worker normalized the "
-                                "name; statement otherwise as briefed "
-                                "unless the signature above disagrees")
-                        else:
-                            out.append(
-                                "  RETARGETED: the brief never names this "
-                                "declaration — the worker delivered under a "
-                                "different name/statement than briefed; "
-                                "diff it against the brief before building "
-                                "on it")
             elif str(r["outcome"] or "") in ("success", "proved"):
                 out.append(
                     "  landed: (nothing attributed to this step — the "
@@ -965,9 +951,12 @@ def _section_pending_reopens(conn: sqlite3.Connection,
         gid = int(r["goal_id"])
         slug = str(r["goal_slug"])
         shelved_at = str(r["shelved_at"])[:19]
+        # Whole: this is the predecessor's own account of WHY the goal
+        # was shelved, and it has no companion to fall back to — a
+        # judge noted its post-mortem survived only because charter.md
+        # happened to carry a second copy. One row per shelved goal, so
+        # the surface is bounded by count, not by clipping each entry.
         reason = str(r["cs_reason"] or "").strip()
-        if len(reason) > 240:
-            reason = reason[:240].rstrip() + "…"
         batch_id = str(r["cs_batch_id"])
 
         out.append(f"### `{slug}` (id={gid}, shelved {shelved_at})")

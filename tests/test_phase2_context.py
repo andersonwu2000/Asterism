@@ -1190,14 +1190,18 @@ def test_tree_inline_keeps_pure_nl_forest(
     assert "brick_a" in text
 
 
-def test_inject_batch_done_flags_retargeted_delivery(
+def test_delivered_vs_briefed_is_not_decided_by_a_regex(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, tmp_path: Path,
 ) -> None:
-    """a5 run: `outcome=success` means "a declaration got proved", not
-    "the briefed one" — the strategist kept a hand tally to compensate.
-    A landed slug the (untruncated) brief never names gets a RETARGETED
-    marker; a brief that names it stays unmarked."""
+    """User ruling 2026-08-07: no mechanical checking of natural
+    language. "Did the worker deliver what I briefed" was decided by
+    searching the brief's PROSE for the landed slug, so the framework's
+    own convention — briefs name the file `L_<slug>`, the theorem lands
+    as `<slug>` — cried RETARGETED on correct work (24 complaints in one
+    run, each ordering the reader to diff a brick that matched). The
+    scoreboard now states the facts (landed slug, status, whole
+    signature, and where the whole brief is) and the Strategist judges."""
     _insert_problem(conn)
     _insert_root(conn)
     ids = _seed_inject_batch_done(
@@ -1224,10 +1228,15 @@ def test_inject_batch_done_flags_retargeted_delivery(
         pending_review_id=None,
     )
     text = out.read_text(encoding="utf-8")
-    # step 0: briefed f_pos, landed something else -> flagged
-    assert "RETARGETED" in text
-    # step 1: briefed name == landed name -> exactly one flag in total
-    assert text.count("RETARGETED") == 1
+    # No verdict is manufactured either way — for the step whose brief
+    # never names the landed slug, or for the one where it does.
+    assert "RETARGETED" not in text
+    assert "RENAMED" not in text
+    # What the Strategist needs to judge IS there: both landed slugs
+    # with their status, and a pointer to the untruncated briefs.
+    assert "landed: `exists_fiber_count_eq`" in text
+    assert "landed: `g_mono`" in text
+    assert "BATCHES.md" in text
 
 
 def test_batch_scoreboard_surfaces_recent_declines(
@@ -1272,14 +1281,16 @@ def test_batch_scoreboard_surfaces_recent_declines(
     assert "growth_exp_flawed" in text
 
 
-def test_inject_batch_done_attributes_slug_rename(
+def test_a_normalized_slug_rename_is_narrated_by_nobody(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, tmp_path: Path,
 ) -> None:
-    """07-29 (cube_e2e): a briefed camelCase name whose slug
-    normalization equals the landed slug is a RENAME the renderer can
-    attribute itself — the bare RETARGETED flag cost a full batch of
-    forensics + an adversary round for a mechanically-derivable fact."""
+    """The RENAMED marker went out with RETARGETED (user ruling
+    2026-08-07: no mechanical checking of natural language). It was the
+    kinder half of the same regex — reading a brief's prose to guess
+    whether `isPerfectCube` and `is_perfect_cube` are the same intent —
+    and a guess is exactly what the Strategist is there to make. The
+    facts it needs stay: what landed, and where the whole brief is."""
     _insert_problem(conn)
     _insert_root(conn)
     ids = _seed_inject_batch_done(
@@ -1301,8 +1312,9 @@ def test_inject_batch_done_attributes_slug_rename(
         attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
         pending_review_id=None)
     text = out.read_text(encoding="utf-8")
-    assert "RENAMED: briefed `isPerfectCube`" in text
+    assert "RENAMED" not in text
     assert "RETARGETED" not in text
+    assert "landed: `is_perfect_cube`" in text
 
 
 def test_outcome_line_reads_full_signature_for_def(

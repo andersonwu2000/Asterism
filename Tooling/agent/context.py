@@ -351,7 +351,6 @@ PAPER_MAP_COMPANION = "PAPER_MAP.md"
 # — binders and hypotheses live only in the proof file, so the catalog
 # showed `(f.comp γ).Nullhomotopic` with no premises). NOT a soundness
 # surface: parsing is best-effort, fallback = the bare statement.
-_CATALOG_SIG_CAP = 1_500
 _ALIAS_TARGET_RE_TMPL = r"def\s+{slug}\b[^\n]*:=\s*@[\w.]*?\.(s\d+)"
 
 
@@ -374,7 +373,14 @@ def _decl_signature(text: str, name: str) -> "str | None":
         end = re.search(r"^end\b", block, re.M)
         if end is not None:
             block = block[:end.start()]
-    return block.strip()[:_CATALOG_SIG_CAP]
+    # No cap. CATALOG.md IS the lazily-loaded layer — the file an agent
+    # opens only when it needs the exact statement — so truncating
+    # inside it pays a long quotation's budget and delivers a short
+    # one's reliability (operator ruling, the same one BATCHES.md was
+    # built on). The old 1500-char cut landed mid-word and sent workers
+    # to the .lean file anyway, which is the hop the companion exists
+    # to remove.
+    return block.strip()
 
 
 def _catalog_signature(workspace: Path, lean_path: str,

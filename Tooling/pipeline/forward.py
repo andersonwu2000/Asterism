@@ -103,7 +103,10 @@ def _forward_seed_scaffold(*, problem: str, workspace: Path) -> str:
         "set_option linter.style.longLine false\n\n"
         f"namespace Problems.{problem}\n\n"
         "-- Write ONE forward lemma here (see your instructions). Edit this file with\n"
-        "-- apply_edit and validate_file to type-check before finishing.\n\n"
+        "-- apply_edit and validate_file to type-check before finishing.\n"
+        "-- Write NO `import` lines: you are inside the namespace, where Lean does not\n"
+        "-- allow them, and the framework adds every import this file needs at commit\n"
+        "-- (Mathlib, Defs opens, and the proved siblings you cite by bare name).\n\n"
         f"end Problems.{problem}\n"
     )
     seeded = _ensure_imports_subgoal(base, problem=problem, workspace=workspace)
