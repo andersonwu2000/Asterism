@@ -60,9 +60,24 @@ class _Tee:
 
 
 def _log_filename(workspace: Path) -> str:
-    """`<problem>_<model>_<UTC ts>.log` — `<problem>` falls back to
-    `daemon` when the DB has no problems yet (e.g. first run before
-    init), or `multi` when more than one problem is registered."""
+    """`<problem>_<UTC ts>.log` — `<problem>` falls back to `daemon`
+    when the DB has no problems yet (e.g. first run before init), or
+    `multi` when more than one problem is registered.
+
+    No model in the name any more. It used to carry one, resolved from
+    `builder` + `backward` — two keys the v33 Formalizer merge retired,
+    so both fell through to DEFAULT_MODEL and the label named a model
+    that had nothing to do with the run: 2026-08-06's log is
+    `multi_claude-sonnet-4-6_…` for a run whose formalizer was
+    gemini-3.6-flash-high and whose strategist was claude-opus-5. That
+    is worse than no label, because the run's timing analyses are
+    identified BY these filenames.
+
+    A single token cannot honestly name a run with one model per seat,
+    so the seats go where they fit: `seat_banner()` writes the whole
+    table into the log's first lines, where it is accurate by
+    construction and stays accurate when a seat moves mid-run.
+    """
     problem = "daemon"
     try:
         conn = db.connect()
@@ -76,24 +91,26 @@ def _log_filename(workspace: Path) -> str:
     except Exception:
         # DB missing / unreadable: keep 'daemon' default
         pass
-    # Resolve via the same chain as the actual workers (per-pipeline
-    # provider/model selection), not the legacy ASTERISM_AGENT_MODEL
-    # env which lies when builder/backward use different models. Use
-    # the builder's resolved model as the canonical label; combine
-    # with backward's model when they differ so a mixed-model run is
-    # visible from the filename.
+    return f"{problem}_{_utc_log_stamp()}.log"
+
+
+def seat_banner() -> str:
+    """The run's actual seats, for the head of its log.
+
+    What the filename cannot say: one line per pipeline that spawns a
+    model, with the provider and model it is configured to use right
+    now. This is what a later timing or A/B analysis needs to know it is
+    comparing like with like — and reading it off a filename is how a
+    run gets attributed to a model it never used.
+    """
+    from . import dispatcher
     try:
-        from ..llm import claude_cli as _cc
-        b_model = _cc.resolve_model("builder")
-        w_model = _cc.resolve_model("backward")
-        model = b_model if b_model == w_model else f"{b_model}+{w_model}"
-    except Exception:
-        # Provider import failed (very early init / corrupt config):
-        # fall back to legacy env so log filename always succeeds.
-        model = os.environ.get("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
-    # Strip path-unsafe chars from model (just in case env carries them)
-    model = re.sub(r"[^\w.+-]", "_", model)
-    return f"{problem}_{model}_{_utc_log_stamp()}.log"
+        seats = dispatcher._pipeline_seats()
+    except Exception:  # noqa: BLE001 — a banner must never block a run
+        return "[seats] unavailable"
+    return "\n".join(
+        [f"[seats] {kind}: {prov}/{model or '(provider default)'}"
+         for kind, (prov, model) in sorted(seats.items())])
 
 
 def _utc_log_stamp() -> str:
@@ -465,6 +482,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
     sys.stdout = _Tee(orig_stdout, log_file)
     sys.stderr = _Tee(orig_stderr, log_file)
+    # The seat table goes in FIRST, before any dispatch line: what the
+    # filename used to claim (and got wrong) now lives where it can be
+    # true — one line per pipeline, with the model it actually runs.
+    print(seat_banner(), flush=True)
     try:
         rc = dispatcher.run(
             workspace,

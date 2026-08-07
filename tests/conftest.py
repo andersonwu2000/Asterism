@@ -54,6 +54,31 @@ _REAL_CONNECT = socket.socket.connect
 
 
 @pytest.fixture(autouse=True)
+def _reset_spawn_shutdown_state():
+    """Clear the provider's module-level shutdown Event after every test.
+
+    `claude_cli.request_shutdown()` sets a process-wide Event and there
+    is no production path that clears it — the caller hard-exits. Tests
+    stub that exit, so any test reaching the FATAL path (today:
+    `test_cli_logs.py::test_cmd_run_logs_traceback_on_crash`) leaves the
+    flag set, and every later `ClaudeCliProvider.spawn` in the process
+    returns SHUTDOWN before invoking anything.
+
+    The suite was green only by luck of alphabetical ordering: a file
+    between the setter and the victims (`test_e2e_dispatcher.py`) calls
+    the reset for its own reasons. Renaming a file, or running a subset,
+    turns 33 unrelated tests red with an error that names none of the
+    causes. One autouse teardown makes order irrelevant.
+    """
+    yield
+    try:
+        from Tooling.llm import claude_cli
+        claude_cli._reset_shutdown_for_tests()
+    except Exception:  # noqa: BLE001 — teardown must never mask a failure
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _side_effect_fence(request, monkeypatch: pytest.MonkeyPatch):
     """Fail fast (with the offending test named by pytest itself) when a
     non-`real_lake` test tries to spawn the Lean/LLM toolchain or open a

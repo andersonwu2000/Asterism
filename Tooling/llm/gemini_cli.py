@@ -235,37 +235,3 @@ class GeminiCliProvider:
             return 1
         return r.returncode
 
-    def complete_text(
-        self, *, prompt: str, timeout_sec: int = 60,
-    ) -> str | None:
-        """One-shot completion via `gemini -p`. Returns stdout text or
-        None on quota exhaustion / timeout / failure. Used by short
-        auxiliary calls (idiom extract / curate)."""
-        gemini_exe = resolve_gemini_executable()
-        if not gemini_exe:
-            return None
-        # Auxiliary calls inherit the 'builder' tier.
-        model = _resolve_model("builder")
-        cmd = [
-            gemini_exe,
-            "-m", model,
-            "-p", prompt,
-            *_shared_flags(),
-        ]
-        try:
-            r = subprocess.run(
-                cmd, timeout=timeout_sec,
-                capture_output=True, text=True,
-                encoding="utf-8", errors="replace",
-                creationflags=no_window_creationflags(),
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return None
-        if r.returncode != 0:
-            return None
-        text = r.stdout.strip()
-        # Empty stdout + quota phrase in captured output → quota lie.
-        if not text and _quota_message_in((r.stderr or "")
-                                          + "\n" + (r.stdout or "")):
-            return None
-        return text or None

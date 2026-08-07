@@ -810,9 +810,12 @@ def _trim_flags(req: LLMRequest | None = None) -> list[str]:
     """CLI flags that strip system-prompt overhead Asterism doesn't
     benefit from + per-spawn allowlist for Read/Grep/Bash.
 
-    `req=None` is for callers that don't run agent tools (e.g.
-    complete_text). The path-scoped allowlist is dropped in that case;
-    Bash allowlist still emitted for back-compat with tests.
+    `req=None` is for callers that don't run agent tools. The
+    path-scoped allowlist is dropped in that case; the Bash allowlist is
+    still emitted for back-compat with tests. (Its only user was
+    `complete_text`, retired 2026-08-07 — the branch stays because
+    `_trim_flags()` is called req-less from tests and would otherwise
+    need a second signature.)
     """
     tools = os.environ.get("ASTERISM_CLAUDE_TOOLS", DEFAULT_TOOLS)
     flags = [
@@ -1158,7 +1161,8 @@ class ClaudeCliProvider:
             *session_lifetime_flag,
             *_trim_flags(req),
         ]
-        env = dict(os.environ)
+        from .envelope import spawn_env
+        env = spawn_env()
         # Per-spawn write whitelist for spawn_guard's write-family fence
         # (task #128): file-tool WRITES are default-deny outside these
         # roots — the attempts sandbox, plus the kind's sanctioned edit
@@ -1383,40 +1387,3 @@ class ClaudeCliProvider:
                 return SpawnRC.QUOTA_EXHAUSTED
         return rc
 
-    def complete_text(
-        self, *, prompt: str, timeout_sec: int = 60,
-    ) -> str | None:
-        """One-shot completion via `claude -p <prompt>`. Captures
-        stdout text rather than producing files. Used by short auxiliary
-        calls (idiom extract / curate). complete_text never invokes
-        tools, but the same trim applies to the system prompt. Auxiliary
-        calls inherit the 'builder' tier (cheap-LLM role)."""
-        if not shutil.which("claude"):
-            return None
-        model = resolve_model("builder")
-        _assert_prompt_fits(prompt)
-        cmd = [
-            "claude",
-            "--model", model,
-            "-p", prompt,
-            "--no-session-persistence",
-            "--output-format", "text",
-            *_trim_flags(),
-        ]
-        # Same memory isolation as spawn(): auxiliary calls run with
-        # the daemon's cwd (= repo root) and would otherwise load the
-        # operator's auto-memory into their context.
-        env = dict(os.environ)
-        env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
-        try:
-            r = subprocess.run(
-                cmd, timeout=timeout_sec, env=env,
-                capture_output=True, text=True,
-                encoding="utf-8", errors="replace",
-                creationflags=no_window_creationflags(),
-            )
-            if r.returncode != 0:
-                return None
-            return r.stdout.strip()
-        except subprocess.TimeoutExpired:
-            return None

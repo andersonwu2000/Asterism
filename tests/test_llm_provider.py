@@ -88,74 +88,13 @@ def test_thinking_budget_scales_with_timeout_above_floor() -> None:
 
 
 # ---------------------------------------------------------------------
-# F22 — complete_text one-shot interface (unit tests; mocks subprocess
-# / urllib so we don't actually call claude or HTTP)
+# F22 retired 2026-08-07: `complete_text` is gone from the Provider
+# protocol and all four backends. It was a speculative one-shot
+# interface with zero call sites, and its claude implementation still
+# resolved a model through `builder` — a key the v33 Formalizer merge
+# retired, so it named a model nobody ran. A future need adds it back
+# with a caller attached.
 # ---------------------------------------------------------------------
-
-def test_claude_complete_text_returns_none_when_cli_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No `claude` on PATH → None (not an exception). Caller treats
-    None as "provider unavailable, skip"."""
-    from Tooling.llm import claude_cli
-    monkeypatch.setattr(claude_cli.shutil, "which", lambda _: None)
-    p = claude_cli.ClaudeCliProvider()
-    assert p.complete_text(prompt="hello") is None
-
-
-def test_claude_complete_text_returns_stdout_on_success(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import subprocess as _sub
-    from Tooling.llm import claude_cli
-    monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "/fake/claude")
-    monkeypatch.setattr(
-        claude_cli.subprocess, "run",
-        lambda *a, **kw: _sub.CompletedProcess(
-            args=a[0], returncode=0, stdout="  hi\n  ", stderr=""))
-    p = claude_cli.ClaudeCliProvider()
-    assert p.complete_text(prompt="hello") == "hi"
-
-
-def test_claude_complete_text_returns_none_on_nonzero_rc(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Treat any non-zero exit as failure — don't return partial / error
-    output as if it were a real reply."""
-    import subprocess as _sub
-    from Tooling.llm import claude_cli
-    monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "/fake/claude")
-    monkeypatch.setattr(
-        claude_cli.subprocess, "run",
-        lambda *a, **kw: _sub.CompletedProcess(
-            args=a[0], returncode=2, stdout="error msg", stderr=""))
-    p = claude_cli.ClaudeCliProvider()
-    assert p.complete_text(prompt="hello") is None
-
-
-def test_claude_complete_text_returns_none_on_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import subprocess as _sub
-    from Tooling.llm import claude_cli
-    monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "/fake/claude")
-
-    def _timeout(*a, **kw):
-        raise _sub.TimeoutExpired(cmd=a[0], timeout=1)
-    monkeypatch.setattr(claude_cli.subprocess, "run", _timeout)
-    p = claude_cli.ClaudeCliProvider()
-    assert p.complete_text(prompt="hello", timeout_sec=1) is None
-
-
-def test_openai_complete_text_returns_none_without_model_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Caller never set ASTERISM_LLM_MODEL — no model to send to.
-    Provider must fail-gracefully rather than POST a bogus request."""
-    from Tooling.llm import openai_api
-    monkeypatch.delenv("ASTERISM_LLM_MODEL", raising=False)
-    p = openai_api.OpenAIProvider()
-    assert p.complete_text(prompt="hello") is None
 
 
 # ---------------------------------------------------------------------
@@ -189,7 +128,7 @@ class _FakePopen:
         self.stderr = io.StringIO(stderr)
         self.returncode: int | None = None
         # subprocess.run reads .args off the Popen instance to attach
-        # to CompletedProcess; without it, complete_text path crashes.
+        # to CompletedProcess; without it the subprocess path crashes.
         self.args: list = []
 
     def communicate(self, input=None, timeout=None):
@@ -417,23 +356,6 @@ def test_spawn_no_library_dir_when_absent(
     cmd = captured[0]
     add_dirs = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--add-dir"]
     assert str(tmp_path / "Library") not in add_dirs, add_dirs
-
-
-def test_claude_complete_text_includes_trim_flags(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """complete_text() (F22 playbook calls) carries the same trim."""
-    from Tooling.llm import claude_cli
-
-    captured = _capture_cmd(monkeypatch)
-    p = claude_cli.ClaudeCliProvider()
-    p.complete_text(prompt="hi")
-    assert captured
-    cmd = captured[0]
-    assert "--tools" in cmd
-    assert "--disable-slash-commands" in cmd
-    assert "--exclude-dynamic-system-prompt-sections" in cmd
-    assert "--setting-sources" in cmd
 
 
 def test_claude_tools_env_override(
@@ -1225,48 +1147,6 @@ def test_gemini_spawn_timeout_returns_124(
     assert rc == 124
 
 
-def test_gemini_complete_text_success(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from Tooling.llm import gemini_cli
-    _capture_gemini_cmd(monkeypatch, returncode=0,
-                        stdout="  hi\n  ", stderr="")
-    p = gemini_cli.GeminiCliProvider()
-    assert p.complete_text(prompt="x") == "hi"
-
-
-def test_gemini_complete_text_returns_none_on_quota(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Empty stdout + quota phrase → None (caller treats as
-    'unavailable, skip')."""
-    from Tooling.llm import gemini_cli
-    _capture_gemini_cmd(
-        monkeypatch, returncode=0, stdout="",
-        stderr="Attempt 3 failed: Too Many Requests",
-    )
-    p = gemini_cli.GeminiCliProvider()
-    assert p.complete_text(prompt="x") is None
-
-
-def test_gemini_complete_text_returns_none_on_nonzero_rc(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from Tooling.llm import gemini_cli
-    _capture_gemini_cmd(monkeypatch, returncode=2, stdout="oops")
-    p = gemini_cli.GeminiCliProvider()
-    assert p.complete_text(prompt="x") is None
-
-
-def test_gemini_complete_text_returns_none_when_cli_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from Tooling.llm import gemini_cli
-    monkeypatch.setattr(gemini_cli.shutil, "which", lambda _: None)
-    p = gemini_cli.GeminiCliProvider()
-    assert p.complete_text(prompt="x") is None
-
-
 def test_gemini_resolve_prefers_cmd_extension_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1429,39 +1309,6 @@ def test_openai_resolve_model_returns_none_when_unset(
     monkeypatch.delenv("ASTERISM_BUILDER_MODEL", raising=False)
     monkeypatch.delenv("ASTERISM_LLM_MODEL", raising=False)
     assert openai_api._resolve_model("builder") is None
-
-
-def test_complete_text_uses_builder_kind_for_resolution(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """F22 auxiliary calls (idiom extract / curate) inherit the
-    Builder tier — explicit kind='builder' inside complete_text so a
-    user who set ASTERISM_BUILDER_MODEL=cheap-llm gets that, not the
-    Backward / agent default."""
-    import subprocess as _sub
-    from Tooling.llm import claude_cli
-    monkeypatch.setenv("ASTERISM_BUILDER_MODEL", "claude-haiku-4-5")
-    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
-    captured: list = []
-
-    def _fake_run(cmd, *a, **kw):
-        captured.append(cmd)
-        return _sub.CompletedProcess(args=cmd, returncode=0,
-                                     stdout="ok", stderr="")
-    monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "/fake/claude")
-    monkeypatch.setattr(claude_cli.subprocess, "run", _fake_run)
-    p = claude_cli.ClaudeCliProvider()
-    p.complete_text(prompt="x")
-    cmd = captured[0]
-    # complete_text must have used the Builder model (haiku), not the
-    # Sonnet legacy default.
-    assert cmd[cmd.index("--model") + 1] == "claude-haiku-4-5"
-
-
-# Note: F31's substring-based threshold tier was retired together with
-# the Asterism.yaml introduction. The threshold resolution chain is
-# tested via tests/test_config.py + tests/test_dispatcher.py; weak-tier
-# users now set `dispatch.builder_threshold: 5` explicitly.
 
 
 # ---------------------------------------------------------------------
@@ -1835,22 +1682,6 @@ def test_gemini_spawn_inlines_prompt_body_into_p(
     assert "Read agent prompt at" not in cmd[p_idx]
 
 
-def test_claude_complete_text_has_no_cwd_pin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """F44 only sandboxes the file-IO `spawn` path. complete_text
-    (F22 playbook idiom calls) is text-in / text-out — no tool use,
-    no working dir relevance — so cwd stays unset (inherits
-    daemon's cwd, which is fine)."""
-    from Tooling.llm import claude_cli
-
-    calls = _capture_call(monkeypatch, module_name="claude_cli")
-    p = claude_cli.ClaudeCliProvider()
-    p.complete_text(prompt="hi")
-    assert calls
-    assert "cwd" not in calls[0]["kwargs"]
-
-
 def test_claude_spawn_sets_thinking_budget_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2100,20 +1931,6 @@ def test_prompt_oversized_fails_loudly() -> None:
     big = "x" * (_ARGV_PROMPT_MAX + 1)
     with pytest.raises(PromptTooLarge, match="UNBOUNDED dynamic section"):
         _assert_prompt_fits(big)
-
-
-def test_claude_complete_text_oversized_prompt_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from Tooling.llm import claude_cli
-
-    monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "claude")
-    monkeypatch.setattr(
-        claude_cli.subprocess, "run",
-        lambda *a, **k: pytest.fail("must not spawn an oversized prompt"))
-    big = "y" * (claude_cli._ARGV_PROMPT_MAX + 10)
-    with pytest.raises(claude_cli.PromptTooLarge):
-        claude_cli.ClaudeCliProvider().complete_text(prompt=big)
 
 
 def test_cold_prompt_context_clause_only_when_file_exists(tmp_path) -> None:

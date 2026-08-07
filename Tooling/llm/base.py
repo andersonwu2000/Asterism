@@ -157,18 +157,18 @@ class LLMRequest:
 
 
 class Provider(Protocol):
-    """All LLM backends implement these two methods.
+    """All LLM backends implement this one method.
 
-    `spawn` runs a full agent invocation that writes outputs to disk
-    (Backward / Builder / Verify). `complete_text` is a one-shot
-    text-in/text-out call retained for short auxiliary tasks where
-    file IO would be overkill (no current call sites since the
-    per-problem playbook flow was retired in favor of inline goal annotations,
-    but the surface stays in place for future use).
+    `spawn` runs a full agent invocation that writes outputs to disk.
+
+    There used to be a second, `complete_text` — a one-shot
+    text-in/text-out call kept "for future use" after the per-problem
+    playbook flow that needed it was retired. It went four providers
+    deep with zero call sites, and its claude implementation still
+    resolved a model through `builder`, a config key the v33 Formalizer
+    merge had already retired. That is the cost of a speculative
+    interface method: every new backend implements it, nobody calls it,
+    and it rots where no test can notice. A future need can add it back
+    with a caller attached.
     """
     def spawn(self, req: LLMRequest) -> int: ...
-
-    def complete_text(self, *, prompt: str, timeout_sec: int = 60) -> str | None:
-        """One-shot completion. Returns response text or None on
-        failure (provider unavailable, timeout, parse error)."""
-        ...

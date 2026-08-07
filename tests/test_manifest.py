@@ -479,8 +479,8 @@ def test_spawn_isolates_operator_memory() -> None:
     src = (Path(__file__).resolve().parents[1]
            / "Tooling" / "llm" / "claude_cli.py").read_text(
                encoding="utf-8")
-    # env layer present at BOTH claude call sites (spawn + complete_text)
-    assert src.count('["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"') == 2
+    # env layer present at the claude spawn call site
+    assert src.count('["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"') == 1
     # deny-rule layer wired into the spawn cmd
     assert "*_operator_state_deny_rules()," in src
     from Tooling.llm.claude_cli import _operator_state_deny_rules

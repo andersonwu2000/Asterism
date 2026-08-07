@@ -27,13 +27,22 @@ from Tooling.core.cli import (
 def test_log_filename_format(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`<problem>_<model>_<ts>.log` with ts in YYYYMMDD-HHMMSS UTC."""
+    """`<problem>_<ts>.log` with ts in YYYYMMDD-HHMMSS UTC.
+
+    No model token: it was resolved from `builder` + `backward`, keys
+    the v33 Formalizer merge retired, so it always printed
+    DEFAULT_MODEL — 2026-08-06's log reads `claude-sonnet-4-6` for a run
+    whose formalizer was gemini and whose strategist was opus-5. The
+    seats now go in the log's first lines (`seat_banner`), where one
+    line per pipeline can be true."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
     name = _log_filename(tmp_path)
     # No DB → 'daemon' fallback
-    assert name.startswith("daemon_claude-sonnet-4-6_")
+    assert name.startswith("daemon_")
     assert name.endswith(".log")
+    # a model name must not reappear here by any route
+    assert "claude" not in name and "gemini" not in name
     # ts portion is 16 chars: 8 date + '-' + 6 time + 'Z' (UTC,
     # self-documented — E fix 2026-07-24)
     ts = name.removesuffix(".log").rsplit("_", 1)[1]
@@ -41,34 +50,33 @@ def test_log_filename_format(
     assert ts[:8].isdigit() and ts[9:15].isdigit()
 
 
-def test_log_filename_reflects_mixed_models(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+def test_seat_banner_names_every_pipelines_model(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P1-#8: when builder and backward use different models (F39 per-
-    pipeline selection), filename combines them with `+` so the
-    operator can tell at a glance — instead of always reporting the
-    legacy ASTERISM_AGENT_MODEL value (which lied for mixed runs)."""
-    monkeypatch.chdir(tmp_path)
-    # Clear legacy fallback
-    monkeypatch.delenv("ASTERISM_AGENT_MODEL", raising=False)
-    monkeypatch.setenv("ASTERISM_BUILDER_MODEL", "claude-sonnet-4-6")
-    monkeypatch.setenv("ASTERISM_BACKWARD_MODEL", "claude-opus-4-7")
-    name = _log_filename(tmp_path)
-    assert "claude-sonnet-4-6+claude-opus-4-7" in name
+    """What the filename used to claim, where it can be accurate: one
+    line per spawning pipeline with its provider/model."""
+    from Tooling.core.cli import seat_banner
+    from Tooling.core import dispatcher
+    monkeypatch.setattr(dispatcher, "_pipeline_seats", lambda: {
+        "strategist": ("claude", "claude-opus-5"),
+        "formalizer": ("antigravity", "gemini-3.6-flash-high"),
+    })
+    out = seat_banner()
+    assert "[seats] strategist: claude/claude-opus-5" in out
+    assert "[seats] formalizer: antigravity/gemini-3.6-flash-high" in out
 
 
-def test_log_filename_collapses_when_models_match(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """P1-#8: when both kinds resolve to the same model, no `+`
-    appears — keeps the common case clean."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("ASTERISM_AGENT_MODEL", raising=False)
-    monkeypatch.setenv("ASTERISM_BUILDER_MODEL", "claude-opus-4-7")
-    monkeypatch.setenv("ASTERISM_BACKWARD_MODEL", "claude-opus-4-7")
-    name = _log_filename(tmp_path)
-    assert "claude-opus-4-7_" in name
-    assert "+" not in name
+def test_seat_banner_never_blocks_a_run(monkeypatch: pytest.MonkeyPatch):
+    """A banner is diagnostics. If it cannot be built, the run starts
+    anyway — the alternative is a daemon that will not boot because a
+    log header failed."""
+    from Tooling.core.cli import seat_banner
+    from Tooling.core import dispatcher
+
+    def boom():
+        raise RuntimeError("config unreadable")
+    monkeypatch.setattr(dispatcher, "_pipeline_seats", boom)
+    assert seat_banner() == "[seats] unavailable"
 
 
 def test_log_filename_uses_single_problem(

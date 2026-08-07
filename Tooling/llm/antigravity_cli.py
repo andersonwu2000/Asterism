@@ -356,7 +356,11 @@ def _spawn_env(home: "Path | None" = None) -> "dict[str, str]":
     artifact tripwire in `agent.runtime`, not the sandbox.
     """
     repo = Path(__file__).resolve().parents[2]
-    env = dict(os.environ)
+    from .envelope import spawn_env
+    # PATH first (see `spawn_env`): agy runs every command through
+    # powershell, so a bare `python` here has the same PATH exposure the
+    # claude spawns do.
+    env = spawn_env()
     env["PYTHONPATH"] = (
         str(repo) + os.pathsep + env["PYTHONPATH"]
         if env.get("PYTHONPATH") else str(repo))
@@ -722,33 +726,6 @@ class AntigravityCliProvider:
             f"=== INSTRUCTIONS ===\n{body}\n=== END INSTRUCTIONS ==="
         )
 
-    def complete_text(self, *, prompt: str,
-                      timeout_sec: int = 60) -> "str | None":
-        """One-shot completion for short auxiliary calls. Returns the
-        response text, or None on any failure."""
-        exe = resolve_agy_executable()
-        if not exe:
-            return None
-        cmd = [
-            exe, "-p", prompt,
-            "--model", _resolve_model(None),
-            "--output-format", "json",
-            "--print-timeout", f"{max(30, int(timeout_sec))}s",
-        ]
-        try:
-            r = subprocess.run(
-                cmd, timeout=timeout_sec + _SUBPROCESS_SLACK_SEC,
-                capture_output=True, text=True,
-                encoding="utf-8", errors="replace", env=_spawn_env(),
-                creationflags=no_window_creationflags(),
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return None
-        envelope = _parse_envelope(r.stdout or "")
-        if envelope is None or str(envelope.get("status")).upper() != "SUCCESS":
-            return None
-        text = str(envelope.get("response") or "").strip()
-        return text or None
 
 
 def _parse_envelope(stdout: str) -> "dict | None":
