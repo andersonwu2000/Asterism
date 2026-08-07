@@ -18,11 +18,42 @@ from datetime import datetime
 from pathlib import Path
 
 from .. import agent, pipeline
-from . import config, fsutil, quota_wait
+from . import config, fsutil, quota, quota_wait
 from ..state import db, manifest, thresholds, transitions, tree
 from ..state import failures as _failures
 from ..state import groups as _groups
 from ..quality import prune, verify
+
+
+#: The quota ledger, one per process (its probes are network calls and
+#: it caches). Blocks are re-read on the tick cadence, not per spawn.
+_quota_ledger = quota.Ledger()
+
+#: Every pipeline that spawns a model, and therefore every seat that can
+#: run out of quota independently. `presearch` burns its own cheap model
+#: (research_mode_design §0) and `scholar` its own — both are seats even
+#: though neither is a decision-maker.
+_QUOTA_SEATS = ("strategist", "adversary", "formalizer", "presearch",
+                "scholar", "librarian", "paper_index")
+
+
+def _pipeline_seats() -> "dict[str, tuple[str, str | None]]":
+    """`kind -> (provider, model)` as configured right now.
+
+    Read per tick rather than cached: `Asterism.yaml` is live-editable
+    and the daemon hands off on config change, so a seat can move
+    between providers inside one run — which is exactly what happened on
+    2026-08-06 when the judge moved off an exhausted model.
+    """
+    seats: "dict[str, tuple[str, str | None]]" = {}
+    for kind in _QUOTA_SEATS:
+        provider = str(config.get(
+            f"{kind}.provider", default="claude",
+            env_var=f"ASTERISM_{kind.upper()}_PROVIDER") or "claude")
+        model = config.get(f"{kind}.model", default=None,
+                           env_var=f"ASTERISM_{kind.upper()}_MODEL")
+        seats[kind] = (provider, str(model) if model else None)
+    return seats
 
 
 # Attempt thresholds. Builder ROUTING is retired (Formalizer merge —
@@ -2100,6 +2131,20 @@ def run(workspace: Path, *, once: bool = False,
                             QUOTA_BACKOFF_CAP_SEC,
                         )
                         st.quota_cooldown_kind[kind] = time.time() + backoff
+                        # Tell the ledger what this spawn just learned.
+                        # A provider with no usage API (agy has none —
+                        # `agy --help` carries no quota subcommand) can
+                        # only be known this way, and without it the
+                        # signal died here as a single kind's backoff:
+                        # the seat BOUND to this one kept running,
+                        # manufacturing work for a pipeline that could
+                        # not consume it. Same ledger as the probes, so
+                        # the binding applies either way.
+                        _seat = _pipeline_seats().get(kind)
+                        if _seat is not None:
+                            _quota_ledger.observe(
+                                _seat[0], _seat[1],
+                                detail=f"{kind} spawn refused on quota")
                         # Flush queued entries of this kind so the
                         # pop loop doesn't keep draining the backlog
                         # against an exhausted provider (each pop
@@ -2397,6 +2442,24 @@ def run(workspace: Path, *, once: bool = False,
         # window resets.
         quota_waiting = quota_wait.tick(st, time.time(),
                                          enabled=quota_wait_enabled)
+
+        # Per-(provider, model) quota, ahead of the global wait: a cap
+        # that names ONE model must not stop the pipelines seated on a
+        # different one. 2026-08-06 held a single boolean and paused a
+        # whole run — formalizer on Gemini, judge movable to Opus, and
+        # neither had a quota problem; eleven finished proposals were
+        # discarded for a Fable weekly cap. The ledger writes into the
+        # kind-cooldown map the refill pass already honours, so blocked
+        # seats simply stop being dispatched while the rest keep going.
+        # Extend-only (max): the rc=126 backoffs live in the same map.
+        _blocked = _quota_ledger.blocked_kinds(_pipeline_seats())
+        for _kind, _blk in _blocked.items():
+            _until = _blk.until or (time.time() + 900.0)
+            if _until > st.quota_cooldown_kind.get(_kind, 0.0):
+                st.quota_cooldown_kind[_kind] = _until
+                print(f"[quota] {_kind} held — {_blk.provider}"
+                      f"{'/' + _blk.model if _blk.model else ''}"
+                      f": {_blk.detail or 'exhausted'}", flush=True)
 
         # Refill queue (uses in-memory `running` for dedup; st.cooldown_until
         # holds spawn_fast_fail back-offs; st.quota_cooldown_kind holds the
