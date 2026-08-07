@@ -5,6 +5,7 @@ import RunConsole, { CycleLine } from './Run'
 import { SettingsTab, UsageTab } from './Telemetry'
 import ManifestEditor from '../components/ManifestEditor'
 import ProgrammeView from '../components/ProgrammeView'
+import Timeline from '../components/Timeline'
 import { cycleForGroup, resolveGroup, seatedGroups } from '../lib/programmeFocus'
 import { ErrorState, TabNav } from '../components/ui'
 import type { DaemonStatus, Programme, RunStatus } from '../lib/types'
@@ -21,7 +22,13 @@ import type { DaemonStatus, Programme, RunStatus } from '../lib/types'
  * content — one container, no extra rules.
  */
 
-export type EngineTab = 'console' | 'manifest' | 'programme' | 'settings' | 'usage'
+export type EngineTab =
+  | 'console'
+  | 'manifest'
+  | 'programme'
+  | 'timeline'
+  | 'settings'
+  | 'usage'
 
 const TABS: { id: EngineTab; label: string; href: string; title?: string }[] = [
   { id: 'console', label: 'Console', href: '/engine' },
@@ -36,6 +43,14 @@ const TABS: { id: EngineTab; label: string; href: string; title?: string }[] = [
     label: 'Programme',
     href: '/engine/programme',
     title: "what the engine currently argues — its own case for the route it is taking",
+  },
+  {
+    id: 'timeline',
+    label: 'Timeline',
+    href: '/engine/timeline',
+    title:
+      'what has happened on this run — every state change, newest first,' +
+      ' across every problem under the scope',
   },
   { id: 'settings', label: 'Settings', href: '/engine/settings' },
   { id: 'usage', label: 'Usage', href: '/engine/usage' },
@@ -175,6 +190,17 @@ export default function Engine({ tab }: { tab: EngineTab }) {
       {tab === 'console' && <RunConsole />}
       {tab === 'manifest' && <SteerManifest />}
       {tab === 'programme' && <RunProgramme />}
+      {tab === 'timeline' && (
+        /* The run's own framing of the problem page's log (`419dcb31`'s
+           law: what you read while watching belongs on the page you
+           watch from). A tab, not a strip under the slots — the
+           Manifest and the Programme are carried over the same way, and
+           a document does not live in an instrument's footer (owner,
+           2026-08-07). */
+        <div className="mt-5">
+          <Timeline path="/api/run/events" pollMs={10000} showProblem />
+        </div>
+      )}
       {tab === 'settings' && (
         <div className="mt-5">
           <SettingsTab />
