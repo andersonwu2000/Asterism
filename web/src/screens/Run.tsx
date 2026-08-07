@@ -16,6 +16,7 @@ import { Link, navigate } from '../lib/router'
 import { Button } from '../components/ui'
 import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
+import Timeline from '../components/Timeline'
 import StrategyPanel from '../components/StrategyPanel'
 import LogTail from '../components/LogTail'
 import type { ConfigSetting, ProblemDetail, RunStatus, RunWorker } from '../lib/types'
@@ -904,6 +905,36 @@ export default function Run() {
           })()}
         </section>
       )}
+
+      {/* What just happened, on the page you sit on to watch. The slots
+          answer "now" and a finished lane's receipt lives 30 seconds —
+          so "did anything land in the last hour" had no answer here,
+          and a link out to the problem page is the very defect
+          `419dcb31` named when the Programme joined this page. Two
+          framings of one renderer: the problem page keeps the archive,
+          this reads the RUN, which a pattern scope spreads over several
+          problems the problem page can never show together. */}
+      <section className="mt-7">
+        <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
+          <span title="every state change under this run, newest first — the same log the problem page keeps as an archive">
+            log
+          </span>
+        </div>
+        {/* bounded, not truncated: the whole log is here and scrolls
+            in place, so the console stays a page you can read while a
+            5500px one is a page you leave */}
+        <div className="max-h-[30rem] overflow-y-auto rounded-xl border border-edge bg-surface/40 py-2">
+          <Timeline
+            path="/api/run/events"
+            pollMs={10000}
+            showProblem
+            onSelectGoal={(id) => {
+              setSelGoal(id)
+              setSelStrategy(null)
+            }}
+          />
+        </div>
+      </section>
 
       {data.quota && (
         <section className="mt-7">

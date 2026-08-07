@@ -197,6 +197,8 @@ export interface TimelineEvent {
   group_id: number | null
   /** the group a handover row is ABOUT (Delegate / ReturnToParent) */
   object_group_id: number | null
+  /** set only by the run-scoped read, which merges several problems */
+  problem?: string
 }
 
 export interface TimelineGroup {

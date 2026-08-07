@@ -561,3 +561,70 @@ def test_pattern_scope_resolves_to_real_problems(
     assert picked["problem"] == "Cmp.b"
     bogus = _client(workspace).get("/api/run?problem=No.such").json()
     assert bogus["problem"] == "Cmp.a"          # bad pick falls back
+
+
+# ---------------------------------------------------------------------
+# GET /api/run/events — the Timeline, run-flavoured
+# ---------------------------------------------------------------------
+#
+# Two framings of one renderer (the shape `419dcb31` settled when the
+# Programme joined this page): the problem page keeps the archive, the
+# Engine reads the run you sit on. The console cannot delegate this to
+# the problem page — a pattern scope runs several problems at once and
+# a problem page can only ever show one.
+
+def _problem(conn: sqlite3.Connection, name: str) -> None:
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES (?, ?, ?)", (name, f"Problems/{name}/Manifest.md", db.now()))
+    conn.commit()
+
+
+def test_run_events_span_every_problem_under_a_pattern_scope(
+        workspace: Path, monkeypatch) -> None:
+    conn = _open_db(workspace)
+    for name in ("Cmp.a", "Cmp.b"):
+        _problem(conn, name)
+        gid = db.insert_goal(conn, problem=name, slug=f"brick_{name[-1]}",
+                             lean_path=f"proofs/{name}.lean", statement="True",
+                             origin="forward")
+        db.update_goal_status(conn, gid, "proved", event="builder_proved")
+    conn.close()
+    _fake_daemon(monkeypatch, scope="Cmp.%")
+    d = _client(workspace).get("/api/run/events").json()
+    assert set(d["problems"]) == {"Cmp.a", "Cmp.b"}
+    # every row says which problem it belongs to — the merge is
+    # meaningless otherwise
+    assert {(e["problem"], e["label"]) for e in d["events"]
+            if e["kind"] == "proved"} == {
+        ("Cmp.a", "brick_a"), ("Cmp.b", "brick_b")}
+
+
+def test_run_events_draw_no_seam_across_several_problems(
+        workspace: Path, monkeypatch) -> None:
+    """The reconstruction boundary is a PER-PROBLEM fact ('the engine
+    started recording here'). Merged, there is no single line to draw,
+    so the run view draws none and the rows keep their own marks."""
+    conn = _open_db(workspace)
+    for name in ("Cmp.a", "Cmp.b"):
+        _problem(conn, name)
+        gid = db.insert_goal(conn, problem=name, slug=f"brick_{name[-1]}",
+                             lean_path=f"proofs/{name}.lean", statement="True",
+                             origin="forward")
+        db.update_goal_status(conn, gid, "proved", event="builder_proved")
+    conn.close()
+    _fake_daemon(monkeypatch, scope="Cmp.%")
+    assert _client(workspace).get("/api/run/events").json()["log_since"] is None
+    # one problem in scope → the seam is meaningful again
+    _fake_daemon(monkeypatch, scope="Cmp.a")
+    d = _client(workspace).get("/api/run/events").json()
+    assert d["problems"] == ["Cmp.a"]
+    assert d["log_since"] is not None
+
+
+def test_run_events_empty_workspace_is_not_an_error(
+        workspace: Path, monkeypatch) -> None:
+    _fake_daemon(monkeypatch, running=False)
+    r = _client(workspace).get("/api/run/events")
+    assert r.status_code == 200
+    assert r.json()["events"] == []

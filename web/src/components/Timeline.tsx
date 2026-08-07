@@ -108,6 +108,7 @@ function Row({
   following,
   prefix,
   argument,
+  showProblem,
   onFollow,
   onOpenGoal,
   onOpenProgramme,
@@ -122,6 +123,8 @@ function Row({
   /** which argument this event serves — null on a problem running a
    * single group, where naming it on every row would be noise */
   argument: string | null
+  /** the run view merges several problems; say which */
+  showProblem: boolean
   onFollow: (f: Follow) => void
   onOpenGoal?: (id: number) => void
   onOpenProgramme?: () => void
@@ -203,6 +206,11 @@ function Row({
             {e.label}
           </span>
           )}
+          {showProblem && e.problem && (
+            <span className="shrink-0 font-mono text-[10px] text-ink-faint">
+              {e.problem.includes('.') ? e.problem.split('.').pop() : e.problem}
+            </span>
+          )}
           {note && !open && (
             <span className="truncate text-[11px] text-ink-faint">{note}</span>
           )}
@@ -252,11 +260,21 @@ function Row({
 }
 
 export default function Timeline({
-  problem,
+  path,
+  pollMs = 15000,
+  showProblem = false,
   onSelectGoal,
   onOpenProgramme,
 }: {
-  problem: string
+  /** where the log comes from. Two framings of one renderer
+   * (`419dcb31`): the problem page reads its own archive, the Engine
+   * reads the run it is sitting on — which spans every problem under a
+   * pattern scope and so can never be delegated to a problem page. */
+  path: string
+  pollMs?: number
+  /** name the problem on each row — only the run view needs it, and
+   * only when the run holds more than one */
+  showProblem?: boolean
   onSelectGoal?: (id: number) => void
   onOpenProgramme?: () => void
 }) {
@@ -264,9 +282,9 @@ export default function Timeline({
     events: TimelineEvent[]
     log_since: string | null
     groups: TimelineGroup[]
-  }>(`/api/problems/${encodeURIComponent(problem)}/events`, 15000, {
-    keepPrevious: true,
-  })
+    problems?: string[]
+    truncated?: number
+  }>(path, pollMs, { keepPrevious: true })
   const [lens, setLens] = useState<string | null>(null)
   const [quiet, setQuiet] = useState(false)
   const [follow, setFollow] = useState<Follow | null>(null)
@@ -403,6 +421,7 @@ export default function Timeline({
                  and the whole content of that reading */
               following={follow?.kind === 'goal'}
               prefix={follow === null}
+              showProblem={showProblem && (data?.problems?.length ?? 0) > 1}
               argument={argOf(e.group_id)}
               onFollow={setFollow}
               onOpenGoal={onSelectGoal}

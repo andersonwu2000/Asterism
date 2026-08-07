@@ -303,6 +303,15 @@ def _proposal_cycle(workarea: Path) -> "dict | None":
             "_tail_path": str(rdir / "proposal.md")}
 
 
+#: The run log is a live poll, not an archive read: bound BOTH sides of
+#: the merge. A pattern scope can hold a dozen problems and stokes alone
+#: yields 1148 events, so an unbounded merge would ship megabytes every
+#: few seconds. The problem page carries the whole archive per problem,
+#: which is where the console points when it truncates.
+_RUN_EVENT_PROBLEMS = 8
+_RUN_EVENT_CAP = 400
+
+
 def _resolve_focus(conn: sqlite3.Connection, scope: "str | None",
                    live_pid: "int | None",
                    override: "str | None") -> "tuple[str | None, list[str]]":
@@ -576,3 +585,56 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
                     "burn_5h": None, "quota": quota(), "recent": []}
         with ro(workspace) as conn:
             return run_status(conn, workspace, d, focus_override=problem)
+
+    @app.get("/api/run/events")
+    def run_events(problem: "str | None" = None) -> dict:
+        """The Timeline, run-flavoured — the same log the problem page
+        reads, across every problem under the run's lens.
+
+        Two framings of one renderer, the shape `419dcb31` settled when
+        the Programme joined this page: the problem page keeps the
+        ARCHIVE (one problem, all of it, lenses and follow), and the
+        Engine reads what is happening on the run you are sitting on.
+        The console cannot delegate this to the problem page — a
+        pattern scope runs several problems at once and the problem
+        page can only ever show one.
+
+        Scope resolution is `_resolve_focus`, the same call `/api/run`
+        makes, so the slots and the log can never disagree about which
+        run they are describing.
+        """
+        from ..core.cli import daemon_status
+        d = daemon_status(workspace)
+        if not (workspace / "asterism.db").exists():
+            return {"events": [], "log_since": None, "groups": [],
+                    "problems": [], "truncated": 0}
+        with ro(workspace) as conn:
+            raw = (d.get("scope")
+                   or ((d.get("last_exit") or {}).get("scope")))
+            focus, names = _resolve_focus(
+                conn, raw, _data._live_daemon_pid(d), problem)
+            if focus and focus not in names:
+                names = [focus, *names]
+            events: "list[dict]" = []
+            groups: "list[dict]" = []
+            since: "str | None" = None
+            for name in names[:_RUN_EVENT_PROBLEMS]:
+                one = _data.problem_events(conn, name)
+                for e in one["events"]:
+                    e["problem"] = name
+                events.extend(one["events"])
+                groups.extend(one["groups"])
+                since = one["log_since"]
+            # The seam is a per-problem fact ("the engine started
+            # recording HERE"); with several problems merged there is
+            # no single line to draw, so the run view draws none and
+            # the rows keep their own `~` marks.
+            if len(names) != 1:
+                since = None
+            events.sort(key=lambda e: e["at"], reverse=True)
+            return {
+                "events": events[:_RUN_EVENT_CAP],
+                "truncated": max(0, len(events) - _RUN_EVENT_CAP),
+                "log_since": since, "groups": groups,
+                "problems": names,
+            }
