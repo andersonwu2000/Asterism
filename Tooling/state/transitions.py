@@ -456,7 +456,8 @@ def apply_goal_transition(conn: sqlite3.Connection, goal_id: int, to_state: str,
     _check("goal", frm, to_state, GOAL_EDGES, event)
     if to_state == "proved":
         _check_receipt(goal_id, frm, receipt, event)
-    db.update_goal_status(conn, goal_id, to_state)
+    db.update_goal_status(conn, goal_id, to_state,
+                          event=event, reason=reason)
 
 
 def apply_strategy_transition(conn: sqlite3.Connection, strategy_id: int,

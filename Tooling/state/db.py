@@ -710,6 +710,34 @@ CREATE TABLE IF NOT EXISTS kb_entries (
     created_at  TEXT NOT NULL
 );
 
+-- v36 — every goal status transition, append-only, with the forensic
+-- label of the event that drove it. `goals.updated_at` cannot serve as
+-- an event clock: attempts+1, is_deliverable and integrity_verified all
+-- bump it (measured p90 18min, worst 43min away from the real
+-- transition), so a timeline built on it reads a goal as moving when
+-- nothing moved. Written from `update_goal_status` — the WRITE
+-- chokepoint, so both the validating path (`apply_goal_transition`) and
+-- the operator-amend escape hatch land here, and any future caller does
+-- too without a second wiring decision.
+--
+-- ON DELETE CASCADE is what keeps `asterism reset` honest: reset drops
+-- the problem's goals by id, and the events go with them instead of
+-- becoming a cross-run leak (the class #167 records for `.groups/`).
+CREATE TABLE IF NOT EXISTS goal_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal_id     INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+    problem     TEXT NOT NULL REFERENCES problems(name),
+    -- NULL only when the row vanished under us mid-transition.
+    from_status TEXT NULL DEFAULT NULL,
+    to_status   TEXT NOT NULL,
+    -- Short forensic label for the driving event ('builder_proved',
+    -- 'strategist_reopen', 'operator_amend'); '' when the caller had
+    -- none to give.
+    event       TEXT NOT NULL DEFAULT '',
+    reason      TEXT NOT NULL DEFAULT '',
+    at          TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
 -- v35 — one top group per problem, pinned in the schema rather than
 -- trusted to the code that creates it (CLAUDE.md rule 6): a second
@@ -747,6 +775,9 @@ CREATE INDEX IF NOT EXISTS idx_dead_attempts_target
     ON dead_attempts(target_kind, target_id);
 CREATE INDEX IF NOT EXISTS idx_kb_problem ON kb_entries(problem);
 CREATE INDEX IF NOT EXISTS idx_kb_node ON kb_entries(node_id);
+CREATE INDEX IF NOT EXISTS idx_goal_events_goal ON goal_events(goal_id, at);
+CREATE INDEX IF NOT EXISTS idx_goal_events_problem
+    ON goal_events(problem, at);
 -- idx_sd_batch_id: created after the batch_id ALTER TABLE migration
 -- in init_schema, not here. Inlining it in SCHEMA would fail on pre-
 -- Phase 2.5 DBs (executescript runs CREATE INDEX before the ALTER
@@ -762,7 +793,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 35
+_CURRENT_USER_VERSION = 36
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -951,7 +982,33 @@ def aliases_pointing_at(conn: sqlite3.Connection,
 
 
 def update_goal_status(conn: sqlite3.Connection, goal_id: int,
-                       status: str) -> None:
+                       status: str, *, event: str = "",
+                       reason: str = "") -> None:
+    """Write a goal's status and append the transition to `goal_events`.
+
+    The append lives HERE, at the write chokepoint, not at the
+    validating one (`transitions.apply_goal_transition`): that one
+    misses `amend.py`'s operator escape hatch, which flips a rewritten
+    root back to 'frozen' from whatever state it was in — an edge
+    `GOAL_EDGES` does not allow (only open→frozen is legal), so routing
+    it through the validator is not an option. Writing from the sink
+    means coverage rides the lint ratchet that already forbids raw
+    status SQL, and a future caller is logged without anyone
+    remembering to wire it.
+
+    `event` / `reason` are the caller's forensic label; both default to
+    empty so no call site is forced to have one.
+
+    Same transaction as the UPDATE, and deliberately not wrapped in a
+    try/except: an append-only log that silently drops rows is worse for
+    forensics than no log, and an INSERT that fails here means the DB is
+    already broken — in which case the status change should not stand
+    either.
+    """
+    at = now()
+    prior = conn.execute(
+        "SELECT status, problem FROM goals WHERE id = ?", (goal_id,),
+    ).fetchone()
     # Leaving 'proved' (rollback, manual reset) invalidates any prior
     # axiom_probe pass — clear integrity_verified in the same UPDATE so
     # the dispatcher gate picks the root up again on the next tick.
@@ -959,13 +1016,20 @@ def update_goal_status(conn: sqlite3.Connection, goal_id: int,
     if status == 'proved':
         conn.execute(
             "UPDATE goals SET status = ?, updated_at = ? WHERE id = ?",
-            (status, now(), goal_id),
+            (status, at, goal_id),
         )
     else:
         conn.execute(
             "UPDATE goals SET status = ?, integrity_verified = 0,"
             " updated_at = ? WHERE id = ?",
-            (status, now(), goal_id),
+            (status, at, goal_id),
+        )
+    if prior is not None:
+        conn.execute(
+            "INSERT INTO goal_events (goal_id, problem, from_status,"
+            " to_status, event, reason, at) VALUES (?,?,?,?,?,?,?)",
+            (goal_id, str(prior["problem"]), str(prior["status"]),
+             status, event, reason, at),
         )
     conn.commit()
 

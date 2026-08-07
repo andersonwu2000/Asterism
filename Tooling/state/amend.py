@@ -165,7 +165,8 @@ def resolve_amend(conn: sqlite3.Connection, workspace: Path,
                     # clears integrity_verified — a rewritten root's old
                     # probe pass is void.
                     db.update_goal_status(conn, int(root_row["id"]),
-                                          "frozen")
+                                          "frozen", event="operator_amend",
+                                          reason="root statement rewritten")
 
     (pdir / f".proposed_{file}").unlink(missing_ok=True)
 

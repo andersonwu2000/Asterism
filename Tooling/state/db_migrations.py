@@ -769,6 +769,34 @@ def apply(conn: sqlite3.Connection) -> None:
         _migrate_to_v35(conn)
         conn.execute("PRAGMA user_version = 35")
         conn.commit()
+    if v < 36:
+        # v36 — `goal_events`: every goal status transition, append-only.
+        # Purely additive (new table + two indexes); no existing row is
+        # touched and no reader depends on it yet, so an old DB opened
+        # after this simply starts recording from now on. History is NOT
+        # backfilled — `goals.updated_at` is not an event clock (attempts,
+        # is_deliverable and integrity_verified all bump it), and a
+        # fabricated past is worse in a forensics table than an honest
+        # start line.
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS goal_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            goal_id     INTEGER NOT NULL
+                            REFERENCES goals(id) ON DELETE CASCADE,
+            problem     TEXT NOT NULL REFERENCES problems(name),
+            from_status TEXT NULL DEFAULT NULL,
+            to_status   TEXT NOT NULL,
+            event       TEXT NOT NULL DEFAULT '',
+            reason      TEXT NOT NULL DEFAULT '',
+            at          TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_goal_events_goal
+            ON goal_events(goal_id, at);
+        CREATE INDEX IF NOT EXISTS idx_goal_events_problem
+            ON goal_events(problem, at);
+        """)
+        conn.execute("PRAGMA user_version = 36")
+        conn.commit()
 
 
 def _migrate_to_v35(conn: sqlite3.Connection) -> None:

@@ -202,7 +202,12 @@ _WATERMARKS = {
     # 2600→2660 (2026-08-04): #158 — scope_mismatch_reason pre-flight +
     # the in-run authoritative twin (a scope matching no registered
     # problem must refuse loudly, not idle forever). Conscious bump.
-    "Tooling/core/dispatcher.py": 2660,
+    # 2660→2720 (2026-08-07): the per-(provider, model) quota ledger —
+    # seat resolution, the per-tick hold, and feeding an rc=126 spawn
+    # back into the ledger (the only quota channel a provider without a
+    # usage API has). The judgement itself lives in `core/quota.py`;
+    # what landed here is wiring. Conscious bump.
+    "Tooling/core/dispatcher.py": 2720,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
@@ -323,7 +328,11 @@ _WATERMARKS = {
     # freeze-semantics docstring (operator ruling). Conscious bump.
     # 3670→3680 (2026-08-04): `is_in_queue` poison-row exclusion (the
     # 08-03 stall class, dedup edge). Conscious bump.
-    "Tooling/state/db.py": 3680,
+    # 3680→3740 (2026-08-07): v36 `goal_events` — the table DDL plus the
+    # append inside `update_goal_status`, which is now the sink that
+    # records every goal transition (the frontend's Timeline cannot read
+    # `updated_at` as an event clock). Conscious bump.
+    "Tooling/state/db.py": 3740,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,
@@ -343,7 +352,9 @@ _WATERMARKS = {
     # widenings (each a rebuild-and-copy, since SQLite cannot alter a
     # CHECK in place) plus the top-group backfill. The chain grows by one
     # block per schema version by design — conscious bump.
-    "Tooling/state/db_migrations.py": 2220,
+    # 2220→2260 (2026-08-07): v36 `goal_events` — one additive block
+    # (table + two indexes, no rebuild, no backfill). Conscious bump.
+    "Tooling/state/db_migrations.py": 2260,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
