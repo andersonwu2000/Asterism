@@ -73,6 +73,15 @@ function ConfigPanel() {
             value={draft ?? current}
             onChange={(e) => setDrafts((d) => ({ ...d, [s.key]: e.target.value }))}
           >
+            {/* An UNSET key has no matching option, and a select with no
+                match renders its FIRST one — so the page claimed a model
+                nobody had chosen (2026-08-07). Say "unset" instead, and
+                make it unpickable so it can never be saved back. */}
+            {(draft ?? current) === '' && (
+              <option value="" disabled>
+                not set — the provider's default
+              </option>
+            )}
             {s.choices.map((c) => (
               <option key={c} value={c}>
                 {c}

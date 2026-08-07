@@ -283,12 +283,19 @@ def resolve_workspace(explicit: "Path | str | None" = None) -> Path:
 # per run).
 
 #: dotted key -> (python type, human description)
+#:
+#: Only keys a LIVE spawn resolves. `builder.model` / `backward.model` /
+#: `forward.model` sat here after the v33 merge, described in their own
+#: tooltip as "unread post-v33" — three dropdowns for pipelines that no
+#: longer run (last Backward 2026-07-17, last Forward 2026-07-18; every
+#: Inject since names Formalizer). Worse than clutter: unset, they
+#: rendered as whatever option came first, so the page showed a model
+#: nothing had chosen and nothing would read. Removed 2026-08-07; the
+#: keys still parse from an old yaml, they are simply not offered.
+#: `test_config_ui_keys.py` ratchets this set.
 UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
     "formalizer.model": (str, "model that turns the argued proof into Lean (prove/split/mint)"),
-    "builder.model": (str, "legacy pre-merge key — unread post-v33; kept for old yaml files"),
-    "backward.model": (str, "legacy pre-merge key — unread post-v33; kept for old yaml files"),
     "strategist.model": (str, "model that plans the campaign"),
-    "forward.model": (str, "legacy pre-merge key — unread post-v33; kept for old yaml files"),
     "presearch.model": (str, "model that scouts Mathlib before proving"),
     "librarian.model": (str, "model that curates the Library"),
     "scholar.model": (str, "model that searches and fetches cited papers"),
