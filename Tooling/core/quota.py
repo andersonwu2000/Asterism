@@ -52,6 +52,23 @@ BOUND: "tuple[frozenset[str], ...]" = (
 )
 
 
+#: seat name (the config key, lowercase) -> the queue/dispatch kind that
+#: spawns it. Two spellings for one pipeline is exactly how the first
+#: wiring of this module failed in production (2026-08-07): the ledger
+#: answered in seat names, the dispatcher asked in queue kinds, and the
+#: mismatch silently disabled both halves — `observe()` never fired
+#: because the seat lookup missed, and the hold wrote a key the refill
+#: pass does not read. Seats with no entry are stations inside another
+#: pipeline (pre-search) or non-dispatch surfaces; they matter only
+#: through `BOUND`.
+DISPATCH_KIND: "dict[str, str]" = {
+    "strategist": "Strategist",
+    "formalizer": "Formalizer",
+    "librarian": "Librarian",
+    "scholar": "Scholar",
+}
+
+
 @dataclass(frozen=True)
 class Block:
     """One spawn surface that is unavailable, and until when.

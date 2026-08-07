@@ -2140,10 +2140,25 @@ def run(workspace: Path, *, once: bool = False,
                         # manufacturing work for a pipeline that could
                         # not consume it. Same ledger as the probes, so
                         # the binding applies either way.
-                        _seat = _pipeline_seats().get(kind)
+                        # Seat lookup by CONFIG key: `kind` here is the
+                        # queue spelling ('Formalizer'), the seats are
+                        # config keys ('formalizer'). Looking up the
+                        # queue spelling is what silently disabled this
+                        # in production (2026-08-07) — the miss returned
+                        # None and the ledger never learned a thing.
+                        _seat = _pipeline_seats().get(str(kind).lower())
                         if _seat is not None:
+                            _until = None
+                            if _seat[0] == "antigravity":
+                                # agy has no usage API but its refusal
+                                # says when it recovers ("Resets in
+                                # 2h46m25s"). Without it the block falls
+                                # back to a 15-minute guess and the
+                                # backoff keeps probing a 3-hour wall.
+                                from ..llm import antigravity_cli as _agy
+                                _until = _agy.take_quota_reset()
                             _quota_ledger.observe(
-                                _seat[0], _seat[1],
+                                _seat[0], _seat[1], until=_until,
                                 detail=f"{kind} spawn refused on quota")
                         # Flush queued entries of this kind so the
                         # pop loop doesn't keep draining the backlog
@@ -2453,11 +2468,19 @@ def run(workspace: Path, *, once: bool = False,
         # seats simply stop being dispatched while the rest keep going.
         # Extend-only (max): the rc=126 backoffs live in the same map.
         _blocked = _quota_ledger.blocked_kinds(_pipeline_seats())
-        for _kind, _blk in _blocked.items():
+        for _seat, _blk in _blocked.items():
+            # Seat names are config keys; the cooldown map is read by
+            # QUEUE kind. Writing the seat name here is what made the
+            # first version of this a no-op (2026-08-07 production).
+            _kind = quota.DISPATCH_KIND.get(_seat)
+            if _kind is None:
+                continue    # a station (pre-search) — held via its group
             _until = _blk.until or (time.time() + 900.0)
             if _until > st.quota_cooldown_kind.get(_kind, 0.0):
                 st.quota_cooldown_kind[_kind] = _until
-                print(f"[quota] {_kind} held — {_blk.provider}"
+                print(f"[quota] {_kind} held until "
+                      f"{datetime.fromtimestamp(_until).strftime('%H:%M:%S')}"
+                      f" — {_blk.provider}"
                       f"{'/' + _blk.model if _blk.model else ''}"
                       f": {_blk.detail or 'exhausted'}", flush=True)
 

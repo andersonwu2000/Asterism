@@ -194,3 +194,41 @@ def test_probed_and_observed_blocks_coexist(monkeypatch):
     assert led.blocked("claude", "claude-fable-5") is not None
     assert led.blocked("antigravity", "gemini-3.6-flash-high") is not None
     assert led.blocked("claude", "claude-opus-5") is None
+
+
+def test_every_dispatchable_seat_maps_to_its_queue_kind():
+    """The bug this pins, found in production within an hour of shipping
+    (2026-08-07): the ledger answers in SEAT names (config keys,
+    lowercase) and the dispatcher asks in QUEUE kinds ('Formalizer').
+    The mismatch disabled both halves silently — `observe()` looked up
+    'Formalizer' in a lowercase table and got None, and the hold wrote
+    'formalizer' into a cooldown map read as 'Formalizer'. agy's quota
+    died and the framework kept spawning into it."""
+    from Tooling.core import dispatcher
+    for seat, kind in quota.DISPATCH_KIND.items():
+        assert seat in dispatcher._QUOTA_SEATS, f"{seat} is not a seat"
+        assert kind == seat.replace("_", " ").title().replace(" ", "_"), (
+            f"{seat} -> {kind} is not the queue spelling")
+    # every seat that can be dispatched has a mapping; stations do not
+    assert "presearch" not in quota.DISPATCH_KIND
+    assert set(quota.DISPATCH_KIND) <= set(dispatcher._QUOTA_SEATS)
+
+
+def test_agy_refusal_carries_its_own_reset_time():
+    """agy has no usage API, but says when it comes back. Dropping that
+    left the backoff probing a 3-hour wall every few minutes."""
+    import time as _t
+    from Tooling.llm import antigravity_cli as agy
+    agy._record_quota_reset(
+        "individual quota reached. please upgrade your subscription "
+        "to increase your limits. resets in 2h46m25s.")
+    v = agy.take_quota_reset()
+    assert v is not None and 9900 < v - _t.time() < 10050
+    # consumed once — a stale reset must not silence a later refusal
+    assert agy.take_quota_reset() is None
+
+
+def test_a_refusal_without_a_reset_time_says_nothing():
+    from Tooling.llm import antigravity_cli as agy
+    agy._record_quota_reset("individual quota reached.")
+    assert agy.take_quota_reset() is None

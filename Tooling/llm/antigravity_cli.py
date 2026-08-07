@@ -196,9 +196,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from ..core.process_group import no_window_creationflags
@@ -512,8 +514,40 @@ def _classify(envelope: "dict | None", raw: str, rc: int) -> int:
     if any(m in text for m in _MISCONFIG_MARKERS):
         return RC_MISCONFIGURED
     if any(m in text for m in _QUOTA_MARKERS):
+        _record_quota_reset(text)
         return RC_QUOTA_EXHAUSTED
     return rc if rc != 0 else 1
+
+
+#: Epoch when agy said its quota comes back, or None. agy has no usage
+#: API, but its refusal carries the answer in prose — "Individual quota
+#: reached ... Resets in 2h46m25s" — and the framework used to drop it,
+#: then retry on a 2-4 minute exponential backoff for the whole ~3-hour
+#: window (5 wasted spawns in the first 20 minutes, 2026-08-07). Read by
+#: the dispatcher when it records the block.
+_last_quota_reset: "float | None" = None
+
+_RESET_RE = re.compile(
+    r"resets?\s+in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?", re.I)
+
+
+def _record_quota_reset(text: str) -> None:
+    m = _RESET_RE.search(text)
+    if not m or not any(m.groups()):
+        return
+    h, mi, s = (int(g) if g else 0 for g in m.groups())
+    secs = h * 3600 + mi * 60 + s
+    if secs <= 0:
+        return
+    global _last_quota_reset
+    _last_quota_reset = time.time() + secs
+
+
+def take_quota_reset() -> "float | None":
+    """The reset epoch from the most recent refusal, consumed once."""
+    global _last_quota_reset
+    v, _last_quota_reset = _last_quota_reset, None
+    return v
 
 
 def mcp_config_path() -> Path:

@@ -207,7 +207,10 @@ _WATERMARKS = {
     # back into the ledger (the only quota channel a provider without a
     # usage API has). The judgement itself lives in `core/quota.py`;
     # what landed here is wiring. Conscious bump.
-    "Tooling/core/dispatcher.py": 2720,
+    # 2720→2740 (2026-08-07): the seat/queue spelling fix the first
+    # wiring needed (production found it in an hour) plus consuming
+    # agy's own reset time. Conscious bump.
+    "Tooling/core/dispatcher.py": 2740,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
