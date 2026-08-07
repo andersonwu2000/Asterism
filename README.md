@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-06
+- Broadened access to the literature: more open-access archives can now be fetched, the per-search result cap rose from 5 to 20, and papers can be pulled during a proof attempt rather than only in a separate setup step.
+- The reviewing stage now reads fetched papers and completed proofs directly in place, retiring the size-capped staging copy that previously stood between them.
+- Tightened acceptance: the reviewer can no longer pass its first criterion on an unsupported "looks fine", a run whose scope matches no known problem is refused outright, and a disproof mode used exactly once in the project's history was removed.
+- Fixed bookkeeping bugs where a waiting sub-task let its parent proceed early, retrieved material was attached to the wrong revision of its goal, and two display glitches in the web view.
+
 ### 2026-08-04
 - Fixed a task-queue bug in which an automatic retry after an infrastructure failure inserted a corrupted entry that silently stalled two provers, and added a recovery sweep to eliminate that whole class of failures.
 - Made a failing prover's own last note part of the failure record that later attempts on the same problem get to see.
@@ -221,12 +227,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 - Added the ability to settle a requested claim as false by proving its negation, while keeping such a disproof clearly distinct from an ordinary success.
 - Made the proof-graph viewer show each goal's real Lean source and proof, and overhauled its layout to minimize edge crossings and center the diagram cleanly.
 - Wired the "harvest to Library" action to launch its run immediately.
-
-### 2026-07-07
-- Added the ability for readers to run Lean code directly in the browser, including a live display of the proof goal at the cursor while editing.
-- Built agent-driven fetching of cited papers from academic databases (arXiv, OpenAlex, Crossref), with an in-app shelf for viewing the PDFs alongside problems.
-- Moved harvesting of proved definitions into the shared library behind an explicit human sign-off step, and reworked the library so it reads like a textbook.
-- Shipped a Windows installer with a browser-based setup wizard, and overhauled the run-monitoring console and proof-graph visualizations for readability and performance.
 
 <!-- ASTERISM-PROGRESS:END -->
 
