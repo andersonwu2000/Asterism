@@ -745,6 +745,382 @@ def programme(conn: sqlite3.Connection, problem: str,
             "groups": groups_of(conn, problem)}
 
 
+# ---------------------------------------------------------------------
+# Timeline — one flat log whose every row reads `at | what | to whom`
+# ---------------------------------------------------------------------
+
+#: decision_kind → the log's verb. A CLOSED vocabulary: a row states
+#: what happened in one token and NAMES the object it happened to.
+#: Prose (the brief, the reason) is expansion material and never the
+#: headline — a timeline whose rows opened with 1.3KB of roadmap
+#: markdown was unreadable at a glance (owner, 2026-08-07). An unknown
+#: kind keeps its engine name rather than being mislabelled.
+_DECISION_VERB: "dict[str, str]" = {
+    "Inject": "asked",
+    "Reopen": "reopened",
+    "ConfirmShelve": "set_aside",
+    "MarkDeliverable": "deliverable",
+    "Ingest": "ingested",
+    "FetchPaper": "paper",
+    "Delegate": "handed_off",
+    "ReturnToParent": "handed_back",
+    "CloseGroup": "closed_group",
+    "RequestUserAmend": "asked_you",
+    "EmitDirective": "directive",
+    "Noop": "held",
+    "AttemptDisproof": "disproof",
+}
+
+#: decision outcomes that mean "the thing it asked for exists now" —
+#: the moment the produced goal became real. Mirrors the UI's OK set;
+#: `parse` failures and declines are NOT landings.
+_LANDED_OUTCOMES = frozenset({
+    "success", "accepted", "live_subgoal", "closed_subgoal", "proved",
+})
+
+#: goal statuses that are an end of the road — these get a dated event.
+#: An open/attempting goal has no transition to date yet.
+_TERMINAL_GOAL_STATES = {
+    "proved": "proved",
+    "shelved": "set_aside",
+    "disproved": "disproved",
+    "dead": "dead",
+}
+
+#: `goal_events.to_status` → the log's verb (v36). Not every transition
+#: is news: 'attempting' is a worker picking the goal up and 'open' from
+#: 'attempting' is the same worker putting it down, which the attempt
+#: rows already tell. A revival — 'open' from a SETTLED state — is news,
+#: and gets its verb from the from-side below.
+_TO_STATUS_VERB = {
+    "proved": "proved",
+    "shelved": "set_aside",
+    "disproved": "disproved",
+    "dead": "dead",
+    "frozen": "frozen",
+    "pending_strategist_review": "for_review",
+}
+_SETTLED = frozenset({"proved", "shelved", "disproved", "dead"})
+
+#: how far along a goal's life each verb sits — the tiebreaker when a
+#: brick is asked for and lands inside the same clock minute
+_LIFE_RANK: "dict[str, int]" = {
+    "opened": 0, "asked": 1, "reopened": 1, "hiccup": 2, "attempt": 3,
+    "deliverable": 6, "proved": 7, "set_aside": 7, "disproved": 7,
+    "dead": 7, "ingested": 8,
+}
+
+#: "Mint brick `slug`" — the brief's own convention. Used ONLY to LABEL
+#: a dispatch whose goal does not exist yet (a failed or in-flight
+#: Inject): with no row to point at, the alternative is an anonymous
+#: event. Never used to link, and never as a gate signal.
+_MINT_RE = re.compile(r"[Mm]int (?:brick|def) [`\"]([A-Za-z0-9_']+)[`\"]")
+
+
+def _ev(at: str, kind: str, *, object_kind: str = "problem",
+        label: str = "", goal_id: "int | None" = None,
+        n: "int | None" = None, note: "str | None" = None,
+        body: "str | None" = None, approx: bool = False,
+        eid: str = "", batch_id: "str | None" = None,
+        group_id: "int | None" = None) -> dict:
+    return {
+        "at": at, "kind": kind, "object_kind": object_kind,
+        "label": label, "goal_id": goal_id, "n": n, "note": note,
+        "body": body, "approx": approx, "id": eid,
+        "batch_id": batch_id, "group_id": group_id,
+    }
+
+
+def _logged_transitions(conn: sqlite3.Connection, problem: str,
+                        goals: "list[dict]") -> "tuple[list[dict], set[int]]":
+    """Goal state changes as the ENGINE RECORDED THEM (`goal_events`,
+    v36 — appended inside `db.update_goal_status`, so it catches the
+    operator's own amend escape hatch as well as every checked
+    transition).
+
+    Returns the events and the set of goals it speaks for: a goal with
+    logged history is never reconstructed on top of.
+    """
+    by_id = {int(g["id"]): g for g in goals}
+    out: "list[dict]" = []
+    covered: "set[int]" = set()
+    try:
+        rows = conn.execute(
+            "SELECT id, goal_id, from_status, to_status, event, reason, at"
+            " FROM goal_events WHERE problem = ? ORDER BY at, id",
+            (problem,)).fetchall()
+    except sqlite3.OperationalError:
+        return [], set()  # pre-v36 DB — reconstruction carries it all
+    for r in rows:
+        gid = int(r["goal_id"])
+        if gid not in by_id:
+            continue
+        covered.add(gid)
+        frm, to = str(r["from_status"] or ""), str(r["to_status"])
+        verb = _TO_STATUS_VERB.get(to)
+        if verb is None:
+            # a revival is news; a worker picking the goal up is not
+            if to == "open" and frm in _SETTLED:
+                verb = "reopened"
+            else:
+                continue
+        out.append(_ev(
+            str(r["at"]), verb, object_kind="goal",
+            label=str(by_id[gid]["slug"]), goal_id=gid,
+            note=str(r["reason"] or "") or None,
+            eid=f"e{int(r['id'])}"))
+    return out, covered
+
+
+def _transition_events(conn: sqlite3.Connection, problem: str,
+                       goals: "list[dict]",
+                       dec_rows: "list[sqlite3.Row]") -> "list[dict]":
+    """When each goal reached its terminal state, for the goals the
+    engine's own log does not cover — everything that happened before
+    `goal_events` existed (v36).
+
+    THE HONEST CAVEAT: this is RECONSTRUCTION. In order of trust:
+
+      1. the succeeded pipeline that targeted the goal (`finished_at`)
+      2. the producing decision's outcome write (`updated_at`) — when
+         the batch step was recorded as landed
+      3. `goals.updated_at`, marked `approx`
+
+    (3) is last because that column is bumped by `attempts + 1`,
+    `is_deliverable` and `integrity_verified` writes too: measured
+    against (1)/(2) on Combinatorics.union_closed it agreed at the
+    median and drifted +18min at p90, +43min worst case.
+    """
+    by_id = {int(g["id"]): g for g in goals}
+    # (1) succeeded pipelines, latest per goal
+    pipe: "dict[int, str]" = {}
+    try:
+        for r in conn.execute(
+                "SELECT target_id, MAX(finished_at) AS at FROM pipelines"
+                " WHERE target_kind = 'Goal' AND status = 'succeeded'"
+                "   AND finished_at IS NOT NULL"
+                " GROUP BY target_id"):
+            try:
+                gid = int(r["target_id"])
+            except (TypeError, ValueError):
+                continue
+            if gid in by_id:
+                pipe[gid] = str(r["at"])
+    except sqlite3.OperationalError:
+        pass
+    # (2) the decision that produced the goal, once its outcome landed;
+    # and (2b) the ConfirmShelve that set one aside — that decision IS
+    # the shelving, so it dates it exactly.
+    landed: "dict[int, str]" = {}
+    shelved_by: "dict[int, str]" = {}
+    for d in dec_rows:
+        gid = d["produced_goal_id"]
+        if (gid is not None and int(gid) in by_id
+                and str(d["outcome"] or "") in _LANDED_OUTCOMES):
+            landed[int(gid)] = str(d["updated_at"])
+        if str(d["decision_kind"]) == "ConfirmShelve":
+            try:
+                tid = int(d["target_id"])
+            except (TypeError, ValueError):
+                continue
+            if tid in by_id:
+                shelved_by[tid] = str(d["created_at"])
+
+    out: "list[dict]" = []
+    for g in goals:
+        kind = _TERMINAL_GOAL_STATES.get(str(g["status"]))
+        if kind is None:
+            continue
+        gid = int(g["id"])
+        # ConfirmShelve IS the shelving — its own row already says so.
+        # (A ConfirmShelve on a goal that later revived stays: that one
+        # is history, not a duplicate of the current state.)
+        if kind == "set_aside" and gid in shelved_by:
+            continue
+        at = pipe.get(gid) or landed.get(gid)
+        approx = at is None
+        if at is None:
+            at = str(g["updated_at"])
+        out.append(_ev(at, kind, object_kind="goal", label=str(g["slug"]),
+                       goal_id=gid, approx=approx, eid=f"g{gid}"))
+    return out
+
+
+def _attempt_events(conn: sqlite3.Connection,
+                    goals: "list[dict]") -> "list[dict]":
+    """Failed attempts, numbered per goal in the order they happened.
+
+    Infrastructure failures are split off as `hiccup`: the registry's
+    own semantics — a provider/pipeline infra death never incremented
+    `goals.attempts` — so counting them as attempts would tell the
+    reader the machine tried more times than it did.
+    """
+    from ..state.failures import is_infra
+    by_id = {int(g["id"]): g for g in goals}
+    rows = []
+    for r in conn.execute(
+            "SELECT target_id, failure_reason, ts FROM dead_attempts"
+            " WHERE target_kind = 'Goal' ORDER BY ts"):
+        try:
+            gid = int(r["target_id"])
+        except (TypeError, ValueError):
+            continue
+        if gid in by_id:
+            rows.append((gid, str(r["failure_reason"]), str(r["ts"])))
+    seen: "dict[int, int]" = {}
+    out = []
+    for i, (gid, reason, ts) in enumerate(rows):
+        infra = is_infra(reason)
+        n = None
+        if not infra:
+            n = seen.get(gid, 0) + 1
+            seen[gid] = n
+        out.append(_ev(ts, "hiccup" if infra else "attempt",
+                       object_kind="goal", label=str(by_id[gid]["slug"]),
+                       goal_id=gid, n=n, note=reason,
+                       eid=f"a{i}-{gid}"))
+    return out
+
+
+def _decision_events(conn: sqlite3.Connection, problem: str,
+                     dec_rows: "list[sqlite3.Row]",
+                     goals: "list[dict]") -> "list[dict]":
+    """The strategist's moves, each naming what it moved."""
+    by_id = {int(g["id"]): g for g in goals}
+    out = []
+    for d in dec_rows:
+        kind = str(d["decision_kind"])
+        verb = _DECISION_VERB.get(kind, kind)
+        try:
+            payload = json.loads(d["payload"] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        brief = str(d["brief"] or "")
+        reason = str(d["reason"] or "")
+        gid = d["produced_goal_id"]
+        if gid is None:
+            gid = d["target_id"]
+        if gid is None:
+            gid = payload.get("target_goal_id")
+        try:
+            gid = int(gid) if gid is not None else None
+        except (TypeError, ValueError):
+            gid = None
+        if gid not in by_id:
+            gid = None
+        okind, label, group_id = "problem", problem, None
+        if gid is not None:
+            okind, label = "goal", str(by_id[gid]["slug"])
+        elif kind == "FetchPaper":
+            okind = "paper"
+            label = str(payload.get("query") or reason or "a paper")
+        elif kind in ("Delegate", "ReturnToParent", "CloseGroup"):
+            okind = "group"
+            g = d["produced_group_id"] if "produced_group_id" \
+                in d.keys() else None
+            group_id = int(g) if g is not None else (
+                int(payload["group_id"]) if isinstance(
+                    payload.get("group_id"), int) else None)
+            # a group NAMES itself in its Programme's title; its charter
+            # is a paragraph and a poor label (same law as the tree)
+            card = _group_lineage(conn, problem, group_card(conn, group_id)) \
+                if group_id else None
+            label = (card or {}).get("title") or (card or {}).get(
+                "charter") or (f"group {group_id}" if group_id else problem)
+        elif verb == "asked":
+            # a dispatch whose brick does not exist yet (failed or still
+            # in flight) — name what was ASKED FOR, or the row is anonymous
+            m = _MINT_RE.search(brief)
+            if m:
+                okind, label = "unbuilt", m.group(1)
+        note = reason or None
+        if kind == "ReturnToParent" and payload.get("flavour"):
+            note = f"{payload['flavour']} — {reason}" if reason \
+                else str(payload["flavour"])
+        out.append(_ev(
+            str(d["created_at"]), verb, object_kind=okind, label=label,
+            goal_id=gid, note=note, body=brief or None,
+            eid=f"d{int(d['id'])}", batch_id=d["batch_id"],
+            group_id=group_id))
+    return out
+
+
+def problem_events(conn: sqlite3.Connection, problem: str) -> dict:
+    """The Timeline read: one flat, uniform log.
+
+    Every row is `at | what happened | to whom`, and every row NAMES an
+    object — which is what lets a reader follow one brick's whole life
+    (asked → attempt 2 → proved) by filtering on it. That reading was
+    impossible while the log recorded only what the strategist decided:
+    of 54 goals on union_closed, 52 reached `proved` and not one of
+    those landings appeared here (owner, 2026-08-07).
+    """
+    goals = [dict(r) for r in conn.execute(
+        "SELECT id, slug, status, origin, created_at, updated_at"
+        " FROM goals WHERE problem = ?", (problem,))]
+    _dcols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(strategist_decisions)")}
+    _gsel = "" if "produced_group_id" not in _dcols \
+        else ", produced_group_id"
+    dec_rows = conn.execute(
+        "SELECT id, batch_id, decision_kind, target_id, brief, reason,"
+        " payload, outcome, produced_goal_id, created_at, updated_at"
+        + _gsel +
+        " FROM strategist_decisions WHERE problem = ?"
+        " ORDER BY id DESC", (problem,)).fetchall()
+
+    events = _decision_events(conn, problem, dec_rows, goals)
+    logged, covered = _logged_transitions(conn, problem, goals)
+    events += logged
+    events += [e for e in _transition_events(conn, problem, goals, dec_rows)
+               if e["goal_id"] not in covered]
+    events += _attempt_events(conn, goals)
+
+    # a goal nobody dispatched (a decomposition cut it out of its
+    # parent) still has a birthday, and its insert dates it exactly
+    asked = {e["goal_id"] for e in events
+             if e["kind"] in ("asked", "reopened") and e["goal_id"]}
+    for g in goals:
+        if int(g["id"]) not in asked:
+            events.append(_ev(str(g["created_at"]), "opened",
+                              object_kind="goal", label=str(g["slug"]),
+                              goal_id=int(g["id"]),
+                              note=str(g["origin"]),
+                              eid=f"o{int(g['id'])}"))
+
+    # the argument's own landmarks — only revisions that LANDED ride the
+    # default stream; a rejected proposal is a round of editing, not a
+    # change to the record (owner, 2026-08-07)
+    for r in _programme_events(conn, problem, _top_group_id(conn, problem)):
+        passed = r["status"] == "passed"
+        events.append(_ev(
+            r["created_at"], "rev" if passed else "proposal",
+            object_kind="programme", label="programme", n=r["rev"],
+            note=(None if r["rounds"] == 0 else
+                  f"{r['rounds']} round{'' if r['rounds'] == 1 else 's'}"
+                  " of review"),
+            eid=f"p{r['rev']}-{r['created_at']}"))
+
+    # newest first; within one timestamp, later-in-life first — a brick
+    # minted and landed inside the same minute must not read as having
+    # been proved before it was asked for
+    events.sort(key=lambda e: (e["at"], _LIFE_RANK.get(e["kind"], 5),
+                               e["id"]), reverse=True)
+    # Where the record starts. Below this line every goal landing is
+    # dated by inference from the work that produced it; above it the
+    # engine wrote the transition down itself. Three months from now
+    # nobody will remember which half was which unless the surface
+    # says so (backend, 2026-08-07).
+    try:
+        row = conn.execute(
+            "SELECT MIN(at) FROM goal_events WHERE problem = ?",
+            (problem,)).fetchone()
+        log_since = str(row[0]) if row and row[0] is not None else None
+    except sqlite3.OperationalError:
+        log_since = None
+    return {"events": events, "log_since": log_since}
+
+
 # display-signature cache: mtime-keyed per lean file so the 3s detail
 # poll doesn't re-read a hundred stubs (the underlying reader is the
 # engine's context.goal_display_signature — ONE extraction, no serve

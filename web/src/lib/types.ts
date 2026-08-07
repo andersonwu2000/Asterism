@@ -168,6 +168,31 @@ export interface ProgrammeEvent {
   created_at: string
 }
 
+/** One row of the Timeline: `at | what happened | to whom`. Every event
+ * names an OBJECT, which is what lets a reader follow one brick's whole
+ * life (asked → attempt 2 → proved) by filtering the log on it. */
+export interface TimelineEvent {
+  at: string
+  /** closed vocabulary — see vocab.ts eventLabel */
+  kind: string
+  object_kind: 'goal' | 'programme' | 'group' | 'paper' | 'problem' | 'unbuilt'
+  label: string
+  /** set when the object is a goal that exists — the row links to it */
+  goal_id: number | null
+  /** attempt number / programme rev */
+  n: number | null
+  /** failure reason, delegation flavour, or the strategist's sentence */
+  note: string | null
+  /** the agent-facing brief — expansion only, never the headline */
+  body: string | null
+  /** the engine stores goal STATUS, not goal HISTORY: a reconstructed
+   * timestamp says so rather than pretending to be exact */
+  approx: boolean
+  id: string
+  batch_id: string | null
+  group_id: number | null
+}
+
 export interface Programme {
   current: {
     rev: number

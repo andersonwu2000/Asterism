@@ -100,6 +100,139 @@ export function decisionKindTitle(kind: string): string {
   return DECISION_KIND_TITLE[kind] ?? `engine term: ${kind}`
 }
 
+/* ---------------------------------------------------------------
+ * Timeline events. The log's row is `at | what happened | to whom`,
+ * so the verb must survive in ONE short word — the object next to it
+ * carries the identity. (The old timeline spent its widest column on
+ * the same word 47 times over and its second on 1.3KB of roadmap
+ * markdown; owner, 2026-08-07.)
+ * --------------------------------------------------------------- */
+const EVENT_LABEL: Record<string, string> = {
+  asked: 'asked',
+  opened: 'opened',
+  reopened: 'reopened',
+  attempt: 'attempt',
+  hiccup: 'hiccup',
+  proved: 'proved',
+  set_aside: 'set aside',
+  disproved: 'disproved',
+  dead: 'dead',
+  frozen: 'frozen',
+  for_review: 'for review',
+  deliverable: 'claimed',
+  ingested: 'closed',
+  rev: 'rev',
+  proposal: 'proposal',
+  handed_off: 'handed off',
+  handed_back: 'handed back',
+  closed_group: 'retired',
+  asked_you: 'asked you',
+  directive: 'note',
+  held: 'held',
+  paper: 'paper',
+  disproof: 'disproof',
+}
+
+export function eventLabel(kind: string): string {
+  return EVENT_LABEL[kind] ?? kind.replace(/_/g, ' ')
+}
+
+const EVENT_TITLE: Record<string, string> = {
+  asked: 'the strategist dispatched this brick',
+  opened: 'cut out of a larger goal by a decomposition — nobody dispatched it',
+  reopened: 'put back in play after having been settled',
+  attempt: 'an attempt ran and failed (this one burned a goal attempt)',
+  hiccup:
+    'an infrastructure death — provider, spawn or framework. It cost no attempt,' +
+    ' which is why it is not numbered',
+  proved: 'the goal reached proved',
+  set_aside: 'shelved — not failed; it can be picked up again',
+  disproved: 'its negation was proved instead',
+  dead: 'out of attempts',
+  frozen: 'held out of play — the root after you amended its statement',
+  for_review: 'handed to the strategist to judge',
+  deliverable: 'flagged as one of the claims this problem promises',
+  ingested: "the finished work was accepted as the problem's final state",
+  rev: 'a Programme revision was adopted — the standing argument changed',
+  proposal: 'a revision the adversarial reviewer rejected — editing, not a change of record',
+  handed_off: 'a claim was handed to a discussion group, which argues it in parallel',
+  handed_back: 'a group handed its charter back: refuted, needing an amendment, or exhausted',
+  closed_group: 'a group was retired — the route no longer needs its claim',
+  asked_you: 'the run paused to ask you to amend the Manifest',
+  directive: 'a standing note steering its own agents',
+  held: 'looked at the state and changed nothing',
+  paper: "a paper was pulled into the problem's sources",
+  disproof: 'an attempt to prove the negation instead',
+}
+
+export function eventTitle(kind: string): string {
+  return EVENT_TITLE[kind] ?? kind.replace(/_/g, ' ')
+}
+
+/** Colour is a budget: the norm (a brick asked for, a brick landed) is
+ * quiet, and amber stays reserved app-wide for the human's move. */
+export const EVENT_CLS: Record<string, string> = {
+  proved: 'text-starlight',
+  disproved: 'text-danger',
+  dead: 'text-ink-faint',
+  set_aside: 'text-ink-faint',
+  frozen: 'text-ink-faint',
+  for_review: 'text-ink-dim',
+  hiccup: 'text-ink-faint',
+  attempt: 'text-ink-dim',
+  opened: 'text-ink-dim',
+  asked: 'text-ink-dim',
+  deliverable: 'text-star',
+  ingested: 'text-star',
+  rev: 'text-star',
+  proposal: 'text-ink-faint',
+  handed_off: 'text-accent',
+  handed_back: 'text-accent',
+  closed_group: 'text-ink-dim',
+  asked_you: 'text-warn',
+  directive: 'text-ink-dim',
+  held: 'text-ink-faint',
+  paper: 'text-ink-dim',
+}
+
+/** dead_attempts.failure_reason — the engine's forensic enum. The words
+ * say what happened; the enum stays greppable in the tooltip. */
+const FAILURE_LABEL: Record<string, string> = {
+  agent_timeout: 'ran out of time',
+  agent_stuck_thinking: 'stopped making progress',
+  agent_declined: 'the agent declined the task',
+  agent_infeasible: 'reported it infeasible',
+  agent_no_annotation: 'no usable proposal',
+  agent_no_output: 'produced nothing',
+  agent_shelved: 'the agent shelved it',
+  agent_rc_nonzero: 'the agent exited badly',
+  agent_error: 'the agent errored',
+  lake_build_error: "the proof didn't build",
+  axiom_violation: 'used a forbidden axiom',
+  naming_violation: 'broke a naming rule',
+  no_progress: 'no progress over the last attempt',
+  cite_unproved_sibling: 'cited a sibling that is not proved',
+  patch_signature_mismatch: 'changed the locked signature',
+  patch_body_contains_sorry: 'left a sorry in the body',
+  no_nl_correspondence: "the Lean didn't match the prose",
+  forward_no_new_goal: 'produced no new brick',
+  parent_needs_fix: 'blocked on its parent',
+  parent_stub_not_decomposable: 'its parent cannot be split further',
+  missing_parent_stub: 'its parent stub was missing',
+  goal_no_longer_open: 'settled before this attempt finished',
+  spawn_fast_fail: 'the agent never started',
+  daemon_shutdown: 'the engine stopped mid-run',
+  paper_unfetchable: 'the paper could not be fetched',
+  strategist_noop: 'the strategist changed nothing',
+  strategist_schema_invalid: 'the strategist wrote an invalid decision',
+  strategist_proposal_rejected: 'the reviewer rejected the proposal',
+  parse_proposal_fail: 'the proposal could not be parsed',
+}
+
+export function failureLabel(reason: string): string {
+  return FAILURE_LABEL[reason] ?? reason.replace(/_/g, ' ')
+}
+
 /** strategy statuses are already words (proposed / succeeded / dead /
  * superseded); this only guards future underscored values */
 export function strategyStatusLabel(status: string): string {

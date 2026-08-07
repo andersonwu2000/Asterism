@@ -478,6 +478,23 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                 return {"current": None, "history": [],
                         "group_id": None, "charter": None, "groups": []}
 
+    @app.get("/api/problems/{problem}/events")
+    def problem_events(problem: str) -> dict:
+        """The Timeline: one flat log of what happened, to whom.
+
+        Its own endpoint, not a field on the problem read — the detail
+        poll runs every few seconds and this is history, which only
+        changes when something happens and which nobody is looking at
+        unless the tab is open."""
+        with _ro(workspace) as conn:
+            known = conn.execute(
+                "SELECT 1 FROM problems WHERE name = ?",
+                (problem,)).fetchone()
+            if known is None:
+                raise HTTPException(status_code=404,
+                                    detail="unknown problem")
+            return _data.problem_events(conn, problem)
+
     @app.get("/api/problems/{problem}/manifest")
     def manifest_get(problem: str) -> dict:
         """The Manifest as the UI works with it: structured settings +

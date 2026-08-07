@@ -10,7 +10,7 @@ import { Button, ErrorState, StatusBadge, TabNav } from '../components/ui'
 import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
 import StrategyPanel from '../components/StrategyPanel'
-import DecisionTimeline from '../components/DecisionTimeline'
+import Timeline from '../components/Timeline'
 import ProgrammeView from '../components/ProgrammeView'
 import FileViewer from '../components/FileViewer'
 import ManifestEditor from '../components/ManifestEditor'
@@ -693,10 +693,8 @@ export default function Problem({ name }: { name: string }) {
           )}
           {tab === 'timeline' && (
             <div className="mx-auto max-w-4xl px-4 py-3">
-              <DecisionTimeline
-                decisions={data.decisions}
-                programmeEvents={data.programme_events}
-                goals={data.goals}
+              <Timeline
+                problem={data.name}
                 onSelectGoal={(id) => {
                   setSelectedGoal(id)
                   setSelectedStrategy(null)

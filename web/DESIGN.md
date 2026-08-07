@@ -112,6 +112,28 @@ the ladder via `::picker(select)` where supported.
   format list). No always-visible dropzone box — the affordance is a
   header hint sentence; the frame appears only mid-drag.
 
+## Logs — a row names an object (2026-08-07)
+
+Any surface that lists what the machine did reads
+`when | what happened | to whom`, and the third field is a NAME the
+reader can act on — a goal slug, the Programme, a group, a paper.
+
+- **Prose is never a headline.** An agent brief is over a kilobyte of
+  markdown; as a row's summary it truncates to boilerplate and buries
+  the one token that identifies the event. Briefs live in the
+  expansion.
+- **Because every row names an object, the log can be followed by
+  object** — one click filters to a single thing's whole life. That
+  reading is the point of the shape; a row that names nothing breaks
+  it.
+- **Outcomes are events too.** A log of what was *decided* without
+  what *became of it* answers none of the questions a reader arrives
+  with (`Timeline` showed 0 of 52 landings before this rule).
+- **A reconstructed timestamp says so.** Where a time is inferred
+  rather than recorded, mark the row (`~`) and draw the boundary where
+  the real record begins — otherwise nobody can tell later which half
+  was true.
+
 ## Copy
 
 - Quiet, lowercase-leaning, one sentence. Say what happens next, not
