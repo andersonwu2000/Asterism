@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-07
+- Rebuilt the web interface around the proof attempt itself: each branch is now labelled by the claim it was asked to prove, the search tree and its running log sit on one page, and settings moved to a page of their own.
+- Added per-model usage accounting, so runs sharing a rate limit now pause together rather than one at a time.
+- Began recording every change in a goal's status along with the event that caused it.
+- Tightened what the language models are given and report back: evidence is no longer truncated mid-way, the lemma catalogue cites names that can actually be invoked, and edits report the exact line range they touched.
+
 ### 2026-08-06
 - Broadened access to the literature: more open-access archives can now be fetched, the per-search result cap rose from 5 to 20, and papers can be pulled during a proof attempt rather than only in a separate setup step.
 - The reviewing stage now reads fetched papers and completed proofs directly in place, retiring the size-capped staging copy that previously stood between them.
@@ -221,12 +227,6 @@ Out-of-budget open goals now route to human review instead of looping fruitlessl
 
 - The one-click Windows installer was consolidated into a single `Asterism.exe` with a web-based first-run setup, plus a more resilient Python bootstrap that self-heals broken 3.12 installs, accepts any Python ≥3.12, and runs Lean and Mathlib setup on parallel tracks.
 - The web interface gained a unified camera engine shared across the proof-search and library views, directional citation arcs, automatic layout-cleanup passes, richer run cards showing the full proof body, and problem deletion behind a confirmation guard.
-
-### 2026-07-08
-- Rebuilt the one-click installer and setup wizard to run unattended with live progress, a reliable minimal Python and pinned Lean toolchain, and browser-based login.
-- Added the ability to settle a requested claim as false by proving its negation, while keeping such a disproof clearly distinct from an ordinary success.
-- Made the proof-graph viewer show each goal's real Lean source and proof, and overhauled its layout to minimize edge crossings and center the diagram cleanly.
-- Wired the "harvest to Library" action to launch its run immediately.
 
 <!-- ASTERISM-PROGRESS:END -->
 
