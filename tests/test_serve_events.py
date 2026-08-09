@@ -190,6 +190,24 @@ def test_a_dispatch_whose_brick_does_not_exist_is_still_named(
     assert asked[0]["goal_id"] is None
 
 
+def test_a_dispatch_is_named_by_the_path_it_mints_into(
+        workspace: Path) -> None:
+    """The strategist's WORDING moves; the file convention does not.
+    Batches now write "Mint into `proofs/L_x.lean`" with no "mint brick
+    `x`" anywhere, and a prose-only reader labelled those rows with the
+    problem's own name — anonymous exactly on the newest dispatches
+    (owner, 2026-08-09)."""
+    conn = _open_db(workspace)
+    _decide(conn, "Inject",
+            brief="Roadmap: the forced cores as bricks\n\n## Need\nThe "
+                  "seven-set forced core as a single brick. Mint into "
+                  "`proofs/L_uc_forced_seven_path_core.lean`.")
+    conn.close()
+    asked = [e for e in _events(workspace)["events"] if e["kind"] == "asked"]
+    assert asked[0]["label"] == "uc_forced_seven_path_core"
+    assert asked[0]["object_kind"] == "unbuilt"
+
+
 def test_shelving_is_not_counted_twice(workspace: Path) -> None:
     """ConfirmShelve IS the shelving — the goal's state must not add a
     second row for the same fact."""

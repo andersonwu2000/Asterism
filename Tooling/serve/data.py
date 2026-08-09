@@ -810,11 +810,26 @@ _LIFE_RANK: "dict[str, int]" = {
     "dead": 7, "ingested": 8,
 }
 
-#: "Mint brick `slug`" — the brief's own convention. Used ONLY to LABEL
-#: a dispatch whose goal does not exist yet (a failed or in-flight
-#: Inject): with no row to point at, the alternative is an anonymous
-#: event. Never used to link, and never as a gate signal.
-_MINT_RE = re.compile(r"[Mm]int (?:brick|def) [`\"]([A-Za-z0-9_']+)[`\"]")
+#: What a dispatch ASKED FOR, when its goal does not exist yet (a
+#: failed or still-in-flight Inject). Used ONLY to LABEL such a row —
+#: never to link, never as a gate signal; with no row to point at the
+#: alternative is an anonymous event, which is worst exactly where the
+#: reader most wants a name (the newest dispatches).
+#:
+#: The PATH is tried first and the prose second, because the path is a
+#: convention the framework enforces (`proofs/L_<slug>.lean`) while the
+#: sentence around it is the strategist's own wording — and that wording
+#: moved: batches now say "Mint into `proofs/L_x.lean`" with no "mint
+#: brick `x`" anywhere, so a prose-only reader labelled the newest rows
+#: with the problem's name (owner spotted it on union_closed,
+#: 2026-08-09).
+_MINT_PATH_RE = re.compile(r"proofs/L_([A-Za-z0-9_']+)\.lean")
+_MINT_PROSE_RE = re.compile(r"[Mm]int (?:brick|def) [`\"]([A-Za-z0-9_']+)[`\"]")
+
+
+def _asked_for(brief: str) -> "str | None":
+    m = _MINT_PATH_RE.search(brief) or _MINT_PROSE_RE.search(brief)
+    return m.group(1) if m else None
 
 
 def _ev(at: str, kind: str, *, object_kind: str = "problem",
@@ -1037,9 +1052,9 @@ def _decision_events(conn: sqlite3.Connection, problem: str,
         elif verb == "asked":
             # a dispatch whose brick does not exist yet (failed or still
             # in flight) — name what was ASKED FOR, or the row is anonymous
-            m = _MINT_RE.search(brief)
-            if m:
-                okind, label = "unbuilt", m.group(1)
+            asked = _asked_for(brief)
+            if asked:
+                okind, label = "unbuilt", asked
         note = reason or None
         if kind == "ReturnToParent" and payload.get("flavour"):
             note = f"{payload['flavour']} — {reason}" if reason \
