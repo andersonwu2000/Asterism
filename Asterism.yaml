@@ -86,15 +86,23 @@ dispatch:
 # EVERY worker spawn. sonnet-5 (user ruling 2026-07-29): the opus tier
 # stays on strategist/adversary where one decision shapes the tree.
 formalizer:
-  provider: antigravity        # SG-mirror layout (user 2026-08-06, second half
-  model: gemini-3.6-flash-high # of the Frankl run): Gemini does the throughput
-                               # work — write the Lean for a brief the NL layer
-                               # already argued and the judge already passed.
-                               # Its recorded failure mode is asserting its own
-                               # unchecked mathematics, which this seat never
-                               # asks for. Precedent: the 2026-07-30 SG run on
-                               # exactly this split closed in 91m32s with zero
-                               # dead attempts.
+  provider: claude             # 2026-08-07: agy's individual quota ran out
+  model: claude-sonnet-5       # mid-run ("Resets in 2h46m25s"), so this seat
+                               # falls back to the model it held before the
+                               # SG mirror. Nothing is wrong with the Gemini
+                               # choice — it had just landed 8 bricks with no
+                               # dead attempts — this is a quota outage, and
+                               # the seat moves rather than the run stopping.
+                               # Move it back when the window resets.
+  # provider: antigravity      # SG-mirror layout (user 2026-08-06, second half
+  # model: gemini-3.6-flash-high # of the Frankl run): Gemini does the
+                               # throughput work — write the Lean for a brief
+                               # the NL layer already argued and the judge
+                               # already passed. Its recorded failure mode is
+                               # asserting its own unchecked mathematics,
+                               # which this seat never asks for. Precedent:
+                               # the 2026-07-30 SG run on exactly this split
+                               # closed in 91m32s with zero dead attempts.
 
 strategist:
   provider: claude             # Back on the opus tier 2026-08-06 after the
