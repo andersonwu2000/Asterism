@@ -1,9 +1,13 @@
-"""Explainer chat contract tests — everything EXCEPT the claude spawn.
+"""Explainer chat contract tests — everything EXCEPT a real spawn.
 
 Same charter as the other serve tests: tmp workspace, no toolchain or
 CLI spawn, no network. The spawn boundary is covered by construction
 tests on the command line (read-only tool surface is an invariant, not
 a hope) and a fake-Popen streaming test for the SSE path.
+
+The provider-dialect half lives in `tests/test_explainer_backend.py`;
+what is pinned HERE is the endpoint's behaviour — that it follows the
+seated provider's DECLARATION rather than a provider's name.
 """
 from __future__ import annotations
 
@@ -17,6 +21,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from Tooling.llm import capabilities as caps
+from Tooling.llm import explainer
 from Tooling.serve import chat as _chat
 from Tooling.serve.app import create_app
 from Tooling.state import db
@@ -38,40 +44,6 @@ def _client(workspace: Path) -> TestClient:
     return TestClient(create_app(workspace))
 
 
-# -- read-only surface invariants ------------------------------------------
-
-
-def test_chat_cmd_tool_surface_is_read_only(workspace: Path) -> None:
-    cmd = _chat._chat_cmd(workspace, prompt="q", model="sonnet",
-                          session_id="s", resume=False)
-    tools = cmd[cmd.index("--tools") + 1]
-    for banned in ("Write", "Edit", "Bash", "NotebookEdit"):
-        assert banned not in tools.split()
-    assert "Read" in tools.split() and "Grep" in tools.split()
-    # deny rules pin the operator's Claude state out even of Read
-    joined = " ".join(cmd)
-    assert ".claude/projects" in joined
-    assert "Read(**/.env)" in cmd
-
-
-def test_chat_cmd_session_flags(workspace: Path) -> None:
-    fresh = _chat._chat_cmd(workspace, prompt="q", model="sonnet",
-                            session_id="abc", resume=False)
-    assert ["--session-id", "abc"] == fresh[-2:]
-    resumed = _chat._chat_cmd(workspace, prompt="q", model="sonnet",
-                              session_id="abc", resume=True)
-    assert ["--resume", "abc"] == resumed[-2:]
-
-
-def test_allowed_tools_scoped_to_workspace(workspace: Path) -> None:
-    pats = _chat._allowed_tools(workspace).split()
-    ws = workspace.as_posix()
-    for p in pats:
-        if p.startswith(("Read(", "Grep(", "Glob(")):
-            assert ws in p, p
-    assert any(p.startswith("WebFetch(domain:") for p in pats)
-
-
 # -- endpoint contracts (no spawn) -----------------------------------------
 
 
@@ -82,6 +54,27 @@ def test_chat_state_shape(workspace: Path) -> None:
     assert body["busy"] is False
     assert body["has_session"] is False
     assert body["models"] == ["haiku", "sonnet", "opus"]
+    # the seat, and the two ways a seat can be honestly worse
+    assert body["provider"] == "claude"
+    assert body["conversation_memory"] is True
+    assert body["read_scope"] == explainer.READ_SCOPE_WORKSPACE
+
+
+def test_chat_state_publishes_the_seated_providers_own_answers(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seat the explainer on agy and the page must change what it
+    promises: agy's models, no workspace read fence (its `read_file`
+    permission is honoured in no direction), and a memory that comes
+    from the CLI's own conversation id."""
+    monkeypatch.setenv("ASTERISM_EXPLAINER_PROVIDER", "agy")
+    body = _client(workspace).get("/api/chat/state").json()
+    assert body["provider"] == "antigravity"
+    assert body["models"] == list(explainer.ANTIGRAVITY.models)
+    assert body["model_default"] == explainer.ANTIGRAVITY.default_model
+    assert body["read_scope"] == explainer.READ_SCOPE_PROCESS
+    assert "cannot be scoped" in body["read_note"]
+    assert body["conversation_memory"] is True
 
 
 def test_chat_rejects_empty_and_oversize(workspace: Path) -> None:
@@ -192,7 +185,8 @@ def test_reader_translates_stream_json() -> None:
                     "usage": {"output_tokens": 9}}),
     ]
     q: "queue.Queue" = queue.Queue()
-    t = threading.Thread(target=_chat._reader, args=(_FakeProc(lines), q))
+    t = threading.Thread(target=explainer.CLAUDE.reader,
+                         args=(_FakeProc(lines), q))
     t.start()
     events = _drain(q)
     t.join(timeout=2)
@@ -215,7 +209,7 @@ def test_reader_thinking_and_error_result() -> None:
                     "is_error": True}),
     ]
     q: "queue.Queue" = queue.Queue()
-    _chat._reader(_FakeProc(lines), q)
+    explainer.CLAUDE.reader(_FakeProc(lines), q)
     events = _drain(q)
     assert events[0] == {"type": "status", "stage": "thinking"}
     assert events[-1]["type"] == "done" and events[-1]["ok"] is False
@@ -224,8 +218,173 @@ def test_reader_thinking_and_error_result() -> None:
 # -- busy slot -------------------------------------------------------------
 
 
+# -- the endpoint follows the DECLARATION, not the provider's name ---------
+
+
+_STREAM = [
+    json.dumps({"type": "system", "subtype": "init"}),
+    json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_delta",
+        "delta": {"type": "text_delta", "text": "hi"}}}),
+    json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                "num_turns": 1, "usage": {"output_tokens": 2}}),
+]
+
+
+class _FakePopen:
+    """Enough of Popen for the SSE generator; records the argv."""
+
+    def __init__(self, argv, **_kw) -> None:
+        self.argv = list(argv)
+        self.stdout = io.StringIO("\n".join(_STREAM) + "\n")
+        self.stderr = io.StringIO("")
+
+    def wait(self, timeout=None) -> int:  # noqa: ARG002
+        return 0
+
+    def poll(self) -> int:
+        return 0
+
+    def kill(self) -> None:
+        pass
+
+
+@pytest.fixture
+def spawned(monkeypatch: pytest.MonkeyPatch) -> "list[_FakePopen]":
+    """No real CLI, but the REAL availability gate: only the executable
+    lookup is stubbed, so every test below still crosses it."""
+    seen: "list[_FakePopen]" = []
+
+    def _popen(argv, **kw):
+        p = _FakePopen(argv, **kw)
+        seen.append(p)
+        return p
+
+    monkeypatch.setattr(_chat.subprocess, "Popen", _popen)
+    monkeypatch.setattr(explainer.CLAUDE, "executable",
+                        lambda: "C:/claude.exe")
+    monkeypatch.setattr(explainer.ANTIGRAVITY, "executable",
+                        lambda: "C:/agy.exe")
+    return seen
+
+
+def _ask(client: TestClient, text: str = "hi") -> None:
+    with client.stream("POST", "/api/chat", json={"message": text}) as r:
+        assert r.status_code == 200
+        for _ in r.iter_lines():
+            pass
+
+
+def test_second_question_resumes_when_the_declaration_says_it_can(
+    workspace: Path, spawned: "list[_FakePopen]",
+) -> None:
+    """Baseline for the flip below: claude declares
+    RESUME_CALLER_SESSION_ID, so question 1 pins an id and question 2
+    replays it."""
+    app = create_app(workspace)
+    c = TestClient(app)
+    _ask(c)
+    assert app.state.chat.session_id is not None
+    assert "--session-id" in spawned[0].argv
+    _ask(c, "and why?")
+    assert "--resume" in spawned[1].argv
+    assert c.get("/api/chat/state").json()["has_session"] is True
+
+
+def test_no_resume_flag_and_no_session_when_the_declaration_says_none(
+    workspace: Path, spawned: "list[_FakePopen]",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SAME provider name, SAME backend, one field flipped: with
+    `session_resume = none` the explainer must stop pretending to have a
+    conversation. No resume flag ever reaches the CLI, the endpoint
+    never claims a session, and the drawer is told
+    `conversation_memory: false` — otherwise the user asks "and why is
+    that?" into a blank context and reads the answer as continuous."""
+    monkeypatch.setitem(
+        caps.CAPABILITIES, "claude",
+        caps.ProviderCapabilities(
+            name="claude", rc_contract=caps.RC_STRUCTURED,
+            stream_events=True, enforcement_strength=caps.ENFORCEMENT_HARD,
+            allow_honoured_actions=caps.ALLOW_HONOURED_ALL,
+            session_resume=caps.RESUME_NONE))
+    app = create_app(workspace)
+    c = TestClient(app)
+    assert c.get("/api/chat/state").json()["conversation_memory"] is False
+    _ask(c)
+    _ask(c, "and why?")
+    for p in spawned:
+        assert "--resume" not in p.argv
+        assert "--session-id" not in p.argv
+    assert app.state.chat.session_id is None
+    assert c.get("/api/chat/state").json()["has_session"] is False
+
+
+def test_page_context_is_resent_when_there_is_no_memory(
+    workspace: Path, spawned: "list[_FakePopen]",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The degradation has to be WIRED, not only announced: with no
+    session to carry it, the page context must ride every prompt.
+    (With memory it is sent once and the session keeps it.)"""
+    def _prompt(p: "_FakePopen") -> str:
+        return p.argv[p.argv.index("-p") + 1]
+
+    app = create_app(workspace)
+    c = TestClient(app)
+    _ask(c)
+    _ask(c, "again")
+    assert _chat._CONTEXT_HEADER not in _prompt(spawned[1])
+
+    monkeypatch.setitem(
+        caps.CAPABILITIES, "claude",
+        caps.ProviderCapabilities(
+            name="claude", rc_contract=caps.RC_STRUCTURED,
+            stream_events=True, enforcement_strength=caps.ENFORCEMENT_HARD,
+            allow_honoured_actions=caps.ALLOW_HONOURED_ALL,
+            session_resume=caps.RESUME_NONE))
+    spawned.clear()
+    c2 = TestClient(create_app(workspace))
+    _ask(c2)
+    _ask(c2, "again")
+    assert _chat._CONTEXT_HEADER in _prompt(spawned[1])
+
+
+# -- the availability gate names the SEAT, never `claude` ------------------
+
+
+def test_availability_gate_is_not_hardwired_to_claude(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A machine that installed only agy must not be told to install
+    Claude Code — and a machine seated on agy WITHOUT agy must be told
+    about agy. The 503 names the seat; the word `claude` appears in it
+    only as one of the backends that could be chosen instead."""
+    monkeypatch.setenv("ASTERISM_EXPLAINER_PROVIDER", "antigravity")
+    monkeypatch.setattr(explainer.ANTIGRAVITY, "executable", lambda: None)
+    r = _client(workspace).post("/api/chat", json={"message": "hi"})
+    assert r.status_code == 503
+    detail = r.json()["detail"]
+    assert "antigravity" in detail
+    assert "Claude Code is not installed" not in detail
+    assert "explainer.provider" in detail
+
+
+def test_the_gate_passes_on_agy_with_no_claude_installed(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch,
+    spawned: "list[_FakePopen]",
+) -> None:
+    """The point of the whole change, as a test: claude absent, agy
+    present, the button works — and the spawn is agy's."""
+    monkeypatch.setenv("ASTERISM_EXPLAINER_PROVIDER", "agy")
+    monkeypatch.setattr(explainer.CLAUDE, "executable", lambda: None)
+    _ask(TestClient(create_app(workspace)))
+    assert spawned and spawned[0].argv[0] == "C:/agy.exe"
+
+
 def test_chat_busy_returns_409(workspace: Path, monkeypatch) -> None:
-    monkeypatch.setattr(_chat.shutil, "which", lambda _: "claude")
+    monkeypatch.setattr(explainer.CLAUDE, "executable",
+                        lambda: "C:/claude.exe")
     app = create_app(workspace)
     c = TestClient(app)
     state = app.state.chat

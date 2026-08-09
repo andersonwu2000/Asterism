@@ -144,24 +144,19 @@ def datetime_now_compact() -> str:
 
 
 def claude_exe() -> "str | None":
-    """Resolve the claude CLI. PATH first; then its known install
-    homes — the official installer's PATH edit lands in NEW sessions
-    (and on a fresh Windows it can miss entirely), so a serve started
+    """Resolve the claude CLI. PATH first; then its known install homes
+    — the official installer's PATH edit lands in NEW sessions (and on a
+    fresh Windows it can miss entirely), so a serve started
     before/during the install would otherwise report 'not installed'
-    about a CLI that is sitting right there."""
-    import os
-    import shutil
-    p = shutil.which("claude")
-    if p:
-        return p
-    candidates = [Path.home() / ".local" / "bin" / "claude.exe"]
-    if os.environ.get("APPDATA"):
-        candidates.append(
-            Path(os.environ["APPDATA"]) / "npm" / "claude.cmd")
-    for c in candidates:
-        if c.exists():
-            return str(c)
-    return None
+    about a CLI that is sitting right there.
+
+    The knowledge itself now lives with the provider
+    (`llm/claude_cli.resolve_claude_executable`, beside
+    `resolve_agy_executable`); this stays as the name the accounts panel
+    and the login flow already call. Kept module-level so tests can
+    monkeypatch it."""
+    from ..llm.claude_cli import resolve_claude_executable
+    return resolve_claude_executable()
 
 
 def spawn_claude_login() -> None:
@@ -280,6 +275,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         run that fails at its first spawn.
         """
         from ..llm.antigravity_cli import resolve_agy_executable
+        from ..llm import capabilities as _caps
         from ..core import config as _cfg
         roles: list[dict] = []
         for role in ("strategist", "adversary", "formalizer", "presearch",
@@ -291,7 +287,10 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                                 default="claude", workspace=workspace)
             except Exception:  # noqa: BLE001 — display garnish only
                 continue
-            if str(prov) == "antigravity":
+            # `agy` is a legal spelling of the same seat (llm.get_provider
+            # accepts it); comparing the raw string missed it and dropped
+            # the role off the panel.
+            if _caps.canonical(prov) == "antigravity":
                 try:
                     model = _cfg.get(f"{role}.model",
                                      env_var=f"ASTERISM_{role.upper()}_MODEL",

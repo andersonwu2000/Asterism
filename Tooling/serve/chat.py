@@ -2,17 +2,29 @@
 
 One endpoint pair: POST /api/chat streams an answer over SSE; POST
 /api/chat/clear forgets the conversation. The answerer is a headless
-`claude` spawn with a READ-ONLY tool surface (Read/Grep/Glob scoped to
-the workspace + WebFetch pinned to the public notes site) — it explains
-progress, code and framework mechanics; it can never act. That is a
-soundness boundary, same tier as "sign-off cannot be machine-signed"
-(design SoT: docs/internal/chat_explainer_design.md).
+spawn with a READ-ONLY tool surface — it explains progress, code and
+framework mechanics; it can never act. That is a soundness boundary,
+same tier as "sign-off cannot be machine-signed" (design SoT:
+docs/internal/chat_explainer_design.md).
 
-Conversation continuity rides claude CLI session persistence: the
-first message mints a session id (--session-id), later messages
---resume it. One question at a time (single slot, non-blocking lock →
-409 busy). The browser owns display history; the CLI session owns
-model context; /api/chat/clear drops both ends together.
+WHICH backend answers is a seat like any other: `explainer.provider` →
+`ASTERISM_EXPLAINER_PROVIDER` → `ASTERISM_LLM_PROVIDER` → claude, the
+chain every pipeline resolves through. This module knows none of the
+dialects; `llm/explainer.py` owns them, and owns the two places where a
+backend gives the reader LESS than claude does (conversation memory,
+read fence). Both are published on /api/chat/state so the drawer can
+say so — an explainer that quietly answers every question from a blank
+context, or quietly reads outside the workspace, would be the same
+hardwired-to-claude assumption wearing a registry.
+
+Conversation continuity rides whatever the seated provider declares
+(`capabilities.session_resume`): claude replays a caller-minted session
+id, agy replays the conversation id it minted itself, and a provider
+that resumes nothing gets no resume flag and reports
+`conversation_memory: false`. One question at a time (single slot,
+non-blocking lock → 409 busy). The browser owns display history; the
+provider's session owns model context; /api/chat/clear drops both ends
+together.
 
 Page awareness: the client freezes {page kind, name} at send time and
 the context block is built from that frozen value — the QPaper lesson
@@ -30,29 +42,21 @@ from __future__ import annotations
 import json
 import os
 import queue
-import shutil
 import sqlite3
 import subprocess
 import threading
-import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ..llm import explainer
 from ..state import db
 
 _MAX_MESSAGE = 8_000        # chars — a question, not an upload
 _MAX_CONTEXT = 6_000        # chars — prebuilt page context budget
 _TIMEOUT_SEC = int(os.environ.get("ASTERISM_EXPLAINER_TIMEOUT", "300"))
-_MODELS = ("haiku", "sonnet", "opus")   # CLI aliases, cheapest first
-
-# The public notes site doubles as the mechanism knowledge base for
-# zip installs (no docs/ in the package; user call 2026-07-18: fetch
-# live, don't bundle).
-_NOTES_DOMAIN = os.environ.get(
-    "ASTERISM_EXPLAINER_NOTES_DOMAIN", "andersonwu2000.github.io")
 
 _SYSTEM_PROMPT = """You are the explainer inside Asterism's console — \
 a proving framework where LLM agents build machine-checked Lean proofs \
@@ -231,101 +235,15 @@ def _page_context(workspace: Path, page: "dict | None") -> "tuple[str, str]":
 
 
 # ---------------------------------------------------------------------------
-# spawn plumbing
-
-
-def _allowed_tools(workspace: Path) -> str:
-    ws = workspace.as_posix()
-    patterns = [
-        f"Read({ws}/Problems/**)", f"Grep({ws}/Problems/**)",
-        f"Read({ws}/Library/**/*.lean)", f"Grep({ws}/Library/**)",
-        f"Read({ws}/Papers/**/*.md)", f"Grep({ws}/Papers/**)",
-        # dev machines carry design docs in-repo; absent in zip installs
-        f"Read({ws}/docs/**/*.md)", f"Grep({ws}/docs/**)",
-        f"Glob({ws}/**)",
-        f"WebFetch(domain:{_NOTES_DOMAIN})",
-    ]
-    return " ".join(patterns)
-
-
-def _chat_cmd(workspace: Path, *, prompt: str, model: str,
-              session_id: str, resume: bool) -> "list[str]":
-    from ..llm.claude_cli import (_operator_state_deny_rules,
-                                  _spawn_guard_settings_path)
-    session_flags = (["--resume", session_id] if resume
-                     else ["--session-id", session_id])
-    return [
-        "claude",
-        "--model", model,
-        "-p", prompt,
-        "--append-system-prompt", _SYSTEM_PROMPT,
-        # read-only surface: no Write/Edit/Bash in the tool set at all;
-        # deny rules below are belt-over-braces for operator state
-        "--tools", "Read Grep Glob WebFetch",
-        "--allowed-tools", _allowed_tools(workspace),
-        "--disallowedTools",
-        "Read(**/.env)", "Read(**/.env.*)",
-        *_operator_state_deny_rules(),
-        "--settings", str(_spawn_guard_settings_path()),
-        # no turn cap flag in this CLI — the endpoint's wall timeout is
-        # the runaway stop
-        "--output-format", "stream-json", "--verbose",
-        "--include-partial-messages",
-        "--setting-sources", "",
-        "--disable-slash-commands",
-        "--exclude-dynamic-system-prompt-sections",
-        *session_flags,
-    ]
-
-
-def _reader(proc: subprocess.Popen, out: "queue.Queue[dict | None]") -> None:
-    """stdout JSONL → UI events. Runs on its own thread; the SSE
-    generator drains the queue. None = stream ended."""
-    try:
-        assert proc.stdout is not None
-        for raw in proc.stdout:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                obj = json.loads(raw)
-            except ValueError:
-                continue
-            t = obj.get("type")
-            if t == "system" and obj.get("subtype") == "init":
-                out.put({"type": "status", "stage": "thinking"})
-            elif t == "stream_event":
-                ev = obj.get("event") or {}
-                et = ev.get("type")
-                if et == "content_block_start":
-                    cb = ev.get("content_block") or {}
-                    if cb.get("type") == "tool_use":
-                        out.put({"type": "status", "stage": "reading",
-                                 "tool": str(cb.get("name") or "")})
-                    elif cb.get("type") == "thinking":
-                        out.put({"type": "status", "stage": "thinking"})
-                elif et == "content_block_delta":
-                    d = ev.get("delta") or {}
-                    if d.get("type") == "text_delta":
-                        txt = d.get("text")
-                        if isinstance(txt, str) and txt:
-                            out.put({"type": "delta", "text": txt})
-            elif t == "result":
-                usage = obj.get("usage") or {}
-                out.put({
-                    "type": "done",
-                    "ok": not bool(obj.get("is_error")),
-                    "subtype": str(obj.get("subtype") or ""),
-                    "turns": obj.get("num_turns"),
-                    "output_tokens": usage.get("output_tokens"),
-                })
-    finally:
-        out.put(None)
+# spawn plumbing (dialects live in llm/explainer.py)
 
 
 class _ChatState:
     def __init__(self) -> None:
         self.lock = threading.Lock()      # ONE question at a time
+        #: the seated provider's resume handle for the live conversation
+        #: — a caller-minted uuid, a provider-minted conversation id, or
+        #: None forever on a backend that resumes nothing
         self.session_id: "str | None" = None
         self.page_key: "str | None" = None
 
@@ -333,34 +251,56 @@ class _ChatState:
 class ChatBody(BaseModel):
     message: str
     page: "dict | None" = None   # {kind: board|problem|library|engine|papers, name?}
-    model: "str | None" = None   # haiku | sonnet | opus
+    model: "str | None" = None   # one of /api/chat/state's `models`
 
 
 def register(app: FastAPI, workspace: Path) -> None:
     state = _ChatState()
     app.state.chat = state  # tests reach the slot lock through here
 
-    def _default_model() -> str:
+    def _default_model(backend) -> str:
+        """`explainer.model` when set, else the SEATED backend's own
+        default. A stored claude alias would be an invalid slug on
+        another provider, so the fallback must move with the seat."""
         from ..core import config
-        v = str(config.get("explainer.model",
-                           env_var="ASTERISM_EXPLAINER_MODEL",
-                           default="sonnet"))
-        return v if v in _MODELS else v  # full model ids pass through
+        return str(config.get("explainer.model",
+                              env_var="ASTERISM_EXPLAINER_MODEL",
+                              default=backend.default_model,
+                              workspace=workspace))
 
     @app.get("/api/chat/state")
     def chat_state() -> dict:
+        """What the drawer must know BEFORE the user types.
+
+        `conversation_memory` and `read_scope` are the two ways a
+        backend can be honestly worse than claude here (llm/explainer.py
+        has the ruling). They ride this endpoint rather than an answer's
+        events because both are properties of the seat, and a caveat
+        that arrives after the question has been asked is a caveat that
+        arrived too late.
+        """
+        name = explainer.provider(workspace)
+        backend = explainer.backend_for(name)
+        ok, detail = explainer.availability(name)
         return {
             "busy": state.lock.locked(),
             "has_session": state.session_id is not None,
-            "model_default": _default_model(),
-            "models": list(_MODELS),
+            "provider": name,
+            "available": ok,
+            "unavailable_detail": detail,
+            "conversation_memory": explainer.remembers(name),
+            "read_scope": explainer.read_scope(name),
+            "read_note": explainer.scope_note(name),
+            "model_default": _default_model(backend) if backend else "",
+            "models": list(backend.models) if backend else [],
         }
 
     @app.post("/api/chat/clear")
     def chat_clear() -> dict:
-        """Forget the conversation — both ends. The CLI session is
-        simply abandoned (sessions are files under the user's Claude
-        state; unreferenced ones age out with the CLI's own hygiene)."""
+        """Forget the conversation — both ends. The provider's session
+        is simply abandoned (claude keeps sessions as files under the
+        user's state and ages unreferenced ones out; agy's conversation
+        id is dropped and never replayed)."""
         if state.lock.locked():
             raise HTTPException(status_code=409, detail="busy")
         state.session_id = None
@@ -374,12 +314,13 @@ def register(app: FastAPI, workspace: Path) -> None:
             raise HTTPException(status_code=400, detail="empty message")
         if len(message) > _MAX_MESSAGE:
             raise HTTPException(status_code=413, detail="message too long")
-        model = (body.model or "").strip() or _default_model()
-        if not shutil.which("claude"):
-            raise HTTPException(
-                status_code=503,
-                detail="Claude Code is not installed — the explainer"
-                       " needs it (same login the engine uses)")
+        provider = explainer.provider(workspace)
+        ok, detail = explainer.availability(provider)
+        if not ok:
+            raise HTTPException(status_code=503, detail=detail)
+        backend = explainer.backend_for(provider)
+        assert backend is not None  # availability() just proved it
+        model = (body.model or "").strip() or _default_model(backend)
         if not state.lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="busy")
 
@@ -390,40 +331,52 @@ def register(app: FastAPI, workspace: Path) -> None:
         try:
             page_key, context = _page_context(workspace, body.page)
             context = context[:_MAX_CONTEXT]
-            resume = state.session_id is not None
-            sid = state.session_id or str(uuid.uuid4())
+            # THE DEGRADATION, wired: on a provider that resumes nothing
+            # `turn.resume` is False for every question, so the page
+            # context below is re-sent every time instead of being left
+            # to a session memory that does not exist.
+            turn = explainer.plan_turn(provider, state.session_id)
             parts: "list[str]" = []
-            if not resume or page_key != state.page_key:
+            if not turn.resume or page_key != state.page_key:
                 parts.append(_CONTEXT_HEADER + context + "\n")
             parts.append(message)
             prompt = "\n".join(parts)
-
-            env = dict(os.environ)
-            env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
         except BaseException:
             state.lock.release()
             raise
 
-        def _spawn(with_resume: bool) -> subprocess.Popen:
+        def _spawn(t: explainer.Turn) -> subprocess.Popen:
             from ..core.process_group import no_window_creationflags
+            argv, env = backend.launch(
+                workspace=workspace, system=_SYSTEM_PROMPT, prompt=prompt,
+                model=model, turn=t, timeout_sec=_TIMEOUT_SEC)
             return subprocess.Popen(
-                _chat_cmd(workspace, prompt=prompt, model=model,
-                          session_id=sid, resume=with_resume),
-                env=env, cwd=str(workspace),
+                argv, env=env, cwd=str(workspace),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace",
                 creationflags=no_window_creationflags(),
             )
 
         async def gen():
-            nonlocal sid, resume
+            nonlocal turn
             import asyncio
             proc: "subprocess.Popen | None" = None
             try:
                 yield _sse({"type": "status", "stage": "context"})
-                proc = _spawn(resume)
+                try:
+                    proc = _spawn(turn)
+                except OSError as exc:
+                    # Launching is more than exec on some backends: agy's
+                    # capability envelope is a directory this call writes.
+                    # A failure there must name itself, not surface as a
+                    # truncated stream (the drawer would roll the question
+                    # back with "the stream ended before an answer").
+                    yield _sse({"type": "error",
+                                "detail": f"could not start the {provider} "
+                                          f"explainer: {exc}"})
+                    return
                 q: "queue.Queue[dict | None]" = queue.Queue()
-                threading.Thread(target=_reader, args=(proc, q),
+                threading.Thread(target=backend.reader, args=(proc, q),
                                  daemon=True, name="chat-reader").start()
                 got_any = False
                 deadline = asyncio.get_running_loop().time() + _TIMEOUT_SEC
@@ -439,34 +392,40 @@ def register(app: FastAPI, workspace: Path) -> None:
                     if item is None:
                         rc = proc.wait()
                         if rc != 0 and not got_any:
-                            # a dead --resume (aborted turn, swept
-                            # session) gets ONE clean fresh-session
-                            # retry before surfacing the error
+                            # a dead resume handle (aborted turn, swept
+                            # session, a conversation id the CLI no
+                            # longer knows) gets ONE clean cold retry
+                            # before surfacing the error
                             err = ""
                             if proc.stderr is not None:
                                 err = (proc.stderr.read() or "")[-400:]
-                            if resume:
-                                resume = False
-                                sid = str(uuid.uuid4())
+                            if turn.resume:
+                                turn = explainer.plan_turn(provider, None)
                                 state.session_id = None
                                 yield _sse({"type": "status",
                                             "stage": "retry"})
-                                proc = _spawn(False)
+                                proc = _spawn(turn)
                                 q2: "queue.Queue[dict | None]" = \
                                     queue.Queue()
                                 threading.Thread(
-                                    target=_reader, args=(proc, q2),
+                                    target=backend.reader, args=(proc, q2),
                                     daemon=True,
                                     name="chat-reader-2").start()
                                 q = q2
                                 continue
                             yield _sse({"type": "error",
-                                        "detail": f"claude exited rc={rc}"
-                                                  f" {err}".strip()})
+                                        "detail": f"{provider} exited "
+                                                  f"rc={rc} {err}".strip()})
                         break
                     got_any = got_any or item.get("type") == "delta"
                     if item.get("type") == "done":
-                        state.session_id = sid
+                        # The handle to replay next time: the one we
+                        # minted (claude), the one the provider minted
+                        # and reported (agy), or None — a backend that
+                        # resumes nothing must never look resumed.
+                        state.session_id = (
+                            (item.get("handle") or turn.handle)
+                            if explainer.remembers(provider) else None)
                         state.page_key = page_key
                     yield _sse(item)
                     if item.get("type") == "done":

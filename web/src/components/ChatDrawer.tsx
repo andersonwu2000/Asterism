@@ -30,6 +30,15 @@ interface ChatState {
   has_session: boolean
   model_default: string
   models: string[]
+  /* which backend answers, and the two ways one can be honestly worse
+   * than another (engine SoT: Tooling/llm/explainer.py). Optional so an
+   * older serve still renders. */
+  provider?: string
+  conversation_memory?: boolean
+  read_scope?: 'workspace' | 'process'
+  read_note?: string
+  available?: boolean
+  unavailable_detail?: string
 }
 
 type Page = { kind: string; name?: string }
@@ -177,7 +186,13 @@ export default function ChatDrawer({
     apiGet<ChatState>('/api/chat/state')
       .then((s) => {
         setMeta(s)
-        if (!s.has_session && loadTranscript().length > 0) setEngineForgot(true)
+        // a model stored while another provider was seated is not a
+        // choice here — claude aliases and agy slugs share no
+        // vocabulary, and sending one to the other is a hard error
+        setModelState((m) => (m && !(s.models ?? []).includes(m) ? null : m))
+        // "the engine forgot" is only news where the engine remembers
+        if (s.conversation_memory !== false && !s.has_session && loadTranscript().length > 0)
+          setEngineForgot(true)
       })
       .catch(() => undefined)
   }, [])
@@ -367,6 +382,17 @@ export default function ChatDrawer({
 
   const page = useMemo(() => pageFromRoute(route.segments), [route.segments])
 
+  // What this backend can and cannot promise. Both notes are exceptions
+  // — they appear only when the seated provider is weaker than the
+  // fenced, remembering one, so the settled case earns no ink.
+  const noMemory = meta ? meta.conversation_memory === false : false
+  const unfencedReads = meta?.read_scope === 'process'
+  // say it before the question is typed, not after it is thrown away
+  const unavailable: string | null =
+    meta?.available === false
+      ? meta.unavailable_detail || 'the explainer has no usable backend on this machine'
+      : null
+
   // closed = hidden, not unmounted — the transcript survives the
   // close/open cycle (and a stream keeps writing into it)
   return (
@@ -393,7 +419,12 @@ export default function ChatDrawer({
         <span className="text-[13px] font-medium text-ink">ask</span>
         <span
           className="truncate text-[11px] text-ink-faint"
-          title="questions are answered about this page; it can read the whole workspace — read-only, it explains, it never acts"
+          // the backend states its own reach — a fixed sentence here
+          // described claude's fence on every provider
+          title={
+            meta?.read_note ??
+            'questions are answered about this page; read-only, it explains, it never acts'
+          }
         >
           about {pageLabel(page)}
         </span>
@@ -451,6 +482,7 @@ export default function ChatDrawer({
               ask about progress, a lemma, or how the machine works. it reads the workspace and
               answers with sources; it never acts.
             </p>
+            {noMemory && <p>this backend keeps no conversation — each question is read fresh.</p>}
             <div className="space-y-1.5">
               {SUGGESTIONS.map((s) => (
                 <button
@@ -493,12 +525,23 @@ export default function ChatDrawer({
                 </div>
               ),
             )}
-            {engineForgot && (
+            {/* one fact, one place: on a backend with no memory EVERY
+                question is read fresh, which subsumes "the engine
+                forgot this one conversation" */}
+            {noMemory ? (
               <div className="mt-4 flex items-center gap-2 text-[10px] text-ink-faint">
                 <span className="h-px flex-1 bg-edge" />
-                restored on this tab — the engine reads your next question fresh
+                this backend keeps no conversation — each question is read fresh
                 <span className="h-px flex-1 bg-edge" />
               </div>
+            ) : (
+              engineForgot && (
+                <div className="mt-4 flex items-center gap-2 text-[10px] text-ink-faint">
+                  <span className="h-px flex-1 bg-edge" />
+                  restored on this tab — the engine reads your next question fresh
+                  <span className="h-px flex-1 bg-edge" />
+                </div>
+              )
             )}
           </div>
         )}
@@ -506,6 +549,16 @@ export default function ChatDrawer({
 
       {/* composer — one pill, send lives inside it (QPaper shape) */}
       <div className="border-t border-edge px-3 py-2.5">
+        {/* a standing condition, not an error: this backend's reads are
+            bounded by your computer account, not by the workspace. it
+            stays visible because it is true of every question asked
+            here (engine: Tooling/llm/explainer.py read_scope) */}
+        {unfencedReads && (
+          <div className="mb-1.5 text-[11px] text-ink-faint italic">
+            this backend cannot be scoped — it can read any file your computer account can read.
+          </div>
+        )}
+        {unavailable && <div className="mb-1.5 text-[11px] text-warn">{unavailable}</div>}
         {note && <div className="mb-1.5 text-[11px] text-warn">{note}</div>}
         <div className="flex items-end gap-1.5 rounded-2xl border border-edge bg-bg px-1.5 py-1 transition-colors focus-within:border-ink-faint">
           <textarea
@@ -542,7 +595,7 @@ export default function ChatDrawer({
             <button
               className="mb-0.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-bg transition-colors enabled:bg-ink enabled:hover:bg-ink-dim disabled:cursor-default disabled:bg-surface-3 disabled:text-ink-faint"
               onClick={() => void send(input)}
-              disabled={input.trim() === ''}
+              disabled={input.trim() === '' || unavailable !== null}
               title="send (Enter)"
               aria-label="send"
             >
