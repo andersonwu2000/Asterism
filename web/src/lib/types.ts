@@ -563,3 +563,12 @@ export interface Meta {
   /** the console's Lean-layer self-check (can break long after install) */
   lean_ready: { lake: boolean; mathlib: boolean }
 }
+
+/** GET /api/shutdown/preview — what "quit Asterism" would stop, measured
+ * now. The gateway entry is the one a reader could not have guessed: it
+ * is built to outlive the engine, so nothing ever ends it. */
+export interface ShutdownPreview {
+  daemon: { running: boolean; scope: string | null; in_flight: number }
+  gateway: { phase: string | null }
+  console: { pid: number }
+}

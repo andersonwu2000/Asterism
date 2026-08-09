@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { isStopped } from './shutdown'
 
 /*
  * API client + polling hook. All engine communication is plain HTTP to
@@ -109,6 +110,9 @@ export function usePoll<T>(
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
     const run = async () => {
+      // the server was quit on purpose — stop, and do not dress a
+      // deliberate shutdown as a failed update
+      if (isStopped()) return
       try {
         const d = await apiGet<T>(path)
         if (cancelled) return
@@ -116,10 +120,10 @@ export function usePoll<T>(
         setStale(false)
         setError(null)
       } catch (e) {
-        if (cancelled) return
+        if (cancelled || isStopped()) return
         setError(e as Error)
       } finally {
-        if (!cancelled) {
+        if (!cancelled && !isStopped()) {
           setLoading(false)
           timer = setTimeout(run, intervalMs)
         }

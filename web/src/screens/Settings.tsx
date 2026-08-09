@@ -1,11 +1,14 @@
 import { useState } from 'react'
-import { usePoll } from '../lib/api'
+import { apiPost, usePoll } from '../lib/api'
 import { logout, switchAccount } from '../lib/claudeAuth'
 import { currentTheme, setTheme } from '../lib/theme'
 import type { Theme } from '../lib/theme'
+import { Button } from '../components/ui'
 import { QuotaMeter } from './Run'
 import { scopedRows } from '../lib/quota'
 import type { Meta, RunStatus } from '../lib/types'
+import type { ShutdownPreview } from '../lib/types'
+import { markStopped } from '../lib/shutdown'
 
 /*
  * Settings — everything that is NOT the engine's: the accounts it
@@ -225,6 +228,98 @@ function Appearance() {
   )
 }
 
+/** Quit the whole installation. Three processes, and the reader would
+ * only ever guess at the third: the Lean gateway is spawned to OUTLIVE
+ * the engine (warming Mathlib costs minutes, so a daemon restart must
+ * not pay for it again) and nothing in the product ever ends it —
+ * closing the browser leaves it resident. So the card NAMES what is
+ * running before it offers to stop it. */
+function ShutDown() {
+  const { data } = usePoll<ShutdownPreview>('/api/shutdown/preview', 5000)
+  const [armed, setArmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  if (!data) return null
+  const engine = data.daemon.running
+  const gw = data.gateway.phase !== null
+  const running = [
+    engine
+      ? `the engine${data.daemon.scope ? ` on ${data.daemon.scope}` : ''}` +
+        (data.daemon.in_flight ? ` — ${data.daemon.in_flight} agent${data.daemon.in_flight === 1 ? '' : 's'} in flight` : '')
+      : null,
+    gw ? `the Lean gateway (${data.gateway.phase})` : null,
+    'this console',
+  ].filter(Boolean) as string[]
+
+  const quit = async (force: boolean) => {
+    setBusy(true)
+    setErr(null)
+    try {
+      await apiPost('/api/shutdown', { force })
+      // the server is going; tell the app before its polls start failing
+      markStopped()
+    } catch (e) {
+      setErr(String((e as Error).message))
+      setArmed(false)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Row>
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-xs text-ink">Shut down</span>
+          <span className="text-[11px] text-ink-faint">
+            stops everything and frees the port
+          </span>
+          <span className="ml-auto">
+            {!armed ? (
+              <Button variant="outline" size="xs" onClick={() => setArmed(true)}>
+                Quit Asterism
+              </Button>
+            ) : (
+              /* two-step, in place: the second click NAMES what happens,
+                 and it is a different sentence when a run is live */
+              <span className="flex items-center gap-2">
+                <Button
+                  variant={engine ? 'danger' : 'primary'}
+                  size="xs"
+                  disabled={busy}
+                  onClick={() => void quit(engine)}
+                >
+                  {busy
+                    ? 'Stopping…'
+                    : engine
+                      ? `Confirm — abandon ${data.daemon.in_flight || 'the'} in-flight agent${data.daemon.in_flight === 1 ? '' : 's'}`
+                      : 'Confirm — stop everything'}
+                </Button>
+                <button
+                  className="cursor-pointer text-[11px] text-ink-faint hover:text-ink"
+                  onClick={() => setArmed(false)}
+                >
+                  cancel
+                </button>
+              </span>
+            )}
+          </span>
+        </div>
+        <div className="text-[11px] text-ink-faint">
+          running now: {running.join(' · ')}
+        </div>
+        {engine && armed && (
+          <div className="text-[11px] text-warn">
+            The engine drains when you stop a run from the Engine page; quitting
+            here does not wait for it. Stop the run first to lose nothing.
+          </div>
+        )}
+        {err && <div className="text-[11px] text-danger">{err}</div>}
+      </div>
+    </Row>
+  )
+}
+
 export default function Settings() {
   const { data: meta, refresh } = usePoll<Meta>('/api/meta', 5000)
   return (
@@ -239,6 +334,7 @@ export default function Settings() {
         {meta && <AntigravityAccount meta={meta} />}
         <Allowance />
         <Appearance />
+        <ShutDown />
       </div>
     </div>
   )

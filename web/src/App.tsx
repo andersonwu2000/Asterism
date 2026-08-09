@@ -14,6 +14,7 @@ import Engine from './screens/Engine'
 import type { EngineTab } from './screens/Engine'
 import ChatDrawer from './components/ChatDrawer'
 import type { Meta } from './lib/types'
+import { isStopped, onStopped } from './lib/shutdown'
 
 /** The explainer's door — the one utility slot at the sidebar's foot
  * (owner, 2026-07-18: chat entry outranks the old engine-status chip;
@@ -460,7 +461,32 @@ function Shell() {
   )
 }
 
+/** After the console quits itself, the page outlives its server. It
+ * says so plainly instead of decaying into failed polls — and names the
+ * way back, because the launcher is how this starts again. */
+function Farewell() {
+  return (
+    <div className="flex h-screen flex-col items-center justify-center gap-3 bg-bg text-center">
+      <svg width="30" height="30" viewBox="0 0 20 20" className="text-ink-faint" aria-hidden>
+        <path d="M4 14.5L10.5 5l5 6.5" stroke="currentColor" strokeWidth="0.8" opacity="0.4" fill="none" />
+        <circle cx="4" cy="14.5" r="1.5" fill="currentColor" opacity="0.35" />
+        <circle cx="10.5" cy="5" r="1.9" fill="currentColor" opacity="0.35" />
+        <circle cx="15.5" cy="11.5" r="1.2" fill="currentColor" opacity="0.35" />
+      </svg>
+      <div className="font-display text-[19px] text-ink-dim">Asterism has stopped</div>
+      <div className="max-w-sm text-xs leading-relaxed text-ink-faint">
+        The engine, the Lean gateway and this console are all closed, and the port is
+        free. Your work is on disk — start Asterism again whenever you like.
+      </div>
+      <div className="mt-1 text-[11px] text-ink-faint/70">You can close this tab.</div>
+    </div>
+  )
+}
+
 export default function App() {
+  const [gone, setGone] = useState(isStopped())
+  useEffect(() => onStopped(() => setGone(true)), [])
+  if (gone) return <Farewell />
   return (
     <RouterProvider>
       <Shell />

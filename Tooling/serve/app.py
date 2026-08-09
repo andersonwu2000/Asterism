@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import re
 import sqlite3
 import threading
@@ -129,6 +130,14 @@ class DaemonStartBody(BaseModel):
 
 
 class DaemonStopBody(BaseModel):
+    force: bool = False
+
+
+class ShutdownBody(BaseModel):
+    """`force` carries the SAME meaning it has for the daemon: abandon
+    in-flight agents instead of draining them. Shutdown refuses while
+    the engine is live without it, rather than deciding on the user's
+    behalf that their run is expendable."""
     force: bool = False
 
 
@@ -1173,6 +1182,82 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         if code != 0:
             raise HTTPException(status_code=500, detail=msg)
         return {"message": msg}
+
+    @app.get("/api/shutdown/preview")
+    def shutdown_preview() -> dict:
+        """What "quit Asterism" would actually stop, measured now.
+
+        Three processes, and the third is the surprise: the Lean gateway
+        is spawned with CREATE_BREAKAWAY_FROM_JOB and has no atexit kill
+        because it must OUTLIVE daemon restarts (warming Mathlib costs
+        minutes — `lsp/lifecycle.py`). Nothing in the product ever ends
+        it, so closing the browser leaves it resident holding its
+        toolchain. That is the gap this endpoint exists for; the page
+        must be able to name it before it acts.
+        """
+        from ..core.cli import daemon_status
+        d = daemon_status(workspace)
+        return {
+            "daemon": {"running": bool(d.get("running")),
+                       "scope": d.get("scope"),
+                       "in_flight": int(d.get("in_flight_leases") or 0)},
+            "gateway": {"phase": d.get("gateway")},
+            "console": {"pid": os.getpid()},
+        }
+
+    @app.post("/api/shutdown")
+    def shutdown(body: ShutdownBody) -> dict:
+        """Stop everything, in the order that keeps the answer readable.
+
+        The engine first (it is the thing with work in flight), the
+        gateway next (it outlives the engine by design), and this
+        process LAST — a console that killed itself first could not
+        report what happened to the other two.
+
+        Draining is the daemon's own graceful stop and can take as long
+        as a spawn (minutes), so this does not wait on it: a live engine
+        is a 409 telling the reader to stop the run first, exactly like
+        `daemon_stop`'s own contract. Only `force` abandons work.
+        """
+        import threading
+        from ..core.cli import daemon_status, daemon_stop
+        stopped: "list[str]" = []
+        d = daemon_status(workspace)
+        if d.get("running"):
+            if not body.force:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(f"the engine is still running"
+                            f"{' on ' + str(d.get('scope')) if d.get('scope') else ''}"
+                            f" with {int(d.get('in_flight_leases') or 0)} agent(s)"
+                            f" in flight — stop the run first, or force"))
+            code, msg = daemon_stop(workspace, force=True)
+            if code != 0:
+                raise HTTPException(status_code=500, detail=msg)
+            stopped.append("engine")
+
+        # The gateway answers /health on its own port; its pid comes from
+        # there, and the existing helper waits for the port to actually
+        # free rather than trusting one missed ping.
+        try:
+            from ..lsp import lifecycle as _gw
+            h = _gw._ping_health(timeout=1.0)
+            if h and h.get("pid"):
+                _gw._kill_stale_gateway(h["pid"])
+                stopped.append("Lean gateway")
+        except Exception as e:  # noqa: BLE001 — never block the exit
+            print(f"[shutdown] gateway stop: {e}", flush=True)
+
+        stopped.append("console")
+
+        def _bye() -> None:
+            # after the response has flushed: this is the process the
+            # caller is talking to, so it cannot exit inside the handler
+            time.sleep(0.4)
+            os._exit(0)
+
+        threading.Thread(target=_bye, daemon=True).start()
+        return {"stopped": stopped}
 
     # -- SSE log tail -----------------------------------------------------
 

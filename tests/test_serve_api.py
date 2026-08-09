@@ -1721,3 +1721,61 @@ def test_lean_session_ws_busy_and_warming(workspace: Path,
                       "parts": [{"id": "p", "code": "#check 1"}]})
         r = ws.receive_json()
         assert r["type"] == "warming" and r["seq"] == 8
+
+
+# ---------------------------------------------------------------------
+# POST /api/shutdown — quit the whole installation
+# ---------------------------------------------------------------------
+#
+# Three processes, and the third is the one a reader could not guess:
+# the Lean gateway is spawned to OUTLIVE the engine (warming Mathlib
+# costs minutes) and nothing in the product ever ends it. The laws worth
+# pinning are about CONSENT, not about the killing: a live run is not
+# something this button gets to decide is expendable.
+
+def test_shutdown_refuses_while_the_engine_is_running(
+        tmp_path: Path, monkeypatch) -> None:
+    import Tooling.core.cli as _cli
+    monkeypatch.setattr(_cli, "daemon_status", lambda ws: {
+        "running": True, "pid": 111, "scope": "Cmp.a", "in_flight_leases": 3})
+    r = TestClient(create_app(tmp_path)).post("/api/shutdown", json={})
+    assert r.status_code == 409
+    # the refusal has to say what it is protecting, or it is just a wall
+    detail = r.json()["detail"]
+    assert "Cmp.a" in detail and "3 agent" in detail
+
+
+def test_shutdown_preview_names_all_three(tmp_path: Path, monkeypatch) -> None:
+    import Tooling.core.cli as _cli
+    monkeypatch.setattr(_cli, "daemon_status", lambda ws: {
+        "running": True, "pid": 111, "scope": "Cmp.a",
+        "in_flight_leases": 2, "gateway": "ready"})
+    d = TestClient(create_app(tmp_path)).get("/api/shutdown/preview").json()
+    assert d["daemon"] == {"running": True, "scope": "Cmp.a", "in_flight": 2}
+    assert d["gateway"]["phase"] == "ready"
+    assert d["console"]["pid"] > 0
+
+
+def test_shutdown_with_force_stops_the_engine_first(
+        tmp_path: Path, monkeypatch) -> None:
+    """Order is the contract: the engine, then the gateway that outlives
+    it, then this process — a console that killed itself first could not
+    report what happened to the other two."""
+    import Tooling.core.cli as _cli
+    import Tooling.serve.app as _app
+    calls: "list[str]" = []
+    monkeypatch.setattr(_cli, "daemon_status", lambda ws: {
+        "running": True, "pid": 111, "scope": "Cmp.a", "in_flight_leases": 1})
+    monkeypatch.setattr(_cli, "daemon_stop",
+                        lambda ws, force=False: (calls.append(
+                            f"daemon(force={force})"), (0, "stopped"))[1])
+    monkeypatch.setattr(_app.os, "_exit", lambda code: calls.append("exit"))
+    from Tooling.lsp import lifecycle as _gw
+    monkeypatch.setattr(_gw, "_ping_health", lambda timeout=1.0: {"pid": 222})
+    monkeypatch.setattr(_gw, "_kill_stale_gateway",
+                        lambda pid: calls.append(f"gateway({pid})"))
+    r = TestClient(create_app(tmp_path)).post("/api/shutdown",
+                                              json={"force": True})
+    assert r.status_code == 200
+    assert r.json()["stopped"] == ["engine", "Lean gateway", "console"]
+    assert calls[:2] == ["daemon(force=True)", "gateway(222)"]
