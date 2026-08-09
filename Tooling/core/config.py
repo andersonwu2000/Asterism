@@ -60,6 +60,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "dispatch.classify_trap_per_decl_sec": "classify trap budget per kept decl (12)",
     "gateway.port": "LSP gateway HTTP port (ASTERISM_GATEWAY_PORT; 8765)",
     "gateway.interactive_slots": "reserved gateway slots for the serve UI editor (ASTERISM_INTERACTIVE_SLOTS; 1)",
+    "gateway.lean_memory_cap_mb": "per-process commit cap on the lake/lean tree via Job Object, 0 disables (ASTERISM_LEAN_MEMORY_CAP_MB; 8192)",
     "strategist.interval_min": "T1 routine wake cadence (ASTERISM_STRATEGIST_INTERVAL_MIN; 120.0)",
     "strategist.verify_retry": "strategist verify/Adversary revision rounds per wake (ASTERISM_STRATEGIST_VERIFY_RETRY; 6)",
     "strategist.timeout_sec": "strategist wake spawn cap — hang guard, not a work budget (ASTERISM_STRATEGIST_TIMEOUT_SEC; 10800)",

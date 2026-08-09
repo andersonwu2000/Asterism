@@ -34,6 +34,12 @@ def test_provider_infra_set_pinned():
         # 07-30: agy provider — bad model slug / refused credentials /
         # a tool denied for want of a permissions.allow rule.
         "provider_misconfigured",
+        # 08-08: OS/runtime terminated the spawn (NTSTATUS rc / Bun
+        # crash banner) — the machine failed, not the mathematics.
+        "system_killed",
+        # 08-08: an rc nobody has classified yet. Unknown ⇒ not charged
+        # to the goal; repetition escalates to the operator.
+        "unclassified_spawn_failure",
     }
 
 
@@ -60,10 +66,14 @@ def test_non_agent_set_pinned():
         "agent_shelved", "goal_not_found", "lean_file_missing",
         "missing_parent_stub", "parent_stub_not_decomposable",
         "goal_no_longer_open", "unknown_kind", "no_nl_correspondence",
-        "problem_not_found",
+        "problem_not_found", "system_killed",
+        "unclassified_spawn_failure",
         # A provider config error teaches the agent nothing — the fix is
         # an operator edit to the CLI's permission/model settings.
         "provider_misconfigured",
+        # v38 (08-08): worker thread died by a non-infra exception; the
+        # forensic row pairs cascade_one's attempts++ (goal-7486 class).
+        "worker_exception",
     }
 
 
@@ -71,6 +81,7 @@ def test_target_cooldown_set_pinned():
     assert failures.TARGET_COOLDOWN_REASONS == {
         "spawn_fast_fail", "missing_dep", "gateway_unreachable",
         "transient_timeout", "strategist_proposal_rejected",
+        "system_killed", "unclassified_spawn_failure",
         # #125: ghost queue rows (no loadable Manifest) must not be
         # re-dispatched in a tight T4-pumped loop.
         "problem_not_found",
@@ -80,6 +91,7 @@ def test_target_cooldown_set_pinned():
 def test_death_note_set_pinned():
     assert failures.DEATH_NOTE_REASONS == {
         "spawn_fast_fail", "quota_exhausted", "missing_dep",
+        "system_killed",
     }
 
 

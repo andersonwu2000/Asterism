@@ -622,6 +622,13 @@ def test_dispatch_consumer_blocks_ingest_signoff(tmp_path: Path, monkeypatch):
             outcome="success", failure_reason="", failure_detail=""))
     manifests = {"p": SimpleNamespace(library=True, axioms_whitelist=[])}
 
+    # v38 — _run_pipeline finalizes the dispatch-time row; seed it as
+    # the dispatcher's pop loop would.
+    c = orig_connect(dbfile)
+    db.record_pipeline_start(c, pipeline_id="pid-signoff-t",
+                             kind="Librarian", target_id="p",
+                             target_kind="Problem")
+    c.close()
     out = dispatcher._run_pipeline(
         tmp_path, manifests, "Librarian", "p", "Problem", "pid-signoff-t")
     assert out[4] == "success"          # clean no-op, not a failure
@@ -632,6 +639,9 @@ def test_dispatch_consumer_blocks_ingest_signoff(tmp_path: Path, monkeypatch):
     db.set_ingest_signoff_pending(c, "p", False)
     # give it one derivable unit so work_kind is not None
     _candidate(c, "s1", "p")
+    db.record_pipeline_start(c, pipeline_id="pid-signoff-t2",
+                             kind="Librarian", target_id="p",
+                             target_kind="Problem")
     c.close()
     out = dispatcher._run_pipeline(
         tmp_path, manifests, "Librarian", "p", "Problem", "pid-signoff-t2")
@@ -802,10 +812,12 @@ def test_advance_chain_stall_surfaces_failure_detail(tmp_path: Path, capsys):
     conn = _mem()
     tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
     pid = "pl-stall-1"
-    db.record_pipeline(                       # FK: dead_attempts → pipelines(id)
+    # FK: dead_attempts → pipelines(id) — start then finalize (v38).
+    db.record_pipeline_start(
         conn, pipeline_id=pid, kind="Librarian", target_id="p",
-        target_kind="Problem", status="failed", outcome="failed",
-        started_at=db.now())
+        target_kind="Problem")
+    db.finish_pipeline(conn, pipeline_id=pid, status="failed",
+                       outcome="failed")
     db.record_dead_attempt(
         conn, target_id=0, target_kind="Problem", pipeline_id=pid,
         failure_reason="schema_violation",

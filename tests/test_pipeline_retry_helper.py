@@ -3,8 +3,10 @@
 Exercises the helper's public contract independently of Builder /
 Backward integration. Each test stubs `spawn_fn`, `parse_fn`,
 `postmortem_fn` so no claude / lake invocation happens; the helper's
-DB writes are limited to `goals.attempts` (incremented by
-dispatcher's flush, NOT by the helper itself in Phase 7-C.1).
+DB writes are the EAGER per-retry failure records (v38): one
+dead_attempts row + one goals.attempts++ per failed retry, written
+in-loop against the dispatch-time pipelines row (`_seed_pipeline_row`
+plays the dispatcher's `record_pipeline_start`).
 
 Invariants exercised:
   * dynamic budget = budget_threshold - goal.attempts (decision 1)
@@ -12,12 +14,14 @@ Invariants exercised:
   * stale_session on warm → in-place cold re-mint, no budget consumed
   * timeout → postmortem called once on the killed sid, then exhaust
   * spawn_fast_fail / quota_exhausted / missing_dep → early bail with
-    no buffered failure for that iter (prior iters still attached)
+    no failure record for that iter (prior iters' rows persist)
   * terminal decline reasons (agent_declined / agent_infeasible /
-    goal_no_longer_open) exit without buffering
-  * pending_failures is always attached to the returned PipelineResult
+    goal_no_longer_open) exit without recording the terminal iter
+  * every failed retry leaves attempts == dead_attempts (eager 1:1),
+    including when the loop later dies by an unhandled exception —
+    the goal-7486 (2026-08-08) drift class
   * moot detection (budget≤0 entry, mid-loop goal_still_active=False)
-    returns outcome='moot' with empty pending_failures (mid-loop)
+    returns outcome='moot'; the moot iteration itself records nothing
 """
 from __future__ import annotations
 
@@ -60,17 +64,20 @@ def _seed_goal(conn: sqlite3.Connection, *, attempts: int = 0,
 
 def _seed_pipeline_row(conn: sqlite3.Connection, pipeline_id: str,
                        gid: int) -> None:
-    """Pre-INSERT a pipelines row so dead_attempts FK is satisfiable.
-    Mirrors what `dispatcher._run_pipeline` does before flushing the
-    helper's pending_failures (the helper itself does no INSERTs)."""
-    conn.execute(
-        "INSERT INTO pipelines (id, kind, target_id, target_kind, "
-        "status, outcome, started_at, finished_at) VALUES "
-        "(?, ?, ?, ?, ?, ?, ?, ?)",
-        (pipeline_id, "Builder", str(gid), "Goal",
-         "failed", "failed", db.now(), db.now()),
-    )
-    conn.commit()
+    """Play the dispatcher's dispatch-time INSERT (v38
+    `db.record_pipeline_start`): the row exists status='running' for the
+    whole pipeline lifetime, which is what lets the helper write its
+    dead_attempts rows eagerly (FK target present mid-loop)."""
+    db.record_pipeline_start(conn, pipeline_id=pipeline_id,
+                             kind="Formalizer", target_id=str(gid),
+                             target_kind="Goal")
+
+
+def _dead_rows(conn: sqlite3.Connection, pipeline_id: str) -> list:
+    """The helper's eagerly-written forensic rows for one pipeline."""
+    return list(conn.execute(
+        "SELECT * FROM dead_attempts WHERE pipeline_id = ? ORDER BY id",
+        (pipeline_id,)))
 
 
 def _make_postmortem_recorder() -> tuple[list[str], callable]:
@@ -154,7 +161,7 @@ def test_budget_zero_at_entry_returns_moot(conn: sqlite3.Connection,
         spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
     )
     assert r.outcome == "moot"
-    assert r.pending_failures == []
+    assert _dead_rows(conn, "pid-budget0") == []
     assert seen == []  # no spawn
     assert parse_count[0] == 0
 
@@ -232,7 +239,7 @@ def test_inject_dispatch_still_moots_on_terminal_status(
     assert seen == []
 
 
-def test_first_iter_proved_returns_proved_with_empty_pending(
+def test_first_iter_proved_records_no_failure(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
     gid = _seed_goal(conn, attempts=0)
@@ -247,7 +254,7 @@ def test_first_iter_proved_returns_proved_with_empty_pending(
         spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
     )
     assert r.outcome == "proved"
-    assert r.pending_failures == []
+    assert _dead_rows(conn, "pid-proved") == []
     assert len(seen) == 1
     assert seen[0].cold is True
     assert seen[0].retry_context is None
@@ -255,10 +262,11 @@ def test_first_iter_proved_returns_proved_with_empty_pending(
 
 def test_first_iter_fails_second_iter_proved(conn: sqlite3.Connection,
                                               tmp_path: Path) -> None:
-    """iter 0 lake_build_error (buffered), iter 1 proved (terminal).
-    Final pending_failures has the 1 prior failure; iter 0 was cold,
-    iter 1 was warm with retry_context = iter 0's detail."""
+    """iter 0 lake_build_error (recorded eagerly), iter 1 proved
+    (terminal). One dead_attempts row for the prior failure; iter 0 was
+    cold, iter 1 was warm with retry_context = iter 0's detail."""
     gid = _seed_goal(conn, attempts=0)
+    _seed_pipeline_row(conn, "pid-mix", gid)
     seen, spawn_fn = _spawn_returning([0, 0])
     _, parse_fn = _parse_returning([
         PipelineResult(outcome="failed", failure_reason="lake_build_error",
@@ -274,8 +282,9 @@ def test_first_iter_fails_second_iter_proved(conn: sqlite3.Connection,
         spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
     )
     assert r.outcome == "proved"
-    assert len(r.pending_failures) == 1
-    assert r.pending_failures[0]["reason"] == "lake_build_error"
+    rows = _dead_rows(conn, "pid-mix")
+    assert len(rows) == 1
+    assert rows[0]["failure_reason"] == "lake_build_error"
     assert seen[0].cold is True and seen[0].retry_context is None
     assert seen[1].cold is False
     assert seen[1].retry_context == "error: foo"
@@ -286,8 +295,9 @@ def test_first_iter_fails_second_iter_proved(conn: sqlite3.Connection,
 def test_all_iters_fail_returns_exhausted(conn: sqlite3.Connection,
                                            tmp_path: Path) -> None:
     """3 retries, all fail with lake_build_error → exhausted with last
-    failure as failure_reason and 3 pending_failures buffered."""
+    failure as failure_reason and 3 dead_attempts rows written eagerly."""
     gid = _seed_goal(conn, attempts=0)
+    _seed_pipeline_row(conn, "pid-exh", gid)
     seen, spawn_fn = _spawn_returning([0, 0, 0])
     fail = lambda detail: PipelineResult(
         outcome="failed", failure_reason="lake_build_error",
@@ -304,8 +314,10 @@ def test_all_iters_fail_returns_exhausted(conn: sqlite3.Connection,
     assert r.outcome == "exhausted"
     assert r.failure_reason == "lake_build_error"
     assert r.failure_detail == "e3"
-    assert len(r.pending_failures) == 3
-    assert [pf["detail"] for pf in r.pending_failures] == ["e1", "e2", "e3"]
+    rows = _dead_rows(conn, "pid-exh")
+    assert [row["failure_detail"] for row in rows] == ["e1", "e2", "e3"]
+    # Eager 1:1 — attempts marched with the rows.
+    assert db.get_goal(conn, gid)["attempts"] == 3
 
 
 # ---------------------------------------------------------------------
@@ -319,10 +331,11 @@ def test_all_iters_fail_returns_exhausted(conn: sqlite3.Connection,
 def test_terminal_decline_reasons_exit_without_buffering(
     conn: sqlite3.Connection, tmp_path: Path, reason: str,
 ) -> None:
-    """Terminal decline at iter 1: prior iter 0 buffered, iter 1
-    returns terminal without being buffered (1:1 governs only at
+    """Terminal decline at iter 1: prior iter 0 recorded, iter 1
+    returns terminal without being recorded (1:1 governs only at
     cascade level for declines)."""
     gid = _seed_goal(conn, attempts=0)
+    _seed_pipeline_row(conn, "pid-decline", gid)
     seen, spawn_fn = _spawn_returning([0, 0])
     _, parse_fn = _parse_returning([
         PipelineResult(outcome="failed", failure_reason="lake_build_error",
@@ -340,9 +353,10 @@ def test_terminal_decline_reasons_exit_without_buffering(
     )
     assert r.outcome == "failed"
     assert r.failure_reason == reason
-    # Only the prior iter is buffered; the terminal iter itself is not.
-    assert len(r.pending_failures) == 1
-    assert r.pending_failures[0]["reason"] == "lake_build_error"
+    # Only the prior iter is recorded; the terminal iter itself is not.
+    rows = _dead_rows(conn, "pid-decline")
+    assert len(rows) == 1
+    assert rows[0]["failure_reason"] == "lake_build_error"
 
 
 # ---------------------------------------------------------------------
@@ -358,6 +372,7 @@ def test_timeout_no_salvage_calls_postmortem_then_returns_exhausted(
     pre-`b6ece82` behavior for genuinely timed-out spawns with no
     usable output."""
     gid = _seed_goal(conn, attempts=0)
+    _seed_pipeline_row(conn, "pid-timeout", gid)
     seen, spawn_fn = _spawn_returning([SpawnRC.TIMEOUT])
     # Parse returns a non-terminal failure → salvage skipped, postmortem
     # path engages.
@@ -378,8 +393,9 @@ def test_timeout_no_salvage_calls_postmortem_then_returns_exhausted(
     assert r.failure_reason == "agent_timeout"
     assert len(pm_log) == 1
     assert pm_log[0] == seen[0].sid  # postmortem on the killed session
-    assert len(r.pending_failures) == 1
-    assert r.pending_failures[0]["reason"] == "agent_timeout"
+    rows = _dead_rows(conn, "pid-timeout")
+    assert len(rows) == 1
+    assert rows[0]["failure_reason"] == "agent_timeout"
 
 
 def test_timeout_salvages_when_parse_returns_success(
@@ -406,8 +422,8 @@ def test_timeout_salvages_when_parse_returns_success(
     assert r.outcome == "proved"
     # Postmortem must NOT run when salvage succeeds.
     assert pm_log == []
-    # No buffered failure for the timeout itself — salvage replaces it.
-    assert r.pending_failures == []
+    # No failure record for the timeout itself — salvage replaces it.
+    assert _dead_rows(conn, "pid-timeout-salvage") == []
 
 
 def test_timeout_no_salvage_folds_parse_reason_into_detail(
@@ -420,6 +436,7 @@ def test_timeout_no_salvage_folds_parse_reason_into_detail(
     the parse outcome is folded into failure_detail so forensics can
     distinguish "agent wrote nothing" vs "agent wrote a broken patch"."""
     gid = _seed_goal(conn, attempts=0)
+    _seed_pipeline_row(conn, "pid-timeout-fold", gid)
     _, spawn_fn = _spawn_returning([SpawnRC.TIMEOUT])
     _, parse_fn = _parse_returning([
         PipelineResult(outcome="failed",
@@ -455,6 +472,7 @@ def test_timeout_detail_is_main_spawn_stderr_not_postmortem(
     actually ran the full 900s. Observed in SG run #6 g266 retry
     pipeline 0187e8d1 (dead_attempt 128)."""
     gid = _seed_goal(conn, attempts=0)
+    _seed_pipeline_row(conn, "pid-stderr-overwrite", gid)
     _, spawn_fn = _spawn_returning([SpawnRC.TIMEOUT])
     # Salvage parse returns non-terminal failure → falls through to
     # postmortem path (the one with the bug).
@@ -502,6 +520,7 @@ def test_timeout_no_salvage_records_parse_exception_in_detail(
     the exception type+message lands in failure_detail so forensics
     can see it. Reason stays agent_timeout, postmortem still runs."""
     gid = _seed_goal(conn, attempts=0)
+    _seed_pipeline_row(conn, "pid-timeout-raise", gid)
     _, spawn_fn = _spawn_returning([SpawnRC.TIMEOUT])
 
     def raising_parse() -> PipelineResult:
@@ -556,6 +575,7 @@ def test_stale_session_on_warm_remints_in_place_no_budget_consumed(
     extra slot. Verify the spawn_fn was called 3 times total: cold,
     warm-stale, in-place-cold."""
     gid = _seed_goal(conn, attempts=0)
+    _seed_pipeline_row(conn, "pid-stale", gid)
     seen, spawn_fn = _spawn_returning([0, SpawnRC.STALE_SESSION, 0])
     _, parse_fn = _parse_returning([
         PipelineResult(outcome="failed", failure_reason="lake_build_error",
@@ -578,9 +598,9 @@ def test_stale_session_on_warm_remints_in_place_no_budget_consumed(
     assert seen[2].cold is True   # in-place re-mint
     # Re-mint changed the sid for the third call.
     assert seen[2].sid != seen[1].sid
-    # Only iter 0's failure is buffered; the stale-then-success iter
+    # Only iter 0's failure is recorded; the stale-then-success iter
     # doesn't add another row.
-    assert len(r.pending_failures) == 1
+    assert len(_dead_rows(conn, "pid-stale")) == 1
 
 
 @pytest.mark.parametrize("rc, reason", [
@@ -591,9 +611,10 @@ def test_provider_infra_rc_returns_failed_without_consuming_budget(
     conn: sqlite3.Connection, tmp_path: Path, rc: int, reason: str,
 ) -> None:
     """rc=126 / 127 → return outcome='failed' with that reason. Prior-
-    iteration pending_failures still attach; this iteration's failure
-    is NOT buffered (no agent budget burn)."""
+    iteration failures are already in DB (eager); this iteration's
+    infra death is NOT recorded (no agent budget burn)."""
     gid = _seed_goal(conn, attempts=0)
+    _seed_pipeline_row(conn, "pid-infra", gid)
     seen, spawn_fn = _spawn_returning([0, rc])
     _, parse_fn = _parse_returning([
         PipelineResult(outcome="failed", failure_reason="lake_build_error",
@@ -609,9 +630,10 @@ def test_provider_infra_rc_returns_failed_without_consuming_budget(
     )
     assert r.outcome == "failed"
     assert r.failure_reason == reason
-    # Prior iter's failure attached, current iter's infra rc dropped.
-    assert len(r.pending_failures) == 1
-    assert r.pending_failures[0]["reason"] == "lake_build_error"
+    # Prior iter's failure recorded, current iter's infra rc dropped.
+    rows = _dead_rows(conn, "pid-infra")
+    assert len(rows) == 1
+    assert rows[0]["failure_reason"] == "lake_build_error"
 
 
 # ---------------------------------------------------------------------
@@ -621,12 +643,14 @@ def test_provider_infra_rc_returns_failed_without_consuming_budget(
 def test_mid_loop_goal_proved_externally_returns_moot(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """iter 0 fails (buffered). Before iter 1's spawn, the goal status
-    flips to 'proved' (sibling won the OR race). cascade re-check
-    triggers, helper returns 'moot' with the prior pending_failures
-    still attached. Dispatcher's flush will skip them on moot
-    (decision 2)."""
+    """iter 0 fails (recorded eagerly). Before iter 1's spawn, the goal
+    status flips to 'proved' (sibling won the OR race). cascade
+    re-check triggers, helper returns 'moot'. The prior iteration's
+    forensic row PERSISTS (v38 — it was a real LLM call and its
+    attempts++ was always kept); decision 2's "moot writes nothing"
+    applies to the moot detection itself."""
     gid = _seed_goal(conn, attempts=0)
+    _seed_pipeline_row(conn, "pid-midmoot", gid)
     seen: list[SpawnCtx] = []
     parse_calls = [0]
 
@@ -654,10 +678,12 @@ def test_mid_loop_goal_proved_externally_returns_moot(
         spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
     )
     assert r.outcome == "moot"
-    # Helper still attaches prior buffered failures (decision 2's flush
-    # skip is enforced by dispatcher, not the helper).
-    assert len(r.pending_failures) == 1
-    assert r.pending_failures[0]["reason"] == "lake_build_error"
+    # Prior iteration's eager record persists; the moot itself added
+    # nothing — attempts and rows stay 1:1.
+    rows = _dead_rows(conn, "pid-midmoot")
+    assert len(rows) == 1
+    assert rows[0]["failure_reason"] == "lake_build_error"
+    assert db.get_goal(conn, gid)["attempts"] == 1
     # Only iter 0's spawn ran.
     assert len(seen) == 1
 
@@ -684,25 +710,20 @@ def test_goal_not_found_returns_failed(conn: sqlite3.Connection,
 
 
 # ---------------------------------------------------------------------
-# 1:1 attempts ↔ dead_attempts invariant when dispatcher flushes
+# 1:1 attempts ↔ dead_attempts invariant (eager, v38)
 # ---------------------------------------------------------------------
 
-def test_dispatcher_flush_preserves_1to1_invariant(conn: sqlite3.Connection,
-                                                    tmp_path: Path) -> None:
-    """Helper now increments attempts EAGERLY for live operator
-    visibility (TREE.md mid-pipeline refresh). Dispatcher's flush only
-    INSERTs the buffered dead_attempts rows; it does NOT re-increment.
-    Verify final goal.attempts equals dead_attempts row count — the
-    1:1 invariant holds in the non-crash path (decision 5/6, with
-    eager attempts++ landing in-helper instead of at flush time).
+def test_eager_recording_preserves_1to1_invariant(conn: sqlite3.Connection,
+                                                  tmp_path: Path) -> None:
+    """v38 — the helper writes each failed retry's dead_attempts row
+    IN-LOOP, immediately paired with the attempts++ (no dispatcher
+    flush step exists any more). Verify final goal.attempts equals the
+    dead_attempts row count with no post-processing at all.
     """
-    import json as _json
     gid = _seed_goal(conn, attempts=0)
     pid = "pid-1to1"
     _seed_pipeline_row(conn, pid, gid)
 
-    # Helper run produces 3 buffered failures (and eagerly increments
-    # goal.attempts to 3 inside the loop).
     seen, spawn_fn = _spawn_returning([0, 0, 0])
     fail = lambda d: PipelineResult(outcome="failed",
                                     failure_reason="lake_build_error",
@@ -717,25 +738,75 @@ def test_dispatcher_flush_preserves_1to1_invariant(conn: sqlite3.Connection,
         spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
     )
     assert r.outcome == "exhausted"
-    assert db.get_goal(conn, gid)["attempts"] == 3  # eager from helper
-
-    # Dispatcher flush emulation: only INSERT dead_attempts rows; do
-    # NOT re-increment (helper already did).
-    for pf in r.pending_failures:
-        db.record_dead_attempt(
-            conn, target_id=gid, target_kind="Goal",
-            pipeline_id=pid, failure_reason=pf["reason"],
-            failure_detail=pf["detail"],
-            artifacts=_json.dumps(pf["artifacts"]) if pf["artifacts"] else "",
-        )
-
-    # 1:1 invariant in non-crash path
     final_attempts = db.get_goal(conn, gid)["attempts"]
     da_count = conn.execute(
         "SELECT COUNT(*) AS n FROM dead_attempts WHERE target_id=?",
         (gid,),
     ).fetchone()["n"]
     assert final_attempts == da_count == 3
+
+
+def test_unhandled_exception_mid_retry_keeps_attempts_and_rows_1to1(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """THE goal-7486 scenario (2026-08-08): iter 0 fails (attempts++ +
+    row), then iter 1's spawn raises an unhandled exception — the
+    worker thread dies, `PipelineResult` never returns. Pre-v38 the
+    buffered forensic rows died with the stack frame while the eager
+    increments stayed banked (goal 7486: attempts=10 vs 7 rows, three
+    pipelines with no trace at all). With eager recording the DB is
+    already consistent at the moment of death, and startup recovery
+    finalizes the orphaned 'running' pipelines row."""
+    gid = _seed_goal(conn, attempts=0)
+    pid = "pid-worker-dies"
+    _seed_pipeline_row(conn, pid, gid)
+
+    calls = [0]
+
+    def spawn_fn(ctx: SpawnCtx) -> int:
+        calls[0] += 1
+        if calls[0] == 2:
+            # e.g. a gateway HTTP 500 escaping the loop
+            raise OSError("gateway HTTP 500")
+        return 0
+
+    _, parse_fn = _parse_returning([
+        PipelineResult(outcome="failed", failure_reason="lake_build_error",
+                       failure_detail="iter0 err"),
+    ])
+    _, pm_fn = _make_postmortem_recorder()
+
+    with pytest.raises(OSError):
+        run_with_session_retries(
+            conn=conn, goal_id=gid, pipeline_id=pid,
+            budget_threshold=3, shelve_threshold=8,
+            attempts_dir=tmp_path,
+            spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
+        )
+
+    # The invariant holds at the moment of death: every banked
+    # increment has its forensic row.
+    attempts = db.get_goal(conn, gid)["attempts"]
+    rows = _dead_rows(conn, pid)
+    assert attempts == len(rows) == 1
+    assert rows[0]["failure_reason"] == "lake_build_error"
+
+    # The dispatch-time pipelines row is still 'running' (worker died
+    # before finalize) — exactly what startup recovery resolves.
+    st = conn.execute("SELECT status, outcome FROM pipelines WHERE id=?",
+                      (pid,)).fetchone()
+    assert st["status"] == "running" and st["outcome"] is None
+
+    from Tooling.state import recovery
+    recovery.recover_at_startup(conn, workspace=None)
+    st = conn.execute(
+        "SELECT status, outcome, finished_at FROM pipelines WHERE id=?",
+        (pid,)).fetchone()
+    assert st["status"] == "failed"
+    assert st["outcome"] == "daemon_crashed"
+    assert st["finished_at"] is not None
+    # Recovery adds no forensic rows and no increments — 1:1 untouched.
+    assert db.get_goal(conn, gid)["attempts"] == len(_dead_rows(conn, pid))
 
 
 # ---------------------------------------------------------------------
@@ -776,7 +847,7 @@ def test_retry_loop_bails_when_shutdown_requested_at_entry(
     assert r.outcome == "failed"
     assert r.failure_reason == "daemon_shutdown"
     assert seen == []  # spawn never invoked
-    assert r.pending_failures == []  # no dead_attempt for teardown
+    assert _dead_rows(conn, "pid-sd-entry") == []  # teardown ≠ failure
 
 
 def test_retry_loop_bails_when_shutdown_requested_mid_loop(
@@ -788,6 +859,7 @@ def test_retry_loop_bails_when_shutdown_requested_mid_loop(
     iter 1's spawn is never invoked."""
     from Tooling.llm import claude_cli
     gid = _seed_goal(conn, attempts=0)
+    _seed_pipeline_row(conn, "pid-sd-mid", gid)
     # spawn_fn for iter 0 returns 0 (success rc); iter 1 spawn must NOT
     # be invoked, so the rcs list has only one entry.
     def spawn_iter(_ctx: SpawnCtx) -> int:
@@ -809,9 +881,10 @@ def test_retry_loop_bails_when_shutdown_requested_mid_loop(
     )
     assert r.outcome == "failed"
     assert r.failure_reason == "daemon_shutdown"
-    # iter 0's failure is preserved
-    assert len(r.pending_failures) == 1
-    assert r.pending_failures[0]["reason"] == "lake_build_error"
+    # iter 0's failure is preserved (recorded eagerly)
+    rows = _dead_rows(conn, "pid-sd-mid")
+    assert len(rows) == 1
+    assert rows[0]["failure_reason"] == "lake_build_error"
     assert parse_count[0] == 1  # parse ran once, iter-1 never reached spawn
 
 
@@ -820,7 +893,7 @@ def test_retry_loop_handles_SpawnRC_SHUTDOWN(
 ) -> None:
     """spawn_fn returns SpawnRC.SHUTDOWN (the rc spawn_llm short-
     circuits with when shutdown is already requested). Retry loop
-    treats as terminal-no-retry, no dead_attempt buffered."""
+    treats as terminal-no-retry, no dead_attempt recorded."""
     gid = _seed_goal(conn, attempts=0)
     seen, spawn_fn = _spawn_returning([int(SpawnRC.SHUTDOWN)])
     parse_count, parse_fn = _parse_returning([])
@@ -836,7 +909,7 @@ def test_retry_loop_handles_SpawnRC_SHUTDOWN(
     assert r.failure_reason == "daemon_shutdown"
     assert len(seen) == 1  # one spawn happened, returned SHUTDOWN
     assert parse_count[0] == 0  # parse never invoked
-    assert r.pending_failures == []
+    assert _dead_rows(conn, "pid-sd-rc") == []
 
 
 # ---------------------------------------------------------------------
@@ -894,6 +967,7 @@ def test_initial_sid_warm_retry_is_plain_retry(
     iteration is a plain warm retry on the SAME sid (is_retry framing:
     cold=False, continuation=False)."""
     gid = _seed_goal(conn)
+    _seed_pipeline_row(conn, "pid-cont-retry", gid)
     seen, spawn_fn = _spawn_returning([0, 0])
     _, parse_fn = _parse_returning([
         PipelineResult(outcome="failed", failure_reason="lake_build_error",

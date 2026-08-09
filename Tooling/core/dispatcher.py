@@ -210,6 +210,18 @@ def _classify_worker_exception(exc: BaseException) -> str:
     import errno
     import urllib.error
 
+    # Memory exhaustion — the machine, not the mathematics (2026-08-08:
+    # a runaway lean worker ate the pagefile; ten WinError 1455s then
+    # fell through this classifier's "" default and burned ten attempts
+    # across five goals with no dead_attempts row — the same shape
+    # SG#14 fixed for transport errors). 1455=ERROR_COMMITMENT_LIMIT,
+    # 8=ERROR_NOT_ENOUGH_MEMORY.
+    if isinstance(exc, MemoryError):
+        return "system_killed"
+    if isinstance(exc, OSError) and (
+            getattr(exc, "winerror", None) in (1455, 8)
+            or exc.errno == errno.ENOMEM):
+        return "system_killed"
     if isinstance(exc, urllib.error.URLError):
         return "gateway_unreachable"
     if isinstance(exc, OSError):
@@ -810,11 +822,15 @@ def _warn_consecutive_strategist(conn: sqlite3.Connection, problem: str,
         if inflight is not None:
             return
         row = conn.execute(
+            # v38: exclude in-flight rows — this probe runs INSIDE the
+            # Strategist worker, whose own dispatch-time 'running' row
+            # would otherwise always be the newest match.
             "SELECT p.kind, p.id FROM pipelines p"
             " LEFT JOIN goals g ON p.target_kind = 'Goal'"
             "   AND g.id = CAST(p.target_id AS INTEGER)"
-            " WHERE (p.target_kind = 'Problem' AND p.target_id = ?)"
-            "    OR (p.target_kind = 'Goal' AND g.problem = ?)"
+            " WHERE p.status != 'running'"
+            "   AND ((p.target_kind = 'Problem' AND p.target_id = ?)"
+            "    OR (p.target_kind = 'Goal' AND g.problem = ?))"
             " ORDER BY p.started_at DESC LIMIT 1",
             (problem, problem)).fetchone()
         if row is not None and str(row["kind"]) == "Strategist":
@@ -1005,6 +1021,14 @@ class FutureMeta:
     queue_row_id: int
 CONSEC_SPAWN_FAIL_LIMIT = 10
 CONSEC_GATEWAY_UNREACHABLE_LIMIT = 8
+# Consecutive unclassified spawn deaths before the daemon stops and asks
+# for a human (2026-08-08). Lower than the fast-fail limit on purpose:
+# a fast-fail has a KNOWN shape and a known remedy (cooldown, or a quota
+# wait), whereas "we do not know why this died" repeating is evidence of
+# a fault nobody has diagnosed yet — grinding on it produces noise, not
+# proofs, and the evidence rows are already in dead_attempts for
+# whoever reads the log.
+CONSEC_UNCLASSIFIED_LIMIT = 5
 QUOTA_BACKOFF_BASE_SEC = 30.0
 QUOTA_BACKOFF_CAP_SEC = 600.0
 
@@ -1047,6 +1071,15 @@ class SchedulerState:
     # Independent gateway_unreachable breaker (run #17: 48 strategies piled
     # up busy-looping against a dead gateway before this existed).
     consec_gateway_unreachable: int = 0
+    # Consecutive `unclassified_spawn_failure` (2026-08-08). Unknown
+    # causes no longer burn goal attempts, so nothing else would ever
+    # stop a goal dying the same unexplained way forever. Escalation
+    # goes to the OPERATOR, not the Strategist: a framework fault is
+    # not something the Strategist can act on, and handing it one only
+    # gets the fault rewritten as mathematics in the Programme. The
+    # "machine never self-stops" promise is about hard PROBLEMS; broken
+    # machinery is exactly when stopping loudly is correct.
+    consec_unclassified: int = 0
     # DB write-through — see class docstring.
     librarian_fail_counts: "dict[str, int]" = field(default_factory=dict)
     # Lazy verify cache: problem → Defs/Root built clean (False =
@@ -1114,8 +1147,10 @@ def _run_pipeline(workspace: Path,
     target_kind, outcome).
 
     Side effects:
-      - INSERT one finished pipeline row (succeeded/failed)
+      - UPDATE the dispatch-time pipelines row (INSERTed 'running' by the
+        pop loop via db.record_pipeline_start) to succeeded/failed
       - On failure: INSERT dead_attempt row with full artifacts JSON
+        (per-retry rows are written eagerly by the retry helper itself)
       - Always rmtree .attempts/<pid>/ + .attempts/_backup_<pid>/ via WorkArea
 
     Phase 2 — `decision_id` carries the strategist_decisions row id
@@ -1127,7 +1162,6 @@ def _run_pipeline(workspace: Path,
     NB: opens its own DB conn (sqlite3 thread safety)."""
     import json as _json
     conn = db.connect()
-    started_at = db.now()
     try:
         with agent.WorkArea(workspace, pipeline_id) as wa:
             attempts_dir = wa.attempts
@@ -1147,12 +1181,8 @@ def _run_pipeline(workspace: Path,
                     conn, target_id, target_kind)
                 if problem is None or not _ensure_manifest(
                         conn, manifests, problem):
-                    db.record_pipeline(
-                        conn, pipeline_id=pipeline_id, kind=task_kind,
-                        target_id=target_id, target_kind=target_kind,
-                        status="failed", outcome="failed",
-                        started_at=started_at,
-                    )
+                    db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                       status="failed", outcome="failed")
                     return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                             "failed", "problem_not_found")
                 mfst = manifests[problem]
@@ -1176,12 +1206,8 @@ def _run_pipeline(workspace: Path,
                 )
                 status = ("succeeded" if r.outcome in ("proved", "success")
                           else "failed")
-                db.record_pipeline(
-                    conn, pipeline_id=pipeline_id, kind=task_kind,
-                    target_id=target_id, target_kind=target_kind,
-                    status=status, outcome=r.outcome,
-                    started_at=started_at,
-                )
+                db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                   status=status, outcome=r.outcome)
                 if status == "failed":
                     # Problem-targeted forensic uses target_id=0 (INTEGER
                     # column; same convention as Forward below). Artifacts
@@ -1208,12 +1234,8 @@ def _run_pipeline(workspace: Path,
                 # 'Forward' = legacy queue rows (pre-merge recovery).
                 problem = target_id
                 if not _ensure_manifest(conn, manifests, problem):
-                    db.record_pipeline(
-                        conn, pipeline_id=pipeline_id, kind=task_kind,
-                        target_id=target_id, target_kind=target_kind,
-                        status="failed", outcome="failed",
-                        started_at=started_at,
-                    )
+                    db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                       status="failed", outcome="failed")
                     return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                             "failed", "problem_not_found")
                 mfst = manifests[problem]
@@ -1225,32 +1247,20 @@ def _run_pipeline(workspace: Path,
                 )
                 status = ("succeeded" if r.outcome in ("proved", "success")
                           else "failed")
-                db.record_pipeline(
-                    conn, pipeline_id=pipeline_id, kind=task_kind,
-                    target_id=target_id, target_kind=target_kind,
-                    status=status, outcome=r.outcome,
-                    started_at=started_at,
-                )
-                # Flush per-retry buffered failures from the retry
-                # helper. Phase 2 dead_attempts row for Forward uses
-                # target_id=0 + target_kind='Problem' (migration_plan
-                # §C option 1: dead_attempts.target_id is INTEGER, so
-                # Problem-targeted forensic uses 0 with the audit
-                # index living on target_kind + decision_id).
-                for pf in r.pending_failures:
-                    db.record_dead_attempt(
-                        conn, target_id=0, target_kind="Problem",
-                        pipeline_id=pipeline_id,
-                        failure_reason=pf["reason"],
-                        failure_detail=pf["detail"],
-                        proposal_md=pf.get("proposal_md", ""),
-                        artifacts=(_json.dumps(pf["artifacts"])
-                                   if pf.get("artifacts") else ""),
-                    )
+                db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                   status=status, outcome=r.outcome)
+                # Per-retry dead_attempts rows were written EAGERLY by
+                # the retry helper (v38 — the dispatch-time pipelines
+                # row satisfies the FK, so nothing is buffered any
+                # more). Forward forensic rows use target_id=0 +
+                # target_kind='Problem' (migration_plan §C option 1:
+                # dead_attempts.target_id is INTEGER, so Problem-
+                # targeted forensic uses 0 with the audit index living
+                # on target_kind + decision_id).
                 # Pipeline-level dead_attempt for the final outcome.
                 # Skip when outcome is 'exhausted' — the helper has
-                # already buffered the last retry's failure (flushed
-                # above); duplicating here would over-count.
+                # already recorded the last retry's failure eagerly;
+                # duplicating here would over-count.
                 if (status == "failed"
                         and r.outcome != "exhausted"):
                     _arts = pipeline.collect_artifacts(attempts_dir)
@@ -1270,12 +1280,8 @@ def _run_pipeline(workspace: Path,
                 # decision row (decision_id threaded from the queue).
                 problem = target_id
                 if not _ensure_manifest(conn, manifests, problem):
-                    db.record_pipeline(
-                        conn, pipeline_id=pipeline_id, kind=task_kind,
-                        target_id=target_id, target_kind=target_kind,
-                        status="failed", outcome="failed",
-                        started_at=started_at,
-                    )
+                    db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                       status="failed", outcome="failed")
                     return WorkerDone(pipeline_id, task_kind, target_id,
                                       target_kind, "failed",
                                       "problem_not_found")
@@ -1286,12 +1292,8 @@ def _run_pipeline(workspace: Path,
                 )
                 status = ("succeeded" if r.outcome in ("proved", "success")
                           else "failed")
-                db.record_pipeline(
-                    conn, pipeline_id=pipeline_id, kind=task_kind,
-                    target_id=target_id, target_kind=target_kind,
-                    status=status, outcome=r.outcome,
-                    started_at=started_at,
-                )
+                db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                   status=status, outcome=r.outcome)
                 if status == "failed":
                     _arts = pipeline.collect_artifacts(attempts_dir)
                     db.record_dead_attempt(
@@ -1316,12 +1318,8 @@ def _run_pipeline(workspace: Path,
                 # step (dedup/classify/bridge).
                 problem, target_file = _lib_decode(target_id)
                 if not _ensure_manifest(conn, manifests, problem):
-                    db.record_pipeline(
-                        conn, pipeline_id=pipeline_id, kind=task_kind,
-                        target_id=target_id, target_kind=target_kind,
-                        status="failed", outcome="failed",
-                        started_at=started_at,
-                    )
+                    db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                       status="failed", outcome="failed")
                     return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                             "failed", "problem_not_found")
                 if db.problem_ingest_signoff_pending(conn, problem):
@@ -1337,12 +1335,9 @@ def _run_pipeline(workspace: Path,
                     print(f"[librarian] {problem}: dispatch blocked — "
                           f"ingest_signoff_pending (awaiting human sign-off)",
                           flush=True)
-                    db.record_pipeline(
-                        conn, pipeline_id=pipeline_id, kind=task_kind,
-                        target_id=target_id, target_kind=target_kind,
-                        status="succeeded", outcome="success",
-                        started_at=started_at,
-                    )
+                    db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                       status="succeeded",
+                                       outcome="success")
                     return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                             "success", "")
                 from ..pipeline import librarian
@@ -1362,12 +1357,9 @@ def _run_pipeline(workspace: Path,
                 if work_kind is None:
                     # Nothing to do for this row (chain drained, or a stale
                     # plain row whose phase is now per-file). Clean no-op.
-                    db.record_pipeline(
-                        conn, pipeline_id=pipeline_id, kind=task_kind,
-                        target_id=target_id, target_kind=target_kind,
-                        status="succeeded", outcome="success",
-                        started_at=started_at,
-                    )
+                    db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                       status="succeeded",
+                                       outcome="success")
                     return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                             "success", "")
                 # Per-file axiom check uses the operator's authorized
@@ -1385,12 +1377,8 @@ def _run_pipeline(workspace: Path,
                 )
                 status = ("succeeded" if r.outcome in ("proved", "success")
                           else "failed")
-                db.record_pipeline(
-                    conn, pipeline_id=pipeline_id, kind=task_kind,
-                    target_id=target_id, target_kind=target_kind,
-                    status=status, outcome=r.outcome,
-                    started_at=started_at,
-                )
+                db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                   status=status, outcome=r.outcome)
                 # Problem-targeted forensic uses target_id=0 (mirrors
                 # Forward — dead_attempts.target_id is INTEGER). Librarian
                 # is background: a failure is logged but never blocks
@@ -1414,12 +1402,8 @@ def _run_pipeline(workspace: Path,
             goal_id = int(target_id)
             goal = db.get_goal(conn, goal_id)
             if goal is None:
-                db.record_pipeline(
-                    conn, pipeline_id=pipeline_id, kind=task_kind,
-                    target_id=target_id, target_kind=target_kind,
-                    status="failed", outcome="failed",
-                    started_at=started_at,
-                )
+                db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                   status="failed", outcome="failed")
                 return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                         "failed", "goal_not_found")
 
@@ -1428,12 +1412,8 @@ def _run_pipeline(workspace: Path,
             # raw KeyError (worker-exception path) instead of a clean
             # problem_not_found.
             if not _ensure_manifest(conn, manifests, goal["problem"]):
-                db.record_pipeline(
-                    conn, pipeline_id=pipeline_id, kind=task_kind,
-                    target_id=target_id, target_kind=target_kind,
-                    status="failed", outcome="failed",
-                    started_at=started_at,
-                )
+                db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                                   status="failed", outcome="failed")
                 return WorkerDone(pipeline_id, task_kind, target_id,
                                   target_kind, "failed",
                                   "problem_not_found")
@@ -1454,47 +1434,27 @@ def _run_pipeline(workspace: Path,
                                             failure_reason="unknown_kind")
 
             status = "succeeded" if r.outcome in ("proved", "success") else "failed"
-            db.record_pipeline(
-                conn, pipeline_id=pipeline_id, kind=task_kind,
-                target_id=target_id, target_kind=target_kind,
-                status=status, outcome=r.outcome,
-                started_at=started_at,
-            )
+            db.finish_pipeline(conn, pipeline_id=pipeline_id,
+                               status=status, outcome=r.outcome)
 
-            # Phase 7 — flush per-retry buffered failures from the
-            # in-pipeline retry helper. The helper writes one
-            # `goals.attempts++` eagerly (for live TREE.md visibility)
-            # but buffers the paired dead_attempts row here because
-            # dead_attempts.pipeline_id FKs the pipelines row we just
-            # INSERTed. Flush only writes the dead_attempts rows; the
-            # increment already happened in-helper.
-            #
-            # Skip flush on outcome='moot': decision 2 mandates moot is
-            # uniform no-op (no dead_attempts written). Mid-loop moot
-            # detection drops any prior-iteration buffered failures —
-            # those were real LLM calls but on a goal that's since gone
-            # terminal, so their forensic value is curiosity-only. Note
-            # the eager attempts++ from those iterations remains in DB
-            # (helper already wrote them); strict decision-2 alignment
-            # is at the dead_attempts surface, not the attempts column.
-            if r.outcome != "moot":
-                for pf in r.pending_failures:
-                    db.record_dead_attempt(
-                        conn, target_id=goal_id, target_kind="Goal",
-                        pipeline_id=pipeline_id,
-                        failure_reason=pf["reason"],
-                        failure_detail=pf["detail"],
-                        proposal_md=pf.get("proposal_md", ""),
-                        artifacts=(_json.dumps(pf["artifacts"])
-                                   if pf.get("artifacts") else ""),
-                    )
+            # Phase 7 / v38 — per-retry failures are recorded EAGERLY by
+            # the in-pipeline retry helper: one dead_attempts row + one
+            # `goals.attempts++` per failed retry, in-helper, because
+            # the pipelines row (FK target) exists from dispatch time.
+            # Nothing to flush here — the pre-v38 buffer protocol lost
+            # the rows whenever the worker thread died by exception
+            # while the increments stayed banked (goal 7486,
+            # 2026-08-08). A mid-loop moot after real failed retries
+            # therefore now LEAVES their forensic rows in DB (they were
+            # real LLM calls, and their attempts++ was always kept);
+            # decision 2's "moot writes nothing" applies to the moot
+            # detection itself, which still records nothing.
 
             # Capture artifacts from .attempts/<pid>/ before WorkArea rmtree.
             # Skip the pipeline-final dead_attempts INSERT for:
-            #   - 'exhausted' outcome: helper already buffered the
-            #     last retry's failure into pending_failures (flushed
-            #     above); duplicating here would violate the 1:1
-            #     attempts ↔ dead_attempts invariant.
+            #   - 'exhausted' outcome: helper already recorded the
+            #     last retry's failure eagerly; duplicating here would
+            #     violate the 1:1 attempts ↔ dead_attempts invariant.
             #   - 'superseded' (OR race noise, not a real failure).
             #   - infra reasons (spawn_fast_fail / quota_exhausted /
             #     missing_dep): not agent actions; reason carried back
@@ -1507,6 +1467,7 @@ def _run_pipeline(workspace: Path,
                         "spawn_fast_fail",
                         "quota_exhausted",
                         "missing_dep",
+                        "system_killed",   # OS/runtime death (2026-08-08)
                     )):
                 artifacts = pipeline.collect_artifacts(attempts_dir)
                 tk = target_kind
@@ -2183,7 +2144,30 @@ def run(workspace: Path, *, once: bool = False,
                           and reason in _failures.TARGET_COOLDOWN_REASONS):
                         st.cooldown_until[(tid, kind)] = (
                             time.time() + SPAWN_COOLDOWN_SEC)
-                        if reason == "spawn_fast_fail":
+                        if reason == "unclassified_spawn_failure":
+                            st.consec_unclassified += 1
+                            print(f"[cooldown] {kind} {tk}={tid} cooled "
+                                  f"{SPAWN_COOLDOWN_SEC:.0f}s after an "
+                                  f"UNCLASSIFIED spawn death (no attempts++"
+                                  f"; consec={st.consec_unclassified})",
+                                  flush=True)
+                            if (st.consec_unclassified
+                                    >= CONSEC_UNCLASSIFIED_LIMIT):
+                                print(
+                                    f"[dispatcher] "
+                                    f"{st.consec_unclassified} consecutive "
+                                    f"spawn deaths nobody can classify — "
+                                    f"stopping. This is an OPERATOR "
+                                    f"question, not a Strategist one: no "
+                                    f"amount of re-planning fixes a fault "
+                                    f"the framework cannot name. Read the "
+                                    f"`unclassified_spawn_failure` rows in "
+                                    f"dead_attempts (rc + duration + "
+                                    f"stderr tail) and either classify the "
+                                    f"cause in `state/failures.py` or fix "
+                                    f"it.", flush=True)
+                                return 2
+                        elif reason == "spawn_fast_fail":
                             st.consec_fast_fails += 1
                             print(f"[cooldown] {kind} {tk}={tid} cooled "
                                   f"{SPAWN_COOLDOWN_SEC:.0f}s after "
@@ -2237,6 +2221,7 @@ def run(workspace: Path, *, once: bool = False,
                     else:
                         st.consec_fast_fails = 0
                         st.consec_gateway_unreachable = 0
+                        st.consec_unclassified = 0
                         # #103 — any non-quota, non-infra outcome on this
                         # kind proves the provider responded: clear the
                         # per-kind quota backoff so dispatch resumes
@@ -2292,12 +2277,47 @@ def run(workspace: Path, *, once: bool = False,
                     pid, kind, tid, tk = (meta.pipeline_id, meta.kind,
                                           meta.target_id, meta.target_kind)
                     infra_reason = _classify_worker_exception(exc)
-                    label = (f"{infra_reason} (no attempts++)"
-                             if infra_reason else "treating as failed")
+                    # NB wording: an infra death adds no NEW attempts++,
+                    # but any per-retry failures BEFORE the exception were
+                    # already recorded eagerly in-loop (attempts++ AND the
+                    # paired dead_attempts row — v38; pre-v38 the rows died
+                    # with this stack frame while the increments stayed).
+                    label = (f"{infra_reason} (infra — no further "
+                             f"attempts++)"
+                             if infra_reason
+                             else "treating as failed (attempts++ paired "
+                                  "with a worker_exception dead_attempt)")
                     print(f"[cascade] worker exception on {kind} "
                           f"{tk}={tid}: {exc}; {label}",
                           flush=True)
                     try:
+                        # v38 — the dispatch-time 'running' row must not
+                        # outlive its pipeline: finalize it here, or it
+                        # sits 'running' until the next daemon start's
+                        # recovery sweep.
+                        db.finish_pipeline(conn, pipeline_id=pid,
+                                           status="failed",
+                                           outcome="failed")
+                        # Non-infra exception on a Goal target: cascade_one
+                        # below books one attempts++ with no worker left to
+                        # write the forensic row — write it here (the
+                        # pipelines row exists, so the FK holds; evidence
+                        # before increment). Infra classifications skip
+                        # both sides, mirroring the normal-return path.
+                        if not infra_reason:
+                            try:
+                                _da_tid = (int(tid)
+                                           if tk in ("Goal", "Strategy")
+                                           else 0)
+                            except (TypeError, ValueError):
+                                _da_tid = 0
+                            db.record_dead_attempt(
+                                conn, target_id=_da_tid, target_kind=tk,
+                                pipeline_id=pid,
+                                failure_reason="worker_exception",
+                                failure_detail=f"{type(exc).__name__}: "
+                                               f"{exc}",
+                            )
                         cascade_one(conn, pipeline_id=pid, kind=kind,
                                     target_id=tid, target_kind=tk,
                                     outcome="failed",
@@ -2613,6 +2633,15 @@ def run(workspace: Path, *, once: bool = False,
                 db.complete_queue_row(conn, qid)
                 continue
             pipeline_id = agent.new_pipeline_id()
+            # v38 — the pipelines row is born HERE, status='running',
+            # before the worker exists. dead_attempts (FK → pipelines.id)
+            # can then be written eagerly during the pipeline, 1:1 with
+            # every goals.attempts increment; the worker's completion
+            # (or the exception handler / startup recovery) finalizes
+            # this same row via db.finish_pipeline.
+            db.record_pipeline_start(
+                conn, pipeline_id=pipeline_id, kind=kind,
+                target_id=target_id, target_kind=target_kind)
             running.add((target_id, kind, decision_id))
             fut = pool.submit(_run_pipeline, workspace, manifests,
                               kind, target_id, target_kind, pipeline_id,

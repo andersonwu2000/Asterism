@@ -380,9 +380,16 @@ CREATE TABLE IF NOT EXISTS strategy_subgoals (
     PRIMARY KEY (strategy_id, subgoal_id)
 );
 
--- pipelines: only finished rows. No 'running' status.
--- Live state ('this daemon has a worker on target X') is in-memory only.
--- → daemon crash leaves no zombie rows; restart sees clean DB.
+-- pipelines: one row per DISPATCHED pipeline, for its whole lifetime (v38).
+-- INSERTed status='running' at dispatch (`record_pipeline_start`), UPDATEd
+-- to succeeded/failed at completion (`finish_pipeline`). The row existing
+-- from dispatch is what lets `dead_attempts` (FK → pipelines.id) be written
+-- EAGERLY, 1:1 with each `goals.attempts` increment — before v38 the rows
+-- were buffered until a normal worker return, and a worker thread dying by
+-- exception banked the increments while the forensic rows died with the
+-- stack frame (goal 7486, 2026-08-08: attempts=10 vs 7 dead_attempts).
+-- A daemon crash leaves 'running' rows behind; `recovery.recover_at_startup`
+-- finalizes them as failed/daemon_crashed (scope-filtered).
 -- Phase 2 — `kind` adds 'Strategist' / 'Forward'; `target_kind` adds 'Problem'.
 -- Forward target_id = problem_name (TEXT NOT NULL preserved; see
 -- migration_plan §C option 1). Strategist target = problem.root.id (Goal).
@@ -404,10 +411,12 @@ CREATE TABLE IF NOT EXISTS pipelines (
     target_kind TEXT NOT NULL
                     CHECK(target_kind IN ('Goal','Strategy','Problem',
                                           'Group')),
-    status      TEXT NOT NULL CHECK(status IN ('succeeded','failed')),
-    outcome     TEXT NOT NULL,
+    status      TEXT NOT NULL CHECK(status IN ('running','succeeded',
+                                               'failed')),
+    -- NULL while running; set by finish_pipeline / recovery.
+    outcome     TEXT NULL,
     started_at  TEXT NOT NULL,
-    finished_at TEXT NOT NULL
+    finished_at TEXT NULL
 );
 
 -- dead_attempts.artifacts: JSON dict of all agent output files for forensic
@@ -793,7 +802,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 36
+_CURRENT_USER_VERSION = 38
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -3146,21 +3155,43 @@ def strategies_ready_for_verify(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 # Pipeline helpers
 # ---------------------------------------------------------------------
 
-def record_pipeline(conn: sqlite3.Connection, *, pipeline_id: str, kind: str,
-                    target_id: str, target_kind: str, status: str,
-                    outcome: str, started_at: str) -> None:
-    """INSERT a finished pipeline row. Status is 'succeeded' or 'failed' only.
-
-    Live state ('this daemon has a worker on target X') is held in
-    dispatcher's in-memory _running set, never persisted to DB.
-    """
+def record_pipeline_start(conn: sqlite3.Connection, *, pipeline_id: str,
+                          kind: str, target_id: str,
+                          target_kind: str) -> None:
+    """INSERT the pipeline row at DISPATCH time with status='running'
+    (v38). Existing for the whole pipeline lifetime is what satisfies the
+    `dead_attempts.pipeline_id` FK, so forensic rows can be written
+    EAGERLY — 1:1 with each `goals.attempts` increment — instead of
+    buffered until a normal worker return (the buffer died with the stack
+    frame on a worker exception, leaving increments with no evidence).
+    `finish_pipeline` sets the terminal status; a daemon crash leaves the
+    row 'running' and `recovery.recover_at_startup` finalizes it."""
     conn.execute(
         "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
-        " outcome, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (pipeline_id, kind, target_id, target_kind, status, outcome,
-         started_at, now()),
+        " outcome, started_at, finished_at)"
+        " VALUES (?, ?, ?, ?, 'running', NULL, ?, NULL)",
+        (pipeline_id, kind, target_id, target_kind, now()),
     )
     conn.commit()
+
+
+def finish_pipeline(conn: sqlite3.Connection, *, pipeline_id: str,
+                    status: str, outcome: str) -> None:
+    """UPDATE the dispatch-time 'running' row to its terminal status
+    ('succeeded' / 'failed') + outcome + finished_at. Raises when the row
+    is missing: a finish without a `record_pipeline_start` is a dispatch
+    bug — failing loud here beats silently resurrecting the pre-v38
+    INSERT-at-completion shape."""
+    cur = conn.execute(
+        "UPDATE pipelines SET status = ?, outcome = ?, finished_at = ?"
+        " WHERE id = ?",
+        (status, outcome, now(), pipeline_id),
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        raise RuntimeError(
+            f"finish_pipeline: no pipelines row for {pipeline_id!r} — "
+            f"record_pipeline_start was never called for this dispatch")
 
 
 def is_in_queue(conn: sqlite3.Connection, *, target_id: str,

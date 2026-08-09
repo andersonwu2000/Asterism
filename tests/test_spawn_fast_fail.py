@@ -181,13 +181,18 @@ def test_spawn_failure_classifies_timeout_as_agent_timeout(
     assert reason == "agent_timeout"
 
 
-def test_spawn_failure_classifies_slow_nontimeout_as_rc_nonzero(
+def test_spawn_failure_classifies_slow_nontimeout_as_unclassified(
     tmp_path: Path,
 ) -> None:
-    """rc≠0 and rc≠124, wall ≥ 10s → generic `agent_rc_nonzero`."""
+    """rc≠0 and rc≠124, wall ≥ 10s → `unclassified_spawn_failure`.
+
+    Was `agent_rc_nonzero` (charged to the goal) until the 2026-08-08
+    owner ruling: an unrecognised rc cannot tell us whether the worker
+    got a fair chance, and guessing "the agent's fault" is what let a
+    dying workstation shove five healthy goals into strategist review."""
     reason, _ = _pipeline._spawn_failure(
         rc=1, attempts_dir=tmp_path, spawn_dur=15.0)
-    assert reason == "agent_rc_nonzero"
+    assert reason == "unclassified_spawn_failure"
 
 
 def test_spawn_failure_includes_stderr_tail(tmp_path: Path) -> None:
@@ -468,3 +473,142 @@ def test_bfs_refill_no_cooldown_dict_back_compat(
     gid = _seed_goal(conn)
     bfs_refill(conn, set())  # no cooldown arg
     assert db.queue_size(conn) == 1
+
+
+# ---------------------------------------------------------------------
+# 4. system_killed — the OS killed the spawn, not the agent (2026-08-08)
+# ---------------------------------------------------------------------
+
+def test_spawn_failure_classifies_ntstatus_as_system_killed(
+    tmp_path: Path,
+) -> None:
+    """The three NTSTATUS codes a dying workstation actually handed us
+    (fail-fast, DLL-init, debugger-terminate) must classify as
+    provider infra — burning attempts on them shoved five healthy
+    goals into strategist review while the machine was thrashing."""
+    from Tooling.state import failures
+    for rc in (0xC0000409, 0xC0000142, 0x40010004):
+        reason, detail = _pipeline._spawn_failure(
+            rc=rc, attempts_dir=tmp_path, spawn_dur=120.0)
+        assert reason == "system_killed", hex(rc)
+        assert f"0x{rc:08X}" in detail
+        assert failures.is_infra(reason)
+
+
+def test_spawn_failure_ntstatus_beats_fast_fail_window(
+    tmp_path: Path,
+) -> None:
+    """A system kill inside the 10s window is still `system_killed` —
+    the honest label, same no-burn semantics."""
+    reason, _ = _pipeline._spawn_failure(
+        rc=0xC0000005, attempts_dir=tmp_path, spawn_dur=1.0)
+    assert reason == "system_killed"
+
+
+def test_spawn_failure_classifies_bun_panic_as_system_killed(
+    tmp_path: Path,
+) -> None:
+    """claude.exe is a Bun standalone; a runtime panic exits with a
+    SMALL rc (observed: 3) but stamps its crash banner on stderr.
+    Same class: the CLI died, the agent chose nothing."""
+    (tmp_path / "_spawn.stderr").write_text(
+        "rc=3\n" + "=" * 60 + "\n"
+        "Bun v1.4.0 (eb835313a) Windows x64 (baseline)\n"
+        "Windows v10.26200\nCPU: sse42 avx avx2\n"
+        'Args: "claude" "--model" "claude-sonnet-5" "-p" "..."\n'
+        "Features: fetch jsc spawn(3) claude_code\n",
+        encoding="utf-8")
+    reason, detail = _pipeline._spawn_failure(
+        rc=3, attempts_dir=tmp_path, spawn_dur=45.0)
+    assert reason == "system_killed"
+    assert "runtime crashed" in detail
+
+
+def test_spawn_failure_small_rc_without_banner_is_unclassified(
+    tmp_path: Path,
+) -> None:
+    """rc=3 with ordinary agent stderr is NOT a runtime crash — the
+    banner, not the code, is the discriminator. It lands in the
+    unclassified bucket rather than `system_killed`: we can say what it
+    is NOT, which is not the same as knowing what it is."""
+    (tmp_path / "_spawn.stderr").write_text(
+        "rc=3\nsome ordinary tool error output", encoding="utf-8")
+    reason, _ = _pipeline._spawn_failure(
+        rc=3, attempts_dir=tmp_path, spawn_dur=45.0)
+    assert reason == "unclassified_spawn_failure"
+
+
+def test_worker_exception_memory_exhaustion_is_system_killed() -> None:
+    """WinError 1455 (pagefile / commitment limit) and MemoryError are
+    the machine dying, not the goal failing — ten of them burned ten
+    attempts across five goals on 2026-08-08 via the "" default."""
+    from Tooling.core.dispatcher import _classify_worker_exception
+    e = OSError("pagefile too small")
+    e.winerror = 1455
+    assert _classify_worker_exception(e) == "system_killed"
+    e8 = OSError("not enough memory")
+    e8.winerror = 8
+    assert _classify_worker_exception(e8) == "system_killed"
+    assert _classify_worker_exception(MemoryError()) == "system_killed"
+    # Transport classification is untouched.
+    e2 = OSError("refused")
+    e2.winerror = 10061
+    assert _classify_worker_exception(e2) == "gateway_unreachable"
+
+
+# ---------------------------------------------------------------------
+# 5. Unknown causes do not charge the goal (owner ruling, 2026-08-08)
+# ---------------------------------------------------------------------
+
+def test_unrecognised_rc_is_unclassified_not_agent_fault(
+    tmp_path: Path,
+) -> None:
+    """The counter answers "did the worker get a fair chance and fail?".
+    An rc nothing recognises cannot answer that, so it must not be
+    charged. Every death mode this project has met — NTSTATUS exits, a
+    Bun panic, a gateway 500, a pagefile exhaustion — first arrived as
+    an unrecognised rc and was silently billed to the agent until an
+    audit found it."""
+    from Tooling.state import failures
+    reason, detail = _pipeline._spawn_failure(
+        rc=42, attempts_dir=tmp_path, spawn_dur=300.0)
+    assert reason == "unclassified_spawn_failure"
+    assert failures.is_infra(reason)          # ⇒ no attempts++
+    assert reason in failures.PROVIDER_INFRA_REASONS   # the skip reads this
+    # Traceable: the price of not guessing is that the record must carry
+    # enough to classify it later.
+    assert "rc=42" in detail and "300s" in detail
+
+
+def test_unclassified_is_not_shown_to_the_agent(tmp_path: Path) -> None:
+    """An unexplained mechanical fault teaches the agent nothing, and
+    projecting it invites a mathematical narrative for a machine fault
+    (a gateway 500 once reached a worker as "your Lean failed to
+    build")."""
+    from Tooling.state import failures
+    assert "unclassified_spawn_failure" in failures.NON_AGENT_REASONS
+    assert "unclassified_spawn_failure" not in failures.DEATH_NOTE_REASONS
+
+
+def test_a_fair_chance_consumed_still_counts(tmp_path: Path) -> None:
+    """The other half of the rule: a spawn that HELD the full budget and
+    delivered nothing did get its chance. Timeouts keep agent traits —
+    narrowing the entrance must not empty it, or a goal that can never
+    be formalized would never reach the Strategist."""
+    from Tooling.state import failures
+    reason, _ = _pipeline._spawn_failure(
+        rc=124, attempts_dir=tmp_path, spawn_dur=960.0)
+    assert reason == "agent_timeout"
+    assert not failures.is_infra(reason)      # ⇒ attempts++ as before
+
+
+def test_unclassified_breaker_limit_is_tighter_than_fast_fail() -> None:
+    """Repetition escalates to the OPERATOR, not the Strategist: a
+    framework fault is not something re-planning fixes, and handing one
+    to the Strategist only gets it rewritten as mathematics. The limit
+    sits below the fast-fail one because a fast-fail has a known shape
+    and a known remedy; "we cannot name this" repeating does not."""
+    from Tooling.core import dispatcher
+    assert (dispatcher.CONSEC_UNCLASSIFIED_LIMIT
+            < dispatcher.CONSEC_SPAWN_FAIL_LIMIT)
+    assert "consec_unclassified" in dispatcher.SchedulerState().__dict__

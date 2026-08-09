@@ -229,6 +229,11 @@ def test_reflection_trigger_gate(
         for _ in range(3):
             db.increment_goal_attempts(conn, gid)
 
+    # v38 — dispatch-time pipelines row so eager dead_attempts FK holds.
+    db.record_pipeline_start(conn, pipeline_id="pid-gate",
+                             kind="Formalizer", target_id=str(gid),
+                             target_kind="Goal")
+
     run_with_session_retries(
         conn=conn, goal_id=gid, pipeline_id="pid-gate",
         budget_threshold=3, shelve_threshold=8, attempts_dir=tmp_path,

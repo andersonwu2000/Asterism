@@ -1258,7 +1258,9 @@ def _section_tree_inline(conn: sqlite3.Connection,
     out += [
         f"_Full decomposition tree: `{rel}` (dispatcher-maintained, "
         f"current every cascade) — read it for structure, dead-branch "
-        f"forensics, and OR-alternative history._",
+        f"forensics, and OR-alternative history. That file is LIVE and "
+        f"the counters above are not: re-read it before asserting any "
+        f"goal's status._",
         "",
     ]
     return out
@@ -1588,7 +1590,9 @@ def _section_catalog_index_strategist(conn: sqlite3.Connection,
         f"_{len(rows)} landed bricks — full list & exact statements in"
         f" `{context.catalog_companion_path(attempts_dir)}`"
         " (read-only, NOT in your cwd; machine-generated from what actually landed"
-        " — never drifts from pipeline renames; grep it by slug; every"
+        " — never drifts from pipeline renames; written when this wake"
+        " started, so a brick that lands mid-wake reaches `TREE.md`"
+        " before it reaches here; grep it by slug; every"
         " worker gets its own copy beside its Context.md, so cite it by"
         " bare name in briefs). Copy signatures from there into"
         " briefs/directives instead of hand-maintaining a catalog."

@@ -5,10 +5,16 @@ Extracted from `dispatcher.py`. The dispatcher's main
 loop concerns itself with steady-state work; FS↔DB reconciliation is
 a structurally separate phase that runs once at startup.
 
-Five classes of stale state, each restored:
+Six classes of stale state, each restored:
 
   1. queue rows         — live dispatch state, never persists across
                           daemon lifetimes; cleared unconditionally.
+  1b. 'running' pipelines rows (v38) — INSERTed at dispatch, finalized
+                          at completion; a crashed daemon leaves them
+                          'running' with no worker behind them. Marked
+                          failed / outcome='daemon_crashed'
+                          (scope-filtered; live concurrent drivers'
+                          rows spared via the #90 owner-pid manifest).
   2. half-baked strategies — INSERTed by run_backward then crashed
                           before scratch_path was set; flagged 'dead'.
   3. stuck-attempting goals — Backward succeeded last run but no
@@ -65,6 +71,36 @@ def _attempt_owner_alive(attempt_dir: Path) -> bool:
     except (OSError, ValueError):
         return False
     return _pid_alive(data.get("owner_pid"))
+
+
+def _pipeline_problem(conn: sqlite3.Connection, target_id: str,
+                      target_kind: str) -> "str | None":
+    """Resolve a pipelines row's target to its problem name (for scope
+    filtering), or None when the target no longer resolves. Mirrors the
+    dispatcher's `_problem_of_target` shapes without importing core
+    (state must stay import-clean of core): 'Problem' targets carry the
+    name directly (Librarian per-file rows compose `problem\\x1ffile`),
+    the rest resolve through their tables."""
+    if target_kind == "Problem":
+        return target_id.split("\x1f", 1)[0]
+    try:
+        tid = int(target_id)
+    except (TypeError, ValueError):
+        return None
+    if target_kind == "Goal":
+        row = conn.execute("SELECT problem FROM goals WHERE id = ?",
+                           (tid,)).fetchone()
+    elif target_kind == "Group":
+        row = conn.execute("SELECT problem FROM groups WHERE id = ?",
+                           (tid,)).fetchone()
+    elif target_kind == "Strategy":
+        row = conn.execute(
+            "SELECT g.problem FROM strategies s"
+            " JOIN goals g ON g.id = s.goal_id WHERE s.id = ?",
+            (tid,)).fetchone()
+    else:
+        return None
+    return str(row[0]) if row is not None else None
 
 
 def recover_at_startup(conn: sqlite3.Connection,
@@ -144,6 +180,68 @@ def recover_at_startup(conn: sqlite3.Connection,
                    decision_id=spec["decision_id"],
                    problem=spec["problem"])
         inject_reenqueued += 1
+
+    # Never-woken groups — the one wake with no re-derivable trigger.
+    # `_commit_delegate` queues the new group's Strategist seat
+    # explicitly BECAUSE nothing else can find it: a fresh group has a
+    # NULL clock (T1 reads that as "due a full interval after daemon
+    # start"), no goals (no pending_review), and no batch (no
+    # inject_batch_done). The unconditional queue clear above deletes
+    # that one-shot row, and until 2026-08-08 nothing re-derived it —
+    # a daemon restart landing between "group opened" and "first
+    # dispatch" silently orphaned the group's launch, and the T4 stall
+    # backstop picked it up 69 minutes later (g384, union_closed).
+    # The predicate is derivable from the groups table alone: an active
+    # SUB-group that never woke ⇒ its launch row is the one we just
+    # cleared. Top groups are excluded — they are not born from a
+    # Delegate and never had a launch row; their wakes belong to the
+    # T1/stall selectors, and sweeping them in here woke every fresh
+    # problem's Strategist at daemon start (caught by the e2e happy
+    # path the same day this shipped).
+    groups_relaunched = 0
+    for r in conn.execute(
+            "SELECT id, problem FROM groups"
+            " WHERE status = 'active' AND last_strategist_at IS NULL"
+            "   AND parent_group_id IS NOT NULL"
+            + _scope_sql, _scope_args):
+        db.enqueue(conn, kind="Strategist", target_id=str(r["id"]),
+                   target_kind="Group", priority=10,
+                   problem=str(r["problem"]))
+        groups_relaunched += 1
+
+    # v38 — stale 'running' pipeline rows. The dispatcher INSERTs the
+    # pipelines row at dispatch time (status='running') and finalizes it
+    # at completion; a daemon that died mid-pipeline leaves the row
+    # 'running' with, by definition, no worker behind it. Finalize as
+    # failed with the distinguishing outcome 'daemon_crashed' (vs the
+    # worker-exception path's 'failed') so archaeology can tell "this
+    # daemon watched it fail" from "a dead daemon abandoned it". The
+    # per-retry attempts++/dead_attempts pairs were written eagerly
+    # in-loop, so no forensic catch-up write is owed here — only the
+    # status flip.
+    # Scope-filtered (the #74 class); a row whose problem cannot be
+    # resolved is left alone under a scoped run (can't prove it's ours)
+    # and finalized by the next unscoped/owning start. Rows whose
+    # .attempts/<pid>/ sandbox manifest names a LIVE owner belong to a
+    # concurrent non-daemon driver/e2e (#90) — spared.
+    pipelines_finalized = 0
+    for r in list(conn.execute(
+            "SELECT id, target_id, target_kind FROM pipelines"
+            " WHERE status = 'running'")):
+        problem = _pipeline_problem(
+            conn, str(r["target_id"]), str(r["target_kind"]))
+        if scope is not None:
+            if problem is None or conn.execute(
+                    "SELECT ? LIKE ?", (problem, scope)).fetchone()[0] != 1:
+                continue
+        if workspace is not None and _attempt_owner_alive(
+                workspace / ".attempts" / str(r["id"])):
+            continue
+        conn.execute(
+            "UPDATE pipelines SET status = 'failed',"
+            " outcome = 'daemon_crashed', finished_at = ? WHERE id = ?",
+            (db.now(), r["id"]))
+        pipelines_finalized += 1
 
     strategies_killed = conn.execute(
         "UPDATE strategies SET status = 'dead'"
@@ -260,7 +358,8 @@ def recover_at_startup(conn: sqlite3.Connection,
     from . import consistency as _consistency
     _consistency.repair_unambiguous(conn)
 
-    if (queue_cleared or inject_reenqueued or strategies_killed
+    if (queue_cleared or inject_reenqueued or groups_relaunched
+            or pipelines_finalized or strategies_killed
             or goals_reopened or goals_attempting_fixup
             or attempts_cleared or attempts_live_skipped
             or backups_handled or tmps_removed
@@ -268,6 +367,9 @@ def recover_at_startup(conn: sqlite3.Connection,
             or orphans_swept or orphans_kept_cited):
         print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
               f"re-enqueued {inject_reenqueued} in-flight Inject pipelines, "
+              f"relaunched {groups_relaunched} never-woken group(s), "
+              f"finalized {pipelines_finalized} crashed 'running' "
+              f"pipeline row(s), "
               f"killed {strategies_killed} half-baked strategies, "
               f"reopened {goals_reopened} stuck goals, "
               f"flipped {goals_attempting_fixup} open->attempting "

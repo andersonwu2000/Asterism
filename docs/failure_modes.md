@@ -28,10 +28,10 @@ infra/投影/cooldown 集合、tests 綁定）；本檔是它的人類敘述層�
 | `moot` | Formalizer | helper 入場 / mid-loop cascade re-check 發現 goal 已終態 | uniform no-op（不動 state、不寫 dead_attempts、不 ++ attempts） |
 
 **cascade 共通規則**（表格欄只列 reason 特異處）：
-- 預設：失敗 spawn 由 helper buffer 一筆 dead_attempt + attempts++（dispatcher 在 pipelines INSERT 後 flush）；達 SHELVE_THRESHOLD → **轉 `pending_strategist_review` 交 Strategist 裁決，不再自動 shelve**（bfs_refill 也會在派工前攔截 over-threshold goal 轉 review）。真正的 shelve 只來自 Strategist ConfirmShelve 或個別硬終態分支
+- 預設：失敗 spawn 由 helper **當場**寫一筆 dead_attempt + attempts++（v38：pipelines row 在 dispatch 時即以 `running` INSERT，FK 從頭滿足，故不再 buffer-then-flush——舊協議在 worker thread 例外死亡時把 forensic rows 連 stack frame 一起丟掉、增量卻已入帳，goal 7486 2026-08-08）；達 SHELVE_THRESHOLD → **轉 `pending_strategist_review` 交 Strategist 裁決，不再自動 shelve**（bfs_refill 也會在派工前攔截 over-threshold goal 轉 review）。真正的 shelve 只來自 Strategist ConfirmShelve 或個別硬終態分支
 - BUILDER_THRESHOLD 升級路由已隨 Formalizer 合併退役（無 config key；prove/split 由 agent 在 session 內自決）
 - **Strategist Inject 例外**：pipeline 帶 `decision_id` 時 budget gate 與 attempts 上限**完全 bypass**——Strategist 看完 failure replay 認可後框架不二猜；唯一守住的是 goal status 已終態則 `moot`
-- 五種 provider-infra reason（spawn_fast_fail / quota_exhausted / missing_dep / gateway_unreachable / transient_timeout）→ 不增 attempts、不寫 dead_attempt。除 quota 外設 30s target cooldown；`quota_exhausted` 走 per-kind 指數退避（30s×2ⁿ cap 600s）+ flush 同 kind queue + 可轉 quota-wait。CONSEC daemon-exit：spawn_fast_fail=10（撞頂先向 usage endpoint 確認、真 quota 則轉 quota-wait 不退出）、gateway_unreachable=8、transient_timeout 不進 CONSEC
+- 七種 provider-infra reason（spawn_fast_fail / quota_exhausted / missing_dep / gateway_unreachable / transient_timeout / system_killed / unclassified_spawn_failure）→ 不增 attempts、不寫 dead_attempt。除 quota 外設 30s target cooldown；`quota_exhausted` 走 per-kind 指數退避（30s×2ⁿ cap 600s）+ flush 同 kind queue + 可轉 quota-wait。CONSEC daemon-exit：spawn_fast_fail=10（撞頂先向 usage endpoint 確認、真 quota 則轉 quota-wait 不退出）、gateway_unreachable=8、transient_timeout 不進 CONSEC
 - 四條 decline 的 cascade：agent_declined → attempts++（entry_kind 路由已隨 v33 移除）；agent_infeasible → attempts++ + goal `disproved` + propagate；parent_needs_fix → attempts++ + goal `dead` + propagate；agent_shelved / no_nl_correspondence → attempts++ + 轉 pending_strategist_review、不 propagate
 - **soft-shelve 的上行**（`_maybe_stall_parent_strategies` → `_maybe_review_goal_out_of_routes`，07-09 `453c0636`）：子目標 soft-shelve 後父 strategy 的子目標全部結清 ⇒ strategy 轉 `stalled`、父目標交給 T2 review（否則 `attempting` 且無活 strategy 的目標永遠沒人碰，BFS 只吃 `open`）。**aliveness 判準含承諾**（07-30，b6_1 四層級聯):`shelved` 子目標若其最新 ConfirmShelve 所屬批次仍有未結清 Inject，算 **alive** ⇒ 不 stall、不 review，父節點單純等——與 `pending_strategist_review` 算 alive 同一條理由（有排程要發生的事）。批次語意保證連續性:最後一個 Inject 結清的同時 `maybe_enqueue_inject_batch_done` 就排好 wake,所以不需要逾期計時器;承諾未兌現的情況由問題層級 stall 判準(`_subtree_has_live_frontier`,`attempting` 本身不算 live frontier)一次叫醒,而非每層一次。無承諾的 shelved 行為不變
 
@@ -40,10 +40,12 @@ infra/投影/cooldown 集合、tests 綁定）；本檔是它的人類敘述層�
 ## 2. Failure reasons（master table）
 
 Phase 7 後 retry 邏輯下沉到 in-pipeline retry helper（`Tooling/pipeline/_retry.py`）。
-attempts ↔ dead_attempts 的 1:1 invariant：每個失敗 spawn 都 buffer 一筆 dead_attempt
-記錄、由 dispatcher 在 pipelines INSERT 後 flush（buffer-then-flush 給 all-or-nothing
-crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbidden_lemma 等）
-只做 status transition、不再做 attempts++（已由 helper buffer 內計數）。
+attempts ↔ dead_attempts 的 1:1 invariant：每個失敗 spawn 由 helper **當場**寫一筆
+dead_attempt + attempts++（v38 起 pipelines row 在 dispatch 時即存在，FK 直接滿足；
+表中「buffer + retry」的「buffer」自 v38 起讀作「立即寫入 DB 後續 retry」——舊的
+buffer-then-flush 在 worker 例外死亡時遺失 forensic rows 而增量已入帳）。cascade 對非
+terminal-decline 的失敗（lake error、forbidden_lemma 等）只做 status transition、
+不再做 attempts++（已由 helper 當場計數）。
 
 > 名詞：「verify-collapse」= 把舊版的 Verify worker_kind 折疊成主迴圈 inline
 > housekeeping。pre-collapse 的 Strategy-target `dead_attempts` row 留在 DB
@@ -68,7 +70,8 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 | `no_progress` | Backward | sub-goal 經 isDefEq 偵測 definitionally 等於正在拆的 goal 本身（零進展；比 `circular_decomposition` 的同名文字比對更深的 dedupe tier）| buffer + retry（換個分解）| (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `agent_no_annotation` | Builder + Backward (Phase 2) | rc=0、build 過但 patch.lean leading comment 空白 | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `agent_no_output` | Builder Phase 2 | rc=0 但 agent 沒寫 `patch*.lean` | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `agent_rc_nonzero` | Builder + Backward | rc≠0、rc≠124/125/126/127、wall-clock ≥ 10s（一般 hard fail）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `agent_rc_nonzero` | (歷史) | 舊的「其餘 rc」預設值,2026-08-08 由 `unclassified_spawn_failure` 取代;registry 保留供舊 dead_attempts 列解讀 | — | — | `direct_attempt` |
+| `unclassified_spawn_failure` | Formalizer（`_spawn_failure`） | rc≠0、rc≠124、wall-clock ≥ 10s——**沒有任何判準認得的死法**。owner 裁決 2026-08-08:計數欄問的是「worker 有沒有得到**公平的機會**而失敗」,不明原因不得計入(這個專案遇過的每一種死法——NTSTATUS、Bun panic、gateway 500、pagefile 耗盡——都是先以未知 rc 出現、被默默算在 agent 頭上,直到有人稽核才現形;分類表不可能窮盡,所以預設翻面) | 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、**連續 `CONSEC_UNCLASSIFIED_LIMIT`=5 次 → daemon 退出 rc=2 交給 operator**(框架故障 strategist 無能為力,交給它只會讓故障被改寫成數學) | 不投影(infra) |
 | `agent_timeout` | Builder + Backward | claude rc=124（SIGKILL at WORKER_TIMEOUT_SEC、預設 900s、`dispatch.spawn_timeout_sec`） | **salvage parse 一次**（idle-window guard 後 active agent 可能 disk 上有 valid output 但沒 exit 乾淨）：parse 返 terminal-success / decline → 直接 attach；返 non-terminal failure → fold 到 detail、走原 postmortem（寫 `.drafts/`）+ buffer + 強制 exhaust（不再續 retry） | (helper 已 ++)；exhausted → status transition；salvage 成功時 reason 走 success/decline 而非 timeout | `direct_attempt` |
 | `agent_declined` | Builder | agent 寫 `-- decline: needs_decomposition`（unified directive system, 2026-05-10） | terminal exit（不 buffer 自身）| **attempts++**；達 SHELVE 轉 review（entry_kind 路由已隨 v33 移除；Formalizer 在 session 內自行 split，此 reason 實務只剩 mint 的 `library_sufficient` 與 Librarian decline 在用） | `direct_attempt` |
 | `agent_infeasible` | Builder + Backward | agent 寫 `-- decline: unprovable`（含反例；舊名 `parent_type_infeasible`） | terminal exit（不 buffer 自身）| **attempts++** + goal `disproved` + `_propagate_disproved` | `infeasible_sub`（投到 parent goal、不到自己；filter `_NON_AGENT_REASONS` 排除 self） |
@@ -83,6 +86,7 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 | `quota_exhausted` | Builder + Backward | rc=126（gemini quota 耗盡）| 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra） |
 | `missing_dep` | Builder + Backward | rc=127（CLI 缺）| 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra） |
 | `spawn_fast_fail` | Builder + Backward | rc≠0 且 wall-clock < 10s（claude.exe crash / cwd） | 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、CONSEC=10 觸發 daemon 退出 rc=2 | 不投影（infra） |
+| `system_killed` | Formalizer（`_spawn_failure`） | NTSTATUS 形 rc ≥ 0x40000000（0xC0000409 fail-fast / 0xC0000142 DLL-init / 0x40010004 debugger-terminate）或 stderr 帶 Bun crash banner——OS/CLI runtime 殺掉 spawn,非 agent 行為（2026-08-08 post-mortem:六筆這類 rc 走 `agent_rc_nonzero` 燒 attempts,把五個健康 goal 衝進 review） | 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra、death note） |
 | `gateway_unreachable` | Builder + Backward (1db4e8c) | worker thread 收到 URLError / OSError(ECONNREFUSED/ECONNRESET/ENETUNREACH/ETIMEDOUT) / Windows WinError 10061/10054/64 — gateway HTTP transport 完全失聯 | 早返（dispatcher 端、不進 helper）| **不增 attempts**、設 30s cooldown、CONSEC=8 觸發 daemon 退出 rc=2（gateway 永久死亡時不無限重試） | 不投影（infra） |
 | `transient_timeout` | Builder + Backward (post-pilot fix) | worker thread 收到 `TimeoutError`（lsp_client.py:169 的 `$/lean/rpc/call` 超時、slot 競爭 RPC 等不到等）| 早返（dispatcher 端）| **不增 attempts**、設 30s cooldown、**不進 CONSEC**（slot 競爭是健康過載、不是 gateway 死、若併計 circuit breaker 會在 244-題 benchmark 下誤殺） | 不投影（infra） |
 | `superseded` (legacy) | pre-collapse Verify worker | verify-collapse 後不再產生新 row、僅歷史 db 有 | n/a | n/a | 不投影 |
@@ -98,13 +102,14 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 | `parent_stub_not_decomposable` | Backward | skeleton 從 parent stub 抽不出簽名 |
 | `goal_no_longer_open` | Backward | 跑到中途 goal status 已非 `'open'`（race protection、_abort 前回滾寫入的檔） |
 | `unknown_kind` | dispatcher | `_run_pipeline` 收到非 Builder/Backward 的 task_kind（unreachable in current code、enum 完整性保留） |
+| `worker_exception` | dispatcher（v38, 2026-08-08） | worker thread 以**非 infra** 未攔截例外死亡：cascade 會對 Goal target 記一次 attempts++，此 forensic row 由 dispatcher 例外處理器當場補上（pipelines row 自 dispatch 起存在、FK 可寫），使增量必有證據；infra 分類（gateway_unreachable 等）不增 attempts 也不寫此 row |
 
 這些走 generic cascade（attempts++）、**event 不投影**（agent 看不到也不能改；
 `dead_attempts` 仍 INSERT 給 operator forensic）。例外：`missing_parent_stub` 有專屬分支
 ——attempts++ 後**直接 shelved + 上拋**（不等門檻；stub 檔消失會造成 tight-loop 重派）。
 
 **Notes**：
-- rc → reason 有**兩套映射**：pipeline 內 `_spawn_failure`（124→`agent_timeout`、<10s→`spawn_fast_fail`、其餘→`agent_rc_nonzero`）與 channel 級 `failures.rc_to_reason`（124→`transient_timeout`、125/128/未知→`spawn_fast_fail`；Strategist/Adversary 用）。rc 語彙另含 125 stale-session、128 stuck-thinking、129 shutdown（`llm/base.py` `SpawnRC`）。
+- rc → reason 有**兩套映射**：pipeline 內 `_spawn_failure`（124→`agent_timeout`、NTSTATUS/runtime crash→`system_killed`、<10s→`spawn_fast_fail`、**其餘→`unclassified_spawn_failure`,不計 attempts**）與 channel 級 `failures.rc_to_reason`（124→`transient_timeout`、125/128/未知→`spawn_fast_fail`；Strategist/Adversary 用）。rc 語彙另含 125 stale-session、128 stuck-thinking、129 shutdown（`llm/base.py` `SpawnRC`）。
 - `agent_declined` 是跨 pipeline 共用 string：mint 的 `library_sufficient`、Librarian 的「無法機械化」都走它。split 臂沒有此 escape（退出用 `unprovable` / `return_to_parent` / `shelve`）。
 - `lake_build_error` 在 prove 臂來自 patch build 失敗；在 split 臂來自 strategy 組裝 batch build 失敗。directive 詞彙設計史見 `docs/archive/design/decline_directives.md`。
 

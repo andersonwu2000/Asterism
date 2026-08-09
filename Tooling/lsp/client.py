@@ -29,7 +29,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..core.process_group import no_window_creationflags
+from ..core import config as _cfg
+from ..core.process_group import (assign_to_job, create_capped_job,
+                                  no_window_creationflags, terminate_job)
 from ..state.metaprog import blocked_detail, scan_metaprogramming
 
 
@@ -53,9 +55,14 @@ def _guard_metaprogramming(file_path: Path, content: str) -> None:
 
 
 class LspClient:
+    # Class-level default so partially-constructed instances (tests use
+    # `__new__` to unit-test shutdown paths) still read a coherent None.
+    _job = None
+
     def __init__(self, workspace: Path) -> None:
         self.workspace = workspace
         self.proc: subprocess.Popen | None = None
+        self._job = None       # memory-capped Job Object over the lake tree
         self._next_id = 1
         self._pending: dict[int, queue.Queue] = {}
         self._notifications: queue.Queue = queue.Queue()
@@ -140,6 +147,22 @@ class LspClient:
             creationflags=no_window_creationflags(),
             **popen_kwargs,
         )
+        # Memory-capped Job Object over the whole lake tree (2026-08-08
+        # post-mortem: one worker's diverging kernel reduction reached
+        # 102 GB of commit and took the workstation down; taskkill /T
+        # missed it once orphaned). Descendants inherit membership, so
+        # the cap and the job-kill cover workers taskkill cannot see.
+        # Assigned immediately after Popen — lake takes seconds to spawn
+        # lean, so the pre-assignment window is not a real gap. Soft:
+        # None off-Windows / on refusal, and every use checks for it.
+        cap_mb = _cfg.get("gateway.lean_memory_cap_mb", default=8192,
+                          env_var="ASTERISM_LEAN_MEMORY_CAP_MB", cast=int)
+        if cap_mb > 0:
+            self._job = create_capped_job(cap_mb)
+            if self._job is not None and not assign_to_job(
+                    self._job, self.proc):
+                terminate_job(self._job)   # close the empty job handle
+                self._job = None
         self._reader_thread = threading.Thread(
             target=self._read_loop, daemon=True
         )
@@ -155,9 +178,19 @@ class LspClient:
         only `lake serve`, orphaning a wedged worker that keeps burning
         CPU — a runaway elaboration then survives shutdown (the
         2026-06-12 gateway-hang root cause: a non-terminating elaborate
-        was never reaped, so a backend restart could not recover it)."""
+        was never reaped, so a backend restart could not recover it).
+
+        Job first, taskkill second: `taskkill /T` walks the CURRENT
+        parent-child chain, so a worker whose parent died first is
+        re-parented and invisible to it — one such orphan outlived 21
+        backend restarts and reached 102 GB (2026-08-08). Job
+        membership survives re-parenting, so `terminate_job` reaps it;
+        taskkill stays as the fallback for the no-job path."""
         if self.proc is None:
             return
+        if self._job is not None:
+            terminate_job(self._job)
+            self._job = None
         pid = self.proc.pid
         if os.name == "nt":
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -189,6 +222,11 @@ class LspClient:
                 self.proc.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
                 pass
+        # Even after a clean exit of `lake serve`, a re-parented worker
+        # may survive; the job sweeps it and closes the handle.
+        if self._job is not None:
+            terminate_job(self._job)
+            self._job = None
 
     # ---- protocol -------------------------------------------------
 

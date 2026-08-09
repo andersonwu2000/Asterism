@@ -16,23 +16,26 @@ Design decisions resolved 2026-05-06 — see
   5. goals.attempts increments per failed spawn (1:1 with dead_attempts).
   6. dead_attempts row per failed retry, artifacts JSON snapshot per row.
 
-Forensic write protocol: dead_attempts.pipeline_id is FK to pipelines.id;
-the pipelines row is INSERTed by `dispatcher._run_pipeline` AFTER this
-helper returns. The helper therefore CANNOT write dead_attempts inline
-(FK violation). Per-retry records are buffered into
-`PipelineResult.pending_failures`; `_run_pipeline` flushes them after
-the pipelines INSERT.
+Forensic write protocol (v38): dead_attempts.pipeline_id is FK to
+pipelines.id, and the pipelines row is INSERTed status='running' by the
+dispatcher AT DISPATCH TIME (`db.record_pipeline_start`) — so the helper
+writes each failed retry's dead_attempts row EAGERLY, immediately
+followed by the paired `goals.attempts++` (evidence first, then
+increment). `TREE.md` + `asterism status` show retry progress
+mid-pipeline, and the two surfaces cannot diverge: a crash or
+worker-thread exception loses at most the current, not-yet-recorded
+iteration.
 
-`goals.attempts` is incremented EAGERLY (per retry, in-helper) for
-live operator visibility — `TREE.md` + `asterism status` show retry
-progress mid-pipeline rather than waiting for cascade. The paired
-dead_attempts row is still buffered for FK reasons. Crash semantics:
-daemon kill mid-pipeline leaves attempts inflated by N relative to
-dead_attempts (no rows for the in-flight pipeline); this drift is
-cosmetic — `bfs_refill` and threshold checks treat attempts as
-authoritative either way, and on the next dispatch the goal simply
-appears to have N more failures than dead_attempts records (operator-
-visible drift, no functional bug).
+History: pre-v38 the rows were buffered in
+`PipelineResult.pending_failures` and flushed by `_run_pipeline` only on
+a NORMAL worker return, while the increments were written eagerly. A
+worker thread dying by exception dropped the buffer with the stack frame
+and kept the increments — attempts drifted above dead_attempts with no
+forensic record anywhere. That drift was misdocumented here as
+"cosmetic"; it is not: attempts feeds `dispatch.shelve_threshold`, and
+the missing rows sent a 2026-08-08 operator audit down the wrong path
+(goal 7486: attempts=10 vs 7 dead_attempts rows, the 3 lost to gateway
+HTTP 500s escaping the loop).
 """
 from __future__ import annotations
 
@@ -569,8 +572,15 @@ def run_with_session_retries(
     decision_id: int | None = None,
     initial_sid: str | None = None,
     rescue_template: str = "_shared/fresh_rescue_stage2.md",
+    kind: str | None = None,
 ) -> PipelineResult:
     """Run a kind-agnostic in-pipeline retry loop.
+
+    `kind` is the pipeline kind (`formalizer` / `backward` / …). The
+    loop itself stays kind-agnostic; the name is carried only so the
+    rc/liveness readings can resolve WHICH PROVIDER is seated and read
+    its declaration (`llm/capabilities.py`) instead of assuming claude's
+    contracts. None = unknown seat, which degrades conservatively.
 
     `rescue_template`: the fresh-sid takeover's ship-or-bail menu. The
     default menu is GOAL-job shaped (patch.lean / stubs / leaf-bypass);
@@ -598,8 +608,8 @@ def run_with_session_retries(
          * spawn_fast_fail / quota_exhausted / missing_dep → return
            outcome='failed' immediately with the matching reason
            (infra noise; dispatcher applies cooldown). Prior-iteration
-           pending_failures still flush; this iteration's failure is
-           NOT recorded against the goal's budget.
+           failures are already recorded (eager, v38); this iteration's
+           failure is NOT recorded against the goal's budget.
          * other rc!=0 → write dead_attempt, attempts++, fall through
            to next iteration with the failure detail as retry_context.
       4. rc==0 → invoke `parse_fn`. Terminal outcomes (proved /
@@ -621,15 +631,22 @@ def run_with_session_retries(
       - cascade re-check via `goal_still_active` is skipped (no goal to
         check; the originating Strategist Inject already authorised
         this pipeline; Strategist self-feedback handles convergence).
-      - `buffer_failure` skips `increment_goal_attempts` + TREE refresh
+      - `record_failure` skips `increment_goal_attempts` + TREE refresh
         (no goal counters to bump, no tree edge to redraw).
-      Forensic dead_attempts still buffer through `pending_failures`;
-      the dispatcher flushes them with target_kind='Problem'.
+      Forensic dead_attempts are still written (eagerly, v38) with
+      target_id=0 + target_kind='Problem'.
 
     On budget exhaustion without a terminal outcome, returns
     outcome='exhausted' carrying the most recent failure reason/detail
     for forensic visibility.
     """
+    # Which provider is seated for this kind, and what it says it can
+    # tell us. Resolved once per pipeline run (a seat can move between
+    # providers between runs, never inside one).
+    from ..llm import capabilities as _capabilities
+    _provider = _capabilities.provider_for_kind(kind)
+    _liveness = _capabilities.liveness_clock(_provider, kind or "")
+
     if goal_id is not None:
         goal = db.get_goal(conn, goal_id)
         if goal is None:
@@ -667,40 +684,66 @@ def run_with_session_retries(
     sid = initial_sid or str(uuid.uuid4())
     last_reason: str = ""
     last_detail: str = ""
-    pending_failures: list[dict] = []
 
-    def buffer_failure(reason: str, detail: str, proposal_md: str = "") -> None:
+    def record_failure(reason: str, detail: str,
+                       proposal_md: str = "") -> None:
         # Snapshot agent output BEFORE next iteration's framework-side
         # mutations (Builder backup restore / Backward proofs unlink)
         # so each record captures the agent state at failure time.
-        pending_failures.append({
-            "reason": reason,
-            "detail": detail,
-            "proposal_md": proposal_md,
-            "artifacts": collect_artifacts(attempts_dir),
-        })
-        # Eager attempts++ for live operator visibility (TREE.md +
-        # `asterism status` show retry progress mid-pipeline). The
-        # paired dead_attempts row is still buffered for FK ordering
-        # (pipelines.id FK target written by dispatcher post-return);
-        # crash mid-pipeline leaves attempts inflated by N relative to
-        # dead_attempts, but the drift is cosmetic — bfs_refill /
-        # threshold checks treat attempts as authoritative either way.
         #
-        # Goal-less pipelines (Forward, goal_id=None) skip both: no
-        # goal.attempts to increment and no goal-rooted tree edge to
-        # redraw. The Forward dispatch path also writes its own
-        # `## Forward` subtree on cascade (tree.py:render).
+        # v38 — written EAGERLY: the pipelines row exists from dispatch
+        # time (`db.record_pipeline_start`), so the dead_attempts FK
+        # holds mid-loop. Evidence row FIRST, then the paired
+        # attempts++ — a crash between the two under-counts attempts
+        # rather than leaving an increment with no forensic record
+        # (the pre-v38 buffer-until-normal-return protocol lost the
+        # rows whenever the worker thread died by exception:
+        # goal 7486, 2026-08-08).
+        #
+        # Goal-LESS sub-loops (librarian cleanup/audit/simplify per-file
+        # passes) mint DERIVED pipeline ids (`<pid>-audit-<stem>`) that
+        # have no pipelines row (some run with conn=None entirely) — the
+        # FK would reject the write. No attempts counter exists there,
+        # so nothing can drift; their per-retry records were discarded
+        # pre-v38 too (the caller drops the result). Skip with a log
+        # line rather than crash the loop. Goal-BOUND pipelines always
+        # carry the dispatch-time pid; a missing row there is a
+        # dispatch bug and the IntegrityError should surface loudly.
+        if goal_id is None and (conn is None or conn.execute(
+                "SELECT 1 FROM pipelines WHERE id = ?",
+                (pipeline_id,)).fetchone() is None):
+            print(f"[retry] {pipeline_id}: failure '{reason}' not "
+                  f"recorded to dead_attempts — derived sub-spawn id "
+                  f"with no pipelines row", flush=True)
+            return
+        arts = collect_artifacts(attempts_dir)
+        db.record_dead_attempt(
+            conn,
+            target_id=(goal_id if goal_id is not None else 0),
+            target_kind=("Goal" if goal_id is not None else "Problem"),
+            pipeline_id=pipeline_id,
+            failure_reason=reason,
+            failure_detail=detail,
+            proposal_md=proposal_md,
+            artifacts=(json.dumps(arts) if arts else ""),
+        )
+        # goals.attempts++ pairs 1:1 with the row above; TREE.md +
+        # `asterism status` show retry progress mid-pipeline.
+        # Goal-less pipelines (Forward, goal_id=None) have no attempts
+        # counter and no goal-rooted tree edge to redraw — the forensic
+        # row above (target_id=0 + target_kind='Problem', migration
+        # plan §C option 1) is their only side effect. The Forward
+        # dispatch path also writes its own `## Forward` subtree on
+        # cascade (tree.py:render).
         if goal_id is not None:
             db.increment_goal_attempts(conn, goal_id)
             if workspace is not None:
                 tree.write_for_target(conn, workspace, str(goal_id), "Goal")
 
     def attach(result: PipelineResult) -> PipelineResult:
-        # Always thread the buffered failures through the return value.
-        # Caller (`dispatcher._run_pipeline`) flushes them after the
-        # pipelines row INSERT.
-        result.pending_failures = pending_failures
+        # Per-retry failures were already recorded eagerly (v38) — this
+        # hook only runs the reflection / feedback tail before the
+        # result crosses back to the dispatcher.
         _maybe_reflect(result)
         return result
 
@@ -933,7 +976,7 @@ def run_with_session_retries(
                 sid = outcome.last_sid
                 if outcome.terminal_result is not None:
                     return attach(outcome.terminal_result)
-                buffer_failure("agent_stuck_thinking",
+                record_failure("agent_stuck_thinking",
                                "; ".join(outcome.detail_parts))
                 last_reason = "agent_stuck_thinking"
                 # Task #8: carry the takeover's real failure details into
@@ -958,7 +1001,8 @@ def run_with_session_retries(
             # "salvage parse itself raised". Reason stays
             # `agent_timeout` so the operator-level "this is a
             # timeout" signal is not lost.
-            reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
+            reason, detail = _spawn_failure(
+                rc, attempts_dir, spawn_dur, kind=kind)
             postmortem_fn(sid)
             if timeout_result is not None:
                 salvage_note = (
@@ -967,18 +1011,35 @@ def run_with_session_retries(
                     f"{(timeout_result.failure_detail or '')[:200]}")
             if salvage_note:
                 detail = f"{detail}; {salvage_note}"
-            # Detector verdict: only assert "active" when the parser
-            # state file actually exists. Missing file (non-stream-json
-            # spawn, write IO error, future code path) → record
-            # `unavailable` so operators don't misread "active" as a
-            # detector observation when in reality nothing was sampled.
-            if parser_state is not None:
+            # Detector verdict: only assert "active" when a detector
+            # actually ran. Two things can make that false, and the
+            # difference matters:
+            #
+            #  * the PROVIDER emits no stream at all
+            #    (`capabilities.stream_events=False`, agy). There is no
+            #    detector to be unavailable — the wall timeout IS the
+            #    whole liveness guarantee, so the timeout is a genuine
+            #    budget exhaustion and not an undetected thinking trap.
+            #    File presence cannot tell us this: agy writes
+            #    `_parser_state.json` too (usage accounting, no `state`
+            #    key), so the old check read "a detector ran" for a
+            #    provider that has never had one and printed
+            #    `[detector verdict: active state=— last_stop_reason=—]`
+            #    — a confident observation about nothing.
+            #  * the file is genuinely missing (postmortem / rescue
+            #    spawn, write IO error) on a provider that DOES stream.
+            if _liveness == _capabilities.LIVENESS_TIMEOUT_ONLY:
+                detail = (f"{detail}; [detector verdict: none — provider "
+                          f"{_provider!r} declares no stream events; the "
+                          f"overall {int(spawn_dur)}s wall was the only "
+                          f"liveness signal]")
+            elif parser_state is not None:
                 detail = (f"{detail}; [detector verdict: active "
                           f"state={state_label} "
                           f"last_stop_reason={stop_label}]")
             else:
                 detail = f"{detail}; [detector verdict: unavailable]"
-            buffer_failure(reason, detail)
+            record_failure(reason, detail)
             return attach(PipelineResult(outcome="exhausted",
                                          failure_reason=reason,
                                          failure_detail=detail))
@@ -1004,7 +1065,7 @@ def run_with_session_retries(
             sid = outcome.last_sid
             if outcome.terminal_result is not None:
                 return attach(outcome.terminal_result)
-            buffer_failure("agent_stuck_thinking",
+            record_failure("agent_stuck_thinking",
                            "; ".join(outcome.detail_parts))
             last_reason = "agent_stuck_thinking"
             # Task #8: same retry_context enrichment as the timeout-trap
@@ -1014,17 +1075,21 @@ def run_with_session_retries(
             continue
 
         if rc != SpawnRC.OK:
-            reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
-            if reason == "spawn_fast_fail":
-                # Infra noise (claude.exe crash / cwd). No dead_attempt
-                # write, no attempts++ — dispatcher's cascade_one
-                # applies cooldown + CONSEC tracking. Prior-iteration
-                # buffered failures still flush; this iteration's
-                # fast-fail itself is dropped.
+            reason, detail = _spawn_failure(
+                rc, attempts_dir, spawn_dur, kind=kind)
+            from ..state import failures as _failures
+            if _failures.is_infra(reason):
+                # Infra noise (claude.exe crash / cwd fast-fail, or an
+                # OS/system termination — `system_killed`, 2026-08-08).
+                # No dead_attempt write, no attempts++ — dispatcher's
+                # cascade_one applies cooldown (+ CONSEC tracking for
+                # fast-fail). Prior-iteration failures are already in
+                # DB (eager, v38); this iteration's infra death is
+                # simply not recorded.
                 return attach(PipelineResult(outcome="failed",
                                              failure_reason=reason,
                                              failure_detail=detail))
-            buffer_failure(reason, detail)
+            record_failure(reason, detail)
             last_reason, last_detail = reason, detail
             continue
 
@@ -1034,8 +1099,8 @@ def run_with_session_retries(
                 or result.failure_reason in _TERMINAL_DECLINE_REASONS):
             return attach(result)
 
-        # Non-terminal parse failure — buffer + retry
-        buffer_failure(result.failure_reason, result.failure_detail,
+        # Non-terminal parse failure — record (eager) + retry
+        record_failure(result.failure_reason, result.failure_detail,
                        result.proposal_md)
         last_reason, last_detail = result.failure_reason, result.failure_detail
 
@@ -1083,13 +1148,13 @@ def run_lsp_edit_loop(
         `--resume` the session, so this is NOT called then).
       - `parse_fn()`: read `target`, run the stage's gate, return a
         PipelineResult (terminal success/decline → returned verbatim; any
-        other failure → buffered + retried by the inner loop).
+        other failure → recorded + retried by the inner loop).
       - `kind` / `prompt_path` / `problem` / `problem_dir`: the spawn identity.
       - optional `postmortem_fn` / `reflection_fn` / `feedback_fn` / `death_fn`
         hooks (Builder wires all; migrate-hole-fill none; audit feedback only).
 
     Everything INVARIANT — cold vs warm session resume, stale-session re-mint,
-    timeout / thinking-trap takeover, pending-failures buffering, budget /
+    timeout / thinking-trap takeover, eager failure recording, budget /
     cascade re-check — is owned by `run_with_session_retries` underneath.
 
     `release_session_after` releases the gateway slot in a `finally` once the
@@ -1124,7 +1189,8 @@ def run_lsp_edit_loop(
             postmortem_fn=postmortem_fn or (lambda _sid: None),
             workspace=workspace, reflection_fn=reflection_fn,
             feedback_fn=feedback_fn, death_fn=death_fn, decision_id=decision_id,
-            initial_sid=initial_sid, rescue_template=rescue_template)
+            initial_sid=initial_sid, rescue_template=rescue_template,
+            kind=kind)
     finally:
         if release_session_after:
             _release_session(attempts_dir)

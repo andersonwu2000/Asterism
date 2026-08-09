@@ -37,7 +37,8 @@ def _py_files(*roots: Path) -> list[Path]:
 # multi-line expression (e.g. librarian.py's `(... if _wok else "x")`), which a
 # `failure_reason=\s*"x"` regex silently skips — that gap shipped a real miss
 # (librarian_warnings_remain). Walk every `failure_reason=<expr>` keyword,
-# every `_abort("x", …)` / `buffer_failure("x", …)` positional call, and
+# every `_abort("x", …)` / `record_failure("x", …)` positional call (the
+# latter named buffer_failure pre-v38 — keep both spellings scanned), and
 # every positional `WorkerDone(…, "x")` (failure_reason is field 6) —
 # the positional forms were blind spots that let agent_stuck_thinking
 # ship unregistered (07-30 audit) — and collect every snake_case string
@@ -64,7 +65,8 @@ def _code_failure_reasons() -> set[str]:
             elif isinstance(node, ast.Call):
                 fn = node.func
                 name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
-                if (name in ("_abort", "buffer_failure") and node.args
+                if (name in ("_abort", "buffer_failure", "record_failure")
+                        and node.args
                         and isinstance(node.args[0], ast.Constant)
                         and isinstance(node.args[0].value, str)
                         and _SNAKE.match(node.args[0].value)):

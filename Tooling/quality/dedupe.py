@@ -187,6 +187,36 @@ def _signature_binder_count(text: str) -> int:
     return count
 
 
+def _normalized_signature(text: str) -> str | None:
+    """`_extract_full_signature` with whitespace collapsed — the tier-0
+    identity key (2026-08-08).
+
+    Why a STRING check in front of a kernel probe: the Lean probes below
+    can be blind. `apply @canonical <;> assumption` unifies the
+    CONCLUSION first, so a statement whose conclusion does not mention
+    every binder leaves those metavariables unconstrained, `assumption`
+    mis-assigns them, and the probe reports "not equal" — deterministically
+    — for a pair that is byte-identical. That is not hypothetical: goal
+    7499 was a character-for-character copy of its own parent 7486, the
+    probe ran on the pair at commit time and returned False, and the copy
+    entered the tree (whence a dead route, five shelved goals and two
+    Strategist wakes spent catching it by hand).
+
+    The normalization is deliberately CONSERVATIVE — comments (via
+    `_extract_full_signature`) and whitespace only. NOT alpha-renaming,
+    NOT notation folding: the property that makes a tier-0 hit safe to
+    act on WITHOUT the kernel is `normalized-equal ⇒ literally the same
+    statement ⇒ defeq`, and every cleverer rule trades that certainty for
+    recall. Recall is what the kernel probes are for; this tier exists to
+    be the one that cannot be wrong.
+    """
+    sig = _extract_full_signature(text)
+    if sig is None:
+        return None
+    flat = " ".join(sig.split())
+    return flat or None
+
+
 def _extract_full_signature(text: str) -> str | None:
     """Return `<binders> : <conclusion>` portion of the first theorem.
 
@@ -510,7 +540,7 @@ def _batch_provable_via_apply(
     workspace: Path,
     problem: str,
     pairs: list[tuple[str, str, str]],
-) -> list[bool]:
+) -> list[bool | None]:
     """For each (cand_signature, canonical_module, canonical_fqn)
     pair, check if `apply @canonical_fqn <;> assumption` proves
     `<cand_signature>`.
@@ -615,7 +645,7 @@ def _batch_provable_via_apply(
     if metaprog.scan_metaprogramming(content) is not None:
         print("[dedupe] probe skipped — candidate signature carries a "
               "metaprogramming entry", flush=True)
-        return [False] * len(pairs)
+        return [None] * len(pairs)
 
     tmp_dir = workspace / ".attempts"
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -639,9 +669,19 @@ def _batch_provable_via_apply(
         output = r.stdout + r.stderr
         rc = r.returncode
     except subprocess.TimeoutExpired:
-        return [False] * len(pairs)
-    except OSError:
-        return [False] * len(pairs)
+        # UNKNOWN, not "not equal": a swallowed probe used to be
+        # indistinguishable from a completed scan that found nothing, so
+        # the summary line "checked N pairs" read as evidence when it was
+        # silence (2026-08-08). The sentinel makes the difference
+        # un-flattenable — callers must decide, and the count is logged.
+        print(f"[dedupe] probe TIMED OUT after {_BATCH_TIMEOUT_SEC:.0f}s "
+              f"— {len(pairs)} pair(s) UNCHECKED (not 'no duplicate')",
+              flush=True)
+        return [None] * len(pairs)
+    except OSError as e:
+        print(f"[dedupe] probe could not run ({e}) — {len(pairs)} pair(s) "
+              f"UNCHECKED (not 'no duplicate')", flush=True)
+        return [None] * len(pairs)
     finally:
         try:
             tmp_file.unlink()
@@ -703,7 +743,7 @@ def _batch_provable_via_apply(
     # in its range. Backstop: everything at/after a maxErrors cutoff is
     # UNKNOWN (Lean exited before elaborating it), never True.
     cutoff = _max_errors_cutoff(output)
-    results: list[bool] = []
+    results: list[bool | None] = []
     for i, start in enumerate(pair_start_lines):
         end = (pair_start_lines[i + 1] - 1
                if i + 1 < len(pair_start_lines) else len(lines))
@@ -777,7 +817,7 @@ def _batch_statement_defeq(
     workspace: Path,
     problem: str,
     pairs: list[tuple[str, str, str]],
-) -> list[bool]:
+) -> list[bool | None]:
     """For each (cand_forall, twin_forall, twin_module) pair, check the
     two statement TYPES are definitionally equal via an `rfl` probe:
 
@@ -858,9 +898,19 @@ def _batch_statement_defeq(
         output = r.stdout + r.stderr
         rc = r.returncode
     except subprocess.TimeoutExpired:
-        return [False] * len(pairs)
-    except OSError:
-        return [False] * len(pairs)
+        # UNKNOWN, not "not equal": a swallowed probe used to be
+        # indistinguishable from a completed scan that found nothing, so
+        # the summary line "checked N pairs" read as evidence when it was
+        # silence (2026-08-08). The sentinel makes the difference
+        # un-flattenable — callers must decide, and the count is logged.
+        print(f"[dedupe] probe TIMED OUT after {_BATCH_TIMEOUT_SEC:.0f}s "
+              f"— {len(pairs)} pair(s) UNCHECKED (not 'no duplicate')",
+              flush=True)
+        return [None] * len(pairs)
+    except OSError as e:
+        print(f"[dedupe] probe could not run ({e}) — {len(pairs)} pair(s) "
+              f"UNCHECKED (not 'no duplicate')", flush=True)
+        return [None] * len(pairs)
     finally:
         try:
             tmp_file.unlink()
@@ -887,7 +937,7 @@ def _batch_statement_defeq(
         return [False] * len(pairs)
 
     cutoff = _max_errors_cutoff(output)
-    results: list[bool] = []
+    results: list[bool | None] = []
     for i, start in enumerate(pair_start_lines):
         end = (pair_start_lines[i + 1] - 1
                if i + 1 < len(pair_start_lines) else len(lines))
@@ -1509,6 +1559,45 @@ def find_canonicals_batch(
         cand_sig = _extract_full_signature(full_text)
         if cand_sig is None:
             continue
+        # ── Tier 0: syntactic identity, decided without Lean ──────────
+        # Normalized-equal signatures ARE the same statement, so no probe
+        # can legitimately disagree — and one of them demonstrably does
+        # (see `_normalized_signature`). Checked before the pool is turned
+        # into probe pairs, in pool order, so it inherits the same
+        # first-hit priority the kernel tiers use.
+        cand_norm = _normalized_signature(full_text)
+        if cand_norm is not None and result[ci] is None:
+            for anc_row, anc_text, kind in cand_pools[ci]:
+                # BLOCKING verdicts only. A tier-0 hit says "these two
+                # signature TEXTS are the same", which is not quite the
+                # same as "these two TYPES are the same": identical text
+                # in two files can elaborate differently under different
+                # `open` / `variable` scopes. That gap is harmless when
+                # the verdict is "reject this sub-goal, decompose
+                # differently" (worst case, one wasted retry) and is NOT
+                # harmless when the verdict GRANTS a proof — an alias
+                # makes the candidate inherit the canonical's proof, so
+                # it stays kernel-confirmed (task #6: a `_2` slug
+                # collision must never alias on a name, and it must not
+                # alias on a string either).
+                if kind not in (KIND_NO_PROGRESS, KIND_DISPROVED,
+                                KIND_DEAD):
+                    continue
+                if _normalized_signature(anc_text) != cand_norm:
+                    continue
+                # `slug` is not in every pool query's SELECT — name the
+                # canonical by whatever the row actually carries.
+                _keys = anc_row.keys()
+                _name = (anc_row["slug"] if "slug" in _keys
+                         else f"goal {anc_row['id']}")
+                print(f"[dedupe] tier-0 identity: candidate {ci} "
+                      f"({slug}) is byte-equal to `{_name}` "
+                      f"({kind}) — no probe needed", flush=True)
+                result[ci] = CanonicalMatch(
+                    goal_id=int(anc_row["id"]), kind=kind)
+                break
+        if result[ci] is not None:
+            continue
         for anc_row, anc_text, kind in cand_pools[ci]:
             canonical_thm = _extract_theorem_name(anc_text) or ""
             # DB stores workspace-relative lean_path strings; resolve
@@ -1593,7 +1682,12 @@ def find_canonicals_batch(
     # by Tier 1 is also skipped here so Tier 1 hits aren't overwritten
     # (e.g. by a disproved tier match that would change `kind`).
     for (ci, kind, payload), is_eq in zip(pair_origin, flags):
-        if not is_eq:
+        # `is_eq is None` = the probe never answered (timeout / OSError /
+        # metaprogramming skip). Treated as "no hit" exactly as before —
+        # dedupe is an optimisation, never a soundness verdict — but it
+        # is COUNTED and reported, so a scan that silently did nothing
+        # can no longer masquerade as a scan that found nothing.
+        if is_eq is not True:
             continue
         if result[ci] is not None:
             continue
@@ -1673,10 +1767,14 @@ def find_canonicals_batch(
     n_library = sum(1 for m in result if m and m.kind == "library_alias")
     n_reuse = sum(1 for m in result if m and m.kind == "reuse")
     n_dead = sum(1 for m in result if m and m.kind == "dead")
+    n_unchecked = sum(1 for f in flags if f is None)
     print(f"[dedupe] checked {n} candidate(s) against {len(pairs)} "
           f"pair(s); alias={n_alias} disproved={n_disproved} "
           f"no_progress={n_noprog} library={n_library} reuse={n_reuse} "
-          f"(defeq={n_defeq}) dead={n_dead}",
+          f"(defeq={n_defeq}) dead={n_dead}"
+          + (f" — WARNING: {n_unchecked} pair(s) UNCHECKED (probe did "
+             f"not answer; a duplicate here would not have been seen)"
+             if n_unchecked else ""),
           flush=True)
     return result
 

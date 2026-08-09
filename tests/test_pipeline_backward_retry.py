@@ -79,6 +79,13 @@ def _seed_root_goal(tmp_path: Path, conn: sqlite3.Connection) -> int:
     )
 
 
+def _start_pipeline(conn: sqlite3.Connection, pid: str, gid: int) -> None:
+    """v38 - play the dispatcher's dispatch-time INSERT so the retry
+    helper's EAGER dead_attempts writes have their FK target."""
+    db.record_pipeline_start(conn, pipeline_id=pid, kind="Formalizer",
+                             target_id=str(gid), target_kind="Goal")
+
+
 def test_first_dispatch_mints_session_id_and_passes_to_spawn(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -86,6 +93,7 @@ def test_first_dispatch_mints_session_id_and_passes_to_spawn(
     """First retry-loop iteration is cold: helper mints a fresh sid
     and passes it with is_retry=False / retry_context=None."""
     gid = _seed_root_goal(tmp_path, conn)
+    _start_pipeline(conn, "pid-bw1", gid)
     captured = {}
 
     def fake_spawn(**kw):
@@ -228,6 +236,7 @@ def test_backward_agent_failure_keeps_strategy_dead(
     persistence, signature mismatch) keep the strategy row as 'dead'
     for forensic review. Only infra reasons trigger DELETE."""
     gid = _seed_root_goal(tmp_path, conn)
+    _start_pipeline(conn, "pid-bw-agent-fail", gid)
     # Watchdog STUCK_THINKING for cold spawn AND fresh-rescue stage 2
     # AND postmortem → entire flow exhausts attempts and bails with
     # an agent-side failure_reason (not in _INFRA_REASONS).
@@ -300,6 +309,7 @@ def test_each_dispatch_mints_fresh_strategy_id(
     sid + one strategy_id within a single pipeline call, so cross-
     pipeline always gets fresh ids."""
     gid = _seed_root_goal(tmp_path, conn)
+    _start_pipeline(conn, "pid-bw-cold", gid)
     rel = db.get_goal(conn, gid)["lean_path"]
     stale_sid = db.insert_strategy(
         conn, goal_id=gid, lean_path=rel,
@@ -341,6 +351,7 @@ def test_backward_wrapper_persists_progress_note_after_timeout(
     _progress.md with state + blockers. Wrapper persists _progress.md
     into .drafts/ so the next dispatch's Context.md surfaces it."""
     gid = _seed_root_goal(tmp_path, conn)
+    _start_pipeline(conn, "pid-bw-timeout", gid)
 
     def fake_spawn(**kw):
         if kw.get("is_postmortem"):
@@ -372,6 +383,7 @@ def test_backward_timeout_dispatches_postmortem_with_correct_args(
     backward_postmortem.md, and the same session_id as the killed
     main spawn (so --resume can revive its memory)."""
     gid = _seed_root_goal(tmp_path, conn)
+    _start_pipeline(conn, "pid-bw-pm-args", gid)
     calls = []
 
     def fake_spawn(**kw):
@@ -402,6 +414,7 @@ def test_backward_wrapper_no_persist_when_no_postmortem_note(
     as it would have without F55. Best-effort design: no exception
     blocks the timeout flow."""
     gid = _seed_root_goal(tmp_path, conn)
+    _start_pipeline(conn, "pid-bw-nodump", gid)
 
     def fake_spawn(**kw):
         if kw.get("is_postmortem"):
@@ -494,7 +507,13 @@ def test_backward_progress_md_with_real_split_does_not_trigger_bail(
         (attempts / "new_sub_one.lean").write_text(
             "-- sub_one: real sub-lemma\n"
             "import Mathlib\nnamespace Problems.p\n"
-            "theorem sub_one : True := by sorry\n"
+            # NOT `True`: the root goal in this fixture IS `True`, so a
+            # `True` sub-goal restates its own parent verbatim — dedupe
+            # tier-0 now rejects that as circular (correctly; the probe
+            # blindness is what let this fixture through before). This
+            # test is about the `_progress.md` bail discriminator, so the
+            # split has to be a REAL one.
+            "theorem sub_one : 0 = 0 := by sorry\n"
             "end Problems.p\n",
             encoding="utf-8")
         (attempts / "_progress.md").write_text(
@@ -551,7 +570,13 @@ def test_backward_wrapper_clears_draft_on_goal_no_longer_open(
         (attempts / f"new_sub_one.lean").write_text(
             "-- sub_one: race-test sub\n"
             "import Mathlib\nnamespace Problems.p\n"
-            "theorem sub_one : True := by sorry\n"
+            # NOT `True`: the root goal in this fixture IS `True`, so a
+            # `True` sub-goal restates its own parent verbatim — dedupe
+            # tier-0 now rejects that as circular (correctly; the probe
+            # blindness is what let this fixture through before). This
+            # test is about the `_progress.md` bail discriminator, so the
+            # split has to be a REAL one.
+            "theorem sub_one : 0 = 0 := by sorry\n"
             "end Problems.p\n",
             encoding="utf-8")
         # Race: between spawn return and the inner's status re-check
@@ -640,6 +665,11 @@ def test_backward_leaf_bypass_axiom_violation_rejects_at_acceptance(
     axiom_violation as a retryable failure (analogous to
     lake_build_error)."""
     gid = _seed_root_goal(tmp_path, conn)
+    # v38 — the dispatch-time pipelines row must exist for the helper's
+    # eager dead_attempts writes (FK).
+    db.record_pipeline_start(
+        conn, pipeline_id="pid-leaf-bypass-axiom-violation",
+        kind="Formalizer", target_id=str(gid), target_kind="Goal")
     from Tooling.lsp import lifecycle as _gl
     # Backward's leaf-bypass verifies on the pipeline's OWN session slot
     # (verify_in_session); override it to surface a sorryAx-tainted elaborate.
@@ -673,18 +703,21 @@ def test_backward_leaf_bypass_axiom_violation_rejects_at_acceptance(
         mfst=mfst, pipeline_id="pid-leaf-bypass-axiom-violation")
 
     # axiom_violation is RETRYABLE (unlike agent_infeasible / agent_
-    # declined which are terminal): helper buffers + retries; with
-    # fake_spawn always shipping the same sorry-tainted patch, the
-    # helper exhausts budget. Last buffered failure is axiom_violation.
+    # declined which are terminal): helper records (eagerly, v38) +
+    # retries; with fake_spawn always shipping the same sorry-tainted
+    # patch, the helper exhausts budget. Every recorded failure is
+    # axiom_violation.
     assert r.outcome == "exhausted"
     assert r.failure_reason == "axiom_violation"
     assert "sorryAx" in r.failure_detail
-    assert len(r.pending_failures) >= 2, (
+    da = conn.execute(
+        "SELECT failure_reason FROM dead_attempts WHERE pipeline_id=?",
+        ("pid-leaf-bypass-axiom-violation",)).fetchall()
+    assert len(da) >= 2, (
         f"expected helper to retry on axiom_violation; got "
-        f"{len(r.pending_failures)} buffered failure(s)"
+        f"{len(da)} recorded failure(s)"
     )
-    assert all(pf["reason"] == "axiom_violation"
-                for pf in r.pending_failures)
+    assert all(row["failure_reason"] == "axiom_violation" for row in da)
     # Strategy never promoted (scratch_path stays empty).
     rows = conn.execute(
         "SELECT scratch_path FROM strategies WHERE goal_id=?",
@@ -722,6 +755,7 @@ def test_backward_no_subs_with_sorry_body_still_parse_proposal_fail(
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
+    _start_pipeline(conn, "pid-empty", gid)
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
         mfst=manifest.Manifest(problem="p", statement="True"),

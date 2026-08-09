@@ -486,6 +486,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     # filename used to claim (and got wrong) now lives where it can be
     # true — one line per pipeline, with the model it actually runs.
     print(seat_banner(), flush=True)
+    # Provider drift guard (background, non-fatal): does each seated
+    # CLI still answer the way its capability entry says it does? Every
+    # quota / misconfig detector we own is a substring match against
+    # vendor prose, so a wording change at the SAME version is silent
+    # until a run gets nowhere. Off the startup path because the probes
+    # are CLI cold starts and nothing about dispatch waits on them.
+    from ..llm import drift_guard as _drift_guard
+    _drift_guard.start_background(workspace)
     try:
         rc = dispatcher.run(
             workspace,
@@ -1033,6 +1041,20 @@ def _reset_problem_files(workspace: Path, pdir: Path, problem: str,
         if not _robust_rmtree(presearch_dir):
             failed_files.append(".presearch/")
 
+    # Drop .groups/ (per-sub-group `PROGRAMME.md`, keyed by group id).
+    # The top group's programme is the problem-root PROGRAMME.md swept
+    # above; sub-groups project into `.groups/<id>/`, so sweeping only the
+    # root was half a fix — task #167, where a rerun's revision 2 cited
+    # `.groups/369` from the run before it. `DELETE FROM groups` clears
+    # the DB side, which makes it the `.presearch` hazard exactly: ids are
+    # re-issued after a reset, and a surviving directory becomes an
+    # UNRELATED new group's research programme — the one file whose whole
+    # job is to carry a worldview forward.
+    groups_dir = pdir / ".groups"
+    if groups_dir.exists():
+        if not _robust_rmtree(groups_dir):
+            failed_files.append(".groups/")
+
     if failed_files:
         print(f"FAIL: reset {problem}: could not remove "
               f"{len(failed_files)} file(s) after retries:",
@@ -1348,6 +1370,28 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         line("WARN", "agy CLI not on PATH (Antigravity provider "
                      "unavailable)")
+
+    # Provider capability declarations vs. what is actually installed.
+    # The daemon runs this in the background at start; doctor runs it in
+    # the foreground because doctor IS the place you look when a
+    # detector has gone quiet. Warnings only — a version bump or a
+    # reworded error never blocks a run.
+    print("\n=== Provider capabilities ===")
+    from ..llm import capabilities as _caps
+    from ..llm import drift_guard as _drift
+    for _prov in sorted(_caps.CAPABILITIES):
+        _c = _caps.CAPABILITIES[_prov]
+        line("OK", f"{_prov}: rc={_c.rc_contract} "
+                   f"usage_endpoint={_c.usage_endpoint} "
+                   f"stream_events={_c.stream_events} "
+                   f"resume={_c.session_resume} "
+                   f"enforcement={_c.enforcement_strength} "
+                   f"tested@{_c.tested_version or '—'}")
+    try:
+        for _w in _drift.check(workspace):
+            line("WARN", _w)
+    except Exception as exc:  # noqa: BLE001 — a guard never fails doctor
+        line("WARN", f"provider drift guard errored: {exc}")
 
     # Lake (Lean build tool)
     if shutil.which("lake"):

@@ -75,6 +75,53 @@ def confirmed_quota_deadline(now: float, *,
     return None
 
 
+def park_in_pipeline(label: str, *, budget_sec: float,
+                     sleep_fn=time.sleep) -> bool:
+    """Sleep an IN-FLIGHT pipeline thread to a confirmed quota reset.
+
+    The dispatcher's quota-wait holds FUTURE dispatch; it cannot save a
+    debate already running inside the worker pool. So the author↔judge
+    loop needs its own park: 2026-08-07, an 8-round Programme debate
+    (~2.5h) died at round 8 because the subscription window expired
+    mid-revision and the retry policy was 2×15s against a 1.5h outage.
+    The end time was knowable the whole time — the usage endpoint
+    publishes `resets_at` — and the ledger sat one import away.
+
+    Discipline mirrors `maybe_enter`'s: only a POSITIVE endpoint answer
+    parks. The incident's rc was 1, not 126 (quota death wearing
+    `spawn_fast_fail`'s clothes), so callers must probe on ANY infra
+    rc rather than keying on 126 — and a genuinely broken exe still
+    fails fast because the endpoint answers "healthy".
+
+    `budget_sec` is the caller's own ceiling, and it is a correctness
+    parameter, not a comfort one: `release_expired_leases` un-claims a
+    queue row on AGE ALONE even when the owner is alive (db.py, TTL
+    `LEASE_TTL_SEC` = 6h), so a park that pushes wake-elapsed past the
+    TTL invites a second Strategist onto the same group. Callers pass
+    what is left of their safe window; a reset beyond it declines to
+    park (weekly-scoped caps can be days out — sleeping a pool thread
+    that long is absurd) and the caller keeps its old failure path.
+
+    Returns True iff it parked and the caller should retry the spawn.
+    """
+    if budget_sec <= 0:
+        return False
+    now = time.time()
+    deadline = confirmed_quota_deadline(now, attempts=QUOTA_CONFIRM_ATTEMPTS)
+    if deadline is None:
+        return False
+    wait = deadline - now
+    if wait > budget_sec:
+        print(f"[quota-park] {label}: window resets {_fmt_epoch(deadline)} "
+              f"({wait / 60:.0f}min) — beyond this wake's {budget_sec / 60:.0f}"
+              f"min budget; not parking", flush=True)
+        return False
+    print(f"[quota-park] {label}: sleeping {wait / 60:.0f}min to "
+          f"{_fmt_epoch(deadline)}; the proposal stays alive", flush=True)
+    sleep_fn(max(0.0, wait))
+    return True
+
+
 def _confirmed_available() -> bool:
     """True only on a positive endpoint answer that no window is
     exhausted. Unreachable/unparseable ≠ recovered — keep sleeping."""

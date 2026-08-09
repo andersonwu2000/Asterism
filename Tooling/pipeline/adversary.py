@@ -35,6 +35,19 @@ from typing import Any, Optional
 
 from ..state import failures
 
+
+def _rc_reason(rc: int) -> str:
+    """The judge's rc, read against the JUDGE's provider contract.
+
+    The Adversary routinely sits on a different provider from its
+    author, and an `uninformative` rc (agy exits 1 for every ERROR
+    envelope) must not be reported as a specific cause — see
+    `llm/capabilities.py`."""
+    from ..llm import capabilities as _caps
+    return failures.rc_to_reason(
+        rc, rc_contract=_caps.for_kind("adversary").rc_contract)
+
+
 VERDICT_BASENAME = "verdict.json"
 PROJECTION_DIRNAME = "adversary"
 #: `review` budgets, kept separate on purpose: a judge that produced no
@@ -388,7 +401,8 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
            conn: sqlite3.Connection, problem: str, proposal_body: str,
            decisions, dialogue: list[dict[str, Any]],
            proof_warn: Optional[str],
-           group_id: "int | None" = None) -> tuple[
+           group_id: "int | None" = None,
+           quota_park=None) -> tuple[
                Optional[dict[str, Any]], str, int]:
     """One adversarial round: fresh judge, projection-isolated.
 
@@ -470,7 +484,15 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
             usage_pipeline_id=attempts_dir.name,
         )
         if rc != 0:
-            if (failures.is_infra(failures.rc_to_reason(rc))
+            # A confirmed quota window costs a sleep, not the author's
+            # work (2026-08-08). The judge is fresh-per-round with no
+            # session at stake, so parking here is pure win — and the
+            # caller's budget keeps the wake inside its lease TTL.
+            if (quota_park is not None
+                    and failures.is_infra(_rc_reason(rc))
+                    and quota_park(f"judge round {round_no}")):
+                continue
+            if (failures.is_infra(_rc_reason(rc))
                     and infra_tries < INFRA_SPAWN_RETRIES):
                 infra_tries += 1
                 print(f"[adversary] r{round_no}: spawn rc={rc} "

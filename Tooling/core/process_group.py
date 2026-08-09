@@ -136,6 +136,96 @@ def breakaway_creationflags() -> int:
     return getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
 
 
+_JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x00000100
+
+
+def create_capped_job(per_process_mb: int):
+    """A kill-on-close Job Object with a PER-PROCESS commit cap, for the
+    gateway's `lake serve → lean --server → lean --worker` tree.
+
+    Two holes it closes at once (2026-08-08 post-mortem — one lean
+    worker reached 102 GB of commit and took the workstation down):
+
+      * No ceiling: kernel reduction does not count heartbeats, so a
+        diverging `decide`/whnf allocates ~30 MB/s until the machine
+        dies. With the cap, allocations beyond it FAIL inside that one
+        process — the worker dies loudly, siblings and the OS live.
+      * Unreachable orphans: `taskkill /T` walks the CURRENT
+        parent-child chain, so a worker whose parent died first is
+        re-parented and survives the sweep (it outlived 21 backend
+        restarts that night). Job membership is not affected by
+        re-parenting — `terminate_job` reaps every member, orphan or
+        not, and KILL_ON_JOB_CLOSE backstops a dropped handle.
+
+    Returns the job handle (keep it referenced!), or None off-Windows /
+    on any OS refusal — callers keep the taskkill path as fallback."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        k32.SetInformationJobObject.restype = wintypes.BOOL
+        k32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        ext_cls = _build_structs(ctypes, wintypes)
+        info = ext_cls()
+        info.BasicLimitInformation.LimitFlags = (
+            _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            | _JOB_OBJECT_LIMIT_PROCESS_MEMORY)
+        info.ProcessMemoryLimit = int(per_process_mb) * 1024 * 1024
+        if not k32.SetInformationJobObject(
+                job, _JobObjectExtendedLimitInformation,
+                ctypes.byref(info), ctypes.sizeof(info)):
+            k32.CloseHandle(job)
+            return None
+        return job
+    except Exception:  # noqa: BLE001 — soft fallback, taskkill still runs
+        return None
+
+
+def assign_to_job(job, proc) -> bool:
+    """Assign a freshly-Popen'd child to `job`. Its own descendants then
+    inherit membership automatically. Soft-fails to False (the child
+    keeps running unmanaged; callers keep their fallback kill path)."""
+    if job is None or sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.AssignProcessToJobObject.restype = wintypes.BOOL
+        k32.AssignProcessToJobObject.argtypes = [
+            wintypes.HANDLE, wintypes.HANDLE]
+        return bool(k32.AssignProcessToJobObject(
+            job, int(proc._handle)))  # noqa: SLF001 — Popen's real handle
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def terminate_job(job) -> bool:
+    """TerminateJobObject + CloseHandle: reap EVERY member, including
+    re-parented orphans `taskkill /T` cannot see. Idempotent-ish; soft."""
+    if job is None or sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.TerminateJobObject.restype = wintypes.BOOL
+        k32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        ok = bool(k32.TerminateJobObject(job, 1))
+        k32.CloseHandle(job)
+        return ok
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def no_window_creationflags() -> int:
     """`creationflags` addend that stops a console-subsystem child from
     popping a visible console window when its parent has none (the

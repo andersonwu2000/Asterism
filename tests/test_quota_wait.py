@@ -364,3 +364,61 @@ def test_tick_recheck_respects_cadence(monkeypatch):
     assert quota_wait.tick(
         st, 1000.0 + quota_wait.QUOTA_WAIT_RECHECK_SEC - 1.0,
         enabled=True) is True
+
+
+# ---------------------------------------------------------------------
+# In-pipeline park (2026-08-08)
+# ---------------------------------------------------------------------
+
+def test_park_sleeps_to_a_confirmed_reset(monkeypatch):
+    """The whole point: an 8-round debate whose provider window expires
+    mid-revision waits it out instead of being discarded. The endpoint
+    publishes the end time; 2×15s of blind retry did not."""
+    now = time.time()
+    monkeypatch.setattr(quota_wait, "confirmed_quota_deadline",
+                        lambda n, attempts=1: now + 900)
+    slept = []
+    assert quota_wait.park_in_pipeline(
+        "p revision round 8", budget_sec=3600,
+        sleep_fn=slept.append) is True
+    assert slept and 880 < slept[0] <= 900
+
+
+def test_park_declines_when_the_endpoint_says_healthy(monkeypatch):
+    """Confirmation-gated, mirroring the breaker's discipline: a broken
+    exe must still fail fast. The 2026-08-07 incident's rc was 1, not
+    126 — so callers probe on ANY infra rc and the ENDPOINT decides,
+    which is also why keying on 126 would have missed it."""
+    monkeypatch.setattr(quota_wait, "confirmed_quota_deadline",
+                        lambda n, attempts=1: None)
+    slept = []
+    assert quota_wait.park_in_pipeline(
+        "p judge round 3", budget_sec=3600, sleep_fn=slept.append) is False
+    assert not slept
+
+
+def test_park_declines_beyond_the_caller_budget(monkeypatch):
+    """`release_expired_leases` un-claims a queue row on AGE alone even
+    with this thread alive (TTL 6h), so a park past the caller's window
+    invites a second Strategist onto the same group. A weekly-scoped
+    cap days out must decline, not sleep a pool thread."""
+    now = time.time()
+    monkeypatch.setattr(quota_wait, "confirmed_quota_deadline",
+                        lambda n, attempts=1: now + 3 * 86400)
+    slept = []
+    assert quota_wait.park_in_pipeline(
+        "p revision round 2", budget_sec=2 * 3600,
+        sleep_fn=slept.append) is False
+    assert not slept
+
+
+def test_park_declines_on_exhausted_budget(monkeypatch):
+    """A wake already at its lease horizon parks for nothing — and must
+    not even probe."""
+    probed = []
+    monkeypatch.setattr(
+        quota_wait, "confirmed_quota_deadline",
+        lambda n, attempts=1: probed.append(1) or (time.time() + 60))
+    assert quota_wait.park_in_pipeline(
+        "p", budget_sec=0, sleep_fn=lambda _: None) is False
+    assert not probed

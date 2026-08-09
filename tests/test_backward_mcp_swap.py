@@ -65,6 +65,9 @@ def test_spawn_passes_mcp_config_path(
         captured.update(kw)
         return 124  # bail via timeout, we only care about call args
 
+    db.record_pipeline_start(conn, pipeline_id="pid-bw-mcp",
+                             kind="Formalizer", target_id=str(gid),
+                             target_kind="Goal")  # v38 FK for eager writes
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
@@ -120,6 +123,9 @@ def test_mcp_target_is_patch_lean_not_goal_lean(
     def fake_spawn(**kw):
         return 124
 
+    db.record_pipeline_start(conn, pipeline_id="pid-bw-target-check",
+                             kind="Formalizer", target_id=str(gid),
+                             target_kind="Goal")  # v38 FK for eager writes
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
@@ -162,6 +168,9 @@ def test_goal_lean_untouched_by_backward(
             encoding="utf-8")
         return 124  # timeout; parse never runs
 
+    db.record_pipeline_start(conn, pipeline_id="pid-bw-untouched",
+                             kind="Formalizer", target_id=str(gid),
+                             target_kind="Goal")  # v38 FK for eager writes
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,

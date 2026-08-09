@@ -210,7 +210,16 @@ _WATERMARKS = {
     # 2720→2740 (2026-08-07): the seat/queue spelling fix the first
     # wiring needed (production found it in an hour) plus consuming
     # agy's own reset time. Conscious bump.
-    "Tooling/core/dispatcher.py": 2740,
+    # 2740→2760 (2026-08-08): memory-exhaustion classification in
+    # `_classify_worker_exception` (WinError 1455 burned ten attempts
+    # with no dead_attempts row) + the `system_killed` dead-attempt
+    # exemption. Conscious bump.
+    # 2760→2800 (2026-08-08): the consecutive-unclassified breaker —
+    # unknown spawn deaths stopped charging goal attempts, so nothing
+    # else would ever halt a goal dying the same unexplained way, and
+    # the escalation goes to the operator rather than the Strategist.
+    # Conscious bump.
+    "Tooling/core/dispatcher.py": 2800,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
@@ -335,7 +344,12 @@ _WATERMARKS = {
     # append inside `update_goal_status`, which is now the sink that
     # records every goal transition (the frontend's Timeline cannot read
     # `updated_at` as an event clock). Conscious bump.
-    "Tooling/state/db.py": 3740,
+    # 3740→3790 (2026-08-08): v38 pipelines-lifetime rows —
+    # `record_pipeline_start` / `finish_pipeline` replace the single
+    # INSERT-at-completion `record_pipeline`, plus the SCHEMA comment
+    # documenting why the row must exist from dispatch (eager
+    # dead_attempts, the goal-7486 drift class). Conscious bump.
+    "Tooling/state/db.py": 3790,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,
@@ -357,7 +371,11 @@ _WATERMARKS = {
     # block per schema version by design — conscious bump.
     # 2220→2260 (2026-08-07): v36 `goal_events` — one additive block
     # (table + two indexes, no rebuild, no backfill). Conscious bump.
-    "Tooling/state/db_migrations.py": 2260,
+    # 2260→2340 (2026-08-08): v38 pipelines rebuild — status CHECK gains
+    # 'running', outcome/finished_at go NULLable (rebuild-and-copy; the
+    # chain grows by one block per schema version by design). Conscious
+    # bump.
+    "Tooling/state/db_migrations.py": 2340,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

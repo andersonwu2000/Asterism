@@ -87,6 +87,36 @@ REGISTRY: "dict[str, FailureTraits]" = {
     # exact class the SG#14 gateway-death lesson exempts (cascade's
     # attempts skip reads PROVIDER_INFRA_REASONS only).
     "daemon_shutdown": _T("provider_infra"),
+    # The OS (not the agent, not the framework) terminated the spawn:
+    # NTSTATUS-shaped exit codes (0xC0000409 fail-fast, 0xC0000142 DLL
+    # init, 0x40010004 debugger-terminate, ...) or the provider CLI's
+    # own runtime crashing (Bun panic banner). 2026-08-08 post-mortem:
+    # a dying workstation handed six such exits to `agent_rc_nonzero`,
+    # which burned attempts and shoved five healthy goals into
+    # strategist review — the mathematics never failed, the machine
+    # did. Same traits as spawn_fast_fail: no attempts, target
+    # cooldown, framework-written death note.
+    "system_killed": _T("provider_infra", agent_visible=False,
+                        cooldown_scope="target", death_note=True),
+    # The spawn ran a while and exited non-zero for a reason nothing here
+    # recognises. 2026-08-08 owner ruling — the counter answers "did the
+    # worker get a FAIR CHANCE and fail?", so an unknown cause must not
+    # be charged to the goal's mathematics: every death mode this project
+    # has met (NTSTATUS exits, a Bun panic, a gateway 500, a pagefile
+    # exhaustion) first arrived as an unrecognised rc and was silently
+    # billed to the agent until someone audited it. The taxonomy can
+    # never be complete, so the DEFAULT flips: unknown ⇒ don't charge,
+    # but record. `provider_infra` because that is the trait bundle that
+    # skips attempts (`transitions.py` reads PROVIDER_INFRA_REASONS);
+    # the honest name says the origin is unknown, not proven-infra.
+    # No death note: an unexplained mechanical fault teaches the agent
+    # nothing, and repetition escalates to the OPERATOR, not the
+    # Strategist — a framework fault is not something the Strategist can
+    # act on, and asking it to will only get the fault written into the
+    # Programme as mathematics (dispatcher's consecutive-unclassified
+    # breaker).
+    "unclassified_spawn_failure": _T("provider_infra", agent_visible=False,
+                                     cooldown_scope="target"),
 
     # --- pipeline-level infra (clean declines / framework self-reject) --
     "strategist_noop": _T("pipeline_infra"),
@@ -131,6 +161,13 @@ REGISTRY: "dict[str, FailureTraits]" = {
     "missing_parent_stub": _T("framework", agent_visible=False),
     "parent_stub_not_decomposable": _T("framework", agent_visible=False),
     "unknown_kind": _T("framework", agent_visible=False),
+    # v38 (2026-08-08): the worker THREAD died by an unhandled non-infra
+    # exception. The dispatcher's exception handler writes this forensic
+    # row to pair cascade_one's attempts++ (pre-v38 that increment had
+    # no evidence row anywhere — the goal-7486 drift class).
+    # agent_visible=False: a framework stack trace teaches the next
+    # agent nothing.
+    "worker_exception": _T("framework", agent_visible=False),
 
     # --- agent-side proof/commit failures (defaults) --------------------
     "agent_error": _T(),
@@ -223,13 +260,45 @@ def is_infra(failure_reason: str) -> bool:
     return failure_reason in INFRA_REASONS
 
 
-def rc_to_reason(rc: int) -> str:
+#: The rc values the FRAMEWORK defines (llm/base.py SpawnRC + the
+#: antigravity provider's 123). Every provider is contractually
+#: required to translate its own failures into these, so reading them
+#: is provider-independent. An rc OUTSIDE this set is a residue whose
+#: meaning depends on the provider's `rc_contract` — see below.
+_FRAMEWORK_RCS: frozenset = frozenset({0, 123, 124, 125, 126, 127, 128, 129})
+
+
+def rc_to_reason(rc: int, *, rc_contract: "str | None" = None) -> str:
     """Map an `agent.spawn_llm` rc to its channel failure_reason — the
     single home of the rc taxonomy (was mirrored per-pipeline; strategist
     carried the last copy). rc values are the SpawnRC contract
     (llm/base.py): 124 timeout, 125 stale-session/fast-fail, 126 provider
     quota, 127 missing CLI, 128 stuck-thinking watchdog. 123 =
-    provider config/authorization is broken (antigravity_cli)."""
+    provider config/authorization is broken (antigravity_cli).
+
+    `rc_contract` is the seated provider's declaration
+    (`llm/capabilities.py`: 'structured' / 'uninformative' /
+    'undeclared'). It is passed as a plain STRING rather than a provider
+    name because this module is a leaf — it imports nothing from Tooling
+    so `state.transitions` and `pipeline.*` can both depend on it — and
+    resolving a name into a declaration needs `core.config`.
+
+    It changes exactly one thing: the RESIDUE (an rc outside
+    `_FRAMEWORK_RCS`, e.g. a bare 1).
+      * 'structured' — the residue is a provider-authored error signal;
+        keep the historical `spawn_fast_fail` reading.
+      * 'uninformative' / 'undeclared' — the residue carries no
+        information (agy exits 1 for every ERROR envelope regardless of
+        cause), so calling it a fast fail is a guess dressed as a
+        diagnosis. `unclassified_spawn_failure` is the honest name; it
+        has the same no-attempts / cooldown traits and its repetition
+        escalates to the operator, which is who can actually fix an
+        unnamed mechanical fault (2026-08-08 ruling).
+    `rc_contract=None` means the CALLER has no provider in hand (a pure
+    framework-vocabulary question) and keeps the historical reading —
+    that is a caller saying nothing, not a provider that declared
+    nothing.
+    """
     if rc == 123:
         return "provider_misconfigured"
     if rc == 124:
@@ -238,6 +307,11 @@ def rc_to_reason(rc: int) -> str:
         return "quota_exhausted"
     if rc == 127:
         return "missing_dep"
-    # 125 stale-session, 128 stuck-thinking, anything unknown: treat as a
-    # spawn-level fast fail (infra; cooldown + no attempts burn).
+    if rc in _FRAMEWORK_RCS:
+        # 125 stale-session, 128 stuck-thinking, 129 shutdown: framework
+        # values with an agreed meaning — spawn-level fast fail (infra;
+        # cooldown + no attempts burn).
+        return "spawn_fast_fail"
+    if rc_contract in ("uninformative", "undeclared"):
+        return "unclassified_spawn_failure"
     return "spawn_fast_fail"

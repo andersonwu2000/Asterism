@@ -376,22 +376,30 @@ def record_rejection(conn: sqlite3.Connection, problem: str, body: str,
                      dialogue: list[dict[str, Any]],
                      rounds: int,
                      discard_reason: Optional[str] = None,
-                     group_id: "int | None" = None) -> None:
+                     group_id: "int | None" = None,
+                     discard_channel: Optional[str] = None) -> None:
     """Keep a discarded proposal + full criticism for audit.
 
     `discard_reason` (v34) names WHICH channel dropped it — adversary
     refutation, verify rounds exhausted, revision spawn failure. Every
     discard path records a row: the next wake's plan note may assert a
     dispatch that never happened, and the reason is what stops it
-    re-deriving blind (07-29 SG feedback ×2)."""
+    re-deriving blind (07-29 SG feedback ×2).
+
+    `discard_channel` (v37) is that same fact as a MACHINE-readable
+    value — the registry `failure_reason` verbatim. `discard_reason` is
+    prose and must never be pattern-matched; the channel is what
+    decides whether the successor wake is shown the draft (see
+    `rejection_notice`)."""
     conn.execute(
         "INSERT INTO programme_revisions"
         " (problem, rev, body, status, verdict, dialogue, rounds,"
-        "  batch_id, created_at, discard_reason, group_id)"
-        " VALUES (?,?,?,'rejected',NULL,?,?,NULL,?,?,?)",
+        "  batch_id, created_at, discard_reason, group_id,"
+        "  discard_channel)"
+        " VALUES (?,?,?,'rejected',NULL,?,?,NULL,?,?,?,?)",
         (problem, next_rev_number(conn, problem, group_id), body,
          json.dumps(dialogue, ensure_ascii=False), rounds, now(),
-         discard_reason, group_id))
+         discard_reason, group_id, discard_channel))
 
 
 def rejection_notice(conn: sqlite3.Connection, problem: str,
@@ -413,9 +421,70 @@ def rejection_notice(conn: sqlite3.Connection, problem: str,
     why = (row["discard_reason"] if "discard_reason" in keys else None)
     # NULL on pre-v34 rows: those only ever came from the Adversary.
     cause = why or "adversary rebuttal"
-    return (f"Programme rev {row['rev']} did not commit — {cause} after "
+    head = (f"Programme rev {row['rev']} did not commit — {cause} after "
             f"{row['rounds']} round(s) ({row['created_at'][:10]}). "
-            f"Batch not dispatched; draft not shown.")
+            f"Batch not dispatched")
+    channel = (row["discard_channel"] if "discard_channel" in keys
+               else None)
+    if channel not in _INFRA_DISCARD_CHANNELS:
+        # Adversarial exhaustion (and every legacy row): the draft is
+        # withheld ON PURPOSE — design §1/§3 wants the next session to
+        # re-derive with fresh eyes rather than defend a refuted body.
+        return head + "; draft not shown."
+    # Infra death: NOBODY refuted this argument, so the anti-anchoring
+    # rationale does not apply and withholding the draft just burns the
+    # rounds again (2026-08-07: an 8-round debate re-derived from one
+    # line because a subscription window expired mid-revision). The
+    # body and the criticisms are already in this row; hand them over.
+    return head + (
+        f" because the machine failed, not the argument — the draft "
+        f"below was never refuted. Continue from it: fold in any "
+        f"criticism it already answers, and re-argue only what the "
+        f"judge actually challenged.\n\n"
+        f"### Uncommitted draft (rev {row['rev']})\n\n"
+        f"{row['body']}\n\n"
+        f"{_dialogue_transcript(row['dialogue'])}")
+
+
+#: Channels whose discard is a MACHINE failure — the successor sees the
+#: draft. Anything else (adversary rebuttal, package verify) keeps the
+#: ratified blindness. Registry `failure_reason` values, not prose.
+_INFRA_DISCARD_CHANNELS = frozenset({
+    "spawn_fast_fail", "quota_exhausted", "missing_dep",
+    "gateway_unreachable", "transient_timeout", "provider_misconfigured",
+    "daemon_shutdown", "system_killed", "agent_timeout", "agent_no_output",
+    # A spawn that died of a cause nobody can name refuted nothing
+    # either — same reasoning, and the invariant test below enforces
+    # that every provider-infra reason lands on this side.
+    "unclassified_spawn_failure",
+})
+
+
+def _dialogue_transcript(dialogue_json: Optional[str]) -> str:
+    """The judge's criticisms from the discarded rounds, oldest first.
+
+    Only the criticisms: each round's stored `proposal` is a snapshot
+    the draft above supersedes, and repeating N bodies would bury the
+    one that matters."""
+    if not dialogue_json:
+        return ""
+    try:
+        rounds = json.loads(dialogue_json)
+    except (ValueError, TypeError):
+        return ""
+    out: list[str] = []
+    for t in rounds if isinstance(rounds, list) else []:
+        if not isinstance(t, dict) or t.get("role") != "adversary":
+            continue
+        crits = t.get("criticisms") or []
+        if not crits:
+            continue
+        out.append(f"**Round {t.get('round', '?')} criticisms**")
+        out += [f"- {c}" for c in crits]
+        out.append("")
+    if not out:
+        return ""
+    return "### Criticisms already raised\n\n" + "\n".join(out)
 
 
 # ---------------------------------------------------------------------

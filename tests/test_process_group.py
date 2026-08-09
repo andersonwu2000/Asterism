@@ -89,3 +89,74 @@ def test_hard_kill_reaps_grandchild(tmp_path) -> None:
             child.stdout.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+# ---------------------------------------------------------------------
+# Memory-capped job for the lake/lean tree (2026-08-08 post-mortem)
+# ---------------------------------------------------------------------
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Job Objects are win32")
+def test_capped_job_fails_oversized_allocation(tmp_path) -> None:
+    """The ceiling half of the fix: a member process whose commit
+    crosses the per-process cap must fail its allocation instead of
+    growing without bound (the runaway lean worker reached 102 GB and
+    took the workstation down)."""
+    job = process_group.create_capped_job(64)     # 64 MB
+    if job is None:
+        pytest.skip("capped job unsupported here")
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "b = bytearray(300 * 1024 * 1024); print(len(b))"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert process_group.assign_to_job(job, child)
+        out, _err = child.communicate(timeout=30)
+        assert child.returncode != 0, (
+            f"300MB allocation under a 64MB cap succeeded: {out!r}")
+    finally:
+        process_group.terminate_job(job)
+        subprocess.run(["taskkill", "/F", "/PID", str(child.pid), "/T"],
+                       capture_output=True)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Job Objects are win32")
+def test_capped_job_reaps_reparented_orphan(tmp_path) -> None:
+    """The reaper half: a grandchild whose parent already exited is
+    invisible to `taskkill /T` (it walks the live parent-child chain),
+    which is how one wedged worker outlived 21 backend restarts. Job
+    membership survives re-parenting, so `terminate_job` must reap it."""
+    from Tooling.agent import sandbox
+    job = process_group.create_capped_job(512)
+    if job is None:
+        pytest.skip("capped job unsupported here")
+    # stdin gate: the child spawns its grandchild only after we say go,
+    # so assignment to the job deterministically precedes the spawn.
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "import sys, subprocess\n"
+         "sys.stdin.readline()\n"
+         "gc = subprocess.Popen([sys.executable, '-c',"
+         " 'import time; time.sleep(60)'])\n"
+         "print('GRANDCHILD=' + str(gc.pid), flush=True)\n"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    gc_pid = None
+    try:
+        assert process_group.assign_to_job(job, child)
+        child.stdin.write("go\n")
+        child.stdin.flush()
+        gc_pid = int(child.stdout.readline().split("=", 1)[1])
+        child.wait(timeout=15)          # parent exits; grandchild orphaned
+        assert sandbox._pid_alive(gc_pid)
+        process_group.terminate_job(job)
+        for _ in range(100):            # ≤10s
+            if not sandbox._pid_alive(gc_pid):
+                break
+            time.sleep(0.1)
+        assert not sandbox._pid_alive(gc_pid), (
+            "re-parented orphan survived terminate_job — the exact "
+            "shape that reached 102 GB")
+    finally:
+        for pid in (gc_pid, child.pid):
+            if pid:
+                subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"],
+                               capture_output=True)

@@ -2467,6 +2467,24 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     )
     decision_path = attempts_dir / "decision.json"
 
+    # Quota-park budget for this wake (2026-08-08). A debate that
+    # collides with the subscription reset must sleep to it rather than
+    # burn the accumulated rounds — but only so far: the queue row's
+    # lease is reclaimed on AGE alone at LEASE_TTL_SEC even with this
+    # thread alive, and a reclaimed row means a second Strategist on
+    # this same group. Budget = what is left of 80% of the TTL after
+    # everything this wake has already spent.
+    _wake_t0 = _time.monotonic()
+
+    def _park_budget() -> float:
+        from ..core.dispatcher import LEASE_TTL_SEC
+        return (LEASE_TTL_SEC * 0.8) - (_time.monotonic() - _wake_t0)
+
+    def _quota_park(label: str) -> bool:
+        from ..core import quota_wait as _qw
+        return _qw.park_in_pipeline(f"{problem} {label}",
+                                    budget_sec=_park_budget())
+
     def _read_and_parse() -> tuple[
         list[Decision] | None, str, str
     ]:
@@ -2530,23 +2548,24 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                     conn=conn, problem=problem,
                     proposal_body=proposal_body, decisions=decisions,
                     dialogue=dialogue, proof_warn=proof_warn,
-                    group_id=group_id)
+                    group_id=group_id, quota_park=_quota_park)
                 if arc != 0:
                     _discard_proposal(
                         conn, problem, proposal_body, dialogue,
                         rounds_used,
                         f"adversary spawn rc={arc}", attempts_dir,
-                        group_id=group_id)
+                        group_id=group_id,
+                        channel=_adversary_rc_reason(arc))
                     return PipelineResult(
                         outcome="failed",
-                        failure_reason=_rc_to_reason(arc),
+                        failure_reason=_adversary_rc_reason(arc),
                         failure_detail=f"adversary rc={arc}")
                 if verdict is None:
                     _discard_proposal(
                         conn, problem, proposal_body, dialogue,
                         rounds_used,
                         "adversary produced no ruling", attempts_dir,
-                        group_id=group_id)
+                        group_id=group_id, channel="agent_no_output")
                     return PipelineResult(
                         outcome="failed",
                         failure_reason="agent_no_output",
@@ -2584,7 +2603,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 _discard_proposal(
                     conn, problem, proposal_body, dialogue, rounds_used,
                     "adversary rebuttal", attempts_dir,
-                    group_id=group_id)
+                    group_id=group_id,
+                    channel="strategist_proposal_rejected")
                 return PipelineResult(
                     outcome="failed",
                     failure_reason="strategist_proposal_rejected",
@@ -2595,7 +2615,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             _discard_proposal(
                 conn, problem, proposal_body, dialogue, rounds_used,
                 "package verify rejected", attempts_dir,
-                group_id=group_id)
+                group_id=group_id,
+                channel="strategist_schema_invalid")
             return PipelineResult(
                 outcome="failed",
                 failure_reason="strategist_schema_invalid",
@@ -2617,6 +2638,14 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 timeout_sec=strategist_timeout,
                 mcp_config_path=tools_cfg,
             )
+            if rc2 != 0 and _failures.is_infra(_rc_to_reason(rc2)):
+                # Ask the ledger BEFORE spending the retry budget: an
+                # expired subscription window announces its own end
+                # time, and 2×15s against it is what cost an 8-round
+                # debate (2026-08-07). Parking resumes the SAME sid, so
+                # the author keeps its position in the argument.
+                if _quota_park(f"revision round {rounds_used}"):
+                    continue
             if (rc2 != 0
                     and _failures.is_infra(_rc_to_reason(rc2))
                     and _infra_tries < _adversary.INFRA_SPAWN_RETRIES):
@@ -2634,7 +2663,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             _discard_proposal(
                 conn, problem, proposal_body, dialogue, rounds_used,
                 f"revision spawn rc={rc2}", attempts_dir,
-                group_id=group_id)
+                group_id=group_id, channel=_rc_to_reason(rc2))
             return PipelineResult(
                 outcome="failed",
                 failure_reason=_rc_to_reason(rc2),
@@ -2649,7 +2678,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             _discard_proposal(
                 conn, problem, proposal_body, dialogue, rounds_used,
                 "revision round produced no decision.json",
-                attempts_dir, group_id=group_id)
+                attempts_dir, group_id=group_id,
+                channel="strategist_schema_invalid")
             return PipelineResult(
                 outcome="failed",
                 failure_reason="strategist_schema_invalid",
@@ -2866,7 +2896,8 @@ def _discard_proposal(conn, problem: str,
                       dialogue: list, rounds_used: int,
                       reason: str,
                       attempts_dir: "Path | None" = None,
-                      group_id: "int | None" = None) -> None:
+                      group_id: "int | None" = None,
+                      channel: "str | None" = None) -> None:
     """Record a proposal that did NOT commit, whichever channel dropped
     it (Adversary refutation / package verify / revision spawn failure /
     unusable revision output).
@@ -2895,7 +2926,8 @@ def _discard_proposal(conn, problem: str,
         _programme.record_rejection(conn, problem, proposal_body,
                                     dialogue, rounds_used,
                                     discard_reason=reason,
-                                    group_id=group_id)
+                                    group_id=group_id,
+                                    discard_channel=channel)
         conn.commit()
     except Exception as e:  # noqa: BLE001 — audit record, never fatal
         print(f"[strategist] {problem}: discard record failed: "
@@ -2917,12 +2949,27 @@ def _persist_plan(problem_dir: Path, attempts_dir: Path,
               flush=True)
 
 
-def _rc_to_reason(rc: int) -> str:
+def _rc_to_reason(rc: int, kind: str = "strategist") -> str:
     """Channel failure_reason for an agent rc — thin alias of the registry's
     `failures.rc_to_reason` (task #5: the last per-pipeline mirror of the rc
-    taxonomy; kept as a module-local name for the two call sites + tests)."""
+    taxonomy; kept as a module-local name for the two call sites + tests).
+
+    `kind` names the seat, which is how the provider's `rc_contract`
+    declaration is found. The Strategist and the Adversary sit on
+    different providers routinely (2026-08 runs: NL on opus-5, judge
+    moved between seats mid-run), so an rc from the judge must be read
+    against the JUDGE's contract, not the author's."""
+    from ..llm import capabilities as _caps
     from ..state.failures import rc_to_reason
-    return rc_to_reason(rc)
+    return rc_to_reason(rc, rc_contract=_caps.for_kind(kind).rc_contract)
+
+
+def _adversary_rc_reason(rc: int) -> str:
+    """The judge's rc, read against the JUDGE's seat. A named function
+    rather than an inline second argument: a bare string literal beside
+    `failure_reason=` is what the registry's AST drift scan reads as a
+    new failure reason."""
+    return _rc_to_reason(rc, "adversary")
     if rc == 126:
         return "quota_exhausted"
     if rc == 127:

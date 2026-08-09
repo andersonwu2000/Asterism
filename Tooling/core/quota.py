@@ -19,9 +19,11 @@ shared five-hour window); a Block naming a model covers just that one
 (the scoped weekly cap).
 
 Providers answer in their own dialect and are asked through one
-interface, so a third backend is a new probe function and nothing else
-— `openai` is already here as the honest empty case, and ChatGPT will
-land the same way.
+interface. WHETHER a provider is asked at all is not a property of its
+name but of its declaration (`llm/capabilities.py`): `usage_endpoint`
+decides, and `register_declared_probes` wires every declared provider
+accordingly. A backend that cannot answer — agy has no usage API at all
+— gets the honest empty case, and so does one nobody has measured yet.
 
 Pipelines are NOT independent, which is the other half of the lesson.
 A Strategist proposal that no judge can review is a proposal that gets
@@ -158,13 +160,58 @@ def _claude_blocks() -> "list[Block]":
 def _no_endpoint() -> "list[Block]":
     """Providers with no usage API. Their exhaustion is still inferred
     from spawn failures by the dispatcher's breaker — this returns
-    nothing rather than pretending to know."""
+    nothing rather than pretending to know.
+
+    CONSEQUENCE, recorded so nobody re-litigates it: a provider wired to
+    this probe can never receive a POSITIVE quota confirmation. There is
+    no `resets_at` for `core/quota_wait` to sleep to, and a spawn that
+    dies without one of the provider's own refusal markers is charged as
+    an agent failure. That is the correct reading of
+    `usage_endpoint=False` — the framework declines to invent a
+    confirmation nobody gave it — not agy being treated unfairly. The
+    cure is an endpoint, not a heuristic.
+    """
     return []
 
 
-register_probe("claude", _claude_blocks)
-register_probe("antigravity", _no_endpoint)
-register_probe("openai", _no_endpoint)
+#: Real probes, keyed by canonical provider name. A provider is wired to
+#: its probe HERE only if its declaration says it can answer; the
+#: registry below reads `usage_endpoint`, not the provider's name.
+_ENDPOINT_PROBES: "dict[str, Callable[[], list[Block]]]" = {
+    "claude": _claude_blocks,
+}
+
+
+def register_declared_probes() -> None:
+    """Wire every declared provider to a probe, chosen by its
+    DECLARATION rather than by its name.
+
+    This used to be three literal `register_probe(<name>, …)` lines, two
+    of them pointing at `_no_endpoint` — which meant a fourth backend
+    (codex is next) got no line at all, and `Ledger.refresh` simply
+    never asked it anything. Silent, and indistinguishable from "that
+    provider is fine". Now the question is asked of the declaration:
+    `usage_endpoint=True` and no probe implemented is a loud gap;
+    `usage_endpoint=False` is the honest empty case; an UNDECLARED
+    provider lands in the empty case too, because a backend nobody
+    measured must not be assumed to have an endpoint.
+    """
+    from ..llm import capabilities as _caps
+    for name, caps in _caps.CAPABILITIES.items():
+        if not caps.usage_endpoint:
+            register_probe(name, _no_endpoint)
+            continue
+        probe = _ENDPOINT_PROBES.get(name)
+        if probe is None:
+            print(f"[quota] provider {name!r} declares a usage endpoint "
+                  f"but core/quota.py implements no probe for it — its "
+                  f"quota is invisible to the ledger", flush=True)
+            register_probe(name, _no_endpoint)
+            continue
+        register_probe(name, probe)
+
+
+register_declared_probes()
 
 
 class Ledger:

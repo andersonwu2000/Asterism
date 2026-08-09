@@ -797,6 +797,41 @@ def apply(conn: sqlite3.Connection) -> None:
         """)
         conn.execute("PRAGMA user_version = 36")
         conn.commit()
+    if v < 37:
+        # v37 — `programme_revisions.discard_channel`: WHICH channel
+        # dropped a proposal, as a machine-readable value (the registry
+        # failure_reason verbatim), not prose. `discard_reason` is free
+        # text an agent's next wake must not be routed on — gates read
+        # structured signals (CLAUDE.md), and this one decides whether
+        # the successor sees the rejected draft (infra death: nobody
+        # refuted the argument) or only the one-line notice (adversary
+        # exhaustion: the ratified anti-anchoring semantics of
+        # research_mode_design §1/§3). Additive nullable; NULL on older
+        # rows reads as the adversarial channel, which is what every
+        # pre-v34 row actually was.
+        rcols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(programme_revisions)")}
+        if "discard_channel" not in rcols:
+            conn.execute(
+                "ALTER TABLE programme_revisions"
+                " ADD COLUMN discard_channel TEXT NULL")
+        conn.execute("PRAGMA user_version = 37")
+        conn.commit()
+    if v < 38:
+        # v38 — pipeline rows exist for the whole pipeline LIFETIME:
+        # INSERTed status='running' at dispatch, UPDATEd at completion.
+        # Widens the status CHECK with 'running' and relaxes outcome /
+        # finished_at to NULL (a running row has neither). Motive: with
+        # the FK target present from dispatch, `dead_attempts` rows are
+        # written eagerly, 1:1 with each goals.attempts increment — the
+        # pre-v38 buffer-until-normal-return protocol lost the forensic
+        # rows whenever the worker thread died by exception while the
+        # eager increments stayed banked (goal 7486, 2026-08-08:
+        # attempts=10 vs 7 dead_attempts rows; the drift distorted
+        # dispatch.shelve_threshold input and misled an operator audit).
+        _migrate_to_v38(conn)
+        conn.execute("PRAGMA user_version = 38")
+        conn.commit()
 
 
 def _migrate_to_v35(conn: sqlite3.Connection) -> None:
@@ -1030,6 +1065,69 @@ def _v35_rebuild_target_kind(conn: sqlite3.Connection, table: str) -> None:
         f"ALTER TABLE _new_{table} RENAME TO {table};\n")
     for idx_sql in indexes:
         conn.execute(idx_sql)
+
+
+def _migrate_to_v38(conn: sqlite3.Connection) -> None:
+    """v38 — rebuild `pipelines` so status admits 'running' and
+    outcome / finished_at admit NULL (SQLite cannot alter a CHECK or a
+    NOT NULL in place). Point-in-time rebuild-and-copy, idempotent via a
+    substring probe on the stored DDL (the v33/v35 pattern). The column
+    set is fixed by v35 (every DB at v37 has passed the v33 kind-widen
+    and the v35 target_kind-widen), so the new DDL is written out in
+    full — it must stay token-identical to the SCHEMA block in db.py
+    (test_pipelines_v38 compares fresh vs migrated table_info)."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table'"
+        " AND name='pipelines'").fetchone()
+    if row is None:
+        raise RuntimeError(
+            "v38: pipelines is missing — a prior migration crashed "
+            "mid-rebuild; restore the DB from backup")
+    if "'running'" in (row[0] or ""):
+        return  # already rebuilt (idempotent)
+    indexes = [r[0] for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index'"
+        " AND tbl_name='pipelines' AND sql IS NOT NULL").fetchall()]
+    # dead_attempts.pipeline_id FKs this table: rebuild under
+    # foreign_keys=OFF and assert no violations after (v35 pattern).
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_pipelines (
+                id          TEXT PRIMARY KEY,
+                kind        TEXT NOT NULL
+                                CHECK(kind IN ('Builder','Backward','Verify',
+                                               'Strategist','Forward',
+                                               'Librarian','Scholar',
+                                               'Formalizer')),
+                target_id   TEXT NOT NULL,
+                target_kind TEXT NOT NULL
+                                CHECK(target_kind IN ('Goal','Strategy',
+                                                      'Problem','Group')),
+                status      TEXT NOT NULL CHECK(status IN ('running',
+                                                           'succeeded',
+                                                           'failed')),
+                outcome     TEXT NULL,
+                started_at  TEXT NOT NULL,
+                finished_at TEXT NULL
+            );
+            INSERT INTO _new_pipelines
+                (id, kind, target_id, target_kind, status, outcome,
+                 started_at, finished_at)
+            SELECT id, kind, target_id, target_kind, status, outcome,
+                   started_at, finished_at
+            FROM pipelines;
+            DROP TABLE pipelines;
+            ALTER TABLE _new_pipelines RENAME TO pipelines;
+        """)
+        for idx_sql in indexes:
+            conn.execute(idx_sql)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"v38 migration left FK violations: {fk_violations[:5]}")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_to_v26(conn: sqlite3.Connection) -> None:

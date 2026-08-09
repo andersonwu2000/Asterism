@@ -1636,8 +1636,8 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                     event="backward_decomposed")
             return
         # Phase 7 — `exhausted` outcome: mirrors Builder branch above.
-        # Helper buffered N dead_attempts + N attempts++ for the N
-        # failed retries; cascade does status transition only.
+        # Helper recorded N dead_attempts + N attempts++ (eagerly, v38)
+        # for the N failed retries; cascade does status transition only.
         if outcome == "exhausted":
             cur = db.get_goal(conn, int(target_id))
             n = int(cur["attempts"]) if cur else 0

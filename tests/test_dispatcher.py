@@ -832,6 +832,61 @@ def test_recover_at_startup_clears_queue(conn: sqlite3.Connection) -> None:
     assert db.queue_count(conn, target_id="9", kind="Verify") == 0
 
 
+def test_recover_at_startup_relaunches_never_woken_group(
+    conn: sqlite3.Connection,
+) -> None:
+    """A Delegate's one-shot launch row is the only trigger a fresh
+    group has (NULL clock ⇒ no T1; no goals ⇒ no pending_review; no
+    batch ⇒ no inject_batch_done), and startup recovery clears the
+    queue unconditionally — so recovery must re-derive that row from
+    the groups table or the launch is silently orphaned to the T4
+    stall backstop (g384, union_closed, 2026-08-07: 69 minutes lost
+    across a code-drift handoff)."""
+    from Tooling.core.dispatcher import _recover_at_startup
+    from Tooling.state import groups as groups_store
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at,"
+                 " bootstrap_done) VALUES ('p','',?,1)", (db.now(),))
+    top = groups_store.ensure_top_group(conn, "p")
+    kid = groups_store.open_group(conn, problem="p", parent_group_id=top,
+                                  charter="settle X")
+    # The delegate-time launch row, wiped by the unconditional clear.
+    db.enqueue(conn, kind="Strategist", target_id=str(kid),
+               target_kind="Group", problem="p")
+    _recover_at_startup(conn)
+    assert db.queue_count(conn, target_id=str(kid), kind="Strategist") == 1
+    # The never-woken TOP group must NOT be relaunched: it was not born
+    # from a Delegate and has no launch row to lose — its wakes belong
+    # to the T1/stall selectors (the over-broad first cut woke every
+    # fresh problem's Strategist at daemon start; e2e caught it).
+    assert db.queue_count(conn, target_id=str(top), kind="Strategist") == 0
+
+
+def test_recover_at_startup_relaunch_respects_scope(
+    conn: sqlite3.Connection,
+) -> None:
+    """A scoped daemon must not relaunch another problem's groups —
+    the same fence #74 put on the NULL-inject re-enqueue."""
+    from Tooling.core.dispatcher import _recover_at_startup
+    from Tooling.state import groups as groups_store
+    for name in ("p", "q"):
+        conn.execute(
+            "INSERT INTO problems (name, manifest_path, created_at,"
+            " bootstrap_done) VALUES (?,'',?,1)", (name, db.now()))
+    top_in = groups_store.ensure_top_group(conn, "p")
+    kid_in = groups_store.open_group(conn, problem="p",
+                                     parent_group_id=top_in,
+                                     charter="in scope")
+    top_out = groups_store.ensure_top_group(conn, "q")
+    kid_out = groups_store.open_group(conn, problem="q",
+                                      parent_group_id=top_out,
+                                      charter="out of scope")
+    _recover_at_startup(conn, scope="p")
+    assert db.queue_count(conn, target_id=str(kid_in),
+                          kind="Strategist") == 1
+    assert db.queue_count(conn, target_id=str(kid_out),
+                          kind="Strategist") == 0
+
+
 def test_recover_at_startup_sweeps_stale_migrate_probes(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:

@@ -1006,7 +1006,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
     def forward_postmortem(sid: str) -> None:
         # Forward postmortem stage not yet implemented. Helper passes
         # the sid on TIMEOUT after salvage parse fails; for now we
-        # accept the timeout silently — the buffered failure_detail
+        # accept the timeout silently — the recorded failure_detail
         # already captures the spawn rc and the parser-state verdict.
         return None
 

@@ -217,7 +217,12 @@ def test_reset_sweeps_drafts_and_presearch(
     notes) would pre-bias a clean baseline; `.presearch/` is worse —
     it is keyed by goal id, so after a reset that recreates the DB a
     surviving `g<id>.md` is silently served as the candidate-lemma cache
-    for an UNRELATED new goal with the same id."""
+    for an UNRELATED new goal with the same id.
+
+    `.groups/<id>/PROGRAMME.md` is the same hazard one level up (#167):
+    the root PROGRAMME.md was swept from the start, but sub-group
+    programmes project into `.groups/`, and a programme is the one
+    artifact whose entire job is to carry a worldview forward."""
     pdir = _setup_problem(tmp_path)
     monkeypatch.chdir(tmp_path)
     _seed_via_init(tmp_path)
@@ -232,6 +237,9 @@ def test_reset_sweeps_drafts_and_presearch(
     # _plan.md at the problem root: strategists sometimes write the plan
     # note here instead of .drafts/ (a5 run did) — same leak class
     (pdir / "_plan.md").write_text("facts...", encoding="utf-8")
+    (pdir / ".groups" / "369").mkdir(parents=True)
+    (pdir / ".groups" / "369" / "PROGRAMME.md").write_text(
+        "# rev 2\nthesis...", encoding="utf-8")
 
     rc = cmd_reset(argparse.Namespace(problem="wilson"))
     assert rc == 0
@@ -239,6 +247,7 @@ def test_reset_sweeps_drafts_and_presearch(
     assert not (pdir / ".presearch").exists()
     assert not (pdir / "PROGRAMME.md").exists()
     assert not (pdir / "_plan.md").exists()
+    assert not (pdir / ".groups").exists()
 
 
 def test_reset_clears_pipelines_for_problem_only(

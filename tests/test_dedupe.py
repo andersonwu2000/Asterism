@@ -2343,3 +2343,98 @@ def test_library_canonicals_star_domain(tmp_path: Path) -> None:
     assert "Library.LinearAlgebra.B.la_thm" not in geo
     assert {"Library.Geometry.A.geo_thm",
             "Library.LinearAlgebra.B.la_thm"} <= star
+
+
+# ---------------------------------------------------------------------
+# Tier 0 — syntactic identity, decided without Lean (2026-08-08)
+# ---------------------------------------------------------------------
+
+def test_tier0_catches_a_renamed_verbatim_copy_of_the_parent(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 7499 shape: a sub-goal that restates its own parent verbatim
+    under a DIFFERENT name. The slug-collision gate never looks at it
+    (names differ) and the apply-probe returns a deterministic False —
+    `apply @canonical <;> assumption` unifies the conclusion first, so a
+    statement whose conclusion does not mention every binder leaves those
+    metavariables unconstrained and `assumption` mis-assigns them. Tier 0
+    decides it with no Lean at all."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    parent = _seed_sub(conn, slug="ledger_bound", statement="B", depth=2)
+    _link(conn, root, [parent])
+    sig = "(U : F) (w : A) (a b c d : P) : LedgerBound U w"
+    _write_lean(tmp_path, "p", "ledger_bound",
+                f"import Mathlib\ntheorem ledger_bound {sig} := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+                "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+    # Same statement, different name — exactly what slipped through.
+    cand = f"import Mathlib\ntheorem four_set_bound {sig} := by sorry\n"
+
+    def probe_is_blind(ws, p, pairs):
+        return [False] * len(pairs)      # what the real probe does here
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", probe_is_blind)
+    monkeypatch.setattr(dedupe, "_batch_statement_defeq", probe_is_blind)
+
+    got = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("four_set_bound", cand)])
+    assert got[0] is not None, "renamed verbatim copy slipped tier 0"
+    assert got[0].kind == "no_progress"
+    assert got[0].goal_id == parent
+
+
+def test_tier0_never_grants_a_proof(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Risk asymmetry: a tier-0 hit says the signature TEXTS match, which
+    is not quite "the TYPES match" — identical text in two files can
+    elaborate differently under different `open`/`variable` scopes. That
+    is tolerable for a verdict that REJECTS a sub-goal (one wasted retry)
+    and not for one that GRANTS it a proof. So aliasing stays
+    kernel-confirmed even on a byte-identical signature."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    base = _seed_sub(conn, slug="foo", statement="X", status="proved")
+    _link(conn, root, [base])
+    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
+    _link(conn, root, [parent])
+    _write_lean(tmp_path, "p", "foo",
+                "import Mathlib\ntheorem foo (a : T) : X := by trivial\n")
+    _write_lean(tmp_path, "p", "parent",
+                "import Mathlib\ntheorem parent : Q := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+                "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+    cand = "import Mathlib\ntheorem foo_2 (a : T) : X := by sorry\n"
+
+    probed: list = []
+
+    def probe_says_no(ws, p, pairs):
+        probed.extend(pairs)
+        return [False] * len(pairs)
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", probe_says_no)
+
+    got = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("foo_2", cand)])
+    assert probed, "alias tier must still reach the kernel probe"
+    assert got[0] is None, "a refused probe must not be overridden by tier 0"
+
+
+def test_probe_failure_is_unknown_not_no_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A swallowed probe used to return all-False, indistinguishable from
+    a completed scan that found nothing — so "checked N pairs" read as
+    evidence when it was silence. The sentinel makes the difference
+    un-flattenable at the type level, not just in a log line."""
+    import subprocess as _sp
+
+    def boom(*a, **k):
+        raise _sp.TimeoutExpired(cmd="lake", timeout=1)
+    monkeypatch.setattr(dedupe.subprocess, "run", boom)
+    out = dedupe._batch_provable_via_apply(
+        tmp_path, "p", [("(a : T) : X", "M", "M.foo")])
+    assert out == [None], "probe failure must be UNKNOWN, not False"

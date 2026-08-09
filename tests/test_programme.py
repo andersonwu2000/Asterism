@@ -436,3 +436,69 @@ def test_emit_directive_is_retired(tmp_path):
                                              "body": "do X"})
     err = verify_decision(d, c, problem="p")
     assert "retired" in err and "## Conventions" in err
+
+
+# ---------------------------------------------------------------------
+# The discard-channel split (v37, 2026-08-08)
+# ---------------------------------------------------------------------
+
+def _discard(c, channel, *, rounds=8):
+    programme.record_rejection(
+        c, "p", _body(proof="The load-bearing step."),
+        [{"round": 1, "role": "adversary",
+          "criticisms": ["[criterion 3] step 2 assumes t-s > 0"],
+          "proposal": "older body"},
+         {"round": 2, "role": "adversary",
+          "criticisms": ["[criterion 1] distance to MAIN unchanged"],
+          "proposal": "newer body"}],
+        rounds, discard_reason="whatever prose", group_id=None,
+        discard_channel=channel)
+
+
+def test_adversary_exhaustion_still_withholds_the_draft(tmp_path):
+    """The ratified destructive semantics (design §1/§3): a refuted
+    proposal is NOT shown to the next session — it must re-derive with
+    fresh eyes rather than defend a body the judge already broke."""
+    c = _fresh(tmp_path)
+    _discard(c, "strategist_proposal_rejected")
+    notice = programme.rejection_notice(c, "p")
+    assert notice.endswith("draft not shown.")
+    assert "load-bearing step" not in notice
+    assert "criterion 3" not in notice
+
+
+def test_infra_discard_hands_the_draft_over(tmp_path):
+    """An infra death refuted nothing, so the anti-anchoring rationale
+    does not apply: withholding just burns the rounds again (2026-08-07,
+    an 8-round debate re-derived from one line because a subscription
+    window expired mid-revision)."""
+    c = _fresh(tmp_path)
+    _discard(c, "quota_exhausted")
+    notice = programme.rejection_notice(c, "p")
+    assert "draft not shown" not in notice
+    assert "The load-bearing step." in notice          # the body
+    assert "criterion 3" in notice and "criterion 1" in notice
+    assert "Round 1 criticisms" in notice              # oldest first
+    assert notice.index("Round 1") < notice.index("Round 2")
+    assert "the machine failed, not the argument" in notice
+
+
+def test_legacy_null_channel_reads_as_adversarial(tmp_path):
+    """Pre-v37 rows have no channel and every one of them came from the
+    Adversary — defaulting them to "show the draft" would retroactively
+    break the ratified blindness."""
+    c = _fresh(tmp_path)
+    programme.record_rejection(c, "p", _body(), [], 3)
+    assert programme.rejection_notice(c, "p").endswith("draft not shown.")
+
+
+def test_infra_channels_are_registry_reasons(tmp_path):
+    """The gate reads a structured signal, and every value in it must be
+    a real registry failure_reason — a typo would silently downgrade an
+    infra death to the blind path (the quota-ledger disease, 08-07)."""
+    from Tooling.state import failures
+    unknown = programme._INFRA_DISCARD_CHANNELS - set(failures.REGISTRY)
+    assert not unknown, unknown
+    # And every provider-infra reason must be on the show-the-draft
+    # side: none of them is an argument the judge refuted.
+    assert failures.PROVIDER_INFRA_REASONS <= programme._INFRA_DISCARD_CHANNELS

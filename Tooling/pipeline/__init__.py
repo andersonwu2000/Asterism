@@ -197,15 +197,14 @@ class PipelineResult:
     failure_detail: str = ""
     proposal_md: str = ""
     artifacts: dict[str, str] = field(default_factory=dict)
-    # Phase 7 — per-retry failure records buffered by the in-pipeline
-    # retry helper. The helper cannot INSERT dead_attempts during the
-    # loop because the pipelines row (FK target) is written by
-    # `_run_pipeline` only after this PipelineResult returns. Caller
-    # (`dispatcher._run_pipeline`) flushes these after the pipelines
-    # INSERT: one `dead_attempts` row + one `goals.attempts++` per
-    # entry, preserving the 1:1 invariant (decision 5/6).
-    # Each entry has keys: reason, detail, proposal_md, artifacts.
-    pending_failures: list[dict] = field(default_factory=list)
+    # (v38) `pending_failures` is GONE: per-retry failure records are
+    # written eagerly by the retry helper — one dead_attempts row + one
+    # `goals.attempts++` per failed retry, in-loop, because the
+    # pipelines row (FK target) exists from dispatch time
+    # (`db.record_pipeline_start`). The old buffer-until-normal-return
+    # protocol lost the rows whenever the worker thread died by
+    # exception while the increments stayed banked (goal 7486,
+    # 2026-08-08).
     # Phase 2 — Forward pipeline only. When Forward commits a new lemma
     # goal, populate this so cascade_one can link the Inject decision
     # row to its produced goal. Cascade then defers the decision's
@@ -238,10 +237,18 @@ def collect_artifacts(attempts_dir: Path) -> dict[str, str]:
 # Spawn classification
 # ---------------------------------------------------------------------
 
-def _spawn_failure(rc: int, attempts_dir: Path,
-                   spawn_dur: float) -> tuple[str, str]:
+def _is_runtime_crash(stderr_tail: str) -> bool:
+    """The provider CLI's runtime crash banner (claude.exe is a Bun
+    standalone; a panic prints `Bun v… / Args: … / Features: …` before
+    exiting with a small rc). Agent stderr never carries this banner —
+    it only exists when the CLI itself died."""
+    return "Bun v" in stderr_tail and "Args:" in stderr_tail
+
+
+def _spawn_failure(rc: int, attempts_dir: Path, spawn_dur: float,
+                   *, kind: "str | None" = None) -> tuple[str, str]:
     """Classify a non-zero `agent.spawn_llm` rc into
-    (failure_reason, failure_detail). Three classes:
+    (failure_reason, failure_detail). Four classes:
 
       - `spawn_fast_fail` — wall-clock < 10s; agent almost certainly
         never ran (claude.exe crashed at startup, prompt parser
@@ -250,15 +257,50 @@ def _spawn_failure(rc: int, attempts_dir: Path,
       - `agent_timeout` — rc=124, SIGKILL'd at WORKER_TIMEOUT_SEC.
         Pipeline runs a postmortem on this same session before
         returning so next dispatch sees a `.drafts/` progress note.
-      - `agent_rc_nonzero` — anything else (rc≠0, wall ≥ 10s,
-        rc≠124). Generic agent / spawn error.
+      - `system_killed` — NTSTATUS-shaped rc (≥ 0x40000000) or the CLI
+        runtime's crash banner: the OS/runtime terminated the spawn.
+        Provider infra — no attempts increment (2026-08-08).
+      - `unclassified_spawn_failure` — anything else (rc≠0, wall ≥ 10s,
+        rc≠124). Cause unknown, so the goal is NOT charged; the rc and
+        duration are recorded and the dispatcher's consecutive-
+        unclassified breaker escalates repetition to the operator
+        (2026-08-08 owner ruling: the counter measures mathematical /
+        decomposition difficulty, and only a fair chance consumed
+        belongs in it).
+
+    `kind` names the pipeline, which is how the SEATED PROVIDER (and
+    therefore its `rc_contract` declaration) is resolved. It is the only
+    provider-shaped input this function takes: the branches below are
+    otherwise about duration and about OS-level exit shapes, both of
+    which are provider-independent.
+
+    THIS FUNCTION IS WHERE `rc_contract='undeclared'` IS DECIDED, and
+    the decision is made once, here, rather than scattered:
+
+      degrade conservatively AND warn once.
+
+    An undeclared provider is read exactly like an `uninformative` one
+    (an unrecognised rc becomes `unclassified_spawn_failure`, charging
+    no goal attempt), and `capabilities.warn_if_undeclared` prints one
+    `[capabilities]` line per daemon naming the provider. Refusing to
+    dispatch was rejected: adding a backend would become a two-step
+    landing whose first step is a dead framework, and the pressure would
+    be to paste an unmeasured declaration — worse than an honest
+    "undeclared". Warning alone was rejected too: a warning that leaves
+    the permissive reading in place is precisely the unknown
+    masquerading as a confident answer, which is the class this whole
+    layer exists to close.
 
     Reads `attempts_dir/_spawn.stderr` (written by the provider on
     rc≠0) and folds the first ~600 chars into failure_detail so
     forensic visibility doesn't depend on grovelling through orphan
     sandbox dirs.
     """
+    from ..llm import capabilities as _caps
     from ..llm.base import SpawnRC
+    _provider = _caps.provider_for_kind(kind)
+    _contract = _caps.capabilities_for(_provider).rc_contract
+    _caps.warn_if_undeclared(_provider, context=f"kind={kind or '?'}")
     stderr_tail = ""
     sf = attempts_dir / "_spawn.stderr"
     if sf.exists():
@@ -273,11 +315,50 @@ def _spawn_failure(rc: int, attempts_dir: Path,
         # minutes); this ordering also defends against artificial
         # spawn_dur values in unit tests.
         reason = "agent_timeout"
+    elif rc >= 0x40000000 or _is_runtime_crash(stderr_tail):
+        # The OS or the CLI's own runtime killed the process — the agent
+        # never chose to exit like this. NTSTATUS-shaped exit codes sit
+        # at 0x40000000+ (0xC0000409 fail-fast, 0xC0000142 DLL-init,
+        # 0x40010004 debugger-terminate) — no CLI or agent exit code is
+        # ever that large (SpawnRC tops out at 129). A Bun panic exits
+        # small (rc=3) but stamps its crash banner on stderr. Both are
+        # provider infra: burning goal budget on them shoved five
+        # healthy goals into strategist review while the workstation
+        # was dying (2026-08-08 post-mortem).
+        base = f"agent rc={rc} (0x{rc:08X} — OS/system termination)" \
+            if rc >= 0x40000000 else \
+            f"agent rc={rc} (provider CLI runtime crashed)"
+        reason = "system_killed"
     elif spawn_dur < SPAWN_FAST_FAIL_SEC:
+        # Duration evidence, not rc evidence — so it survives an
+        # `uninformative` / `undeclared` rc contract unchanged: a
+        # process that died in under ten seconds never ran an agent, and
+        # that is true whatever its exit code did or did not mean.
         base = f"agent rc={rc} (fast-fail in {spawn_dur:.1f}s)"
         reason = "spawn_fast_fail"
     else:
-        reason = "agent_rc_nonzero"
+        # Unknown cause ⇒ do not charge the goal (2026-08-08 owner
+        # ruling; see the registry entry). This used to be
+        # `agent_rc_nonzero`, and it was the leak: an rc nobody had
+        # classified yet defaulted to "the agent's fault" and burned a
+        # goal attempt. The rc and the duration go in the detail so the
+        # cause stays traceable — that is the whole price of not
+        # guessing.
+        base = (f"agent rc={rc} (unclassified; ran {spawn_dur:.0f}s "
+                f"— cause unknown, not charged to the goal)")
+        reason = "unclassified_spawn_failure"
+        # Say WHY the rc taught us nothing, so the operator reading the
+        # consecutive-unclassified breaker is not sent to hunt a number
+        # that never meant anything. `_classify` already mined the
+        # envelope for this provider — an rc that reached here is the
+        # residue it could not name.
+        if _contract == "uninformative":
+            base += (f" [provider {_provider!r} declares its rc "
+                     f"UNINFORMATIVE — the cause, if any, is in "
+                     f"_spawn.stderr, not in the exit code]")
+        elif _contract == "undeclared":
+            base += (f" [provider {_provider!r} has declared no rc "
+                     f"contract — see Tooling/llm/capabilities.py]")
     detail = base if not stderr_tail else f"{base}\n{stderr_tail}"
     return reason, detail
 
