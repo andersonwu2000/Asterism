@@ -46,15 +46,124 @@ class Envelope:
     point at it as "write here instead"."""
     write_roots: "tuple[Path, ...]"
     mcp_config_path: "Path | None"
+    #: Subtrees this spawn may NOT read. See `read_deny_roots`.
+    read_deny_roots: "tuple[Path, ...]" = ()
 
     def write_roots_env(self) -> str:
         """`ASTERISM_SPAWN_WRITE_ROOTS` value (spawn_guard's parser)."""
         return os.pathsep.join(str(p) for p in self.write_roots)
 
+    def read_deny_roots_env(self) -> str:
+        """`ASTERISM_SPAWN_READ_DENY_ROOTS` value (spawn_guard's parser)."""
+        return os.pathsep.join(str(p) for p in self.read_deny_roots)
+
+
+#: Environment a spawn INHERITS, by explicit allowlist.
+#:
+#: Not a blocklist, and that is the whole point: a blocklist rots the
+#: moment the vendor adds a variable, and this one had already rotted.
+#: Verified 2026-08-08 — a daemon started from inside a Claude Code
+#: session passes CLAUDECODE, CLAUDE_CODE_SESSION_ID,
+#: CLAUDE_CODE_ENTRYPOINT, CLAUDE_CODE_SSE_PORT, CLAUDE_PID and
+#: CLAUDE_CODE_CHILD_SESSION down into EVERY spawn, because `spawn_env`
+#: inherited everything and `claude_cli` only ever ADDED variables. No
+#: harm was ever observed (thousands of spawns), but "daemon started
+#: from a clean terminal" and "daemon started from inside an agent
+#: session" were two different, invisible configurations — and
+#: CLAUDE_CODE_SSE_PORT points at the HOST session's server.
+#:
+#: The three groups below are, in order: what the OS needs to create a
+#: process at all, what the CLIs need to authenticate and reach the
+#: network, and what the framework's own children read. Everything else
+#: is dropped.
+#:
+#: Names are matched CASE-INSENSITIVELY on Windows (where the
+#: environment block is case-insensitive but arbitrarily cased —
+#: `SystemRoot`, `ProgramData`, `COMSPEC` all appear as written by
+#: whoever set them) and exactly elsewhere.
+_ALLOWED_ENV_NAMES: "frozenset[str]" = frozenset({
+    # --- process creation / OS identity ------------------------------
+    # Omitting any of these breaks CreateProcess or the CLI in ways that
+    # do not name themselves: no SYSTEMROOT and Windows sockets fail to
+    # initialise; no PATHEXT and a `.cmd` shim is unlaunchable; no TEMP
+    # and every tool that writes a scratch file dies at a random depth.
+    "PATH", "PATHEXT", "COMSPEC", "OS",
+    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "DRIVERDATA",
+    "TEMP", "TMP", "TMPDIR",
+    "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "ALLUSERSPROFILE", "PUBLIC",
+    "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
+    "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)", "COMMONPROGRAMW6432",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME", "USERNAME",
+    "USERDOMAIN", "USERDOMAIN_ROAMINGPROFILE", "LOGONSERVER",
+    "COMPUTERNAME", "SESSIONNAME",
+    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_ARCHITEW6432", "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL",
+    "PROCESSOR_REVISION",
+    "PSMODULEPATH",
+    # POSIX equivalents — the daemon is Windows-first but nothing here
+    # is Windows-only, and a missing LANG breaks unicode output.
+    "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+    "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+    # --- provider auth + network -------------------------------------
+    # Auth is normally a file (~/.claude/.credentials.json, the
+    # Antigravity IDE session), but the env route is real and stripping
+    # it would look like "the vendor logged me out". Corporate TLS /
+    # proxy settings are in the same class: dropping them turns every
+    # spawn into an unexplained network failure.
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_OAUTH_TOKEN",
+    # Config LOCATION, not session identity — the CLAUDE_CODE_* names
+    # that leak the host session are deliberately absent.
+    "CLAUDE_CONFIG_DIR",
+    "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_APPLICATION_CREDENTIALS", "OPENAI_API_KEY",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+    # --- the framework's own children --------------------------------
+    # claude spawns the `asterism_tools` MCP server as a child with THIS
+    # environment, and the spawn_guard PreToolUse hook runs the same
+    # way; both are `python -m Tooling.…`. PYTHONPATH is re-set
+    # explicitly by each provider, the rest keep the interpreter honest.
+    "PYTHONPATH", "PYTHONIOENCODING", "PYTHONUTF8",
+    "ELAN_HOME", "LEAN_SYSROOT",
+})
+
+#: Inherited whole. `ASTERISM_*` is the framework's own namespace: the
+#: operator's config overrides (`ASTERISM_<KIND>_MODEL`,
+#: `ASTERISM_WORKSPACE`, …) are read by `core/config` inside every
+#: framework child, and `ASTERISM_SPAWN_WRITE_ROOTS` is the write fence
+#: the spawn_guard hook reads. Dropping the prefix would silently move a
+#: configured run onto defaults.
+_ALLOWED_ENV_PREFIXES: "tuple[str, ...]" = ("ASTERISM_",)
+
+#: Escape hatch. Set to any non-empty value to restore full inheritance
+#: for one daemon (`ASTERISM_SPAWN_ENV_INHERIT_ALL=1`). Intended for
+#: exactly one situation: a spawn breaks in a way that smells
+#: environmental, and you need to know whether the allowlist is the
+#: cause before you spend an hour elsewhere. If it fixes it, the fix is
+#: to ADD the missing name above — leaving the hatch on re-opens the
+#: host-session leak this allowlist closed.
+INHERIT_ALL_ENV = "ASTERISM_SPAWN_ENV_INHERIT_ALL"
+
+
+def _inherit(base: "dict[str, str]") -> "dict[str, str]":
+    """Filter `base` down to the allowlist (case-insensitive on
+    Windows, where the same variable appears differently cased
+    depending on who set it)."""
+    fold = (str.upper if os.name == "nt" else (lambda s: s))
+    out: "dict[str, str]" = {}
+    for k, v in base.items():
+        key = fold(k)
+        if key in _ALLOWED_ENV_NAMES or any(
+                key.startswith(p) for p in _ALLOWED_ENV_PREFIXES):
+            out[k] = v
+    return out
+
 
 def spawn_env(base: "dict[str, str] | None" = None) -> "dict[str, str]":
-    """The inherited environment with THIS interpreter's directory first
-    on PATH.
+    """The spawn's environment: an ALLOWLISTED slice of the parent's,
+    with THIS interpreter's directory first on PATH.
 
     Agents are handed shell commands that start with a bare `python`
     (scholar's `python -m Tooling.papers.fetch`, and the allowlist
@@ -74,13 +183,101 @@ def spawn_env(base: "dict[str, str] | None" = None) -> "dict[str, str]":
     agent types — a prompt rewritten to an absolute path would have to
     be kept byte-identical with a permission pattern in another file,
     which is the drift this project has paid for before.
+
+    The ALLOWLIST (see `_ALLOWED_ENV_NAMES`) is the second half: a spawn
+    should get the same environment whether the daemon was started from
+    a clean terminal or from inside an agent session. Everything the
+    framework deliberately sets — the PATH prepend here, PYTHONPATH,
+    MAX_THINKING_TOKENS, CLAUDE_CODE_DISABLE_*,
+    ASTERISM_SPAWN_WRITE_ROOTS, agy's per-spawn HOME/USERPROFILE — is
+    written AFTER this function returns and is therefore untouched by
+    the filter.
     """
-    env = dict(os.environ if base is None else base)
+    src = dict(os.environ if base is None else base)
+    env = src if os.environ.get(INHERIT_ALL_ENV, "").strip() else _inherit(src)
     own = str(Path(sys.executable).resolve().parent)
     cur = env.get("PATH", "")
     if cur.split(os.pathsep)[:1] != [own]:
         env["PATH"] = own + (os.pathsep + cur if cur else "")
     return env
+
+
+#: Operator-private subtrees, named relative to the workspace root. A
+#: spawn has no legitimate errand in any of them, and each is a channel
+#: for something the run is supposed to derive rather than be handed:
+#:
+#:   docs/          the operator's own writing — STATUS names how far the
+#:                  live problem has got, `operator_lessons.md` and
+#:                  `strategy/paper_takeaways.md` carry conclusions
+#:                  distilled from the literature. Feeding those to a
+#:                  worker is the "文獻不拿來餵答案" line, crossed quietly.
+#:   .asterism/     backups (whole DBs of earlier runs of the SAME
+#:                  problem), caches, daemon runtime state.
+#:   asterism.db    the live run: every goal, decision and dead attempt.
+#:
+#: `Library/` and `Papers/` are deliberately absent — both are surfaces
+#: the framework hands out on purpose.
+PRIVATE_READ_SUBTREES = ("docs", ".asterism", "asterism.db")
+
+
+def workspace_of(problem_dir: "Path | None") -> "Path | None":
+    """`<workspace>/Problems/<name…>` → `<workspace>`."""
+    if problem_dir is None:
+        return None
+    for parent in Path(problem_dir).parents:
+        if parent.name == "Problems":
+            return parent.parent
+    return None
+
+
+def _foreign_problem_dirs(workspace: Path,
+                          problem_dir: "Path | None") -> "list[Path]":
+    """Every OTHER problem's directory, as deny roots.
+
+    Problems sit at mixed depth (`Problems/sylvester_gallai` and
+    `Problems/NumberTheory/cube_e2e` both exist), so this walks the
+    ladder from `Problems/` down to the spawn's own directory and denies
+    each level's siblings. That shape is forced by agy's precedence:
+    deny beats allow GLOBALLY, not most-specific-first (measured
+    2026-08-10, probe G — a re-allow two levels inside a denied tree was
+    still refused), so "deny Problems/, allow my own" is not expressible
+    and the siblings have to be named.
+
+    A spawn with no problem_dir under `Problems/` gets nothing denied
+    here rather than everything: the read fence must never be the reason
+    a legitimate spawn goes blind (that failure is silent on agy)."""
+    problems = workspace / "Problems"
+    if problem_dir is None or not problems.is_dir():
+        return []
+    try:
+        rel = Path(problem_dir).resolve().relative_to(problems.resolve())
+    except (ValueError, OSError):
+        return []
+    out: "list[Path]" = []
+    level = problems
+    for part in rel.parts:
+        try:
+            out += [c for c in level.iterdir() if c.name != part]
+        except OSError:
+            return out
+        level = level / part
+    return out
+
+
+def read_deny_roots(workspace: "Path | None",
+                    problem_dir: "Path | None") -> "tuple[Path, ...]":
+    """Subtrees no spawn may read, provider-independent.
+
+    Rendered by each backend in its own dialect — agy as `read_file(...)`
+    deny rules, claude through `spawn_guard` — because the exposure was
+    never agy-specific: `spawn_guard._whitelist()` returns the whole repo
+    root, so a claude spawn could read `docs/internal/` and the live DB
+    just as freely (#162, 2026-08-10)."""
+    if workspace is None:
+        return ()
+    roots = [workspace / name for name in PRIVATE_READ_SUBTREES]
+    roots += _foreign_problem_dirs(workspace, problem_dir)
+    return tuple(roots)
 
 
 def envelope_for(req: LLMRequest, *, library_dir: "Path | None" = None
@@ -93,8 +290,11 @@ def envelope_for(req: LLMRequest, *, library_dir: "Path | None" = None
         # Its problem_dir IS Papers/<pid>, and the agent's contract is to
         # write map.md there (papers/index.py re-stamps the frontmatter).
         roots.append(Path(req.problem_dir))
+    problem_dir = Path(req.problem_dir) if req.problem_dir else None
     return Envelope(
         write_roots=tuple(roots),
         mcp_config_path=(Path(req.mcp_config_path)
                          if req.mcp_config_path is not None else None),
+        read_deny_roots=read_deny_roots(workspace_of(problem_dir),
+                                        problem_dir),
     )

@@ -91,11 +91,14 @@ def test_stuck_thinking_combined_takeover_ships_attaches(
 def test_stuck_thinking_combined_fails_buffers_and_continues(
     conn: sqlite3.Connection,
 ) -> None:
-    """Combined takeover spawn fails to ship terminal. Helper buffers
-    `agent_stuck_thinking` and continues retry loop with the combined
-    fresh sid for the warm retry. NO stage 3 fires (that's the
-    TIMEOUT-trap path's job, not STUCK_THINKING)."""
+    """Combined takeover spawn fails to ship terminal. Helper records
+    `agent_stuck_thinking` (eagerly, v38) and continues retry loop with
+    the combined fresh sid for the warm retry. NO stage 3 fires (that's
+    the TIMEOUT-trap path's job, not STUCK_THINKING)."""
     gid = _seed_open_goal(conn)
+    db.record_pipeline_start(conn, pipeline_id="pid-combined-fail",
+                             kind="Formalizer", target_id=str(gid),
+                             target_kind="Goal")
     spawn_calls: list[SpawnCtx] = []
 
     def spawn(ctx: SpawnCtx) -> int:
@@ -135,14 +138,17 @@ def test_stuck_thinking_combined_fails_buffers_and_continues(
     assert spawn_calls[2].sid == spawn_calls[1].sid
     assert spawn_calls[2].sid != spawn_calls[0].sid
     assert spawn_calls[2].inline_prompt is None
-    # Buffered failure says combined (not stage2/stage3).
-    reasons = [f["reason"] for f in r.pending_failures]
+    # Recorded failure says combined (not stage2/stage3).
+    rows = conn.execute(
+        "SELECT failure_reason, failure_detail FROM dead_attempts"
+        " WHERE pipeline_id=?", ("pid-combined-fail",)).fetchall()
+    reasons = [row["failure_reason"] for row in rows]
     assert "agent_stuck_thinking" in reasons
-    stuck = [f for f in r.pending_failures
-             if f["reason"] == "agent_stuck_thinking"][0]
-    assert "combined" in stuck["detail"]
-    assert "stage2" not in stuck["detail"]
-    assert "stage3" not in stuck["detail"]
+    stuck = [row for row in rows
+             if row["failure_reason"] == "agent_stuck_thinking"][0]
+    assert "combined" in stuck["failure_detail"]
+    assert "stage2" not in stuck["failure_detail"]
+    assert "stage3" not in stuck["failure_detail"]
 
 
 def test_timeout_trap_uses_combined_takeover(
@@ -245,6 +251,9 @@ def test_combined_takeover_forces_progress_when_ship_fails_without_note(
     def postmortem(sid: str) -> None:
         postmortem_calls.append(sid)
 
+    db.record_pipeline_start(conn, pipeline_id="pid-fp",
+                             kind="Formalizer", target_id=str(gid),
+                             target_kind="Goal")
     r = run_with_session_retries(
         conn=conn, goal_id=gid, pipeline_id="pid-fp",
         budget_threshold=5, shelve_threshold=8,
@@ -323,6 +332,9 @@ def test_combined_takeover_trap_uses_fresh_cold_forced_progress(
     def postmortem(sid: str) -> None:
         postmortem_calls.append(sid)
 
+    db.record_pipeline_start(conn, pipeline_id="pid-trap",
+                             kind="Formalizer", target_id=str(gid),
+                             target_kind="Goal")
     r = run_with_session_retries(
         conn=conn, goal_id=gid, pipeline_id="pid-trap",
         budget_threshold=5, shelve_threshold=8,
@@ -393,6 +405,9 @@ def test_combined_takeover_skips_force_progress_when_note_exists(
     def postmortem(sid: str) -> None:
         postmortem_calls.append(sid)
 
+    db.record_pipeline_start(conn, pipeline_id="pid-skip",
+                             kind="Formalizer", target_id=str(gid),
+                             target_kind="Goal")
     r = run_with_session_retries(
         conn=conn, goal_id=gid, pipeline_id="pid-skip",
         budget_threshold=5, shelve_threshold=8,

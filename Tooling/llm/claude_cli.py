@@ -47,6 +47,7 @@ import time
 from pathlib import Path
 
 from ..core.process_group import no_window_creationflags
+from . import capabilities
 from .base import LLMRequest, SpawnRC
 from .stream_parser import StreamParser
 
@@ -335,10 +336,53 @@ _DEFAULT_SILENCE_THRESHOLD_SEC = 300
 # are never cut; small enough to reclaim most of a hung tail.
 _DEFAULT_COMPLETION_GRACE_SEC = 20
 
+#: This provider's canonical name in `llm/capabilities.py`.
+PROVIDER_NAME = "claude"
+
+
+def resolve_claude_executable() -> "str | None":
+    """Launchable path for `claude`, or None — the provider's own answer.
+
+    PATH first, then the installer's known homes. The official
+    installer's PATH edit lands in NEW sessions (and on a fresh Windows
+    it can miss entirely), so a long-lived process started before or
+    during the install would otherwise conclude the CLI is absent about
+    one sitting right there. `serve/app.py` learned that the hard way
+    and grew its own copy; `drift_guard` kept a bare `shutil.which` and
+    silently checked NOTHING on such a machine. One resolver per
+    provider, beside `antigravity_cli.resolve_agy_executable`, so the
+    next consumer inherits the knowledge instead of a third variant.
+
+    NOT used by `spawn` below, deliberately: the spawn's argv[0] is the
+    bare name and its gate is the matching `shutil.which`, so those two
+    agree with each other. Changing the engine's launch path is a
+    behaviour change on the hot path and belongs to whoever needs it.
+    """
+    p = shutil.which("claude")
+    if p:
+        return p
+    candidates = [Path.home() / ".local" / "bin" / "claude.exe"]
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        candidates.append(Path(appdata) / "npm" / "claude.cmd")
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return None
+
+#: Kinds whose silence is measured as STREAM idleness rather than
+#: tool-call cadence. The table moved to `llm/capabilities.py` when the
+#: choice became `capabilities.liveness_clock(provider, kind)` — the
+#: same question a provider WITHOUT a stream has to answer, and it has
+#: to answer it "there is no silence clock at all". Re-exported here
+#: because this is where it was born and where the tests look.
+_STREAM_IDLE_KINDS = capabilities.STREAM_IDLE_KINDS
+
 
 def _watchdog(proc: subprocess.Popen, sid: str, *,
               stuck_flag: list, done_flag: list, timeout_sec: int,
               parser: StreamParser,
+              kind: str = "",
               trap_check_sec_override: int | None = None) -> None:
     """Two jobs while the spawn runs:
 
@@ -355,7 +399,10 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
     picked up by the natural-exit return below.
 
     (2) Trap check at `trap_check_sec` (single-shot): sample BOTH
-    parser-trap state AND silence; kill iff both fire. `stuck_flag[0]`
+    parser-trap state AND silence; kill iff both fire. Which clock
+    "silence" means is chosen by `kind` (see `_STREAM_IDLE_KINDS`):
+    tool cadence for the formalizer family, stream liveness for the NL
+    layer. `stuck_flag[0]`
     on kill routes the spawn to STUCK_THINKING → combined fresh-sid
     takeover. When AND fails, exit quietly — the spawn runs to its full
     subprocess timeout and the TIMEOUT path's parser-only trap check
@@ -437,13 +484,22 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
         return  # Proc finished naturally before trap_check_sec.
 
     snap = parser.snapshot()
-    silence = parser.silence_seconds(time.monotonic())
+    _now = time.monotonic()
+    tool_idle = parser.silence_seconds(_now)
+    stream_idle = parser.stream_idle_seconds(_now)
+    stream_metric = (capabilities.liveness_clock(PROVIDER_NAME, kind)
+                     == capabilities.LIVENESS_STREAM)
+    silence = stream_idle if stream_metric else tool_idle
     verdict_state = snap.state.value
     verdict_stop = snap.last_stop_reason or "—"
     is_trap = parser.is_thinking_trap()
     is_silent = silence > silence_threshold_sec
+    # Both clocks in the log whichever one decides: the pair is what a
+    # later calibration of the threshold has to read.
     label = (f"state={verdict_state} last_stop_reason={verdict_stop} "
-             f"silence={int(silence)}s")
+             f"silence={int(silence)}s "
+             f"[{'stream' if stream_metric else 'tool'}-clock; "
+             f"tool_idle={int(tool_idle)}s stream_idle={int(stream_idle)}s]")
     if is_trap and is_silent:
         # Race re-check: if the proc finished between the wait-loop
         # exit and this sample, sticking a STUCK_THINKING rc on a
@@ -1101,8 +1157,16 @@ class ClaudeCliProvider:
         # real dispatch sets session_id.
         # Fresh-rescue stages 2/3 (inline_prompt) and timeout postmortem
         # (is_postmortem) both fall in the no-watchdog bucket.
+        # The first clause is the DECLARATION, not a claude fact: a
+        # watchdog exists only where there is a stream to sample. Read
+        # from `capabilities` so a future provider that reuses this
+        # module (or a claude release that drops stream-json) degrades
+        # to the timeout-only clock instead of starting a watchdog
+        # thread that samples an empty parser forever.
         watchdog_eligible = (
-            not req.is_postmortem
+            capabilities.liveness_clock(PROVIDER_NAME, req.kind)
+            != capabilities.LIVENESS_TIMEOUT_ONLY
+            and not req.is_postmortem
             and req.inline_prompt is None
             and req.session_id is not None
         )
@@ -1168,15 +1232,21 @@ class ClaudeCliProvider:
         # roots — the attempts sandbox, plus the kind's sanctioned edit
         # surface (the librarian family edits Library in place; every
         # other persisted artifact is written by framework code, not
-        # spawn tools). Reads keep the broad repo whitelist. Attempts
-        # dir stays FIRST — the deny message points at roots[0].
+        # spawn tools). Attempts dir stays FIRST — the deny message
+        # points at roots[0].
         # The roots themselves come from `envelope.envelope_for` — the
         # same grants agy renders into its per-spawn settings.json, so a
         # third provider inherits one definition instead of a third copy.
         from .envelope import envelope_for
-        from .spawn_guard import WRITE_ROOTS_ENV
-        env[WRITE_ROOTS_ENV] = envelope_for(
-            req, library_dir=library_dir).write_roots_env()
+        from .spawn_guard import READ_DENY_ROOTS_ENV, WRITE_ROOTS_ENV
+        spec = envelope_for(req, library_dir=library_dir)
+        env[WRITE_ROOTS_ENV] = spec.write_roots_env()
+        # Reads keep the broad repo whitelist MINUS the operator-private
+        # subtrees (#162, 2026-08-10). Until that ruling the repo root was
+        # readable whole, so a spawn could open `docs/internal/`, the live
+        # `asterism.db`, or another problem's proofs — the exposure that
+        # was written up as agy-specific and never was.
+        env[READ_DENY_ROOTS_ENV] = spec.read_deny_roots_env()
         # Per-spawn thinking-token cap (restored 2026-05-10 from 9d05d19).
         # Sonnet 4.6's adaptive thinking can produce 30-90K-character
         # single thinking blocks that hit Anthropic's max_tokens stop
@@ -1279,6 +1349,7 @@ class ClaudeCliProvider:
                     "done_flag": done_flag,
                     "timeout_sec": req.timeout_sec,
                     "parser": parser,
+                    "kind": req.kind,
                     "trap_check_sec_override": req.trap_check_sec,
                 },
                 daemon=True,

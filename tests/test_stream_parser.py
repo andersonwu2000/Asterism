@@ -380,3 +380,42 @@ def test_silence_seconds_grows_during_thinking() -> None:
     s2 = p.silence_seconds(_time.monotonic())
     assert s2 > s1
     assert s2 - s1 >= 0.04
+
+
+# ---------------------------------------------------------------------
+# Stream liveness — the second clock (2026-08-07)
+# ---------------------------------------------------------------------
+
+def test_thinking_deltas_keep_the_stream_clock_alive() -> None:
+    """The two clocks must diverge on exactly the shape that burned
+    seven Strategist spawns in one day: a long think with no tool call.
+
+    Measured against the real CLI (sonnet-5 and opus-5, 2026-08-07): a
+    thinking block emits a delta every ~1.5s and calls no tool for
+    minutes, so tool cadence reports total silence while the stream is
+    plainly alive. `content_block_delta` carries no state transition,
+    which is why the parser used to drop it on the floor."""
+    import time as _time
+    p = StreamParser()
+    p.feed_line(_message_start())
+    p.feed_line(_content_block_start(0, "thinking"))
+    _time.sleep(0.05)
+    for _ in range(3):
+        p.feed_line(_content_block_delta(0, "thinking_delta"))
+    now = _time.monotonic()
+    assert p.stream_idle_seconds(now) < 0.02   # a delta just arrived
+    assert p.silence_seconds(now) >= 0.04      # no tool_use, ever
+    assert p.silence_seconds(now) > 2 * p.stream_idle_seconds(now)
+    assert p.snapshot().last_event_ts > p.snapshot().spawn_start_ts
+
+
+def test_stream_clock_grows_when_the_stream_really_stops() -> None:
+    """The guard the NL layer keeps: nothing arriving at all."""
+    import time as _time
+    p = StreamParser()
+    p.feed_line(_message_start())
+    p.feed_line(_content_block_start(0, "thinking"))
+    s1 = p.stream_idle_seconds(_time.monotonic())
+    _time.sleep(0.05)
+    s2 = p.stream_idle_seconds(_time.monotonic())
+    assert s2 - s1 >= 0.04

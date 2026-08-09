@@ -95,7 +95,8 @@ def _seed_active_tool_use(parser: StreamParser) -> None:
 
 def _run_watchdog(proc, sid: str, parser: StreamParser, *,
                   timeout_sec: int,
-                  monkeypatch: pytest.MonkeyPatch) -> tuple[list[bool], list[bool]]:
+                  monkeypatch: pytest.MonkeyPatch,
+                  kind: str = "") -> tuple[list[bool], list[bool]]:
     """Run `_watchdog` in a thread with the trap-check floor lowered so
     the trigger fires fast. Returns (stuck_flag, done_flag) once the
     thread exits."""
@@ -106,7 +107,8 @@ def _run_watchdog(proc, sid: str, parser: StreamParser, *,
         target=claude_cli._watchdog,
         args=(proc, sid),
         kwargs={"stuck_flag": stuck, "done_flag": done,
-                "timeout_sec": timeout_sec, "parser": parser},
+                "timeout_sec": timeout_sec, "parser": parser,
+                "kind": kind},
         daemon=True,
     )
     th.start()
@@ -472,3 +474,100 @@ def test_find_session_jsonl_returns_none_when_missing(
     `~/.claude/projects` returns None (no crash)."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     assert claude_cli._find_session_jsonl("nonexistent-sid") is None
+
+
+# ---------------------------------------------------------------------
+# Which clock counts as "silence" — per kind (2026-08-07)
+# ---------------------------------------------------------------------
+
+class _DeltaFeeder:
+    """Keeps a thinking block streaming while the watchdog waits — the
+    shape of a healthy NL spawn deep in one long think: deltas every
+    fraction of a second, not one tool call in sight. Measured against
+    the real CLI (sonnet-5 and opus-5, 2026-08-07): ~1.5s between
+    deltas, four minutes without a tool."""
+
+    def __init__(self, parser: StreamParser, interval: float = 0.1) -> None:
+        self._parser = parser
+        self._interval = interval
+        self._stop = threading.Event()
+        self._th = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            self._parser.feed_line(_stream_event({
+                "type": "content_block_delta", "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "..."}}))
+
+    def __enter__(self) -> "_DeltaFeeder":
+        self._th.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        self._th.join(timeout=2.0)
+
+
+def test_nl_kind_survives_a_long_think_with_a_live_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Strategist thinking without calling a tool must NOT be killed.
+    Its work IS the thinking, and its 3h timeout is an absurdity ceiling
+    rather than a work budget — so the only thing worth guarding against
+    is a process that has stopped producing. Seven healthy Strategist
+    spawns died on the tool clock in one day before this split."""
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "2")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "1")
+    parser = StreamParser()
+    _seed_mid_thinking(parser)
+    proc = _FakeProc()
+    with _DeltaFeeder(parser):
+        flag, _done = _run_watchdog(proc, "nlthink1", parser, timeout_sec=4,
+                                    monkeypatch=monkeypatch,
+                                    kind="strategist")
+    assert flag[0] is False
+    assert proc.term_calls + proc.kill_calls == 0
+
+
+def test_formal_kind_still_dies_on_the_tool_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Byte-identical stream, formalizer kind: the tool clock still
+    rules, because the failure guarded against there is thinking instead
+    of acting, and a tool call every few seconds is the healthy shape."""
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "2")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "1")
+    parser = StreamParser()
+    _seed_mid_thinking(parser)
+    proc = _FakeProc()
+    with _DeltaFeeder(parser):
+        flag, _done = _run_watchdog(proc, "fmlthink", parser, timeout_sec=4,
+                                    monkeypatch=monkeypatch,
+                                    kind="formalizer")
+    assert flag[0] is True
+    assert proc.term_calls + proc.kill_calls >= 1
+
+
+def test_nl_kind_still_dies_when_the_stream_goes_quiet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard the NL layer keeps: mid-thinking AND nothing arriving.
+    No feeder here, so the stream clock trips too and the rescue path
+    runs exactly as before."""
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
+    parser = StreamParser()
+    _seed_mid_thinking(parser)
+    proc = _FakeProc()
+    flag, _done = _run_watchdog(proc, "nlquiet1", parser, timeout_sec=2,
+                                monkeypatch=monkeypatch, kind="strategist")
+    assert flag[0] is True
+    assert proc.term_calls + proc.kill_calls >= 1
+
+
+def test_stream_idle_kinds_match_the_dispatch_spelling() -> None:
+    """The set is keyed by `LLMRequest.kind` — the literal the pipelines
+    pass to `spawn_llm` (`strategist.py`, `adversary.py`). A near-miss
+    spelling would be a silent no-op, which is the exact shape the quota
+    ledger shipped with on the morning of the same day."""
+    assert claude_cli._STREAM_IDLE_KINDS == {"strategist", "adversary"}

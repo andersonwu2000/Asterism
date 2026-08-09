@@ -23,6 +23,19 @@ Policy:
   missed it; same rule closes worker writes into mathlib packages /
   Library). Env absent (manual/legacy spawn) → broad whitelist as
   before.
+- Read fence (all file tools + Bash), when the spawn cmd injects
+  ASTERISM_SPAWN_READ_DENY_ROOTS (#162, 2026-08-10): the repo tree was
+  readable WHOLE until this ruling, so a spawn could open
+  `docs/internal/` (the operator's own notes and paper takeaways), the
+  live `asterism.db`, `.asterism/backups/`, or another problem's proofs.
+  Those roots are now default-deny. For Grep/Glob the path argument is a
+  search ROOT, so a root that CONTAINS a private subtree is refused too —
+  a prefix check alone passes `Grep(path=<repo>)` and prints the contents
+  anyway. RESIDUAL GAP, named rather than papered over: the Bash pass
+  only sees ABSOLUTE path tokens (see `_BASH_TOKEN`), so a relative
+  `cat ../../docs/internal/STATUS.md` is not caught. Spawn cwd is the
+  problem dir, which makes that a deliberate traversal rather than an
+  accident, and the same limit has always applied to the home guard.
 - Bash: home-directory guard. A command is denied only if it contains
   an absolute-path token that resolves under the user's home dir and
   outside the whitelist (~/.claude, ~/.ssh, ...). Tokens elsewhere are
@@ -54,6 +67,19 @@ WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 # separated absolute paths; attempts dir FIRST — the deny message
 # points at roots[0]).
 WRITE_ROOTS_ENV = "ASTERISM_SPAWN_WRITE_ROOTS"
+
+# Per-spawn READ blacklist, injected by claude_cli from
+# `envelope.read_deny_roots` (#162, user ruling 2026-08-10). The repo
+# root was readable whole until then, so a spawn could open
+# `docs/internal/`, the live `asterism.db`, `.asterism/backups/`, or
+# another problem's proofs. Env absent (manual/legacy spawn) → nothing
+# denied, matching the write fence's fallback.
+READ_DENY_ROOTS_ENV = "ASTERISM_SPAWN_READ_DENY_ROOTS"
+
+#: Tools whose path argument is a search ROOT, not a target: they
+#: traverse it, so a private subtree INSIDE the root leaks even though
+#: the root itself is allowed.
+SEARCH_TOOLS = {"Grep", "Glob"}
 
 
 def _write_roots() -> "list[Path] | None":
@@ -139,9 +165,42 @@ def _whitelist() -> list[Path]:
     return [REPO_ROOT, *_allowed_home(), Path(os.sep + "tmp")]
 
 
+def _read_deny_roots() -> list[Path]:
+    raw = os.environ.get(READ_DENY_ROOTS_ENV, "").strip()
+    return [Path(p.strip()) for p in raw.split(os.pathsep) if p.strip()]
+
+
+def _read_denied(tool_name: str, raw: str, path: Path,
+                 droots: list[Path]) -> str | None:
+    """Deny reason if this path lands in — or would traverse — a private
+    subtree."""
+    for root in droots:
+        if _under(path, root):
+            return (
+                f"{tool_name} on {raw} is inside {root}, which is "
+                "operator-private: the framework's own notes, earlier "
+                "runs' databases, and other problems' proofs. Your "
+                "problem's own files, Library/ and Papers/ are the "
+                "surfaces meant for you — everything you are supposed to "
+                "know is in Context.md, BRIEF.md and the Manifest.")
+    if tool_name in SEARCH_TOOLS:
+        # The root is allowed, but searching it walks the private
+        # subtrees inside it. A prefix check alone would pass this and
+        # print the contents anyway.
+        inside = [r for r in droots if _under(r, path)]
+        if inside:
+            return (
+                f"{tool_name} rooted at {raw} would search "
+                f"{inside[0]} and the other operator-private subtrees "
+                "under it. Narrow the search to your problem directory, "
+                "Library/ or Papers/.")
+    return None
+
+
 def check(tool_name: str, tool_input: dict, cwd: str | None) -> str | None:
     """Return a deny reason, or None to allow."""
     wl = _whitelist()
+    droots = _read_deny_roots()
     if tool_name in FILE_TOOLS:
         wroots = _write_roots() if tool_name in WRITE_TOOLS else None
         for field in _PATH_FIELDS:
@@ -151,6 +210,12 @@ def check(tool_name: str, tool_input: dict, cwd: str | None) -> str | None:
             path = _normalize(str(raw), cwd)
             if path is None:
                 continue
+            # Read fence first: it applies to the write family too (a
+            # write root can never be private, but the check is cheap
+            # and the ordering keeps one rule for one question).
+            denied = _read_denied(tool_name, str(raw), path, droots)
+            if denied:
+                return denied
             if wroots is not None:
                 if not any(_under(path, root) for root in wroots):
                     return (
@@ -172,7 +237,15 @@ def check(tool_name: str, tool_input: dict, cwd: str | None) -> str | None:
         home = Path.home()
         for m in _BASH_TOKEN.finditer(str(tool_input.get("command", ""))):
             path = _normalize(m.group(0), cwd)
-            if path is None or not _under(path, home):
+            if path is None:
+                continue
+            # A `cat docs/internal/STATUS.md` reads exactly what the
+            # file-tool fence just refused. Fencing one channel and not
+            # the other is how the write fence was almost lost.
+            denied = _read_denied("Bash", m.group(0), path, droots)
+            if denied:
+                return denied
+            if not _under(path, home):
                 continue
             # Exempt the FULL whitelist, not just the home subtrees: on
             # hosts where the repo itself lives under home (Linux CI,

@@ -1,0 +1,531 @@
+"""What each provider CAN ANSWER — declared once, by the provider.
+
+`llm/base.py` says a Provider is one method, `spawn(req) -> int`, and
+that is right: the ACTION is uniform. What is not uniform is what the
+backend can tell us about that action, and every one of those gaps
+arrived in core as an `if provider == "<name>"`:
+
+  * `core/quota.py` registered `_no_endpoint` against the literal
+    string `"antigravity"`, because agy has no usage API at all.
+  * `state/failures.rc_to_reason` reads claude's rc vocabulary, while
+    `antigravity_cli._classify` exists solely to manufacture that
+    vocabulary out of an envelope, because agy exits 1 for every error.
+  * the stream watchdog (`claude_cli._watchdog` + `stream_parser`) is
+    claude-only; an agy spawn runs with no parser at all, and the
+    retry helper's timeout branch still printed a confident
+    `[detector verdict: active]` for it — a detector that never ran.
+  * `--resume <uuid>` vs agy's minted `conversation_id`.
+  * agy's permission surface enforces `deny` absolutely and IGNORES
+    `allow` for `read_url` (11 probes, 2026-07-30) — "the permission
+    file says X" is not the same sentence on both providers.
+
+A name-keyed special case is invisible to the next backend. `codex` is
+coming and an OpenAI-compatible HTTP provider is already here; each one
+that is not thought about inherits whatever the branch's `else` happened
+to be. That is not hypothetical: on 2026-08-07 the quota ledger spoke
+seat names while the dispatcher asked in queue kinds and BOTH halves
+silently no-oped for an hour, because a lookup miss returned a
+plausible-looking `None`.
+
+So the gaps become a DECLARATION the provider owns, and the consumers
+read the declaration. The defaults on `ProviderCapabilities` are all
+the "we were never told" values — a new backend that declares nothing
+gets `rc_contract='undeclared'`, `usage_endpoint=False`,
+`stream_events=False`, and every consumer degrades conservatively. It
+cannot inherit a safe-looking answer it never gave. That mirrors the
+2026-08-08 `unclassified_spawn_failure` ruling one level up: an unknown
+must not masquerade as a confident answer.
+
+WHERE `undeclared` IS DECIDED: exactly one consumer — rc
+classification (`state/failures.rc_to_reason` +
+`pipeline._spawn_failure`). See `RC_UNDECLARED` below for the ruling
+and why it is degradation-plus-warning rather than refuse-to-dispatch.
+
+A CONSEQUENCE, written down so it is not re-litigated: a provider with
+`usage_endpoint=False` can never receive a POSITIVE quota confirmation.
+`core/quota_wait` only sleeps to a `resets_at` the endpoint stated, and
+the dispatcher's breaker charges a spawn that died without a recognised
+quota marker as an agent failure. So an agy timeout is billed to the
+agent even when the true cause was a silent throttle. That is the
+correct consequence of `usage_endpoint=False`, not agy being treated
+unfairly: the framework declines to invent a confirmation nobody gave
+it. The cure is an endpoint, not a heuristic.
+
+ALSO RECORDED (production data, both providers, all of 2026-07/08):
+neither CLI takes a per-directory single-instance lock. `dispatch.pool`
+= 4 concurrent spawns share one `Problems/<p>/` cwd all day, on claude
+and on agy, with no contention and no lockfile. An external project hit
+exactly such a lock with a different CLI; ours is clear, so a future
+reader does not have to re-derive it. `single_instance_lock` carries
+the fact per provider.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+# --------------------------------------------------------------- rc
+
+#: The provider's exit codes mean what `llm/base.py::SpawnRC` says they
+#: mean: 0/124/125/126/127/128/129 are a vocabulary, and an rc outside
+#: it is a real, provider-authored error signal.
+RC_STRUCTURED = "structured"
+#: The process rc carries NO information and must not be read as one.
+#: agy exits 1 for every ERROR envelope regardless of cause — a bad
+#: model slug, a refused credential and a transient blip are the same
+#: integer (`antigravity_cli._classify`, which exists because of this).
+#: A consumer that reads such an rc as a cause is guessing.
+RC_UNINFORMATIVE = "uninformative"
+#: Nobody ever said. The DEFAULT, and it must stay the default: the
+#: cost of a wrong guess here is a goal charged for a failure whose
+#: cause was mechanical (the 2026-08-08 post-mortem: six OS-level exits
+#: burned attempts and shoved five healthy goals into review).
+#:
+#: THE RULING (one consumer, one decision — rc classification):
+#: `undeclared` degrades exactly like `uninformative` — an rc outside
+#: the framework vocabulary becomes `unclassified_spawn_failure`, which
+#: does not charge the goal and whose repetition escalates to the
+#: OPERATOR — and additionally emits a one-time `[capabilities]`
+#: warning naming the provider.
+#:
+#: Why not refuse to dispatch: adding a backend would then be a
+#: two-step landing whose first step is a dead framework, and the
+#: pressure would be to paste a declaration nobody measured — which is
+#: worse than an honest "undeclared". Why not warn-only: a warning that
+#: leaves the permissive reading in place IS the unknown masquerading
+#: as an answer. Degrade AND warn is the only pair that keeps both.
+RC_UNDECLARED = "undeclared"
+
+# ------------------------------------------------------ session resume
+
+#: Caller mints the id and pins it (`--session-id`), then replays it
+#: (`--resume`). The framework owns the identifier.
+RESUME_CALLER_SESSION_ID = "caller_session_id"
+#: The CLI MINTS the id and reports it back; resuming means recording
+#: it on the cold call and replaying it (`--conversation <id>`). agy.
+#: Consequence the Strategist paid for: without the recorded map a
+#: retry cannot resume, so a bare rebuttal would reach an amnesiac
+#: agent — `antigravity_cli._build_prompt` falls back to the full
+#: prompt rather than waste the round.
+RESUME_PROVIDER_CONVERSATION_ID = "provider_conversation_id"
+#: No resume of any kind; every invocation is a fresh context.
+RESUME_NONE = "none"
+RESUME_UNDECLARED = "undeclared"
+
+# --------------------------------------------- permission enforcement
+
+#: Every rule in the permission surface is enforced as written.
+ENFORCEMENT_HARD = "hard"
+#: `deny` is absolute, `allow` is not universally honoured. MEASURED on
+#: agy 2026-07-30 (11 + 4 probes): a `read_url` ALLOW is ignored in
+#: every scoping form (it fetches with no rule at all), while a
+#: `read_url(*)` DENY blocks even with an exact-URL allow beside it; and
+#: the `command` matcher takes only a full literal or `*`, nothing
+#: between. So a capability is safe to REMOVE here and never safe to
+#: narrow — the closed posture (deny `command(*)` + `read_url(*)`, reach
+#: everything else over MCP) is a consequence of this field, not a
+#: preference.
+ENFORCEMENT_DENY_ONLY = "deny_only"
+#: No enforceable tool surface (the OpenAI HTTP provider has no tools).
+ENFORCEMENT_NOT_APPLICABLE = "not_applicable"
+ENFORCEMENT_UNDECLARED = "undeclared"
+
+#: Which ACTIONS a provider actually honours an `allow` rule for
+#: (2026-08-10 owner call). The single `enforcement_strength` string
+#: above was itself a flattening — agy's real behaviour is per action,
+#: not per provider, and the coarse word hid the one case that bites:
+#:
+#:   write_file  allow ENFORCED   (a write into `.attempts` landed; the
+#:                                 same write into `Problems/` came back
+#:                                 "Matches user-configured deny rule")
+#:   mcp         allow ENFORCED   (no rule at all → auto-denied headless)
+#:   command     allow enforced, but the matcher takes only a full
+#:               literal or `*` — nothing between (7 probes)
+#:   read_url    allow IGNORED    (fetches with no rule, every scoping
+#:                                 form) — deny is the ONLY control
+#:   read_file   allow ENFORCED and SCOPING (re-measured 2026-08-10, five
+#:               probes in `_spike/p162/`): no matching allow → denied,
+#:               a deny inside an allowed tree wins for that subtree.
+#:               It was declared unenforceable here that morning on the
+#:               strength of an earlier series that read the silent
+#:               auto-deny as a successful read — the two are
+#:               indistinguishable from outside the process.
+#:
+#: The trap this exists to catch: a future edit that tries to NARROW an
+#: unenforceable action by writing an allow rule — e.g. "allow only
+#: arxiv.org" for `read_url` — produces UNRESTRICTED fetching on agy, not
+#: narrowed fetching, and says nothing while doing it. For a benchmark an
+#: ungated outbound fetch is a validity problem (a route to a published
+#: solution) before it is a security one.
+#:
+#: Enforced by a static invariant test, deliberately NOT by a runtime
+#: gate: this condition can only be created by editing the permission
+#: renderer, and a code edit is what tests are for. A runtime check would
+#: add a production failure mode for a state production cannot reach.
+ALLOW_HONOURED_ALL = frozenset({"*"})  # every action (claude, hard)
+ALLOW_HONOURED_NONE: frozenset = frozenset()   # no tool surface at all
+
+#: Reading a file — named because it is the action whose absence from a
+#: provider's honoured set changes what a FEATURE can promise, not just
+#: what a spawn may do. The console explainer is scoped to the workspace
+#: on a provider that honours it and scoped to the OS account on one
+#: that does not (`llm/explainer.py` publishes which).
+ACTION_READ_FILE = "read_file"
+
+# ---------------------------------------------------- liveness clocks
+
+#: Silence measured on the raw event stream (any delta counts).
+LIVENESS_STREAM = "stream"
+#: Silence measured on tool-call cadence (`tool_use` events).
+LIVENESS_TOOL = "tool"
+#: The provider emits nothing incremental, so NO silence clock exists
+#: and the overall wall timeout is the whole liveness guarantee. This
+#: is a degradation, and it is named so that a consumer can say so out
+#: loud instead of reporting an observation it never made.
+LIVENESS_TIMEOUT_ONLY = "timeout"
+
+#: Kinds whose silence is STREAM idleness rather than tool cadence.
+#: A property of the KIND, not the provider: the tool clock was built
+#: for the formalizer family, where thinking-instead-of-acting is the
+#: failure and a tool call every few seconds is health. The NL layer's
+#: work IS the thinking, and measuring it on tool cadence killed seven
+#: healthy Strategist spawns in one day (2026-08-07, sonnet-5 + opus-5:
+#: four minutes into one thinking block the tool clock read 240s of
+#: silence while the stream had never been quiet for 3.5s). Lives here
+#: rather than in `claude_cli` because the choice is now made through
+#: `liveness_clock`, which every provider consults.
+STREAM_IDLE_KINDS: "frozenset[str]" = frozenset({"strategist", "adversary"})
+
+
+@dataclass(frozen=True)
+class ProviderCapabilities:
+    """One provider's answer to "what can you tell us?".
+
+    EVERY default is the pessimistic / unknown value. Constructing
+    `ProviderCapabilities(name='codex')` yields a provider that cannot
+    report quota, emits no stream, resumes nothing, has an undeclared
+    rc contract and an undeclared enforcement surface — which is the
+    truth about a backend nobody has measured.
+    """
+
+    name: str
+    #: Can we ASK how much quota is left? claude: yes (the subscription
+    #: usage endpoint, `core/usage_quota.fetch_usage`). agy: NO —
+    #: verified 2026-08-07, `agy --help` carries no usage/quota
+    #: subcommand, and re-verified against agy 1.1.11 on 2026-08-09.
+    #: Read by `core/quota` to decide whether a provider gets a live
+    #: probe or only the observed-from-failures channel.
+    usage_endpoint: bool = False
+    #: Does the CLI emit parseable incremental events? claude: yes
+    #: (`--output-format stream-json --include-partial-messages`, which
+    #: `llm/stream_parser.py` consumes). agy: no — one JSON envelope at
+    #: the end and nothing before it. False means the watchdog has
+    #: nothing to sample and the retry helper must NOT report a
+    #: detector verdict.
+    stream_events: bool = False
+    #: How a second turn reaches the first turn's memory.
+    session_resume: str = RESUME_UNDECLARED
+    #: What the process exit code means. TRI-STATE — see the RC_*
+    #: constants; `undeclared` is the default on purpose.
+    rc_contract: str = RC_UNDECLARED
+    #: Is the tool-permission surface a hard boundary or advisory?
+    enforcement_strength: str = ENFORCEMENT_UNDECLARED
+    #: The ACTIONS whose `allow` rules this provider actually honours —
+    #: `{"*"}` for all, `frozenset()` for none. `enforcement_strength`
+    #: above is the headline; this is the fact a gate can act on, because
+    #: the headline word ("deny_only") averages over actions that behave
+    #: differently. Default empty = "nothing is known to be grantable",
+    #: so an undeclared provider cannot silently be handed a capability
+    #: the framework merely ASSUMES will be enforced.
+    allow_honoured_actions: frozenset = ALLOW_HONOURED_NONE
+    #: The CLI version everything above was VERIFIED against, and the
+    #: version that validated `marker_tables`. Version equality alone
+    #: cannot catch a server-side wording change, which is why
+    #: `llm/drift_guard.py` also diffs a behaviour snapshot — but when
+    #: a marker stops matching, the first question is "validated
+    #: against which version?" and this is the answer.
+    tested_version: "str | None" = None
+    #: Dotted paths of the STRING-MATCH tables validated at
+    #: `tested_version`. These are the most brittle thing in the
+    #: system: every quota / misconfig / timeout / stale-session
+    #: detector is a substring test against vendor prose that can
+    #: change without a version bump. Naming them here lets the drift
+    #: guard say WHICH tables a warning puts in doubt, and lets a test
+    #: assert every named table still exists and is non-empty.
+    marker_tables: "tuple[str, ...]" = ()
+    #: Does the CLI take a per-directory single-instance lock? False
+    #: for both live providers — production data, `dispatch.pool` = 4
+    #: spawns sharing one problem directory all day for months, on
+    #: claude and on agy, with no lockfile and no contention. Recorded
+    #: because an external project DID hit such a lock with a different
+    #: CLI; a future reader should not have to re-derive that ours is
+    #: clear.
+    single_instance_lock: bool = False
+    #: argv tail that prints the version without touching the network
+    #: or the quota. `()` = no free version probe.
+    version_argv: "tuple[str, ...]" = ("--version",)
+    notes: str = ""
+
+    @property
+    def declared(self) -> bool:
+        """False for a backend that never declared its rc contract —
+        the single flag consumers use to decide whether to warn."""
+        return self.rc_contract != RC_UNDECLARED
+
+
+def _undeclared(name: str) -> ProviderCapabilities:
+    """A provider nobody has measured. Every field pessimistic."""
+    return ProviderCapabilities(
+        name=name,
+        notes=("no declaration in llm/capabilities.py — every consumer "
+               "degrades conservatively until one is measured"))
+
+
+#: canonical provider name -> declaration. Keys match the names
+#: `llm/get_provider` resolves; `ALIASES` covers the spellings config
+#: accepts.
+CAPABILITIES: "dict[str, ProviderCapabilities]" = {
+    "claude": ProviderCapabilities(
+        name="claude",
+        usage_endpoint=True,
+        stream_events=True,
+        session_resume=RESUME_CALLER_SESSION_ID,
+        rc_contract=RC_STRUCTURED,
+        enforcement_strength=ENFORCEMENT_HARD,
+        # Flags on the command line; what is granted is what applies.
+        allow_honoured_actions=ALLOW_HONOURED_ALL,
+        # Measured 2026-08-09 on this machine (`claude --version` →
+        # "2.1.224 (Claude Code)"). An external project pins 2.1.221;
+        # our marker tables were first written against the 2.1 line.
+        tested_version="2.1.224",
+        marker_tables=("Tooling.llm.claude_cli._QUOTA_MARKERS",
+                       "Tooling.llm.claude_cli._STALE_SESSION_MARKER"),
+        single_instance_lock=False,
+        notes=("usage endpoint = the subscription usage API read by "
+               "core/usage_quota; stream = stream-json + partial "
+               "messages, the watchdog's only sampling surface"),
+    ),
+    "antigravity": ProviderCapabilities(
+        name="antigravity",
+        # NO usage API. Probed 2026-08-07 and re-probed against 1.1.11
+        # on 2026-08-09: `agy --help` has no usage/quota subcommand.
+        # Its exhaustion is knowable ONLY from a refusal it has already
+        # made — `_QUOTA_MARKERS` → rc=126 → `Ledger.observe`.
+        usage_endpoint=False,
+        # False = "no liveness stream WE CAN SAMPLE", which as of
+        # 1.1.11 is no longer the same sentence as "the CLI emits
+        # nothing incremental". MEASURED 2026-08-10: `--output-format
+        # stream-json` on 1.1.11 IS incremental —
+        #   {"event":"init", ...}
+        #   {"event":"step_update","step_update":{"state":"ACTIVE",
+        #     "step_type":"agent_response","text_delta":"1. One is..."}}
+        #   {"event":"step_update", ..., "state":"DONE","usage":{...}}
+        # — first line at 2.9s, further lines spread over the turn. The
+        # 1.1.8 measurement this entry was born with ("one envelope at
+        # the end") has been overtaken by the vendor.
+        #
+        # The VALUE still holds, for a different reason than the one
+        # originally written: `stream_parser.StreamParser` speaks
+        # claude's `{"type":"stream_event","event":{...}}` dialect and
+        # nothing else, so agy's stream is unsampled — there is no
+        # detector, exactly as the consumers assume. What is missing is
+        # a parser dialect, not a stream. Writing one would give agy a
+        # real liveness clock (and its `text_delta` cadence is what the
+        # stream clock wants); until then LIVENESS_TIMEOUT_ONLY is
+        # correct and `[detector verdict: none]` stays true.
+        #
+        # HOW THIS SLIPPED: `tested_version` below was refreshed to
+        # 1.1.11 on 2026-08-09 by running `--version`, while the facts
+        # it vouches for were still the 1.1.8 ones. The field promises
+        # "everything above was VERIFIED against this version" — so the
+        # table caught the very disease it was built to cure. Re-measure
+        # the FACTS when bumping the version, or the bump is a lie.
+        stream_events=False,
+        session_resume=RESUME_PROVIDER_CONVERSATION_ID,
+        # agy exits 1 for EVERY ERROR envelope regardless of cause.
+        rc_contract=RC_UNINFORMATIVE,
+        # `deny` absolute, `allow` partly ignored (read_url) — 15 probes
+        # on 2026-07-30; see ENFORCEMENT_DENY_ONLY.
+        enforcement_strength=ENFORCEMENT_DENY_ONLY,
+        # Measured per action, NOT inferred from the headline word.
+        # `read_url` is absent on purpose: its allow is ignored, so the
+        # only control there is deny, and any attempt to narrow it with
+        # an allow rule would silently open it wide.
+        allow_honoured_actions=frozenset({"write_file", "mcp", "command",
+                                          ACTION_READ_FILE}),
+        # Interface claims in `antigravity_cli`'s module docstring were
+        # measured against 1.1.8; the marker tables have been carried
+        # forward unchanged since. Installed today: 1.1.11 (measured
+        # 2026-08-09). An external project pins 1.1.10.
+        tested_version="1.1.11",
+        marker_tables=("Tooling.llm.antigravity_cli._QUOTA_MARKERS",
+                       "Tooling.llm.antigravity_cli._MISCONFIG_MARKERS",
+                       "Tooling.llm.antigravity_cli._TIMEOUT_MARKERS"),
+        single_instance_lock=False,
+        notes=("capability surface is a per-spawn HOME (no config "
+               "flag); `status: SUCCESS` is not proof of work — the "
+               "artifact on disk is"),
+    ),
+    "gemini": ProviderCapabilities(
+        name="gemini",
+        usage_endpoint=False,
+        stream_events=False,
+        # `gemini --resume` takes a session INDEX, not a UUID, so the
+        # claude contract does not map; the provider ignores session_id
+        # outright.
+        session_resume=RESUME_NONE,
+        # The CLI returns rc=0 even when every internal retry failed on
+        # quota (observed: 5 attempts, all "You have exhausted your
+        # capacity", final rc=0). An rc that is 0 on failure carries no
+        # information — the provider infers from output presence.
+        rc_contract=RC_UNINFORMATIVE,
+        enforcement_strength=ENFORCEMENT_UNDECLARED,
+        tested_version=None,
+        single_instance_lock=False,
+        notes=("API-key / enterprise Code Assist only since Google cut "
+               "the individual tiers off 2026-06-18 — kept for those "
+               "users; not exercised by this workspace, so nothing "
+               "below the rc contract has been re-measured"),
+    ),
+    "openai": ProviderCapabilities(
+        name="openai",
+        usage_endpoint=False,
+        stream_events=False,
+        session_resume=RESUME_NONE,
+        # In-process HTTP, not a subprocess: the rc is manufactured by
+        # `openai_api.py` itself from the HTTP outcome, so it is a
+        # structured framework value by construction (98 fence-parse,
+        # 99 HTTP, 124 timeout, 127 unconfigured).
+        rc_contract=RC_STRUCTURED,
+        # No tools at all — single-shot fence parsing. There is no
+        # permission surface to enforce, which is a property of the
+        # provider, not an omission.
+        enforcement_strength=ENFORCEMENT_NOT_APPLICABLE,
+        # No tools to grant, so nothing is grantable — same empty set as
+        # `undeclared`, reached for the opposite reason (known-none vs
+        # unknown). `enforcement_strength` is what tells them apart.
+        allow_honoured_actions=ALLOW_HONOURED_NONE,
+        tested_version=None,
+        version_argv=(),
+        single_instance_lock=False,
+        notes="no subprocess, no CLI version to probe",
+    ),
+}
+
+#: config spellings -> canonical name (mirrors `llm.get_provider`).
+ALIASES: "dict[str, str]" = {"agy": "antigravity"}
+
+
+def canonical(provider: "str | None") -> str:
+    name = str(provider or "claude").strip().lower()
+    return ALIASES.get(name, name)
+
+
+def capabilities_for(provider: "str | None") -> ProviderCapabilities:
+    """The declaration for `provider`, or a fully-undeclared one.
+
+    Never raises and never returns None: a consumer asking about an
+    unknown backend gets the pessimistic answer, not an exception it
+    would have to decide how to swallow.
+    """
+    name = canonical(provider)
+    return CAPABILITIES.get(name) or _undeclared(name)
+
+
+def honours_allow(provider: "str | None", action: str) -> bool:
+    """Does an `allow` rule for `action` actually bind on this provider?
+
+    The wildcard lives in the data (`ALLOW_HONOURED_ALL == {"*"}`), so
+    every consumer would otherwise re-derive the same two-line set
+    test — and the one that got it wrong would silently read "claude
+    honours nothing" or "agy honours everything". False for an
+    undeclared backend, by the same rule as everything else here.
+    """
+    honoured = capabilities_for(provider).allow_honoured_actions
+    return "*" in honoured or action in honoured
+
+
+def provider_for_kind(kind: "str | None",
+                      workspace: "Path | None" = None) -> str:
+    """Which provider a pipeline kind is seated on RIGHT NOW.
+
+    Same resolution chain as `llm.get_provider` and
+    `dispatcher._pipeline_seats` — read per call, because `Asterism.yaml`
+    is live-editable and a seat can move between providers inside one
+    run (2026-08-06: the judge moved off an exhausted model mid-run).
+
+    `workspace` matters for callers that do not run from the workspace
+    root: `config.get` defaults to cwd, and `asterism serve` is launched
+    from wherever the user's shortcut points. A seat written into the
+    workspace's Asterism.yaml that the reader looks for in some other
+    directory resolves to the default and says nothing — the console
+    would then answer with a provider the config never chose.
+    """
+    if not kind:
+        return canonical(os.environ.get("ASTERISM_LLM_PROVIDER", "claude"))
+    from ..core import config
+    return canonical(config.get(
+        f"{kind}.provider",
+        env_var=f"ASTERISM_{kind.upper()}_PROVIDER",
+        legacy_env=("ASTERISM_LLM_PROVIDER",),
+        default="claude",
+        workspace=workspace,
+    ))
+
+
+def for_kind(kind: "str | None") -> ProviderCapabilities:
+    """The declaration of the provider currently seated for `kind`."""
+    return capabilities_for(provider_for_kind(kind))
+
+
+def liveness_clock(provider: "str | None", kind: str) -> str:
+    """Which signal proves a spawn of `kind` on `provider` is alive.
+
+    THE DEGRADATION IS HERE, not in a comment: a provider that declares
+    `stream_events=False` has no incremental output, therefore no
+    silence to measure, therefore no watchdog. Its ONLY liveness
+    guarantee is the overall wall timeout. Consumers must branch on
+    this rather than on "did a parser state file appear" — agy writes
+    `_parser_state.json` too (usage accounting only, no `state` key),
+    so file presence answered "yes, a detector ran" for a provider that
+    has never had one, and the retry helper duly printed
+    `[detector verdict: active]` about a detector that does not exist.
+    """
+    if not capabilities_for(provider).stream_events:
+        return LIVENESS_TIMEOUT_ONLY
+    return LIVENESS_STREAM if kind in STREAM_IDLE_KINDS else LIVENESS_TOOL
+
+
+# -------------------------------------------------- undeclared warning
+
+#: Providers already warned about, so the log carries the message once
+#: per daemon rather than once per spawn.
+_warned: "set[str]" = set()
+
+
+def warn_if_undeclared(provider: "str | None", *, context: str = "") -> bool:
+    """Emit the one-time `[capabilities]` warning. Returns True if the
+    provider is undeclared (whether or not this call printed).
+
+    The warning is half of the `undeclared` ruling; the other half is
+    the conservative rc reading in `state/failures.rc_to_reason` and
+    `pipeline._spawn_failure`. Neither half is sufficient alone.
+    """
+    caps = capabilities_for(provider)
+    if caps.declared:
+        return False
+    if caps.name not in _warned:
+        _warned.add(caps.name)
+        print(f"[capabilities] provider {caps.name!r} has no declaration "
+              f"in Tooling/llm/capabilities.py"
+              + (f" ({context})" if context else "")
+              + " — its exit codes will be read as UNCLASSIFIED (no goal "
+                "is charged), it gets no quota probe, no stream watchdog "
+                "and no session resume. Measure it and add an entry.",
+              flush=True)
+    return True
+
+
+def _reset_warned_for_tests() -> None:
+    _warned.clear()

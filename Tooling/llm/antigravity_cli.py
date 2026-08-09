@@ -204,7 +204,13 @@ import time
 from pathlib import Path
 
 from ..core.process_group import no_window_creationflags
+from . import capabilities
 from .base import LLMRequest
+
+#: This provider's canonical name in `llm/capabilities.py`, where its
+#: gaps (no usage endpoint, no stream events, uninformative rc,
+#: deny-only enforcement) are declared for consumers to read.
+PROVIDER_NAME = "antigravity"
 
 
 #: Pro tier as of 2026-07-30. Effort is baked into the slug (`-high` /
@@ -247,6 +253,21 @@ _QUOTA_MARKERS = (
     "rate limit",
     "status: 429",
     "quota",
+)
+#: agy's own `--print-timeout` firing — the envelope this provider is
+#: DESIGNED to receive (see `_SUBPROCESS_SLACK_SEC`: we let agy's clock
+#: fire first precisely so the death has a classifiable envelope instead
+#: of a SIGKILL). Without these markers it fell through to the generic
+#: rc=1 → `agent_rc_nonzero`, which skips the retry helper's timeout
+#: branch: no postmortem, so the next spawn got no `.drafts/` progress
+#: note (2026-08-07, g7415: two 16-minute spawns, ~1M output tokens,
+#: nothing handed on). Same attempts semantics as claude's 124 — a spawn
+#: that used its whole budget without delivering still burns one.
+_TIMEOUT_MARKERS = (
+    "timeout waiting for response",
+    "deadline_exceeded",
+    "context deadline exceeded",
+    "request timed out",
 )
 
 #: Files this provider (or the framework) writes into attempts_dir —
@@ -331,8 +352,35 @@ def _spawn_permissions(env_spec, workspace: "Path | None") -> dict:
     allow = [f"write_file({p})" for p in env_spec.write_roots]
     allow.append("mcp(*)")
     deny = ["command(*)", "read_url(*)"]
+    # `read_file` IS governed by this file, in every direction — RE-
+    # MEASURED 2026-08-10 (five probes, agy 1.1.11, each under its own
+    # fake HOME; raw envelopes and agy's own permission_manager lines in
+    # `_spike/p162/`):
+    #   deny read_file(*)                          → denied, and agy says
+    #       "Matches user-configured deny rule"
+    #   allow read_file(<ws>) + deny read_file(<d>) → <d> denied, a file
+    #       elsewhere in <ws> read: a scalpel, not a switch
+    #   allow read_file(<d>) only                  → a file outside <d>
+    #       DENIED (agy log: "user denied permission for read_file")
+    #   NO read_file rule at all                   → DENIED, same line
+    # So reads are default-deny and the allow is a whitelist. The earlier
+    # series (same day) concluded the exact opposite in all three
+    # directions and the rule below was removed as "decorative"; that
+    # removal was not behaviour-neutral, it silently BLINDED every agy
+    # spawn — the denial never reaches the model (status stays SUCCESS,
+    # the response is empty), so it would have surfaced as a formalizer
+    # that read nothing and did nothing. The wrong conclusion survived
+    # because a silent auto-deny and an ungated read look identical from
+    # the outside; only agy's own log tells them apart.
     if workspace is not None:
-        allow.insert(0, f"read_file({workspace})")
+        allow.append(f"read_file({workspace})")
+    # …and the operator-private subtrees carved back out of it (#162,
+    # user ruling 2026-08-10). The list is provider-independent and lives
+    # in `envelope.py`, because the same exposure was never agy-specific:
+    # `spawn_guard._whitelist()` returns the whole repo root, so a claude
+    # spawn read `docs/internal/` and the live DB just as freely.
+    # Order does not matter — deny beats allow globally on agy (probe G).
+    deny += [f"read_file({p})" for p in env_spec.read_deny_roots]
     return {"permissions": {"allow": allow, "deny": deny},
             "trustedWorkspaces": ([str(workspace)] if workspace else [])}
 
@@ -516,6 +564,8 @@ def _classify(envelope: "dict | None", raw: str, rc: int) -> int:
     if any(m in text for m in _QUOTA_MARKERS):
         _record_quota_reset(text)
         return RC_QUOTA_EXHAUSTED
+    if any(m in text for m in _TIMEOUT_MARKERS):
+        return RC_TIMEOUT
     return rc if rc != 0 else 1
 
 
@@ -631,6 +681,23 @@ class AntigravityCliProvider:
                                 RC_MISCONFIGURED)
             return RC_MISCONFIGURED
         prompt = self._build_prompt(req)
+        # THE DEGRADATION, wired rather than merely declared. agy emits
+        # ONE json envelope when it is finished and nothing before it,
+        # so `capabilities.liveness_clock` returns TIMEOUT_ONLY: there
+        # is no stream to sample, hence no StreamParser, hence no
+        # watchdog, hence no silence threshold and no thinking-trap
+        # detection. The entire liveness guarantee for an agy spawn is
+        # that agy's own `--print-timeout` fires FIRST (the subprocess
+        # wall is deliberately `_SUBPROCESS_SLACK_SEC` longer, so the
+        # death arrives as a classifiable envelope instead of a
+        # SIGKILL). That is why the timeout must be driven from
+        # `req.timeout_sec` and never left at agy's 5-minute default,
+        # and why `_TIMEOUT_MARKERS` has to recognise the envelope: on
+        # this provider a missed timeout classification is not a
+        # cosmetic mislabel, it is the only liveness signal being
+        # dropped (g7415, 2026-08-07 — two 16-minute spawns, ~1M output
+        # tokens, no postmortem, nothing handed on).
+        liveness = capabilities.liveness_clock(PROVIDER_NAME, req.kind)
         print_timeout = max(60, int(req.timeout_sec or 900))
 
         cmd = [
@@ -663,10 +730,19 @@ class AntigravityCliProvider:
                 creationflags=no_window_creationflags(),
             )
         except subprocess.TimeoutExpired:
-            print(f"[llm:agy] timed out after {print_timeout}s", flush=True)
-            _write_spawn_stderr(req.attempts_dir,
-                                f"(subprocess.TimeoutExpired after "
-                                f"{print_timeout}s)", RC_TIMEOUT)
+            # agy's own clock did NOT fire first — the one thing this
+            # provider's liveness design depends on. Name the degraded
+            # clock in the forensic record: with `liveness=timeout`
+            # there is no parser state to consult afterwards, so "the
+            # wall ran out" is genuinely all anyone can say, and a
+            # reader must not go looking for a detector verdict that
+            # was never produced.
+            note = (f"(subprocess.TimeoutExpired after {print_timeout}s; "
+                    f"liveness={liveness} — this provider emits no stream, "
+                    f"so the wall clock was the only signal)")
+            print(f"[llm:agy] timed out after {print_timeout}s "
+                  f"[liveness={liveness}]", flush=True)
+            _write_spawn_stderr(req.attempts_dir, note, RC_TIMEOUT)
             return RC_TIMEOUT
         except FileNotFoundError as e:
             print(f"[llm:agy] launch failed ({e})", flush=True)

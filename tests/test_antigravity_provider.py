@@ -86,6 +86,25 @@ def test_quota_error_stays_quota():
     assert agy._classify(env, "", 1) == agy.RC_QUOTA_EXHAUSTED
 
 
+def test_own_print_timeout_is_classified_as_timeout(tmp_path: Path):
+    """agy's clock is deliberately set to fire before the subprocess
+    one so the death arrives as an envelope we can classify — which is
+    worth nothing if the classifier does not recognise it. Landing on
+    the generic rc=1 skipped the retry helper's timeout branch, so no
+    postmortem ran and the next spawn inherited no progress note
+    (g7415, 2026-08-07)."""
+    env = {"status": "ERROR", "error": "timeout waiting for response"}
+    assert agy._classify(env, "", 1) == agy.RC_TIMEOUT
+    # ... and the worker path must read that rc as a timeout. (Note the
+    # two mappings of 124 are both intended: `_spawn_failure` is the
+    # goal-bearing pipelines' reading — the agent held the whole budget,
+    # so it burns an attempt AND gets a postmortem; `rc_to_reason` is
+    # the Strategist/Adversary channel's, where there is no goal.)
+    from Tooling.pipeline import _spawn_failure
+    reason, _ = _spawn_failure(agy.RC_TIMEOUT, tmp_path, 900.0)
+    assert reason == "agent_timeout"
+
+
 def test_unknown_error_keeps_process_rc():
     env = {"status": "ERROR", "error": "something else entirely"}
     assert agy._classify(env, "", 7) == 7

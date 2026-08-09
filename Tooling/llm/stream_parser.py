@@ -73,6 +73,8 @@ class StateSnapshot(NamedTuple):
     `spawn_start_ts`: parser creation time (≈ spawn start). Used as
         the fallback baseline for `silence_seconds` when no tool_use
         has happened yet.
+    `last_event_ts`: monotonic time of the most recent stream event of
+        ANY type — the liveness clock behind `stream_idle_seconds`.
     """
     state: ParserState
     state_since: float
@@ -80,6 +82,7 @@ class StateSnapshot(NamedTuple):
     messages_seen: int
     last_tool_use_ts: float | None
     spawn_start_ts: float
+    last_event_ts: float
 
 
 class StreamParser:
@@ -102,6 +105,15 @@ class StreamParser:
         # now - spawn_start_ts when no tool_use has been seen.
         self._last_tool_use_ts: float | None = None
         self._spawn_start_ts = now
+        # Liveness tracking, the second clock: time of the last stream
+        # event of any type, INCLUDING `content_block_delta`. Measured
+        # 2026-08-07 on both sonnet-5 and opus-5: an agent four minutes
+        # deep in one thinking block emits a delta every ~1.5s (max gap
+        # 3.5s) and calls no tool at all — so the tool-cadence clock
+        # above reads it as totally silent while this one shows it
+        # plainly alive. Which clock is the right one depends on what
+        # the role's work looks like; the watchdog picks per kind.
+        self._last_event_ts = now
         # Token accounting (task #7): the CLI stream carries the API's
         # usage numbers on every turn — message_start has the input side
         # (fresh + cache split), message_delta carries the cumulative
@@ -141,6 +153,11 @@ class StreamParser:
             return
         etype = event.get("type")
         with self._lock:
+            # Every well-formed stream event is evidence the process is
+            # still producing — stamped before the state branches so the
+            # types that carry no transition (content_block_delta, the
+            # bulk of a thinking block) still count.
+            self._last_event_ts = time.monotonic()
             if etype == "message_start":
                 # New assistant turn begins. Reset stop_reason — prior
                 # max_tokens (if any) is from a prior turn and no
@@ -219,6 +236,7 @@ class StreamParser:
                 messages_seen=self._messages_seen,
                 last_tool_use_ts=self._last_tool_use_ts,
                 spawn_start_ts=self._spawn_start_ts,
+                last_event_ts=self._last_event_ts,
             )
 
     def silence_seconds(self, now: float) -> float:
@@ -228,12 +246,30 @@ class StreamParser:
         Used by the watchdog as one half of the AND trap condition —
         long silence by itself isn't enough (a slow Bash / lake
         build would trip it), but combined with parser thinking-trap
-        state it is strong evidence of a stuck agent."""
+        state it is strong evidence of a stuck agent.
+
+        This is the TOOL-CADENCE clock, and it answers "is the agent
+        thinking instead of acting?" — the right question for a
+        formalizer, whose unit of work is a tool call. It is the wrong
+        question for a role whose work is one long think; see
+        `stream_idle_seconds`."""
         with self._lock:
             baseline = (self._last_tool_use_ts
                         if self._last_tool_use_ts is not None
                         else self._spawn_start_ts)
             return now - baseline
+
+    def stream_idle_seconds(self, now: float) -> float:
+        """Seconds since ANY stream event arrived — the liveness clock.
+
+        Answers "has this process stopped producing?" rather than "is it
+        acting?". For the NL layer (Strategist / Adversary) that is the
+        only guard that makes sense: those roles have no work budget by
+        design, so thinking without calling a tool is the job, not a
+        symptom, and the tool-cadence clock read seven legitimate
+        Strategist spawns as silent and killed them (2026-08-07)."""
+        with self._lock:
+            return now - self._last_event_ts
 
     # ---- Trap detection helpers ----
 
