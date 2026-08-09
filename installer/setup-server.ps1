@@ -119,7 +119,15 @@ try {
                 }
             }
             elseif ($req.method -eq 'GET' -and $path -eq '/status') {
-                $st = Get-SetupStatus $Root
+                # the answers already given (if any) — the account
+                # half of readiness is about the provider the user
+                # PICKED, not always claude
+                $prevDec = $null
+                $decFile = Join-Path $PSScriptRoot 'setup-decisions.json'
+                if (Test-Path $decFile) {
+                    try { $prevDec = Get-Content $decFile -Raw | ConvertFrom-Json } catch {}
+                }
+                $st = Get-SetupStatus $Root $prevDec
                 $st['engine_up'] = (Engine-Up)
                 Send-Text $stream '200 OK' 'application/json' (ConvertTo-Json -Compress -Depth 5 $st)
             }

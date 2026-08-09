@@ -109,19 +109,51 @@
     function el(tag, cls, html){ var e=document.createElement(tag); if(cls)e.className=cls; if(html!=null)e.innerHTML=html; return e }
 
     function allDone(s){
+      // the account half follows the CHOICE. `ready === null` means the
+      // provider offers no way to check from here (agy's credentials
+      // live in another app) - installed is then all anyone can assert,
+      // and blocking on an answer nobody can give would never finish.
+      var p = s.provider || { installed: s.claude.installed, ready: s.claude.logged_in }
+      // Three ways the account row can be satisfied, and only the first
+      // is "we checked":
+      //   ready true            - it answered
+      //   ready null            - installed, and this provider lets
+      //                           nobody check from here (agy's
+      //                           credentials live in another app)
+      //   auth_flow undeclared  - self-managed, or a backend nothing is
+      //                           declared about. Setup was TOLD not to
+      //                           handle it, so it must not wait forever
+      //                           on an answer it will never get.
+      var acct = (p.auth_flow === 'undeclared') ||
+                 (p.installed && (p.ready === null || p.ready))
       return s.python.found && s.engine.present && s.git.found && s.lean.found &&
-             s.mathlib.present && s.claude.installed && s.claude.logged_in
+             s.mathlib.present && acct
     }
 
     // ---- decisions view -------------------------------------------------
     function renderDecide(s){
       document.getElementById('lede').innerHTML =
-        "A few dependencies, then one button. The only step that needs you is the Claude login &mdash; a browser tab opens; click Authorize."
+        "A few dependencies, then one button. One step needs you &mdash; signing in to the account that will do the thinking."
       var d = document.getElementById('decide'); d.innerHTML=''; d.style.display=''
       var card = el('div','card')
       card.appendChild(el('div','lbl','Before it runs'))
       var free = (s.repo_free_gb!=null) ? ' <span style="color:#67696f">('+esc(s.repo_free_gb)+' GB free here)</span>' : ''
       card.appendChild(el('div',null,'<div style="color:#a2a4ab;font-size:12.5px;margin:.4rem 0">Asterism lives at <span style="font-family:Consolas,monospace;color:#ededf0">'+esc(s.repo)+'</span> — the math library (~5 GB) lands here too'+free+'</div>'))
+
+      // WHICH ACCOUNT — asked as "what do you have", because that is
+      // what the reader knows and what decides the one human step.
+      // Options are copy here on purpose: this card renders before
+      // Python exists, so no declaration can be read yet; the
+      // orchestrator asks the provider itself once the engine lands.
+      var pc = el('div','choice')
+      pc.innerHTML =
+        '<label><input type="radio" name="prov" value="claude" checked> I have a Claude subscription</label>'+
+        '<label><input type="radio" name="prov" value="antigravity"> I have Google AI Pro / Ultra</label>'+
+        '<label><input type="radio" name="prov" value="none"> I&rsquo;ll set the agent up myself</label>'
+      card.appendChild(pc)
+      var pnote = el('div',null,''); pnote.id='provNote'
+      pnote.style.cssText='color:#6a6c72;font-size:12.5px;margin:.1rem 0 .5rem'
+      card.appendChild(pnote)
 
       var needLean = !s.lean.found
       if (needLean){
@@ -148,15 +180,29 @@
       card.appendChild(bar)
       d.appendChild(card)
 
-      if (needLean){
-        d.addEventListener('change', function(){
+      // each account's human step is a different sentence; say which
+      // one is coming BEFORE the button, not half an hour in
+      var PROV_NOTE = {
+        claude: 'A browser tab will open — click Authorize and you are done.',
+        antigravity: 'Antigravity signs in through its own desktop app. Install it and sign in there; the CLI then rides that session — there is no separate login here.',
+        none: 'Nothing will be installed for the agent. Point Asterism at a provider yourself afterwards, in Settings.'
+      }
+      function syncProv(){
+        var v = (d.querySelector('input[name=prov]:checked')||{}).value || 'claude'
+        document.getElementById('provNote').textContent = PROV_NOTE[v] || ''
+      }
+      d.addEventListener('change', function(){
+        syncProv()
+        if (needLean){
           var mode = (d.querySelector('input[name=lean]:checked')||{}).value
           document.getElementById('leanExisting').style.display = mode==='existing'?'':'none'
-        })
-      }
+        }
+      })
+      syncProv()
       btn.onclick = function(){
         btn.disabled = true
         var body = { lean_mode:'install' }
+        body.provider = (d.querySelector('input[name=prov]:checked')||{}).value || 'claude'
         if (needLean){
           body.lean_mode = (d.querySelector('input[name=lean]:checked')||{}).value
           var lake = document.getElementById('lake'); if (lake) body.lake_path = lake.value

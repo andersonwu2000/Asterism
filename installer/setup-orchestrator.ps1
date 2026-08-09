@@ -430,15 +430,112 @@ function Lane-B {
         else { Warn 'the engine did not install' }
     }
 
-    # Claude last in this lane so its browser login (the one human step)
-    # surfaces while the long Mathlib download runs in lane A
-    Step 'Claude Code'
-    if ((Get-ClaudeStatus).installed) { Ok 'already installed' }
-    elseif (Install-Claude) { Ok 'Claude Code installed' }
-    else { Warn 'could not install automatically' }
-    Repair-ClaudePath
-    $cs = Get-ClaudeStatus
-    if ($cs.installed -and -not $cs.logged_in) { Spawn-ClaudeLogin }
+    # The agent account LAST in this lane: whatever human step it needs
+    # (a browser Authorize, an IDE sign-in) surfaces while the long
+    # Mathlib download runs in lane A.
+    Install-Provider (Get-ChosenProvider (Read-Decisions))
+}
+
+# ---- the chosen provider, driven by its own declaration -------------
+function Install-Provider($provider) {
+    Step (Provider-StepName $provider)
+    $info = Get-ProviderInfo $provider
+    if (-not $info) {
+        # Python or the engine did not land, so the declaration is
+        # unreadable. Say that, rather than guessing an install command.
+        Warn 'could not read this provider''s setup steps (the engine did not install)'
+        return
+    }
+
+    # The choice has to REACH the engine, or it is only a story on a
+    # page. `.env` is the machine-local override (gitignored; the
+    # committed Asterism.yaml stays canonical), and
+    # ASTERISM_LLM_PROVIDER is the provider-wide default every
+    # `<kind>.provider` falls back to. Written for a real pick only —
+    # 'none' means the user will point it somewhere themselves.
+    if ($provider -and $provider -ne 'none') { Set-EnvKey 'ASTERISM_LLM_PROVIDER' $provider }
+
+    switch ($info.install_method) {
+        'not_needed'  { Ok 'nothing to install - this one is reached over HTTP' }
+        'by_command'  {
+            $probe = Get-ProviderInfo $provider -Check
+            if ($probe -and $probe.installed) { Ok 'already installed' }
+            else {
+                Note ('installing ' + (Provider-StepName $provider) + '...')
+                Run-Stream 'powershell' @('-NoProfile', '-Command', $info.install_command) $null | Out-Null
+                $probe = Get-ProviderInfo $provider -Check
+                if ($probe -and $probe.installed) { Ok 'installed' }
+                else { Warn 'could not install automatically - run the vendor''s installer, then press again' }
+            }
+        }
+        default {
+            # 'undeclared' - nobody wrote down how, or it cannot be
+            # automated. NOT an error: it is the honest answer, and the
+            # shape every future provider starts in.
+            Human ('Set ' + (Provider-StepName $provider) + ' up yourself, then press again - the rest keeps installing.')
+        }
+    }
+
+    # ---- readiness: what this provider lets anyone know -------------
+    $probe = Get-ProviderInfo $provider -Check
+    if (-not $probe -or -not $probe.installed) { return }
+
+    # Branch on the DECLARED property, not on the name: "has its own
+    # OAuth" is the fact that decides whether a login can be spawned at
+    # all. How to invoke it is still claude's own knowledge (its argv
+    # lives in Spawn-ClaudeLogin) — a second own_oauth backend will need
+    # a declared login argv rather than a second name here.
+    if ($probe.auth_flow -eq 'own_oauth' -and $provider -eq 'claude') {
+        Repair-ClaudePath
+        if (-not $probe.ready) { Spawn-ClaudeLogin }
+        return
+    }
+
+    if ($probe.identity -eq 'legacy_file') {
+        # A silent-downgrade trap, not a failure: quota comes out of a
+        # DIFFERENT subscription and nothing errors. Presence is the
+        # detectable signal, which is why it is worth a WARN.
+        Warn ('another Google credential file is overriding your IDE session (' +
+              $probe.identity_path + ') - the run would spend the WRONG account')
+    }
+    if ($probe.ready -eq $true) {
+        # Deliberately NOT "signed in": nobody has measured how this
+        # check fails with no credentials at all, so it is a necessary
+        # condition, not a sufficient one. Report what happened.
+        Ok ((Get-Date -Format 'HH:mm') + ' - ' + $probe.detail)
+    } elseif ($probe.ready -eq $false) {
+        Human ('It is installed but could not reach the service: ' + $probe.detail)
+        if ($probe.auth_flow -eq 'borrowed_session') {
+            Human 'This account signs in through its own desktop app - sign in there, then press again.'
+        }
+    } else {
+        Note 'installed; this provider offers no way to check the account from here'
+    }
+}
+
+function Set-EnvKey($key, $value) {
+    # replace-or-append one KEY=VALUE in the workspace .env, leaving
+    # every other line (and any hand-written comment) exactly as it was
+    $envFile = Join-Path $Root '.env'
+    $lines = @()
+    if (Test-Path $envFile) { $lines = @(Get-Content $envFile) }
+    $done = $false
+    $out = foreach ($ln in $lines) {
+        if ($ln -match ('^\s*' + [regex]::Escape($key) + '\s*=')) { $done = $true; "$key=$value" }
+        else { $ln }
+    }
+    if (-not $done) { $out = @($out) + "$key=$value" }
+    Set-Content -Path $envFile -Value $out -Encoding UTF8
+    Note "recorded $key=$value in .env"
+}
+
+function Provider-StepName($provider) {
+    switch ($provider) {
+        'claude'      { return 'Claude Code' }
+        'antigravity' { return 'Antigravity CLI' }
+        'none'        { return 'Agent account' }
+        default       { return ('Agent account (' + $provider + ')') }
+    }
 }
 
 # ---- lane A: Git -> Lean -> Mathlib (the multi-GB long pole) ---------
@@ -493,7 +590,8 @@ try {
 
     # the checklist the page draws up front - names MUST match the Step
     # '...' calls in the lanes (two of these rows run at once)
-    Emit ('[PLAN] ' + (@('Python', 'Asterism engine', 'Claude Code', 'Git',
+    $provRow = Provider-StepName (Get-ChosenProvider (Read-Decisions))
+    Emit ('[PLAN] ' + (@('Python', 'Asterism engine', $provRow, 'Git',
         'Lean theorem prover', 'Math library (Mathlib)', 'Asterism console') -join '|'))
 
     # spawn the two lanes as hidden children of this script. ArgumentList
@@ -519,10 +617,22 @@ try {
 
     # end-to-end truth check (installers can exit 0 after a child dies);
     # each row re-derived from the WORLD, a miss flags its checklist row
+    # the provider row re-derived through its own declaration, so a
+    # future backend is checked without a branch here
+    $provRow2 = Provider-StepName (Get-ChosenProvider (Read-Decisions))
+    $provProbe = Get-ProviderInfo (Get-ChosenProvider (Read-Decisions)) -Check
+    $provOk = $(if ($provProbe) {
+        # only a provider that DECLARED an install command can fail to
+        # install. 'not_needed' is reached over HTTP; 'undeclared' is
+        # the user's own job (including the explicit "I'll do it
+        # myself") - flagging either as "not ready" would be a
+        # confident answer nobody gave us.
+        ($provProbe.installed -or $provProbe.install_method -ne 'by_command')
+    } else { (Get-ClaudeStatus).installed })
     $checks = @(
         @{ row = 'Python';                 ok = [bool](Get-PyVersion) }
         @{ row = 'Asterism engine';        ok = (Test-Engine) }
-        @{ row = 'Claude Code';            ok = (Get-ClaudeStatus).installed }
+        @{ row = $provRow2;                ok = $provOk }
         @{ row = 'Git';                    ok = (Test-Git) }
         @{ row = 'Lean theorem prover';    ok = (Get-LakeStatus).found }
         @{ row = 'Math library (Mathlib)'; ok = ((Get-LakeStatus).found -and (Get-MathlibStatus $Root).present) }

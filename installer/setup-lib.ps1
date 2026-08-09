@@ -183,6 +183,51 @@ function Get-ClaudeStatus {
     return @{ installed = [bool]$exe; logged_in = (Test-Path $creds); exe = $exe }
 }
 
+# ---- the chosen LLM provider ----------------------------------------
+#
+# The installer knows NOTHING about any provider: how to install one,
+# how it authenticates, and whether that can even be checked are
+# declared by the provider itself (Tooling/llm/capabilities.py) and read
+# through installer/provider-info.py. A `if $provider -eq 'antigravity'`
+# here would be the branch-per-backend that module exists to stop, and
+# the place the next one (codex/GPT) gets forgotten — an undeclared
+# provider comes back all-'undeclared' and renders as "you set this one
+# up yourself" with no code change.
+#
+# Readable only once Python + the engine land; lane B installs them
+# first, and before that the page shows the CHOICE, which is copy.
+
+$script:ProvInfoMemo = @{}
+
+function Get-ProviderInfo($provider, [switch]$Check) {
+    # Memoized 5s, not because the answer is stable but because /status
+    # is polled every couple of seconds through a whole install and this
+    # spawns a Python process. Short enough that the row still moves
+    # while the user watches, and the OBSERVATION is never stored beyond
+    # it - "installed and authenticated" is measured, never cached, which
+    # is the line capabilities.py draws.
+    $py = Resolve-Py
+    $script = Join-Path $PSScriptRoot 'provider-info.py'
+    if (-not $py -or -not (Test-Path $script)) { return $null }
+    $key = "$provider/$Check"
+    $hit = $script:ProvInfoMemo[$key]
+    if ($hit -and ((Get-Date) - $hit.at).TotalSeconds -lt 5) { return $hit.value }
+    $args = @($script, $provider)
+    if ($Check) { $args += '--check' }
+    try {
+        $out = & $py @args 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $out) { return $null }
+        $val = ($out | ConvertFrom-Json)
+        $script:ProvInfoMemo[$key] = @{ at = (Get-Date); value = $val }
+        return $val
+    } catch { return $null }
+}
+
+function Get-ChosenProvider($decisions) {
+    if ($decisions -and $decisions.provider) { return $decisions.provider }
+    return 'claude'
+}
+
 # ---- Git -------------------------------------------------------------
 
 function Test-Git {
@@ -202,10 +247,15 @@ function Get-FreeGB($path) {
     } catch { return $null }
 }
 
-function Get-SetupStatus($workspace) {
+function Get-SetupStatus($workspace, $decisions) {
     $py = Get-PyVersion
     $lake = Get-LakeStatus
     $claude = Get-ClaudeStatus
+    # The account half of readiness follows the CHOICE, and every
+    # provider is asked the SAME way - giving the default one a private
+    # path is how it stops being one option among several.
+    $prov = Get-ChosenProvider $decisions
+    $pinfo = Get-ProviderInfo $prov -Check
     return @{
         repo        = $workspace
         repo_free_gb = (Get-FreeGB $workspace)
@@ -215,6 +265,16 @@ function Get-SetupStatus($workspace) {
         lean        = @{ found = $lake.found; path = $lake.path; version = $lake.version }
         mathlib     = Get-MathlibStatus $workspace
         claude      = @{ installed = $claude.installed; logged_in = $claude.logged_in }
+        provider    = @{
+            name      = $prov
+            installed = $(if ($pinfo) { [bool]$pinfo.installed } else { $claude.installed })
+            # tri-state on purpose: $null = "this provider does not let
+            # anyone check", which is NOT the same as "not ready"
+            ready     = $(if ($pinfo) { $pinfo.ready } else { $claude.logged_in })
+            detail    = $(if ($pinfo) { $pinfo.detail } else { '' })
+            identity  = $(if ($pinfo) { $pinfo.identity } else { $null })
+            auth_flow = $(if ($pinfo) { $pinfo.auth_flow } else { 'own_oauth' })
+        }
         elan_home   = $(if ($env:ELAN_HOME) { $env:ELAN_HOME } else { Join-Path $env:USERPROFILE '.elan' })
     }
 }
