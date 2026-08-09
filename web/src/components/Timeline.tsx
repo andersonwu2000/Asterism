@@ -60,6 +60,36 @@ const LENSES: { key: string; label: string; kinds: string[]; title: string }[] =
   },
 ]
 
+/* A brick is settled once it lands, is set aside, or dies. Anything
+ * with attempts and no settling AFTER them is still in the way — the
+ * blocker. Derived from the log rather than passed in, so the run-wide
+ * view (several problems at once) gets it on the same terms. */
+const SETTLING = new Set(['proved', 'set_aside', 'disproved', 'dead'])
+
+export function topBlocker(events: TimelineEvent[]): TimelineEvent | null {
+  const worst = new Map<string, TimelineEvent>()
+  const settled = new Map<string, string>()
+  for (const e of events) {
+    if (e.kind === 'attempt') {
+      const cur = worst.get(e.label)
+      if (!cur || (e.n ?? 0) > (cur.n ?? 0)) worst.set(e.label, e)
+    } else if (SETTLING.has(e.kind)) {
+      const cur = settled.get(e.label)
+      if (!cur || e.at > cur) settled.set(e.label, e.at)
+    }
+  }
+  let best: TimelineEvent | null = null
+  for (const [label, e] of worst) {
+    // a goal that was proved, reopened and attempted again is in the
+    // way once more: compare the newest attempt against the newest
+    // settling rather than asking merely whether it ever settled
+    const s = settled.get(label)
+    if (s && s > e.at) continue
+    if (!best || (e.n ?? 0) > (best.n ?? 0)) best = e
+  }
+  return best
+}
+
 /* An infra death cost no attempt, and a rejected proposal is a round
  * of editing rather than a change to the record — both are true
  * history and neither is news, so they stay off the default read and
@@ -263,7 +293,6 @@ export default function Timeline({
   path,
   pollMs = 15000,
   showProblem = false,
-  followGoal = null,
   onSelectGoal,
   onOpenProgramme,
 }: {
@@ -276,9 +305,6 @@ export default function Timeline({
   /** name the problem on each row — only the run view needs it, and
    * only when the run holds more than one */
   showProblem?: boolean
-  /** open already following this goal — another surface can make a
-   * claim ("5 failed attempts") and hand the reader its evidence */
-  followGoal?: string | null
   onSelectGoal?: (id: number) => void
   onOpenProgramme?: () => void
 }) {
@@ -291,11 +317,11 @@ export default function Timeline({
   }>(path, pollMs, { keepPrevious: true })
   const [lens, setLens] = useState<string | null>(null)
   const [quiet, setQuiet] = useState(false)
-  const [follow, setFollow] = useState<Follow | null>(
-    followGoal ? { kind: 'goal', label: followGoal } : null)
+  const [follow, setFollow] = useState<Follow | null>(null)
 
   const all = useMemo(() => data?.events ?? [], [data])
   const since = data?.log_since ?? null
+  const blocker = useMemo(() => topBlocker(all), [all])
   // one group is the ordinary case and reads exactly as it did before
   // groups existed — the argument is named only where there is a
   // choice of arguments to name (v35's standing law)
@@ -340,6 +366,24 @@ export default function Timeline({
 
   return (
     <div className="flex flex-col">
+      {/* where the machine is burning attempts. It lived in the problem
+          header until 2026-08-09; it belongs next to its own evidence,
+          and one click IS that evidence. */}
+      {follow === null && blocker && (
+        <div className="mb-2 flex items-baseline gap-2 px-2 text-[11px]">
+          <span className="text-ink-faint">most attempts</span>
+          <button
+            className="cursor-pointer font-mono text-[12px] text-ink-dim underline decoration-ink-faint/50 underline-offset-2 hover:text-ink"
+            title="read what happened on each attempt"
+            onClick={() => setFollow({ kind: 'goal', label: blocker.label })}
+          >
+            {blocker.label}
+          </button>
+          <span className="tnum text-ink-faint">
+            {blocker.n} failed attempt{blocker.n === 1 ? '' : 's'}
+          </span>
+        </div>
+      )}
       {follow !== null ? (
         <div className="mb-2 flex items-center gap-3 px-2">
           <span className="text-[11px] text-ink-faint">following</span>

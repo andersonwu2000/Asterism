@@ -416,9 +416,6 @@ export default function Problem({ name }: { name: string }) {
   )
   const { data: daemon } = usePoll<DaemonStatus>('/api/daemon', 3000)
   const [tab, setTab] = useState<Tab>('stars')
-  // a slug the log should open already following (set by the blocker
-  // line; cleared when the reader leaves the tab)
-  const [followInLog, setFollowInLog] = useState<string | null>(null)
   const [manifestDirty, setManifestDirty] = useState(false)
   const [selectedGoal, setSelectedGoal] = useState<number | null>(null)
   // stars lit by hovering a route in the goal panel (owner: the text
@@ -537,77 +534,11 @@ export default function Problem({ name }: { name: string }) {
             stopping={daemon?.stopping ?? false}
           />
         )}
-        {(() => {
-          // Where is it burning attempts — the "is it stuck?" answer,
-          // client-side from data already on hand.
-          //
-          // The other half of this line used to be "last progress Nd
-          // ago", amber past three days. Removed 2026-08-09, same
-          // ruling as the Board's last-event column: a clock that
-          // ticks louder the longer you leave something reads as a
-          // deadline somebody else is holding you to. It was also
-          // measuring the wrong thing twice over — it took the
-          // DISPATCH time of the newest decision with an OK outcome,
-          // so a batch that landed an hour later still read as old,
-          // and ConfirmShelve counts as OK, so the machine giving up
-          // on a goal could refresh "last progress" (measured on
-          // union_closed, 2026-08-09: the line was driven by a shelve
-          // at 03:46 while the newest real landing was 02:31). The
-          // Timeline records landings as events now; that is where
-          // "is it moving" is answered honestly.
-          const live =
-            data.status === 'proving' ||
-            data.status === 'awaiting_human' ||
-            data.status === 'stalled' ||
-            data.goals.some((g) => g.status === 'open' || g.status === 'attempting')
-          if (!live) return null
-          // a blocker must still be IN the way: the old not-proved
-          // filter crowned dead goals — the header named a "top
-          // blocker" the panel then called dead (cold-eye)
-          const blocker = [...data.goals]
-            .filter(
-              (g) =>
-                (g.status === 'open' ||
-                  g.status === 'attempting' ||
-                  g.status === 'pending_strategist_review') &&
-                g.dead_attempts > 0,
-            )
-            .sort((a, b) => b.dead_attempts - a.dead_attempts)[0]
-          if (!blocker) return null
-          return (
-            <div className="mt-1.5 text-xs">
-              <span className="text-ink-faint">
-                top blocker{' '}
-                {/* the words and the map must know each other: the
-                    named blocker is a link that lights its star */}
-                <button
-                  className="cursor-pointer font-mono text-ink-dim underline decoration-ink-faint/50 underline-offset-2 transition-colors hover:text-ink"
-                  title="show this star on the constellation"
-                  onClick={() => {
-                    setTab('stars')
-                    setSelectedStrategy(null)
-                    setSelectedGoal(blocker.id)
-                  }}
-                >
-                  {blocker.slug}
-                </button>{' '}
-                {/* the count is a claim; the log is its evidence —
-                    one click and you read why each attempt died */}
-                <button
-                  className="cursor-pointer underline decoration-ink-faint/50 underline-offset-2 transition-colors hover:text-ink"
-                  title="read what happened on each attempt"
-                  onClick={() => {
-                    setFollowInLog(blocker.slug)
-                    setTab('timeline')
-                  }}
-                >
-                  ({blocker.dead_attempts} failed attempt
-                  {blocker.dead_attempts === 1 ? '' : 's'})
-                </button>
-              </span>
-            </div>
-          )
-        })()}
+        {/* "top blocker" used to sit here, above the map. It moved
+            into the Timeline (owner, 2026-08-09): the header says what
+            this problem IS and how it stands; where the machine is
+            burning attempts is something happening TO it, and it reads
+            next to the evidence rather than a tab away from it. */}
         {/* NO standing-directive line: it is the strategist's memo to
             its own agents — engine vocabulary a mathematician can
             neither parse nor act on (owner, 2026-07-12). Its history
@@ -629,12 +560,7 @@ export default function Problem({ name }: { name: string }) {
             ),
           }))}
           active={tab}
-          onSelect={(t) => {
-            // a hand-off into the log is for ONE reading; picking a tab
-            // yourself is asking for the whole thing back
-            setFollowInLog(null)
-            setTab(t)
-          }}
+          onSelect={setTab}
         />
       </div>
 
@@ -707,8 +633,6 @@ export default function Problem({ name }: { name: string }) {
           {tab === 'timeline' && (
             <div className="mx-auto max-w-4xl px-4 py-3">
               <Timeline
-                key={followInLog ?? 'all'}
-                followGoal={followInLog}
                 path={`/api/problems/${encodeURIComponent(data.name)}/events`}
                 onSelectGoal={(id) => {
                   setSelectedGoal(id)
