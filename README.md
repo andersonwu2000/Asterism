@@ -222,12 +222,6 @@ Programme revisions and worker declines now appear on the project's timeline and
 - Made long-running prover processes more robust: they now survive the process that launched them, hand off cleanly when the code changes underneath them, and stale servers can no longer go undetected.
 - Improved the monitoring interface to show proofs as they are being drafted, fixed display glitches, and tightened tracking of exactly which lemmas each Lean proof depends on.
 
-### 2026-07-09
-Out-of-budget open goals now route to human review instead of looping fruitlessly, and parked work no longer masquerades as active proving.
-
-- The one-click Windows installer was consolidated into a single `Asterism.exe` with a web-based first-run setup, plus a more resilient Python bootstrap that self-heals broken 3.12 installs, accepts any Python ≥3.12, and runs Lean and Mathlib setup on parallel tracks.
-- The web interface gained a unified camera engine shared across the proof-search and library views, directional citation arcs, automatic layout-cleanup passes, richer run cards showing the full proof body, and problem deletion behind a confirmation guard.
-
 <!-- ASTERISM-PROGRESS:END -->
 
 
