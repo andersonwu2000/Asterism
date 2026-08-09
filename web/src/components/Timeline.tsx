@@ -263,6 +263,7 @@ export default function Timeline({
   path,
   pollMs = 15000,
   showProblem = false,
+  followGoal = null,
   onSelectGoal,
   onOpenProgramme,
 }: {
@@ -275,6 +276,9 @@ export default function Timeline({
   /** name the problem on each row — only the run view needs it, and
    * only when the run holds more than one */
   showProblem?: boolean
+  /** open already following this goal — another surface can make a
+   * claim ("5 failed attempts") and hand the reader its evidence */
+  followGoal?: string | null
   onSelectGoal?: (id: number) => void
   onOpenProgramme?: () => void
 }) {
@@ -287,7 +291,8 @@ export default function Timeline({
   }>(path, pollMs, { keepPrevious: true })
   const [lens, setLens] = useState<string | null>(null)
   const [quiet, setQuiet] = useState(false)
-  const [follow, setFollow] = useState<Follow | null>(null)
+  const [follow, setFollow] = useState<Follow | null>(
+    followGoal ? { kind: 'goal', label: followGoal } : null)
 
   const all = useMemo(() => data?.events ?? [], [data])
   const since = data?.log_since ?? null
