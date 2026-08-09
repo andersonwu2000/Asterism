@@ -18,7 +18,21 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
-from Tooling.knowledge import loogle
+from Tooling.knowledge import loogle, pin_check
+
+
+@pytest.fixture(autouse=True)
+def _stub_pin_verdicts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_format` annotates every hit with a pin verdict, and `check_names`
+    is cache-first against `<root>/.asterism/pin_decl_cache.db` — the
+    OPERATOR's cache, since these tests never chdir. Caught by the
+    live-data fence (task #180): six formatting tests were opening (and
+    CREATE-TABLE-ing in) real workspace state to answer a question they
+    make no assertion about. The pin contract, including the label
+    wording in `_format`, belongs to `test_pin_check.py`; here the
+    verdicts are just noise."""
+    monkeypatch.setattr(pin_check, "check_names",
+                        lambda names: {n: None for n in names})
 
 
 # ---------------------------------------------------------------------

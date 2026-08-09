@@ -5,6 +5,9 @@ import os
 import socket
 import sqlite3
 import subprocess
+import urllib.parse
+from pathlib import Path
+
 import pytest
 
 from Tooling.state import db
@@ -44,6 +47,13 @@ def pytest_collection_modifyitems(config, items):
 # expensive, quota-burning, minutes-long escapes, not all subprocesses.
 _FENCED_EXES = frozenset({
     "claude", "claude.exe", "claude.cmd",
+    # agy is the second quota-burning backend and belonged here from the
+    # day it landed: it is now reachable from the serve layer too (the
+    # console explainer resolves its provider through the registry), and
+    # an escaped agy spawn costs the same subscription an escaped claude
+    # spawn does. Its two legitimate probes are `free_cli_probe`-marked
+    # and pass the argv check below (`--version`, the drift-guard tail).
+    "agy", "agy.exe", "agy.cmd",
     "lake", "lake.exe", "lean", "lean.exe",
     "lean-asterism-server", "lean-asterism-server.exe",
     "loogle", "loogle.exe",
@@ -51,6 +61,21 @@ _FENCED_EXES = frozenset({
 
 _REAL_POPEN = subprocess.Popen
 _REAL_CONNECT = socket.socket.connect
+
+
+@pytest.fixture(autouse=True)
+def _no_provider_drift_probe(monkeypatch: pytest.MonkeyPatch):
+    """Keep the daemon's provider drift guard from shelling out.
+
+    `cmd_run` starts it in a BACKGROUND thread, so a test that exercises
+    the run path (test_cli_reset_status, test_cli_logs, …) would fire two
+    real CLI cold starts per test — and, because the thread outlives the
+    fence's monkeypatch scope, trip the side-effect fence from a thread
+    whose failure pytest can only report as a warning. Tests that mean to
+    probe (`test_provider_drift_guard.py`) delete the variable
+    themselves."""
+    monkeypatch.setenv("ASTERISM_SKIP_PROVIDER_DRIFT_CHECK", "1")
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -116,10 +141,38 @@ def _side_effect_fence(request, monkeypatch: pytest.MonkeyPatch):
     # isn't subscriptable and the import exploded, but only in isolated
     # runs where no earlier collection had cached the import
     # (test_gateway_lifecycle.py alone, 2026-07-09).
+    # A narrow hole for the provider-capability probes (2026-08-09).
+    # The fence's premise is "a claude.exe spawn here means a stub was
+    # bypassed and something expensive / quota-burning escaped". The
+    # capability layer's probes are the exception that proves it: they
+    # are answered LOCALLY (`--version`; `--resume <nonexistent uuid>`;
+    # `--model <invalid slug>`), cost no tokens, and are the only way to
+    # verify that the string-match detectors still match the CLI's own
+    # output. `real_lake` is the wrong hatch — it is OFF by default, so
+    # marking them would silently stop running the one check that
+    # notices a vendor CLI moved under us.
+    #
+    # The hole stays honest by checking the ARGV, not just the marker: a
+    # `free_cli_probe` test that accidentally launches a real agent
+    # spawn still fails, because `-p <prompt>` alone is not on the list.
+    free_probe = "free_cli_probe" in request.keywords
+
+    def _is_free_probe(args) -> bool:
+        if not free_probe or not isinstance(args, (list, tuple)):
+            return False
+        tail = tuple(str(x) for x in args[1:])
+        if tail[:1] == ("--version",):
+            return True
+        try:
+            from Tooling.llm.drift_guard import PROBES
+        except Exception:  # noqa: BLE001
+            return False
+        return any(tail == p.argv_tail for p in PROBES.values())
+
     class _FencedPopen(_REAL_POPEN):
         def __init__(self, args, *a, **kw):
             name = _exe_name(args)
-            if name in _FENCED_EXES:
+            if name in _FENCED_EXES and not _is_free_probe(args):
                 pytest.fail(
                     f"side-effect fence: this test tried to spawn {name!r} "
                     f"(argv[0]="
@@ -144,6 +197,112 @@ def _side_effect_fence(request, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(subprocess, "Popen", _FencedPopen)
     monkeypatch.setattr(socket.socket, "connect", _fenced_connect)
+    yield
+
+
+# ---------------------------------------------------------------------
+# Live-data fence (task #180) — the side-effect fence above guards the
+# OUTSIDE world (spawns, network). This one guards ours.
+#
+# `db.DB_PATH` is the RELATIVE `Path("asterism.db")`, so every default
+# `db.connect()` resolves against whatever CWD the test happens to run
+# under — and pytest is normally launched from the repo root, where the
+# operator's live run DB sits. A fixture that forgets
+# `monkeypatch.chdir(tmp_path)` therefore opens the real one, and
+# `connect()` does not merely read it: it auto-migrates a behind-schema
+# DB (a write) before the test's own DELETEs and UPDATEs land.
+#
+# That file is the one artifact in the tree that cannot be regenerated.
+# Source is in git, proofs are on disk, but the DB *is* the run — the
+# current tree cost tens of hours of subscription quota, and re-running
+# it does not reproduce it, it grows a different tree. `.asterism/` is
+# protected on the same grounds: those backups are the recovery path,
+# not a spare copy.
+#
+# Unlike the side-effect fence, this one applies to `real_lake` tests
+# too. Needing a live toolchain is not a reason to need live run state.
+# ---------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REAL_SQLITE_CONNECT = sqlite3.connect
+
+# Exact files, then whole subtrees. Both are compared against a RESOLVED
+# path, so a tmp_path copy of the DB (the legal way to test against real
+# data) never matches.
+_PROTECTED_DB_FILES = (_REPO_ROOT / "asterism.db",)
+_PROTECTED_DB_DIRS = (
+    _REPO_ROOT / ".asterism",             # backups + daemon runtime state
+    Path.home() / ".gemini",              # agy's conversations/*.db
+)
+
+
+def _sqlite_target_path(database) -> "Path | None":
+    """Resolve what a `sqlite3.connect` first argument names on disk.
+
+    Returns None for the forms that touch no operator file: `:memory:`,
+    the anonymous temp DB (`""`), and unparseable arguments."""
+    if isinstance(database, bytes):
+        database = database.decode(errors="replace")
+    elif isinstance(database, os.PathLike):
+        database = os.fspath(database)
+    if not isinstance(database, str) or not database or database == ":memory:":
+        return None
+    if database.startswith("file:"):
+        # URI form — `db.connect_readonly` builds one. Strip scheme,
+        # authority and query before touching the filesystem; a read-only
+        # open of live state is still a test-isolation defect (the test
+        # then depends on whatever the daemon last wrote).
+        rest = database[len("file:"):].split("?", 1)[0]
+        if rest.startswith("//"):
+            rest = rest[2:].split("/", 1)[-1]
+        if not rest or rest == ":memory:":
+            return None
+        database = urllib.parse.unquote(rest)
+    try:
+        return Path(database).resolve()
+    except (OSError, ValueError):
+        return None
+
+
+def _protected_db_reason(target: Path) -> str:
+    for f in _PROTECTED_DB_FILES:
+        if target == f:
+            return f"{f} is the operator's LIVE run database"
+    for d in _PROTECTED_DB_DIRS:
+        try:
+            target.relative_to(d)
+        except ValueError:
+            continue
+        return f"{target} lives under {d}, which holds live operator state"
+    return ""
+
+
+@pytest.fixture(autouse=True)
+def _live_data_fence(request, monkeypatch: pytest.MonkeyPatch):
+    """Fail fast when a test opens the operator's real sqlite state."""
+    if "live_db" in request.keywords:
+        yield
+        return
+
+    def _fenced_sqlite_connect(database, *a, **kw):
+        target = _sqlite_target_path(database)
+        if target is not None:
+            why = _protected_db_reason(target)
+            if why:
+                pytest.fail(
+                    f"live-data fence: this test opened {str(target)!r} — "
+                    f"{why}, not test state.\n"
+                    "Almost always a missing `monkeypatch.chdir(tmp_path)`: "
+                    "`db.DB_PATH` is relative, so the default `db.connect()` "
+                    "follows the CWD straight to the real file. Fix by "
+                    "chdir-ing into `tmp_path` first, passing an explicit "
+                    "path under `tmp_path`, or using the in-memory `conn` "
+                    "fixture. Mark the test `live_db` only if reading the "
+                    "operator's own run is the point of the test.",
+                    pytrace=True)
+        return _REAL_SQLITE_CONNECT(database, *a, **kw)
+
+    monkeypatch.setattr(sqlite3, "connect", _fenced_sqlite_connect)
     yield
 
 
