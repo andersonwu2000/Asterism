@@ -1358,8 +1358,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         # Which ACCOUNT serves the run is decided silently (§2b): this
         # file outranks the Antigravity IDE session, so its presence can
         # quietly move the run onto a different subscription's quota.
-        legacy = _agy.legacy_oauth_creds_path()
-        if legacy.is_file():
+        verdict, legacy = _agy.agy_identity()
+        if verdict == _agy.IDENTITY_LEGACY_FILE:
             line("WARN", f"{legacy} exists — agy prefers it over the "
                          f"Antigravity IDE session, so THIS file's account "
                          f"pays for the run; rename it away to fall back to "

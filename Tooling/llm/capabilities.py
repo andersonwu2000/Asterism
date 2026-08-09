@@ -173,6 +173,49 @@ ALLOW_HONOURED_NONE: frozenset = frozenset()   # no tool surface at all
 #: that does not (`llm/explainer.py` publishes which).
 ACTION_READ_FILE = "read_file"
 
+# ------------------------------------------------------- provisioning
+#
+# The installer needs three facts before it can offer a provider, and
+# until 2026-08-10 all three lived in prose: the install one-liner in
+# `setup-orchestrator.ps1`, the auth story in `antigravity_cli`'s header,
+# and the readability of auth state only in the negative — a comment in
+# serve's accounts panel explaining why agy has no `logged_in`.
+#
+# They belong here for the same reason `rc_contract` does. An installer
+# that writes `if provider == "antigravity"` is guessing from the name,
+# grows a branch per backend, and is exactly what this module exists to
+# stop. The scope of the module was never "runtime only" — `version_argv`
+# and `tested_version` already ask about the BINARY, not about a spawn.
+# The line that matters is declaration vs observation: what is true of
+# this provider everywhere lives here; whether THIS machine has it
+# installed and authenticated is measured by the caller and never cached.
+
+#: The installer can run `install_command`.
+INSTALL_BY_COMMAND = "by_command"
+#: Nothing to install — the HTTP providers are a library call.
+INSTALL_NOT_NEEDED = "not_needed"
+#: Nobody wrote one down, or it cannot be automated (the Antigravity IDE
+#: is a GUI login). Renders as "you do this part".
+INSTALL_UNDECLARED = "undeclared"
+
+#: The vendor's own OAuth, with its own credential file.
+AUTH_OWN_OAUTH = "own_oauth"
+#: Rides an already-signed-in session belonging to another product. agy
+#: takes the Antigravity IDE's — there is no login step and no file we
+#: own, which also makes the IDE session load-bearing state.
+AUTH_BORROWED_SESSION = "borrowed_session"
+#: A key from the environment or config.
+AUTH_API_KEY = "api_key"
+AUTH_UNDECLARED = "undeclared"
+
+#: The framework can read the credential state locally (a file, an env
+#: var) and answer "authenticated?" without a call.
+AUTH_STATE_READABLE = "readable"
+#: There IS no local answer. agy authenticates fine from a fake HOME, so
+#: no file on this machine decides it; only a live call does.
+AUTH_STATE_OPAQUE = "opaque"
+AUTH_STATE_UNDECLARED = "undeclared"
+
 # ---------------------------------------------------- liveness clocks
 
 #: Silence measured on the raw event stream (any delta counts).
@@ -265,6 +308,32 @@ class ProviderCapabilities:
     #: argv tail that prints the version without touching the network
     #: or the quota. `()` = no free version probe.
     version_argv: "tuple[str, ...]" = ("--version",)
+
+    # ------------------------------------------------- provisioning
+    # How this backend gets onto a machine and proves it can be used.
+    # Same rule as everything above: these are FACTS ABOUT THE PROVIDER,
+    # constant across machines — not observations of this machine, which
+    # belong to whoever probes (serve's accounts panel, the installer).
+    #: `INSTALL_BY_COMMAND` / `INSTALL_NOT_NEEDED` / `INSTALL_UNDECLARED`.
+    #: Split from the command itself because "there is nothing to
+    #: install" and "nobody wrote down how" are different answers that a
+    #: single nullable command would flatten into one.
+    install_method: str = INSTALL_UNDECLARED
+    #: Meaningful only under `INSTALL_BY_COMMAND` (invariant test pins
+    #: the two together). A shell one-liner, run by the installer.
+    install_command: "str | None" = None
+    #: Where the credential comes from — see the AUTH_* constants.
+    auth_flow: str = AUTH_UNDECLARED
+    #: Whether the framework can READ that credential's state locally.
+    #: Tri-state on purpose: `opaque` means "no local answer exists",
+    #: `undeclared` means "nobody has looked", and an installer renders
+    #: those differently — the first offers a live probe, the second
+    #: says do it yourself.
+    auth_state: str = AUTH_STATE_UNDECLARED
+    #: argv tail for a NON-spawn call that only a usable install can
+    #: answer — the honest readiness check where `auth_state` is opaque.
+    #: Costs a round-trip, no tokens. `()` = none known.
+    readiness_argv: "tuple[str, ...]" = ()
     notes: str = ""
 
     @property
@@ -302,6 +371,15 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         marker_tables=("Tooling.llm.claude_cli._QUOTA_MARKERS",
                        "Tooling.llm.claude_cli._STALE_SESSION_MARKER"),
         single_instance_lock=False,
+        install_method=INSTALL_BY_COMMAND,
+        # The one-liner `installer/setup-orchestrator.ps1` already runs.
+        install_command="irm https://claude.ai/install.ps1 | iex",
+        auth_flow=AUTH_OWN_OAUTH,
+        # `~/.claude/.credentials.json` — serve's accounts panel reads
+        # it for `logged_in` and the subscription tier.
+        auth_state=AUTH_STATE_READABLE,
+        # None needed: the credential file IS the answer, for free.
+        readiness_argv=(),
         notes=("usage endpoint = the subscription usage API read by "
                "core/usage_quota; stream = stream-json + partial "
                "messages, the watchdog's only sampling surface"),
@@ -363,6 +441,32 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
                        "Tooling.llm.antigravity_cli._MISCONFIG_MARKERS",
                        "Tooling.llm.antigravity_cli._TIMEOUT_MARKERS"),
         single_instance_lock=False,
+        install_method=INSTALL_BY_COMMAND,
+        install_command=("irm https://antigravity.google/cli/install.ps1 "
+                         "| iex"),
+        # No login step exists: agy picks up the Antigravity IDE's
+        # already-signed-in session. Which makes that session
+        # load-bearing state — signing out of the IDE costs a fresh
+        # interactive login, and the token lives in Electron app
+        # storage, so it cannot be backed up by copying.
+        auth_flow=AUTH_BORROWED_SESSION,
+        # …and therefore no file on this machine decides it. A spawn
+        # authenticates normally from a FAKE HOME (measured 2026-08-01),
+        # which is exactly why serve's accounts panel reports `installed`
+        # and roles but no `logged_in`: there is nothing to read.
+        auth_state=AUTH_STATE_OPAQUE,
+        # The honest readiness check where nothing is readable. `agy
+        # models` makes a server round-trip ("Fetching available
+        # models…", ~2.5s, zero tokens) and returns THIS ACCOUNT's model
+        # list, so it proves the binary reaches Google with some
+        # identity — and the installer needs that list anyway.
+        # NOT proof of the negative: this machine cannot produce an
+        # unauthenticated control (the credential is the IDE's, and
+        # logging out to test would cost a real login), so nobody has
+        # measured how it fails without one. Report what it proves —
+        # "reached the service and listed N models at HH:MM" — not
+        # "logged in".
+        readiness_argv=("models",),
         notes=("capability surface is a per-spawn HOME (no config "
                "flag); `status: SUCCESS` is not proof of work — the "
                "artifact on disk is"),
@@ -409,6 +513,13 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         tested_version=None,
         version_argv=(),
         single_instance_lock=False,
+        # There is no binary — the same fact that empties `version_argv`.
+        # `not_needed` rather than `undeclared`: an installer should show
+        # "nothing to install", not "you do this part".
+        install_method=INSTALL_NOT_NEEDED,
+        auth_flow=AUTH_API_KEY,
+        # An env var / config key the framework reads directly.
+        auth_state=AUTH_STATE_READABLE,
         notes="no subprocess, no CLI version to probe",
     ),
 }

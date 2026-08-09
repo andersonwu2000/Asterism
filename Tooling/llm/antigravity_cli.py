@@ -287,6 +287,31 @@ def legacy_oauth_creds_path() -> Path:
     return Path.home() / ".gemini" / "oauth_creds.json"
 
 
+#: `agy_identity()` verdicts.
+IDENTITY_IDE_SESSION = "ide_session"
+IDENTITY_LEGACY_FILE = "legacy_file"
+
+
+def agy_identity() -> "tuple[str, Path | None]":
+    """WHICH ACCOUNT will pay for the next agy spawn.
+
+    Not a formatted line, because two callers render it differently:
+    `doctor` prints a WARN, the installer draws a decision page. Both
+    need the same judgement, and it is a judgement — `agy` resolves
+    `~/.gemini/oauth_creds.json` BEFORE the Antigravity IDE session, so
+    the mere presence of that file moves the run onto whichever account
+    wrote it, with nothing anywhere reporting the switch. That is how a
+    long run once came out of the operator's own free tier while the IDE
+    was signed in to the Pro account it was supposed to use.
+
+    Returns (verdict, path): `IDENTITY_LEGACY_FILE` with the file that
+    is overriding, or `IDENTITY_IDE_SESSION` with None."""
+    legacy = legacy_oauth_creds_path()
+    if legacy.is_file():
+        return IDENTITY_LEGACY_FILE, legacy
+    return IDENTITY_IDE_SESSION, None
+
+
 def _spawn_home(req: LLMRequest) -> "Path | None":
     """Build this spawn's private HOME and return it, or None on failure.
 

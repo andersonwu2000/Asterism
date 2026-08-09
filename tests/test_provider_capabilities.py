@@ -469,6 +469,82 @@ def test_read_url_stays_denied_not_narrowed() -> None:
     assert "command" in denied      # the compute channel, same ruling
 
 
+def test_install_method_and_command_agree() -> None:
+    """`by_command` is a PROMISE that `install_command` is runnable, and
+    a command under any other method is a command nobody will run. The
+    two directions are the reason the method is not just a nullable
+    command: "nothing to install" and "nobody wrote one down" are
+    different answers, and an installer renders them differently."""
+    from Tooling.llm import capabilities as caps
+    for cap in caps.CAPABILITIES.values():
+        if cap.install_method == caps.INSTALL_BY_COMMAND:
+            assert cap.install_command, cap.name
+        else:
+            assert cap.install_command is None, cap.name
+
+
+def test_opaque_auth_declares_how_to_check_instead() -> None:
+    """A provider whose credential state cannot be read must say what a
+    caller CAN do — otherwise the declaration hands back a shrug, and
+    the installer invents a provider branch to fill it (the thing this
+    module exists to prevent)."""
+    from Tooling.llm import capabilities as caps
+    for cap in caps.CAPABILITIES.values():
+        if cap.auth_state == caps.AUTH_STATE_OPAQUE:
+            assert cap.readiness_argv, (
+                f"{cap.name}: auth state is opaque and no readiness probe "
+                f"is declared — nothing left but to guess")
+
+
+def test_provisioning_values_are_from_the_declared_sets() -> None:
+    """Free text here rots into a second vocabulary; the consumers match
+    on these strings."""
+    from Tooling.llm import capabilities as caps
+    methods = {caps.INSTALL_BY_COMMAND, caps.INSTALL_NOT_NEEDED,
+               caps.INSTALL_UNDECLARED}
+    flows = {caps.AUTH_OWN_OAUTH, caps.AUTH_BORROWED_SESSION,
+             caps.AUTH_API_KEY, caps.AUTH_UNDECLARED}
+    states = {caps.AUTH_STATE_READABLE, caps.AUTH_STATE_OPAQUE,
+              caps.AUTH_STATE_UNDECLARED}
+    for cap in caps.CAPABILITIES.values():
+        assert cap.install_method in methods, cap.name
+        assert cap.auth_flow in flows, cap.name
+        assert cap.auth_state in states, cap.name
+
+
+def test_a_cli_provider_says_how_it_gets_installed() -> None:
+    """`not_needed` is only honest where there is no binary. A CLI-backed
+    provider that leaves install undeclared makes the installer offer a
+    provider it cannot set up."""
+    from Tooling.llm import capabilities as caps
+    for name in ("claude", "antigravity"):
+        cap = caps.capabilities_for(name)
+        assert cap.install_method == caps.INSTALL_BY_COMMAND, name
+        assert cap.auth_flow != caps.AUTH_UNDECLARED, name
+        assert cap.auth_state != caps.AUTH_STATE_UNDECLARED, name
+
+
+def test_undeclared_provider_provisions_nothing() -> None:
+    """The pessimistic default reaches the installer too: an unmeasured
+    backend renders as "you do this part", never as a button."""
+    from Tooling.llm import capabilities as caps
+    cap = caps.capabilities_for("codex-not-yet-measured")
+    assert cap.install_method == caps.INSTALL_UNDECLARED
+    assert cap.install_command is None
+    assert cap.auth_flow == caps.AUTH_UNDECLARED
+    assert cap.auth_state == caps.AUTH_STATE_UNDECLARED
+    assert cap.readiness_argv == ()
+
+
+def test_agy_identity_is_a_verdict_not_a_sentence() -> None:
+    """doctor and the installer need the same judgement and render it
+    differently, so the shared thing is the verdict."""
+    from Tooling.llm import antigravity_cli as agy
+    verdict, path = agy.agy_identity()
+    assert verdict in (agy.IDENTITY_IDE_SESSION, agy.IDENTITY_LEGACY_FILE)
+    assert (path is None) == (verdict == agy.IDENTITY_IDE_SESSION)
+
+
 def test_undeclared_provider_grants_nothing() -> None:
     """A backend that declared nothing must not be handed a capability
     the framework merely ASSUMES will be enforced — the empty default is
