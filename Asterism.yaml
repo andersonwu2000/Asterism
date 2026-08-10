@@ -88,14 +88,19 @@ dispatch:
 formalizer:
   provider: claude
   model: claude-sonnet-5
-  # Seat choice is routine and changes with the day's quota; the durable
-  # fact worth keeping is WHY this seat is expensive on a cacheless
-  # provider. Measured 2026-08-10: claude formalizer spawns bill ~11k
-  # fresh input against ~846k cache reads, because a formalizer edits,
-  # validates, re-reads and edits again — agy has no prompt cache, so the
-  # same loop bills in full every turn (34k–844k per spawn). A Strategist
-  # wake reads once and decides, which is why the NL layer felt cheap on
-  # the same model. `dispatch.pool: 4` multiplies it.
+  # Seat choice is routine; the durable fact is WHY this seat is
+  # expensive on agy. Measured 2026-08-10 — and NOT for the reason first
+  # written here: agy does have a cache and reports it (`cache_read_tokens`,
+  # excluded from `total_tokens` exactly as on claude).
+  #   claude formalizer, per spawn:  11k fresh /  846k cached  (1.3% fresh)
+  #   agy formalizer, worst spawn:  844k fresh / 12.5M cached  (6.3% fresh)
+  # The hit rate is ~5x worse, but the dominant term is CHURN: that spawn
+  # moved 13.4M tokens of context against claude's 857k. A formalizer
+  # edits, validates, re-reads and edits again; a Strategist wake reads
+  # once and decides, which is why the same model felt cheap on the NL
+  # layer. `dispatch.pool: 4` multiplies it, and with no liveness clock
+  # (#182) a spawn that stops making progress still runs to its timeout —
+  # two did, 964s each.
   # # provider: antigravity
   # # model: gemini-3.6-flash-high
                                # SG-mirror layout (user 2026-08-06, second half
