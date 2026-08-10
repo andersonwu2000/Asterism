@@ -51,6 +51,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+
+from . import edits as _edits
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -1366,21 +1368,25 @@ def _editor_line_count(text: str) -> int:
 
 @mcp.tool()
 @_offload_to_thread
-def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
-    """Replace lines [start_line..end_line] (1-indexed, inclusive) in
-    the target Lean file with new_text. Set start_line == end_line to
-    replace a single line. new_text may contain multiple lines (use
-    literal newlines).
+def apply_edit(edits: list = None) -> str:
+    """Apply one or more anchored edits to the target Lean file.
 
-    Lean re-elaborates after the edit; the response carries the proof
-    goal at BOTH ends of the replacement (`goal_at_edit_start` /
-    `goal_at_edit_end`), plus diagnostics.
+    Each edit names the TEXT it acts on, not a line number:
+
+        [{"replace": "<exact old text>", "with": "<new text>"},
+         {"replace_between": ["<from>", "<to>"], "with": "<new text>"},
+         {"insert_after": "<anchor>", "text": "<new text>"}]
+
+    Anchors must match exactly and appear exactly once. For
+    `replace_between` the closing anchor need only be unique AFTER the
+    opening one — use it to swap a whole tactic block without quoting it.
+
+    If any anchor fails to resolve, NOTHING is applied: the response says
+    which edit and how to repair it, the file is unchanged, and your
+    other anchors are still valid on resubmission.
 
     Args:
-      start_line: 1-indexed inclusive start of region to replace.
-      end_line:   1-indexed inclusive end of region to replace, or -1
-                  for "through the end of the file".
-      new_text:   Replacement text (may be multi-line).
+      edits: list of edit objects (see above).
     """
     _recv_ts = _ts_now()
     meta = _current_session()
@@ -1406,60 +1412,50 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
             "writing through it could clobber newer on-disk content. "
             "Retry, or Read the file and use Write."),
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
-    lines = meta.file_content.split("\n")
-    n_lines = _editor_line_count(meta.file_content)
-    # `-1` = through the end of file (2026-08-06 feedback ×3). Without a
-    # sentinel a whole-tail replace costs a probe round-trip just to
-    # learn the line count — and the count agents guess from `Read` is
-    # off by one whenever the file ends in a newline, which is the same
-    # boundary the error message below already had to explain.
-    if end_line == -1:
-        end_line = n_lines
-    if start_line < 1 or start_line > n_lines:
-        return json.dumps({"error":
-            f"start_line {start_line} out of range 1..{n_lines}"})
-    if end_line < start_line or end_line > n_lines:
-        # Say what to pass, not only what was wrong: three agents in one
-        # run read this message against `Read`'s output — which shows the
-        # slot after a trailing newline as a further line — and each spent
-        # a round-trip probing the boundary (2026-08-02 feedback x3).
-        return json.dumps({"error":
-            f"end_line {end_line} out of range {start_line}..{n_lines}"
-            f" (the file has {n_lines} lines; a trailing newline is not a"
-            f" line — pass end_line={n_lines} to replace through the end)"})
+    if not edits:
+        return _arg_help(
+            "apply_edit",
+            'the parameter is `edits`, a list \u2014 e.g. '
+            'apply_edit(edits=[{"replace": "by norm_num", "with": "by simp"}])')
+    try:
+        spans = _edits.resolve(meta.file_content, edits)
+    except _edits.EditError as exc:
+        # Refusal, PRE-elaboration: the file is untouched and the batch
+        # cost milliseconds instead of a corrupted proof discovered a
+        # round-trip later. That is the whole point of anchoring \u2014 a line
+        # number has nothing to check itself against, so a stale one
+        # spliced silently (42 agent reports in the week to 2026-08-10).
+        return json.dumps(
+            {"edit": "rejected \u2014 file unchanged", **exc.as_dict(),
+             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()},
+            ensure_ascii=False)
 
-    # Editor-sanity normalization (agent_feedback ~30 reports):
-    # CRLF → LF, and ONE trailing newline stripped — a block ending in
-    # a newline means "content ends here", not "plus a blank line".
-    # Empty new_text DELETES the range (the old splice left a blank
-    # line behind, which no editor means by "replace with nothing").
-    new_text = new_text.replace("\r\n", "\n")
-    if new_text.endswith("\n"):
-        new_text = new_text[:-1]
-    replacement = [] if new_text == "" else new_text.split("\n")
-    # Echo of the OLD region (the splice's precondition): a range that
-    # drifted after an earlier edit becomes visible in THIS response
-    # instead of via a confusing downstream diagnostic.
-    replaced_text = "\n".join(lines[start_line - 1:end_line])
-    if len(replaced_text) > 600:
-        replaced_text = replaced_text[:600] + " …[truncated]"
+    replaced_text = " | ".join(
+        meta.file_content[s.start:s.end][:200]
+        for s in spans if not s.is_insert)[:600] or "(insert only)"
+    new_content = _edits.apply_spans(meta.file_content, spans)
+    new_lines = new_content.split(chr(10))
+    # Where each edit LANDED, measured on the produced file. Line numbers
+    # are output only: the tool measured them, so they cannot be stale
+    # the way a caller-supplied one could.
+    _shift = 0
+    _regions = []
+    for s in sorted(spans, key=lambda x: x.start):
+        lo = _edits.line_of(new_content, s.start + _shift)
+        hi = _edits.line_of(new_content, s.start + _shift + len(s.new_text))
+        _regions.append((lo, hi))
+        _shift += len(s.new_text) - (s.end - s.start)
+    start_line = _regions[0][0]
+    end_line = _regions[-1][1]
 
-    new_lines = (lines[: start_line - 1]
-                 + replacement
-                 + lines[end_line:])
-    new_content = "\n".join(new_lines)
-
-    # Scope tripwire: report only a balance THIS edit broke, so a
-    # mid-repair file does not nag.
-    _scope_warn: "str | None" = None
+    # Structural balance, reported UNCONDITIONALLY as a number. The old
+    # version warned only when THIS edit broke a previously balanced
+    # file, so once a file was unbalanced every later edit went quiet \u2014
+    # including the one that added a second stray `end`. Computing a
+    # value and then gating it into silence is the "knows but flattens"
+    # shape this codebase keeps finding.
+    _scope_warn = None
     _bal_after = _scope_balance(new_content)
-    if _bal_after != 0 and _scope_balance(meta.file_content) == 0:
-        _scope_warn = (
-            f"this edit left {abs(_bal_after)} unclosed "
-            f"`namespace`/`section` — add the matching `end`"
-            if _bal_after > 0 else
-            f"this edit left {abs(_bal_after)} `end` more than there are "
-            f"`namespace`/`section` openers")
 
     # Metaprogramming gate — BEFORE the mirror/disk write-through, so a
     # blocked edit leaves neither the buffer nor the file carrying it.
@@ -1478,10 +1474,19 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
     # dropped `:= by`, clobbered `have`): the recurring corruption in
     # agent_feedback (C1). Seeing the actual result makes a misfire obvious
     # immediately rather than via a confusing downstream diagnostic.
-    _lo = max(1, start_line - 2)
-    _hi = min(len(new_lines), start_line + len(replacement) - 1 + 2)
-    post_edit_region = "\n".join(
-        f"{i}: {new_lines[i - 1]}" for i in range(_lo, _hi + 1))
+    _echo = []
+    for lo, hi in _regions:
+        a, b = max(1, lo - 2), min(len(new_lines), hi + 2)
+        _echo += [f"{i}: {new_lines[i - 1]}" for i in range(a, b + 1)]
+        _echo.append("")
+    # The TAIL, always. Two of the loudest failure reports were a dropped
+    # `end` and a duplicated proof body, both at end-of-file, where an
+    # echo anchored on the edited region never looks.
+    _tail_from = max(1, len(new_lines) - 2)
+    _echo.append(f"--- end of file ({len(new_lines)} lines) ---")
+    _echo += [f"{i}: {new_lines[i - 1]}"
+              for i in range(_tail_from, len(new_lines) + 1)]
+    post_edit_region = "\n".join(_echo)
 
     # Locked-signature tripwire (warning, not a block): the commit gate
     # byte-compares the seeded `s<sid>` signature, so an edit touching
@@ -1529,8 +1534,8 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
         # against a ~46s elaboration latency. Skipped when the edit is a
         # single line (both ends are the same query) or a deletion.
         goal_end_text: "str | None" = None
-        end_line_after = start_line + len(replacement) - 1
-        if replacement and end_line_after > start_line:
+        end_line_after = _regions[-1][1]
+        if end_line_after > start_line:
             try:
                 q_end = _merged_line_for(line_map, end_line_after)
                 goal_end_text = _summarize_goal(backend.plain_goal(
@@ -1564,12 +1569,15 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
     _cite = _citation_submission(
         new_content, meta.problem, meta.workspace, _own_stubs,
         kind=meta.kind)
-    _verb = "deleted" if not replacement else "replaced"
     _n_diags = len(formatted)
     formatted = _collapse_repeats(formatted)
     response = {
-        "edit": (f"{_verb} lines {start_line}-{end_line}; "
-                 f"file is now {len(new_lines)} lines"),
+        "edit": (f"applied {len(spans)} edit(s) at lines "
+                 + ", ".join(f"{a}-{b}" for a, b in _regions)
+                 + f"; file is now {len(new_lines)} lines"),
+        # Always a number, never a conditional warning: see the note at
+        # the splice above.
+        "scope_balance": _bal_after,
         "replaced_text": replaced_text,
         "post_edit_region": post_edit_region,
         "goal_at_edit_start": goal_text,
@@ -1587,28 +1595,49 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
         response["citation"] = _cite
     if _locked_warn is not None:
         response["locked_signature"] = _locked_warn
-    if _scope_warn is not None:
-        response["scope_warning"] = _scope_warn
+    if _bal_after != 0:
+        response["scope_warning"] = (
+            f"{abs(_bal_after)} unclosed `namespace`/`section`/`mutual` — "
+            f"add the matching `end`" if _bal_after > 0 else
+            f"{abs(_bal_after)} more `end` than there are openers")
     dur = time.perf_counter() - t0
     _log_for(meta, {"event": "tool_call", "name": "apply_edit",
-                    "args": {"start_line": start_line,
-                             "end_line": end_line,
-                             "new_text_lines": new_text.count("\n") + 1},
+                    "args": {"edits": len(spans),
+                             "kinds": [s.kind for s in spans]},
                     "duration_s": dur,
                     "slot_kind": _slot_kind, "converged": converged,
                     "diagnostic_count": len(diags)})
     return json.dumps(response, ensure_ascii=False)
 
 
+#: Same rule as `knowledge/mcp_tools`: NO TOOL ON THIS SERVER HAS A
+#: REQUIRED PARAMETER. A model that guesses a parameter name wrong makes
+#: FastMCP's pydantic model raise, and on the Antigravity CLI a raising
+#: MCP tool stamps the whole envelope `status: ERROR` — killing the run
+#: AND the `--resume` turn that would have collected its feedback.
+#: Measured 2026-08-10: `inspect(inspect_requests=…)` cost six spawns
+#: their feedback records in one fifteen-minute window. Optional
+#: parameters plus a teaching string turn that into one recoverable
+#: round-trip. Enumerating plausible aliases is NOT the fix — the next
+#: model invents a new name.
+def _arg_help(tool: str, hint: str) -> str:
+    return json.dumps({"error": f"{tool}: {hint}"}, ensure_ascii=False)
+
+
 @mcp.tool()
 @_offload_to_thread
-def goal_at(line: int, col: int) -> str:
+def goal_at(line: int = 0, col: int = 0) -> str:
     """Get the Lean proof goal state at a specific position.
 
     Args:
       line: 1-indexed line number.
       col:  0-indexed character column.
     """
+    if not line:
+        return _arg_help(
+            "goal_at",
+            "the parameters are `line` (1-indexed) and `col` (0-indexed), "
+            "e.g. goal_at(line=42, col=2)")
     _recv_ts = _ts_now()
     meta = _current_session()
     if meta is None:
@@ -2075,7 +2104,7 @@ def _declhead_submission(content: str) -> "dict":
 
 @mcp.tool()
 @_offload_to_thread
-def validate_file(content: str) -> str:
+def validate_file(content: str = "") -> str:
     """Validate a candidate Lean file (typically a `new_<slug>.lean`
     sub-goal stub, or the assembled strategy patch). Auto-prepends
     Mathlib + the problem's Defs imports, pushes the candidate content
@@ -2128,6 +2157,11 @@ def validate_file(content: str) -> str:
     Returns: { ok, diagnostics, diagnostic_count[, inlined_siblings],
                commit_header, submission }.
     """
+    if not (content or "").strip():
+        return _arg_help(
+            "validate_file",
+            "the parameter is `content`, the whole candidate file as "
+            "a string — e.g. validate_file(content=<your patch text>)")
     _recv_ts = _ts_now()
     meta = _current_session()
     if meta is None:

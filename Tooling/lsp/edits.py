@@ -59,7 +59,13 @@ class EditError(Exception):
         self.extra = extra
 
     def as_dict(self) -> dict:
-        return {"edit": self.index, "error": self.message, **self.extra}
+        # `edit_index`, not `edit`: the gateway response already uses
+        # `edit` for its outcome line, and the `**`-merge silently
+        # overwrote that string with this integer — a refusal came back
+        # reading as a successful edit numbered 2. Caught by its own
+        # test on the first run (2026-08-10).
+        return {"edit_index": self.index, "error": self.message,
+                **self.extra}
 
 
 def line_of(content: str, offset: int) -> int:

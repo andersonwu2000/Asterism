@@ -241,3 +241,38 @@ def test_loogle_left_the_shell_allowlist() -> None:
     # writes its OUTFILE, so the trailing `*` was a write channel that
     # two months of comments called side-effect-free.
     assert claude_cli.DEFAULT_BASH_ALLOWED == ""
+
+
+def test_no_mcp_tool_has_a_required_parameter() -> None:
+    """A model guesses parameter names. When it guesses wrong, FastMCP's
+    pydantic model raises `Field required` — and on the Antigravity CLI a
+    raising MCP tool stamps the WHOLE envelope `status: ERROR`, killing
+    the run and the `--resume` turn that would have collected its
+    feedback.
+
+    Measured 2026-08-10, first live minute of the Gemini formalizer
+    seat: `inspect(inspect_requests=[…])`. Six spawns filed no feedback
+    in that fifteen-minute window, and the file already carried the same
+    lesson for `loogle(query=…)` — written down, then not applied to the
+    next tool. Hence a test rather than a note.
+
+    The rule is not "accept these aliases": enumerating names a model
+    might invent is the trap this codebase keeps naming. It is "never
+    raise" — every parameter optional, and a call that binds nothing
+    answers with a teaching string. Extra unknown fields are already
+    dropped by pydantic, so a mis-named argument arrives as an empty
+    call, which is exactly the case the teaching string covers."""
+    import asyncio
+
+    from Tooling.knowledge import mcp_tools
+    from Tooling.lsp import gateway
+
+    offenders: "list[str]" = []
+    for server in (mcp_tools.mcp, gateway.mcp):
+        for t in asyncio.run(server.list_tools()):
+            required = (t.inputSchema or {}).get("required") or []
+            if required:
+                offenders.append(f"{t.name}: {sorted(required)}")
+    assert not offenders, (
+        "these MCP tools raise instead of teaching when a model guesses a "
+        f"parameter name wrong: {offenders}")

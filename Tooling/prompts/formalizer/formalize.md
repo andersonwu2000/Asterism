@@ -12,7 +12,7 @@ apply_edit `patch.lean`'s `:= by sorry` into a tactic block; iterate to 0 errors
 
 Four MCP tools talk to a live Lean server already holding **your `patch.lean` sandbox**:
 
-- `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range; returns the post-edit goal + diagnostics.
+- `mcp__lsp__apply_edit(edits)` — anchored edits, several per call: `[{"replace": "<exact old text>", "with": "<new>"}, {"replace_between": ["<from>", "<to>"], "with": "<new>"}, {"insert_after": "<anchor>", "text": "<new>"}]`. Anchors must be verbatim and unique; if one fails NOTHING is applied and the response says which and how to fix it. No line numbers — the response reports where each edit landed, plus the file’s tail and `scope_balance`.
 - `mcp__lsp__goal_at(line, col)` — read the proof goal at any position.
 - `mcp__lsp__errors_at(line=None)` — list current diagnostics.
 - `mcp__lsp__validate_file(content)` — elaborate a standalone candidate (auto-prepends Mathlib + Defs + your patch's `open`s); returns two independent verdicts: `diagnostics` = Lean compilation, `submission` = commit-gate rehearsal — both must be clean (`ok:true` covers only the former). Run it on `patch.lean` too before finishing.

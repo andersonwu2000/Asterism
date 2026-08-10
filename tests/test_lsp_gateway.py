@@ -1877,51 +1877,60 @@ def test_interactive_reclaim_evicts_stale_interactive_only(
     lsp_gateway._release_session_internal(tok3)
 
 
-def test_apply_edit_rejects_range_on_phantom_trailing_line(
+def test_apply_edit_refuses_a_stale_anchor_and_changes_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """a5 inject2502: split("\\n") counts the empty element after the
-    trailing newline as a line, so replacing lines 1-12 of an 11-line
-    file passed the range check, ate the file's last real line (the
-    namespace `end`) and reported success. The check must use the
-    editor's line count."""
+    """The two tests this replaces pinned line-range behaviour: a range
+    that overshot onto the phantom line after a trailing newline, and
+    the `-1` end-of-file sentinel. Both premises retired with the
+    contract (2026-08-10) — there are no line numbers in a request any
+    more, so neither failure is expressible.
+
+    What replaces them is the property that made the change worth making:
+    when the agent's picture of the file is stale, the tool refuses and
+    the file is untouched. Under line ranges every in-bounds range was
+    "valid", so a stale one spliced silently — 42 agent reports in the
+    week to 2026-08-10, including a dropped namespace `end` and a
+    duplicated proof body."""
     content = "line one\nline two\nend Problems.p\n"
     (tmp_path / "x.lean").write_text(content, encoding="utf-8")
     backend = _DiagBackend()
     ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
     lsp_gateway._state.sessions["tok-A"].file_content = content
     try:
-        out = json.loads(asyncio.run(lsp_gateway.apply_edit(1, 4, "x")))
+        out = json.loads(asyncio.run(lsp_gateway.apply_edit(
+            [{"replace": "line three", "with": "x"}])))
     finally:
         lsp_gateway._session_ctx.reset(ctx)
         lsp_gateway._state.sessions.pop("tok-A", None)
-    assert "error" in out
-    assert "1..3" in out["error"]
-    # nothing was written through
+    assert out["edit"].startswith("rejected")
+    assert "does not appear" in out["error"]
     assert (tmp_path / "x.lean").read_text(encoding="utf-8") == content
 
 
-def test_apply_edit_accepts_minus_one_as_end_of_file(
+def test_apply_edit_reports_the_tail_and_the_balance(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """2026-08-06 feedback ×3: replacing through the tail cost a probe
-    round-trip just to learn the line count, and the count agents guess
-    off `Read` is one too many whenever the file ends in a newline."""
-    content = "line one\nline two\nend Problems.p\n"
+    """Two of the loudest reports were a dropped `end` and a duplicated
+    body, both at end-of-file — where an echo anchored on the edited
+    region never looks. And `scope_balance` is now a number on every
+    response: the old warning fired only when THIS edit broke a
+    previously balanced file, so once a file was unbalanced every later
+    edit went quiet, including the one adding a second stray `end`."""
+    content = "namespace Problems.p\ntheorem t : True := trivial\nend Problems.p\n"
     (tmp_path / "x.lean").write_text(content, encoding="utf-8")
     backend = _DiagBackend()
     ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
     lsp_gateway._state.sessions["tok-A"].file_content = content
     try:
-        out = json.loads(asyncio.run(lsp_gateway.apply_edit(2, -1, "two\nend")))
+        out = json.loads(asyncio.run(lsp_gateway.apply_edit(
+            [{"replace": "end Problems.p", "with": "end Problems.p\nend"}])))
     finally:
         lsp_gateway._session_ctx.reset(ctx)
         lsp_gateway._state.sessions.pop("tok-A", None)
-    assert "error" not in out
-    # `-1` resolved to the editor's line count (3), so line two onward
-    # was replaced — the file's own trailing newline is preserved.
-    assert (tmp_path / "x.lean").read_text(
-        encoding="utf-8") == "line one\ntwo\nend\n"
+    assert "end of file" in out["post_edit_region"]
+    assert out["scope_balance"] == -1
+    assert "more `end`" in out["scope_warning"]
 
 
 def test_apply_edit_reports_the_goal_at_both_ends(
@@ -1939,11 +1948,12 @@ def test_apply_edit_reports_the_goal_at_both_ends(
     ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
     lsp_gateway._state.sessions["tok-A"].file_content = content
     try:
-        multi = json.loads(asyncio.run(
-            lsp_gateway.apply_edit(1, 1, "a\nb\nc")))
+        multi = json.loads(asyncio.run(lsp_gateway.apply_edit(
+            [{"replace": "line one", "with": "a\nb\nc"}])))
         lsp_gateway._state.sessions["tok-A"].file_content = content
         (tmp_path / "x.lean").write_text(content, encoding="utf-8")
-        single = json.loads(asyncio.run(lsp_gateway.apply_edit(1, 1, "a")))
+        single = json.loads(asyncio.run(lsp_gateway.apply_edit(
+            [{"replace": "line one", "with": "a"}])))
     finally:
         lsp_gateway._session_ctx.reset(ctx)
         lsp_gateway._state.sessions.pop("tok-A", None)
@@ -1982,7 +1992,9 @@ def test_apply_edit_carries_citation_mirror(
     meta.kind = "builder"   # Builder: non-proved citation = error
     try:
         out = json.loads(asyncio.run(
-            lsp_gateway.apply_edit(3, 3, "theorem t : True := trivial")))
+            lsp_gateway.apply_edit(
+                [{"replace": "theorem t : True := trivial",
+                  "with": "theorem t : True := trivial"}])))
     finally:
         lsp_gateway._session_ctx.reset(ctx)
         lsp_gateway._state.sessions.pop("tok-A", None)

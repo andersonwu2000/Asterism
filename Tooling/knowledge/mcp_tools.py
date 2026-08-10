@@ -38,6 +38,32 @@ from . import loogle as _loogle
 #: agent's.
 MAX_CHARS = 8000
 
+#: NO TOOL HERE HAS A REQUIRED PARAMETER, and that is a rule about the
+#: transport, not about politeness.
+#:
+#: A model guesses parameter names. When it guesses wrong, FastMCP's
+#: pydantic model raises `Field required`, and on the Antigravity CLI a
+#: raising MCP tool stamps the WHOLE envelope `status: ERROR` — the run
+#: exits 1, and the postmortem turn that `--resume`s the same session to
+#: collect feedback dies with it. One wrong parameter name therefore
+#: costs a spawn's entire feedback record.
+#:
+#: Measured 2026-08-10, first live minute of the Gemini formalizer seat:
+#: the model called `inspect(inspect_requests=[…])`. Six spawns filed no
+#: feedback that window. The same failure is recorded four lines below
+#: for `loogle(query=…)` — the lesson was written down and then not
+#: applied to the next tool.
+#:
+#: The fix is deliberately NOT a list of accepted aliases: enumerating
+#: the names a model might invent is the "列舉會爛" trap, and the next
+#: model invents a new one. Instead every parameter is optional, so
+#: nothing raises, and a call that binds nothing returns a TEACHING
+#: STRING naming the real parameter. Extra unknown fields are already
+#: dropped silently by pydantic, so a mis-named argument lands as an
+#: empty call — which is exactly the case the teaching string covers.
+#: Cost: one recoverable round-trip instead of a dead spawn.
+_ARG_HELP = "{tool}: {hint}"
+
 mcp = FastMCP("asterism_tools")
 
 
@@ -62,7 +88,10 @@ def loogle(pattern: str = "", query: str = "",
     # that accepts the natural guess costs one parameter.
     pattern = (pattern or query).strip()
     if not pattern:
-        return "loogle: give a type pattern, e.g. `Nat.factorial _ = _`"
+        return _ARG_HELP.format(
+            tool="loogle",
+            hint='the parameter is `pattern` (or `query`), e.g. '
+                 'loogle(pattern="Nat.factorial _ = _")')
     rc, text = _loogle.query(pattern, limit=limit)
     if rc != 0:
         return f"loogle unavailable: {text}"
@@ -72,7 +101,7 @@ def loogle(pattern: str = "", query: str = "",
 
 
 @mcp.tool()
-def validate_json(text: str) -> str:
+def validate_json(text: str = "") -> str:
     """Check that `text` parses as JSON before you emit it.
 
     Returns `OK: <n> top-level key(s)` or the parser's own message with
@@ -80,6 +109,11 @@ def validate_json(text: str) -> str:
     the framework will ACCEPT the decision, only that it can be read.
     """
     import json as _json
+    if not (text or "").strip():
+        return _ARG_HELP.format(
+            tool="validate_json",
+            hint='the parameter is `text`, a string — e.g. '
+                 'validate_json(text=\'{"a": 1}\')')
     try:
         obj = _json.loads(text)
     except ValueError as e:
@@ -92,7 +126,7 @@ def validate_json(text: str) -> str:
 
 
 @mcp.tool()
-def inspect(queries: list) -> str:
+def inspect(queries: list = None) -> str:
     """Ask several questions about the files here, in one call.
 
     Each query is an object; results come back labelled and capped.
@@ -111,11 +145,17 @@ def inspect(queries: list) -> str:
     to see them.
     """
     from . import workspace_query
+    if not queries:
+        return _ARG_HELP.format(
+            tool="inspect",
+            hint='the parameter is `queries`, a list — e.g. '
+                 'inspect(queries=[{"decl": "foo"}, '
+                 '{"grep": "Bar", "in": "proofs/*.lean"}])')
     return workspace_query.run_queries(queries, max_chars=MAX_CHARS)
 
 
 @mcp.tool()
-def compute(code: str) -> str:
+def compute(code: str = "") -> str:
     """Run a short Python calculation and get back what it prints.
 
     NOT A PROOF. Nothing computed here establishes a mathematical claim,
@@ -132,8 +172,10 @@ def compute(code: str) -> str:
     """
     from ..sandbox import run as _run
     if not (code or "").strip():
-        return ("compute: give it some code, e.g. "
-                "`print(sum(1/k**2 for k in range(1, 10**6)))`")
+        return _ARG_HELP.format(
+            tool="compute",
+            hint='the parameter is `code`, a string — e.g. '
+                 'compute(code="print(sum(1/k**2 for k in range(1, 10**6)))")')
     return _run(code).render()
 
 
@@ -153,7 +195,10 @@ def paper_search(query: str = "", doi: str = "") -> str:
     from ..papers import search as _search
     argv = ["--doi", doi] if doi else (query or "").split()
     if not argv:
-        return "paper_search: give a citation, some keywords, or a doi."
+        return _ARG_HELP.format(
+            tool="paper_search",
+            hint='the parameters are `query` (citation or keywords) or '
+                 '`doi`, e.g. paper_search(query="Frankl union-closed")')
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = _search.main(argv)
@@ -171,7 +216,7 @@ def paper_search(query: str = "", doi: str = "") -> str:
 
 
 @mcp.tool()
-def paper_fetch(target: str, problem: str = "", reason: str = "") -> str:
+def paper_fetch(target: str = "", problem: str = "", reason: str = "") -> str:
     """Download a paper, shelve it, and bind it to the problem.
 
     `target` is an arXiv id or a URL on a whitelisted host. This is the
@@ -184,7 +229,11 @@ def paper_fetch(target: str, problem: str = "", reason: str = "") -> str:
 
     from ..papers import fetch as _fetch
     if not (target or "").strip():
-        return "paper_fetch: give an arXiv id or a whitelisted URL."
+        return _ARG_HELP.format(
+            tool="paper_fetch",
+            hint='the parameter is `target` — an arXiv id or a whitelisted '
+                 'URL, e.g. paper_fetch(target="2211.11504", '
+                 'reason="cited for the closure bound")')
     argv = [target, "--workspace", str(_workspace_root())]
     if problem:
         argv += ["--problem", problem]
