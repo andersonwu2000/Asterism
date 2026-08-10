@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 38
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -366,7 +366,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 38
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
     conn.close()
 
 
@@ -506,7 +506,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 38
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -546,7 +546,7 @@ def test_v28_manifest_history_carryover(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 38
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
     rows = conn.execute(
         "SELECT problem, file, sha, body, source FROM user_file_history"
     ).fetchall()
@@ -593,7 +593,7 @@ def test_v29_problem_state_backfill(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 38
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
     states = {str(r["name"]): str(r["state"]) for r in conn.execute(
         "SELECT name, state FROM problems")}
     assert states == {"p_active": "active", "p_await": "awaiting_human",

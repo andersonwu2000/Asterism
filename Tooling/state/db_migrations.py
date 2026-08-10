@@ -832,6 +832,24 @@ def apply(conn: sqlite3.Connection) -> None:
         _migrate_to_v38(conn)
         conn.execute("PRAGMA user_version = 38")
         conn.commit()
+    if v < 39:
+        # v39 — `groups.conventions_seed`: the parent's `## Conventions`
+        # snapshotted when the group was opened. Conventions stopped
+        # walking the ancestor chain (a sub-group's workers were reading
+        # two sibling research lines' working notes, 3,088 B of graph
+        # vocabulary for a brick with no graph in it), so a child that
+        # never inherits also never LEARNS a parent's footgun — and it
+        # cannot ask for a rule it does not know exists. The seed is that
+        # one-time hand-off; it is read only until the group ships its own
+        # section. Additive with a default: pre-v39 groups seed empty,
+        # which is what they have been running on all along.
+        gcols = {r[1] for r in conn.execute("PRAGMA table_info(groups)")}
+        if "conventions_seed" not in gcols:
+            conn.execute(
+                "ALTER TABLE groups"
+                " ADD COLUMN conventions_seed TEXT NOT NULL DEFAULT ''")
+        conn.execute("PRAGMA user_version = 39")
+        conn.commit()
 
 
 def _migrate_to_v35(conn: sqlite3.Connection) -> None:

@@ -49,6 +49,11 @@ ROADMAP_WARN_CHARS = 10_000
 #: 4K is generous for "short and general"; at SLC rev 19 the section hit
 #: 5.9K carrying near-verbatim duplicates of lesson-KB entries (the two
 #: learning loops write the same footgun twice — 2026-08-04 audit).
+#: Since 2026-08-11 this threshold measures what a worker actually
+#: receives: `conventions_for_group` resolves to one group's section, so
+#: the number the author is warned about and the number that ships are
+#: the same one. Under the old ancestor walk they were not — every group
+#: sat under 4K while group 384's chain shipped 7,886 B.
 CONVENTIONS_WARN_CHARS = 4_000
 DOC_WARN_CHARS = 25_000
 
@@ -155,32 +160,42 @@ def extract_conventions(body: "str | None") -> str:
 def conventions_for_group(conn: sqlite3.Connection, problem: str,
                           group_id: "int | None") -> str:
     """Standing conventions in force for work owned by `group_id`:
-    the ancestor chain's sections top-down, then the group's own —
-    problem-wide rules first, the nearest group's refinements last.
+    THIS group's own section, and nothing above it.
 
-    The successor of the retired `EmitDirective` channel
-    (research_mission_design.md §3.1). Fixes the v35 asymmetry where the
-    directive was problem-level while Programmes are per-group: a
-    sub-group's workers now inherit every charter-line convention above
-    them instead of reading one problem-wide blob."""
-    chain: list[int] = []
-    if group_id is not None:
-        try:
-            from . import groups as _groups
-            chain = [int(g["id"]) for g in
-                     reversed(_groups.ancestors(conn, int(group_id)))]
-        except Exception:
-            chain = []
-        chain.append(int(group_id))
-    else:
-        chain = [None]  # type: ignore[list-item]
-    parts: list[str] = []
-    for gid in chain:
-        row = current_rev(conn, problem, gid)
-        text = extract_conventions(row["body"]) if row is not None else ""
-        if text:
-            parts.append(text)
-    return "\n\n".join(parts).strip()
+    The ancestor walk this function used to do was measured on
+    2026-08-10 and reversed by the owner. Group 384's chain
+    `[379, 381, 383, 384]` came to 7,886 B on every worker spawn, of
+    which 3,088 B was graph vocabulary (`SimpleGraph.cycleGraph`,
+    properness, semimodularity) shipped to a worker whose brick
+    contains no graph — not "relevant but unneeded" but actively
+    wrong vocabulary — and 381 / 383 were two SIBLING research lines'
+    working notes, not 384's charter. A parent that needs a rule to
+    reach a sub-group writes it into that group, which makes "write it
+    down" a deliberate act instead of a side effect of depth.
+
+    The one thing the walk did carry honestly — a footgun learned above
+    reaching a group opened later — is now `groups.conventions_seed`,
+    copied once at `open_group`. It answers here only until this group
+    ships its own section: a group with a `## Conventions` of its own
+    owns the subject, including the decision to drop what it inherited.
+
+    This reverses `discussion_group_design.md` §6's ruling that
+    conventions/footguns are rightly shared across groups. See the note
+    there; the reversal is deliberate, not drift."""
+    if group_id is None:
+        row = current_rev(conn, problem, None)
+        return extract_conventions(row["body"]) if row is not None else ""
+    row = current_rev(conn, problem, int(group_id))
+    own = extract_conventions(row["body"]) if row is not None else ""
+    if own:
+        return own
+    try:
+        seed = conn.execute(
+            "SELECT conventions_seed FROM groups WHERE id = ?",
+            (int(group_id),)).fetchone()
+    except sqlite3.OperationalError:      # pre-v39 schema
+        return ""
+    return str((seed["conventions_seed"] if seed else "") or "").strip()
 
 
 def length_warning(sections: dict[str, str],

@@ -1492,9 +1492,16 @@ def _commit_delegate(decision: Decision, conn: sqlite3.Connection,
     batch_id = batch_id_override or uuid.uuid4().hex
     ts = db.now()
 
+    # Copy-on-open (2026-08-11): conventions no longer walk the ancestor
+    # chain, so this snapshot is the only way a footgun learned up here
+    # reaches a group opened now. Taken at open time and never refreshed
+    # — the child owns the subject from its first `## Conventions` on.
+    from ..state import programme as _programme
     new_gid = _groups.open_group(
         conn, problem=problem, parent_group_id=int(parent["id"]),
-        charter=charter, anchor_goal_id=target)
+        charter=charter, anchor_goal_id=target,
+        conventions_seed=_programme.conventions_for_group(
+            conn, problem, int(parent["id"])))
     row_payload = {
         "step_index": step_index,
         "batch_size": batch_size,

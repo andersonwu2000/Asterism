@@ -588,6 +588,33 @@ def test_delegate_opens_a_group_and_seats_it(tmp_path):
     assert (str(kid["id"]), "Group") in _seats(conn)
 
 
+def test_delegate_seeds_the_child_with_the_parents_conventions(tmp_path):
+    """Copy-on-open (2026-08-11). Conventions stopped walking the ancestor
+    chain, so the Delegate path is where a parent's standing rules cross
+    into a group opened later — otherwise a footgun learned up here is
+    lost to every group opened after it, silently, and the child cannot
+    ask for a rule it has never been told exists."""
+    from Tooling.state import programme
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.seed")
+    top = groups.ensure_top_group(conn, p)
+    programme.record_pass(
+        conn, p,
+        "# T\n## Argument\na\n## Proof\nb\n## Roadmap\nc\n"
+        "## Conventions\nVERIFY HINT NAMES AGAINST CATALOG\n",
+        verdict={}, dialogue=[], rounds=0, batch_id=None, group_id=top)
+    conn.commit()
+    _commit(conn, tmp_path,
+            [_S().Decision(kind="Delegate", brief="Settle claim A.")],
+            p, top)
+
+    kid = groups.children(conn, top)[0]
+    assert "VERIFY HINT NAMES" in str(kid["conventions_seed"])
+    # and it is what the child's workers read until the child has its own
+    assert "VERIFY HINT NAMES" in programme.conventions_for_group(
+        conn, p, int(kid["id"]))
+
+
 def test_delegate_with_a_target_anchors_it_as_attempting(tmp_path):
     """The rescue shape. `attempting` is the only status that is both
     undispatchable by BFS and ALIVE — `frozen`/`shelved` are parked and
@@ -1741,7 +1768,7 @@ def test_v35_migrates_a_v34_db_without_losing_rows(tmp_path):
               for t in ("strategist_decisions", "queue", "pipelines",
                         "programme_revisions")}
     db_migrations.apply(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 38
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
     after = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
              for t in before}
     assert before == after
@@ -1765,7 +1792,7 @@ def test_init_schema_upgrades_a_v34_db_in_place(tmp_path):
     """
     conn = _v34_db(tmp_path)
     db.init_schema(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 38
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
     cols = {r[1] for r in conn.execute(
         "PRAGMA table_info(strategist_decisions)")}
     assert {"group_id", "produced_group_id"} <= cols

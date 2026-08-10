@@ -322,23 +322,33 @@ def ensure_top_group(conn: sqlite3.Connection, problem: str) -> int:
 def open_group(conn: sqlite3.Connection, *, problem: str,
                parent_group_id: int, charter: str,
                anchor_goal_id: "int | None" = None,
-               opened_by: "int | None" = None) -> int:
+               opened_by: "int | None" = None,
+               conventions_seed: str = "") -> int:
     """Open a sub-group under `parent_group_id`. Returns its id.
 
     `charter` is the parent's `Delegate` brief verbatim — the claim this
     group exists to settle, and the fixed reference point its own Adversary
     judges against.
+
+    `conventions_seed` is the parent's `## Conventions` copied at this
+    moment. Workers read conventions from their own group only, so
+    without the copy a footgun learned above this group would never
+    reach it — and a group cannot ask for a rule it does not know
+    exists. The copy is read until this group ships its own section;
+    what to keep is then the group's own call.
     """
     if not str(charter).strip():
         raise ValueError("a group's charter must not be empty")
     ts = now()
     cur = conn.execute(
         "INSERT INTO groups (problem, parent_group_id, charter,"
-        " anchor_goal_id, opened_by, status, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, 'active', ?, ?)",
+        " anchor_goal_id, opened_by, status, conventions_seed,"
+        " created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)",
         (problem, int(parent_group_id), str(charter).strip(),
          int(anchor_goal_id) if anchor_goal_id is not None else None,
-         int(opened_by) if opened_by is not None else None, ts, ts))
+         int(opened_by) if opened_by is not None else None,
+         str(conventions_seed or "").strip(), ts, ts))
     return int(cur.lastrowid)
 
 

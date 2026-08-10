@@ -402,10 +402,11 @@ def test_conventions_section_is_optional_and_parsed(tmp_path):
     assert err3 and "after `## Roadmap`" in err3
 
 
-def test_conventions_for_group_walks_the_ancestor_chain(tmp_path):
-    """A sub-group's workers inherit every convention above them,
-    problem-wide first — the v35 asymmetry (problem-level directive vs
-    per-group Programme) closed."""
+def test_conventions_for_group_never_walks_the_ancestor_chain(tmp_path):
+    """A group's workers see that group's conventions and nothing above
+    (2026-08-11, owner call). The chain shipped a sibling line's working
+    vocabulary to every spawn — 3,088 B of graph rules for a brick with
+    no graph. A parent that needs a rule down there writes it down."""
     c = _fresh(tmp_path)
     from Tooling.state import groups
     top = groups.ensure_top_group(c, "p")
@@ -418,10 +419,54 @@ def test_conventions_for_group_walks_the_ancestor_chain(tmp_path):
         c, "p", _body() + "## Conventions\nKID RULE\n",
         verdict={}, dialogue=[], rounds=0, batch_id=None, group_id=kid)
     text = programme.conventions_for_group(c, "p", kid)
-    assert "TOP RULE" in text and "KID RULE" in text
-    assert text.index("TOP RULE") < text.index("KID RULE")
-    # the top group sees only its own
+    assert "KID RULE" in text
+    assert "TOP RULE" not in text
     assert "KID RULE" not in programme.conventions_for_group(c, "p", top)
+
+
+def test_conventions_seed_carries_until_the_group_writes_its_own(tmp_path):
+    """Copy-on-open: the footgun a parent already knows reaches a group
+    opened later, because that group could never ask for a rule it does
+    not know exists. It stops being read the moment the group ships its
+    own section — including when the group deliberately drops it."""
+    c = _fresh(tmp_path)
+    from Tooling.state import groups
+    top = groups.ensure_top_group(c, "p")
+    programme.record_pass(
+        c, "p", _body() + "## Conventions\nVERIFY NAMES AGAINST CATALOG\n",
+        verdict={}, dialogue=[], rounds=0, batch_id=None, group_id=top)
+    kid = groups.open_group(
+        c, problem="p", parent_group_id=top, charter="settle the lemma",
+        conventions_seed=programme.conventions_for_group(c, "p", top))
+    # Before its first revision the child runs on the seed.
+    assert "VERIFY NAMES" in programme.conventions_for_group(c, "p", kid)
+    # Its own section supersedes it — wholly, drops included.
+    programme.record_pass(
+        c, "p", _body() + "## Conventions\nKID RULE ONLY\n",
+        verdict={}, dialogue=[], rounds=0, batch_id=None, group_id=kid)
+    text = programme.conventions_for_group(c, "p", kid)
+    assert text == "KID RULE ONLY"
+
+
+def test_conventions_seed_is_a_snapshot_not_a_link(tmp_path):
+    """The seed is copied at open time. A parent revising afterwards does
+    not reach back into a child already running — that is the whole
+    difference between copy-on-open and the chain walk it replaced."""
+    c = _fresh(tmp_path)
+    from Tooling.state import groups
+    top = groups.ensure_top_group(c, "p")
+    programme.record_pass(
+        c, "p", _body() + "## Conventions\nRULE AT OPEN TIME\n",
+        verdict={}, dialogue=[], rounds=0, batch_id=None, group_id=top)
+    kid = groups.open_group(
+        c, problem="p", parent_group_id=top, charter="settle the lemma",
+        conventions_seed=programme.conventions_for_group(c, "p", top))
+    programme.record_pass(
+        c, "p", _body() + "## Conventions\nRULE ADDED LATER\n",
+        verdict={}, dialogue=[], rounds=0, batch_id=None, group_id=top)
+    text = programme.conventions_for_group(c, "p", kid)
+    assert "RULE AT OPEN TIME" in text
+    assert "RULE ADDED LATER" not in text
 
 
 def test_emit_directive_is_retired(tmp_path):

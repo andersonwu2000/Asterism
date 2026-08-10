@@ -227,6 +227,14 @@ CREATE TABLE IF NOT EXISTS groups (
     -- columns — until then, a divergence between the two is a bug.
     last_routine_at    TEXT NULL DEFAULT NULL,
     last_strategist_at TEXT NULL DEFAULT NULL,
+    -- Copy-on-open (v39): the parent's `## Conventions` AT THE MOMENT this
+    -- group was opened. Workers resolve conventions from their OWN group
+    -- only — no ancestor walk — so this snapshot is the one channel by
+    -- which a parent's footguns reach a child that would otherwise never
+    -- know they existed. It is a seed, not a link: it stops being read the
+    -- moment this group ships its own `## Conventions`, and the group is
+    -- free to drop any of it in its first revision.
+    conventions_seed   TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -802,7 +810,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 38
+_CURRENT_USER_VERSION = 39
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
