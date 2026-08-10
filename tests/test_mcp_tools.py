@@ -29,7 +29,13 @@ def test_server_exposes_exactly_the_intended_tools() -> None:
     from Tooling.knowledge import mcp_tools
 
     tools = asyncio.run(mcp_tools.mcp.list_tools())
-    assert {t.name for t in tools} == {"loogle", "validate_json", "compute"}
+    assert {t.name for t in tools} == {
+        "loogle", "validate_json",
+        # The shell's replacements (2026-08-10): reading, calculating,
+        # and the Scholar's two curated network commands, which had to
+        # move here or closing Bash would decapitate that role.
+        "inspect", "compute", "paper_search", "paper_fetch",
+    }
 
 
 def test_validate_json_covers_the_most_used_shell_call() -> None:

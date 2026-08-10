@@ -92,6 +92,29 @@ def validate_json(text: str) -> str:
 
 
 @mcp.tool()
+def inspect(queries: list) -> str:
+    """Ask several questions about the files here, in one call.
+
+    Each query is an object; results come back labelled and capped.
+
+        [{"decl":  "uc_four_set_deficit"},
+         {"grep":  "BoundedOrder", "in": "proofs/*.lean", "context": 3},
+         {"read":  "CATALOG.md", "lines": "380-420"},
+         {"find":  "*deficit*.lean"},
+         {"size":  "proofs/*.lean"}]
+
+    `decl` answers from the framework's own record — the statement, the
+    file and whether it is proved — so use it instead of grepping for a
+    keyword at the start of a line. `in` and `read` take paths relative
+    to your own directory, or globs. `max` raises a query's own line cap;
+    a truncated answer always says how many lines were dropped and how
+    to see them.
+    """
+    from . import workspace_query
+    return workspace_query.run_queries(queries, max_chars=MAX_CHARS)
+
+
+@mcp.tool()
 def compute(code: str) -> str:
     """Run a short Python calculation and get back what it prints.
 
@@ -112,6 +135,77 @@ def compute(code: str) -> str:
         return ("compute: give it some code, e.g. "
                 "`print(sum(1/k**2 for k in range(1, 10**6)))`")
     return _run(code).render()
+
+
+@mcp.tool()
+def paper_search(query: str = "", doi: str = "") -> str:
+    """Find a paper by citation text, keywords, or DOI.
+
+    `query` searches OpenAlex, arXiv and Crossref; `doi` lists the
+    open-access copies of one DOI. Returns JSON hits. Refine the query
+    until you are sure which hit IS the work you are looking for —
+    fetching the wrong paper costs a whole wake.
+    """
+    import io
+    import json as _json
+    from contextlib import redirect_stdout
+
+    from ..papers import search as _search
+    argv = ["--doi", doi] if doi else (query or "").split()
+    if not argv:
+        return "paper_search: give a citation, some keywords, or a doi."
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = _search.main(argv)
+    out = buf.getvalue().strip()
+    if rc != 0:
+        return f"paper_search failed: {out[:500]}"
+    if len(out) > MAX_CHARS:
+        try:
+            hits = _json.loads(out)
+            out = _json.dumps(hits[:8], ensure_ascii=False, indent=1)
+        except ValueError:
+            out = out[:MAX_CHARS]
+        out += "\n… narrowed to the first hits; refine the query."
+    return out
+
+
+@mcp.tool()
+def paper_fetch(target: str, problem: str = "", reason: str = "") -> str:
+    """Download a paper, shelve it, and bind it to the problem.
+
+    `target` is an arXiv id or a URL on a whitelisted host. This is the
+    success action of a Scholar wake: say in `reason` why the work is
+    needed — the binding is audited.
+    """
+    import io
+    from contextlib import redirect_stdout
+    from pathlib import Path as _Path
+
+    from ..papers import fetch as _fetch
+    if not (target or "").strip():
+        return "paper_fetch: give an arXiv id or a whitelisted URL."
+    argv = [target, "--workspace", str(_workspace_root())]
+    if problem:
+        argv += ["--problem", problem]
+    if reason:
+        argv += ["--reason", reason]
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = _fetch.main(argv)
+    out = buf.getvalue().strip() or f"(no output, rc={rc})"
+    _ = _Path  # keep the import honest for readers of the argv above
+    return out
+
+
+def _workspace_root():
+    """The workspace, resolved the same way `inspect` resolves it — the
+    Scholar's cwd is its own problem directory, and `fetch` needs the
+    root to shelve into. One resolver, not two."""
+    from pathlib import Path as _Path
+
+    from . import workspace_query
+    return workspace_query.workspace_of(_Path.cwd()) or _Path.cwd()
 
 
 def main() -> None:
