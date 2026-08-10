@@ -1003,25 +1003,39 @@ def _section_active_goals(conn: sqlite3.Connection,
     ))
     if not rows:
         return []
-    out = ["## Active goals", ""]
+    # INDEX EAGER, SIGNATURES LAZY (2026-08-10).
+    #
+    # This section existed to stop a spawn restating a goal that is
+    # already alive, and it carried each goal's FULL signature to make
+    # the comparison possible inline. Measured across today's renders it
+    # was 16,557B of a 39,000B Context — 42% — and the signatures are
+    # ~90% of that. Every one of those bytes is re-sent on EVERY step of
+    # the agent loop, not once per spawn.
+    #
+    # What changed is that the signature now has a cheap on-demand
+    # source: `inspect([{"decl": "<slug>"}])` answers from the goals
+    # table — statement, file and status — and did not exist until this
+    # morning. So the list stays COMPLETE (the agent still sees exactly
+    # what is alive, which is what prevents the restatement) while the
+    # bytes that only matter when comparing one specific pair move to
+    # the moment of comparison.
+    #
+    # Not a truncation: nothing is silently dropped and the pointer says
+    # how to get the rest (#177's rule — a cap that hides itself is the
+    # thing that rule forbids). And duplicate-avoidance is not left to
+    # goodwill either way: `quality/dedupe.py` enforces it mechanically
+    # at commit, tier-0 and defeq. This section is the courtesy that
+    # saves a spawn, not the gate.
+    out = ["## Active goals", "",
+           "_Signatures on demand: `inspect([{\"decl\": \"<slug>\"}])` "
+           "returns the statement, its file and whether it is proved._",
+           ""]
     for r in rows:
-        # 200→400 (2026-07-05): statements are now pp-canonical
-        # conclusions (decl-#1) and 200 cut many real ones mid-term —
-        # the Strategist fell back to reading stub files to compare
-        # goals (feedback: twin-goal hunt done by hand).
-        # #5 (2026-07-18): display the FULL signature from the stub
-        # file — the stored conclusion-only column renders a by_contra
-        # sub-goal as just `False`.
-        st = context.goal_display_signature(
-            workspace, str(r["slug"]), r["lean_path"], r["statement"])
-        if len(st) > 400:
-            st = st[:400].rstrip() + "…"
         out.append(
             f"- [{r['id']}] depth={r['depth']} "
             f"{r['status']:25s} attempts={r['attempts']}"
             f" `{r['slug']}`"
         )
-        out.append(f"  `{st}`")
     out.append("")
     return out
 

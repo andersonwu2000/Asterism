@@ -278,11 +278,40 @@ def _q_decl(q: dict, cwd: Path, deny) -> "list[str]":
     if not rows:
         return [f"no declaration named {name!r} in this run's record. "
                 f"For a Mathlib name use `loogle`."]
+    # The FULL signature from the stub file, not the stored `statement`.
+    # `goals.statement` holds the pp-canonical CONCLUSION only, so a
+    # by_contra sub-goal renders as literally `False` — which is why the
+    # eager `## Active goals` section had used `goal_display_signature`
+    # since 2026-07-18. When that section went lazy (2026-08-10) this
+    # query became its replacement and, for one hour, gave back LESS than
+    # what it replaced: the exact goals whose signature matters most were
+    # the ones it flattened. Same helper, so the lazy path is equivalent
+    # to the eager one it retired rather than a cheaper imitation of it.
+    from ..agent import context as _ctx
+    # An EXACT hit answers alone. Substring matching is the fallback for
+    # a half-remembered name, but once the caller has typed the whole
+    # thing, attaching every near-miss is the CATALOG's old failure in a
+    # new place — the answer is in there somewhere, under two others.
+    # Measured: three matches on one query, ~1,000 characters each,
+    # because a full signature is a full signature.
+    exact = [r for r in rows if r["slug"] == name]
+    others = len(rows) - len(exact)
+    if exact:
+        rows, note = exact, (f"({others} other slug(s) contain {name!r} — "
+                             f"ask for one by its full name)" if others else "")
+    else:
+        note = ""
     out: "list[str]" = []
+    if note:
+        out.append(note)
     for r in rows:
         out.append(f"{r['slug']}  [{r['status']}]  {r['lean_path']}")
-        out += [f"    {ln}" for ln in
-                (r["statement"] or "").strip().splitlines()[:12]]
+        try:
+            sig = _ctx.goal_display_signature(
+                ws, str(r["slug"]), r["lean_path"], r["statement"])
+        except Exception:  # noqa: BLE001 — a missing stub falls back
+            sig = r["statement"] or ""
+        out += [f"    {ln}" for ln in (sig or "").strip().splitlines()[:16]]
     return out
 
 
