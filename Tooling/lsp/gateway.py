@@ -1038,6 +1038,91 @@ def _proved_sibling_import_lines(
             pass
 
 
+def _parity_for(
+    content: str, problem: str, workspace: "Path", inlined_slugs: "list[str]",
+    header: "dict",
+) -> "dict":
+    """Does the sandbox's verdict cover what the real build will see?
+
+    The two units are NOT the same object and never can be: the sandbox
+    INLINES a referenced sibling's stub so it can elaborate without that
+    sibling being built, while commit gives the sibling its own module and
+    an `import` line. So comparing unit digests would alarm on every call.
+    What must agree is narrower and checkable — every name the sandbox
+    resolved through an inlined stub has to be a name the real build can
+    resolve too:
+
+      exact       every inlined sibling is PROVED, and commit imports it.
+                  The sandbox saw the same declarations lake will.
+      conditional at least one inlined sibling is not proved yet, so the
+                  sandbox elaborated against `:= by sorry` and the real
+                  build will use whatever that goal eventually becomes.
+                  Legitimate and common (that is how a batch works) — but
+                  it is NOT the same green, and it must not render as one.
+      unresolved  an inlined sibling is neither proved nor a declared stub
+                  of this batch, and no commit import covers it. That is a
+                  framework defect, not the agent's: the probe answered a
+                  question the build was never going to be asked.
+
+    This is the handshake #179 needed. That bug hid for a week because
+    the divergence surfaced to the AGENT as `Unknown identifier`, which
+    reads as "my sibling does not exist" — 37 reports, several saying
+    plainly they could not tell that from "wrong approach". A named
+    parity verdict costs one field and moves the diagnosis to the side
+    that can act on it."""
+    if not inlined_slugs:
+        return {"state": "exact", "note": "no siblings inlined"}
+    imports = " ".join(header.get("imports") or ())
+    proved: "list[str]" = []
+    conditional: "list[str]" = []
+    unresolved: "list[str]" = []
+    db_path = workspace / "asterism.db"
+    statuses: "dict[str, str]" = {}
+    if db_path.exists():
+        try:
+            conn = db.connect(db_path)
+            try:
+                for slug in inlined_slugs:
+                    row = conn.execute(
+                        "SELECT status FROM goals WHERE problem = ? "
+                        "AND slug = ?", (problem, slug)).fetchone()
+                    if row is not None:
+                        statuses[slug] = str(row[0])
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 — parity must never break validate
+            statuses = {}
+    for slug in inlined_slugs:
+        st = statuses.get(slug)
+        if st == "proved":
+            proved.append(slug)
+        elif st is not None:
+            conditional.append(slug)
+        elif f"L_{slug}" in imports:
+            proved.append(slug)
+        else:
+            unresolved.append(slug)
+    if unresolved:
+        return {
+            "state": "unresolved",
+            "framework_parity_error": sorted(unresolved),
+            "note": ("the probe resolved these through an inlined stub, but "
+                     "the commit unit neither imports them nor knows them as "
+                     "goals — your mathematics was not judged against what "
+                     "will be built. Report this; it is not your error."),
+        }
+    if conditional:
+        return {
+            "state": "conditional",
+            "depends_on": sorted(conditional),
+            "note": ("elaborated against the DECLARED signature of these "
+                     "not-yet-proved siblings; the real build uses whatever "
+                     "they become. A clean result here is conditional on "
+                     "them proving as declared."),
+        }
+    return {"state": "exact", "proved_siblings": sorted(proved)}
+
+
 def _build_compilation_unit(
     content: str, problem: str, workspace: "Path", attempts_dir: "Path",
     extra_opens: "list[str]" = (),
@@ -2267,6 +2352,14 @@ def validate_file(content: str = "") -> str:
         "what the framework ADDS at commit; do not write these yourself. "
         "Imports already in your file are kept, and are absent here only "
         "because nothing needs adding")
+    # Does this green mean what a green usually means? The sandbox inlines
+    # sibling stubs; commit imports sibling MODULES. Where those two views
+    # can disagree, say so here rather than letting the disagreement reach
+    # the agent later disguised as `Unknown identifier` (#179 hid behind
+    # exactly that reading for a week, 37 reports).
+    response["parity"] = _parity_for(
+        content, meta.problem, meta.workspace, inlined_slugs,
+        response["commit_header"])
     # Submission mirror (#8 / P2): the commit-time citation + annotation gates,
     # surfaced here so a clean Lean elaboration that would still be bounced at
     # commit is flagged pre-commit. Separate from `diagnostics` (Lean) so the
