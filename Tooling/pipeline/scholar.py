@@ -94,11 +94,20 @@ def run_scholar(conn: sqlite3.Connection, *, problem: str,
     prompt_file = attempts_dir / "prompt.md"
     prompt_file.write_text(rendered, encoding="utf-8")
 
+    # Scholar's two commands became MCP tools when the shell closed
+    # (2026-08-10), so this spawn needs a tools config — it never had one,
+    # because `python -m Tooling.papers.…` reached them through Bash.
+    # Without it the prompt would name `paper_search` / `paper_fetch` to
+    # an agent holding no server at all: the role would go quiet rather
+    # than fail, which is the silent-capability-gap shape.
+    from . import write_tools_mcp_config as _write_tools_cfg
+    tools_cfg = _write_tools_cfg(attempts_dir, workspace)
     agent.spawn_llm(
         kind="scholar", prompt_path=prompt_file,
         problem_dir=db.problem_dir(workspace, problem),
         attempts_dir=attempts_dir,
         session_id=str(uuid.uuid4()),
+        mcp_config_path=tools_cfg,
     )
 
     after = db.paper_bindings(conn, problem)

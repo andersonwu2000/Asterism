@@ -792,9 +792,12 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
         # this kind's ONLY extra surface — the LLM judges, the commands
         # touch the network (search = open metadata APIs; fetch =
         # whitelisted hosts + caps, see Tooling/papers/fetch.py).
-        *(["Bash(python -m Tooling.papers.search *)",
-           "Bash(python -m Tooling.papers.fetch *)"]
-          if req.kind == "scholar" else []),
+        # (Scholar's two curated commands used to be granted here as
+        # `Bash(python -m Tooling.papers.… *)`. They are MCP tools now —
+        # `paper_search` / `paper_fetch` — which is what made closing
+        # Bash possible without decapitating that role. A trailing `*`
+        # in a Bash pattern was also a write channel, the way
+        # `json.tool <in> <out>` was.)
         # Read scope: this problem's dir, the agent's sandbox, and
         # only `*.lean` under Lake-packages — keeps `.olean` binary
         # blobs out of agent context (an accidental Read on one
@@ -1201,6 +1204,20 @@ class ClaudeCliProvider:
             # the Ingest snapshot's Manifest history (§3-1b) is the
             # any-channel detection backstop.
             "--disallowedTools",
+            # The shell closes here (2026-08-10). `--allowedTools` never
+            # shut it: that list is ADDITIVE pre-approval, and with
+            # `--permission-mode acceptEdits` a headless spawn ran Bash
+            # whether or not a pattern named it — measured, twice. Once
+            # by transcript (a `sed … > D:\…` whose unquoted redirect
+            # bash flattened into the problem dir, four days after the
+            # shell was believed closed) and once by probe: the same
+            # prompt runs `echo` with no deny and answers "I don't have
+            # a shell execution tool" with it.
+            # What replaced the 33k measured calls: `inspect` for the
+            # ~91% that was reading, `compute` for the ~3% that was
+            # arithmetic, `paper_search`/`paper_fetch` for the Scholar's
+            # two curated commands. spawn_guard's refusal names them.
+            "Bash",
             "Write(**/Manifest.md)", "Edit(**/Manifest.md)",
             "Write(**/Defs.lean)", "Edit(**/Defs.lean)",
             "Write(**/Root.lean)", "Edit(**/Root.lean)",

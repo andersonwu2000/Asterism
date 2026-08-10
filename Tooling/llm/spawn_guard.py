@@ -234,31 +234,18 @@ def check(tool_name: str, tool_input: dict, cwd: str | None) -> str | None:
                     "directory and .attempts workspace.")
         return None
     if tool_name == "Bash":
-        home = Path.home()
-        for m in _BASH_TOKEN.finditer(str(tool_input.get("command", ""))):
-            path = _normalize(m.group(0), cwd)
-            if path is None:
-                continue
-            # A `cat docs/internal/STATUS.md` reads exactly what the
-            # file-tool fence just refused. Fencing one channel and not
-            # the other is how the write fence was almost lost.
-            denied = _read_denied("Bash", m.group(0), path, droots)
-            if denied:
-                return denied
-            if not _under(path, home):
-                continue
-            # Exempt the FULL whitelist, not just the home subtrees: on
-            # hosts where the repo itself lives under home (Linux CI,
-            # any ~/src checkout) repo paths must never deny.
-            if not any(_under(path, root) for root in wl):
-                return (
-                    f"Bash command references {m.group(0)}, which is "
-                    "under the user's home directory. Home is outside "
-                    "the problem workspace (only the Lean toolchain "
-                    "~/.elan and your temp dir are allowed). Work with "
-                    "the files inside your problem directory and "
-                    ".attempts workspace.")
-        return None
+        # Belt to `--disallowedTools Bash`'s braces (2026-08-10). The
+        # flag is the control; this is what an agent READS if a Bash call
+        # ever reaches the hook again — a provider change, a legacy
+        # spawn, an operator override. A gate message has to carry the
+        # way out, so it names the replacements rather than just saying
+        # no.
+        return (
+            "Bash is not available. Reading, searching and listing go "
+            "through `inspect` — one call can carry several queries, e.g. "
+            '[{"grep": "Foo", "in": "proofs/*.lean", "context": 3}, '
+            '{"decl": "foo"}]. Running a calculation goes through '
+            "`compute`. Loogle and JSON validation have their own tools.")
     return None
 
 

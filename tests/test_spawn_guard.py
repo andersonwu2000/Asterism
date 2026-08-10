@@ -75,35 +75,22 @@ def test_file_tools_deny_message_teaches() -> None:
     assert "workspace" in reason and "problem" in reason
 
 
-# ---------- Bash: home-directory guard ----------
+# ---------- Bash: closed ----------
 
-def test_bash_denies_home_references_all_spellings() -> None:
-    home_fwd = str(HOME).replace("\\", "/")
-    cmds = [
-        f'cat "{_mem()}"',
-        'ls ~/.claude/projects/',
-        f'cd /d/Asterism && ls x && cat "{home_fwd}/.claude/projects/p/memory/f.md"',
-    ]
-    if os.name == "nt":
-        # POSIX drive spelling of THIS home (/c/Users/...) — a
-        # Windows-host rewrite; on POSIX the plain absolute form above
-        # already covers the /home/... spelling
-        cmds.append('grep -n x "/' + str(HOME)[0].lower()
-                    + str(HOME)[2:].replace("\\", "/")
-                    + '/.claude/projects/D--A/memory/MEMORY.md"')
-    for cmd in cmds:
-        assert check("Bash", {"command": cmd}, CWD), cmd
-
-
-def test_bash_allows_toolchain_interpreter_and_non_home() -> None:
-    for cmd in (
-        "timeout 580 ~/.elan/bin/lake env lean Problems/p/proofs/x.lean",
-        str(HOME / "AppData" / "Local" / "Programs" / "Python" / "python.exe") + " run.py",
-        'grep -n "s:\\s*" file.lean',            # regex, not a drive path
-        "rg -n thm D:/.lake/packages/mathlib",   # hallucinated non-home root: OS will fail it
-        f"cd {REPO_ROOT} && git log --oneline -3",
-    ):
-        assert check("Bash", {"command": cmd}, CWD) is None, cmd
+def test_bash_is_refused_and_the_refusal_teaches() -> None:
+    """The home-directory guard retired with its premise (rule 13:
+    a mechanism goes when the thing it guarded is gone, not when it
+    stops firing). Bash is denied at the flag — `--disallowedTools Bash`,
+    probe-verified 2026-08-10 — so the hook no longer sorts commands into
+    allowed and denied. What it still owes an agent that somehow reaches
+    it is the way out, which is the whole point of a gate message."""
+    for cmd in ("ls -la",
+                "cat ~/.claude/projects/p/memory/MEMORY.md",
+                "timeout 580 ~/.elan/bin/lake env lean x.lean",
+                "python -m Tooling.knowledge.loogle 'Nat.add_comm'"):
+        reason = check("Bash", {"command": cmd}, CWD)
+        assert reason, cmd
+        assert "inspect" in reason and "compute" in reason, cmd
 
 
 # ---------- write family: per-spawn whitelist (task #128) ----------

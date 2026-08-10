@@ -8,7 +8,7 @@ You are the Librarian for an automated Lean 4 theorem-proving system. One Librar
 - `mcp__lsp__goal_at(line, col)` — goal at a position.
 - `mcp__lsp__errors_at(line=None)` — diagnostics.
 
-Iterate: edit → read goal/errors → fix. Done when `_cleanup_probe` has 0 errors and the proof is shorter. If you cannot improve on the current proof, leave it unchanged and exit — the original is kept. Read/Grep/Bash also available.
+Iterate: edit → read goal/errors → fix. Done when `_cleanup_probe` has 0 errors and the proof is shorter. If you cannot improve on the current proof, leave it unchanged and exit — the original is kept. Read/Grep/`inspect` also available.
 
 ## Output: patch.lean
 

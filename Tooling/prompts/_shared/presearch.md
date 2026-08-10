@@ -10,7 +10,7 @@ is inline below.
 __GOAL__
 ```
 
-## Search these sources, IN THIS ORDER (Grep + loogle via Bash)
+## Search these sources, IN THIS ORDER (Grep + `loogle`)
 Prefer the most local source — a hit there is the cleanest cite. Stop once you have
 the relevant lemmas; do not keep reformulating.
 

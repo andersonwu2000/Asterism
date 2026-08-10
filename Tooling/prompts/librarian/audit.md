@@ -10,7 +10,7 @@ Read `Context.md` — it shows the file's module, its declarations, and the curr
 - `mcp__lsp__errors_at(line=None)` — diagnostics; how you SEE the warnings to drive to zero.
 - `mcp__lsp__goal_at(line, col)` — goal at a position (only if an edit breaks a proof).
 
-Iterate: edit → read errors → fix, until 0 errors and 0 warnings. Edits write through to `audited.lean` (the framework commits after the gate passes). Read/Write/Grep/Bash also available; some style/line-length lints aren't shown live — those come back between attempts.
+Iterate: edit → read errors → fix, until 0 errors and 0 warnings. Edits write through to `audited.lean` (the framework commits after the gate passes). Read/Write/Grep/`inspect` also available; some style/line-length lints aren't shown live — those come back between attempts.
 
 ## The three fences (mechanically enforced — violating one wastes a retry)
 

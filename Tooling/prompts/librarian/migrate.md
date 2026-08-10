@@ -19,7 +19,7 @@ When porting, drop `Problems.<problem>.Defs` deps — cite the imported sibling 
 - `mcp__lsp__goal_at(line, col)` — goal at a position.
 - `mcp__lsp__errors_at(line=None)` — diagnostics.
 
-Iterate: edit → read goal/errors → fix. Done when your declaration has 0 errors and no `sorry`. Read/Grep/Bash also available.
+Iterate: edit → read goal/errors → fix. Done when your declaration has 0 errors and no `sorry`. Read/Grep/`inspect` also available.
 
 ## Output: patch.lean
 

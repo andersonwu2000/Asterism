@@ -20,6 +20,14 @@ from pathlib import Path
 import pytest
 
 
+def _tool_names() -> "set[str]":
+    """The server's actual tool list."""
+    import asyncio
+
+    from Tooling.knowledge import mcp_tools
+    return {t.name for t in asyncio.run(mcp_tools.mcp.list_tools())}
+
+
 def test_server_exposes_exactly_the_intended_tools() -> None:
     """The tool list IS the whitelist. Adding one is a deliberate act,
     so it fails here first — which is the difference between this and a
@@ -126,6 +134,12 @@ def test_every_prompt_naming_a_tool_gets_a_config() -> None:
         "adversary": ["Tooling/pipeline/adversary.py"],
         "librarian": ["Tooling/pipeline/librarian/run.py"],
         "formalizer": ["Tooling/pipeline/_retry.py"],
+        # Added when the shell closed: scholar's two commands became MCP
+        # tools, and its spawn had never carried a config because
+        # `python -m Tooling.papers.…` reached them through Bash. The
+        # test missed it for exactly the reason below — it matched two
+        # hardcoded tool names, not the server's actual list.
+        "scholar": ["Tooling/pipeline/scholar.py"],
         "_shared": ["Tooling/pipeline/_presearch.py",
                     "Tooling/pipeline/_retry.py"],
     }
@@ -134,7 +148,10 @@ def test_every_prompt_naming_a_tool_gets_a_config() -> None:
         names = " ".join(
             p.read_text(encoding="utf-8")
             for p in (prompts / sub).glob("*.md"))
-        if "loogle(" not in names and "validate_json(" not in names:
+        # Match against the server's REAL tool list, not two names
+        # someone remembered to add here. A whitelist test that
+        # enumerates by hand is the thing it is supposed to prevent.
+        if not any(f"{tool}(" in names for tool in _tool_names()):
             continue
         if not any("mcp_config_path=" in (repo / m).read_text(encoding="utf-8")
                    for m in modules):
@@ -143,32 +160,44 @@ def test_every_prompt_naming_a_tool_gets_a_config() -> None:
     assert not missing, "\n  ".join(missing)
 
 
-def test_no_prompt_names_a_shell_command_the_agent_cannot_run() -> None:
-    """The other direction of the pairing, and the one that was missed.
+def test_no_prompt_names_a_shell_command_at_all() -> None:
+    """There is no shell to name any more (2026-08-10).
 
-    When `json.tool` left the Bash allowlist the prompts kept telling
-    agents to run `python -m json.tool <file>` — four of them. The
-    existing pin only checked that a prompt naming an MCP tool gets a
-    config; nothing checked that a prompt naming a SHELL command still
-    has a shell. Every `python -m X` a prompt names must still be
-    granted somewhere in the claude allowlist (scholar's two curated
-    network commands are the only survivors)."""
+    The earlier version of this pin asked whether every `python -m X` a
+    prompt named was still granted somewhere in the claude allowlist —
+    the right question while a curated shell existed. `--disallowedTools
+    Bash` ended that, so the question becomes absolute: a prompt that
+    tells an agent to run anything is telling it to do something it
+    cannot do, and the agent will spend a turn discovering that.
+    """
     import re
 
     repo = Path(__file__).resolve().parents[1]
-    src = (repo / "Tooling" / "llm" / "claude_cli.py").read_text(
-        encoding="utf-8")
-    granted = set(re.findall(r"Bash\(python -m ([\w.]+)", src))
-
     named: dict[str, str] = {}
     for p in (repo / "Tooling" / "prompts").rglob("*.md"):
-        for mod in re.findall(r"python -m ([\w.]+)",
-                              p.read_text(encoding="utf-8")):
+        text = p.read_text(encoding="utf-8")
+        for mod in re.findall(r"python -m ([\w.]+)", text):
             named.setdefault(mod, p.name)
-    ungranted = {m: f for m, f in named.items() if m not in granted}
-    assert not ungranted, (
-        "prompts name shell commands no allowlist grants: "
-        + ", ".join(f"{m} ({f})" for m, f in sorted(ungranted.items())))
+    assert not named, (
+        "prompts still name shell commands, but Bash is denied: "
+        + ", ".join(f"{m} ({f})" for m, f in sorted(named.items()))
+        + " — point them at the MCP tool instead")
+
+
+def test_the_bash_deny_and_its_replacement_ship_together() -> None:
+    """Closing a channel without naming the replacement is how a gate
+    becomes a wall. The deny is in the spawn flags; the way out is in
+    spawn_guard's message; both must exist."""
+    repo = Path(__file__).resolve().parents[1]
+    cli = (repo / "Tooling" / "llm" / "claude_cli.py").read_text(
+        encoding="utf-8")
+    guard = (repo / "Tooling" / "llm" / "spawn_guard.py").read_text(
+        encoding="utf-8")
+    deny = cli[cli.index('"--disallowedTools",'):]
+    assert '"Bash",' in deny[:2000], "the blanket Bash deny is gone"
+    assert "Bash is not available" in guard
+    for tool in ("inspect", "compute"):
+        assert tool in guard, tool
 
 
 def test_judge_contract_rides_the_projection_not_the_prompt() -> None:

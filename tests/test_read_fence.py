@@ -123,17 +123,21 @@ def test_guard_denies_a_search_rooted_above_a_private_subtree(
     assert reason and "would search" in reason
 
 
-def test_guard_denies_the_same_read_through_bash(
+def test_the_bash_route_to_a_private_file_is_closed_outright(
     workspace: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Fencing the file tools and leaving `cat` open is the shape that
-    nearly cost the write fence."""
+    nearly cost the write fence. It is now closed a level up — Bash is
+    denied entirely (2026-08-10) — so the assertion moved from "this
+    command is refused for reading a private path" to "no command runs
+    at all". Strictly stronger, and it no longer depends on the token
+    scanner seeing an absolute path."""
     monkeypatch.setenv(spawn_guard.READ_DENY_ROOTS_ENV,
                        str(workspace / "docs"))
     target = workspace / "docs" / "internal" / "S.md"
-    reason = spawn_guard.check("Bash", {"command": f"cat {target}"},
-                               str(workspace))
-    assert reason and "operator-private" in reason
+    for cmd in (f"cat {target}", "cat ../../docs/internal/S.md"):
+        reason = spawn_guard.check("Bash", {"command": cmd}, str(workspace))
+        assert reason and "inspect" in reason, cmd
 
 
 def test_guard_allows_the_spawns_own_files(
