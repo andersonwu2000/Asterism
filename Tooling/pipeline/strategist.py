@@ -141,35 +141,17 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
             "Delegate) — thinking runs inside the wake; the "
             "commit is how the argument touches the machine. (Endgame "
             "batches carrying MarkDeliverable/Ingest are exempt.)")
-    # P2 — every Inject brief names its Roadmap entry. Presence of the
-    # `Roadmap:` line is a structured signal and stays mechanical;
-    # whether the cited phrase truly corresponds to a Roadmap entry is
-    # a SEMANTIC question and belongs to the Adversary (criteria 1/4).
-    # The old plain-substring match against the free-prose Roadmap was
-    # a gate detecting free text — the design rules forbid exactly that
-    # — and it bounced whole batches five times over phrasing
-    # (2026-08-03 feedback #4, operator ruling: Roadmap stays pure NL).
-    missing: list[str] = []      # briefs with no `Roadmap:` line at all
-    n = 0
-    for d in decisions:
-        if d.kind != "Inject":
-            continue
-        n += 1
-        label = f"Inject #{n}" + (f" (target `{d.target_id}`)"
-                                  if getattr(d, "target_id", None) else "")
-        tag = ""
-        for line in str(getattr(d, "brief", "") or "").splitlines():
-            if line.strip().lower().startswith("roadmap:"):
-                tag = line.split(":", 1)[1].strip()
-                break
-        if not tag:
-            missing.append(label)
-    if missing:
-        return None, None, (
-            "these Inject briefs carry no `Roadmap: <entry phrase>` "
-            "line: " + ", ".join(missing)
-            + ". Every experiment names the Roadmap entry it tests — "
-              "add the line to each brief listed above.")
+    # The `Roadmap:` presence check is GONE (2026-08-11). Its history is
+    # the argument: it began as a substring match of the cited phrase
+    # against the free-prose Roadmap — a gate detecting free text, which
+    # the design rules forbid — and it bounced whole batches five times
+    # over phrasing (2026-08-03 feedback #4, operator ruling: the Roadmap
+    # stays pure NL). What survived that narrowing checked only that SOME
+    # line began `Roadmap:`, which `Roadmap: x` satisfies. It could not
+    # fail a batch that was actually wrong and it could fail one that was
+    # right, while remaining the last mechanical reader of a field the
+    # Strategist writes as prose. Whether an experiment tests the entry
+    # it claims is the Adversary's, under criteria 1/4, and always was.
     return body, sections, None
 
 

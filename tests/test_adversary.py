@@ -111,27 +111,27 @@ def test_package_requires_file_and_experiment(tmp_path: Path):
     body, sections, err = strategist.verify_proposal_package(
         [_d("Delegate", brief="settle the sub-claim")], tmp_path)
     assert err is None
-    # Inject briefs must carry a `Roadmap:` line (P2 presence check).
-    body, sections, err = strategist.verify_proposal_package(
-        [_d("Inject", brief="## Need\nx")], tmp_path)
-    assert body is None and "Roadmap:" in err
-    # The line's CONTENT is the Adversary's semantic call — the old
-    # substring match against the free-prose Roadmap is retired
-    # (2026-08-03 ruling: the Roadmap stays pure NL).
-    body, sections, err = strategist.verify_proposal_package(
-        [_d("Inject", brief="Roadmap: no such entry\n## Need\nx")],
-        tmp_path)
-    assert err is None
-    body, sections, err = strategist.verify_proposal_package(
-        [_d("Inject", brief="Roadmap: the brick\n## Need\nx")], tmp_path)
-    assert err is None
+    # The brief is prose the verifier does not read at all (2026-08-11):
+    # with or without a `Roadmap:` line, with a phrase that matches the
+    # Roadmap or one that does not, the package passes. Whether the
+    # experiment tests the entry it claims is the Adversary's call under
+    # criteria 1/4.
+    for brief in ("## Need\nx",
+                  "Roadmap: no such entry\n## Need\nx",
+                  "Roadmap: the brick\n## Need\nx"):
+        body, sections, err = strategist.verify_proposal_package(
+            [_d("Inject", brief=brief)], tmp_path)
+        assert err is None, f"verifier read the brief: {brief!r} -> {err}"
 
 
-def test_roadmap_tag_rejection_lists_every_offender(tmp_path: Path):
-    """07-29 feedback: report ALL offenders in one message, not one per
-    round-trip. Only MISSING lines offend now — a phrase that doesn't
-    substring-match the Roadmap is the Adversary's semantic call, not a
-    parse rejection (2026-08-03 ruling: the Roadmap stays pure NL)."""
+def test_the_verifier_no_longer_reads_the_brief_at_all(tmp_path: Path):
+    """The last mechanical reader of the Inject brief is gone
+    (2026-08-11). It began as a substring match of the cited phrase
+    against the free-prose Roadmap — a gate detecting free text — and
+    bounced whole batches five times over phrasing (2026-08-03 feedback
+    #4). Narrowed to "some line begins `Roadmap:`", it could not fail a
+    wrong batch and could still fail a right one. The correspondence is
+    the Adversary's, under criteria 1/4."""
     (tmp_path / "proposal.md").write_text(
         "# Step\n## Argument\nWhy.\n## Proof\nHolds.\n"
         "## Roadmap\n1. **the brick** — brief-ready\n"
@@ -140,9 +140,7 @@ def test_roadmap_tag_rejection_lists_every_offender(tmp_path: Path):
         [_d("Inject", brief="Roadmap: the brick, then some prose\n## Need\nx"),
          _d("Inject", target_id="g7", brief="## Need\ny"),
          _d("Inject", brief="## Need\nz")], tmp_path)
-    assert body is None
-    assert "target `g7`" in err and "Inject #3" in err   # both tagless ones
-    assert "the brick, then some prose" not in err       # phrase not policed
+    assert err is None and body is not None
 
 
 # ------------------------------------------------- verdict contract

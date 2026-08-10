@@ -370,17 +370,21 @@ def test_roadmap_tag_content_is_never_string_matched(tmp_path):
     assert err is None, f"phrase mismatch must not bounce a batch: {err}"
 
 
-def test_roadmap_tag_line_is_still_required(tmp_path):
-    """Presence of the `Roadmap:` line is a structured signal and stays
-    mechanical: an Inject brief without one is rejected, and the
-    message says what to add."""
+def test_the_roadmap_tag_line_is_no_longer_required(tmp_path):
+    """Retired 2026-08-11. "Some line begins `Roadmap:`" was satisfied by
+    `Roadmap: x`: it could not fail a batch that was wrong, and it could
+    still fail one that was right, while being the last mechanical
+    reader of a field the Strategist writes as prose. The correspondence
+    it stood in for is the Adversary's, under criteria 1/4 — where the
+    2026-08-03 ruling ("the Roadmap stays pure NL") already put the
+    content half of the same question."""
     from types import SimpleNamespace
     from Tooling.pipeline import strategist
     (tmp_path / "proposal.md").write_text(_body(), encoding="utf-8")
     d = SimpleNamespace(kind="Inject", target_id=None,
                         brief="## Need\nx")
     _b, _s, err = strategist.verify_proposal_package([d], tmp_path)
-    assert err is not None and "Roadmap: <entry phrase>" in err
+    assert err is None
 
 
 # --------------------------------------------- Conventions (RS-B, 08-03)
