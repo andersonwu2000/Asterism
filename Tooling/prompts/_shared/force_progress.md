@@ -5,4 +5,6 @@ Constraints:
   - Do NOT call MCP / Bash / Edit / Write on any file other than `__ATTEMPTS_DIR__/_progress.md`.
   - Single Write: `__ATTEMPTS_DIR__/_progress.md` then exit.
 
-In ≤200 words capture: (1) the shape of decomposition / proof the trapped agent was converging to, (2) the specific blocker that prevented shipping, (3) the most promising alternative direction (≤60 words). This file is the only thing the next dispatch on this goal will see from the current attempt — make it concrete, name the Mathlib lemmas or sub-shapes you'd try next.
+Open with a `# ` title line: the state and the blocker in one sentence. Once this attempt is no longer the most recent, that line is all the next worker sees of your note, so make it stand alone.
+
+Then, in ≤200 words: (1) the shape of decomposition / proof you were converging to, (2) the specific blocker that prevented shipping, (3) the most promising alternative direction (≤60 words). Name the Mathlib lemmas or sub-shapes you'd try next.

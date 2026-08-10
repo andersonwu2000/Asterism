@@ -208,6 +208,14 @@ def smart_truncate_stderr(stderr: str, *, budget: int = 2000,
     if len(important_text) >= budget:
         return important_text[:budget]
 
+    # A trace head that the reordered lines already contain is not
+    # context, it is the same text twice. It happens whenever the whole
+    # detail is "important" — which is the normal shape of a salvage
+    # line, as opposed to the lake dump this function was written for
+    # (g7491's attempt blocks carried their timeout autopsy verbatim
+    # twice, once as the reorder and once as the head).
+    if stderr.strip() and stderr.strip() in important_text:
+        return important_text
     sep = "\n--- trace head ---\n"
     head_budget = budget - len(important_text) - len(sep)
     if head_budget <= 0:

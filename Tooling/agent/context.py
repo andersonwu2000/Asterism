@@ -263,6 +263,9 @@ def _section_manifest_notes(mfst: manifest.Manifest) -> list[str]:
 # Failure digest helpers (used by Context summary + tests)
 # ---------------------------------------------------------------------
 
+#: The framework's own exit-code preamble on a spawn autopsy
+#: (`agent rc=124` / `rc=124`) — never the reason for anything.
+_RC_PREAMBLE_RE = re.compile(r"^(agent\s+)?rc=-?\d+\s*$", re.IGNORECASE)
 _LEAN_PATH_DUMP_RE = re.compile(r"LEAN_PATH=|lake/packages/|lake/build/")
 _FIRST_ERROR_RE = re.compile(
     r"^.*?\berror\b\s*:?\s*(.*)$", re.IGNORECASE)
@@ -280,7 +283,19 @@ def _digest_failure(failure_reason: str, failure_detail: str) -> str:
         return ""
 
     if failure_reason != "lake_build_error":
-        return failure_detail.strip().splitlines()[0][:160]
+        # Skip our own exit-code preamble. On a timeout the first two
+        # lines are `agent rc=124` / `rc=124` and the third is the
+        # salvage verdict — which is the whole story (did the spawn die
+        # holding a complete proof, a missing comment header, or a
+        # gateway 404?). Returning line one made every timeout read
+        # identically. These prefixes are framework-emitted, not agent
+        # prose: matching our own format is reading structure.
+        for line in failure_detail.strip().splitlines():
+            s = line.strip()
+            if not s or _RC_PREAMBLE_RE.match(s):
+                continue
+            return s[:200]
+        return ""
 
     for line in failure_detail.splitlines():
         s = line.strip()
@@ -807,6 +822,44 @@ def _section_library_available(conn, mfst) -> list[str]:
     return out
 
 
+def _note_title(note: str) -> str:
+    """The note's own first non-blank line, as its label.
+
+    Not an extraction: `force_progress.md` asks for a title line first,
+    and this reads the line the writer put first — the same convention
+    `formalize.md` already uses for the commit header. When a note
+    arrives without one, its opening line is still the best label
+    available, and a bad label costs a pointer follow, not a fact."""
+    for ln in str(note or "").splitlines():
+        s = ln.strip().lstrip("#").strip()
+        if s:
+            return s[:120]
+    return ""
+
+
+def _render_attempt_digest(idx: int, dead, *, note_in_full: bool) -> str:
+    """One attempt as Context.md carries it: what failed, in one line,
+    plus the parting note for the most recent attempt only. The full
+    autopsy — raw failure_detail, PROPOSAL.md, every note — is in
+    `PAST_DIRECT_ATTEMPTS.md`, which the umbrella header names."""
+    out = [f"### Attempt {idx} ({str(dead['pipeline_id'])[:12]}): "
+           f"{dead['failure_reason']}"]
+    digest = _digest_failure(str(dead["failure_reason"] or ""),
+                            str(dead["failure_detail"] or ""))
+    if digest:
+        out += ["", digest]
+    note = context_files._agent_note_from_artifacts(dead)
+    if note:
+        if note_in_full:
+            out += ["", "Agent note (its own `_progress.md`, written as "
+                    "the attempt ended):", "```", note, "```"]
+        else:
+            title = _note_title(note)
+            out += ["", f"Agent note: {title} — in "
+                    f"`{context_files.PAST_DIRECT_ATTEMPTS_FILENAME}`"]
+    return "\n".join(out)
+
+
 def _section_goal_history(*,
                           direct_events: list,
                           verify_events: list,
@@ -859,8 +912,24 @@ def _section_goal_history(*,
                 "decomposition to address them."
             )
             sub.append("")
+        # Inline gets the DIGEST; the full block goes to the companion
+        # file. Both were already specified that way — `write_past_attempts`
+        # tells its reader "Context.md shows a 1-line digest per attempt",
+        # and `_agent_note_from_artifacts` says it renders "in this LAZY
+        # file only" — but one renderer served both audiences, so every
+        # attempt shipped its whole autopsy AND its whole parting note
+        # inline. Measured on g7491 (5 attempts): 10,527 B, most of it a
+        # verbatim second copy of the companion file.
+        #
+        # The newest attempt keeps its note in full: that one is the
+        # hand-off ("patch.lean is ~525 lines and structurally complete;
+        # here is the uniform fix"), and it is the reason the next spawn
+        # does not start over. Older notes collapse to their own first
+        # line — the title the postmortem prompt asks for — plus the
+        # pointer. A title is not a summary the framework invented; it is
+        # what the writer put first.
         for i, d in enumerate(direct_events, 1):
-            sub.append(context_files.render_attempt_block(i, d).rstrip())
+            sub.append(_render_attempt_digest(i, d, note_in_full=(i == 1)))
             sub.append("")
         parts.append(sub)
 

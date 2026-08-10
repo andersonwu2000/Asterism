@@ -446,12 +446,16 @@ def test_compile_context_writes_companion_past_attempts(
 def test_compile_context_size_with_many_attempts_under_smart_truncate(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """F43 inlines the smart-truncated PAST_DIRECT_ATTEMPTS content into
-    Context.md. Verify two things:
-      (a) Smart-truncate (F30 + F32) caps each attempt block — even
-          with 5 attempts each carrying multi-KB of LEAN_PATH garbage,
-          Context.md stays well below the pre-F26 raw blob (~15KB).
-      (b) The companion file still mirrors the same content."""
+    """Context.md carries a DIGEST per attempt; the companion file
+    carries the autopsies. That split is what both surfaces have always
+    claimed — `write_past_attempts` tells its reader "Context.md shows a
+    1-line digest per attempt" — but one renderer served both audiences
+    until 2026-08-11, so each attempt shipped twice (measured on the
+    live tree, g7491: 10,527 B of goal history, 5 attempts).
+
+    The invariant is the SPLIT, not a byte floor: every attempt is
+    accounted for inline, its error is named, and the bulk lives in the
+    file the section header points at."""
     gid = _seed_goal(conn)
     big_stderr_template = (
         "✖ [N/N] Building x\n"
@@ -474,15 +478,74 @@ def test_compile_context_size_with_many_attempts_under_smart_truncate(
     out = compile_context(conn, goal=goal,
                           mfst=Manifest(problem="p", statement="T"),
                           attempts_dir=attempts_dir)
-    ctx_size = out.stat().st_size
-    past_size = (attempts_dir / "PAST_DIRECT_ATTEMPTS.md").stat().st_size
+    ctx_text = out.read_text(encoding="utf-8")
+    past_text = (attempts_dir / "PAST_DIRECT_ATTEMPTS.md").read_text(
+        encoding="utf-8")
 
-    # F43: Context.md grew to fit the inlined content — but smart_truncate
-    # (4KB per block) keeps it bounded well under the pre-F26 ~15KB raw blob.
-    assert ctx_size < 30000, f"Context.md too big: {ctx_size}B"
-    assert ctx_size > 3000, f"Context.md too small — likely missing content: {ctx_size}B"
-    # Companion file still written for forensics
-    assert past_size > 3000
+    # Every attempt is accounted for inline, and named by what failed.
+    assert ctx_text.count("### Attempt ") == 5
+    for i in range(5):
+        assert f"Type mismatch line {i}" in ctx_text
+    # The bulk stays in the companion file the header points at, and the
+    # inline surface is a fraction of it — the whole point of the split.
+    assert len(past_text) > 3 * len(ctx_text)
+    assert "LEAN_PATH=" not in ctx_text
+    # The full proposal text is companion-only.
+    assert "y" * 1000 in past_text
+    assert "y" * 1000 not in ctx_text
+
+
+def test_only_the_newest_attempts_note_rides_inline(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """The most recent note is the hand-off — it names the blocker the
+    next spawn picks up from, so it rides in full. Older notes collapse
+    to their own title line plus the pointer: keeping every note inline
+    replayed the whole failure history verbatim on every spawn, forever
+    (g7491 ran five attempts). The title is the writer's own first line,
+    which `force_progress.md` asks for."""
+    import json
+    gid = _seed_goal(conn)
+    for i in range(3):
+        pid = f"pid-note-{i:02d}"
+        _record_pipeline(conn, pid)
+        db.record_dead_attempt(
+            conn, target_id=gid, target_kind="Goal", pipeline_id=pid,
+            failure_reason="agent_timeout",
+            failure_detail=f"agent rc=124\nrc=124\ntimed out on step {i}",
+            artifacts=json.dumps({"_progress.md":
+                                  f"# blocked on step {i}\n\nbody {i} "
+                                  + "z" * 400}))
+    attempts_dir = tmp_path / ".attempts" / "pid-current"
+    attempts_dir.mkdir(parents=True)
+    out = compile_context(conn, goal=db.get_goal(conn, gid),
+                          mfst=Manifest(problem="p", statement="T"),
+                          attempts_dir=attempts_dir)
+    text = out.read_text(encoding="utf-8")
+
+    newest = "z" * 400
+    assert text.count(newest) == 1          # exactly one note body inline
+    # …and every attempt is still named, by its title and its verdict.
+    for i in range(3):
+        assert f"blocked on step {i}" in text
+        assert f"timed out on step {i}" in text
+    assert "PAST_DIRECT_ATTEMPTS.md" in text
+    # The framework's own rc preamble is never the digest — every
+    # timeout would read identically if it were.
+    assert "\nagent rc=124\n" not in text
+
+
+def test_smart_truncate_does_not_print_the_same_detail_twice(
+) -> None:
+    """`force_reorder` appends a trace head for context. When the whole
+    detail is already "important", that head IS the reordered text —
+    the attempt blocks carried their timeout autopsy verbatim twice."""
+    from Tooling.quality.diagnostics import smart_truncate_stderr
+    detail = ("error: build failed on Foo.lean\n"
+              "error: unknown identifier bar")
+    out = smart_truncate_stderr(detail, budget=4000, force_reorder=True)
+    assert out.count("unknown identifier bar") == 1
+    assert "--- trace head ---" not in out
 
 
 def test_compile_context_no_companion_when_no_history(

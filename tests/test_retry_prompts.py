@@ -47,9 +47,12 @@ def test_force_progress_template_renders(tmp_path):
         "You are a fresh session brought in only to write a checkpoint "
         "note. NOTE.")
     assert f"Do NOT modify `{tmp_path}/patch.lean`." in out
+    # The title line is load-bearing downstream: once this attempt is no
+    # longer the most recent, `context._render_attempt_digest` shows that
+    # line alone in place of the note (2026-08-11).
+    assert "Open with a `# ` title line" in out
     assert out.endswith(
-        "make it concrete, name the Mathlib lemmas or sub-shapes you'd "
-        "try next.")
+        "Name the Mathlib lemmas or sub-shapes you'd try next.")
     assert "__" not in out
 
 
