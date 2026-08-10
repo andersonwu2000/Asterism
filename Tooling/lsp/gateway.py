@@ -1329,7 +1329,10 @@ def _resync_buffer_from_disk(meta: "SessionMetadata") -> "str | None":
 
 
 _SCOPE_OPEN_RE = re.compile(
-    r"^\s*(?:noncomputable\s+)?(?:namespace|section)\b")
+    # `mutual` is `end`-closed too. Without it a mutual block's `end`
+    # counted as a closer with no opener and the balance went negative —
+    # a false "one `end` too many" on a correct file (2026-08-10).
+    r"^\s*(?:noncomputable\s+)?(?:namespace|section|mutual)\b")
 _SCOPE_END_RE = re.compile(r"^\s*end\b")
 
 
