@@ -1215,19 +1215,37 @@ def _backward_parse_and_commit(
                 rel_path=scratch_dest.relative_to(workspace).as_posix(),
                 owner_goal_id=None)
 
-        # Inject Defs.lean's file-level opens (incl `open Library.*`) — Lean's
-        # `import` doesn't propagate opens, so a leaf-bypass patch that cites a
-        # Library decl by its bare (opened) name builds only if the committed
-        # strategy file replays Defs's opens. validate_file already injects them
-        # (gateway `_merge_opens`), so without this the probe green-lit a bare
-        # Library cite that lake then rejected `Unknown identifier`
-        # (currents_boundary_zero 2026-06-28). The decomposition path below
-        # already does this; the leaf-bypass path was the gap.
-        _place_unowned(
-            conn, workspace, scratch_dest,
-            manifest.inject_defs_opens(
-                patches[0].read_text(encoding="utf-8"),
-                problem=goal["problem"], workspace=workspace))
+        # Normalize through the SAME `assemble_for_commit` every other
+        # commit path runs (#179, 2026-08-10).
+        #
+        # This line used to call `manifest.inject_defs_opens` — step 3 of
+        # five, hand-picked. The comment it replaces recorded the previous
+        # instance of exactly this bug: Defs opens were missing here while
+        # "the decomposition path below already does this", so a bare
+        # Library cite went green in the probe and `Unknown identifier` in
+        # lake (currents_boundary_zero, 2026-06-28). That was fixed by
+        # adding the one missing step rather than by routing through the
+        # one function, which left steps 1, 2, 4 and 5 still missing — and
+        # step 5, proved-sibling imports, is #179: a leaf-bypass patch
+        # citing a proved sibling elaborated fine in the sandbox (which
+        # pre-loads sibling stubs) and failed the real build.
+        #
+        # 37 agent reports read that failure as "sibling not found" and
+        # doubted their own mathematics. The cost of the class is not the
+        # rebuild; it is the abandoned line of attack.
+        #
+        # `declared_slugs` is empty by construction: leaf-bypass declares
+        # no sub-goals — that is what makes it leaf-bypass.
+        _asm_leaf = assemble.assemble_for_commit(
+            patches[0].read_text(encoding="utf-8"),
+            problem=goal["problem"], workspace=workspace, conn=conn)
+        if _asm_leaf.injected_sibling_imports:
+            print(f"[cite] leaf-bypass auto-imported "
+                  f"{len(_asm_leaf.injected_sibling_imports)} proved "
+                  f"sibling(s): "
+                  f"{', '.join(_asm_leaf.injected_sibling_imports)}",
+                  flush=True)
+        _place_unowned(conn, workspace, scratch_dest, _asm_leaf.text)
         # Verify-unification: gateway worker pool elaborates the
         # strategy file AND writes its olean to disk in one round trip.
         # The olean is needed downstream by `verify_strategy`, which
