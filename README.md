@@ -216,12 +216,6 @@ Programme revisions and worker declines now appear on the project's timeline and
 - Extended the pre-submission checks so more doomed proof steps are rejected by prediction before they are formally committed, including placeholder proofs and naming collisions.
 - Upgraded the planning agent to periodically audit its own recorded beliefs rather than only the proof tree, to sign off on results with named evidence, and fixed a bug where its review loop mistook its own queued reminders for progress.
 
-### 2026-07-10
-- Registered the first batch of 50 Putnam competition problems from the PutnamBench benchmark, along with the plumbing to run them.
-- Added offline, read-only telemetry to measure whether the system's accumulated proof knowledge actually pays off, and retired a citation-count metric that measured the wrong thing.
-- Made long-running prover processes more robust: they now survive the process that launched them, hand off cleanly when the code changes underneath them, and stale servers can no longer go undetected.
-- Improved the monitoring interface to show proofs as they are being drafted, fixed display glitches, and tightened tracking of exactly which lemmas each Lean proof depends on.
-
 <!-- ASTERISM-PROGRESS:END -->
 
 
