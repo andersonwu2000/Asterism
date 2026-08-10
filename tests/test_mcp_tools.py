@@ -29,7 +29,7 @@ def test_server_exposes_exactly_the_intended_tools() -> None:
     from Tooling.knowledge import mcp_tools
 
     tools = asyncio.run(mcp_tools.mcp.list_tools())
-    assert {t.name for t in tools} == {"loogle", "validate_json"}
+    assert {t.name for t in tools} == {"loogle", "validate_json", "compute"}
 
 
 def test_validate_json_covers_the_most_used_shell_call() -> None:

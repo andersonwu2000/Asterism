@@ -139,7 +139,10 @@ def breakaway_creationflags() -> int:
 _JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x00000100
 
 
-def create_capped_job(per_process_mb: int):
+_JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
+
+
+def create_capped_job(per_process_mb: int, *, max_processes: int = 0):
     """A kill-on-close Job Object with a PER-PROCESS commit cap, for the
     gateway's `lake serve → lean --server → lean --worker` tree.
 
@@ -156,6 +159,11 @@ def create_capped_job(per_process_mb: int):
         restarts that night). Job membership is not affected by
         re-parenting — `terminate_job` reaps every member, orphan or
         not, and KILL_ON_JOB_CLOSE backstops a dropped handle.
+
+    `max_processes` (0 = unlimited) additionally caps how many processes
+    may live in the job at once. The gateway tree needs many; the compute
+    sandbox needs exactly one, and a hard OS-level 1 there means a
+    `subprocess` that somehow got past the audit hook still cannot start.
 
     Returns the job handle (keep it referenced!), or None off-Windows /
     on any OS refusal — callers keep the taskkill path as fallback."""
@@ -175,9 +183,12 @@ def create_capped_job(per_process_mb: int):
             return None
         ext_cls = _build_structs(ctypes, wintypes)
         info = ext_cls()
-        info.BasicLimitInformation.LimitFlags = (
-            _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            | _JOB_OBJECT_LIMIT_PROCESS_MEMORY)
+        flags = (_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                 | _JOB_OBJECT_LIMIT_PROCESS_MEMORY)
+        if max_processes > 0:
+            flags |= _JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+            info.BasicLimitInformation.ActiveProcessLimit = int(max_processes)
+        info.BasicLimitInformation.LimitFlags = flags
         info.ProcessMemoryLimit = int(per_process_mb) * 1024 * 1024
         if not k32.SetInformationJobObject(
                 job, _JobObjectExtendedLimitInformation,

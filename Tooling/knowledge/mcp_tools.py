@@ -91,6 +91,29 @@ def validate_json(text: str) -> str:
     return f"OK: {type(obj).__name__}"
 
 
+@mcp.tool()
+def compute(code: str) -> str:
+    """Run a short Python calculation and get back what it prints.
+
+    NOT A PROOF. Nothing computed here establishes a mathematical claim,
+    in either direction — a clean sweep over a million points settles
+    nothing, and neither does an identity that checks out numerically.
+    Only the Lean kernel decides what is proved. Use this to hunt
+    counterexamples and to check your own arithmetic before you commit
+    to it in prose.
+
+    numpy is available. There is no filesystem, no network and no shell:
+    put the data you need inline in the code and return results with
+    `print()`. Each call is a fresh process, so define everything you
+    use. Time and memory are capped by the framework.
+    """
+    from ..sandbox import run as _run
+    if not (code or "").strip():
+        return ("compute: give it some code, e.g. "
+                "`print(sum(1/k**2 for k in range(1, 10**6)))`")
+    return _run(code).render()
+
+
 def main() -> None:
     mcp.run()
 
