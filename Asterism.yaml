@@ -86,16 +86,22 @@ dispatch:
 # EVERY worker spawn. sonnet-5 (user ruling 2026-07-29): the opus tier
 # stays on strategist/adversary where one decision shapes the tree.
 formalizer:
-  provider: claude             # 2026-08-07: agy's individual quota ran out
-  model: claude-sonnet-5       # mid-run ("Resets in 2h46m25s"), so this seat
-                               # falls back to the model it held before the
-                               # SG mirror. Nothing is wrong with the Gemini
-                               # choice — it had just landed 8 bricks with no
-                               # dead attempts — this is a quota outage, and
-                               # the seat moves rather than the run stopping.
-                               # Move it back when the window resets.
-  # provider: antigravity      # SG-mirror layout (user 2026-08-06, second half
-  # model: gemini-3.6-flash-high # of the Frankl run): Gemini does the
+  provider: antigravity        # Back on Gemini 2026-08-10 (user): the quota
+  model: gemini-3.6-flash-high # window that pushed it off on 08-07 has reset
+                               # — `agy models` answers, identity is the IDE
+                               # session with no oauth_creds.json overriding
+                               # it. 23 Formalizer jobs are already queued, so
+                               # this seat is exercised from the first minute.
+  # provider: claude           # 2026-08-07 fallback: agy's individual quota
+  # model: claude-sonnet-5     # ran out mid-run ("Resets in 2h46m25s"), so
+                               # this seat fell back to the model it held
+                               # before the SG mirror. Nothing was wrong with
+                               # the Gemini choice — it had just landed 8
+                               # bricks with no dead attempts — that was a
+                               # quota outage, and the seat moved rather than
+                               # the run stopping.
+                               # SG-mirror layout (user 2026-08-06, second half
+                               # of the Frankl run): Gemini does the
                                # throughput work — write the Lean for a brief
                                # the NL layer already argued and the judge
                                # already passed. Its recorded failure mode is
@@ -194,7 +200,27 @@ scholar:
   model: claude-sonnet-5
 
 adversary:
-  model: claude-opus-5         # The judge is the only gate on the argument
+  model: claude-fable-5        # 2026-08-10 (user): the strongest model goes to
+                               # the judge, not the planner. The rule below
+                               # still holds — a judge ABOVE its author
+                               # satisfies it — and the reason to prefer this
+                               # allocation is that a bad PLAN has a downstream
+                               # catch (`verify_retry: 10` exists for exactly
+                               # that) while a bad JUDGEMENT has none: the
+                               # kernel checks Lean, not the natural-language
+                               # argument, so this is the one seat with no
+                               # second opinion.
+                               # It is also the cheap place to spend Fable.
+                               # Measured 07-06..08-08: strategist 1,899 spawns
+                               # / 40.9M output tokens, adversary 535 / 11.7M —
+                               # ~29%. Fable's weekly cap is what stalled the
+                               # 08-06 run while it sat on the PLANNER seat.
+                               # WATCH IN THE FIRST RUN: a judge stronger than
+                               # its author can reject faster than the author
+                               # repairs, burning all ten rounds with nothing
+                               # landed (the 07-31 shape). The signal is rounds
+                               # per batch, not pass rate.
+  # model: claude-opus-5       # The judge is the only gate on the argument
                                # layer, so it must not sit below the author.
                                # The 2026-08-02 seeded-defect probe showed
                                # criterion 3 hard at a MODERATE difficulty
