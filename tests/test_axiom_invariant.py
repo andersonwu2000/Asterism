@@ -327,7 +327,7 @@ def test_verify_housekeeping_does_not_skip_probe_with_no_manifests(
         return "superseded"
     monkeypatch.setattr(verify, "verify_strategy", spy_verify)
 
-    mfst = manifest.Manifest(problem="p", statement="True",
+    mfst = manifest.Manifest(problem="p", body="True",
                               axioms_whitelist=["propext"])
     verify.verify_housekeeping(
         conn, workspace=tmp_path, manifests={"p": mfst},
@@ -369,7 +369,7 @@ def test_gate_does_not_enqueue_librarian_even_when_library_optin(
     set) but enqueues NOTHING. The autouse conftest stub returns an
     axiom-clean probe → happy path."""
     gid = _seed_proved_root(conn)
-    mfst = manifest.Manifest(problem="p", statement="True", library=True)
+    mfst = manifest.Manifest(problem="p", body="True", library=True)
     verify.root_integrity_gate(conn, tmp_path, "p", mfst)
     assert _queue_rows(conn) == []
     row = conn.execute(
@@ -383,7 +383,7 @@ def test_gate_no_librarian_when_library_optout(
 ) -> None:
     """Default (`library` unset) must NOT harvest — opt-in only."""
     _seed_proved_root(conn)
-    mfst = manifest.Manifest(problem="p", statement="True")
+    mfst = manifest.Manifest(problem="p", body="True")
     verify.root_integrity_gate(conn, tmp_path, "p", mfst)
     assert _queue_rows(conn) == []
 
@@ -403,7 +403,7 @@ def test_gate_no_librarian_on_rogue_axiom_even_if_optin(
     # the gate logs and returns without enqueueing.
     monkeypatch.setattr(verify, "bisect_sorryax_source",
                         lambda *a, **k: None)
-    mfst = manifest.Manifest(problem="p", statement="True", library=True)
+    mfst = manifest.Manifest(problem="p", body="True", library=True)
     verify.root_integrity_gate(conn, tmp_path, "p", mfst)
     assert _queue_rows(conn) == []
 
@@ -438,7 +438,7 @@ def test_gate_root_file_baseline_pin(
         raise AssertionError("axiom_probe ran on a tampered root")
     monkeypatch.setattr("Tooling.pipeline._axiom.axiom_probe",
                         _probe_must_not_run)
-    mfst = manifest.Manifest(problem="p", statement="True")
+    mfst = manifest.Manifest(problem="p", body="True")
     verify.root_integrity_gate(conn, tmp_path, "p", mfst)
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
@@ -499,7 +499,7 @@ def test_gate_statement_pin_accepts_root_proof_body_rewrite(
         "-- assembled by Builder\n"
         "theorem main : True := by\n  trivial\n",
         encoding="utf-8")
-    mfst = manifest.Manifest(problem="p", statement="True")
+    mfst = manifest.Manifest(problem="p", body="True")
     verify.root_integrity_gate(conn, tmp_path, "p", mfst)
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
@@ -520,7 +520,7 @@ def test_gate_statement_pin_rejects_edited_statement_in_proof_body(
         "Tooling.pipeline._axiom.axiom_probe",
         lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("axiom_probe ran on a statement-drifted root")))
-    mfst = manifest.Manifest(problem="p", statement="True")
+    mfst = manifest.Manifest(problem="p", body="True")
     verify.root_integrity_gate(conn, tmp_path, "p", mfst)
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
@@ -549,7 +549,7 @@ def test_gate_statement_pin_def_alias_own_strategy_passes(
         f"def main := @Problems.p.s{sid}\n\n"
         "end Problems.p\n",
         encoding="utf-8")
-    mfst = manifest.Manifest(problem="p", statement="True")
+    mfst = manifest.Manifest(problem="p", body="True")
     verify.root_integrity_gate(conn, tmp_path, "p", mfst)
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
@@ -583,7 +583,7 @@ def test_gate_statement_pin_def_alias_foreign_strategy_blocked(
         "Tooling.pipeline._axiom.axiom_probe",
         lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("axiom_probe ran on a foreign-alias root")))
-    mfst = manifest.Manifest(problem="p", statement="True")
+    mfst = manifest.Manifest(problem="p", body="True")
     verify.root_integrity_gate(conn, tmp_path, "p", mfst)
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
@@ -614,7 +614,7 @@ def test_gate_statement_pin_defs_lean_still_whole_file(
         "Tooling.pipeline._axiom.axiom_probe",
         lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("axiom_probe ran on vocabulary drift")))
-    mfst = manifest.Manifest(problem="p", statement="True")
+    mfst = manifest.Manifest(problem="p", body="True")
     verify.root_integrity_gate(conn, tmp_path, "p", mfst)
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),

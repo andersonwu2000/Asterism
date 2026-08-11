@@ -750,7 +750,14 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         defs_exists = (db.problem_dir(workspace, problem)
                        / "Defs.lean").exists()
         if metadata.kind in NON_THEOREM_KINDS and defs_exists:
-            stmt = getattr(mfst, "statement", "") or ""
+            # Referent widened from the `## Statement` section to the
+            # whole Manifest body (2026-08-11), because the framework
+            # stopped extracting named sections from a file whose
+            # headings the operator chooses. The body is a strict
+            # SUPERSET of what this read before, so the guard can only
+            # fire more often, never less — the safe direction for a
+            # soundness gate.
+            stmt = getattr(mfst, "body", "") or ""
             if re.search(rf"\b{re.escape(metadata.slug)}\b", stmt):
                 return PipelineResult(
                     outcome="failed", failure_reason="forward_no_new_goal",

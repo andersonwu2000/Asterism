@@ -132,11 +132,13 @@ schema 是「程式碼即文件」：表定義在 `Tooling/state/db.py`、migrat
 ## 4. 人機介面
 
 **Manifest.md**（YAML frontmatter + markdown body；欄位 SoT `state/manifest.py`）：
-statement、`axioms_whitelist`、`forbidden_lemmas`、`library: true`（opt-in Library 化）、
+`axioms_whitelist`、`forbidden_lemmas`、`library: true`（opt-in Library 化）、
 `signoff: false`（benchmark 無人值守專用、跳過人工 sign-off；解析異常一律 coerce 回
-true）、自由 strategic notes；`paper:` 已棄用（綁定移 `problem_papers` 表）。`init` 寬解：
-缺欄位給 default + warning。`## Lemma hints` 仍會被解析，但 pre-search 上線後 prover
-context 的主 hint 通道已是自動生成的 `## Candidate lemmas`。
+true）；`paper:` 已棄用（綁定移 `problem_papers` 表）。`init` 寬解：缺欄位給 default +
+warning。**body 一個字都不解析**（2026-08-11）：operator 想下什麼小標就下什麼，整份
+原樣送到每個 agent 面前（616 份 Manifest 的 body 中位數 440B）。曾經被具名抽取的
+`## Statement` / `## Strategic notes` 都不再是欄位——正典陳述在 `Root.lean` 的
+theorem 簽名，prover 的 hint 通道是自動生成的 `## Candidate lemmas`。
 
 **anchor+claim 的人工介入點**（CLI）：`asterism review`（看 deliverable + kernel anchor
 閉包）、`asterism reject`（反向閉包 cascade 作廢）、`approve-ingest` / `reject-ingest`

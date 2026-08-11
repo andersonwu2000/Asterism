@@ -1,18 +1,15 @@
 """Manifest.md parser. Best-effort: missing fields → defaults + warning.
 
-Format (see docs/architecture.md §4):
+Format (see docs/architecture.md §4): a YAML frontmatter block the
+machine reads, then a markdown body it does not parse at all — the
+operator's prose, whatever headings they choose to give it.
+
   ---
   problem: <name>
   axioms_whitelist: [...]
   forbidden_lemmas: [...]
   ---
-  # <name> — <description>
-  ## Statement
-  <Lean 4 type expression>
-  ## Mathlib hints
-  - <hint>
-  ## Strategic notes
-  <free-form>
+  <free-form markdown; reaches every agent whole>
 
 Phase 2: dropped `## Entry kind` section; the root inits frozen and
 the Strategist handles initialisation (entry_kind routing itself
@@ -31,10 +28,13 @@ from pathlib import Path
 @dataclass
 class Manifest:
     problem: str
-    statement: str
+    #: The whole markdown body, frontmatter stripped — the operator's
+    #: prose, verbatim, headings and all. Replaced `statement` +
+    #: `strategic_notes` (2026-08-11): both were named-section
+    #: extractions from a file whose headings the operator chooses.
+    body: str = ""
     axioms_whitelist: list[str] = field(default_factory=list)
     forbidden_lemmas: list[str] = field(default_factory=list)
-    strategic_notes: str = ""
     # Opt-in: should this Problem's proved decls be Library-ized for
     # cross-problem reuse + mathlib upstreaming (see
     # docs/archive/design/librarian_plan.md). Scope flag, NOT a safety gate —
@@ -228,20 +228,6 @@ def _parse_frontmatter(text: str) -> dict[str, object]:
                 out[key] = val.strip("'\"")
                 current_list_key = None
     return out
-
-
-_SECTION_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
-
-
-def _parse_sections(body: str) -> dict[str, str]:
-    sections: dict[str, str] = {}
-    matches = list(_SECTION_RE.finditer(body))
-    for i, m in enumerate(matches):
-        name = m.group(1).strip()
-        start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
-        sections[name] = body[start:end].strip()
-    return sections
 
 
 def _parse_bullet_list(text: str) -> list[str]:
@@ -442,28 +428,21 @@ def parse(path: Path) -> Manifest:
 
     problem = str(fm.get('problem') or path.parent.name)
 
+    # The body is ONE block (2026-08-11, owner). No section is
+    # extracted, because the framework cannot keep the promise that it
+    # reads a named one: `## Lemma hints` was retired 2026-07-08 and 531
+    # of 611 Manifests still write it, `docs/architecture.md` still told
+    # people it was parsed, and operators invent headings the parser
+    # never heard of (`## Route`, `## Forbidden angles`, `## R1 — search
+    # before reconstructing (hard rule)`). A file whose author writes
+    # whatever they like is prose; the machine-readable settings are the
+    # frontmatter and the DB, and those stay structured.
+    #
+    # Inlining it whole costs almost nothing: across 616 Manifests the
+    # body's median is 440 B and its p90 is 1,066 B. People are lazy —
+    # that is the point, and it is why no laziness is needed here.
     body_start = _FRONTMATTER_RE.match(text)
-    body = text[body_start.end():] if body_start else text
-    sections = _parse_sections(body)
-
-    # Statement section is optional (was required pre-Phase-?). The
-    # canonical statement now lives in the hand-written Root.lean theorem
-    # signature; cli init extracts it from there. A Manifest may still
-    # include `## Statement` as human-readable description, but the
-    # framework does not consume it for dispatch.
-    statement = sections.get('Statement', '').strip()
-
-    # Phase 2: `## Entry kind` section removed. Strategist handles
-    # routing (entry_kind itself retired v33 with the Formalizer merge). Existing
-    # Manifest files carrying `## Entry kind` are tolerated (section
-    # silently ignored) — no warning to avoid noise on legacy files.
-
-    # `## Lemma hints` retired (2026-07-08, owner): presearch covers
-    # mechanical lemma discovery per-goal and the strategist directive
-    # carries curated API steering, so the structured field had no
-    # consumer left. A body section with that title is now plain prose
-    # — the Strategist still reads it as natural language.
-    notes = sections.get('Strategic notes', '').strip()
+    body = (text[body_start.end():] if body_start else text).strip()
 
     axioms = fm.get('axioms_whitelist') or []
     forbidden = fm.get('forbidden_lemmas') or []
@@ -476,10 +455,9 @@ def parse(path: Path) -> Manifest:
 
     return Manifest(
         problem=problem,
-        statement=statement,
+        body=body,
         axioms_whitelist=list(axioms),
         forbidden_lemmas=list(forbidden),
-        strategic_notes=notes,
         library=_coerce_bool(fm.get('library')),
         # Inverse polarity from `library`: absent/garbled must land on
         # True (pause for the human), only an explicit "false"/"no"/"0"

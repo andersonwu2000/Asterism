@@ -47,7 +47,7 @@ def render(workspace: Path, mfst: manifest.Manifest, conn=None) -> str:
         _section_brief_header(mfst),
         context._section_sandbox(),
         context._section_manifest_forbidden(mfst),
-        context._section_manifest_notes(mfst),
+        context._section_manifest_body(mfst),
         context._section_library_available(conn, mfst),
     ]
     parts: list[str] = []

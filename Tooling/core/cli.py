@@ -1444,10 +1444,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             line("FAIL", f"{name}: Manifest.md missing at {r['manifest_path']}")
             continue
         try:
-            mfst = manifest.parse(mfst_path)
-            if not mfst.statement:
-                line("FAIL", f"{name}: Manifest.md has no `## Statement` section")
-                continue
+            manifest.parse(mfst_path)
         except Exception as exc:
             line("FAIL", f"{name}: Manifest parse error: {exc}")
             continue

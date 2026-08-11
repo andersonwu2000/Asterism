@@ -194,7 +194,7 @@ def test_index_missing_map_is_loud(tmp_path: Path, monkeypatch) -> None:
 # ---------------------------------------------------------------------
 
 def _mfst(paper: str = "") -> manifest.Manifest:
-    return manifest.Manifest(problem="p", statement="s", paper=paper)
+    return manifest.Manifest(problem="p", body="s", paper=paper)
 
 
 def test_manifest_parses_paper_pointer(tmp_path: Path) -> None:
@@ -589,7 +589,7 @@ def test_section_paper_index_multi_paper(tmp_path: Path) -> None:
     meta2 = _add_text_paper(tmp_path, "aux paper\n", name="aux.md")
     _db.bind_paper(conn, problem="Test.px", paper_id=meta2.id,
                    origin="scholar", reason="cited")
-    m = manifest.Manifest(problem="Test.px", statement="s",
+    m = manifest.Manifest(problem="Test.px", body="s",
                           paper=meta1.id)
     joined = "\n".join(ctx._section_paper_index(m, tmp_path, conn))
     assert "prim.md" in joined

@@ -185,7 +185,7 @@ def test_backward_intake_decline_exits_before_work(
 
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", statement="True"),
+        mfst=manifest.Manifest(problem="p", body="True"),
         pipeline_id="pid-intake-decline")
     assert r.failure_reason == "return_to_nl"
     assert "unbacked λ-coupling" in (r.failure_detail or "")
@@ -212,7 +212,7 @@ def test_backward_intake_unprovable_maps_to_agent_infeasible(
 
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", statement="True"),
+        mfst=manifest.Manifest(problem="p", body="True"),
         pipeline_id="pid-intake-unprovable")
     assert r.failure_reason == "agent_infeasible"
     assert "n=0 breaks the inequality" in (r.failure_detail or "")
@@ -239,6 +239,6 @@ def test_backward_intake_sid_threads_to_work_loop(
 
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", statement="True"),
+        mfst=manifest.Manifest(problem="p", body="True"),
         pipeline_id="pid-intake-sid")
     assert seen.get("initial_sid") == "intake-sid-42"

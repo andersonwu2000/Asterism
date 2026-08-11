@@ -48,7 +48,7 @@ def _seed_root_goal(tmp_path: Path, conn: sqlite3.Connection) -> int:
 
 
 def _mfst() -> manifest.Manifest:
-    return manifest.Manifest(problem="p", statement="True")
+    return manifest.Manifest(problem="p", body="True")
 
 
 def test_spawn_passes_mcp_config_path(

@@ -249,12 +249,22 @@ def _section_manifest_forbidden(mfst: manifest.Manifest) -> list[str]:
     ]
 
 
-def _section_manifest_notes(mfst: manifest.Manifest) -> list[str]:
-    if not mfst.strategic_notes:
+def _section_manifest_body(mfst: manifest.Manifest) -> list[str]:
+    """The operator's Manifest, whole (2026-08-11).
+
+    It used to be one extracted section, `## Strategic notes`. The
+    framework no longer reads headings in this file — an operator writes
+    what they like there and the machine cannot promise to find a name
+    it chose. Whole is also cheap: median body across 616 Manifests is
+    440 B, p90 1,066 B. And it makes the operator's steering channel
+    stronger rather than weaker — anything written in the file reaches
+    the agent, not only the paragraph under one blessed heading."""
+    if not mfst.body:
         return []
     return [
-        "## Strategic notes (from Manifest.md)",
-        mfst.strategic_notes,
+        "## Manifest (from the operator)",
+        "",
+        mfst.body,
         "",
     ]
 

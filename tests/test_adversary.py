@@ -49,7 +49,7 @@ def conn(workspace: Path) -> sqlite3.Connection:
 
 @pytest.fixture
 def mfst() -> manifest.Manifest:
-    return manifest.Manifest(problem="p", statement="T")
+    return manifest.Manifest(problem="p", body="T")
 
 
 def _insert_root(conn: sqlite3.Connection) -> int:

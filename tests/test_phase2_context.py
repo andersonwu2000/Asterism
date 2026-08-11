@@ -28,7 +28,7 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def mfst() -> manifest.Manifest:
-    return manifest.Manifest(problem="p", statement="T")
+    return manifest.Manifest(problem="p", body="T")
 
 
 def _insert_problem(conn: sqlite3.Connection, name: str = "p") -> None:

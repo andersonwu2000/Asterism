@@ -1220,7 +1220,7 @@ def test_the_sub_group_actually_receives_its_charter(tmp_path):
     ctx.compile_strategist_context(
         conn, problem=p, trigger_kind="routine", attempts_dir=attempts,
         workspace=tmp_path,
-        mfst=_manifest.Manifest(problem=p, statement=""),
+        mfst=_manifest.Manifest(problem=p, body=""),
         group_id=sub)
     assert (attempts / "charter.md").exists()
     assert "settle the growth bound" in (

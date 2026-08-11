@@ -29,7 +29,7 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 
 def _mfst(**kw) -> manifest.Manifest:
-    base = dict(problem="p", statement="True")
+    base = dict(problem="p", body="True")
     base.update(kw)
     return manifest.Manifest(**base)
 

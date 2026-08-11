@@ -65,7 +65,7 @@ def _read_context(attempts_dir: Path) -> str:
 
 
 def _fake_manifest() -> manifest_mod.Manifest:
-    return manifest_mod.Manifest(problem="p", statement="T")
+    return manifest_mod.Manifest(problem="p", body="T")
 
 
 # ---------------------------------------------------------------------

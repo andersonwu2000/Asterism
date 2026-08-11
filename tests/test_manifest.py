@@ -41,12 +41,20 @@ free-form text
 """)
     m = manifest.parse(p)
     assert m.problem == "wilson"
-    assert m.statement == "∀ p : ℕ, p.Prime → True"
-    assert not hasattr(m, "entry_kind")  # Phase 2: field removed
+    # The body is ONE block, verbatim — every heading the operator
+    # wrote, including the ones the parser used to know by name and the
+    # ones it never heard of (2026-08-11). The frontmatter stays
+    # structured; the prose does not.
+    assert "## Statement" in m.body
+    assert "∀ p : ℕ, p.Prime → True" in m.body
+    assert "## Entry kind" in m.body
+    assert "## Mathlib hints" in m.body
+    assert "free-form" in m.body
+    for gone in ("entry_kind", "mathlib_hints", "statement",
+                 "strategic_notes"):
+        assert not hasattr(m, gone), gone
     assert m.axioms_whitelist == ["propext", "Quot.sound"]
     assert m.forbidden_lemmas == ["ZMod.wilsons_lemma"]
-    assert not hasattr(m, "mathlib_hints")  # retired 2026-07-08
-    assert "free-form" in m.strategic_notes
 
 
 def test_legacy_entry_kind_section_is_silently_ignored(tmp_path: Path) -> None:
@@ -65,20 +73,22 @@ T
 Builder
 """)
     m = manifest.parse(p)
-    assert m.statement == "T"
+    assert "## Statement" in m.body and "T" in m.body
+    assert "## Entry kind" in m.body      # tolerated, and now visible
     assert not hasattr(m, "entry_kind")
 
 
-def test_missing_statement_is_silent(tmp_path: Path, capsys) -> None:
-    """`## Statement` section is now optional (canonical statement lives
-    in Root.lean's theorem signature). Missing section → empty field,
-    no warning."""
+def test_an_empty_body_is_silent(tmp_path: Path, capsys) -> None:
+    """A Manifest with frontmatter and no prose parses to an empty body
+    and says nothing. `## Statement` stopped being a field on
+    2026-08-11; the canonical statement lives in Root.lean's theorem
+    signature and always did."""
     p = write(tmp_path / "p", "Manifest.md", """---
 problem: p
 ---
 """)
     m = manifest.parse(p)
-    assert m.statement == ""
+    assert m.body == ""
     err = capsys.readouterr().err
     assert "missing ## Statement" not in err
 
@@ -240,7 +250,7 @@ def test_manifest_cache_hot_reload_on_mtime_change(tmp_path: Path) -> None:
     _write_manifest(mpath, "T_original")
     cache = manifest.ManifestCache(tmp_path)
     cache.load("p", "Problems/p/Manifest.md")
-    assert cache["p"].statement == "T_original"
+    assert "T_original" in cache["p"].body
 
     # Edit + bump mtime explicitly (filesystems may not see sub-second
     # changes between successive writes; setting +2s guarantees stat
@@ -250,7 +260,7 @@ def test_manifest_cache_hot_reload_on_mtime_change(tmp_path: Path) -> None:
     os.utime(mpath, (new_mtime, new_mtime))
 
     fresh = cache["p"]
-    assert fresh.statement == "T_edited"
+    assert "T_edited" in fresh.body
 
 
 def test_manifest_cache_returns_cached_when_mtime_unchanged(
@@ -309,7 +319,7 @@ def test_manifest_cache_keeps_prior_when_reparse_fails(
     finally:
         manifest.parse = real_parse  # type: ignore[assignment]
     # Returned the pre-edit cached manifest (T_good).
-    assert out.statement == "T_good"
+    assert "T_good" in out.body
     captured = capsys.readouterr()
     assert "manifest-reload" in captured.out
     assert "parse failed" in captured.out
@@ -337,7 +347,7 @@ def test_manifest_cache_dict_compat(tmp_path: Path) -> None:
     assert set(cache) == {"a", "b"}
     assert sorted(cache.keys()) == ["a", "b"]
     items = dict(cache.items())
-    assert items["a"].statement == "T_a"
+    assert "T_a" in items["a"].body
 
 
 def test_library_flag_true(tmp_path: Path) -> None:
@@ -435,7 +445,7 @@ True
 # ---------------------------------------------------------------------
 
 def test_effective_axioms_set_field_passes_through() -> None:
-    m = manifest.Manifest(problem="p", statement="s",
+    m = manifest.Manifest(problem="p", body="s",
                           axioms_whitelist=["propext", "Custom.ax"])
     assert manifest.effective_axioms(m) == ["propext", "Custom.ax"]
 
@@ -446,10 +456,10 @@ def test_effective_axioms_strips_sorryAx() -> None:
     stripped at THE derivation chokepoint, and a sorryAx-only whitelist
     degrades to the framework defaults, never to an empty gate."""
     manifest._default_axioms_warned.clear()
-    m = manifest.Manifest(problem="p_sry", statement="s",
+    m = manifest.Manifest(problem="p_sry", body="s",
                           axioms_whitelist=["propext", "sorryAx"])
     assert manifest.effective_axioms(m) == ["propext"]
-    m2 = manifest.Manifest(problem="p_sry2", statement="s",
+    m2 = manifest.Manifest(problem="p_sry2", body="s",
                            axioms_whitelist=["sorryAx"])
     wl2 = manifest.effective_axioms(m2)
     assert wl2 == list(manifest.FRAMEWORK_DEFAULT_AXIOMS)
@@ -496,7 +506,7 @@ def test_effective_axioms_empty_falls_back_to_framework_default(
     """Absent field NEVER weakens a gate: framework default, warned once
     per problem (not once per gate call)."""
     manifest._default_axioms_warned.clear()
-    m = manifest.Manifest(problem="p_eff", statement="s")
+    m = manifest.Manifest(problem="p_eff", body="s")
     wl = manifest.effective_axioms(m)
     assert wl == list(manifest.FRAMEWORK_DEFAULT_AXIOMS)
     assert "sorryAx" not in wl

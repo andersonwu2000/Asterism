@@ -12,7 +12,7 @@ from Tooling.state.manifest import Manifest
 
 
 def _empty_manifest(name: str = "p") -> Manifest:
-    return Manifest(problem=name, statement="T")
+    return Manifest(problem=name, body="T")
 
 
 def _seed_problem_and_goal(conn: sqlite3.Connection, **goal_kw: object) -> int:
@@ -536,7 +536,7 @@ def test_brief_omits_retired_mathlib_hints(tmp_path: Path) -> None:
     from Tooling.state import brief
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True, exist_ok=True)
-    mfst = Manifest(problem="p", statement="T")
+    mfst = Manifest(problem="p", body="T")
     out = brief.write(tmp_path, mfst)
     body = out.read_text(encoding="utf-8")
     assert "## Mathlib lemmas" not in body

@@ -56,7 +56,7 @@ def conn(workspace: Path) -> sqlite3.Connection:
 
 @pytest.fixture
 def mfst() -> manifest.Manifest:
-    return manifest.Manifest(problem="p", statement="T")
+    return manifest.Manifest(problem="p", body="T")
 
 
 def _insert_root(conn: sqlite3.Connection) -> int:
@@ -533,7 +533,7 @@ def test_run_forward_vocab_guard_is_defs_conditional(
     Forward to produce; rejecting them made pure-NL dead-on-arrival."""
     _insert_root(conn)
     mfst_nl = manifest.Manifest(
-        problem="p", statement="define cube_boundary and prove its shape")
+        problem="p", body="define cube_boundary and prove its shape")
 
     def fake_spawn(**kw):
         (kw["attempts_dir"] / "new_forward.lean").write_text(

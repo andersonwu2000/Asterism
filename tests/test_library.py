@@ -92,7 +92,7 @@ def test_library_section_domain_menu(tmp_path: Path) -> None:
     conn = _mem()
     _seed_index(conn)
     mfst = manifest.Manifest(
-        problem="LinearAlgebra.normal_diagonalization", statement="T")
+        problem="LinearAlgebra.normal_diagonalization", body="T")
     body = "\n".join(context._section_library_available(conn, mfst))
     assert "## Library available" in body
     # same-domain (LinearAlgebra) listed with keystone
@@ -108,7 +108,7 @@ def test_library_section_empty_when_nothing_bridged(tmp_path: Path) -> None:
     from Tooling.agent import context
     conn = _mem()
     mfst = manifest.Manifest(
-        problem="x", statement="T",
+        problem="x", body="T",
     )
     assert context._section_library_available(conn, mfst) == []
     assert context._section_library_available(None, mfst) == []
@@ -120,5 +120,5 @@ def test_library_section_skips_other_domains_only(tmp_path: Path) -> None:
     from Tooling.agent import context
     conn = _mem()
     _seed_index(conn)
-    mfst = manifest.Manifest(problem="NumberTheory.x", statement="T")
+    mfst = manifest.Manifest(problem="NumberTheory.x", body="T")
     assert context._section_library_available(conn, mfst) == []

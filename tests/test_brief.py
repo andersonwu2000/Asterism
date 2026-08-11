@@ -30,7 +30,7 @@ def test_render_minimal_manifest_includes_sandbox_header(
     from Tooling.knowledge import lemma_lookup
     monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
 
-    mfst = Manifest(problem="p", statement="True")
+    mfst = Manifest(problem="p", body="True")
     out = brief.render(tmp_path, mfst)
     assert "# p — BRIEF" in out
     assert "## Sandbox" in out
@@ -44,14 +44,16 @@ def test_render_includes_forbidden_and_strategic_notes(
     monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
 
     mfst = Manifest(
-        problem="p", statement="T",
+        problem="p",
         forbidden_lemmas=["Some.banned_lemma"],
-        strategic_notes="Avoid path X. Prefer path Y.",
+        body="T\n\nAvoid path X. Prefer path Y.",
     )
     out = brief.render(tmp_path, mfst)
     assert "## FORBIDDEN_LEMMAS" in out
     assert "Some.banned_lemma" in out
-    assert "## Strategic notes" in out
+    # The operator's prose arrives whole, under one heading — no named
+    # section is extracted from a file whose headings they choose.
+    assert "## Manifest (from the operator)" in out
     assert "Avoid path X" in out
 
 
@@ -74,7 +76,7 @@ def test_worker_surface_carries_no_retired_pipeline_names(
     from Tooling.knowledge import lemma_lookup
     monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
 
-    out = brief.render(tmp_path, Manifest(problem="p", statement="True"))
+    out = brief.render(tmp_path, Manifest(problem="p", body="True"))
     for dead in ("Builder", "Backward", "Forward", "single output"):
         assert dead not in out, dead
     # The replacement has to still say what the output contract is.
@@ -136,7 +138,7 @@ def test_render_no_mathlib_hints_section(tmp_path: Path) -> None:
     """`## Lemma hints` was retired (target-1 pre-search replaces it): a
     Manifest with mathlib hints no longer renders a `## Mathlib lemmas`
     section in BRIEF."""
-    mfst = Manifest(problem="p", statement="T")
+    mfst = Manifest(problem="p", body="T")
     out = brief.render(tmp_path, mfst)
     assert "## Mathlib lemmas" not in out
     assert "Nat.factorial" not in out
@@ -147,7 +149,7 @@ def test_write_returns_none_when_problem_dir_missing(
 ) -> None:
     """No `Problems/<p>/` on disk → no write, returns None. Defends
     against test fixtures + mid-reset races without crashing."""
-    mfst = Manifest(problem="ghost_problem", statement="T")
+    mfst = Manifest(problem="ghost_problem", body="T")
     assert brief.write(tmp_path, mfst) is None
 
 
@@ -160,8 +162,7 @@ def test_write_produces_atomic_brief_file(
     monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
 
     pdir = _mk_problem_dir(tmp_path)
-    mfst = Manifest(problem="p", statement="T",
-                    strategic_notes="hello world")
+    mfst = Manifest(problem="p", body="T\n\nhello world")
 
     target = brief.write(tmp_path, mfst)
     assert target is not None
@@ -183,8 +184,8 @@ def test_write_for_all_problems_swallows_per_problem_errors(
 
     _mk_problem_dir(tmp_path, "good")
     _mk_problem_dir(tmp_path, "bad")
-    good_mfst = Manifest(problem="good", statement="T")
-    bad_mfst = Manifest(problem="bad", statement="T")
+    good_mfst = Manifest(problem="good", body="T")
+    bad_mfst = Manifest(problem="bad", body="T")
 
     # Force `bad` to raise inside write.
     real_write = brief.write

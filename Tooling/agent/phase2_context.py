@@ -1313,11 +1313,9 @@ def _section_manifest_meta(mfst: manifest.Manifest,
     placeholder ("does not exist — RequestUserAmend candidate") was a
     standing lure that mislabelled the legal state as a defect with a
     human-escalation hint attached (user call 2026-07-13)."""
-    out = ["## Manifest", "", "### Statement", ""]
-    out.append(f"```\n{mfst.statement}\n```")
-    if mfst.strategic_notes:
-        out += ["", "### Strategic notes", ""]
-        out.append(mfst.strategic_notes)
+    out = ["## Manifest", ""]
+    if mfst.body:
+        out.append(mfst.body)
     defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
     if defs_path.exists():
         out += ["", "### Defs.lean", ""]
