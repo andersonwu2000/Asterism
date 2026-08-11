@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-10
+- Replaced the proving agents' general shell access with purpose-built tools — file inspection, content-anchored edits, and a network-isolated calculator — that give instructive feedback instead of raw errors.
+- Tightened data boundaries, so each model provider now declares what it enforces and what it may read, with tests guarding the operator's own data as well as outside access.
+- Made verification more honest, with proof-file checks now reporting whether a passing result covers the real build and machine crashes no longer counted as mathematical failures.
+- Improved day-to-day operation with a clean shutdown command, clearer progress and blocker reporting in the web console, and an installer that adapts setup to the user's account and provider.
+
 ### 2026-08-07
 - Rebuilt the web interface around the proof attempt itself: each branch is now labelled by the claim it was asked to prove, the search tree and its running log sit on one page, and settings moved to a page of their own.
 - Added per-model usage accounting, so runs sharing a rate limit now pause together rather than one at a time.
@@ -209,12 +215,6 @@ Programme revisions and worker declines now appear on the project's timeline and
 - Hardened soundness guarantees: proofs are now pinned to a verified snapshot of the user's files, spawned provers cannot write outside their sandbox, and unauthorized axioms are stripped before a proof is accepted.
 - Fixed several scheduling and bookkeeping bugs, including one where truncated error output made a failed proof attempt look like a success.
 - Polished the web dashboard with layout fixes and a performance improvement when opening large problem sets.
-
-### 2026-07-11
-- Improved the web dashboard's proof-tree view with richer hover interactions — hovering a proof step now highlights its subgoals and their status — plus a redesigned legend and assorted polish from a usability audit.
-- Added several safeguards against wasted work, so the system now declines to re-attempt a proof plan identical to one already tried and reuses results for goals whose statements are equivalent.
-- Extended the pre-submission checks so more doomed proof steps are rejected by prediction before they are formally committed, including placeholder proofs and naming collisions.
-- Upgraded the planning agent to periodically audit its own recorded beliefs rather than only the proof tree, to sign off on results with named evidence, and fixed a bug where its review loop mistook its own queued reminders for progress.
 
 <!-- ASTERISM-PROGRESS:END -->
 
