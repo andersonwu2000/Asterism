@@ -353,7 +353,6 @@ export interface RunWorker {
   /** Strategist only: which TURN of the wake is running — 'admin' (the
    * registry pass that runs first, un-judged) or 'math' (the judged
    * loop that plans the route). Null on other kinds. */
-  stage?: 'admin' | 'math' | null
   path: string | null
   /** tail of the file it is writing — spawn writes go through to the
    * real path, so this is the live view; null = nothing on disk yet */

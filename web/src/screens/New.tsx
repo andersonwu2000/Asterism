@@ -115,7 +115,13 @@ export default function New() {
   const create = async () => {
     setBusy(true)
     setError(null)
-    const body = `# ${name}\n\n## Statement\n\n${desc.trim()}\n`
+    // No `## Statement` heading: named sections stopped being parsed
+    // (`23146735`) and the whole body now reaches the agent verbatim.
+    // A template that keeps stamping a dead heading is exactly what
+    // that commit indicted — 531 of 611 Manifests still carry
+    // `## Lemma hints`, retired in 2026-07, because an importer kept
+    // writing it. This form would have been the next such importer.
+    const body = `# ${name}\n\n${desc.trim()}\n`
     try {
       await apiPost<{ problem: string }>('/api/problems/create', {
         name,
