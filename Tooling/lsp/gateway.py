@@ -672,6 +672,26 @@ _LEASE_TTL_SEC = 900.0
 _SWEEP_INTERVAL_SEC = 60.0
 
 
+#: Head and tail of the echo of a removed region. A head-only cap put
+#: the truncation exactly where the evidence lives: an edit that reaches
+#: further than intended shows the opening the agent expected and hides
+#: the tail it did not mean to lose. Both ends, plus the count of what
+#: sits between them, so "I removed more than I thought" is legible
+#: without shipping the whole region back (2026-08-11).
+_ECHO_END_CHARS = 160
+
+
+def _echo_removed(removed: str) -> str:
+    """What an edit took out, as the agent needs to see it."""
+    if len(removed) <= 2 * _ECHO_END_CHARS:
+        return removed
+    head = removed[:_ECHO_END_CHARS]
+    tail = removed[-_ECHO_END_CHARS:]
+    n_lines = removed.count("\n") - head.count("\n") - tail.count("\n")
+    return (f"{head}\n… [{len(removed) - 2 * _ECHO_END_CHARS} chars / "
+            f"{max(n_lines, 0)} lines removed here too] …\n{tail}")
+
+
 def _owner_alive(meta: SessionMetadata) -> bool:
     """Is the process that claimed this slot still running?
 
@@ -1600,8 +1620,8 @@ def apply_edit(edits: list = None) -> str:
             ensure_ascii=False)
 
     replaced_text = " | ".join(
-        meta.file_content[s.start:s.end][:200]
-        for s in spans if not s.is_insert)[:600] or "(insert only)"
+        _echo_removed(meta.file_content[s.start:s.end])
+        for s in spans if not s.is_insert) or "(insert only)"
     new_content = _edits.apply_spans(meta.file_content, spans)
     new_lines = new_content.split(chr(10))
     # Where each edit LANDED, measured on the produced file. Line numbers

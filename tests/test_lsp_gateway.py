@@ -2239,3 +2239,24 @@ def test_scope_balance_counts_namespace_and_section() -> None:
     # `end` inside a word, and a patch with no scopes at all, are zero.
     assert _scope_balance("theorem ending : True := trivial\n") == 0
     assert _scope_balance("") == 0
+
+
+# ─── the echo shows both ends of what it removed (2026-08-11) ───
+
+def test_a_large_removal_echoes_its_tail_not_just_its_head() -> None:
+    """The echo is the last defence against an edit that reached
+    further than intended, and a head-only cap put the truncation
+    exactly where that evidence lives. Both ends, and a count of what
+    sits between them."""
+    removed = "\n".join(f"line {i}" for i in range(200))
+    out = lsp_gateway._echo_removed(removed)
+    assert out.startswith("line 0")
+    assert out.rstrip().endswith("line 199")
+    assert "lines removed here too" in out
+    assert len(out) < len(removed)
+
+
+def test_a_small_removal_is_echoed_whole() -> None:
+    """No marker, no truncation — the common case must stay readable."""
+    removed = "  norm_num\n  omega\n"
+    assert lsp_gateway._echo_removed(removed) == removed
