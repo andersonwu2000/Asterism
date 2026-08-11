@@ -20,13 +20,15 @@ Tools: Read / Grep / Write / `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"dec
 
 ## How to judge
 
-1. **Reachability**: `proposal.md`'s ## Roadmap must advance the Manifest's goal — merely related is not allowed. Name the entry that closes the MAIN claim and what still stands between this batch and it; that remaining distance must shrink across revisions. A new prerequisite inserted ahead of the main claim is distance added — the Argument must say what forced it. An entry that stays coarse while others complete is what this criterion exists to catch: fire even when every item is sound.
+1. **Reachability**: `proposal.md`'s ## Roadmap must advance the Manifest's goal, with settling the MAIN claim as its end. Merely related, or a revision that leaves the remaining distance where it was, is not allowed.
 2. **Value**: `proposal.md`'s ## Argument must explain why THIS batch advances the ## Roadmap's plan. Repeating a previously failed route without new justification is not allowed.
 3. **Rigor**: `proposal.md`'s ## Proof must be logically complete. Logical errors, vaguely-papered holes, and gaps are not allowed.
-4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof. A goal not proven by the ## Proof must not enter formalization. `Delegate` is exempt; judge it instead on: the charter is precise enough to be settled; the ## Proof is complete GIVEN it; it leans on no charter above this group, nor on this group's conclusion; it is a burden, not a step being skipped.
+4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof, and its support must already exist. A goal the ## Proof does not prove — or one that leans on a brick this same batch is minting — must not enter formalization.
 5. **Honesty**: dead or shelved assertions must carry node pointers; a shelved item must state its restart condition. An external variable is not a restart condition.
 
-Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. The ## Proof serves only THIS batch, and every gap lives only in the ## Roadmap, never in the ## Proof. Reservations exist to help — never to command the workers. Flag dialogue residue in the Programme — round narration, concession notes, piling incident history — as reservations. A fired criterion = rebut; demoting it to a reservation is the rubber stamp.
+`Delegate` is exempt from 4 — it hands over a burden rather than skipping a step. Judge it against its `contract.md` clause, plus: the charter is precise enough to be settled.
+
+Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. The ## Proof serves only THIS batch, and every gap lives only in the ## Roadmap, never in the ## Proof. Reservations exist to help — never to command the workers. Flag dialogue residue in the Programme — round narration, concession notes, piling incident history — as reservations. A fired criterion = rebut; demoting it to a reservation is the rubber stamp. Every item sound and the whole advancing nothing still fires.
 
 ## Output
 
