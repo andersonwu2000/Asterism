@@ -311,7 +311,7 @@ def rev_for_goal(conn: sqlite3.Connection, problem: str, *,
     the Strategist ships a new rev, and meanwhile this branch's
     sub-goals keep being auto-dispatched by the dispatcher without any
     Strategist wake. Reading the CURRENT rev then produces either a
-    spurious `no_nl_correspondence` decline (the step is gone) or —
+    spurious `return_to_nl` decline (the step is gone) or —
     worse, because nothing reports it — a silent re-anchoring onto a
     DIFFERENT step that happens to look apt.
 

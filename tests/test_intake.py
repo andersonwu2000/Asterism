@@ -47,11 +47,11 @@ def test_intake_proceed_returns_sid(tmp_path, monkeypatch) -> None:
 
 def test_intake_decline_carries_reason_and_note(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(agent, "spawn_llm", _spawn_writing(json.dumps({
-        "verdict": "decline", "reason": "no_nl_correspondence",
+        "verdict": "decline", "reason": "return_to_nl",
         "note": "the Proof argues nothing about λ-coupling"})))
     out = run_intake(prompt_dir=PROMPT_DIR, attempts_dir=tmp_path,
                      problem_dir=tmp_path, label="t")
-    assert out.declined == ("no_nl_correspondence",
+    assert out.declined == ("return_to_nl",
                             "the Proof argues nothing about λ-coupling")
 
 
@@ -172,7 +172,7 @@ def test_backward_intake_decline_exits_before_work(
     monkeypatch.setattr(
         _intake, "run_intake",
         lambda **kw: IntakeOutcome(
-            declined=("no_nl_correspondence", "unbacked λ-coupling")))
+            declined=("return_to_nl", "unbacked λ-coupling")))
     presearched = {"n": 0}
     from Tooling.pipeline import _presearch
     monkeypatch.setattr(
@@ -187,7 +187,7 @@ def test_backward_intake_decline_exits_before_work(
         conn, goal_id=gid, workspace=tmp_path,
         mfst=manifest.Manifest(problem="p", statement="True"),
         pipeline_id="pid-intake-decline")
-    assert r.failure_reason == "no_nl_correspondence"
+    assert r.failure_reason == "return_to_nl"
     assert "unbacked λ-coupling" in (r.failure_detail or "")
     assert presearched["n"] == 0, "declined goal must not pay presearch"
 

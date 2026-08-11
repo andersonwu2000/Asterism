@@ -524,7 +524,7 @@ DECLINE_NEEDS_DECOMPOSITION = "needs_decomposition"
 # with no argued basis is the Strategist's to justify or retire, not
 # the worker's to grind (b6_1 postmortem: every false statement was
 # minted in the argument-free region, d5-d15).
-DECLINE_NO_NL = "no_nl_correspondence"
+DECLINE_RETURN_TO_NL = "return_to_nl"
 
 # Set of every recognized directive (parser uses for membership check;
 # unknown directives fall through to the generic `agent_declined`
@@ -534,7 +534,7 @@ DECLINE_DIRECTIVES = frozenset({
     DECLINE_RETURN_TO_PARENT,
     DECLINE_SHELVE,
     DECLINE_NEEDS_DECOMPOSITION,
-    DECLINE_NO_NL,
+    DECLINE_RETURN_TO_NL,
 })
 
 # Map directive → DB failure_reason. Keeps existing enum values for
@@ -545,7 +545,7 @@ DECLINE_TO_FAILURE_REASON = {
     DECLINE_RETURN_TO_PARENT: "parent_needs_fix",
     DECLINE_SHELVE: "agent_shelved",
     DECLINE_NEEDS_DECOMPOSITION: "agent_declined",
-    DECLINE_NO_NL: "no_nl_correspondence",
+    DECLINE_RETURN_TO_NL: "return_to_nl",
 }
 
 

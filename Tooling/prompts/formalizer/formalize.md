@@ -77,7 +77,7 @@ When one of the cases below applies, place the directive immediately above the t
 - `unprovable` — false in this hypothesis scope. The description must give a counterexample (concrete instance + a check of the logic).
 - `return_to_parent` — the goal statement you were handed is incomplete/wrong (parent's decomposition omitted a hypothesis, gave the wrong structure, …); provable only once the parent re-states it. Name the missing piece.
 - `shelve` — missing vocabulary / theorems / abstractions to proceed (describe the missing piece and how you'd use it), or the goal embeds a large concrete data structure that would replicate across every sub-goal (propose a concrete shape). In doubt vs `return_to_parent`, pick `shelve`.
-- `no_nl_correspondence` — closing this needs mathematics the Proof does not argue. Name what's unbacked.
+- `return_to_nl` — the argument you were given does not settle this goal: uncovered, mis-aimed, or false as stated. Name which, and what. Do not reroute around it.
 
 Make the description actionable, e.g.:
 

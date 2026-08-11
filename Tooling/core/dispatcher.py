@@ -1156,7 +1156,8 @@ def _run_pipeline(workspace: Path,
     Phase 2 — `decision_id` carries the strategist_decisions row id
     when the spawning queue entry came from a Strategist Inject
     decision. Passed through to compile_context for the
-    `## Strategist brief` section. BFS-auto-dispatched pipelines have
+    `## The argument for this brick` section, whose ancestor walk covers
+    the rest. BFS-auto-dispatched pipelines have
     decision_id=None.
 
     NB: opens its own DB conn (sqlite3 thread safety)."""

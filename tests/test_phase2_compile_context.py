@@ -2,7 +2,7 @@
 
 Covers Step 5 acceptance: `compile_context` accepts `decision_id`
 parameter, renders `## Strategist directive` when problems.
-strategist_directive is non-empty, renders `## Strategist brief` when
+strategist_directive is non-empty, renders `## The argument for this brick` when
 decision_id points to a Strategist Inject decision row.
 """
 from __future__ import annotations
@@ -56,7 +56,7 @@ def _make_attempts_dir(workspace: Path) -> Path:
     walking (.attempts/<pid> -> .attempts -> workspace)."""
     pid = "test-pid"
     attempts_dir = workspace / ".attempts" / pid
-    attempts_dir.mkdir(parents=True)
+    attempts_dir.mkdir(parents=True, exist_ok=True)
     return attempts_dir
 
 
@@ -160,7 +160,7 @@ def test_no_decision_id_no_brief_section(workspace: Path,
         decision_id=None,
     )
     text = _read_context(attempts_dir)
-    assert "## Strategist brief" not in text
+    assert "## The argument for this brick" not in text
 
 
 def test_brief_rendered_when_decision_id_set(
@@ -180,7 +180,7 @@ def test_brief_rendered_when_decision_id_set(
         decision_id=did,
     )
     text = _read_context(attempts_dir)
-    assert "## Strategist brief" in text
+    assert "## The argument for this brick" in text
     assert "contour deformation" in text
 
 
@@ -201,7 +201,7 @@ def test_brief_skipped_when_brief_column_null(
         decision_id=did,
     )
     text = _read_context(attempts_dir)
-    assert "## Strategist brief" not in text
+    assert "## The argument for this brick" not in text
 
 
 def test_both_directive_and_brief_render(
@@ -229,9 +229,9 @@ def test_both_directive_and_brief_render(
     )
     text = _read_context(attempts_dir)
     assert "## Strategist directive" in text
-    assert "## Strategist brief" in text
+    assert "## The argument for this brick" in text
     # Ordering: directive before brief
-    assert text.index("## Strategist directive") < text.index("## Strategist brief")
+    assert text.index("## Strategist directive") < text.index("## The argument for this brick")
 
 
 def test_brief_decision_id_nonexistent(
@@ -248,4 +248,118 @@ def test_brief_decision_id_nonexistent(
         decision_id=99999,
     )
     text = _read_context(attempts_dir)
-    assert "## Strategist brief" not in text
+    assert "## The argument for this brick" not in text
+
+
+# ------------------------------------------------- the brick's argument
+# (2026-08-11) The Inject's prose became the part of its batch's
+# `## Proof` that settles the brick. Two consequences the framework has
+# to get right: the passage has to reach work the author never saw (the
+# sub-goals a worker invents), and the whole `## Proof` has to stop
+# riding along once something more specific answered.
+
+def _decision_for_goal(conn: sqlite3.Connection, gid: int, proof: str) -> int:
+    did = _insert_decision(conn, kind="Inject", brief=proof)
+    conn.execute("UPDATE strategist_decisions SET produced_goal_id = ?"
+                 " WHERE id = ?", (str(gid), did))
+    conn.commit()
+    return did
+
+
+def _subgoal_of(conn: sqlite3.Connection, parent: int, slug: str) -> int:
+    sid = int(conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, status, created_by,"
+        " created_at) VALUES (?, ?, 'proposed', 'backward', ?)",
+        (parent, f"Problems/p/proofs/_strategy_{slug}.lean",
+         db.now())).lastrowid)
+    gid = db.insert_goal(conn, problem="p", slug=slug,
+                         lean_path=f"Problems/p/proofs/L_{slug}.lean",
+                         statement="T", origin="backward")
+    conn.execute("INSERT INTO strategy_subgoals (strategy_id, subgoal_id,"
+                 " position) VALUES (?, ?, 0)", (sid, gid))
+    conn.commit()
+    return gid
+
+
+def test_an_invented_subgoal_inherits_its_ancestors_argument(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """About half of all worker spawns are sub-goals a worker created,
+    with no decision of their own. They are working INSIDE the passage
+    their parent was dispatched under — a `## Proof` may carry no gaps,
+    so a decomposition only outsources part of one — and the walk goes
+    up through `strategies`, so it lands on the nearest injected
+    ancestor rather than the newest thing in the tree."""
+    parent = _insert_root(conn)
+    _decision_for_goal(conn, parent, "## Need\nthe fibre split, in full")
+    kid = _subgoal_of(conn, parent, "kid")
+    grandkid = _subgoal_of(conn, kid, "grandkid")
+
+    attempts_dir = _make_attempts_dir(workspace)
+    compile_context(conn, goal=db.get_goal(conn, grandkid),
+                    mfst=_fake_manifest(), attempts_dir=attempts_dir,
+                    kind="backward", decision_id=None)
+    text = _read_context(attempts_dir)
+    assert "## The argument for this brick" in text
+    assert "the fibre split, in full" in text
+
+
+def test_sibling_strategies_never_see_each_others_argument(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Two live strategies on one OR node are two attempts at the same
+    goal, dispatched under different arguments. The walk climbs through
+    `strategy_subgoals`, so each subtree reaches its own."""
+    a = _insert_root(conn)
+    _decision_for_goal(conn, a, "ROUTE A: via the weight function")
+    b = db.insert_goal(conn, problem="p", slug="other",
+                       lean_path="Problems/p/proofs/L_other.lean",
+                       statement="T", origin="forward")
+    _decision_for_goal(conn, b, "ROUTE B: via the lattice")
+    kid_a = _subgoal_of(conn, a, "kid_a")
+
+    attempts_dir = _make_attempts_dir(workspace)
+    compile_context(conn, goal=db.get_goal(conn, kid_a),
+                    mfst=_fake_manifest(), attempts_dir=attempts_dir,
+                    kind="backward", decision_id=None)
+    text = _read_context(attempts_dir)
+    assert "ROUTE A" in text
+    assert "ROUTE B" not in text
+
+
+def _pass_programme(conn: sqlite3.Connection, proof: str) -> None:
+    from Tooling.state import programme
+    programme.record_pass(
+        conn, "p",
+        f"# T\n## Argument\na\n## Proof\n{proof}\n## Roadmap\nr\n",
+        verdict={}, dialogue=[], rounds=0, batch_id=None, group_id=None)
+    conn.commit()
+
+
+def test_the_whole_proof_rides_only_when_nothing_answered(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The fallback IS the old behaviour, which is what makes this
+    landable on a live tree: every goal in flight predates the field, so
+    every one of them keeps getting the whole `## Proof` until a batch
+    fills theirs in. With a passage in hand, the rest of the batch is
+    other bricks' business and rides the pointer."""
+    _pass_programme(conn, "SECTION ONE. SECTION TWO. SECTION THREE.")
+    gid = _insert_root(conn)
+    attempts_dir = _make_attempts_dir(workspace)
+
+    compile_context(conn, goal=db.get_goal(conn, gid),
+                    mfst=_fake_manifest(), attempts_dir=attempts_dir,
+                    kind="backward", decision_id=None)
+    text = _read_context(attempts_dir)
+    assert "SECTION TWO" in text                       # no passage → all of it
+
+    did = _decision_for_goal(conn, gid, "just my part")
+    attempts_dir = _make_attempts_dir(workspace)
+    compile_context(conn, goal=db.get_goal(conn, gid),
+                    mfst=_fake_manifest(), attempts_dir=attempts_dir,
+                    kind="backward", decision_id=did)
+    text = _read_context(attempts_dir)
+    assert "just my part" in text
+    assert "SECTION TWO" not in text
+    assert "Full Programme" in text                    # …but reachable

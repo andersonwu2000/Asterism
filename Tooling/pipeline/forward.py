@@ -13,7 +13,7 @@ Backward / Builder attack.
 
 Stage order (docs/archive/design/phase2/pipelines.md §3.4; the
 authoritative list is run_forward's own docstring below):
-  1. compile_forward_context (pure)  Context.md: Strategist brief + Forward
+  1. compile_forward_context (pure)  Context.md: the brick's argument + Forward
                                history (failure-replay) + Library + Mathlib + TREE
   2. agent            (agent)  spawn LLM, get new_<slug>.lean or decline
   3. parse            (pure)   extract_forward_metadata / is_decline

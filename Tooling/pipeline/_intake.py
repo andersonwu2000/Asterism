@@ -4,7 +4,7 @@ First turn on a fresh session: the agent reads Context.md (Programme
 `## Proof` + assignment + tree state) and writes an `intake.json`
 sentinel — `{"verdict":"proceed"}` or
 `{"verdict":"decline","reason":<reason>,"note":...}` with reason one of
-  * `no_nl_correspondence` — the Proof does not argue this assignment;
+  * `return_to_nl` — the argument does not settle this assignment;
   * `unprovable` — a concrete instance breaks the statement (task #124,
     archaeology-backed: all 27 historical disproved goals were killed by
     a FRESH agent's unprovable decline within 1-3 attempts, never by the
@@ -45,7 +45,7 @@ INTAKE_INFRA_RCS = (SpawnRC.QUOTA_EXHAUSTED, SpawnRC.MISSING_DEP,
                     SpawnRC.SHUTDOWN)
 
 _SENTINEL = "intake.json"
-_VALID_DECLINE_REASONS = ("no_nl_correspondence", "unprovable")
+_VALID_DECLINE_REASONS = ("return_to_nl", "unprovable")
 
 
 @dataclass
@@ -106,7 +106,7 @@ def run_intake(*, prompt_dir: Path, attempts_dir: Path,
         reason = str(data.get("reason", "")).strip()
         note = str(data.get("note", "")).strip()
         if reason not in _VALID_DECLINE_REASONS:
-            # Pre-#124 this coerced to no_nl_correspondence — a one-word
+            # Pre-#124 this coerced to the return-to-NL reason — a one-word
             # vocabulary's fail-safe. With two reasons a coercion is a
             # mislabel; the work turn carries the full vocabulary.
             print(f"[intake] {label}: unknown decline reason {reason!r} "

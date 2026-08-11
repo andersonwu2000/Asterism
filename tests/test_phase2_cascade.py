@@ -1543,7 +1543,7 @@ def test_cascade_forward_infra_with_produced_goal_no_re_enqueue(
     assert r["outcome"] is None
 
 
-def test_no_nl_correspondence_routes_to_review(
+def test_return_to_nl_routes_to_review(
     conn: sqlite3.Connection,
 ) -> None:
     """NL-first (2026-07-25): a worker declining `no_nl_correspondence`
@@ -1556,7 +1556,7 @@ def test_no_nl_correspondence_routes_to_review(
     cascade_one(
         conn, pipeline_id="pid-nonl", kind="Backward",
         target_id=str(g), target_kind="Goal",
-        outcome="failed", failure_reason="no_nl_correspondence",
+        outcome="failed", failure_reason="return_to_nl",
     )
     gg = db.get_goal(conn, g)
     assert gg["status"] == "pending_strategist_review"

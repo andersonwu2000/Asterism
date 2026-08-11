@@ -518,7 +518,7 @@ def test_review_discharge_rejects_notes_only_batch(tmp_path: Path) -> None:
         {"kind": "FetchPaper", "query": "wall survey",
          "reason": "record the wall"},
         {"kind": "Inject", "pipeline": "Backward",
-         "target_goal_id": grev, "brief": "## Need\nfresh attack"},
+         "target_goal_id": grev, "proof": "## Need\nfresh attack"},
     ]))
     err2 = strategist.verify_decisions(ds2, conn, problem=P)
     assert "review not discharged" not in err2
@@ -595,7 +595,7 @@ def test_stall_advance_gate_rejects_zero_delta(tmp_path: Path) -> None:
 
     with_inject = reconfirm + [{
         "kind": "Inject", "pipeline": "Forward",
-        "brief": "## Need\na genuinely new brick"}]
+        "proof": "## Need\na genuinely new brick"}]
     ds3, _ = strategist.parse_decisions(json.dumps(with_inject))
     err3 = strategist.verify_decisions(
         ds3, conn, problem=P, trigger_kind="inject_batch_done")

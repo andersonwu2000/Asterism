@@ -39,8 +39,9 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
     ## Proof        this batch's mathematics, written as a mathematician writes proofs: a complete
                     argument for every claim this batch dispatches. No gaps here — an unclosed
                     claim belongs in the Roadmap, not the Proof. The worker's only share is the
-                    Lean shape. (Nothing new to argue → the single line "No new
-                    mathematics this batch.")
+                    Lean shape. Write the whole argument here first, then copy each
+                    brick's part into its Inject's `proof`. (Nothing new to argue →
+                    the single line "No new mathematics this batch.")
     ## Roadmap      the route, and the ONLY home for gaps: ordered next goals and open questions
                     with their status and the plan to close them — near entries brief-ready, far
                     entries coarse; a closure names the exact instantiation that died AND a
@@ -61,8 +62,8 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 - Before submitting, re-check your ## Proof for correctness: every step's direction and quantifier scope, and any step that assumes structure the hypothesis does not give.
 
 ## Decision kinds
-- `Inject` — `brief` or `brief_file` (bare filename in your attempts dir — Write the brief there, no JSON escaping). Two shapes:
-  - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself — steer with the brief's mathematics, not a mode.
+- `Inject` — `proof` or `proof_file` (bare filename in your attempts dir — Write it there, no JSON escaping). The part of this batch's `## Proof` that settles this brick, copied across with the vocabulary it uses. It is what the worker formalizes against; the worker does not read the rest. Two shapes:
+  - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself.
   - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never brief a mint with an alive goal's statement.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone (the batch still needs its ≥1 experiment). Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `Delegate` — `brief` or `brief_file` (the charter: a precise claim the new group must settle), optional `target_goal_id`, optional `reason`. For a claim you cannot yet prove. Your Proof must be complete GIVEN it; it must not depend on your conclusion or any charter above you. With `target_goal_id`: that goal becomes the anchor. Several plausible routes, none yet provable → one group per route, in the same batch; competing hypotheses are a portfolio, not a queue.

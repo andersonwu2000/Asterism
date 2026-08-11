@@ -1486,12 +1486,13 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 db.increment_goal_attempts(conn, int(target_id))
                 _enqueue_strategist_review(conn, int(target_id))
                 return
-            # no_nl_correspondence (NL-first, 2026-07-25): the worker
-            # found no Programme Proof step backing this goal — same
+            # return_to_nl (NL-first 2026-07-25; renamed 2026-08-11 to
+            # say its DESTINATION, since one exit now carries three
+            # diagnoses): the argument does not settle this goal — same
             # review routing as agent_shelved (transitional, chain
             # stays alive); the Strategist either argues the claim to
             # closure in the Proof or retires it.
-            if failure_reason == "no_nl_correspondence":
+            if failure_reason == "return_to_nl":
                 db.increment_goal_attempts(conn, int(target_id))
                 _enqueue_strategist_review(conn, int(target_id))
                 return
@@ -1670,9 +1671,9 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             db.increment_goal_attempts(conn, int(target_id))
             _enqueue_strategist_review(conn, int(target_id))
             return
-        # no_nl_correspondence (NL-first, 2026-07-25): same review
+        # return_to_nl (NL-first, 2026-07-25): same review
         # routing as agent_shelved — see the Builder branch above.
-        if failure_reason == "no_nl_correspondence":
+        if failure_reason == "return_to_nl":
             db.increment_goal_attempts(conn, int(target_id))
             _enqueue_strategist_review(conn, int(target_id))
             return

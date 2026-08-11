@@ -13,7 +13,7 @@ Strategist sees:
   - Pending review target (for T2)
 
 Forward sees:
-  - Strategist brief (from queue.decision_id FK)
+  - The argument for this brick (from queue.decision_id FK)
   - Library state (cross-problem proved lemmas)
   - TREE.md inline
   - Past Forward output history
@@ -1677,15 +1677,18 @@ def _section_kb_lessons_curation(conn: sqlite3.Connection, problem: str,
 
 def _section_forward_brief(conn: sqlite3.Connection,
                            decision_id: int | None) -> list[str]:
-    """Strategist Inject brief — primary input to Forward. Falls back
-    to a placeholder if decision_id is None / row missing (shouldn't
-    happen in production but tests / replay may exercise this)."""
+    """The argument for THIS brick — Forward's primary input: the part of
+    the batch's `## Proof` that settles it, copied into the Inject when
+    the batch was written and judged along with it. Falls back to a
+    placeholder if decision_id is None / row missing (shouldn't happen
+    in production but tests / replay may exercise this)."""
+    header = "## The argument for this brick"
     if decision_id is None:
         return [
-            "## Strategist brief",
+            header,
             "",
-            "(no Strategist Inject brief — Forward was dispatched without one. "
-            "Default to a broadly useful new lemma in the problem's domain.)",
+            "(dispatched without one — default to a broadly useful new "
+            "lemma in the problem's domain.)",
             "",
         ]
     try:
@@ -1697,12 +1700,12 @@ def _section_forward_brief(conn: sqlite3.Connection,
         row = None
     if row is None or not row["brief"]:
         return [
-            "## Strategist brief",
+            header,
             "",
-            "(decision row missing brief content; treat as open-ended.)",
+            "(decision row carries none; treat as open-ended.)",
             "",
         ]
-    return ["## Strategist brief", "", str(row["brief"]).strip(), ""]
+    return [header, "", str(row["brief"]).strip(), ""]
 
 
 def _section_library_inventory(conn: sqlite3.Connection, problem: str,
@@ -1778,6 +1781,18 @@ def _section_programme_proof(conn: sqlite3.Connection, problem: str,
     the agent unsure whether it was empty or truncated)."""
     from ..state import programme as _programme
     header = "## Programme Proof"
+    # When the Inject carries its own argument, that argument IS this
+    # section's job and the rest of the batch is other bricks' business.
+    # The observed forward context shipped both: a hand-written 906 B
+    # `## Proof` inside the brief AND the whole 7,962 B Programme Proof,
+    # the same mathematics twice.
+    try:
+        own = conn.execute(
+            "SELECT brief FROM strategist_decisions WHERE id = ?",
+            (int(decision_id),)).fetchone() if decision_id is not None else None
+    except sqlite3.OperationalError:
+        own = None
+    has_own = bool(own is not None and str(own["brief"] or "").strip())
     try:
         # The rev that dispatched this mint, not the latest — a mint has
         # no goal yet, so the decision IS the whole provenance. See
@@ -1791,6 +1806,11 @@ def _section_programme_proof(conn: sqlite3.Connection, problem: str,
     proof = ((sections or {}).get("proof") or "").strip()
     if not proof:
         return [header, "(none yet)", ""]
+    if has_own:
+        return [f"{header} (rev {row['rev']})", "",
+                "The argument for this brick is above. The whole batch's "
+                "`## Proof` — the other bricks and how they compose — is "
+                "in `PROGRAMME.md` beside the problem files.", ""]
     return [f"{header} (rev {row['rev']})", "", proof, ""]
 
 
@@ -1845,7 +1865,7 @@ def compile_forward_context(conn: sqlite3.Connection, *,
     """Write Context.md for the Forward agent into attempts_dir.
 
     Sections:
-      - Strategist brief (load-bearing input)
+      - The argument for this brick (load-bearing input)
       - Library inventory
       - Past Forward proposals
       - Active goals (alive open/attempting/pending — so Forward does not

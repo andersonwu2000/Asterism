@@ -242,7 +242,7 @@ def _spawn_script(rebuttals_before_pass: int):
         n = state["strategist_calls"]
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({"kind": "Inject", "pipeline": "Forward",
-                        "brief": f"Roadmap: the brick\n## Need\nbrick v{n}"}),
+                        "proof": f"Roadmap: the brick\n## Need\nbrick v{n}"}),
             encoding="utf-8")
         (kw["attempts_dir"] / "proposal.md").write_text(
             _PROPOSAL.replace("# Step", f"# Step v{n}"),

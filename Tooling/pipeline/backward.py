@@ -532,7 +532,7 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
 
     Phase 2 — `decision_id` flows from the spawning queue row (non-NULL
     only when a Strategist Inject decision emitted this entry). Passed
-    through to `compile_context` for the `## Strategist brief` section.
+    through to `compile_context` for `## The argument for this brick`.
 
     Outcomes:
       - `success`: strategy committed → clear any prior draft.

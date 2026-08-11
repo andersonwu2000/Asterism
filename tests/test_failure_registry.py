@@ -56,7 +56,7 @@ def test_terminal_decline_set_pinned():
         "agent_declined", "agent_infeasible", "parent_needs_fix",
         "agent_shelved", "agent_bailed", "goal_no_longer_open",
         "same_as_disproved", "same_as_dead_unchanged",
-        "duplicate_strategy", "no_nl_correspondence",
+        "duplicate_strategy", "return_to_nl",
     }
 
 
@@ -65,7 +65,7 @@ def test_non_agent_set_pinned():
         "spawn_fast_fail", "agent_infeasible", "parent_needs_fix",
         "agent_shelved", "goal_not_found", "lean_file_missing",
         "missing_parent_stub", "parent_stub_not_decomposable",
-        "goal_no_longer_open", "unknown_kind", "no_nl_correspondence",
+        "goal_no_longer_open", "unknown_kind", "return_to_nl",
         "problem_not_found", "system_killed",
         "unclassified_spawn_failure",
         # A provider config error teaches the agent nothing — the fix is

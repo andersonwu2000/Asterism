@@ -447,7 +447,7 @@ CREATE TABLE IF NOT EXISTS dead_attempts (
 -- Forward using a Problem target the inference breaks), and `decision_id`
 -- (FK to strategist_decisions; non-null means this queue entry was
 -- emitted by a Strategist Inject decision — its brief flows to the
--- spawned pipeline via Context.md `## Strategist brief`).
+-- spawned pipeline via Context.md `## The argument for this brick`).
 CREATE TABLE IF NOT EXISTS queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     kind        TEXT NOT NULL

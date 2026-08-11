@@ -219,8 +219,9 @@ class Decision:
 def resolve_directive_body_files(decisions: "list[Decision]",
                                  attempts_dir: Path) -> str:
     """File-form hand-off for the two multi-KB text fields: EmitDirective
-    `body_file` → payload['body'], and Inject `brief_file` → `brief`
-    (2026-07-19; agent_feedback ×3 in the a5 run — briefs are multi-KB
+    `body_file` → payload['body'], Inject `proof_file` and Delegate
+    `brief_file` → the decision's prose
+    (2026-07-19; agent_feedback ×3 in the a5 run — these are multi-KB
     Lean-and-markdown blobs the sandbox forces agents to hand-escape
     into JSON, one stray backslash from silent corruption). Each ref is
     a bare filename inside the strategist's attempts dir. The framework
@@ -248,8 +249,13 @@ def resolve_directive_body_files(decisions: "list[Decision]",
             if err:
                 return err
             d.payload["body"] = text
-        elif d.kind == "Inject" and d.payload.get("brief_file"):
-            text, err = _read(d.payload["brief_file"], "Inject.brief_file")
+        elif d.kind == "Inject" and d.payload.get("proof_file"):
+            text, err = _read(d.payload["proof_file"], "Inject.proof_file")
+            if err:
+                return err
+            d.brief = text
+        elif d.kind == "Delegate" and d.payload.get("brief_file"):
+            text, err = _read(d.payload["brief_file"], "Delegate.brief_file")
             if err:
                 return err
             d.brief = text
@@ -340,7 +346,15 @@ def _parse_one(obj: dict[str, Any]) -> tuple[Decision | None, str]:
         else:
             return None, (f"target_id must be int, slug string, or null "
                           f"(got {type(target_id).__name__})")
-    brief = obj.get("brief")
+    # One column, two contracts (2026-08-11). An Inject's prose is the
+    # argument that settles its brick — the part of the batch's
+    # `## Proof` the author copied across — so the key it is written
+    # under is `proof`. A Delegate's is the charter: a claim a new group
+    # must settle, which is not a proof of anything. Naming them apart
+    # is what stops each contract teaching the other's meaning; they
+    # share a row because a decision carries one piece of prose, not
+    # because the prose means one thing.
+    brief = obj.get("proof") if kind == "Inject" else obj.get("brief")
     reason = obj.get("reason")
     # Pull all structured params (anything not already consumed) into
     # payload. Lets agent send either nested-payload or flat shape.
@@ -351,7 +365,7 @@ def _parse_one(obj: dict[str, Any]) -> tuple[Decision | None, str]:
         payload = {}
     for k, v in obj.items():
         if k in ("kind", "target_goal_id", "target_id",
-                 "brief", "reason", "payload"):
+                 "brief", "proof", "reason", "payload"):
             continue
         payload[k] = v
     return Decision(kind=kind, target_id=target_id, brief=brief,
@@ -420,11 +434,20 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         # mode); absent → mint ONE new brick from the brief. The legacy
         # `pipeline` payload field is ignored when present.
         if not isinstance(decision.brief, str) or not decision.brief.strip():
-            return "Inject requires non-empty `brief` (string)"
-        if decision.payload.get("briefs") or decision.payload.get("directive"):
-            return (f"Inject schema uses top-level `brief: str`; "
-                    f"`briefs` / `directive` payload fields are legacy "
-                    f"— remove them and put your text in `brief`")
+            # Emptiness is the only mechanical check here, and it stays
+            # that way. A length floor cannot tell a genuinely short
+            # argument from padding — it fails the right batch and
+            # passes the wrong one, which is what retired the `Roadmap:`
+            # check on this same field. The reader who CAN tell is the
+            # worker, and `return_to_nl` is how it says so.
+            return ("Inject requires non-empty `proof` (string): the part "
+                    "of this batch's `## Proof` that settles this brick, "
+                    "copied across with the vocabulary it uses")
+        if (decision.payload.get("briefs") or decision.payload.get("directive")
+                or decision.payload.get("brief")):
+            return (f"Inject schema uses top-level `proof: str`; "
+                    f"`brief` / `briefs` / `directive` fields are legacy "
+                    f"— remove them and put the argument in `proof`")
         target = decision.target_id
         if target is None:
             return ""          # mint shape — brief is the whole payload

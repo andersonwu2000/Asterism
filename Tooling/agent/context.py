@@ -1170,10 +1170,17 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
             _programme.render(conn, problem, problem_dir, gid)
         except OSError:
             pass
+    # The whole `## Proof` rides inline only when nothing more specific
+    # answered. When the brick has its own argument — the passage its
+    # author copied into the Inject — that passage IS this section's
+    # job, and the rest of the batch is other bricks' business: g7509
+    # carried 10,160 B of five-section Proof with no line anywhere
+    # saying which section was its own.
+    has_own = bool(authorising_proof(conn, decision_id, goal_id)[0])
     sections, _err = _programme.parse_proposal(str(row["body"] or ""))
     proof = ((sections or {}).get("proof") or "").strip()
     out = [f"## Proof (Programme rev {row['rev']})", ""]
-    if proof:
+    if proof and not has_own:
         out += [proof, ""]
     # PROGRAMME.md on disk always renders the group's CURRENT rev. When
     # that is not the rev above, say so rather than let the pointer
@@ -1187,10 +1194,15 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
         print(f"[programme-pin] goal {goal_id}: authorised by rev "
               f"{row['rev']}, current is {current['rev']}"
               f" (group {gid})", flush=True)
+        # The stamp is the whole point of this branch and it must not go
+        # with the text it used to annotate: a worker on attempt 4 of a
+        # stale line has no other way to know its argument is a fossil.
+        anchor = ("The argument above" if not has_own
+                  else "The argument for this brick")
         out += [f"Full Programme: `{prog_rel}` beside the problem "
                 f"files — note it renders rev {current['rev']}, which has "
-                f"moved on from the rev that authorised this goal. The "
-                f"`## Proof` above is the one you formalize against.", ""]
+                f"moved on from the rev that authorised this goal. "
+                f"{anchor} is the one you formalize against.", ""]
     else:
         out += [f"Full Programme (Argument / Roadmap / adversary "
                 f"reservations): `{prog_rel}` beside the problem files.",
@@ -1241,34 +1253,83 @@ def _section_strategist_directive(conn: sqlite3.Connection,
     return out
 
 
-def _section_strategist_brief(conn: sqlite3.Connection,
-                              decision_id: int | None) -> list[str]:
-    """Render `strategist_decisions.brief` as a top-level Context.md
-    section if `decision_id` is set and the row has non-empty brief.
-    Per-pipeline one-shot — this only renders for pipelines spawned
-    by a Strategist Inject decision (queue.decision_id FK).
+#: The argument that authorised a goal, resolved most-specific-first —
+#: the same walk `programme.rev_for_goal` uses for the revision, and for
+#: the same reason. A worker that created its own sub-goals has no
+#: decision of its own; it inherits the argument its parent was
+#: dispatched under, and the walk goes up through `strategies`, not
+#: through a bare goal-parent chain, so two live strategies on one OR
+#: node never see each other's.
+_AUTHORISING_PROOF_SQL = """
+WITH RECURSIVE up(gid, depth) AS (
+  VALUES(?, 0)
+  UNION
+  SELECT s.goal_id, up.depth + 1
+    FROM strategy_subgoals ss
+    JOIN strategies s ON s.id = ss.strategy_id
+    JOIN up ON ss.subgoal_id = up.gid
+)
+SELECT d.brief AS proof, d.id AS decision_id FROM up
+  JOIN strategist_decisions d
+    ON CAST(d.produced_goal_id AS INTEGER) = up.gid
+ WHERE d.brief IS NOT NULL AND TRIM(d.brief) <> ''
+ ORDER BY up.depth ASC, d.id DESC
+ LIMIT 1
+"""
 
-    decision_id=None (BFS-auto-dispatched pipeline) → returns []. No-op
-    if strategist_decisions table is absent.
+
+def authorising_proof(conn: sqlite3.Connection,
+                      decision_id: "int | None" = None,
+                      goal_id: "int | None" = None
+                      ) -> "tuple[str, int | None]":
+    """`(argument, decision_id)` for this piece of work, or `('', None)`.
+
+    Empty is a real answer and the caller must handle it: a goal that
+    predates the field, a revived or hand-detached node, a subtree whose
+    injected ancestor left the field blank. On that path the worker gets
+    the whole `## Proof` inline, which is what every worker got before
+    this field existed — the fallback is the old behaviour, so nothing
+    regresses while the tree fills in.
     """
-    if decision_id is None:
-        return []
-    try:
-        row = conn.execute(
-            "SELECT brief FROM strategist_decisions WHERE id = ?",
-            (int(decision_id),),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return []
-    if row is None:
-        return []
-    brief = row["brief"]
-    if brief is None or not str(brief).strip():
+    if decision_id is not None:
+        try:
+            row = conn.execute(
+                "SELECT brief FROM strategist_decisions WHERE id = ?",
+                (int(decision_id),)).fetchone()
+        except sqlite3.OperationalError:
+            return "", None
+        if row is not None and str(row["brief"] or "").strip():
+            return str(row["brief"]).strip(), int(decision_id)
+    if goal_id is not None:
+        try:
+            row = conn.execute(_AUTHORISING_PROOF_SQL,
+                               (int(goal_id),)).fetchone()
+        except sqlite3.OperationalError:
+            return "", None
+        if row is not None:
+            return str(row["proof"]).strip(), int(row["decision_id"])
+    return "", None
+
+
+def _section_strategist_brief(conn: sqlite3.Connection,
+                              decision_id: int | None,
+                              goal_id: "int | None" = None) -> list[str]:
+    """The argument for THIS brick: the part of its batch's `## Proof`
+    that settles it, which the author copied into the Inject when the
+    batch was written and the Adversary judged along with it.
+
+    Renders for auto-dispatched sub-goals too, via the ancestor walk —
+    they are working inside the passage their parent was dispatched
+    under, since a `## Proof` may carry no gaps and a decomposition
+    therefore only outsources part of it.
+    """
+    proof, _ = authorising_proof(conn, decision_id, goal_id)
+    if not proof:
         return []
     return [
-        "## Strategist brief",
+        "## The argument for this brick",
         "",
-        str(brief).strip(),
+        proof,
         "",
     ]
 
@@ -1403,7 +1464,9 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
 
     `decision_id`: Phase 2 — when set, the spawning queue row was
     emitted by a Strategist Inject decision; pulls
-    `strategist_decisions.brief` into a `## Strategist brief` section.
+    the decision's argument into a `## The argument for this brick`
+    section (resolving up the strategy chain when this spawn has no
+    decision of its own).
     None means BFS-auto-dispatched (no brief, only directive).
 
     `kind`: 'builder' | 'backward' | None — gates which Goal history
@@ -1490,7 +1553,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                                   goal_id=int(goal["id"])),
         _section_strategist_directive(conn, str(goal["problem"]),
                                       goal_id=int(goal["id"])),
-        _section_strategist_brief(conn, decision_id),
+        _section_strategist_brief(conn, decision_id, int(goal["id"])),
         _section_header(goal, workspace),
         _section_library_available(conn, mfst),
         _section_strategy_naming(strategy_id, goal),

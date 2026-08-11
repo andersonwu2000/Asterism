@@ -1,4 +1,4 @@
-Produce **one** new brick to the `## Strategist brief`'s specification — keep the claim, the Lean shape is yours.
+Produce **one** new brick that settles `## The argument for this brick` — keep the claim, the Lean shape is yours.
 
 Before minting, grep Mathlib + Library + siblings to confirm the brick does not already exist.
 
