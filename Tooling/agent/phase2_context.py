@@ -1375,7 +1375,8 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     # the loop "ConfirmShelve promises retry → Forward lands → Strategist
     # never Reopens" was never closed by the agent on its own; surfacing
     # the cross-reference gives it a structured cue.
-    section_names += ["stall_warning", "ingest_gate", "disproof_guidance",
+    section_names += ["stall_warning", "ingest_gate", "deliverables",
+                      "disproof_guidance",
                       "your_group", "groups_in_flight", "programme",
                       "directive",
                       "plan_note", "inject_batches", "pending_reopens",
@@ -1384,6 +1385,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     sections += [
         _section_stall_warning(conn, problem, group_id),
         _section_ingest_gate(conn, problem, group_id, mfst=mfst),
+        _section_deliverables(conn, problem),
         _section_disproof_guidance(conn, problem),
         _section_your_group(conn, problem, group_id),
         _section_groups_in_flight(conn, problem, group_id),
@@ -1778,16 +1780,14 @@ def _section_programme_proof(conn: sqlite3.Connection, problem: str,
     return [f"{header} (rev {row['rev']})", "", proof, ""]
 
 
-def compile_admin_context(conn: sqlite3.Connection, *, problem: str,
-                          attempts_dir: Path, workspace: Path,
-                          mfst: manifest.Manifest,
-                          group_id: "int | None" = None) -> Path:
-    """Context.md for the wake's ADMIN turn (research_mission_design.md
-    §3.2): registry state only — deliverable candidates, current marks,
-    papers, the Manifest's deliverable spec. Deliberately free of the
-    Programme-authoring surfaces: the isolation IS the contract-diet
-    (each turn sees only its own world)."""
-    parts: list[str] = [f"# Admin context — {problem}", ""]
+def _section_deliverables(conn: sqlite3.Connection,
+                          problem: str) -> list[str]:
+    """`## Deliverables` — what is marked, and what is proved and could
+    be. Moved from the admin turn's context (2026-08-11) with the
+    `MarkDeliverable` kind itself: the turn that decides which claims
+    are the deliverable is the turn that reads the Manifest, and the
+    admin turn now runs at the wake's tail, where a mark would arrive
+    one wake late."""
     marked = list(conn.execute(
         "SELECT slug FROM goals WHERE problem = ? AND is_deliverable = 1"
         " ORDER BY id", (problem,)))
@@ -1796,16 +1796,34 @@ def compile_admin_context(conn: sqlite3.Connection, *, problem: str,
         " WHERE problem = ? AND status = 'proved'"
         "   AND origin = 'forward' AND COALESCE(is_deliverable, 0) = 0"
         " ORDER BY id", (problem,)))
-    parts += ["## Deliverables", ""]
-    parts.append("Marked: " + (", ".join(f"`{r['slug']}`" for r in marked)
-                               if marked else "(none)"))
+    if not marked and not candidates:
+        return []
+    out = ["## Deliverables", ""]
+    out.append("Marked: " + (", ".join(f"`{r['slug']}`" for r in marked)
+                             if marked else "(none)"))
     if candidates:
-        parts += ["", "Proved, unmarked (MarkDeliverable candidates — "
-                  "mark only top-level claims, never vocabulary):", ""]
+        out += ["", "Proved, unmarked (`MarkDeliverable` candidates — "
+                "mark only top-level claims the Manifest asks for, "
+                "never vocabulary or internal lemmas):", ""]
         for r in candidates:
             stmt = " ".join(str(r["statement"] or "").split())[:160]
-            parts.append(f"- g{r['id']} `{r['slug']}` — `{stmt}`")
-    parts.append("")
+            out.append(f"- g{r['id']} `{r['slug']}` — `{stmt}`")
+    out.append("")
+    return out
+
+
+def compile_admin_context(conn: sqlite3.Connection, *, problem: str,
+                          attempts_dir: Path, workspace: Path,
+                          mfst: manifest.Manifest,
+                          group_id: "int | None" = None) -> Path:
+    """Context.md for the wake's ADMIN turn (research_mission_design.md
+    §3.2). Its remit is now `RequestUserAmend` alone — is a user-owned
+    file malformed AS A FILE — so it sees the Manifest and the papers
+    and nothing else. `MarkDeliverable` and its candidate list moved to
+    the math turn (2026-08-11): deciding which claims are the
+    deliverable is reading the Manifest against the claim, which is the
+    mathematics this turn was told not to reason about."""
+    parts: list[str] = [f"# Admin context — {problem}", ""]
     parts.extend(_section_manifest_meta(mfst, workspace, problem))
     parts.extend(context._section_paper_index(mfst, workspace, conn,
                                               attempts_dir=attempts_dir))

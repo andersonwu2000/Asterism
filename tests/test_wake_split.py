@@ -65,13 +65,23 @@ def test_admin_turn_rejects_math_kinds(conn: sqlite3.Connection) -> None:
     assert "MATH turn" in err
 
 
-def test_math_turn_rejects_admin_kinds(conn: sqlite3.Connection) -> None:
+def test_mark_deliverable_is_a_math_turn_kind(
+    conn: sqlite3.Connection,
+) -> None:
+    """Moved 2026-08-11 (owner call). "Mark only top-level claims the
+    Manifest asks for" is reading the Manifest against the claim — the
+    mathematics the admin prompt told itself not to reason about. And
+    the admin turn moves to the wake's TAIL, where a mark lands one wake
+    late and pushes its Ingest with it. Here it also faces the
+    Adversary, which a decision driving the root gate should."""
     g = _proved_forward(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "MarkDeliverable", "target_goal_id": g, "reason": "r"},
     ]))
-    err = strategist.verify_decisions(ds, conn, problem="p", turn="math")
-    assert "ADMIN turn" in err
+    assert strategist.verify_decisions(
+        ds, conn, problem="p", turn="math") == ""
+    err = strategist.verify_decisions(ds, conn, problem="p", turn="admin")
+    assert "MATH turn" in err
 
 
 def test_fetch_paper_is_a_math_turn_kind(conn: sqlite3.Connection) -> None:
@@ -121,10 +131,8 @@ def test_admin_turn_skips_review_discharge(conn: sqlite3.Connection) -> None:
                        statement="T", origin="backward")
     db.update_goal_status(conn, g, "pending_strategist_review")
     conn.commit()
-    marked = _proved_forward(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "MarkDeliverable", "target_goal_id": marked,
-         "reason": "top-level claim"},
+        {"kind": "Noop", "reason": "nothing clerical"},
     ]))
     err_admin = strategist.verify_decisions(
         ds, conn, problem="p", trigger_kind="inject_batch_done",
@@ -156,21 +164,17 @@ def _run_admin(conn, workspace, mfst, payload, monkeypatch,
         workspace=workspace, mfst=mfst, attempts_dir=attempts)
 
 
-def test_admin_stage_commits_marks_without_touching_clocks(
+def test_admin_stage_commits_without_touching_clocks(
     conn: sqlite3.Connection, workspace: Path, mfst: manifest.Manifest,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The wake's clocks belong to the MATH turn: an admin commit that
     advanced them would let a wake whose math half failed read as
     'strategist ran', starving the retry pressure."""
-    g = _proved_forward(conn)
     out = _run_admin(conn, workspace, mfst,
-                     [{"kind": "MarkDeliverable", "target_goal_id": g,
-                       "reason": "top-level claim"}], monkeypatch)
+                     [{"kind": "Noop", "reason": "nothing clerical"}],
+                     monkeypatch)
     assert out is None
-    row = conn.execute(
-        "SELECT is_deliverable FROM goals WHERE id = ?", (g,)).fetchone()
-    assert int(row["is_deliverable"]) == 1
     p = conn.execute(
         "SELECT last_strategist_at, last_routine_at FROM problems"
         " WHERE name='p'").fetchone()

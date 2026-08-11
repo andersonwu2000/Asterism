@@ -99,7 +99,16 @@ _PACKAGE_EXEMPT_KINDS: frozenset[str] = frozenset(
     # `ReturnToParent` joins the hand-back family: the group is ending,
     # so there is no next batch for a Programme revision to argue for.
     {"FetchPaper", "RequestUserAmend", "Noop", "ReturnToParent"})
-_ENDGAME_KINDS: frozenset[str] = frozenset({"MarkDeliverable", "Ingest"})
+#: Exempt from "every batch carries an experiment". Only `Ingest` — it
+#: IS the terminal, so there is no next batch to dispatch for.
+#: `MarkDeliverable` sat here while it was an ADMIN kind, where the
+#: experiment rule never ran, so the entry was unreachable. Moving the
+#: kind to the math turn (2026-08-11) would have made it live and handed
+#: the Strategist a legal way to end a wake having dispatched nothing —
+#: exactly the standstill the rule exists to forbid. Marking a landed
+#: brick is bookkeeping; when it really is the endgame, `Ingest` rides
+#: the same batch and exempts it.
+_ENDGAME_KINDS: frozenset[str] = frozenset({"Ingest"})
 #: `Delegate` counts as this batch's experiment — handing a burden to a
 #: group IS dispatching work, and it is the one experiment whose result
 #: the Proof is NOT required to predict (see the closure-law carve-out
@@ -827,10 +836,21 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
 #: A fetch is a route decision (an unverified literature claim the
 #: route leans on), so it belongs with the route.
 ADMIN_TURN_KINDS: frozenset[str] = frozenset(
-    {"MarkDeliverable", "RequestUserAmend", "Noop"})
+    {"RequestUserAmend", "Noop"})
 MATH_TURN_KINDS: frozenset[str] = frozenset(
     {"Inject", "Delegate", "ConfirmShelve",
      "CloseGroup", "ReturnToParent", "Ingest", "RequestUserAmend",
+     # MarkDeliverable moved here 2026-08-11 (owner call). Two reasons.
+     # It is a mathematical judgement — "mark only top-level claims the
+     # Manifest asks for" means reading the Manifest and the claim,
+     # which the admin prompt asked for in the same breath as "do not
+     # reason about the mathematics". And the admin turn is moving to
+     # the wake's TAIL, where a mark would arrive one wake late: the
+     # brick that lands mid-wake would not be marked until the tail,
+     # pushing its Ingest to the next wake. Marking here also puts it
+     # in front of the Adversary, where a decision that drives the root
+     # gate belongs — the admin turn is un-judged and fail-open.
+     "MarkDeliverable",
      "Noop", "FetchPaper",
      # retired — flow through to the per-kind teaching rejections
      "EmitDirective", "AttemptDisproof"})
@@ -848,9 +868,9 @@ def _turn_whitelist_error(kind: str, turn: "str | None") -> str:
                 f"{', '.join(sorted(ADMIN_TURN_KINDS))}. Leave route "
                 f"and verdict decisions to the math turn that follows.")
     if turn == "math" and kind not in MATH_TURN_KINDS:
-        return (f"{kind} belongs to the ADMIN turn (it ran before this "
-                f"one and runs again next wake) — this turn owns the "
-                f"mathematics: "
+        return (f"{kind} belongs to the ADMIN turn — this turn owns "
+                f"the mathematics and the registry decisions that rest "
+                f"on it: "
                 f"{', '.join(sorted(MATH_TURN_KINDS - {'EmitDirective'}))}.")
     return ""
 
