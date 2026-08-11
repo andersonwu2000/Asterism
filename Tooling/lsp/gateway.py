@@ -1545,7 +1545,10 @@ def apply_edit(edits: list = None) -> str:
 
     Anchors must match exactly and appear exactly once. For
     `replace_between` the closing anchor need only be unique AFTER the
-    opening one — use it to swap a whole tactic block without quoting it.
+    opening one — use it to swap a whole tactic block without quoting
+    it. Ambiguity there is refused rather than resolved to the first
+    match: guessing is what silently swallowed the lines between the
+    intended close and a later one (2026-08-11).
 
     If any anchor fails to resolve, NOTHING is applied: the response says
     which edit and how to repair it, the file is unchanged, and your

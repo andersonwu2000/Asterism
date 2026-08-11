@@ -116,21 +116,29 @@ def _closest_region(content: str, needle: str) -> "str | None":
     return content[lo:hi][:CLOSEST_CONTEXT_CHARS]
 
 
-def _find_unique(content: str, needle: str, index: int, label: str) -> int:
+def _find_unique(content: str, needle: str, index: int, label: str,
+                 *, start: int = 0, scope: str = "the file") -> int:
+    """The one offset `needle` names, or an error naming the rivals.
+
+    `start` restricts the search to `content[start:]` while keeping the
+    offsets (and therefore the reported line numbers) absolute — that is
+    how `replace_between`'s closing anchor stays REGIONAL: it must be
+    unique after the opening anchor, never in the whole file.
+    """
     if not needle:
         raise EditError(index, f"{label} is empty — give the text to match")
     hits = []
-    at = content.find(needle)
+    at = content.find(needle, start)
     while at != -1:
         hits.append(at)
         if len(hits) > MAX_AMBIGUOUS_SHOWN:
             break
         at = content.find(needle, at + 1)
     if not hits:
-        closest = _closest_region(content, needle)
+        closest = _closest_region(content[start:], needle)
         raise EditError(
             index,
-            f"{label} does not appear in the file"
+            f"{label} does not appear in {scope}"
             + (". A region differs only in whitespace — resubmit with this "
                "text VERBATIM (indentation is part of the anchor):"
                if closest else
@@ -141,8 +149,8 @@ def _find_unique(content: str, needle: str, index: int, label: str) -> int:
         raise EditError(
             index,
             f"{label} appears {len(hits)}{'+' if len(hits) > MAX_AMBIGUOUS_SHOWN else ''} "
-            f"times — extend it until it is unique (include the line above "
-            f"or below).",
+            f"times in {scope} — extend it until it is unique (include the "
+            f"line above or below).",
             match_lines=[line_of(content, h)
                          for h in hits[:MAX_AMBIGUOUS_SHOWN]])
     return hits[0]
@@ -175,17 +183,27 @@ def resolve(content: str, edits: "list") -> "list[Span]":
                                    "anchors: [<from>, <to>]")
             lo_text, hi_text = str(pair[0] or ""), str(pair[1] or "")
             lo = _find_unique(content, lo_text, i, "the opening anchor")
-            # The closing anchor need only be unique AFTER the opening
-            # one: a proof block routinely ends on a line that recurs
-            # elsewhere in the file, and requiring global uniqueness
-            # there would push the agent back to quoting the whole span —
-            # the transcription failure this form exists to avoid.
-            hi = content.find(hi_text, lo + len(lo_text))
-            if hi == -1:
-                raise EditError(
-                    i, "the closing anchor does not appear after the "
-                       "opening one — check the order, or that both are "
-                       "verbatim.")
+            # The closing anchor is REGIONAL, not global: a proof block
+            # routinely ends on a line that recurs elsewhere in the file
+            # (`omega`, `rfl`), and demanding global uniqueness would
+            # push the agent back to quoting the whole span — the
+            # transcription failure this form exists to avoid. So it must
+            # be unique only in what follows the opening anchor.
+            #
+            # It used to take the FIRST match after `lo` and say nothing,
+            # which made it the one address in this API that could bind
+            # silently to the wrong place. When the intended occurrence
+            # failed to match verbatim (one space of indentation is
+            # enough), the anchor bound to a LATER one and the span
+            # swallowed everything in between — reported 2026-08-11 as
+            # "deleted the e1/e2 have-blocks that followed, leaving a
+            # dangling `intro h`". Ambiguity is now refused the same way
+            # the opening anchor refuses it, so a wrong address costs a
+            # rejection instead of a corrupted file: `resolve` is
+            # all-or-nothing, and a refused batch changes nothing.
+            hi = _find_unique(content, hi_text, i, "the closing anchor",
+                              start=lo + len(lo_text),
+                              scope="the text after the opening anchor")
             spans.append(Span(lo, hi + len(hi_text),
                               str(e.get("with") or ""),
                               "replace_between", lo_text))
