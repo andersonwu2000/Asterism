@@ -65,6 +65,12 @@ select = ["F821"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Parallel by default: 3200 tests, 185s serial vs 46s under xdist with
+# identical results (measured 2026-08-11) — the suite is xdist-safe by
+# construction (per-test tmp_path / in-memory DBs, no fixed ports).
+# Debugging a single test? `-n0` restores serial so -x / --pdb / print
+# ordering behave.
+addopts = "-n auto"
 markers = [
     "real_lake: end-to-end test that spawns a live lake/lean toolchain (slow; only runnable where Mathlib is built). OFF by default — opt in with ASTERISM_REAL_LAKE=1 pytest, or pytest -m real_lake.",
     "free_cli_probe: may spawn a provider CLI for a probe that is answered locally (--version / an invalid --model / a nonexistent --resume id) — no API call, no tokens, no quota. ON by default (it skips itself where the CLI is absent); the side-effect fence checks the argv shape, not just the marker.",

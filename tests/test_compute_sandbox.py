@@ -108,10 +108,18 @@ def test_the_escapes_are_refused(label, code, expect) -> None:
 
 
 @live
-def test_runaway_time_is_stopped_by_the_wall_clock() -> None:
+def test_runaway_time_is_stopped_by_the_wall_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A busy loop accrues CPU; `sleep` does not. The wall clock has to
     catch both, which is why it is enforced out here and not by the Job
-    Object's own limit (that one counts user-mode CPU)."""
+    Object's own limit (that one counts user-mode CPU).
+
+    The limit is shrunk to 2s: the kill loop reads the module constant
+    each tick, so the enforcement path under test is byte-identical to
+    the production one — waiting out the real 30s bought nothing but a
+    test that was 16% of the whole suite's wall time."""
+    monkeypatch.setattr(sandbox, "TIMEOUT_SEC", 2)
     r = sandbox.run("while True: pass")
     assert r.killed == "timeout"
     assert r.seconds < sandbox.TIMEOUT_SEC + 10
