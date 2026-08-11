@@ -16,7 +16,18 @@ The decision-kind rules the Strategist operates under — check quoted contract 
 - `ReturnToParent` — `flavour ∈ {"refuted","amend","exhausted"}`, `reason` (what was tried, where it died, what was learned). `refuted` also takes `target_goal_id`: the PROVED node carrying the negation. `amend` also takes `proposed_charter`: the claim you believe is provable.
 - Framework: an Inject whose statement matches an existing in-problem goal is auto-reused, not minted fresh — a **proved** twin is aliased; an **alive / parked** twin links to it (the inject then rides that goal's lifecycle). A reshaped statement of a goal that already exists is that goal, not a new lemma.
 
+
 `target_goal_id` accepts integer id or slug.
+
+Standing rules the batch itself must satisfy — same source, same words:
+
+- Every Inject is proven in the Proof — inject only what is fully argued; anything short of rigorous closure stays in the Roadmap awaiting a later batch, or goes to a `Delegate`. The `proof` field carries the argument that settles it; the worker settles the Lean shape — the claim must not drift.
+- Boldness lives in the Roadmap — name candidate constructions and hypotheses there, labeled as hypotheses; rigor lives in the Proof — a candidate enters it only once its argument is closed.
+- Name Roadmap entries by phrase, never by position — numbers change as revisions reorder entries.
+- Mark formal↔informal claims not yet kernel-checked in the Roadmap.
+- Every route-moving batch carries ≥1 experiment — an Inject or a `Delegate` (Ingest batches exempt). Retiring work is not an experiment.
+- Same-batch mints must be independent (concurrent dispatch); a dependent brick goes in the next batch.
+- The mathematics — claims, arguments, lemma names, invariant constructions, proof techniques — is yours. Tactics, Lean syntax, statement shape (ranges, off-by-ones, constants) are the worker's.
 
 `ReturnToParent` is available only to a sub-group; `RequestUserAmend` only to the top group; `CloseGroup` only to a group that has live children.
 

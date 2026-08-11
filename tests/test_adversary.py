@@ -886,6 +886,29 @@ def test_adversary_contract_section_matches_wake_prompts() -> None:
     assert checked >= 9, checked
     assert "`target_goal_id` accepts integer id or slug." in wakes
 
+    # …and the REVERSE direction, which is what was missing (2026-08-11).
+    # The guard above only asked "is every contract bullet real?" — never
+    # "does the judge have every rule?" — so `Same-batch mints must be
+    # independent` lived in all three wake prompts and in none of the
+    # judge's, and 16 Injects across 4 batches broke it without one
+    # rebuttal. One of them told g7491's worker to cite a brick minted in
+    # its own batch; the worker could not find it (a mint has no goal row
+    # until its Forward commits) and rebuilt it, spending a third of its
+    # budget on a sibling's work.
+    #
+    # Anchored on the `## Rules` heading: framework-authored structure,
+    # not agent prose, so this reads a section boundary rather than
+    # detecting free text.
+    rules = _re.search("\n## Rules\n(.*?)(?=\n## )", wakes, _re.S)
+    assert rules, "the wake prompts lost their `## Rules` section"
+    for line in rules.group(1).splitlines():
+        line = line.strip()
+        if not line.startswith("- "):
+            continue
+        assert line in section, (
+            "a rule the Strategist is held to never reached the judge: "
+            + line[:140])
+
 
 def test_plan_note_rewrite_step_synced_and_names_attempts_dir() -> None:
     """07-29 SG: the `Rewrite _plan.md` step named no location, and with
