@@ -23,13 +23,6 @@ from Tooling.pipeline import adversary, strategist
 from Tooling.state import db, manifest, programme
 
 
-@pytest.fixture(autouse=True)
-def _admin_turn_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
-    # RS-C: the wake's admin turn (Turn A) spawns before the math turn;
-    # these tests count math-turn spawns, so skip the admin stage.
-    monkeypatch.setattr(strategist, "run_admin_turn", lambda *a, **kw: None)
-
-
 @pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
@@ -86,11 +79,21 @@ def test_gate_shape():
     assert not strategist.package_gate_applies(
         [_d("RequestUserAmend")], "pending_review")
     # Any route-moving kind arms the gate — including EmitDirective
-    # (the drift side door) and the endgame kinds.
-    for kind in ("Inject", "ConfirmShelve",
-                 "MarkDeliverable", "Ingest", "EmitDirective"):
+    # (the drift side door) and Ingest, the terminal act.
+    for kind in ("Inject", "ConfirmShelve", "Ingest", "EmitDirective"):
         assert strategist.package_gate_applies(
             [_d(kind), _d("Noop")], "routine"), kind
+    # MarkDeliverable is exempt as of 2026-08-11, when it moved out of
+    # the retired admin turn: it records that work already dispatched,
+    # already argued and already kernel-checked is the deliverable, and
+    # demanding a fresh Programme revision to say so would be friction
+    # the un-judged admin turn never charged. Deliberate, not drift.
+    assert not strategist.package_gate_applies(
+        [_d("MarkDeliverable"), _d("Noop")], "routine")
+    # …but a mark riding a batch that DOES move the route is gated with
+    # it: the gate asks whether ANY kind is non-exempt.
+    assert strategist.package_gate_applies(
+        [_d("MarkDeliverable"), _d("Inject")], "routine")
 
 
 def test_package_requires_file_and_experiment(tmp_path: Path):

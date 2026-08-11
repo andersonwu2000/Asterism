@@ -47,8 +47,9 @@ def test_attempt_disproof_gone_from_experiment_and_math_kinds() -> None:
     assert "AttemptDisproof" not in strategist._EXPERIMENT_KINDS
     # Parseable-but-rejected, exactly the EmitDirective pattern:
     assert "AttemptDisproof" in strategist.DECISION_KINDS
-    assert "AttemptDisproof" in strategist.MATH_TURN_KINDS
-    assert "AttemptDisproof" not in strategist.ADMIN_TURN_KINDS
+    # The turn whitelists retired with the wake split (2026-08-11);
+    # what mattered here — the kind parses and is then rejected with a
+    # teaching message rather than crashing — is above.
 
 
 def test_prompts_carry_no_attempt_disproof() -> None:
@@ -57,7 +58,7 @@ def test_prompts_carry_no_attempt_disproof() -> None:
     rejects is a round-trip trap."""
     root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
     for rel in ("strategist/routine.md", "strategist/inject_batch_done.md",
-                "strategist/pending_review.md", "strategist/admin.md",
+                "strategist/pending_review.md",
                 "adversary/_contract.md", "adversary/adversary.md"):
         text = (root / rel).read_text(encoding="utf-8")
         assert "AttemptDisproof" not in text, rel

@@ -271,14 +271,16 @@ def test_run_strategist_lane_names_its_group_not_a_row_id(
     assert lane["group"]["charter"] == "settle the pigeonhole bound"
 
 
-def test_run_strategist_lane_names_the_admin_turn(
+def test_run_strategist_lane_matches_on_its_one_context(
         workspace: Path, monkeypatch) -> None:
-    """The wake runs in two turns (2026-08-03): the ADMIN turn works in
-    `<workarea>/admin/` and the wake's OWN Context.md is not compiled
-    until it finishes. The lane matched workareas by that root file
-    only, so for the whole admin turn — up to
-    `strategist.admin_timeout_sec`, ten minutes — the console found no
-    workarea and said "nothing on disk yet" about a working machine."""
+    """The wake ran in two turns from 2026-08-03 to 2026-08-11, and the
+    ADMIN turn worked in `<workarea>/admin/` while the wake's own
+    Context.md did not exist yet — so the console said "nothing on disk
+    yet" about a working machine for up to ten minutes, and the lane
+    grew a `stage` to name which turn it was in. With one turn there is
+    one Context.md, matched directly, and `stage` is permanently null
+    (kept in the payload so a stale UI bundle reads "no stage" rather
+    than KeyError)."""
     conn = _open_db(workspace)
     _add_problem(conn, "p")
     db.enqueue(conn, kind="Strategist", target_id="p",
@@ -288,23 +290,16 @@ def test_run_strategist_lane_names_the_admin_turn(
     conn.commit()
     conn.close()
     wa = workspace / ".attempts" / "wake-1"
-    (wa / "admin").mkdir(parents=True)
-    (wa / "admin" / "Context.md").write_text(
-        "# Admin context — p\n\n## Deliverables\n\nMarked: (none)\n",
-        encoding="utf-8")
-    _fake_daemon(monkeypatch, scope="p")
-
-    lane = _client(workspace).get("/api/run").json()["workers"][0]
-    assert lane["kind"] == "Strategist"   # one seat, two turns
-    assert lane["stage"] == "admin"
-
-    # the wake's own context lands → the lane moves to the math turn
+    wa.mkdir(parents=True)
     (wa / "Context.md").write_text(
         "# Strategist context — p\n\n## Trigger\n\n"
         "`trigger_kind`: routine\n", encoding="utf-8")
+    _fake_daemon(monkeypatch, scope="p")
+
     lane = _client(workspace).get("/api/run").json()["workers"][0]
-    assert lane["stage"] == "math"
+    assert lane["kind"] == "Strategist"
     assert lane["mode"] == "routine"
+    assert lane["stage"] is None
 
 
 def test_run_sibling_group_lanes_do_not_swap_thinking(

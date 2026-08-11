@@ -29,16 +29,6 @@ def _intake_degraded(monkeypatch):
         lambda **kw: _intake.IntakeOutcome(sid=None))
 
 
-@pytest.fixture(autouse=True)
-def _admin_turn_skipped(monkeypatch):
-    """The wake's ADMIN turn (RS-C) has its own tests; these harnesses
-    count spawns and compare session ids assuming call #0 is the MATH
-    spawn — same degradation pattern as the intake fixture above."""
-    monkeypatch.setattr(strategist, "run_admin_turn",
-                        lambda *a, **kw: None)
-
-
-
 
 @pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

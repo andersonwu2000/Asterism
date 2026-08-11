@@ -1,9 +1,27 @@
-"""RS-C (research_mission_design.md §3.2) — the Strategist wake split.
+"""The Strategist wake split is RETIRED (2026-08-11). This file is what
+keeps it retired.
 
-Turn A (admin, un-judged, fail-open) owns registry operations; Turn M
-(math, adversary-judged) owns route and verdicts. The isolation IS the
-contract diet: each turn sees only its own world, and the wake's clocks
-belong to M alone.
+It ran from 2026-08-03: Turn A (admin, un-judged, fail-open) owned
+registry operations, Turn M (math, adversary-judged) owned route and
+verdicts, and the isolation was billed as a contract diet — each turn
+sees only its own world.
+
+Two things ended it.
+
+The exit condition was split across the turns. `Ingest` was a math kind
+and `MarkDeliverable` — its precondition — was an admin kind, so "mark
+the last brick, then Ingest" could not happen in one wake. Turn A
+running FIRST concealed that: the marks a wake saw were the previous
+wake's, so the ordering was load-bearing for a defect the split had
+introduced.
+
+And it was offloading less than it cost: across the union_closed run's
+43 batches, Turn A produced 18 MarkDeliverable + 4 Noop + 0
+RequestUserAmend, at one spawn and one Context per wake. The isolation
+argument did not survive its own prompt either — admin.md said "Mark
+only top-level claims the Manifest asks for" and "Do not reason about
+the mathematics", and which claims are the deliverable IS a
+mathematical judgement.
 """
 from __future__ import annotations
 
@@ -13,7 +31,6 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import agent
 from Tooling.pipeline import strategist
 from Tooling.state import db, manifest
 
@@ -55,162 +72,68 @@ def _proved_forward(conn, slug="brick") -> int:
     return g
 
 
-# ------------------------------------------------------- turn whitelists
+def test_the_wake_has_no_second_turn(conn: sqlite3.Connection) -> None:
+    """No admin stage, no turn whitelists, no per-turn knob. Named here
+    so a reintroduction has to argue with this file rather than land
+    quietly beside it."""
+    for gone in ("run_admin_turn", "ADMIN_TURN_KINDS", "MATH_TURN_KINDS",
+                 "_turn_whitelist_error"):
+        assert not hasattr(strategist, gone), gone
+    from Tooling.agent import phase2_context
+    assert not hasattr(phase2_context, "compile_admin_context")
+    from Tooling.core import config
+    assert "strategist.admin_timeout_sec" not in config.CONFIG_SPEC
+    from Tooling.pipeline import PROMPT_DIR
+    assert not (PROMPT_DIR / "strategist" / "admin.md").exists()
 
-def test_admin_turn_rejects_math_kinds(conn: sqlite3.Connection) -> None:
-    ds, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "Inject", "pipeline": "Forward", "brief": "## Need\nx"},
-    ]))
-    err = strategist.verify_decisions(ds, conn, problem="p", turn="admin")
-    assert "MATH turn" in err
 
-
-def test_mark_deliverable_is_a_math_turn_kind(
+def test_one_turn_takes_both_registry_and_route_kinds(
     conn: sqlite3.Connection,
 ) -> None:
-    """Moved 2026-08-11 (owner call). "Mark only top-level claims the
-    Manifest asks for" is reading the Manifest against the claim — the
-    mathematics the admin prompt told itself not to reason about. And
-    the admin turn moves to the wake's TAIL, where a mark lands one wake
-    late and pushes its Ingest with it. Here it also faces the
-    Adversary, which a decision driving the root gate should."""
+    """The split's whole content was that these two could not appear in
+    the same batch. `Ingest`'s precondition and `Ingest` now can."""
     g = _proved_forward(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "MarkDeliverable", "target_goal_id": g, "reason": "r"},
-    ]))
-    assert strategist.verify_decisions(
-        ds, conn, problem="p", turn="math") == ""
-    err = strategist.verify_decisions(ds, conn, problem="p", turn="admin")
-    assert "MATH turn" in err
-
-
-def test_fetch_paper_is_a_math_turn_kind(conn: sqlite3.Connection) -> None:
-    """#163: the need for a paper surfaces in the Roadmap, which the
-    admin turn's context never renders — 30+ SLC revs carried a survey
-    entry and fetched nothing. A fetch is a route decision; it lives in
-    the math turn and the admin turn refuses it."""
-    ds, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "FetchPaper", "query": "q", "reason": "r"},
-    ]))
-    assert strategist.verify_decisions(
-        ds, conn, problem="p", turn="math") == ""
-    err = strategist.verify_decisions(ds, conn, problem="p", turn="admin")
-    assert "MATH turn" in err
-
-
-def test_both_turns_accept_the_shared_kinds(conn: sqlite3.Connection,
-                                            workspace: Path) -> None:
-    """RequestUserAmend and Noop are deliberately dual-homed: an amend
-    can be discovered mathematically (kernel-checked negation in hand)
-    or clerically (the file is malformed)."""
-    for turn in ("admin", "math"):
-        ds, _ = strategist.parse_decisions(json.dumps([
-            {"kind": "Noop", "reason": "r"},
-        ]))
-        assert strategist.verify_decisions(
-            ds, conn, problem="p", turn=turn) == "", turn
-
-
-def test_legacy_callers_see_no_whitelist(conn: sqlite3.Connection) -> None:
-    """turn=None (pre-split callers and tests) keeps the old contract."""
-    g = _proved_forward(conn, "legacy")
-    ds, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "MarkDeliverable", "target_goal_id": g, "reason": "r"},
+        {"kind": "Inject", "pipeline": "Forward", "brief": "## Need\nx"},
     ]))
     assert strategist.verify_decisions(ds, conn, problem="p") == ""
 
 
-# --------------------------------------------- admin skips the M gates
-
-def test_admin_turn_skips_review_discharge(conn: sqlite3.Connection) -> None:
-    """A pending review is the MATH turn's burden — the admin batch must
-    not be bounced for failing to discharge it (it structurally cannot:
-    none of its kinds target goals under review)."""
-    g = db.insert_goal(conn, problem="p", slug="rev",
-                       lean_path="Problems/p/proofs/L_rev.lean",
-                       statement="T", origin="backward")
-    db.update_goal_status(conn, g, "pending_strategist_review")
-    conn.commit()
-    ds, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "Noop", "reason": "nothing clerical"},
-    ]))
-    err_admin = strategist.verify_decisions(
-        ds, conn, problem="p", trigger_kind="inject_batch_done",
-        turn="admin")
-    assert err_admin == ""
-    # ... while the math turn on the same trigger still faces the gate.
-    ds_m, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "Inject", "pipeline": "Forward", "brief": "## Need\nx"},
-    ]))
-    err_math = strategist.verify_decisions(
-        ds_m, conn, problem="p", trigger_kind="inject_batch_done",
-        turn="math")
-    assert "review not discharged" in err_math
-
-
-# ------------------------------------------------- run_admin_turn stage
-
-def _run_admin(conn, workspace, mfst, payload, monkeypatch,
-               trigger="routine"):
-    def fake_spawn(**kw):
-        (kw["attempts_dir"] / "admin.json").write_text(
-            json.dumps(payload), encoding="utf-8")
-        return 0
-    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
-    attempts = workspace / ".attempts" / "wake1"
-    attempts.mkdir(parents=True, exist_ok=True)
-    return strategist.run_admin_turn(
-        conn, problem="p", trigger_kind=trigger, tick=1,
-        workspace=workspace, mfst=mfst, attempts_dir=attempts)
-
-
-def test_admin_stage_commits_without_touching_clocks(
-    conn: sqlite3.Connection, workspace: Path, mfst: manifest.Manifest,
-    monkeypatch: pytest.MonkeyPatch,
+def test_a_mark_only_batch_needs_no_programme_revision(
+    conn: sqlite3.Connection,
 ) -> None:
-    """The wake's clocks belong to the MATH turn: an admin commit that
-    advanced them would let a wake whose math half failed read as
-    'strategist ran', starving the retry pressure."""
-    out = _run_admin(conn, workspace, mfst,
-                     [{"kind": "Noop", "reason": "nothing clerical"}],
-                     monkeypatch)
-    assert out is None
+    """Marking records that work already dispatched, already argued and
+    already kernel-checked is the deliverable. Requiring a fresh
+    revision to say so would be friction the un-judged admin turn never
+    charged — so `MarkDeliverable` is package-exempt, while a mark that
+    rides a route-moving batch is gated with it."""
+    assert not strategist.package_gate_applies(
+        [strategist.Decision(kind="MarkDeliverable", target_id="1")],
+        "routine")
+
+
+def test_the_wakes_clocks_advance_on_the_one_commit(
+    conn: sqlite3.Connection, workspace: Path,
+) -> None:
+    """`touch_clocks=False` existed so an admin commit could not let a
+    wake whose math half failed read as "strategist ran", starving the
+    retry pressure. With one turn there is no half to fail separately,
+    and the flag went with the split — the clocks advance here, once."""
+    g = _proved_forward(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "MarkDeliverable", "target_goal_id": g,
+         "reason": "top-level claim"},
+    ]))
+    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+    strategist.commit_decisions(
+        ds, conn, problem="p", tick=1, trigger_kind="routine",
+        workspace=workspace)
+    row = conn.execute(
+        "SELECT is_deliverable FROM goals WHERE id = ?", (g,)).fetchone()
+    assert int(row["is_deliverable"]) == 1
     p = conn.execute(
         "SELECT last_strategist_at, last_routine_at FROM problems"
         " WHERE name='p'").fetchone()
-    assert p["last_strategist_at"] is None
-    assert p["last_routine_at"] is None
-
-
-def test_admin_stage_is_fail_open_on_garbage(
-    conn: sqlite3.Connection, workspace: Path, mfst: manifest.Manifest,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A broken admin turn never blocks the mathematics."""
-    def fake_spawn(**kw):
-        (kw["attempts_dir"] / "admin.json").write_text(
-            "not json at all", encoding="utf-8")
-        return 0
-    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
-    attempts = workspace / ".attempts" / "wake2"
-    attempts.mkdir(parents=True, exist_ok=True)
-    out = strategist.run_admin_turn(
-        conn, problem="p", trigger_kind="routine", tick=1,
-        workspace=workspace, mfst=mfst, attempts_dir=attempts)
-    assert out is None  # math turn proceeds
-
-
-def test_admin_amend_freezes_the_wake(
-    conn: sqlite3.Connection, workspace: Path, mfst: manifest.Manifest,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An amend committed by the admin turn ends the wake: the math turn
-    must not plan against a statement under repair."""
-    out = _run_admin(conn, workspace, mfst,
-                     [{"kind": "RequestUserAmend", "file": "Manifest.md",
-                       "reason": "the Statement section is empty",
-                       "question": "what should the Statement say?",
-                       "proposed_body": "## Statement\n<fill in>"}],
-                     monkeypatch)
-    assert out == "frozen"
-    assert db.problem_has_awaiting_human(conn, "p")
+    assert p["last_strategist_at"] is not None
+    assert p["last_routine_at"] is not None
