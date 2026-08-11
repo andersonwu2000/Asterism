@@ -172,8 +172,16 @@ def _section_parent_strategy(conn: sqlite3.Connection,
     ]
     if row["proposal_md"]:
         out.extend([
+            # Do NOT name a file here. This text comes from
+            # `strategies.proposal_md`, a DB column — and the label used
+            # to call it "parent's PROPOSAL.md excerpt", so workers went
+            # looking for a PROPOSAL.md in their own attempts dir and
+            # found nothing: v33 merged every worker kind into the
+            # Formalizer, whose output is patch.lean + new_*.lean.
+            # Measured 2026-08-10: four such reads across four pipelines,
+            # one wasted turn each.
             "Strategy that produced this sub-goal "
-            "(parent's PROPOSAL.md excerpt):",
+            "(the parent worker's own rationale):",
             "```",
             row["proposal_md"][:2000],
             "```",

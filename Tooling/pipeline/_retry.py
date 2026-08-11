@@ -150,6 +150,70 @@ def _copy_broken_session_jsonl(broken_sid: str, dest: Path) -> bool:
         _shutil.copyfile(src, dest)
     except OSError:
         return False
+    _write_broken_session_digest(src, dest.with_suffix(".md"))
+    return True
+
+
+def _write_broken_session_digest(src: Path, dest: Path) -> bool:
+    """One line per turn: what the dying session CALLED and what it said.
+
+    The raw jsonl is the record; it is not a briefing. Measured
+    2026-08-10: a rescue agent opened the copy twice and was told
+    "107,902 tokens exceeds the maximum allowed 25,000" — with a
+    300-second budget and a prompt that opens "Act now". The instruction
+    to page through it with offset/limit was there and was useless at
+    that size.
+
+    So the framework does the reading. Thinking blocks never land in the
+    transcript, so the tool sequence plus the assistant's own text IS
+    the recoverable history — the same projection an operator makes by
+    hand when diagnosing one of these. The jsonl stays beside it for the
+    rescue that wants a verbatim passage."""
+    import json as _json
+    lines: "list[str]" = [
+        "# What the previous session did, in order",
+        "",
+        "One line per step. The full transcript is beside this file as "
+        f"`{dest.with_suffix('.jsonl').name}` if you need a passage "
+        "verbatim.",
+        "",
+    ]
+    try:
+        with src.open(encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    rec = _json.loads(raw)
+                except ValueError:
+                    continue
+                content = (rec.get("message") or {}).get("content")
+                if not isinstance(content, list):
+                    continue
+                stamp = str(rec.get("timestamp") or "")[11:19]
+                for blk in content:
+                    kind = blk.get("type")
+                    if kind == "tool_use":
+                        inp = blk.get("input") or {}
+                        arg = (inp.get("file_path") or inp.get("pattern")
+                               or inp.get("command") or "")
+                        if not arg:
+                            arg = " ".join(
+                                f"{k}={str(v)[:40]}" for k, v in inp.items())
+                        lines.append(
+                            f"- `{stamp}` **{blk.get('name','?')}** "
+                            f"{str(arg)[:160]}")
+                    elif kind == "text":
+                        body = " ".join(str(blk.get("text", "")).split())
+                        if body:
+                            lines.append(f"- `{stamp}` said: {body[:400]}")
+    except OSError:
+        return False
+    try:
+        dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        return False
     return True
 
 
@@ -213,10 +277,11 @@ def _build_fresh_rescue_stage2_prompt(
     silently failed, takeover counted as no-deliverable."""
     if jsonl_copied:
         log_note = (
-            f"The previous session's full conversation log is at "
-            f"`{attempts_dir}/_broken_session.jsonl`. Read it (use "
-            f"offset/limit for large files) to see what was attempted "
-            f"and where it got stuck."
+            f"What the previous session did, step by step, is at "
+            f"`{attempts_dir}/_broken_session.md` — read that first. "
+            f"The raw transcript is beside it as `_broken_session.jsonl` "
+            f"if you need a passage verbatim (it is large; use "
+            f"offset/limit)."
         )
     else:
         log_note = (

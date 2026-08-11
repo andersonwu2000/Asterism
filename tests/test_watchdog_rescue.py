@@ -487,3 +487,61 @@ def test_copy_broken_session_jsonl_returns_false_when_missing(
     ok = _copy_broken_session_jsonl("missing-sid", dest)
     assert ok is False
     assert not dest.exists()
+
+
+def test_the_rescue_is_handed_a_digest_not_a_transcript(tmp_path: Path) -> None:
+    """The raw jsonl is the record; it is not a briefing.
+
+    Measured 2026-08-10: a rescue agent opened the copied transcript
+    twice and was told "107,902 tokens exceeds the maximum allowed
+    25,000" — with a 300-second budget and a prompt that opens "Act
+    now". The instruction to page it with offset/limit was present and
+    useless at that size. So the framework does the reading: one line
+    per step, what was called and what the agent said. Thinking blocks
+    never land in a transcript, so that projection IS the recoverable
+    history. The jsonl stays beside it for a verbatim passage.
+    """
+    import json
+    from Tooling.pipeline._retry import _write_broken_session_digest
+
+    src = tmp_path / "session.jsonl"
+    rows = [
+        {"timestamp": "2026-08-10T13:29:45.000Z",
+         "message": {"content": [
+             {"type": "tool_use", "name": "Read",
+              "input": {"file_path": "/w/Context.md"}}]}},
+        {"timestamp": "2026-08-10T13:30:12.000Z",
+         "message": {"content": [
+             {"type": "text", "text": "Verified: the goal matches §3."}]}},
+        {"timestamp": "2026-08-10T13:30:31.000Z",
+         "message": {"content": [
+             {"type": "tool_use", "name": "mcp__asterism_tools__inspect",
+              "input": {"queries": [{"decl": "uc_forced_seven_path_core"}]}}]}},
+        # A thinking block: never carries text on disk, must not become
+        # an empty line in the digest.
+        {"timestamp": "2026-08-10T13:31:00.000Z",
+         "message": {"content": [{"type": "thinking", "thinking": ""}]}},
+        {"garbage": True},                       # malformed rows are skipped
+    ]
+    src.write_text("\n".join(json.dumps(r) for r in rows) + "\n",
+                   encoding="utf-8")
+    dest = tmp_path / "_broken_session.md"
+    assert _write_broken_session_digest(src, dest) is True
+
+    text = dest.read_text(encoding="utf-8")
+    assert "**Read**" in text and "/w/Context.md" in text
+    assert "said: Verified: the goal matches" in text
+    assert "uc_forced_seven_path_core" in text
+    assert "_broken_session.jsonl" in text        # the verbatim fallback
+    assert len(text) < len(src.read_text(encoding="utf-8"))
+    # No blank step lines from the thinking block.
+    assert not any(ln.rstrip() == "-" for ln in text.splitlines())
+
+
+def test_the_rescue_note_points_at_the_digest_first(tmp_path: Path) -> None:
+    from Tooling.pipeline._retry import _build_fresh_rescue_stage2_prompt
+    attempts_dir = tmp_path / ".attempts" / "pid-test"
+    attempts_dir.mkdir(parents=True)
+    s2 = _build_fresh_rescue_stage2_prompt(attempts_dir, True, 4)
+    assert "_broken_session.md" in s2
+    assert s2.index("_broken_session.md") < s2.index("_broken_session.jsonl")

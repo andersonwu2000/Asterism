@@ -17,10 +17,14 @@ from Tooling.pipeline._retry import _build_fresh_rescue_stage2_prompt
 def test_fresh_rescue_stage2_renders_historical_text(tmp_path):
     ad = tmp_path / ".attempts" / "p1"
     out = _build_fresh_rescue_stage2_prompt(ad, True, 3)
+    # The digest leads and the raw transcript is the fallback
+    # (2026-08-11): a rescue agent with a 300s budget cannot page a
+    # 107k-token jsonl, and one tried, twice.
     assert out.startswith(
         "The previous session was killed mid-think after exceeding the "
-        "wall-clock budget. The previous session's full conversation log "
-        f"is at `{ad}/_broken_session.jsonl`.")
+        "wall-clock budget. What the previous session did, step by step, "
+        f"is at `{ad}/_broken_session.md` — read that first.")
+    assert out.index("_broken_session.md") < out.index("_broken_session.jsonl")
     # the SG-run-#10 fix: the explicit output-location line must survive
     assert (f"All output files must be written into `{ad}/` — use "
             "absolute paths in your Write calls." in out)
