@@ -231,9 +231,30 @@ def test_loogle_left_the_shell_allowlist() -> None:
     control."""
     from Tooling.llm import claude_cli
 
+    # The allowlist must COVER the server, not match a literal. Pinning
+    # the literal is what let `inspect`, `compute` and the two paper
+    # tools ship on 2026-08-10 registered but unreachable: this test
+    # passed all along because it was checking the wrong side of the
+    # relation. On claude an omitted tool prompts, and headless
+    # auto-denies the prompt — so g7491's worker asked for `inspect` as
+    # its first move after intake, was refused twice, fell back to Grep,
+    # and rebuilt a brick it had been told to cite. (The Antigravity
+    # side grants `mcp(*)` and was never affected — the asymmetry is
+    # exactly why the enumerated side needs a mechanical check.)
+    import ast
+    from Tooling.knowledge import mcp_tools as _mt
+    src = ast.parse(Path(_mt.__file__).read_text(encoding="utf-8"))
+    registered = {
+        node.name for node in ast.walk(src)
+        if isinstance(node, ast.FunctionDef)
+        and any(isinstance(d, ast.Call)
+                and isinstance(d.func, ast.Attribute)
+                and d.func.attr == "tool"
+                for d in node.decorator_list)
+    }
+    assert registered, "no @mcp.tool functions found — parser drifted"
     assert set(claude_cli._TOOLS_MCP_PATTERNS) == {
-        "mcp__asterism_tools__loogle",
-        "mcp__asterism_tools__validate_json",
+        f"mcp__asterism_tools__{name}" for name in registered
     }
     # Empty, so an unmatched Bash call falls to the prompt that headless
     # auto-denies. `json.tool` went with loogle once `validate_json`

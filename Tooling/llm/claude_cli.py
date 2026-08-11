@@ -574,8 +574,22 @@ DEFAULT_BASH_ALLOWED = ""
 
 #: Framework tools, exposed over MCP so every provider reaches them the
 #: same way. claude CLI names MCP tools `mcp__<server>__<tool>`.
+#: MUST cover every tool `knowledge/mcp_tools.py` registers. A tool the
+#: server exposes and this list omits is not "unavailable" — it prompts,
+#: and headless auto-denies the prompt, so the agent is told the tool
+#: exists (the prompts name it), reaches for it, and is refused. That is
+#: what happened to `inspect` on 2026-08-10: g7491's worker asked for
+#: `inspect({decl: uc_forced_seven_path_core})` as its first move after
+#: intake, was denied twice, fell back to Grep — which searches FILES,
+#: and the brick it had been told to cite was a same-batch sibling with
+#: no file yet — and so rebuilt a brick another worker was minting in
+#: parallel, then ran out of clock. `test_mcp_tools` pins the coverage.
 _TOOLS_MCP_PATTERNS = ("mcp__asterism_tools__loogle",
-                       "mcp__asterism_tools__validate_json")
+                       "mcp__asterism_tools__validate_json",
+                       "mcp__asterism_tools__inspect",
+                       "mcp__asterism_tools__compute",
+                       "mcp__asterism_tools__paper_search",
+                       "mcp__asterism_tools__paper_fetch")
 
 
 def resolve_model(kind: str | None) -> str:
