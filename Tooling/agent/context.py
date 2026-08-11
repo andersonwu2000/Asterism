@@ -109,6 +109,16 @@ def _section_sandbox(strategy_id: int | None = None,
         "Mathlib source.",
         "- Reads NOT allowed: other `Problems/<...>/` dirs — irrelevant "
         "to this goal. Use Loogle / Grep on Mathlib instead.",
+        # Said here because the refusal costs a turn and the section
+        # above reads like a promise it is not: naming the readable dirs
+        # invites "then rooting above them is fine, the matches are
+        # inside". It is not — the search walks what it is rooted at.
+        # Two workers rooted at the workspace on 2026-08-10, one of them
+        # hunting the very file its brief had pointed it at.
+        "- `Grep`/`Glob` search the root you give them, so a root ABOVE "
+        "those dirs walks the operator-private trees and is refused. "
+        "Omit the path — it defaults to your cwd — or name `Library/` "
+        "or `Papers/`.",
         "- `PAST_*.md` / `LESSONS.md` / `CATALOG.md` / `PAPER_MAP.md` / "
         "`BATCHES.md` sit in Context.md's own directory (NOT your cwd) "
         "and are read-only. `CATALOG.md` holds the exact statement of "
