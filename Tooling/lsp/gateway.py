@@ -167,6 +167,10 @@ class GatewayState:
     # RAM clamp — the daemon's reuse gate compares yaml-to-yaml against
     # this, so a clamped pool doesn't read as a stale gateway.
     workers_configured: int | None = None
+    # Absolute age past which a claim is reclaimed even from a LIVE
+    # owner. Derived from `dispatch.spawn_timeout_sec` at startup (see
+    # `_sweep_stale_claims`); the default matches a 1800s spawn.
+    claim_ceiling_sec: float = 3600.0
 
 
 _state = GatewayState()
@@ -487,9 +491,21 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
             my_slot = slot
             break
     if my_slot is None:
+        # The two causes this used to name (register_session never
+        # called / release racing a use) were both wrong for every
+        # occurrence anyone investigated: the real one was the stale-
+        # claim sweep taking the slot from a live worker, and the
+        # message sent three separate investigations down the wrong
+        # path before 2026-08-11. Say the reachable truth instead, and
+        # do not prescribe an action the agent cannot take — it has no
+        # registration tool; /register is the pipeline's call.
         raise RuntimeError(
-            f"no slot claimed for pipeline {meta.pipeline_id} "
-            "— register_session was not called (or release races with use)"
+            f"no slot claimed for pipeline {meta.pipeline_id} — this "
+            "session's Lean slot was released on the framework side "
+            "(stale-claim sweep, or the session was already closed). "
+            "Nothing in the file you are editing caused it and nothing "
+            "in your patch can fix it: retry this call, and if it "
+            "repeats, report it as framework feedback."
         )
 
     deadline = time.monotonic() + 120.0
@@ -633,15 +649,57 @@ def _current_session() -> SessionMetadata | None:
 
 # ─── Stale-claim sweep (#118 follow-up) ────────────────
 
-# Worker timeouts are 600s (main) + 180s (postmortem); a healthy
-# pipeline issues tool calls every few seconds during agent work, so
-# silence > 900s reliably means the claim has leaked (release_session
-# urlopen failed silently, or the worker / dispatcher crashed before
-# AttemptsContext.__exit__ ran). Set well above WORKER_TIMEOUT to
-# leave a comfortable buffer so long agent reasoning between tool
-# calls is never mistakenly reclaimed.
+# When to START ASKING whether a claim has leaked — NOT when to
+# reclaim. The distinction is the 2026-08-11 bug: this used to be the
+# reclaim threshold, justified by "worker timeouts are 600s (main) +
+# 180s (postmortem), so 900s is well above WORKER_TIMEOUT". Then
+# `dispatch.spawn_timeout_sec` went 960 → 1800 and the premise
+# inverted — the TTL became HALF the life a worker is granted, and the
+# sweep started taking slots away from workers that were merely
+# waiting on a heavy elaboration. Measured: 57 reclaims in one day,
+# all in the 900-960s band, including pipeline d9c3e052 which went on
+# issuing tool calls for another 20 minutes afterwards. Its next call
+# got "no slot claimed", which was charged to the goal as a
+# `lake_build_error` — infra death wearing mathematics' clothes.
+#
+# Silence is measured on the TOOL clock (`last_active`, updated in
+# `_acquire_slot`), and a worker waiting on Lean is silent by
+# definition. The watchdog learned this on 2026-08-08 and moved its NL
+# layer onto the stream clock; the lesson did not travel here. Rather
+# than pick a better silence threshold, ASK: the owner's pid is on
+# disk, so liveness is a question with an answer.
 _LEASE_TTL_SEC = 900.0
 _SWEEP_INTERVAL_SEC = 60.0
+
+
+def _owner_alive(meta: SessionMetadata) -> bool:
+    """Is the process that claimed this slot still running?
+
+    Same evidence as `state.recovery._attempt_owner_alive` (the
+    `owner_pid` every SpawnWorkspace writes into its sandbox manifest)
+    but the OPPOSITE default when the evidence is missing, and the
+    difference is deliberate. There, unknown means "safe to delete an
+    orphan directory", so unknown → dead. Here, unknown means "take a
+    quarter of the pool away from something that may be working", so
+    unknown → alive. Sessions with no attempts dir at all (the serve
+    UI's editor, agy's LSP bridge) live in that gap.
+
+    What keeps that default from becoming a leak is the ceiling in
+    `_sweep_stale_claims`: an unknown owner holds its slot for at most
+    `claim_ceiling_sec`, never forever.
+    """
+    try:
+        import json as _json
+        from ..agent.sandbox import MANIFEST_NAME, _pid_alive
+        manifest_path = (Path(meta.workspace) / ".attempts"
+                         / meta.pipeline_id / "sandbox" / MANIFEST_NAME)
+        data = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ImportError):
+        return True         # no evidence — the ceiling bounds this
+    try:
+        return bool(_pid_alive(data.get("owner_pid")))
+    except Exception:  # noqa: BLE001 — a probe must not halt the sweep
+        return True
 
 
 def _sweep_stale_claims() -> int:
@@ -675,20 +733,43 @@ def _sweep_stale_claims() -> int:
             if now - meta.last_active > _LEASE_TTL_SEC
         ]
         for tok, meta in stale:
+            inactive_for = now - meta.last_active
+            over_ceiling = inactive_for > _state.claim_ceiling_sec
+            # Past the TTL, silence is a QUESTION, not a verdict. Ask
+            # the owner's pid. Sparing a live owner is not
+            # unconditional: a slot is 25% of the pool, and an orphan
+            # process (a daemon that died outside its Job Object) would
+            # otherwise hold one forever with nobody left to sweep it.
+            # So there is an absolute ceiling, past which the claim goes
+            # regardless — a LIVE owner older than the spawn budget
+            # means the watchdog that should have killed it did not, and
+            # that is worth both the slot and a loud line.
+            if not over_ceiling and _owner_alive(meta):
+                continue
             _state.sessions.pop(tok, None)
             for slot in _state.workers:
                 if slot.claimed_by == meta.pipeline_id:
                     slot.claimed_by = None
                     break
             reclaimed += 1
-            inactive_for = now - meta.last_active
-            print(
-                f"[gateway] reclaimed leaked slot for "
-                f"pipeline {meta.pipeline_id[:8]} "
-                f"({inactive_for:.0f}s inactive > "
-                f"{_LEASE_TTL_SEC:.0f}s TTL)",
-                file=sys.stderr, flush=True,
-            )
+            if over_ceiling:
+                print(
+                    f"[gateway] ANOMALY: reclaimed slot for pipeline "
+                    f"{meta.pipeline_id[:8]} at {inactive_for:.0f}s "
+                    f"inactive — past the {_state.claim_ceiling_sec:.0f}s "
+                    f"ceiling, so the claim goes whether or not the owner "
+                    f"still runs. An owner alive past its spawn budget "
+                    f"means the watchdog did not fire; check it.",
+                    file=sys.stderr, flush=True,
+                )
+            else:
+                print(
+                    f"[gateway] reclaimed leaked slot for "
+                    f"pipeline {meta.pipeline_id[:8]} "
+                    f"({inactive_for:.0f}s inactive > "
+                    f"{_LEASE_TTL_SEC:.0f}s TTL; owner pid is gone)",
+                    file=sys.stderr, flush=True,
+                )
     return reclaimed
 
 
@@ -2279,6 +2360,7 @@ def validate_file(content: str = "") -> str:
     t0 = time.perf_counter()
     diags: list = []
     elaborate_failed = False
+    elaborate_error = ""
     timed_out = False
     _slot_kind: str = "unknown"
     backend = _state.backend
@@ -2307,8 +2389,16 @@ def validate_file(content: str = "") -> str:
             # call (still on this claimed slot) didChanges back to the
             # session's `file_content`.
             slot.content_pipeline_id = None
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+        # `ok: false` with zero diagnostics and no reason reads, to an
+        # agent, as "your file is broken and I won't say where". Every
+        # failure that lands here is the FRAMEWORK's (slot gone, backend
+        # restarting, LSP transport dead), so name it: an agent that
+        # cannot tell "your Lean is wrong" from "my Lean is down" will
+        # rewrite a correct proof (2026-08-11, same flattening family as
+        # the slot-claim message above).
         elaborate_failed = True
+        elaborate_error = f"{type(exc).__name__}: {exc}"
         diags = []
 
     formatted = [_format_diag(d) for d in diags]
@@ -2333,6 +2423,14 @@ def validate_file(content: str = "") -> str:
         response["timed_out"] = True
         response["error"] = ("validate_file elaboration did not complete "
                              "within 120s; result indeterminate")
+    if elaborate_failed:
+        response["error"] = (
+            f"validate_file could not run: {elaborate_error}. This is a "
+            "FRAMEWORK-side fault (Lean slot or backend), not a verdict "
+            "on your file — the empty diagnostics list says nothing "
+            "about it. Retry this call; do not rewrite the proof on "
+            "the strength of this result.")
+        response["framework_fault"] = True
     if inlined_slugs:
         # Tell the agent which sibling sub-goal stubs were inlined so a
         # citation could be resolved; diagnostics are already remapped to
@@ -3231,6 +3329,20 @@ def main() -> None:
         env_var="ASTERISM_INTERACTIVE_SLOTS", cast=int,
         workspace=workspace,
     )
+    # The claim ceiling is DERIVED, never a second hand-tuned constant:
+    # the previous literal was chosen against a 780s worker life, and
+    # when `spawn_timeout_sec` doubled nobody came back to it (2026-08-11
+    # — the sweep then took slots from live workers). Twice the spawn
+    # budget covers a main spawn plus its rescue/postmortem successor
+    # under the same claim, and anything past that is an anomaly the
+    # sweep should report rather than accommodate.
+    _spawn_budget = _cfg.get(
+        "dispatch.spawn_timeout_sec", default=1800,
+        env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int,
+        workspace=workspace,
+    )
+    _state.claim_ceiling_sec = max(2.0 * float(_spawn_budget),
+                                   _LEASE_TTL_SEC + 900.0)
 
     # Downsize to what physical memory can hold — an overcommitted pool
     # pages its own warm-up to death (5 workers × multi-GB Mathlib on an

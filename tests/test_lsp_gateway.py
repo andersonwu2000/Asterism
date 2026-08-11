@@ -1007,6 +1007,34 @@ class _DiagBackend:
     def diagnostics_for(self, *a, **kw): return list(self._diags)
 
 
+def test_validate_file_names_a_framework_fault_instead_of_going_mute(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The outer catch used to answer `ok: false`, zero diagnostics, no
+    reason — which an agent reads as "your file is broken and I won't
+    say where", and the honest ones then rewrite a correct proof. Every
+    failure reaching here is the framework's (slot reclaimed, backend
+    restarting, transport dead), so the response must say so and say
+    the empty list is not a verdict (2026-08-11)."""
+    class _Broken(_DiagBackend):
+        def did_change_full(self, *a, **kw):
+            raise RuntimeError("backend restarting")
+
+    ctx = _setup_validate_session(monkeypatch, tmp_path, _Broken())
+    try:
+        out = json.loads(asyncio.run(lsp_gateway.validate_file(
+            "theorem t : True := trivial\n")))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert out["ok"] is False
+    assert out["framework_fault"] is True
+    assert "backend restarting" in out["error"]
+    # and it must tell the agent not to act on the empty list
+    assert "not a verdict" in out["error"]
+    assert "do not rewrite" in out["error"].lower()
+
+
 def test_validate_file_timeout_reports_indeterminate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -1343,7 +1371,18 @@ def _build_fake_pool(monkeypatch: pytest.MonkeyPatch,
 
 
 def _make_meta(tmp_path: Path, *, pipeline_id: str,
-               last_active: float) -> SessionMetadata:
+               last_active: float,
+               owner: "str | int | None" = "dead") -> SessionMetadata:
+    """`owner` writes the sandbox manifest the sweep now consults:
+    "dead" = a pid that cannot be running, an int = that pid (pass
+    `os.getpid()` for a live owner), None = no manifest at all (the
+    unknown case, which the sweep treats as alive)."""
+    if owner is not None:
+        pid = 2 ** 31 - 1 if owner == "dead" else int(owner)
+        sandbox = tmp_path / ".attempts" / pipeline_id / "sandbox"
+        sandbox.mkdir(parents=True, exist_ok=True)
+        (sandbox / "_manifest.json").write_text(
+            json.dumps({"owner_pid": pid}), encoding="utf-8")
     return SessionMetadata(
         pipeline_id=pipeline_id,
         target_path=tmp_path / f"{pipeline_id}.lean",
@@ -1470,6 +1509,134 @@ def test_sweep_orphan_session_without_matching_slot(
     finally:
         with _state.sessions_lock:
             _state.sessions.pop("orphan-tok", None)
+
+
+# ─── Silence is a question, not a verdict (#139, 2026-08-11) ───
+#
+# The sweep used to reclaim on silence alone. `last_active` is the TOOL
+# clock, and a worker waiting on a heavy Lean elaboration is silent by
+# definition, so it took slots from live workers — 57 reclaims in one
+# day, one of them (d9c3e052) from a pipeline that kept working for
+# another 20 minutes. Its next call got "no slot claimed", charged to
+# the goal as `lake_build_error`.
+
+
+def _sweep_one(monkeypatch, tmp_path, *, inactive: float, owner,
+               ceiling: float = 3600.0) -> "tuple[int, object]":
+    """Run one sweep over a single claimed session. Returns
+    (reclaimed_count, claimed_by_after_sweep)."""
+    import time as _t
+    slots = _build_fake_pool(monkeypatch, tmp_path, n=2)
+    monkeypatch.setattr(_state, "claim_ceiling_sec", ceiling)
+    meta = _make_meta(tmp_path, pipeline_id="pipe-x",
+                      last_active=_t.monotonic() - inactive, owner=owner)
+    slots[0].claimed_by = "pipe-x"
+    with _state.sessions_lock:
+        _state.sessions["tok-x"] = meta
+    try:
+        n = lsp_gateway._sweep_stale_claims()
+        # Snapshot BEFORE the cleanup below nulls it.
+        return n, slots[0].claimed_by
+    finally:
+        with _state.sessions_lock:
+            _state.sessions.pop("tok-x", None)
+        slots[0].claimed_by = None
+
+
+def test_a_live_owner_keeps_its_slot_however_quiet_it_has_been(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The production bug, directly: past the TTL but alive."""
+    import os
+    n, held = _sweep_one(monkeypatch, tmp_path,
+                         inactive=lsp_gateway._LEASE_TTL_SEC + 60,
+                         owner=os.getpid())
+    assert n == 0
+    assert held == "pipe-x"
+
+
+def test_a_dead_owner_past_the_ttl_is_still_reclaimed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The behaviour the sweep exists for must survive the fix."""
+    n, held = _sweep_one(monkeypatch, tmp_path,
+                         inactive=lsp_gateway._LEASE_TTL_SEC + 60,
+                         owner="dead")
+    assert n == 1
+    assert held is None
+
+
+def test_an_unknown_owner_is_spared_inside_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """No manifest (the serve UI's editor, agy's LSP bridge) means no
+    evidence. Unknown errs toward alive here — the cost of guessing
+    wrong is a quarter of the pool taken from something that works —
+    and the ceiling is what stops that from being a leak."""
+    n, held = _sweep_one(monkeypatch, tmp_path,
+                         inactive=lsp_gateway._LEASE_TTL_SEC + 60,
+                         owner=None)
+    assert n == 0
+    assert held == "pipe-x"
+
+
+def test_the_ceiling_takes_the_slot_back_from_a_live_owner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """"Alive ⇒ spare" cannot be unconditional: an orphan process that
+    outlived its daemon would hold 25% of the pool forever with nobody
+    left to sweep it. Past the ceiling the claim goes regardless — a
+    live owner older than the spawn budget means the watchdog that
+    should have killed it did not."""
+    import os
+    n, held = _sweep_one(monkeypatch, tmp_path, inactive=5_000.0,
+                         owner=os.getpid(), ceiling=3_600.0)
+    assert n == 1
+    assert held is None
+
+
+def test_the_ceiling_says_so_out_loud(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """A ceiling reclaim is evidence of a watchdog that did not fire;
+    it must not read like the routine leak line."""
+    import os
+    _sweep_one(monkeypatch, tmp_path, inactive=5_000.0,
+               owner=os.getpid(), ceiling=3_600.0)
+    err = capsys.readouterr().err
+    assert "ANOMALY" in err and "watchdog" in err
+
+
+def test_the_ceiling_is_derived_from_the_spawn_budget_not_typed_twice(
+) -> None:
+    """The literal that broke this was `900`, chosen against a 780s
+    worker life and never revisited when `spawn_timeout_sec` doubled.
+    Whatever the budget is, the ceiling must sit ABOVE it — pin the
+    relation, not a number."""
+    import re
+    src = (Path(__file__).resolve().parents[1] / "Tooling" / "lsp"
+           / "gateway.py").read_text(encoding="utf-8")
+    assert "dispatch.spawn_timeout_sec" in src, (
+        "the claim ceiling must read the spawn budget, not restate it")
+    m = re.search(r"claim_ceiling_sec = max\(\s*([\d.]+) \* float", src)
+    assert m and float(m.group(1)) >= 1.0, (
+        "the ceiling must be at least the spawn budget")
+
+
+def test_the_slot_error_does_not_prescribe_an_impossible_action(
+) -> None:
+    """The old message blamed `register_session` — which the agent has
+    no tool for; /register is the pipeline's call. A gate message that
+    names an unreachable exit is worse than one that names none, so
+    this one says the fault is the framework's and to retry."""
+    src = (Path(__file__).resolve().parents[1] / "Tooling" / "lsp"
+           / "gateway.py").read_text(encoding="utf-8")
+    i = src.index("no slot claimed for pipeline")
+    msg = src[i:i + 700]
+    assert "register_session was not called" not in msg
+    assert "retry this call" in msg
+    assert "framework side" in msg
 
 
 # ─── 2026-07-07 warm-race fix: starting marker + wait-not-race ───
