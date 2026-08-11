@@ -162,3 +162,70 @@ def test_a_broken_sandbox_is_reported_not_silently_rebuilt() -> None:
     changed underneath it."""
     src = open(provision.__file__, encoding="utf-8").read()
     assert "not silently rebuilt" in src or "would erase the evidence" in src
+
+
+# ─── the probe stops being a load source, and starts leaving evidence ───
+#
+# `ensure_ready` ran three subprocesses on EVERY compute call, each able
+# to wait 60s. On 2026-08-11 twelve consecutive in-spawn calls came back
+# "sandbox interpreter will not start" while the same interpreter
+# started in 95ms from a shell — and none of them was diagnosable
+# afterwards, because the message is cut at 200 chars and the attempts
+# dir it was written from gets deleted. One strategist, left with no
+# calculator, did a 256-family sweep in its own output and hit the 64k
+# token ceiling: 258k tokens, 50 minutes, nothing kept.
+
+def test_a_verified_sandbox_is_not_re_verified_every_call(monkeypatch):
+    """The MCP server is per-spawn, so caching a success re-proves the
+    isolation once per agent — the scope "every startup" always meant."""
+    monkeypatch.setattr(provision, "_verified", False)
+    calls = []
+    monkeypatch.setattr(provision, "verify",
+                        lambda: (calls.append(1), (True, ""))[1])
+    monkeypatch.setattr(provision, "sandbox_python",
+                        lambda: __import__("pathlib").Path(__file__))
+    assert provision.ensure_ready() == (True, "")
+    assert provision.ensure_ready() == (True, "")
+    assert provision.ensure_ready() == (True, "")
+    assert len(calls) == 1
+
+
+def test_a_failure_is_never_cached(monkeypatch):
+    """A sandbox that just failed gets asked again. Caching the failure
+    would turn one unlucky probe into a whole turn without a calculator
+    — which is the shape that cost 258k tokens."""
+    monkeypatch.setattr(provision, "_verified", False)
+    calls = []
+    monkeypatch.setattr(provision, "verify",
+                        lambda: (calls.append(1), (False, "nope"))[1])
+    monkeypatch.setattr(provision, "sandbox_python",
+                        lambda: __import__("pathlib").Path(__file__))
+    for _ in range(3):
+        assert provision.ensure_ready() == (False, "nope")
+    assert len(calls) == 3
+
+
+def test_a_failed_probe_writes_forensics_that_outlive_the_run(tmp_path,
+                                                              monkeypatch):
+    """The failure has to carry its own evidence: elapsed time (a 60s
+    cap tells you nothing about what took 60s), the resolved cwd, and
+    the environment it ran under."""
+    monkeypatch.setattr(provision, "_workspace", lambda: tmp_path)
+    provision._forensics(["py", "-c", "print(1)"], str(tmp_path), 61.3,
+                         TimeoutError("timed out after 60 seconds"))
+    log = tmp_path / ".asterism" / "logs" / "compute_probe.log"
+    assert log.is_file()
+    text = log.read_text(encoding="utf-8")
+    assert "elapsed=61.3s" in text
+    assert "TimeoutError" in text
+    assert "env_keys=" in text          # the thing we could not read back
+    assert "cwd=" in text
+
+
+def test_forensics_never_breaks_the_probe(monkeypatch):
+    """It runs only when something already went wrong; it must not be
+    able to make that worse."""
+    def boom():
+        raise RuntimeError("no workspace")
+    monkeypatch.setattr(provision, "_workspace", boom)
+    provision._forensics(["py"], "nowhere", 1.0, TimeoutError("x"))

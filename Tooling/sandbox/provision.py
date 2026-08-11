@@ -55,16 +55,53 @@ def _neutral_cwd() -> str:
     return tempfile.gettempdir()
 
 
+def _forensics(argv: "list[str]", cwd: str, elapsed: float,
+               exc: BaseException) -> None:
+    """Write what a failed probe knew, somewhere that outlives the run.
+
+    Every probe failure so far has been the same mystery, because the
+    two places it could be read from both destroy it: the message the
+    agent sees is cut at 200 characters, and the attempts dir it was
+    written from is deleted when the pipeline ends. So the interesting
+    case — a 60s TimeoutExpired starting an interpreter that starts in
+    95ms from a shell — has never once been diagnosable after the fact
+    (2026-08-11: twelve consecutive in-spawn failures, none explained).
+    Cheap, append-only, and it only runs when something already went
+    wrong.
+    """
+    import datetime
+    import os
+    try:
+        log = _workspace() / ".asterism" / "logs" / "compute_probe.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"{datetime.datetime.now(datetime.timezone.utc).isoformat()}"
+                f" pid={os.getpid()} ppid={os.getppid()}"
+                f" elapsed={elapsed:.1f}s"
+                f" {type(exc).__name__}: {str(exc)[:200]}\n"
+                f"    argv={argv}\n"
+                f"    cwd={cwd!r} exists={os.path.isdir(cwd)}\n"
+                f"    env_keys={sorted(os.environ)}\n"
+                f"    cwd_of_this_process={os.getcwd()!r}\n")
+    except Exception:  # noqa: BLE001 — forensics must never fail the probe
+        pass
+
+
 def _run(argv: "list[str]", timeout: int = _PROBE_TIMEOUT
          ) -> "tuple[int, str]":
+    import time
     from ..core.process_group import no_window_creationflags
+    cwd = _neutral_cwd()
+    t0 = time.monotonic()
     try:
         r = subprocess.run(argv, capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
-                           timeout=timeout, cwd=_neutral_cwd(),
+                           timeout=timeout, cwd=cwd,
                            creationflags=no_window_creationflags())
         return r.returncode, (r.stdout or "") + (r.stderr or "")
     except Exception as exc:  # noqa: BLE001
+        _forensics(argv, cwd, time.monotonic() - t0, exc)
         return 1, f"{type(exc).__name__}: {exc}"
 
 
@@ -107,6 +144,20 @@ def create() -> "tuple[bool, str]":
     return verify()
 
 
+#: A verified sandbox stays verified for this process. The process is
+#: the per-spawn MCP server, so the cache dies with the agent that owns
+#: it — the isolation is still re-proved once per spawn, which is the
+#: scope the module docstring's "every startup" actually means.
+#:
+#: Uncached, `ensure_ready` ran THREE subprocesses on every `compute`
+#: call, each able to wait 60s. That made the check a load source on a
+#: machine already running four provers, and — worse — made a single
+#: unlucky probe disable the agent's only calculator for the rest of
+#: its turn. Failures are deliberately NOT cached: a sandbox that just
+#: failed should be re-asked, not written off.
+_verified: bool = False
+
+
 def ensure_ready() -> "tuple[bool, str]":
     """Verify, and build once if it is simply not there yet.
 
@@ -114,7 +165,10 @@ def ensure_ready() -> "tuple[bool, str]":
     that exists means something changed underneath (a base upgrade, or
     the project installed into it), and rebuilding would erase the
     evidence. Report it and let the operator look."""
+    global _verified
+    if _verified:
+        return True, ""
     py = sandbox_python()
-    if not py.is_file():
-        return create()
-    return verify()
+    ok, why = create() if not py.is_file() else verify()
+    _verified = ok
+    return ok, why
