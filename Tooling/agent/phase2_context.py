@@ -792,6 +792,41 @@ _DECLINE_REASONS_SURFACED = (
     "circular_decomposition",
 )
 
+#: Per-decline inline budget. It was 250, head-truncated, against a
+#: measured distribution (196 declines) of median 1,250 / p90 2,348 /
+#: max 2,987 — so 79% of them were cut, and cut at the head, which is
+#: where the diagnosis lives and NOT where the ask does. Live case
+#: 2026-08-11: a worker found a sub-goal whose locked signature dropped
+#: a hypothesis the Argument's own Step 3 needs, wrote 1,095 characters
+#: ending "please re-state this sub-goal with (hUW : …) added", and the
+#: Strategist received the first 250, stopping mid-expression.
+#:
+#: Inline rather than a companion file, deliberately: a decline is not
+#: reference material the Strategist looks up when it wants to — it is
+#: evidence that contradicts the batch it is about to write, and it
+#: matters in exactly this wake. The same reasoning already keeps the
+#: newest attempt's progress note inline ("agents miss companion
+#: files, so the inline section is the canonical surface", agent/
+#: context.py). 2,000 covers everything up to p90 whole; the writer
+#: side is unbounded, so past that both ENDS survive and the middle —
+#: the derivation, the least load-bearing third — is what goes.
+DECLINE_INLINE_CHARS = 2000
+
+
+def _elide_middle(text: str, budget: int) -> str:
+    """Keep both ends of `text`, drop the middle, say how much went.
+
+    A head-only cut hides whatever the writer put last, and agents put
+    the ask last: a conclusion, a request, a "so do X instead". Sibling
+    of `lsp/gateway._echo_removed`, which does the same for the region
+    an edit removed — the shape recurs because the failure does.
+    """
+    if len(text) <= budget:
+        return text
+    half = (budget - 40) // 2
+    return (f"{text[:half].rstrip()} … [{len(text) - 2 * half} chars "
+            f"elided] … {text[-half:].lstrip()}")
+
 
 def _recent_decline_lines(conn: sqlite3.Connection,
                           problem: str, k: int = 5) -> list[str]:
@@ -830,9 +865,8 @@ def _recent_decline_lines(conn: sqlite3.Connection,
     for r in rows:
         why = " ".join((r["proposal_md"] or r["failure_detail"] or "")
                        .replace("--", " ").split())
-        if len(why) > 250:
-            why = why[:250].rstrip() + "…"
-        out.append(f"- `{r['slug']}` [{r['failure_reason']}]: {why}")
+        out.append(f"- `{r['slug']}` [{r['failure_reason']}]: "
+                   f"{_elide_middle(why, DECLINE_INLINE_CHARS)}")
     out.append("")
     return out
 

@@ -1288,6 +1288,67 @@ def test_batch_scoreboard_surfaces_recent_declines(
     assert "growth_exp_flawed" in text
 
 
+def test_a_decline_reaches_the_strategist_with_its_ask_intact(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, tmp_path: Path,
+) -> None:
+    """The head-truncated version cut at 250 characters against a
+    measured median of 1,250, so 79% of declines arrived clipped — and
+    clipped at the head, which holds the diagnosis, never the ask.
+    Production 2026-08-11: a worker wrote 1,095 characters ending
+    "please re-state this sub-goal with (hUW : …) added"; the
+    Strategist got the first 250, stopping mid-expression."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    gid = db.insert_goal(
+        conn, problem="p", slug="count_missing_hyp",
+        lean_path="Problems/p/proofs/L_count_missing_hyp.lean",
+        statement="3 <= s", origin="backward", status="dead")
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at, finished_at) VALUES ('pid-hyp', 'Backward',"
+        " ?, 'Goal', 'failed', 'agent_declined', ?, ?)",
+        (str(gid), db.now(), db.now()))
+    conn.commit()
+    ask = ("Please re-state this sub-goal with (hUW : forall Y in U, "
+           "Y subset W) added to the hypothesis list.")
+    db.record_dead_attempt(
+        conn, target_id=gid, target_kind="Goal", pipeline_id="pid-hyp",
+        failure_reason="parent_needs_fix",
+        failure_detail="backward declined: return_to_parent",
+        proposal_md="-- decline: return_to_parent -- " + ("derivation. " * 60)
+                    + ask)
+    attempts_dir = tmp_path / "_attempts_hyp"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="routine",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        pending_review_id=None)
+    text = out.read_text(encoding="utf-8")
+    assert ask in text                       # the ask, verbatim
+    assert "elided" not in text              # ~800 chars: nothing dropped
+
+
+def test_a_decline_past_the_budget_keeps_both_ends() -> None:
+    """The writer side is unbounded, so the budget has to bite
+    eventually — but it takes the derivation out of the middle, never
+    the conclusion off the end."""
+    body = "DIAGNOSIS. " + ("derivation. " * 400) + "THE ASK."
+    out = phase2_context._elide_middle(
+        body, phase2_context.DECLINE_INLINE_CHARS)
+    assert out.startswith("DIAGNOSIS.")
+    assert out.endswith("THE ASK.")
+    assert "elided" in out
+    assert len(out) <= phase2_context.DECLINE_INLINE_CHARS
+
+
+def test_the_decline_budget_covers_the_measured_distribution() -> None:
+    """Chosen against 196 real declines: median 1,250, p90 2,348. A
+    budget under p90 would put the common case back in the elided
+    branch, which is where this bug lived."""
+    assert phase2_context.DECLINE_INLINE_CHARS >= 2000
+
+
 def test_a_normalized_slug_rename_is_narrated_by_nobody(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, tmp_path: Path,
