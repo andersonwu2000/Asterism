@@ -1051,16 +1051,15 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         from ..state import manifest as _mfst
         raw = body.manifest
         if raw is None and body.body is not None:
-            st = body.settings or {}
-            def _as_list(v: object) -> list:
-                return v if isinstance(v, list) else []
-            fm: dict[str, object] = {
-                "problem": name,
-                "axioms_whitelist": _as_list(st.get("axioms_whitelist")) or [
-                    "propext", "Quot.sound", "Classical.choice"],
-                "forbidden_lemmas": _as_list(st.get("forbidden_lemmas")),
-                "library": bool(st.get("library", True)),
-            }
+            # Identity only. The settings dissolved into
+            # `problem_settings` on 2026-07-07 — the DB wins at every
+            # gate, the UI edits the DB, and the UI never shows this
+            # block again. Writing them here produced a copy that went
+            # stale the first time anyone changed anything, with nobody
+            # positioned to notice (measured 2026-08-11: two problems
+            # already disagreed). The explicit creation-time values are
+            # written to the DB below, which is where they are read.
+            fm: dict[str, object] = {"problem": name}
             nl = body.body if body.body.startswith("\n") else "\n" + body.body
             raw = _mfst.compose(fm, nl)
         if raw is None or not raw.strip():

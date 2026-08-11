@@ -2544,14 +2544,14 @@ def cmd_drift_check(args: argparse.Namespace) -> int:
          unproved goal, live strategy under a terminal goal, unreachable
          alive goals, pending revivals).
     Exit 0 if consistent, 1 on any finding. `--scope` limits (LIKE)."""
-    from ..state import consistency, proof_store
+    from ..state import consistency, proof_store, settings as _settings
     workspace = Path.cwd()
     conn = db.connect()
+    scope = getattr(args, "scope", None)
     try:
-        rep = proof_store.inventory(
-            conn, workspace, scope=getattr(args, "scope", None))
-        sweep = consistency.consistency_sweep(
-            conn, scope=getattr(args, "scope", None))
+        rep = proof_store.inventory(conn, workspace, scope=scope)
+        sweep = consistency.consistency_sweep(conn, scope=scope)
+        fm_drift = _settings_drift(conn, workspace, scope)
     finally:
         conn.close()
     for rel in rep.orphan_files:
@@ -2565,11 +2565,46 @@ def cmd_drift_check(args: argparse.Namespace) -> int:
         for r in rows:
             sweep_bad += 1
             print(f"  [FAIL] {cat}: {r}")
-    ok = rep.ok() and sweep_bad == 0
+    for problem, key, file_v, db_v in fm_drift:
+        print(f"  [FAIL] manifest frontmatter disagrees with the DB: "
+              f"{problem} {key}: file={file_v!r} db={db_v!r} — the DB "
+              f"wins at runtime; the file is the stale copy")
+    ok = rep.ok() and sweep_bad == 0 and not fm_drift
     print(f"  [{'  OK' if ok else 'FAIL'}] {rep.summary()}"
           + (f"; tree sweep: {sweep_bad} finding(s)" if sweep_bad
-             else "; tree sweep clean"))
+             else "; tree sweep clean")
+          + (f"; frontmatter: {len(fm_drift)} drift" if fm_drift
+             else "; frontmatter clean"))
     return 0 if ok else 1
+
+
+def _settings_drift(conn, workspace: Path,
+                    scope: "str | None") -> "list[tuple]":
+    """`(problem, key, file_value, db_value)` across the workspace.
+
+    Layer 3 of the consistency gate. The frontmatter is written once at
+    creation and never again — every later settings edit goes to the DB,
+    and the UI renders the DB — so the file's copy goes stale with
+    nobody watching it. Best-effort per problem: an unreadable or
+    unparseable Manifest is the other layers' business, not this one."""
+    from ..state import settings as _settings
+    out: "list[tuple]" = []
+    for row in conn.execute(
+            "SELECT name, manifest_path FROM problems ORDER BY name"):
+        name = str(row["name"])
+        if scope and scope not in name:
+            continue
+        path = workspace / str(row["manifest_path"])
+        if not path.is_file():
+            continue
+        try:
+            mfst = manifest.parse(path)
+        except Exception:  # noqa: BLE001 — parse failures are layer 1's
+            continue
+        for key, file_v, db_v in _settings.frontmatter_drift(
+                conn, name, mfst):
+            out.append((name, key, file_v, db_v))
+    return out
 
 
 def cmd_library_backfill_declinfo(args: argparse.Namespace) -> int:

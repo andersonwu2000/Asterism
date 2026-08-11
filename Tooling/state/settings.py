@@ -126,6 +126,39 @@ def overlay(mfst: "Manifest", values: "dict[str, object]") -> None:
             setattr(mfst, key, val)
 
 
+def frontmatter_drift(conn: sqlite3.Connection, problem: str,
+                      mfst: "Manifest") -> "list[tuple[str, object, object]]":
+    """`(key, file_value, db_value)` for every setting where the
+    Manifest's frontmatter and the DB disagree.
+
+    The two diverge silently by construction: creation writes the yaml
+    block once, every later edit goes to the DB, and the UI shows the
+    DB — so nobody is looking at the copy that went stale. Runtime is
+    safe (the overlay makes the DB win at every gate), but the file
+    then lies to whoever reads it next, which includes the operator and
+    every tool that parses it without a connection.
+
+    "A divergence nobody would notice" is exactly the shape that
+    belongs in a check rather than in someone's memory, so this is
+    what `asterism drift-check` calls (2026-08-11)."""
+    db_values = read(conn, problem)
+    out: "list[tuple[str, object, object]]" = []
+    for key in SETTING_KEYS:
+        if key not in db_values:
+            continue          # unmigrated: the file IS the value, no drift
+        file_value = getattr(mfst, key, None)
+        if not _valid(key, file_value):
+            continue          # nothing parseable to disagree with
+        db_value = db_values[key]
+        if key in _LIST_KEYS:
+            same = sorted(file_value) == sorted(db_value)
+        else:
+            same = file_value == db_value
+        if not same:
+            out.append((key, file_value, db_value))
+    return out
+
+
 def migrate_from_manifest(conn: sqlite3.Connection, problem: str,
                           mfst: "Manifest") -> int:
     """Copy the Manifest's values into the DB for every key that has

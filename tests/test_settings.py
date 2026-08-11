@@ -228,3 +228,24 @@ def test_manifest_cache_dual_read(tmp_path: Path) -> None:
     settings.write(conn, "p", "library", True)
     assert cache["p"].library is True
     conn.close()
+
+
+def test_frontmatter_drift_is_detected_not_remembered(conn):
+    """The yaml block is written once at creation and never again —
+    every later edit goes to the DB and the UI renders the DB, so the
+    file's copy goes stale with nobody positioned to notice. Runtime is
+    safe (the overlay makes the DB win at every gate); what rots is the
+    file's honesty to the next reader. A divergence nobody would notice
+    belongs in a check, not in someone's memory (2026-08-11)."""
+    mfst = _mfst(library=True, forbidden_lemmas=["a", "b"])
+
+    # Unmigrated: the file IS the value, so there is nothing to disagree.
+    assert settings.frontmatter_drift(conn, "p", mfst) == []
+
+    settings.write(conn, "p", "library", True)
+    settings.write(conn, "p", "forbidden_lemmas", ["b", "a"])
+    assert settings.frontmatter_drift(conn, "p", mfst) == []   # order-free
+
+    settings.write(conn, "p", "library", False)
+    drift = settings.frontmatter_drift(conn, "p", mfst)
+    assert drift == [("library", True, False)]
