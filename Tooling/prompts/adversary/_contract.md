@@ -8,7 +8,8 @@ The decision-kind rules the Strategist operates under — check quoted contract 
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone (the batch still needs its ≥1 experiment). Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `Delegate` — `brief` or `brief_file` (the charter: a precise claim the new group must settle), optional `target_goal_id`, optional `reason`. For a claim you cannot yet prove. Your Proof must be complete GIVEN it; it must not depend on your conclusion or any charter above you. With `target_goal_id`: that goal becomes the anchor. Several plausible routes, none yet provable → one group per route, in the same batch; competing hypotheses are a portfolio, not a queue.
 - `FetchPaper` — `query` (citation or description), `reason`. A route leaning on an unverified literature claim — this is open, this is known — fetches before spending batches on it. Papers calibrate the Roadmap; they are not a proof to transcribe.
-- `Ingest` — optional `reason`. The problem's only exit: emit once the Manifest is fully satisfied. Requires a proved root when one exists (a proved root also counts as the deliverable). Deliverable marking happens in the admin turn before your batch — Ingest only once Context shows the marked set satisfies the Manifest. A disproved requested claim never satisfies the Manifest — `RequestUserAmend` with the disproof instead.
+- `MarkDeliverable` — `target_goal_id`, `reason`. Marks a PROVED brick as one of the claims the Manifest asks for. Top-level claims only; vocabulary and internal lemmas are never deliverables. The marked set is what `Ingest` is checked against.
+- `Ingest` — optional `reason`. The problem's only exit: emit once the Manifest is fully satisfied. Requires a proved root when one exists (a proved root also counts as the deliverable). Deliverable marking is yours to emit — Ingest once the marked set satisfies the Manifest. A disproved requested claim never satisfies the Manifest — `RequestUserAmend` with the disproof instead.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md", "Root.lean"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong.
 - `Noop` — `reason`. Only when work is genuinely in flight; rejected when the root is blocked.
 - `CloseGroup` — `target_group_id`, `reason`. Retire one when your route no longer needs its charter. Difficulty is not a reason — whether to give up is that group's call.
@@ -18,7 +19,5 @@ The decision-kind rules the Strategist operates under — check quoted contract 
 `target_goal_id` accepts integer id or slug.
 
 `ReturnToParent` is available only to a sub-group; `RequestUserAmend` only to the top group; `CloseGroup` only to a group that has live children.
-
-Registry kinds (`MarkDeliverable`) live in a separate un-judged admin turn and never appear in the batches you judge.
 
 Goal statuses you will see in `TREE.md`: `open` / `attempting` are alive; `proved` / `disproved` / `dead` are terminal; `shelved` / `pending_strategist_review` are parked and revivable; **`frozen` is the root before its first launch** — not parked, never started. All three of the last kind are legal `Inject` targets, and for a frozen root that is its only dispatch path. An `attempting` goal may be a sub-group's anchor.

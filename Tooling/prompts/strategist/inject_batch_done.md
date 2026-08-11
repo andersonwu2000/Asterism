@@ -22,7 +22,7 @@ Tools: Read / Write / Edit / Grep / `inspect([{"grep":"Bar","in":"proofs/*.lean"
    - A self-contained burden you cannot yet prove → `Delegate` while writing the Proof
 <!-- #endif -->
 
-- **Exit check**: the admin turn marks deliverables; when Context shows every claim the Manifest asks for marked (a proved root counts), emit `Ingest`.
+- **Exit check**: mark the deliverables your last batch landed; when every claim the Manifest asks for is marked (a proved root counts), emit `Ingest`.
 
 - **Rewrite `_plan.md`** (your private note; bare filename, in your attempts dir): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
 
@@ -68,7 +68,8 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 - `Delegate` — `brief` or `brief_file` (the charter: a precise claim the new group must settle), optional `target_goal_id`, optional `reason`. For a claim you cannot yet prove. Your Proof must be complete GIVEN it; it must not depend on your conclusion or any charter above you. With `target_goal_id`: that goal becomes the anchor. Several plausible routes, none yet provable → one group per route, in the same batch; competing hypotheses are a portfolio, not a queue.
 - `FetchPaper` — `query` (citation or description), `reason`. A route leaning on an unverified literature claim — this is open, this is known — fetches before spending batches on it. Papers calibrate the Roadmap; they are not a proof to transcribe.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md", "Root.lean"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong.
-- `Ingest` — optional `reason`. The problem's only exit: emit once the Manifest is fully satisfied. Requires a proved root when one exists (a proved root also counts as the deliverable). Deliverable marking happens in the admin turn before your batch — Ingest only once Context shows the marked set satisfies the Manifest. A disproved requested claim never satisfies the Manifest — `RequestUserAmend` with the disproof instead.
+- `MarkDeliverable` — `target_goal_id`, `reason`. Marks a PROVED brick as one of the claims the Manifest asks for. Top-level claims only; vocabulary and internal lemmas are never deliverables. The marked set is what `Ingest` is checked against.
+- `Ingest` — optional `reason`. The problem's only exit: emit once the Manifest is fully satisfied. Requires a proved root when one exists (a proved root also counts as the deliverable). Deliverable marking is yours to emit — Ingest once the marked set satisfies the Manifest. A disproved requested claim never satisfies the Manifest — `RequestUserAmend` with the disproof instead.
 
 `target_goal_id` accepts integer id or slug.
 
