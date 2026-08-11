@@ -109,30 +109,44 @@ def _same_model(scoped: str, configured: str) -> bool:
     return bool(a) and (a in b or b in a)
 
 
-#: provider name -> probe. A probe returns the blocks it can see, and
-#: raises nothing: an unreachable endpoint is "cannot confirm", which
-#: must not read as "blocked" (a broken probe would otherwise halt the
-#: framework) nor as "clear" for a provider that never answers.
-_PROBES: "dict[str, Callable[[], list[Block]]]" = {}
+#: provider name -> probe. A probe raises nothing and answers in three
+#: values, not two:
+#:
+#:   [Block, ...]  the endpoint answered: these surfaces are capped
+#:   []            the endpoint answered: nothing is capped
+#:   None          nobody answered — "cannot confirm"
+#:
+#: The empty list and `None` were the same value until 2026-08-11, and
+#: the docstring here already said they must not be ("an unreachable
+#: endpoint ... must [not read] as 'clear' for a provider that never
+#: answers") — the code simply had nowhere to put the distinction. It
+#: is load-bearing in the RELEASE direction: holding on silence costs a
+#: wait, but RELEASING on silence drops a real cap on the floor, so a
+#: hold may only be lifted by a positive answer.
+_PROBES: "dict[str, Callable[[], list[Block] | None]]" = {}
 
 
-def register_probe(provider: str, probe: "Callable[[], list[Block]]") -> None:
+def register_probe(provider: str,
+                   probe: "Callable[[], list[Block] | None]") -> None:
     _PROBES[provider] = probe
 
 
-def _claude_blocks() -> "list[Block]":
+def _claude_blocks() -> "list[Block] | None":
     """Read the subscription endpoint, keeping the per-model dimension.
 
     Global windows (five_hour / seven_day) block every model; an active
     `weekly_scoped` limit blocks only the model its scope names.
+
+    `None` when the endpoint did not answer — distinct from `[]`, which
+    is the endpoint saying nothing is capped.
     """
     from . import usage_quota
     try:
         raw = usage_quota.fetch_usage()
     except Exception:  # noqa: BLE001 — unreachable ≠ exhausted
-        return []
+        return None
     if not raw:
-        return []
+        return None
     out: "list[Block]" = []
     bar = usage_quota.EXHAUSTED_UTILIZATION
     for key in ("five_hour", "seven_day"):
@@ -157,10 +171,10 @@ def _claude_blocks() -> "list[Block]":
     return out
 
 
-def _no_endpoint() -> "list[Block]":
+def _no_endpoint() -> "list[Block] | None":
     """Providers with no usage API. Their exhaustion is still inferred
     from spawn failures by the dispatcher's breaker — this returns
-    nothing rather than pretending to know.
+    `None` ("cannot confirm") rather than pretending to know.
 
     CONSEQUENCE, recorded so nobody re-litigates it: a provider wired to
     this probe can never receive a POSITIVE quota confirmation. There is
@@ -170,8 +184,13 @@ def _no_endpoint() -> "list[Block]":
     `usage_endpoint=False` — the framework declines to invent a
     confirmation nobody gave it — not agy being treated unfairly. The
     cure is an endpoint, not a heuristic.
+
+    Which is also why its holds are never released early by
+    `confirmed_clear`: an `observe()` block on such a provider carries
+    its own TTL and expires on its own, and that TTL is the only honest
+    clock available for it.
     """
-    return []
+    return None
 
 
 #: Real probes, keyed by canonical provider name. A provider is wired to
@@ -231,6 +250,11 @@ class Ledger:
         #: Blocks learned from failed spawns (see `observe`) — the only
         #: channel a provider without a usage API has.
         self._observed: "list[Block]" = []
+        #: Providers whose probe actually ANSWERED on the last refresh.
+        #: Absence of a block is not evidence of a clear seat unless the
+        #: provider is in here — see `_PROBES` for why the release
+        #: direction needs the distinction.
+        self._answered: "set[str]" = set()
 
     #: How long an OBSERVED block (a spawn that died on quota) is
     #: trusted when the provider gave no reset time. Long enough that
@@ -264,13 +288,19 @@ class Ledger:
                           if b.until is None or b.until > now]
         if force or not self._at or now - self._at >= self._ttl:
             found: "list[Block]" = []
-            for probe in list(_PROBES.values()):
+            answered: "set[str]" = set()
+            for name, probe in list(_PROBES.items()):
                 try:
-                    found.extend(probe())
+                    seen = probe()
                 except Exception:  # noqa: BLE001 — a probe must not halt us
                     continue
+                if seen is None:
+                    continue        # asked, nobody answered
+                answered.add(name)
+                found.extend(seen)
             self._probed = [b for b in found
                             if b.until is None or b.until > now]
+            self._answered = answered
             self._at = now
         else:
             self._probed = [b for b in self._probed
@@ -305,3 +335,36 @@ class Ledger:
             for k in group:
                 out.setdefault(k, hit)
         return out
+
+    def confirmed_clear(self, provider: str,
+                        model: "str | None") -> bool:
+        """Did the provider ANSWER, and say this surface is not capped?
+
+        Not the negation of `blocked`: that returns None both for "the
+        endpoint says you are fine" and for "nobody answered", and those
+        two must part company wherever an answer is used to LIFT a hold
+        rather than to impose one.
+        """
+        self.refresh()
+        return (provider in self._answered
+                and self.blocked(provider, model) is None)
+
+    def clear_kinds(
+        self, seats: "dict[str, tuple[str, str | None]]",
+    ) -> "set[str]":
+        """Which pipeline kinds are confirmed runnable — the release-side
+        mirror of `blocked_kinds`, and bound by the same couplings.
+
+        A bound group is runnable only when EVERY member is confirmed,
+        for the reason the group exists at all: releasing the author
+        while the judge is still capped just re-manufactures the
+        proposals that get discarded. One unanswered seat holds its
+        whole group.
+        """
+        ok = {kind for kind, (prov, mdl) in seats.items()
+              if self.confirmed_clear(prov, mdl)}
+        for group in BOUND:
+            members = {k for k in group if k in seats}
+            if members - ok:
+                ok -= members
+        return ok

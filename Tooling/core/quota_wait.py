@@ -16,8 +16,9 @@ this module is the behavior, not the storage.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
-from . import usage_quota
+from . import quota, usage_quota
 
 # Jitter pads the provider's resets_at (clock skew + eager 429s on the
 # boundary); the fallback covers "exhausted but no parseable resets_at".
@@ -157,6 +158,67 @@ def maybe_enter(st, *, enabled: bool, source: str,
           f"resuming automatically (dispatch.quota_wait=false restores "
           f"exit-on-quota)", flush=True)
     return True
+
+
+def sync_quota_holds(st, ledger, seats: dict) -> None:
+    """Bring `st.quota_cooldown_kind` in line with the ledger — BOTH
+    directions.
+
+    It lives beside `tick`'s global release on purpose. The two are the
+    same idea at two granularities, and keeping them in separate files
+    is how the per-seat half shipped (2026-08-07) with a hold and no
+    unblock: `tick` already had the "account switch / window change"
+    recovery, but it is gated behind the GLOBAL pause, which a per-seat
+    hold never arms — and the other release, at the dispatch site, needs
+    a spawn of the very kind the hold prevents. A Fable weekly cap
+    therefore held the Strategist for eight hours across the account
+    switch that had already fixed it (2026-08-11). Anyone adding a third
+    granularity should have to look at these two first.
+
+    Holding: a cap that names ONE model must not stop the pipelines
+    seated on a different one. 2026-08-06 held a single boolean and
+    paused a whole run — formalizer on Gemini, judge movable to Opus,
+    neither with a quota problem; eleven finished proposals were
+    discarded for a Fable weekly cap. Writing into the kind-cooldown map
+    the refill pass already honours means blocked seats simply stop
+    being dispatched while the rest keep going. Extend-only (max), since
+    the rc=126 backoffs live in the same map.
+
+    Two asymmetries are deliberate:
+      * only a POSITIVE answer lifts a hold (`Ledger.clear_kinds`);
+        silence keeps it, because releasing on silence drops a real cap
+        while holding on silence only costs a wait — the same
+        discipline `_confirmed_available` applies to the global pause;
+      * the rc=126 exponential backoff is left to expire on its own. It
+        is a rate-limit brake rather than a quota fact, and clearing it
+        here would let a refusing provider be hammered every tick.
+
+    Seat names are config keys while the cooldown map is read by QUEUE
+    kind — writing the seat name here is what made the first version of
+    the hold a silent no-op (2026-08-07 production).
+    """
+    for seat, blk in ledger.blocked_kinds(seats).items():
+        kind = quota.DISPATCH_KIND.get(seat)
+        if kind is None:
+            continue        # a station (pre-search) — held via its group
+        until = blk.until or (time.time() + 900.0)
+        if until > st.quota_cooldown_kind.get(kind, 0.0):
+            st.quota_cooldown_kind[kind] = until
+            print(f"[quota] {kind} held until "
+                  f"{datetime.fromtimestamp(until).strftime('%H:%M:%S')}"
+                  f" — {blk.provider}"
+                  f"{'/' + blk.model if blk.model else ''}"
+                  f": {blk.detail or 'exhausted'}", flush=True)
+
+    for seat in ledger.clear_kinds(seats):
+        kind = quota.DISPATCH_KIND.get(seat)
+        if kind is None or kind not in st.quota_cooldown_kind:
+            continue
+        if kind in st.consec_quota_per_kind:
+            continue
+        st.quota_cooldown_kind.pop(kind, None)
+        print(f"[quota] {kind} released — the endpoint now reports its "
+              f"seat clear", flush=True)
 
 
 def tick(st, now: float, *, enabled: bool) -> bool:

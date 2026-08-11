@@ -107,8 +107,11 @@ def test_display_names_match_configured_model_ids():
 
 def test_a_provider_without_a_usage_api_reports_nothing(monkeypatch):
     """Silence, not a guess: agy has no endpoint, and its exhaustion is
-    inferred elsewhere (the dispatcher's spawn-failure breaker)."""
-    assert quota._no_endpoint() == []
+    inferred elsewhere (the dispatcher's spawn-failure breaker).
+
+    `None`, not `[]` — "nobody answered" must not be spendable as "the
+    seat is clear" (see `_PROBES`)."""
+    assert quota._no_endpoint() is None
 
 
 def test_the_claude_probe_keeps_the_per_model_dimension(monkeypatch):
@@ -232,3 +235,133 @@ def test_a_refusal_without_a_reset_time_says_nothing():
     from Tooling.llm import antigravity_cli as agy
     agy._record_quota_reset("individual quota reached.")
     assert agy.take_quota_reset() is None
+
+
+# --- the release side (2026-08-11) ------------------------------------
+#
+# Every test above pins the BLOCK direction. That asymmetry is the bug:
+# splitting the global quota boolean into a per-seat ledger (2026-08-07)
+# carried the block over and left the unblock behind, so a Fable weekly
+# cap held the Strategist for eight hours across the account switch that
+# had already fixed it. Block and release are one relation; pinning one
+# end of it is what let this through.
+
+
+def test_answered_and_unanswered_are_different_answers(monkeypatch):
+    """`blocked() is None` means two incompatible things. Only one of
+    them may lift a hold."""
+    monkeypatch.setattr(quota, "_PROBES", {"claude": lambda: []})
+    assert Ledger(ttl=0.0).confirmed_clear("claude", "claude-opus-5")
+
+    for silent in (lambda: None, _boom):
+        monkeypatch.setattr(quota, "_PROBES", {"claude": silent})
+        led = Ledger(ttl=0.0)
+        # not blocked...
+        assert led.blocked("claude", "claude-opus-5") is None
+        # ...but nobody said so, so it cannot buy a release
+        assert not led.confirmed_clear("claude", "claude-opus-5")
+
+
+def _boom():
+    raise RuntimeError("endpoint down")
+
+
+def test_a_capped_seat_is_not_confirmed_clear(monkeypatch):
+    monkeypatch.setattr(quota, "_PROBES",
+                        {"claude": lambda: [Block("claude", "Fable", 9e9)]})
+    led = Ledger(ttl=0.0)
+    assert not led.confirmed_clear("claude", "claude-fable-5")
+    assert led.confirmed_clear("claude", "claude-opus-5")
+
+
+def test_a_bound_group_is_released_only_as_a_whole(monkeypatch):
+    """The mirror of `test_the_author_and_the_judge_stop_together`:
+    releasing the author while the judge is still capped just
+    re-manufactures the proposals that get discarded."""
+    monkeypatch.setattr(quota, "_PROBES",
+                        {"claude": lambda: [Block("claude", "Fable", 9e9)],
+                         "antigravity": lambda: None})
+    led = Ledger(ttl=0.0)
+    seats = _seats(adversary=("claude", "claude-fable-5"))
+    clear = led.clear_kinds(seats)
+    assert "strategist" not in clear and "adversary" not in clear
+    # agy never answers ⇒ its group is never confirmed either
+    assert "formalizer" not in clear and "presearch" not in clear
+
+    # judge's cap lifts ⇒ the pair comes back together
+    monkeypatch.setattr(quota, "_PROBES", {"claude": lambda: []})
+    clear = Ledger(ttl=0.0).clear_kinds(seats)
+    assert {"strategist", "adversary"} <= clear
+
+
+def _state_with_hold(kind="Strategist", until=9e9):
+    from Tooling.core.dispatcher import SchedulerState
+    st = SchedulerState()
+    st.quota_cooldown_kind[kind] = until
+    return st
+
+
+_FABLE_SEATS = {
+    "strategist": ("claude", "claude-opus-5"),
+    "adversary": ("claude", "claude-fable-5"),
+    "formalizer": ("claude", "claude-sonnet-5"),
+    "presearch": ("claude", "claude-sonnet-5"),
+}
+
+
+def test_the_hold_lifts_when_the_endpoint_says_the_seat_is_clear(monkeypatch):
+    """The 2026-08-11 production shape, end to end through the
+    dispatcher's own wiring — the layer where seat-vs-kind spelling has
+    already broken this once."""
+    from Tooling.core import quota_wait
+
+    monkeypatch.setattr(quota, "_PROBES", {"claude": lambda: []})
+    st = _state_with_hold()
+    quota_wait.sync_quota_holds(st, Ledger(ttl=0.0), _FABLE_SEATS)
+    assert "Strategist" not in st.quota_cooldown_kind
+
+
+def test_the_hold_survives_a_silent_endpoint(monkeypatch):
+    from Tooling.core import quota_wait
+
+    monkeypatch.setattr(quota, "_PROBES", {"claude": _boom})
+    st = _state_with_hold()
+    quota_wait.sync_quota_holds(st, Ledger(ttl=0.0), _FABLE_SEATS)
+    assert st.quota_cooldown_kind.get("Strategist") == 9e9
+
+
+def test_the_hold_survives_while_the_bound_seat_is_still_capped(monkeypatch):
+    from Tooling.core import quota_wait
+
+    monkeypatch.setattr(quota, "_PROBES",
+                        {"claude": lambda: [Block("claude", "Fable", 9e9)]})
+    st = _state_with_hold()
+    quota_wait.sync_quota_holds(st, Ledger(ttl=0.0), _FABLE_SEATS)
+    assert st.quota_cooldown_kind.get("Strategist") == 9e9
+
+
+def test_the_release_does_not_touch_the_rc126_backoff(monkeypatch):
+    """The exponential backoff shares this map but is a rate-limit
+    brake, not a quota fact: clearing it here would let a refusing
+    provider be hammered every tick. It has its own release, at the
+    dispatch site, on the first non-quota outcome."""
+    from Tooling.core import quota_wait
+
+    monkeypatch.setattr(quota, "_PROBES", {"claude": lambda: []})
+    st = _state_with_hold(until=1e9)
+    st.consec_quota_per_kind["Strategist"] = 3
+    quota_wait.sync_quota_holds(st, Ledger(ttl=0.0), _FABLE_SEATS)
+    assert st.quota_cooldown_kind.get("Strategist") == 1e9
+
+
+def test_holding_still_works_after_all_this(monkeypatch):
+    """The other end of the relation, through the same entry point."""
+    from Tooling.core import quota_wait
+
+    monkeypatch.setattr(quota, "_PROBES",
+                        {"claude": lambda: [Block("claude", "Fable", 9e9,
+                                                  "weekly cap")]})
+    st = _state_with_hold(until=0.0)
+    quota_wait.sync_quota_holds(st, Ledger(ttl=0.0), _FABLE_SEATS)
+    assert st.quota_cooldown_kind.get("Strategist") == 9e9
+    assert st.quota_cooldown_kind.get("Formalizer") is None

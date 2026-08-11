@@ -2488,22 +2488,7 @@ def run(workspace: Path, *, once: bool = False,
         # kind-cooldown map the refill pass already honours, so blocked
         # seats simply stop being dispatched while the rest keep going.
         # Extend-only (max): the rc=126 backoffs live in the same map.
-        _blocked = _quota_ledger.blocked_kinds(_pipeline_seats())
-        for _seat, _blk in _blocked.items():
-            # Seat names are config keys; the cooldown map is read by
-            # QUEUE kind. Writing the seat name here is what made the
-            # first version of this a no-op (2026-08-07 production).
-            _kind = quota.DISPATCH_KIND.get(_seat)
-            if _kind is None:
-                continue    # a station (pre-search) — held via its group
-            _until = _blk.until or (time.time() + 900.0)
-            if _until > st.quota_cooldown_kind.get(_kind, 0.0):
-                st.quota_cooldown_kind[_kind] = _until
-                print(f"[quota] {_kind} held until "
-                      f"{datetime.fromtimestamp(_until).strftime('%H:%M:%S')}"
-                      f" — {_blk.provider}"
-                      f"{'/' + _blk.model if _blk.model else ''}"
-                      f": {_blk.detail or 'exhausted'}", flush=True)
+        quota_wait.sync_quota_holds(st, _quota_ledger, _pipeline_seats())
 
         # Refill queue (uses in-memory `running` for dedup; st.cooldown_until
         # holds spawn_fast_fail back-offs; st.quota_cooldown_kind holds the
