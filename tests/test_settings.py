@@ -249,3 +249,53 @@ def test_frontmatter_drift_is_detected_not_remembered(conn):
     settings.write(conn, "p", "library", False)
     drift = settings.frontmatter_drift(conn, "p", mfst)
     assert drift == [("library", True, False)]
+
+
+def test_a_key_the_file_never_mentions_is_not_a_disagreement(conn, tmp_path):
+    """Creation writes `problem:` alone as of 2026-08-11, so migrating an
+    older Manifest to that shape means DELETING keys. Read as `[]`, every
+    deletion disagreed with the DB that had been seeded from it — the
+    check became a one-way ratchet pushing the operator to keep the very
+    copy it exists to retire."""
+    (tmp_path / "Manifest.md").write_text(
+        "---\nproblem: p\n---\n\nbody\n", encoding="utf-8")
+    mfst = manifest.parse(tmp_path / "Manifest.md")
+    settings.write(conn, "p", "axioms_whitelist",
+                   ["propext", "Quot.sound", "Classical.choice"])
+    settings.write(conn, "p", "library", True)
+    assert settings.frontmatter_drift(conn, "p", mfst) == []
+
+
+def test_a_key_the_file_does_mention_still_disagrees(conn, tmp_path):
+    """Silence is skipped; a statement is still checked. Losing that
+    distinction would disable the check rather than narrow it."""
+    (tmp_path / "Manifest.md").write_text(
+        "---\nproblem: p\nlibrary: true\n---\n\nbody\n", encoding="utf-8")
+    mfst = manifest.parse(tmp_path / "Manifest.md")
+    settings.write(conn, "p", "library", False)
+    assert settings.frontmatter_drift(conn, "p", mfst) == [
+        ("library", True, False)]
+
+
+def test_an_unparsed_manifest_keeps_the_old_behaviour(conn):
+    """`present_keys is None` means nobody recorded what the file said —
+    a Manifest built in code, not read from disk. Treating that as "the
+    file mentions nothing" would skip every key and silently disable the
+    check for every programmatic caller: the same absent-vs-empty
+    collapse this field exists to undo, one level up."""
+    mfst = _mfst(library=True)
+    assert mfst.present_keys is None
+    settings.write(conn, "p", "library", False)
+    assert settings.frontmatter_drift(conn, "p", mfst) == [
+        ("library", True, False)]
+
+
+def test_a_parsed_file_that_carries_nothing_is_not_the_same_as_unparsed(
+        tmp_path):
+    """Empty frozenset vs None: one is a file that said nothing, the
+    other is no file at all."""
+    (tmp_path / "Manifest.md").write_text(
+        "---\nproblem: p\n---\n\nbody\n", encoding="utf-8")
+    parsed = manifest.parse(tmp_path / "Manifest.md")
+    assert parsed.present_keys == frozenset({"problem"})
+    assert _mfst().present_keys is None

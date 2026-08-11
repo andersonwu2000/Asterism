@@ -56,6 +56,27 @@ class Manifest:
     # (`context._paper_ids_for` primary derivation) — coordinate before
     # removing.
     paper: str = ""
+    #: Which keys the yaml block actually CARRIED. Every field above
+    #: has a default, so after parsing "the file omits this" and "the
+    #: file sets it to the empty value" are the same object — and one
+    #: of the two is a statement while the other is a silence.
+    #: `settings.frontmatter_drift` needs them apart: creation now
+    #: writes `problem:` alone, so migrating an older Manifest to that
+    #: shape means DELETING keys, and a deleted key read as `[]`
+    #: disagrees with the DB that was seeded from it. The check then
+    #: pushes the operator to keep the stale copy it exists to retire
+    #: (2026-08-11). Compared/hashed out of the dataclass: it describes
+    #: the file's syntax, not the problem's settings.
+    #:
+    #: `None` means "nobody recorded this" — a Manifest built in code
+    #: rather than parsed — and readers must fall back to their old
+    #: behaviour there. An empty frozenset is a PARSED file that
+    #: carried no keys, which is a different claim. Defaulting to the
+    #: empty set instead would have silently disabled the drift check
+    #: for every programmatic caller: the same absent-vs-empty
+    #: collapse this field exists to undo, one level up.
+    present_keys: "frozenset | None" = field(default=None, compare=False,
+                                             repr=False)
 
 
 
@@ -465,6 +486,7 @@ def parse(path: Path) -> Manifest:
         signoff=(fm.get('signoff') is None or str(
             fm.get('signoff')).strip().lower() not in ("false", "no", "0")),
         paper=str(fm.get('paper') or "").strip(),
+        present_keys=frozenset(fm),
     )
 
 

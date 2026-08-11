@@ -143,9 +143,19 @@ def frontmatter_drift(conn: sqlite3.Connection, problem: str,
     what `asterism drift-check` calls (2026-08-11)."""
     db_values = read(conn, problem)
     out: "list[tuple[str, object, object]]" = []
+    carried = getattr(mfst, "present_keys", None)
     for key in SETTING_KEYS:
         if key not in db_values:
             continue          # unmigrated: the file IS the value, no drift
+        if carried is not None and key not in carried:
+            # The file does not mention this key at all. Silence is not
+            # disagreement — and treating it as such made the check a
+            # one-way ratchet: creation writes `problem:` alone now, so
+            # migrating an older Manifest to that shape means deleting
+            # keys, and every deletion read as `[]` against the DB that
+            # was seeded from it. That pushed the operator to keep the
+            # stale copy this check exists to retire (2026-08-11).
+            continue
         file_value = getattr(mfst, key, None)
         if not _valid(key, file_value):
             continue          # nothing parseable to disagree with
