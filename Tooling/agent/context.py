@@ -940,6 +940,29 @@ def _section_goal_history(*,
                 "decomposition to address them."
             )
             sub.append("")
+        # A timeout is a legitimate attempt — the worker got its full
+        # budget and produced nothing — but nothing ever TOLD it what
+        # running out of clock means. g7491 timed out three times across
+        # three days and three strategies, each new spawn re-attacking
+        # the same size (and the first goal to meet the raised 1800s
+        # ceiling timed out too: raising the budget buys another run at
+        # the same wall). The count is the part the worker cannot see:
+        # it only ever knows its own turn. Watchdog kills
+        # (`agent_stuck_thinking`) are deliberately NOT counted here —
+        # a stalled stream is the model wedged, not a burden that did
+        # not fit, and folding them in would aim this at the wrong
+        # failure (user call, 2026-08-11).
+        n_timeouts = sum(1 for e in direct_events
+                         if e.get("failure_reason") == "agent_timeout")
+        if n_timeouts:
+            sub.append(
+                f"Note: {n_timeouts} earlier attempt(s) ran out of wall "
+                "clock rather than failing on the mathematics. If one "
+                "part of this proof is heavy and self-contained, declare "
+                "it as a `new_<slug>.lean` sub-goal and cite it rather "
+                "than proving it inline."
+            )
+            sub.append("")
         # Inline gets the DIGEST; the full block goes to the companion
         # file. Both were already specified that way — `write_past_attempts`
         # tells its reader "Context.md shows a 1-line digest per attempt",

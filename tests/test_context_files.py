@@ -16,6 +16,7 @@ from Tooling.state import db
 from Tooling.agent.context import (
     _ago,
     _digest_failure,
+    _section_goal_history,
     compile_context,
 )
 from Tooling.state.manifest import Manifest
@@ -680,3 +681,54 @@ def test_compile_context_companion_files_always_written(
     # still Read on demand if it ever wants to).
     assert (attempts_dir / "PAST_DIRECT_ATTEMPTS.md").exists()
     assert (attempts_dir / "PAST_VERIFY_FAILURES.md").exists()
+
+
+# ---------------------------------------------------------------------
+# The timeout hint (#186, 2026-08-11)
+# ---------------------------------------------------------------------
+
+def _attempt(reason: str, pid: str = "abcdef123456") -> dict:
+    return {"pipeline_id": pid, "failure_reason": reason,
+            "failure_detail": "", "artifacts": None}
+
+
+def _history(*reasons: str) -> str:
+    return "\n".join(_section_goal_history(
+        direct_events=[_attempt(r) for r in reasons],
+        verify_events=[], dead_strat_events=[], infeasible_sub_events=[],
+        show_verifies=False))
+
+
+def test_a_timed_out_goal_is_told_what_running_out_of_clock_means():
+    """A timeout is a legitimate attempt — full budget, nothing
+    delivered — but nothing told the next worker what it MEANS. g7491
+    timed out three times across three days and three strategies, each
+    spawn re-attacking the same size; the first goal to meet the raised
+    1800s ceiling timed out against that too. The way out (outsource the
+    heavy self-contained part) is the whole point of the message: a bare
+    fact would be one more wall."""
+    text = _history("agent_timeout", "lake_build_error", "agent_timeout")
+    assert "2 earlier attempt(s) ran out of wall clock" in text
+    assert "`new_<slug>.lean` sub-goal" in text
+
+
+def test_the_timeout_hint_stays_away_when_nothing_timed_out():
+    text = _history("lake_build_error", "agent_declined")
+    assert "ran out of wall clock" not in text
+
+
+def test_a_watchdog_kill_is_not_counted_as_a_timeout():
+    """User call, 2026-08-11: `agent_stuck_thinking` is the model wedged
+    on a silent stream, not a burden that did not fit in the budget.
+    Folding it in would aim the decomposition advice at the wrong
+    failure."""
+    text = _history("agent_stuck_thinking", "agent_stuck_thinking")
+    assert "ran out of wall clock" not in text
+
+
+def test_the_hint_carries_the_count_the_worker_cannot_see():
+    """One timeout may be luck; three across three strategies is a size
+    problem — and a spawn only ever knows its own turn."""
+    assert "1 earlier attempt(s)" in _history("agent_timeout")
+    assert "3 earlier attempt(s)" in _history(
+        "agent_timeout", "agent_timeout", "agent_timeout")
