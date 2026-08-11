@@ -131,9 +131,16 @@ def test_pending_review_surfaces_backward_shelve_proposal(
     text = out.read_text(encoding="utf-8")
     assert "### Recent failed attempts on this goal" in text
     assert "agent_shelved" in text
-    assert "Needed Forward lemmas" in text
-    assert "lineThrough" in text
-    assert "perpFoot" in text
+    # The brief is the review's primary evidence and it rides the
+    # companion WHOLE (2026-08-11). Inline it was head-truncated, and the
+    # cap had already been raised 1500 -> 4000 once because it sliced
+    # real proposals mid-signature — raising a cap only delays that, so
+    # the cap is gone and the pointer replaces it.
+    assert "PAST_DIRECT_ATTEMPTS.md" in text
+    companion = (attempts_dir / "PAST_DIRECT_ATTEMPTS.md").read_text(
+        encoding="utf-8")
+    for needle in ("Needed Forward lemmas", "lineThrough", "perpFoot"):
+        assert needle in companion, needle
 
 
 def test_pending_review_surfaces_existing_strategy_content(

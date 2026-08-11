@@ -299,11 +299,14 @@ def test_salvage_no_attempts_dir(
     assert _drafts.salvage_orphan_patches(conn, tmp_path) == 0
 
 
-def test_salvage_truncates_oversize_patch(
+def test_salvage_keeps_an_oversize_patch_whole(
     tmp_path: Path, conn: sqlite3.Connection,
 ) -> None:
-    """Very large patches get truncated to `_PATCH_DRAFTS_BUDGET`
-    with a footer note. Avoids ballooning Context.md."""
+    """The salvaged patch is a FILE, and the attempts dir it came from
+    is deleted right after — so a tail cut here destroyed proof the
+    framework was holding, permanently, to bound a surface it does not
+    live on. Context.md pays for what it inlines; this slot pays for
+    nothing (2026-08-11)."""
     gid = _seed_goal(conn, "big")
     body = (
         "theorem big : True := by\n"
@@ -317,8 +320,8 @@ def test_salvage_truncates_oversize_patch(
         problem_dir=tmp_path / "Problems" / "p",
         kind="builder", goal_id=gid)
     assert saved is not None
-    assert "truncated" in saved
-    assert len(saved) < len(body) + 200  # within budget + footer
+    assert "truncated" not in saved
+    assert saved.strip() == body.strip()
 
 
 def test_clear_partial_patch_drops_drafts(

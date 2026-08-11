@@ -276,48 +276,56 @@ def _section_stall_warning(conn: sqlite3.Connection,
 
 def _section_pending_review_failure(
     conn: sqlite3.Connection, pending_review_id: int,
+    attempts_dir: "Path | None" = None,
 ) -> list[str]:
-    """Dead-attempt brief that triggered the review.
+    """Why this goal is under review: one line per attempt, and the
+    autopsies in `PAST_DIRECT_ATTEMPTS.md` beside them.
 
-    Phase 2 §2.2 review_context spec calls for the failure reason
-    summary. The agent's shelve description lives in
-    `dead_attempts.proposal_md` (Backward / Builder write the decline
-    body there before the cascade enqueues Strategist review). Without
-    this section, Strategist sees only the goal statement and has no
-    visibility into what the pipeline agent already articulated as
-    blockers — exactly the gap that caused the take-5 SG misfire where
-    Backward enumerated 5 missing Forward lemmas in `proposal_md` but
-    Strategist Reopen'd with a redundant Kelly directive.
+    Phase 2 §2.2 calls for the failure summary, and the agent's own
+    shelve description (`dead_attempts.proposal_md`) is the review's
+    primary evidence — without it the Strategist saw only a goal
+    statement and re-issued directives for blockers the worker had
+    already enumerated (the take-5 SG misfire).
+
+    Both used to ride inline under head truncation, and both got cut at
+    the payload the verdict hinges on: the brief's cap went 1500 -> 4000
+    on 2026-07-05 because 1500 sliced real proposals mid-signature and
+    the Strategist rebuilt them by grepping source. Raising a cap is not
+    a fix for truncation, only a delay — so the caps are gone and the
+    full text rides the companion, the same split the worker's own goal
+    history uses (2026-08-11).
     """
     rows = list(conn.execute(
-        "SELECT pipeline_id, failure_reason, failure_detail, proposal_md, ts"
+        "SELECT pipeline_id, failure_reason, failure_detail, proposal_md,"
+        " artifacts, ts"
         " FROM dead_attempts WHERE target_kind = 'Goal' AND target_id = ?"
-        " ORDER BY id DESC LIMIT 3",
+        " ORDER BY id DESC LIMIT 5",
         (str(pending_review_id),),
     ))
     if not rows:
         return []
+    from .context import _digest_failure
+    from . import context_files
     out = ["### Recent failed attempts on this goal (newest first)", ""]
     for r in rows:
         out.append(
             f"- pipeline=`{str(r['pipeline_id'])[:8]}`  "
             f"reason=`{r['failure_reason']}`  ts={r['ts']}"
         )
-        detail = (r["failure_detail"] or "").strip()
-        if detail:
-            if len(detail) > 400:
-                detail = detail[:400].rstrip() + "…"
-            out.append(f"  detail: {detail}")
-        proposal = (r["proposal_md"] or "").strip()
-        if proposal:
-            # 1500→4000 (2026-07-05): the shelve brief IS the review's
-            # primary evidence, and 1500 chars truncated real proposals
-            # mid-signature at the exact payload the verdict hinges on
-            # (feedback: Strategist reconstructed it by source-grepping).
-            if len(proposal) > 4000:
-                proposal = proposal[:4000].rstrip() + "\n…(truncated)"
-            out += ["", "  agent brief:", "  ```", proposal, "  ```"]
-        out.append("")
+        digest = _digest_failure(str(r["failure_reason"] or ""),
+                                 str(r["failure_detail"] or ""))
+        if digest:
+            out.append(f"  {digest}")
+    out.append("")
+    if attempts_dir is not None:
+        try:
+            written = context_files.write_past_attempts(rows, attempts_dir)
+        except OSError:
+            written = None
+        if written is not None:
+            out += ["Each attempt's full autopsy — raw failure_detail, the "
+                    "agent's own brief, its parting note — in "
+                    f"`{context_files.PAST_DIRECT_ATTEMPTS_FILENAME}`.", ""]
     return out
 
 
@@ -1378,7 +1386,8 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         section_names += ["review_failure", "review_strategies",
                           "review_ancestors"]
         sections += [
-            _section_pending_review_failure(conn, pending_review_id),
+            _section_pending_review_failure(
+                conn, pending_review_id, attempts_dir),
             _section_pending_review_strategies(conn, pending_review_id),
             _section_pending_review_ancestors(conn, pending_review_id),
         ]

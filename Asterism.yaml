@@ -37,10 +37,18 @@ dispatch:
                               # prompt; with the new rescue prompt listing
                               # decline + leaf-bypass paths, give 1 more
                               # attempt to find an escape before shelving)
-  spawn_timeout_sec: 960      # 16min/spawn. SG empirical: sonnet stuck-
-                              # thinking eats any larger budget without
-                              # tool_use, so the watchdog (trap_check_sec)
-                              # still bounds genuine stalls.
+  spawn_timeout_sec: 1800     # 30min/spawn (was 960). 2026-08-11: the
+                              # union_closed run died on the clock, not on
+                              # the mathematics — 29 of 55 goal-level deaths
+                              # were timeout or stuck-thinking, 7 were a
+                              # mathematical verdict. g7491's killed spawn
+                              # had oriented, written patch.lean and run
+                              # three validate_file cycles inside 4.5min,
+                              # then hit its first long think. The watchdog
+                              # is what bounds genuine stalls (trap_check at
+                              # 660s, plus the timeout path's own parser
+                              # check); this number only decides how much
+                              # room real work gets before them.
 #  postmortem_timeout_sec: 180  # F55 postmortem spawn budget (writes
                               # _progress.md after a main timeout).
   trap_check_sec: 660         # watchdog single check at 11min (≈5min rescue

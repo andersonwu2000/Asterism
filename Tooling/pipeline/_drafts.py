@@ -156,7 +156,12 @@ import re as _re
 import sqlite3 as _sqlite3
 
 _PATCH_FILENAME = "patch.lean"
-_PATCH_DRAFTS_BUDGET = 6000  # patch bodies can run longer than progress notes
+#: No cap on the salvaged patch. This slot is a FILE the next spawn
+#: reads on demand, and the attempts dir it was rescued from is rmtree'd
+#: right after — so a tail cut deleted proof the framework was holding,
+#: permanently, to save bytes nobody was paying (2026-08-11). What DOES
+#: cost per-spawn bytes is the inline surface,
+#: `context._section_prior_patch`, and bounding belongs there.
 _PATCH_DRAFT_KIND_SUFFIX = "patch"
 
 # Extract theorem/lemma/def head name. Mirrors dedupe._THM_NAME_RE.
@@ -314,9 +319,6 @@ def salvage_patch_fallback(*, attempts_dir: Path, problem_dir: Path,
         return None
     if not _patch_is_substantive(text):
         return None
-    if len(text) > _PATCH_DRAFTS_BUDGET:
-        text = (text[:_PATCH_DRAFTS_BUDGET]
-                + f"\n\n-- (truncated; full patch was {len(text)} chars)")
     out = patch_drafts_path(problem_dir, kind, goal_id)
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -395,12 +397,8 @@ def salvage_orphan_patches(conn: "_sqlite3.Connection",
             continue
         out = patch_drafts_path(problem_dir, kind, goal_id)
         out.parent.mkdir(parents=True, exist_ok=True)
-        budget_text = text if len(text) <= _PATCH_DRAFTS_BUDGET else (
-            text[:_PATCH_DRAFTS_BUDGET]
-            + f"\n\n-- (truncated; full patch was {len(text)} chars)"
-        )
         try:
-            out.write_text(budget_text, encoding="utf-8")
+            out.write_text(text, encoding="utf-8")
             salvaged += 1
             print(f"[patch-salvage] orphan {d.name} → "
                   f"{out.relative_to(workspace).as_posix()} "
