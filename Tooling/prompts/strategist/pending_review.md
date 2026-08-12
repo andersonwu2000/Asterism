@@ -78,7 +78,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 - Dispose of the goal(s) under review: at least one decision must target a reviewed goal (ConfirmShelve / Inject). A batch targeting none of them is rejected.
 - New lemmas enter the problem only through your no-target Inject — missing tools never land on their own.
 - The root's STATEMENT is immutable; the root goal itself is a legal Inject target to re-engage its subtree.
-- Same-batch mints must be independent (concurrent dispatch); a dependent brick goes in the next batch.
+- Same-batch Injects must be independent (concurrent dispatch); one that waits, even through a parked goal, stays `ConfirmShelve`d for the next batch.
 - The mathematics — claims, arguments, lemma names, invariant constructions, proof techniques — is yours. Tactics, Lean syntax, statement shape (ranges, off-by-ones, constants) are the worker's.
 - Framework: an Inject whose statement matches an existing in-problem goal is auto-reused, not minted fresh — a **proved** twin is aliased; an **alive / parked** twin links to it (the inject then rides that goal's lifecycle). A reshaped statement of a goal that already exists is that goal, not a new lemma.
 

@@ -26,7 +26,7 @@ Standing rules the batch itself must satisfy — same source, same words:
 - Name Roadmap entries by phrase, never by position — numbers change as revisions reorder entries.
 - Mark formal↔informal claims not yet kernel-checked in the Roadmap.
 - Every route-moving batch carries ≥1 experiment — an Inject or a `Delegate` (Ingest batches exempt). Retiring work is not an experiment.
-- Same-batch mints must be independent (concurrent dispatch); a dependent brick goes in the next batch.
+- Same-batch Injects must be independent (concurrent dispatch); one that waits, even through a parked goal, stays `ConfirmShelve`d for the next batch.
 - The mathematics — claims, arguments, lemma names, invariant constructions, proof techniques — is yours. Tactics, Lean syntax, statement shape (ranges, off-by-ones, constants) are the worker's.
 
 `ReturnToParent` is available only to a sub-group; `RequestUserAmend` only to the top group; `CloseGroup` only to a group that has live children.

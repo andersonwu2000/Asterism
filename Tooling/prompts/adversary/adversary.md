@@ -23,7 +23,7 @@ Tools: Read / Grep / Write / `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"dec
 1. **Reachability**: `proposal.md`'s ## Roadmap must advance the Manifest's goal, with settling the MAIN claim as its end. Merely related, or a revision that leaves the remaining distance where it was, is not allowed.
 2. **Value**: `proposal.md`'s ## Argument must explain why THIS batch advances the ## Roadmap's plan. Repeating a previously failed route without new justification is not allowed.
 3. **Rigor**: `proposal.md`'s ## Proof must be logically complete. Logical errors, vaguely-papered holes, and gaps are not allowed.
-4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof, and its support must already exist. A goal the ## Proof does not prove — or one that leans on a brick this same batch is minting — must not enter formalization.
+4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof, and its support must already exist. A goal the ## Proof does not prove — or one that reaches a brick this same batch is minting, directly or through parked goals — must not enter formalization.
 5. **Honesty**: dead or shelved assertions must carry node pointers; a shelved item must state its restart condition. An external variable is not a restart condition.
 
 `Delegate` is exempt from 4 — it hands over a burden rather than skipping a step. Judge it against its `contract.md` clause, plus: the charter is precise enough to be settled.
