@@ -218,10 +218,10 @@ def test_shelving_is_not_counted_twice(workspace: Path) -> None:
     conn.commit()
     conn.close()
     ev = _events(workspace)["events"]
-    assert len([e for e in ev if e["kind"] == "set_aside"]) == 1
+    assert len([e for e in ev if e["kind"] == "shelved"]) == 1
 
 
-def test_infra_deaths_are_not_numbered_attempts(workspace: Path) -> None:
+def test_infra_deaths_are_split_from_real_failures(workspace: Path) -> None:
     """The failure registry's own semantics: an infra death never
     incremented `goals.attempts`, so numbering it would tell the reader
     the machine tried more times than it did. The fixture derives from
@@ -246,8 +246,12 @@ def test_infra_deaths_are_not_numbered_attempts(workspace: Path) -> None:
                            pipeline_id="y", failure_reason=real)
     conn.close()
     ev = _events(workspace)["events"]
-    assert [e["n"] for e in ev if e["kind"] == "hiccup"] == [None]
-    assert [e["n"] for e in ev if e["kind"] == "attempt"] == [1]
+    assert [e["kind"] for e in ev if e["kind"] == "hiccup"] == ["hiccup"]
+    assert [e["kind"] for e in ev if e["kind"] == "failed"] == ["failed"]
+    # neither is numbered: an ordinal would claim to be the
+    # engine's attempt sequence, and `goals.attempts` is a
+    # different number that disagrees in both directions
+    assert all(e["n"] is None for e in ev if e["kind"] in ("failed", "hiccup"))
 
 
 def test_a_goal_nobody_dispatched_still_has_a_birthday(
@@ -351,3 +355,50 @@ def test_newest_first_and_a_brick_is_asked_for_before_it_lands(
     assert [e["at"] for e in ev] == sorted((e["at"] for e in ev), reverse=True)
     assert [e["kind"] for e in ev].index("proved") < \
         [e["kind"] for e in ev].index("asked")
+
+
+def test_a_decided_shelve_is_one_event_not_two(workspace: Path) -> None:
+    """A decision whose EXECUTION is a status write lands in both
+    records: the strategist's ConfirmShelve AND the goal's logged
+    transition. Same act — the owner saw it as duplicated rows
+    (2026-08-12). The decision survives because it carries WHY.
+
+    Measured on union_closed: 8 pairs, every delta under 0.1s, because
+    the status write rides the decision.
+    """
+    conn = _open_db(workspace)
+    g = _goal(conn, "brick_a")
+    _decide(conn, "ConfirmShelve", target=g, reason="one route, exhausted")
+    db.update_goal_status(conn, g, "shelved", event="set_terminal")
+    conn.close()
+    shelved = [e for e in _events(workspace)["events"]
+               if e["kind"] == "shelved"]
+    assert len(shelved) == 1
+    assert shelved[0]["note"] == "one route, exhausted"
+
+
+def test_an_undecided_shelve_still_shows(workspace: Path) -> None:
+    """The dedupe must not swallow a transition nobody decided — the
+    engine shelves on its own when attempts run out, and that row is
+    the only record of it."""
+    conn = _open_db(workspace)
+    g = _goal(conn, "brick_a")
+    db.update_goal_status(conn, g, "shelved", event="attempts_exhausted")
+    conn.close()
+    ev = _events(workspace)["events"]
+    assert len([e for e in ev if e["kind"] == "shelved"]) == 1
+
+
+def test_a_dispatch_is_named_by_its_title_when_no_path_is_given(
+        workspace: Path) -> None:
+    """Third wording in the wild: a brief whose brick is named ONLY in
+    its markdown title, with no `proofs/...` path and no "mint" phrase
+    anywhere in 2974 bytes (decision #3137 on union_closed)."""
+    conn = _open_db(workspace)
+    _decide(conn, "Inject",
+            brief="# `uc_residual_surplus_floor` - the residual split\n\n"
+                  "## Need\nEvery count in this tree ends the same way.")
+    conn.close()
+    asked = [e for e in _events(workspace)["events"] if e["kind"] == "asked"]
+    assert asked[0]["label"] == "uc_residual_surplus_floor"
+    assert asked[0]["object_kind"] == "unbuilt"

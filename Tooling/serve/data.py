@@ -758,7 +758,7 @@ def programme(conn: sqlite3.Connection, problem: str,
 _DECISION_VERB: "dict[str, str]" = {
     "Inject": "asked",
     "Reopen": "reopened",
-    "ConfirmShelve": "set_aside",
+    "ConfirmShelve": "shelved",
     "MarkDeliverable": "deliverable",
     "Ingest": "ingested",
     "FetchPaper": "paper",
@@ -782,7 +782,7 @@ _LANDED_OUTCOMES = frozenset({
 #: An open/attempting goal has no transition to date yet.
 _TERMINAL_GOAL_STATES = {
     "proved": "proved",
-    "shelved": "set_aside",
+    "shelved": "shelved",
     "disproved": "disproved",
     "dead": "dead",
 }
@@ -794,7 +794,7 @@ _TERMINAL_GOAL_STATES = {
 #: and gets its verb from the from-side below.
 _TO_STATUS_VERB = {
     "proved": "proved",
-    "shelved": "set_aside",
+    "shelved": "shelved",
     "disproved": "disproved",
     "dead": "dead",
     "frozen": "frozen",
@@ -805,8 +805,8 @@ _SETTLED = frozenset({"proved", "shelved", "disproved", "dead"})
 #: how far along a goal's life each verb sits — the tiebreaker when a
 #: brick is asked for and lands inside the same clock minute
 _LIFE_RANK: "dict[str, int]" = {
-    "opened": 0, "asked": 1, "reopened": 1, "hiccup": 2, "attempt": 3,
-    "deliverable": 6, "proved": 7, "set_aside": 7, "disproved": 7,
+    "opened": 0, "asked": 1, "reopened": 1, "hiccup": 2, "failed": 3,
+    "deliverable": 6, "proved": 7, "shelved": 7, "disproved": 7,
     "dead": 7, "ingested": 8,
 }
 
@@ -823,13 +823,25 @@ _LIFE_RANK: "dict[str, int]" = {
 #: brick `x`" anywhere, so a prose-only reader labelled the newest rows
 #: with the problem's name (owner spotted it on union_closed,
 #: 2026-08-09).
-_MINT_PATH_RE = re.compile(r"proofs/L_([A-Za-z0-9_']+)\.lean")
-_MINT_PROSE_RE = re.compile(r"[Mm]int (?:brick|def) [`\"]([A-Za-z0-9_']+)[`\"]")
+#: Three readers, most-structural first. The PATH is the file the brick
+#: will actually be called, and the framework enforces its shape. The
+#: TITLE is the brief's own opening line and every brief has one, but it
+#: is the strategist's composition. The PROSE phrase is the weakest and
+#: the one already caught moving. When a brief carries several they
+#: agree; when they disagree the file name is the fact.
+_MINT_READERS = (
+    re.compile(r"proofs/L_([A-Za-z0-9_']+)\.lean"),
+    re.compile(r"^#\s*[`\"]([A-Za-z0-9_']+)[`\"]", re.M),
+    re.compile(r"[Mm]int (?:brick|def) [`\"]([A-Za-z0-9_']+)[`\"]"),
+)
 
 
 def _asked_for(brief: str) -> "str | None":
-    m = _MINT_PATH_RE.search(brief) or _MINT_PROSE_RE.search(brief)
-    return m.group(1) if m else None
+    for rx in _MINT_READERS:
+        m = rx.search(brief)
+        if m:
+            return m.group(1)
+    return None
 
 
 def _ev(at: str, kind: str, *, object_kind: str = "problem",
@@ -957,7 +969,7 @@ def _transition_events(conn: sqlite3.Connection, problem: str,
         # ConfirmShelve IS the shelving — its own row already says so.
         # (A ConfirmShelve on a goal that later revived stays: that one
         # is history, not a duplicate of the current state.)
-        if kind == "set_aside" and gid in shelved_by:
+        if kind == "shelved" and gid in shelved_by:
             continue
         at = pipe.get(gid) or landed.get(gid)
         approx = at is None
@@ -989,18 +1001,20 @@ def _attempt_events(conn: sqlite3.Connection,
             continue
         if gid in by_id:
             rows.append((gid, str(r["failure_reason"]), str(r["ts"])))
-    seen: "dict[int, int]" = {}
     out = []
     for i, (gid, reason, ts) in enumerate(rows):
-        infra = is_infra(reason)
-        n = None
-        if not infra:
-            n = seen.get(gid, 0) + 1
-            seen[gid] = n
-        out.append(_ev(ts, "hiccup" if infra else "attempt",
+        # NOT numbered. These rows are `dead_attempts` records — one per
+        # failure the engine filed — and numbering them "attempt N"
+        # claimed they were the engine's own attempt sequence. They are
+        # not: measured on union_closed, `goals.attempts` disagrees in
+        # BOTH directions (10 vs 6 recorded, 4 vs 6) because one spawn
+        # can file two records (watchdog says stuck, then the spawn
+        # times out) and some attempts burn the counter without filing
+        # one. The reasons and their order are the evidence; the count
+        # of tries belongs to whoever reads `goals.attempts`.
+        out.append(_ev(ts, "hiccup" if is_infra(reason) else "failed",
                        object_kind="goal", label=str(by_id[gid]["slug"]),
-                       goal_id=gid, n=n, note=reason,
-                       eid=f"a{i}-{gid}"))
+                       goal_id=gid, note=reason, eid=f"a{i}-{gid}"))
     return out
 
 
@@ -1105,6 +1119,29 @@ def _goal_arguments(conn: sqlite3.Connection, problem: str,
     return arg
 
 
+#: how far apart the two records of one act may sit. They are written
+#: in the same operation (measured: under 0.1s), so this is slack for
+#: clock granularity, not a window in which two real shelvings could be
+#: mistaken for one — those are hours apart.
+_SAME_ACT_SEC = 120.0
+
+
+def _already_said(said: "set", e: dict) -> bool:
+    """Has a decision row already reported this goal's transition?"""
+    from datetime import datetime
+    for gid, kind, at in said:
+        if gid != e["goal_id"] or kind != e["kind"]:
+            continue
+        try:
+            delta = abs((datetime.fromisoformat(at)
+                         - datetime.fromisoformat(e["at"])).total_seconds())
+        except ValueError:
+            continue
+        if delta <= _SAME_ACT_SEC:
+            return True
+    return False
+
+
 def problem_events(conn: sqlite3.Connection, problem: str) -> dict:
     """The Timeline read: one flat, uniform log.
 
@@ -1131,7 +1168,15 @@ def problem_events(conn: sqlite3.Connection, problem: str) -> dict:
 
     events = _decision_events(conn, problem, dec_rows, goals)
     logged, covered = _logged_transitions(conn, problem, goals)
-    events += logged
+    # A decision whose EXECUTION is a status write gets recorded twice:
+    # once as what the strategist decided, once as what happened to the
+    # goal. ConfirmShelve is the live instance (8 pairs on union_closed,
+    # every delta under 0.1s — the status write rides the decision), and
+    # Reopen has the same shape. Same fact, so one row; the DECISION
+    # survives because it carries WHY, which the transition cannot.
+    said = {(e["goal_id"], e["kind"], e["at"]) for e in events
+            if e["goal_id"] is not None}
+    events += [e for e in logged if not _already_said(said, e)]
     events += [e for e in _transition_events(conn, problem, goals, dec_rows)
                if e["goal_id"] not in covered]
     events += _attempt_events(conn, goals)

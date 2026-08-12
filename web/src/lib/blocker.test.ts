@@ -22,44 +22,52 @@ describe('topBlocker', () => {
     expect(topBlocker([ev('proved', 'a', '3'), ev('asked', 'b', '2')])).toBeNull()
   })
 
-  it('names the goal with the most failed attempts', () => {
+  it('names the goal with the most recorded failures', () => {
     const b = topBlocker([
-      ev('attempt', 'a', '1', 1),
-      ev('attempt', 'b', '2', 1),
-      ev('attempt', 'b', '3', 2),
+      ev('failed', 'a', '1'),
+      ev('failed', 'b', '2'),
+      ev('failed', 'b', '3'),
     ])
     expect(b?.label).toBe('b')
-    expect(b?.n).toBe(2)
+    expect(b?.failures).toBe(2)
+  })
+
+  it('counts rows, not an ordinal the engine never agreed to', () => {
+    // failures are `dead_attempts` records; `goals.attempts` is a
+    // different number and disagrees in both directions, so the line
+    // counts what it can see and says so
+    const b = topBlocker([ev('failed', 'a', '1'), ev('failed', 'a', '2')])
+    expect(b?.failures).toBe(2)
   })
 
   it('drops a goal that landed after its attempts', () => {
     // the count is about what is STILL in the way; a brick that fought
     // and then landed is the machine working, not a blocker
     const b = topBlocker([
-      ev('attempt', 'a', '1', 1),
-      ev('attempt', 'a', '2', 2),
+      ev('failed', 'a', '1'),
+      ev('failed', 'a', '2'),
       ev('proved', 'a', '3'),
-      ev('attempt', 'b', '4', 1),
+      ev('failed', 'b', '4'),
     ])
     expect(b?.label).toBe('b')
   })
 
   it('drops one that was set aside or died, not only one that landed', () => {
-    expect(topBlocker([ev('attempt', 'a', '1', 3), ev('set_aside', 'a', '2')])).toBeNull()
-    expect(topBlocker([ev('attempt', 'a', '1', 3), ev('dead', 'a', '2')])).toBeNull()
+    expect(topBlocker([ev('failed', 'a', '1'), ev('shelved', 'a', '2')])).toBeNull()
+    expect(topBlocker([ev('failed', 'a', '1'), ev('dead', 'a', '2')])).toBeNull()
   })
 
   it('counts a revived goal again once it is re-attempted', () => {
     // proved -> reopened -> attempted: it is back in the way, and a
     // "did it ever settle?" test would have missed it
     const b = topBlocker([
-      ev('attempt', 'a', '1', 1),
+      ev('failed', 'a', '1'),
       ev('proved', 'a', '2'),
       ev('reopened', 'a', '3'),
-      ev('attempt', 'a', '4', 2),
+      ev('failed', 'a', '4'),
     ])
     expect(b?.label).toBe('a')
-    expect(b?.n).toBe(2)
+    expect(b?.failures).toBe(2)
   })
 
   it('ignores hiccups — an infra death cost no attempt', () => {

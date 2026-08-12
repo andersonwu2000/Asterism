@@ -46,7 +46,7 @@ const LENSES: { key: string; label: string; kinds: string[]; title: string }[] =
   {
     key: 'stuck',
     label: 'setbacks',
-    kinds: ['attempt', 'hiccup', 'set_aside', 'dead', 'asked_you'],
+    kinds: ['failed', 'hiccup', 'shelved', 'dead', 'asked_you'],
     title: 'where it lost time',
   },
   {
@@ -64,28 +64,45 @@ const LENSES: { key: string; label: string; kinds: string[]; title: string }[] =
  * with attempts and no settling AFTER them is still in the way — the
  * blocker. Derived from the log rather than passed in, so the run-wide
  * view (several problems at once) gets it on the same terms. */
-const SETTLING = new Set(['proved', 'set_aside', 'disproved', 'dead'])
+const SETTLING = new Set(['proved', 'shelved', 'disproved', 'dead'])
 
-export function topBlocker(events: TimelineEvent[]): TimelineEvent | null {
-  const worst = new Map<string, TimelineEvent>()
+export interface Blocker {
+  /** the goal in the way */
+  label: string
+  /** how many failures the ENGINE FILED against it. Deliberately not
+   * "attempts": `goals.attempts` is a different number and disagrees in
+   * both directions (measured on union_closed — 10 vs 6 filed, 4 vs 6),
+   * because one spawn can file two records and some attempts burn the
+   * counter without filing any. This counts what the log holds. */
+  failures: number
+  /** newest failure, for the settled-after comparison */
+  at: string
+}
+
+export function topBlocker(events: TimelineEvent[]): Blocker | null {
+  const failed = new Map<string, Blocker>()
   const settled = new Map<string, string>()
   for (const e of events) {
-    if (e.kind === 'attempt') {
-      const cur = worst.get(e.label)
-      if (!cur || (e.n ?? 0) > (cur.n ?? 0)) worst.set(e.label, e)
+    if (e.kind === 'failed') {
+      const cur = failed.get(e.label)
+      if (!cur) failed.set(e.label, { label: e.label, failures: 1, at: e.at })
+      else {
+        cur.failures += 1
+        if (e.at > cur.at) cur.at = e.at
+      }
     } else if (SETTLING.has(e.kind)) {
       const cur = settled.get(e.label)
       if (!cur || e.at > cur) settled.set(e.label, e.at)
     }
   }
-  let best: TimelineEvent | null = null
-  for (const [label, e] of worst) {
-    // a goal that was proved, reopened and attempted again is in the
-    // way once more: compare the newest attempt against the newest
-    // settling rather than asking merely whether it ever settled
+  let best: Blocker | null = null
+  for (const [label, b] of failed) {
+    // a goal that was proved, reopened and failed again is in the way
+    // once more: compare the newest failure against the newest settling
+    // rather than asking merely whether it ever settled
     const s = settled.get(label)
-    if (s && s > e.at) continue
-    if (!best || (e.n ?? 0) > (best.n ?? 0)) best = e
+    if (s && s > b.at) continue
+    if (!best || b.failures > best.failures) best = b
   }
   return best
 }
@@ -161,7 +178,7 @@ function Row({
 }) {
   const [open, setOpen] = useState(false)
   const expandable = Boolean(e.body || e.note || argument)
-  const note = e.kind === 'attempt' || e.kind === 'hiccup'
+  const note = e.kind === 'failed' || e.kind === 'hiccup'
     ? failureLabel(e.note ?? '')
     : e.note
   return (
@@ -371,7 +388,7 @@ export default function Timeline({
           and one click IS that evidence. */}
       {follow === null && blocker && (
         <div className="mb-2 flex items-baseline gap-2 px-2 text-[11px]">
-          <span className="text-ink-faint">most attempts</span>
+          <span className="text-ink-faint">most failures</span>
           <button
             className="cursor-pointer font-mono text-[12px] text-ink-dim underline decoration-ink-faint/50 underline-offset-2 hover:text-ink"
             title="read what happened on each attempt"
@@ -379,8 +396,11 @@ export default function Timeline({
           >
             {blocker.label}
           </button>
-          <span className="tnum text-ink-faint">
-            {blocker.n} failed attempt{blocker.n === 1 ? '' : 's'}
+          <span
+            className="tnum text-ink-faint"
+            title="failures the engine filed against it, with a reason each — not the goal's attempt counter, which is a different number"
+          >
+            {blocker.failures} recorded failure{blocker.failures === 1 ? '' : 's'}
           </span>
         </div>
       )}

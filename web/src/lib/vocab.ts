@@ -111,10 +111,13 @@ const EVENT_LABEL: Record<string, string> = {
   asked: 'asked',
   opened: 'opened',
   reopened: 'reopened',
-  attempt: 'attempt',
+  failed: 'failed',
   hiccup: 'hiccup',
   proved: 'proved',
-  set_aside: 'set aside',
+  // the same word the goal panel and the sky use for this
+  // state — one fact must not have two names across two
+  // surfaces (owner, 2026-08-12)
+  shelved: 'shelved',
   disproved: 'disproved',
   dead: 'dead',
   frozen: 'frozen',
@@ -144,12 +147,15 @@ const EVENT_TITLE: Record<string, string> = {
   asked: 'the strategist dispatched this brick',
   opened: 'cut out of a larger goal by a decomposition — nobody dispatched it',
   reopened: 'put back in play after having been settled',
-  attempt: 'an attempt ran and failed (this one burned a goal attempt)',
+  failed:
+    'engine term: dead_attempt — a failure the engine filed, with the reason it filed.'
+    + ' Not the same as the goal’s attempt count: one spawn can file two records,'
+    + ' and some attempts burn the counter without filing any',
   hiccup:
     'an infrastructure death — provider, spawn or framework. It cost no attempt,' +
     ' which is why it is not numbered',
   proved: 'the goal reached proved',
-  set_aside: 'shelved — not failed; it can be picked up again',
+  shelved: 'set aside — not failed; it can be picked up again',
   disproved: 'its negation was proved instead',
   dead: 'out of attempts',
   frozen: 'held out of play — the root after you amended its statement',
@@ -180,11 +186,11 @@ export const EVENT_CLS: Record<string, string> = {
   proved: 'text-starlight',
   disproved: 'text-danger',
   dead: 'text-ink-faint',
-  set_aside: 'text-ink-faint',
+  shelved: 'text-ink-faint',
   frozen: 'text-ink-faint',
   for_review: 'text-ink-dim',
   hiccup: 'text-ink-faint',
-  attempt: 'text-ink-dim',
+  failed: 'text-ink-dim',
   opened: 'text-ink-dim',
   asked: 'text-ink-dim',
   deliverable: 'text-star',
