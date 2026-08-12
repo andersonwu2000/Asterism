@@ -228,9 +228,15 @@ def _compute_via_gateway(code: str) -> str:
                    f"retry once, and if it repeats say so in your "
                    f"framework feedback rather than working around it.",
         ).render()
+    # `killed` is what turns a bare empty result into an instruction.
+    # Dropping it here (2026-08-12) cost a Strategist two calls: a
+    # timed-out sweep came back as the standing header and nothing at
+    # all, so it probed with `print("hello", 1+1)` to see whether the
+    # tool existed.
     return ComputeResult(rc=int(data.get("rc", 1)),
                          output=str(data.get("output") or ""),
-                         seconds=float(data.get("seconds") or 0.0)).render()
+                         seconds=float(data.get("seconds") or 0.0),
+                         killed=str(data.get("killed") or "")).render()
 
 
 @mcp.tool()

@@ -127,8 +127,13 @@ def _sandbox_env() -> "dict[str, str]":
         val = os.environ.get(key)
         if val:
             env[key] = val
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # No `PYTHON*` entries here on purpose: the child runs with `-E`,
+    # which makes CPython ignore every one of them. A `PYTHONIOENCODING`
+    # sat here looking load-bearing and was inert — the child read the
+    # agent's UTF-8 code through the machine's legacy code page and one
+    # `∨` in a comment killed the call (2026-08-12). Stream encoding is
+    # pinned inside `launcher._force_utf8_streams`, where no launch flag
+    # can discard it; `-B` covers the bytecode half.
     # Single-threaded BLAS. Not a preference — numpy's OpenBLAS reserves
     # per-core thread buffers AT IMPORT, which blew the whole memory cap
     # before a line of agent code ran (measured 2026-08-10: every case in
@@ -184,7 +189,13 @@ def run(code: str) -> ComputeResult:
 
     workdir = tempfile.mkdtemp(prefix="asterism_compute_")
     launcher = str(Path(__file__).resolve().parent / "launcher.py")
-    cmd = [str(provision.sandbox_python()), "-B", "-E", launcher, workdir]
+    # `-u`: unbuffered, so what the code printed BEFORE we killed it
+    # survives the kill. Block buffering took the whole output of a
+    # timed-out 4-deep sweep with it (2026-08-12), and the agent's next
+    # move was to add `sys.stdout.flush()` by hand — working around the
+    # framework in the one place we can see it doing so.
+    cmd = [str(provision.sandbox_python()), "-B", "-E", "-u",
+           launcher, workdir]
 
     job = None
     popen_kw: dict = {}

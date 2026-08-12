@@ -118,7 +118,36 @@ def selftest() -> None:
         raise SystemExit(f"compute selftest FAILED: {label} was allowed")
 
 
+def _force_utf8_streams() -> None:
+    """Pin the three std streams to UTF-8 from INSIDE the child.
+
+    The runner is launched with `-E`, which makes CPython ignore every
+    `PYTHON*` variable — including the `PYTHONIOENCODING=utf-8` the
+    parent sets in its allowlisted environment. So the child fell back
+    to the machine's legacy code page (cp950 on the workstation this was
+    measured on, 2026-08-12) and BOTH directions broke:
+
+      * stdin decoded the agent's UTF-8 bytes with `surrogateescape`,
+        turning one `∨` into three lone surrogates, and `compile()`
+        then died with "surrogates not allowed" pointing at THIS file —
+        a message with no path back to "your comment had a maths
+        symbol in it";
+      * `print("α")` died symmetrically on the way out.
+
+    A mathematics framework whose calculator refuses `⊆` is broken for
+    its actual users: the first union_closed call of the day was lost
+    to a `# fam ∨ P ⊆ fam` comment. Setting it here rather than through
+    the environment keeps it true whatever the launch flags do later —
+    the env round-trip is what failed."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 — a detached stream is not fatal
+            pass
+
+
 def main() -> int:
+    _force_utf8_streams()
     workdir = sys.argv[1] if len(sys.argv) > 1 else ""
     # Pre-import everything the calculator is allowed to use, BEFORE the
     # hook tightens: numpy pulls in ctypes at module load, so an import

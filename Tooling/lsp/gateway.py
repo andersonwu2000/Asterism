@@ -3256,7 +3256,17 @@ async def compute_endpoint(request: Request):
     proven path rather than a new one.
 
     Body:    {"code": "<python>"}
-    Returns: {"rc": int, "output": str, "seconds": float}
+    Returns: {"rc": int, "output": str, "seconds": float, "killed": str}
+
+    `killed` carries the limit that stopped the run ("timeout" /
+    "memory" / ""), and it is part of the wire format rather than a
+    detail because it is the half of the answer that says what to do
+    next. It was omitted at first, and the caller rebuilt the result
+    with `killed=""`: a timed-out sweep reached the Strategist as the
+    standing header and NOTHING else — no output (the kill took the
+    buffer), no "stopped at the 30s limit, shrink the search". The
+    agent's next act was to spend a call on `print("hello", 1+1)` to
+    find out whether the tool was alive at all (2026-08-12).
 
     The sandbox's own guarantees are unchanged — separate interpreter,
     no framework on `sys.path`, memory/wall-clock caps, PEP 578 audit
@@ -3276,7 +3286,7 @@ async def compute_endpoint(request: Request):
             {"rc": 1, "output": f"[compute] gateway-side failure: "
                                 f"{type(e).__name__}: {e}", "seconds": 0.0})
     return JSONResponse({"rc": res.rc, "output": res.output,
-                         "seconds": res.seconds})
+                         "seconds": res.seconds, "killed": res.killed})
 
 
 @mcp.custom_route("/health", methods=["GET"])

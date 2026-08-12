@@ -272,6 +272,71 @@ def test_a_gateway_that_does_not_answer_says_whose_fault_it_is(monkeypatch):
     assert "base Python upgraded" not in out
 
 
+# ─── a calculator for mathematicians has to survive mathematics ───
+#
+# Measured 2026-08-12: the child ran with `-E`, which discards every
+# `PYTHON*` variable — including the `PYTHONIOENCODING=utf-8` the parent
+# was setting. The stream encoding fell back to the machine's legacy
+# code page, and the first union_closed call of the day died on the
+# comment `# fam ∨ P ⊆ fam`: three lone surrogates where one character
+# had been, and a `compile()` error naming launcher.py that no agent
+# could trace back to "your comment had a maths symbol in it".
+
+@live
+def test_maths_symbols_survive_in_both_directions() -> None:
+    """Both halves, because they broke independently: the code coming
+    IN through stdin, and what `print` sends back OUT."""
+    r = sandbox.run('# fam ∨ P ⊆ fam\nprint("α ≤ β ⊆ ℝ", 1 + 1)')
+    assert r.rc == 0, r.output
+    assert "α ≤ β ⊆ ℝ 2" in r.output
+
+
+def test_the_env_does_not_pretend_to_configure_a_python_that_ignores_it():
+    """Pin the RELATION, not one side of it: while the child is launched
+    with `-E`, a `PYTHON*` entry in the environment is inert, and an
+    inert setting that looks load-bearing is how this went unnoticed."""
+    import inspect as _inspect
+    src = _inspect.getsource(sandbox.run)
+    assert '"-E"' in src, "isolation flag dropped — revisit this test"
+    assert not [k for k in sandbox._sandbox_env() if k.startswith("PYTHON")]
+
+
+@live
+def test_what_was_printed_before_a_kill_is_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A killed child never flushes, so block-buffered output dies with
+    it — and a 4-deep sweep that hit the wall reached the agent as
+    nothing at all. The agent's own fix was to write
+    `sys.stdout.flush()` by hand, which is the framework asking to be
+    worked around."""
+    monkeypatch.setattr(sandbox, "TIMEOUT_SEC", 2)
+    r = sandbox.run('print("printed before the wall")\nwhile True: pass')
+    assert r.killed == "timeout"
+    assert "printed before the wall" in r.output
+
+
+def test_the_limit_that_stopped_the_run_survives_the_gateway(monkeypatch):
+    """`killed` is the half of the answer that says what to do next, and
+    it crossed the HTTP boundary as nothing. A timeout then rendered as
+    the standing header and an empty body — no output, no "shrink the
+    search" — and the Strategist spent its next call on
+    `print("hello", 1+1)` to find out whether the tool was alive."""
+    import io
+    import json
+    import urllib.request
+
+    class _Resp(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp(
+        json.dumps({"rc": 1, "output": "", "seconds": 30.0,
+                    "killed": "timeout"}).encode()))
+    out = mcp_tools._compute_via_gateway("while True: pass")
+    assert str(sandbox.TIMEOUT_SEC) in out and "Shrink" in out
+
+
 def test_the_gateway_endpoint_runs_the_same_sandbox() -> None:
     """Moving WHERE `sandbox.run` is called must not change what it
     does — same isolation, same caps, same contract."""
@@ -279,6 +344,9 @@ def test_the_gateway_endpoint_runs_the_same_sandbox() -> None:
     src = (pathlib.Path(__file__).resolve().parents[1] / "Tooling" / "lsp"
            / "gateway.py").read_text(encoding="utf-8")
     i = src.index('@mcp.custom_route("/compute"')
-    body = src[i:i + 2500]
+    # To the next route, not a character count — a docstring grew past
+    # the old 2500-char window and took the assertion's subject with it.
+    body = src[i:src.index("@mcp.custom_route", i + 1)]
     assert "from ..sandbox import run as _sandbox_run" in body
     assert "asyncio.to_thread" in body      # never block the event loop
+    assert '"killed": res.killed' in body   # the limit, not just the data
