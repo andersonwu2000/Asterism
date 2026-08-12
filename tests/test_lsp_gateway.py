@@ -763,9 +763,14 @@ def test_acquire_slot_skip_swap_in_for_apply_edit(
 def test_acquire_slot_no_claim_raises(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """If `_acquire_slot` is called for a pipeline that has no
-    `register_session`-claimed slot, fail loudly (rather than silently
-    seizing some other pipeline's slot)."""
+    """A pipeline with no claimed slot must never take one that is
+    already owned.
+
+    08-12: the OUTCOME here changed — a live session now re-claims a
+    FREE slot instead of failing, because a backend restart drops every
+    claim while the sessions survive. The invariant this test was
+    written for did not change and is what it now pins: whatever
+    happens, `pipe-OTHER`'s slot is not seized."""
     slots = [_make_fake_slot(0, claimed_by="pipe-OTHER",
                              content_pipeline_id="pipe-OTHER"),
              _make_fake_slot(1, claimed_by=None)]
@@ -782,9 +787,10 @@ def test_acquire_slot_no_claim_raises(
         problem="p", workspace=tmp_path, log_path=None,
         file_content="x",
     )
-    with pytest.raises(RuntimeError, match="no slot claimed"):
-        with lsp_gateway._acquire_slot(meta, swap_in=False):
-            pass
+    with lsp_gateway._acquire_slot(meta, swap_in=False) as (s, _kind):
+        assert s.slot_id == 1, "took the free slot, not pipe-OTHER's"
+    assert slots[0].claimed_by == "pipe-OTHER"   # untouched
+    assert slots[1].claimed_by == "pipe-A"
 
 
 def test_acquire_slot_lock_excludes_concurrent_acquire(
@@ -1636,7 +1642,11 @@ def test_the_slot_error_does_not_prescribe_an_impossible_action(
     msg = src[i:i + 700]
     assert "register_session was not called" not in msg
     assert "retry this call" in msg
-    assert "framework side" in msg
+    # It must still put the fault on this side of the wall. 08-12: the
+    # wording moved from "released on the framework side" to naming the
+    # one cause that survives re-claim — a pool with nothing free.
+    assert "framework" in msg
+    assert "nothing your patch can fix" in msg
 
 
 # ─── 2026-07-07 warm-race fix: starting marker + wait-not-race ───
@@ -2260,3 +2270,92 @@ def test_a_small_removal_is_echoed_whole() -> None:
     """No marker, no truncation — the common case must stay readable."""
     removed = "  norm_num\n  omega\n"
     assert lsp_gateway._echo_removed(removed) == removed
+
+
+# ─── a backend restart takes the slots, not the sessions ───
+#
+# `_restart_backend` builds a whole fresh pool, so every live session's
+# claim disappears with the old one while `_state.sessions` keeps all of
+# them. Its docstring has always promised the other half — "their next
+# tool call re-claims or gets a clear error" — and only the error was
+# implemented. Measured cost: two death CLUSTERS trailing a restart by
+# minutes (08-11 14:47:17Z → 14:53/14:55/14:57; 08-12 06:06:43Z →
+# 06:10/06:15), each one row of `no slot claimed`.
+
+def test_a_live_session_reclaims_after_the_pool_is_replaced(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys,
+) -> None:
+    """The identity survived; only the resource was destroyed.
+
+    The log line is part of the fix, not decoration: replacing the pool
+    left NO trace anywhere, which is why this cost two days and two
+    clusters to find. A self-healing path that swallows its own
+    evidence just moves the next investigation further from the cause."""
+    fresh = [_make_fake_slot(0), _make_fake_slot(1)]   # unowned, as after
+    monkeypatch.setattr(lsp_gateway._state, "workers", fresh)
+
+    class _FakeBackend:
+        def did_change_full(self, *a, **kw): pass
+        def clear_diagnostics(self, *a): pass
+        def wait_for_diagnostics(self, *a, **kw): pass
+    monkeypatch.setattr(lsp_gateway._state, "backend", _FakeBackend())
+
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="pipe-A", target_path=tmp_path / "x.lean",
+        problem="p", workspace=tmp_path, log_path=None,
+        file_content="content for pipe-A",
+    )
+    with lsp_gateway._acquire_slot(meta, swap_in=True) as (s, kind):
+        assert s.claimed_by == "pipe-A", "the slot must be CLAIMED, not borrowed"
+        assert kind == "cold_warmup"      # its warm content died with the pool
+    assert sum(1 for s in fresh if s.claimed_by == "pipe-A") == 1
+    logged = capsys.readouterr().err
+    assert "re-claimed" in logged and "pipe-A" in logged
+
+
+def test_a_swept_session_does_not_come_back_through_reclaim(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The two recoveries must not undo each other. A session the sweep
+    took is `pop`ped from `_state.sessions` outright, so it never
+    reaches `_acquire_slot` at all — the route answers "no session"
+    first — and the slot it lost stays free for someone else."""
+    import time as _t
+    slots = _build_fake_pool(monkeypatch, tmp_path, n=2)
+    stale = _make_meta(tmp_path, pipeline_id="pipe-stale",
+                       last_active=_t.monotonic()
+                       - lsp_gateway._LEASE_TTL_SEC - 1.0)
+    slots[0].claimed_by = "pipe-stale"
+    with _state.sessions_lock:
+        _state.sessions["stale-tok"] = stale
+    try:
+        assert lsp_gateway._sweep_stale_claims() == 1
+        # Gone from the registry ⇒ no metadata ⇒ no re-claim path.
+        assert _state.sessions.get("stale-tok") is None
+        assert slots[0].claimed_by is None
+    finally:
+        with _state.sessions_lock:
+            _state.sessions.pop("stale-tok", None)
+
+
+def test_the_last_resort_message_names_the_only_cause_left(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Third rewrite of this string. It has twice named causes that were
+    wrong for every occurrence investigated; with re-claim in place the
+    only way through is a pool with nothing free, so that is all it may
+    say."""
+    full = [_make_fake_slot(0, claimed_by="someone-else")]
+    monkeypatch.setattr(lsp_gateway._state, "workers", full)
+    monkeypatch.setattr(lsp_gateway._state, "backend", object())
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="pipe-A", target_path=tmp_path / "x.lean",
+        problem="p", workspace=tmp_path, log_path=None, file_content="",
+    )
+    with pytest.raises(RuntimeError) as exc:
+        with lsp_gateway._acquire_slot(meta, swap_in=False):
+            pass
+    msg = str(exc.value)
+    assert "no free slot to re-claim" in msg
+    assert "stale-claim sweep" not in msg      # the cause it used to blame
+    assert "framework" in msg and "your patch" in msg

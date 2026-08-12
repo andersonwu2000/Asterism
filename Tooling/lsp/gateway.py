@@ -566,20 +566,60 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
             my_slot = slot
             break
     if my_slot is None:
-        # The two causes this used to name (register_session never
-        # called / release racing a use) were both wrong for every
-        # occurrence anyone investigated: the real one was the stale-
-        # claim sweep taking the slot from a live worker, and the
-        # message sent three separate investigations down the wrong
-        # path before 2026-08-11. Say the reachable truth instead, and
-        # do not prescribe an action the agent cannot take — it has no
-        # registration tool; /register is the pipeline's call.
+        # The claim is gone but the SESSION is not — an unregistered
+        # token never reaches here (`no session`, :1659). The identity
+        # and the resource are two layers, and only the resource was
+        # destroyed: `_restart_backend` builds a whole fresh slot list,
+        # so every live session's claim disappears with the old pool
+        # while `_state.sessions` keeps every one of them. Re-claim is
+        # what that function's own docstring has promised since it was
+        # written ("their next tool call re-claims or gets a clear
+        # error") — only the second half was ever implemented.
+        #
+        # Measured cost of the missing half: two death CLUSTERS, each
+        # trailing a restart by minutes — 08-11 14:47:17Z → three deaths
+        # 14:53/14:55/14:57, 08-12 06:06:43Z → two at 06:10/06:15. One
+        # restart orphans every in-flight pipeline at once and they fall
+        # over one by one as each next touches Lean.
+        #
+        # A session the stale-claim sweep took is `pop`ped from
+        # `_state.sessions` outright (:844), so it cannot come back this
+        # way — a reclaimed slot stays reclaimed.
+        want_reserved = (meta.kind == "interactive")
+        free: WorkerSlot | None = None
+        with _state.sessions_lock:
+            free = next((s for s in _state.workers
+                         if s.claimed_by is None
+                         and s.reserved == want_reserved), None)
+            if free is not None:
+                free.claimed_by = meta.pipeline_id
+        if free is not None:
+            # LOUD on purpose. Replacing the pool left no trace at all,
+            # which is why this took two days and two clusters to find;
+            # a self-healing path that swallows its own evidence just
+            # moves the next investigation further from the cause.
+            print(f"[gateway] pipeline {meta.pipeline_id[:8]} re-claimed "
+                  f"slot {free.slot_id} — its previous claim is gone "
+                  f"(backend restart replaces the whole pool). One cold "
+                  f"warmup follows: the old slot's content died with the "
+                  f"old backend.", file=sys.stderr, flush=True)
+            my_slot = free
+
+    if my_slot is None:
+        # Everything else now has its own exit, so one cause is left:
+        # the session is registered, the claim is gone, and there is no
+        # free slot to give it. The two causes this message used to name
+        # (register_session never called / release racing a use) were
+        # wrong for every occurrence anyone investigated, and it sent
+        # three separate investigations down the wrong path before
+        # 2026-08-11; the sweep it then named was wrong for the two
+        # clusters above. Third time: say only what is reachable.
         raise RuntimeError(
-            f"no slot claimed for pipeline {meta.pipeline_id} — this "
-            "session's Lean slot was released on the framework side "
-            "(stale-claim sweep, or the session was already closed). "
-            "Nothing in the file you are editing caused it and nothing "
-            "in your patch can fix it: retry this call, and if it "
+            f"no slot claimed for pipeline {meta.pipeline_id} and no free "
+            f"slot to re-claim — every one of the {len(_state.workers)} "
+            "worker slots is held by another session. This is a framework "
+            "resource shortage, not anything in the file you are editing "
+            "and nothing your patch can fix: retry this call, and if it "
             "repeats, report it as framework feedback."
         )
 
