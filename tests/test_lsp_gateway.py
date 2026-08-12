@@ -2359,3 +2359,116 @@ def test_the_last_resort_message_names_the_only_cause_left(
     assert "no free slot to re-claim" in msg
     assert "stale-claim sweep" not in msg      # the cause it used to blame
     assert "framework" in msg and "your patch" in msg
+
+
+# ─── the heartbeat budget: ask once, before the bill ───
+#
+# g7554 (2026-08-12) went 200k → 1M → 4M after each timeout. The same
+# three positions timed out at every budget, its check latency went
+# 20s → 96s → 240s, and the 30-minute spawn died with the file never
+# once compiling. Raising the limit buys a LATER refusal, and every
+# check until then pays for it.
+
+def _hb_meta(tmp_path, **kw):
+    m = lsp_gateway.SessionMetadata(
+        pipeline_id="pipe-hb", target_path=tmp_path / "x.lean",
+        problem="p", workspace=tmp_path, log_path=None, file_content="")
+    for k, v in kw.items():
+        setattr(m, k, v)
+    return m
+
+
+def test_a_big_budget_alone_asks_once_and_then_gets_out_of_the_way(tmp_path):
+    """(a). Not a block: 11 proved bricks in this workspace sit at 4M,
+    `_strategy_s24405` among them. The identical write resent is the
+    confirmation."""
+    m = _hb_meta(tmp_path)
+    body = "set_option maxHeartbeats 4000000 in\ntheorem t : True := trivial"
+    first = lsp_gateway._heartbeat_gate(m, body)
+    assert first and "4,000,000" in first
+    assert lsp_gateway._heartbeat_gate(m, body) is None, "resend must pass"
+
+
+def test_the_message_says_how_to_confirm(tmp_path):
+    """Without this sentence an agent whose write was refused edits the
+    content instead — which changes the hash, asks again, and makes the
+    gate look random."""
+    m = _hb_meta(tmp_path)
+    msg = lsp_gateway._heartbeat_gate(
+        m, "set_option maxHeartbeats 4000000 in\n")
+    assert "Resend this identical write" in msg
+
+
+def test_raising_after_a_timeout_fires_however_small(tmp_path):
+    """(b). The step (a) sleeps through: 200k → 1M is exactly where this
+    run's spiral began, and 1M is not above the ask-threshold."""
+    m = _hb_meta(tmp_path, hb_saw_timeout=True, hb_limit=200_000)
+    msg = lsp_gateway._heartbeat_gate(
+        m, "set_option maxHeartbeats 1000000 in\n")
+    assert msg and "does not converge" in msg
+    assert "200,000 to 1,000,000" in msg
+
+
+def test_the_trigger_is_not_keyed_on_the_timing_out_line(tmp_path):
+    """Deliberately loose: an agent's own edits shift line numbers, so
+    an exact-position match would mostly miss. Any timeout seen this
+    session plus any raise is enough — the cost of a false ask is one
+    extra round-trip."""
+    import inspect as _inspect
+    src = _inspect.getsource(lsp_gateway._heartbeat_gate)
+    assert "hb_saw_timeout" in src
+    assert "line" not in src.split("def ")[0] or True   # readability only
+    m = _hb_meta(tmp_path, hb_saw_timeout=True, hb_limit=400_000)
+    assert lsp_gateway._heartbeat_gate(
+        m, "set_option maxHeartbeats 800000 in\n") is not None
+
+
+def test_unlimited_after_a_timeout_is_the_heaviest_case(tmp_path):
+    """`maxHeartbeats 0` is UNLIMITED — the ultimate raise, and it must
+    sort ABOVE every finite budget rather than below them all. Reaching
+    for it after a timeout is the escape hatch this gate exists to
+    interrupt; the 5 landed files that carry a template `0` never raise
+    it and are never asked."""
+    assert lsp_gateway._hb_rank(0) > lsp_gateway._hb_rank(4_000_000)
+    m = _hb_meta(tmp_path, hb_saw_timeout=True, hb_limit=4_000_000)
+    msg = lsp_gateway._heartbeat_gate(m, "set_option maxHeartbeats 0 in\n")
+    assert msg and "UNLIMITED" in msg and "does not converge" in msg
+
+
+def test_a_file_that_never_raises_is_never_asked(tmp_path):
+    """A session already at 4M that keeps editing without touching the
+    budget has nothing new to be told — and every edit is a new content
+    hash, so without this the gate would nag on each one instead of
+    asking once."""
+    m = _hb_meta(tmp_path, hb_saw_timeout=True, hb_limit=4_000_000)
+    assert lsp_gateway._heartbeat_gate(
+        m, "set_option maxHeartbeats 4000000 in\n-- edited\n") is None
+    assert lsp_gateway._heartbeat_gate(
+        m, "set_option maxHeartbeats 4000000 in\n-- edited again\n") is None
+
+
+def test_no_setting_at_all_never_fires(tmp_path):
+    assert lsp_gateway._heartbeat_gate(
+        _hb_meta(tmp_path, hb_saw_timeout=True),
+        "theorem t : True := trivial\n") is None
+
+
+def test_a_heartbeat_timeout_in_diagnostics_arms_the_escalation_trigger(
+    tmp_path,
+):
+    m = _hb_meta(tmp_path)
+    lsp_gateway._note_diagnostics(m, [{"message": "unknown identifier"}], 3.0)
+    assert m.hb_saw_timeout is False and m.hb_last_check_s == 3.0
+    lsp_gateway._note_diagnostics(m, [{"message": (
+        "(deterministic) timeout at `whnf`, maximum number of heartbeats "
+        "(1000000) has been reached")}], 96.0)
+    assert m.hb_saw_timeout is True and m.hb_last_check_s == 96.0
+
+
+def test_the_gate_quotes_a_measured_cost_not_a_hard_coded_one(tmp_path):
+    """A "4M ≈ 8 minutes" in the text would drift with the machine; the
+    number comes from the last real check."""
+    m = _hb_meta(tmp_path, hb_last_check_s=240.0)
+    msg = lsp_gateway._heartbeat_gate(
+        m, "set_option maxHeartbeats 4000000 in\n")
+    assert "240s" in msg

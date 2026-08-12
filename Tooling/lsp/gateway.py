@@ -39,6 +39,7 @@ import asyncio
 import contextlib
 import contextvars
 import functools
+import hashlib
 import json
 import os
 import re
@@ -140,6 +141,19 @@ class SessionMetadata:
     # 2026-07-09/10, ~32 reports). `_resync_buffer_from_disk` compares
     # and invalidates the slot on change.
     stub_fingerprint: tuple = ()
+    # --- heartbeat-budget gate (2026-08-12) -------------------------
+    #: A heartbeat timeout has been reported to this agent at least once.
+    hb_saw_timeout: bool = False
+    #: The `maxHeartbeats` this session's content last asked for (None =
+    #: never set it, i.e. Lean's default).
+    hb_limit: "int | None" = None
+    #: Wall seconds the last diagnostics call took — the number the gate
+    #: quotes, because a machine-measured cost cannot drift the way a
+    #: hard-coded "4M ≈ 8 minutes" would.
+    hb_last_check_s: float = 0.0
+    #: Content hashes already warned about: the SAME write resent is the
+    #: confirmation, so the gate asks once and then gets out of the way.
+    hb_confirmed: set = field(default_factory=set)
 
 
 # ─── Gateway global state ─────────────────────────────────
@@ -1738,6 +1752,16 @@ def apply_edit(edits: list = None) -> str:
         _echo_removed(meta.file_content[s.start:s.end])
         for s in spans if not s.is_insert) or "(insert only)"
     new_content = _edits.apply_spans(meta.file_content, spans)
+    _hb = _heartbeat_gate(meta, new_content)
+    if _hb is not None:
+        # Refused PRE-write, like an unresolvable anchor: the file is
+        # untouched and the cost was milliseconds. Asking after the
+        # write would be asking after the bill.
+        return json.dumps(
+            {"edit": "held — file unchanged", "heartbeat_budget": _hb,
+             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()},
+            ensure_ascii=False)
+    meta.hb_limit = _hb_declared(new_content) or meta.hb_limit
     new_lines = new_content.split(chr(10))
     # Where each edit LANDED, measured on the produced file. Line numbers
     # are output only: the tool measured them, so they cannot be stale
@@ -1889,9 +1913,11 @@ def apply_edit(edits: list = None) -> str:
         **({"goal_at_edit_end": goal_end_text}
            if goal_end_text is not None else {}),
         "diagnostic_count": _n_diags,
+        "elapsed_s": round(time.perf_counter() - t0, 1),
         "_server_recv_ts": _recv_ts,
         "_server_send_ts": _ts_now(),
     }
+    _note_diagnostics(meta, formatted, time.perf_counter() - t0)
     if not converged:
         response["elaborating"] = True
         response["warning"] = _ELABORATING_WARNING
@@ -2025,6 +2051,112 @@ def _diags_converged(backend, slot) -> bool:
         return False
 
 
+#: `set_option maxHeartbeats N`. Lean syntax, not prose — the value is
+#: a structured signal the way a decision kind is.
+_HB_SET_RE = re.compile(r"set_option\s+maxHeartbeats\s+(\d+)")
+_HB_TIMEOUT_MARK = "maximum number of heartbeats"
+#: Above this, the gate asks once. NOT a limit on what may land: 11 of
+#: this workspace's proved bricks sit at 4M — `_strategy_s24405` among
+#: them, a sibling of the strategy this gate was written for — and their
+#: comments name the same technique ("large literal-set peeling needs
+#: the extra budget"). A big budget is normal practice here; being SLOW
+#: about it while blind to the cost is what is not.
+_HB_ASK_ABOVE = 1_000_000
+
+
+def _hb_rank(limit: "int | None") -> float:
+    """Order two budgets. `0` means UNLIMITED in Lean, so it sorts above
+    every finite value rather than below all of them; `None` is "never
+    set", i.e. Lean's own default."""
+    if limit is None:
+        return 200_000.0
+    return float("inf") if limit == 0 else float(limit)
+
+
+def _hb_declared(content: str) -> "int | None":
+    """The largest budget this content asks for, or None."""
+    found = [int(m.group(1)) for m in _HB_SET_RE.finditer(content or "")]
+    return max(found, key=_hb_rank) if found else None
+
+
+def _note_diagnostics(meta: SessionMetadata, diags: list,
+                      elapsed_s: float) -> None:
+    """Remember what a diagnostics call cost and whether Lean gave up on
+    a heartbeat budget. Both are inputs the gate quotes back."""
+    meta.hb_last_check_s = elapsed_s
+    for d in diags or []:
+        if _HB_TIMEOUT_MARK in str(d.get("message", "")):
+            meta.hb_saw_timeout = True
+            return
+
+
+def _heartbeat_gate(meta: SessionMetadata, content: str) -> "str | None":
+    """Ask once before a write buys a slower feedback loop — or None.
+
+    Raising `maxHeartbeats` does not make an elaboration converge; it
+    buys a LATER refusal, and every diagnostics call in the session pays
+    the difference. Measured 2026-08-12 on g7554: 200k → 1M → 4M took
+    the check latency 20s → 96s → 240s, the same three positions timed
+    out at every budget, and the spawn died on its 30-minute wall with
+    the file never once compiling. Its own last words were "still
+    elaborating — let's wait and re-check".
+
+    Two triggers, union, because each is blind where the other sees:
+      (a) the budget is large — catches a file that opens at 4M and
+          never learns why its checks take minutes;
+      (b) the budget goes UP after this session has already been shown a
+          heartbeat timeout — catches the 200k→1M step, which (a) would
+          sleep through, and it is deliberately not keyed on the timing
+          out LINE: an agent's own edits shift line numbers, so an
+          exact-position match would mostly miss.
+
+    Confirmation is the identical write resent. That is why the message
+    has to SAY so: an agent whose write was refused will otherwise edit
+    the content, changing the hash, and read the gate as random."""
+    declared = _hb_declared(content)
+    if declared is None:
+        return None
+    # BOTH triggers require this write to RAISE the budget. Without it,
+    # (a) re-asks on every edit while the file sits at 4M — each edit is
+    # a new content hash — which is a nag, not a gate.
+    raised = _hb_rank(declared) > _hb_rank(meta.hb_limit)
+    if not raised:
+        return None
+    escalating = meta.hb_saw_timeout
+    if not (escalating or _hb_rank(declared) > _HB_ASK_ABOVE):
+        return None
+    key = hashlib.sha1((content or "").encode("utf-8")).hexdigest()
+    if key in meta.hb_confirmed:
+        return None
+    meta.hb_confirmed.add(key)
+
+    budget = "UNLIMITED" if declared == 0 else f"{declared:,}"
+    cost = (f" Your last diagnostics call took "
+            f"{meta.hb_last_check_s:.0f}s" if meta.hb_last_check_s else "")
+    if escalating:
+        was = ("Lean's default" if meta.hb_limit is None
+               else "UNLIMITED" if meta.hb_limit == 0
+               else f"{meta.hb_limit:,}")
+        head = (
+            f"This session has already been shown a heartbeat timeout, and "
+            f"this write raises the budget from {was} to {budget}. A "
+            f"timeout is Lean saying the elaboration does not converge — a "
+            f"larger budget moves the same refusal further away and makes "
+            f"every check until then slower.{cost}, against a spawn budget "
+            f"measured in minutes. What works instead: bound the quantity "
+            f"rather than evaluating it, or lift the heavy step into its "
+            f"own `new_<slug>.lean` with a small context and cite it.")
+    else:
+        head = (
+            f"This file asks for {budget} heartbeats. That is allowed and "
+            f"normal here — several proved bricks in this workspace use "
+            f"it — but every diagnostics call in this session now waits "
+            f"proportionally longer before Lean will answer.{cost}. Budget "
+            f"your remaining checks accordingly.")
+    return head + (" — Resend this identical write to confirm and it will "
+                   "be applied; changing the content asks again.")
+
+
 _ELABORATING_WARNING = (
     "Lean has NOT finished elaborating this file (120s wait expired) — "
     "the diagnostics here are INCOMPLETE and a count of 0 does NOT mean "
@@ -2077,7 +2209,14 @@ def errors_at(line: int | None = None) -> str:
                     "args": {"line": line}, "duration_s": dur,
                     "slot_kind": _slot_kind, "converged": converged,
                     "returned_count": len(formatted)})
+    # `elapsed_s` as a number, not two timestamps to subtract: a worker
+    # blind to what a check costs cannot budget its checks, and this one
+    # ran eight of them at 92s average against a 30-minute wall
+    # (g7554, 2026-08-12).
+    _elapsed = time.perf_counter() - t0
+    _note_diagnostics(meta, formatted, _elapsed)
     response = {"diagnostics": formatted, "count": len(formatted),
+                "elapsed_s": round(_elapsed, 1),
                 "_server_recv_ts": _recv_ts,
                 "_server_send_ts": _ts_now()}
     if not converged:
@@ -2478,6 +2617,14 @@ def validate_file(content: str = "") -> str:
     if not meta.problem:
         return json.dumps({"error": "no problem on session metadata",
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
+    _hb = _heartbeat_gate(meta, content)
+    if _hb is not None:
+        return json.dumps(
+            {"ok": False, "held": True, "heartbeat_budget": _hb,
+             "diagnostics": [], "diagnostic_count": 0,
+             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()},
+            ensure_ascii=False)
+    meta.hb_limit = _hb_declared(content) or meta.hb_limit
     # Metaprogramming gate — the candidate is about to be elaborated, and
     # the sibling stubs folded in with it are agent text too.
     _mp = _metaprog_error(content, "candidate")
@@ -2554,9 +2701,11 @@ def validate_file(content: str = "") -> str:
         "ok": not has_error and not timed_out,
         "diagnostic_count": n_diags,
         "diagnostics": formatted,
+        "elapsed_s": round(time.perf_counter() - t0, 1),
         "_server_recv_ts": _recv_ts,
         "_server_send_ts": _ts_now(),
     }
+    _note_diagnostics(meta, formatted, time.perf_counter() - t0)
     if timed_out:
         response["timed_out"] = True
         response["error"] = ("validate_file elaboration did not complete "
