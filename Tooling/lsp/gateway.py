@@ -171,6 +171,21 @@ class GatewayState:
     # owner. Derived from `dispatch.spawn_timeout_sec` at startup (see
     # `_sweep_stale_claims`); the default matches a 1800s spawn.
     claim_ceiling_sec: float = 3600.0
+    # One-way latch: the FIRST warm has finished (whatever happens to
+    # the backend later). HTTP now opens before that warm, so this is
+    # what separates "the pool has never been up" from "a wedge restart
+    # cleared `ready_event` and Lean work is legitimately waiting for
+    # the replacement". Lean surfaces refuse fast in the first case and
+    # keep blocking in the second — `_ensure_backend_ready` alone can't
+    # tell them apart, and blocking through the initial warm would put
+    # a 240s wait on the event loop where `/compute` lives.
+    first_warm_done: bool = False
+    #: Set by the warm watcher when the initial warm fails; `main`
+    #: turns it into the same rc 3 the blocking version exited with.
+    warm_failed: str | None = None
+    #: The uvicorn Server, so the watcher can ask it to stop rather
+    #: than `os._exit` past the Lean-subtree reap in `main`'s finally.
+    http_server: object | None = None
 
 
 _state = GatewayState()
@@ -296,14 +311,74 @@ def _start_workers(workspace: Path, w_count: int,
         _state.ready_event.set()
 
 
-def _ensure_backend_ready(timeout: float = 240.0) -> str | None:
-    """Block until the bg-init thread reports ready. Returns None on
-    success, error string on init failure or timeout."""
+#: What every Lean surface says while the pool has never been up. Not
+#: a bare "unavailable": this state ends by itself, and the caller's
+#: right move is to wait rather than to conclude damage.
+WARMING_MSG = (
+    "the Lean worker pool is still warming (first start of this gateway "
+    "— minutes, not seconds). This is the framework starting up, not a "
+    "problem with the request: Lean-side work is queued until it "
+    "finishes, while `compute` and the other non-Lean tools work now.")
+
+
+def _await_backend(timeout: float) -> "str | None":
+    """The blocking primitive: wait out an init/re-init and report."""
     if not _state.ready_event.wait(timeout=timeout):
         return f"backend not ready after {timeout}s"
     if _state.backend is None or not _state.workers:
         return _state.init_error or "backend init failed"
     return None
+
+
+def _ensure_backend_ready(timeout: float = 240.0) -> str | None:
+    """Every Lean surface's readiness gate. None on success, else the
+    reason — and during the FIRST warm the reason arrives instantly.
+
+    HTTP now opens before that warm (2026-08-12) so the NL layer, which
+    the dispatcher deliberately runs in exactly that window, can reach
+    `compute`. That also makes every Lean surface reachable minutes
+    before it can work, and the old answer was to BLOCK up to 240s. On
+    `/verify` and `/verify_session` — async routes calling this
+    straight from the event loop — one stray Lean POST would then wedge
+    the very endpoint the change exists to serve. A hang is worse than
+    the refusal it replaces, which was at least instant.
+
+    The fast no is gated on `first_warm_done`, NOT on
+    `ready_event.is_set()`: the wedge watchdog clears that event to
+    swap a hung backend, and a caller waiting through THAT is right to
+    wait — its work is real and in flight. Only the first warm, when by
+    construction no Lean work exists yet, gets the instant answer."""
+    if not _state.first_warm_done:
+        return WARMING_MSG
+    return _await_backend(timeout)
+
+
+def _watch_initial_warm(budget: float, marker: "Path") -> None:
+    """Wait out the first warm on a thread, so HTTP can serve during it.
+
+    Runs beside the serving loop, never on it. Opens the Lean surfaces
+    when the pool is up, and keeps a failed warm exactly as fatal as it
+    was when `main` blocked here and called `sys.exit(3)`."""
+    err = _await_backend(budget)
+    if err:
+        # The only way a thread can end this process without cutting
+        # ahead of `main`'s finally — which reaps the Lean subtree.
+        print(f"[gateway] FATAL: {err}", file=sys.stderr, flush=True)
+        _state.warm_failed = err
+        srv = _state.http_server
+        if srv is not None:
+            srv.should_exit = True              # type: ignore[attr-defined]
+        return
+    _state.first_warm_done = True
+    print("[gateway] worker pool warm — Lean surfaces now open",
+          file=sys.stderr, flush=True)
+    # The marker's job ends only HERE, not when HTTP opened. `/health`
+    # answers 503 for the whole warm, so `_ping_health` sees nothing
+    # and this file stays the presence signal — and
+    # `_wait_for_starting_gateway` reads its disappearance as "that
+    # gateway is up". Removing it at HTTP-open would tell a second
+    # daemon to spawn a rival into an occupied port.
+    marker.unlink(missing_ok=True)
 
 
 # ─── Wedge recovery (2026-06-12 gateway-hang fix) ─────────
@@ -3294,7 +3369,19 @@ async def health(request: Request):
     """Liveness check. Reports worker pool status + active sessions
     + slot acquire counters (so operator can compute hot/cold ratio
     over the run, especially relevant at pool > W where churn
-    dominates framework overhead)."""
+    dominates framework overhead).
+
+    503 while the first warm runs. HTTP opens before that warm now, so
+    this endpoint answers minutes earlier than it used to — and every
+    reader of it means "is the gateway USABLE", not "is the port open".
+    `lifecycle._ping_health` catches `URLError`, of which `HTTPError` is
+    a subclass, so a 503 reads as absent exactly like the old connection
+    refusal did: the warm window stays invisible to the reuse gate and
+    `gateway-starting.txt` stays its only presence signal."""
+    if not _state.first_warm_done:
+        return JSONResponse(
+            {"warming": True, "backend_ready": False, "pid": os.getpid(),
+             "error": WARMING_MSG}, status_code=503)
     backend_ok = _state.backend is not None and bool(_state.workers)
     with _state.sessions_lock:
         n_sessions = len(_state.sessions)
@@ -3476,21 +3563,25 @@ def main() -> None:
     # pins a worker (2026-06-12 hang fix — see `_wedge_watchdog_loop`).
     threading.Thread(target=_wedge_watchdog_loop,
                      daemon=True, name="gateway-wedge-watchdog").start()
+    # The warm is watched from a thread and HTTP opens NOW, rather than
+    # after it (2026-08-12). `core/warmup` dispatches Strategist and
+    # Scholar during this window on purpose — a cold slot-0 warm was
+    # measured at 300s+, once seven minutes — and `compute` lives in
+    # this process, so waiting here left the NL layer without its
+    # calculator for exactly the minutes it is the only thing running.
+    #
+    # Nothing about the warm moves ONTO the serving thread: the pool
+    # already inits on `_start_workers`'s thread and only the WAIT was
+    # here. Every Lean surface refuses fast until `first_warm_done`
+    # (`_ensure_backend_ready`), so no request can put that wait back
+    # on the event loop.
+    #
     # Inner warm budget scales with the EFFECTIVE slot count: the warm
     # loop legally tolerates 300s per slot serially, so a flat 600s
     # contradicted our own tolerance at any pool ≥ 2. The daemon's
     # outer wait scales from the CONFIGURED (≥ effective) count and
     # stays the more generous of the two.
-    err = _ensure_backend_ready(
-        timeout=300.0 * (w_count + n_interactive) + 300.0)
-    if err:
-        print(f"[gateway] FATAL: {err}", file=sys.stderr, flush=True)
-        sys.exit(3)
-
-    print(f"[gateway] worker pool warm, opening HTTP",
-          file=sys.stderr, flush=True)
-    # HTTP is about to open: /health takes over as the presence signal.
-    _marker.unlink(missing_ok=True)
+    _warm_budget = 300.0 * (w_count + n_interactive) + 300.0
 
     app = mcp.streamable_http_app()
     app = SessionHeaderMiddleware(app)
@@ -3511,23 +3602,38 @@ def main() -> None:
     # SelectorEventLoop active across uvicorn's startup.
     # Serve on the socket bound at startup (asyncio listens on it) —
     # the port was ours for the whole warm, so no bind can fail here.
+    #
+    # The Server object exists BEFORE the warm watcher starts: the
+    # watcher's only way to end this process is `should_exit`, and a
+    # warm that fails in the first second must not find that handle
+    # still unset.
+    if sys.platform == "win32":
+        import asyncio as _asyncio
+        loop = _asyncio.SelectorEventLoop()
+        _asyncio.set_event_loop(loop)
+        config = uvicorn.Config(app, host="127.0.0.1", port=port,
+                                log_level="warning", loop="none")
+    else:
+        loop = None
+        # Non-Windows: manual Server so the pre-bound socket is used.
+        config = uvicorn.Config(app, host="127.0.0.1", port=port,
+                                log_level="warning")
+    server = uvicorn.Server(config)
+    _state.http_server = server
+    threading.Thread(target=_watch_initial_warm, daemon=True,
+                     name="gateway-warm-watch",
+                     args=(_warm_budget, _marker)).start()
+    print(f"[gateway] HTTP open on {port} — pool warming in background",
+          file=sys.stderr, flush=True)
+
     try:
-        if sys.platform == "win32":
-            import asyncio as _asyncio
-            loop = _asyncio.SelectorEventLoop()
-            _asyncio.set_event_loop(loop)
-            config = uvicorn.Config(app, host="127.0.0.1", port=port,
-                                     log_level="warning", loop="none")
-            server = uvicorn.Server(config)
+        if loop is not None:
             try:
                 loop.run_until_complete(server.serve(sockets=[http_sock]))
             finally:
                 loop.close()
         else:
-            # Non-Windows: manual Server so the pre-bound socket is used.
-            config = uvicorn.Config(app, host="127.0.0.1", port=port,
-                                    log_level="warning")
-            uvicorn.Server(config).run(sockets=[http_sock])
+            server.run(sockets=[http_sock])
     finally:
         # Reap the Lean backend subtree on gateway exit (SIGTERM from the
         # daemon's atexit, or any shutdown). Without this, `lake serve`'s
@@ -3544,6 +3650,13 @@ def main() -> None:
                     _b._kill_tree()
                 except Exception:
                     pass
+
+    # A warm that never finished is still fatal, and still rc 3: the
+    # daemon's `start_gateway` distinguishes "died" from "still coming"
+    # by this exit, and a process that served 503s forever would hang
+    # every retry behind a gateway that can never do Lean work.
+    if _state.warm_failed:
+        sys.exit(3)
 
 
 def _install_windows_event_loop_policy() -> None:

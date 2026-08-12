@@ -200,6 +200,27 @@ def gateway_starting_marker(workspace: Path) -> Path:
     return workspace / ".asterism" / "gateway-starting.txt"
 
 
+def warming_pid(workspace: Path) -> "int | None":
+    """The pid of a gateway that is mid-warm, or None.
+
+    The marker is a FILE, so it outlives an abnormal death: present but
+    naming a dead pid means "nothing is running", not "still coming".
+    Every reader needs that distinction and none should re-derive it —
+    the liveness question is answered by `psutil.pid_exists`, a native
+    API call, because this also runs inside the stdio MCP server where
+    no subprocess (and therefore no `tasklist`) starts at all."""
+    try:
+        pid = int(gateway_starting_marker(workspace)
+                  .read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        import psutil
+        return pid if psutil.pid_exists(pid) else None
+    except Exception:  # noqa: BLE001 — no psutil: assume it is coming
+        return pid
+
+
 def gateway_phase(workspace: Path) -> str | None:
     """Coarse gateway phase for status surfaces: 'ready' (health OK),
     'warming' (starting marker names a live pid), else None. Cheap —
@@ -207,16 +228,7 @@ def gateway_phase(workspace: Path) -> str | None:
     h = _ping_health(timeout=0.5)
     if h is not None and h.get("backend_ready"):
         return "ready"
-    marker = gateway_starting_marker(workspace)
-    try:
-        pid = int(marker.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return None
-    try:
-        import psutil
-        return "warming" if psutil.pid_exists(pid) else None
-    except Exception:  # noqa: BLE001 — status must not crash
-        return "warming"
+    return "warming" if warming_pid(workspace) is not None else None
 
 
 def _wait_for_starting_gateway(workspace: Path,

@@ -200,6 +200,31 @@ def compute(code: str = "") -> str:
 _GATEWAY_TIMEOUT_SEC = 180
 
 
+def _gateway_silence_hint() -> str:
+    """Which silence this is — and they call for opposite actions.
+
+    A gateway that is still coming up will answer on its own, so the
+    move is to wait. One that is not running will not, so the move is
+    to say so and carry on without a calculator. Told as one message,
+    an agent picks wrong half the time.
+
+    The marker is a file and survives an abnormal death, so its mere
+    presence proves nothing; `lifecycle.warming_pid` is the one place
+    that pairs it with liveness."""
+    try:
+        from ..lsp import lifecycle
+        pid = lifecycle.warming_pid(_workspace_root())
+    except Exception:  # noqa: BLE001 — a hint must never be the failure
+        pid = None
+    if pid is not None:
+        return (f"The framework's gateway (pid {pid}) is starting up right "
+                f"now, so this is a matter of seconds: carry on with "
+                f"something else and use compute again later this turn.")
+    return ("This is a framework fault, not a problem with your code: "
+            "retry once, and if it repeats say so in your framework "
+            "feedback rather than working around it.")
+
+
 def _compute_via_gateway(code: str) -> str:
     import json
     import os
@@ -216,17 +241,17 @@ def _compute_via_gateway(code: str) -> str:
         with urllib.request.urlopen(req, timeout=_GATEWAY_TIMEOUT_SEC) as r:
             data = json.loads(r.read())
     except Exception as exc:  # noqa: BLE001
-        # Say which side failed. The old message named the venv and
-        # guessed "base Python upgraded under it?", and that hard-coded
-        # guess sent every reader — including the operator — after the
-        # wrong thing for two days.
+        # Say which side failed, and WHICH of the two silences this is.
+        # The old message named the venv and guessed "base Python
+        # upgraded under it?"; that hard-coded guess sent every reader —
+        # the operator included — after the wrong thing for two days.
+        # "Wait" and "report it" are opposite instructions, so the two
+        # states must not share one sentence.
         return ComputeResult(
             rc=127, seconds=0.0,
             output=f"[compute] the framework's compute service did not "
-                   f"answer ({type(exc).__name__}: {str(exc)[:160]}). This "
-                   f"is a framework fault, not a problem with your code: "
-                   f"retry once, and if it repeats say so in your "
-                   f"framework feedback rather than working around it.",
+                   f"answer ({type(exc).__name__}: {str(exc)[:160]}). "
+                   f"{_gateway_silence_hint()}",
         ).render()
     # `killed` is what turns a bare empty result into an instruction.
     # Dropping it here (2026-08-12) cost a Strategist two calls: a
