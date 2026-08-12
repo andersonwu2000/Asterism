@@ -1,223 +1,233 @@
 # Asterism — Pipeline outcomes & failure modes
 
-寫於 2026-05-06；2026-07-29 對照代碼全面校正（Formalizer 合併對齊）。
+Written 2026-05-06; fully re-verified against code 2026-07-29 (Formalizer merge alignment).
 
-每條 pipeline 結束時產出一個 outcome；非成功 outcome 帶 `failure_reason` 給 forensic
-+ event 投影。**機器 SoT 是 `Tooling/state/failures.py` 的 `REGISTRY`**（traits 推導
-infra/投影/cooldown 集合、tests 綁定）；本檔是它的人類敘述層——觸發條件與 cascade 語意
-的完整對照**只在這裡**，不在其他 doc 加對照表。新增 reason = registry 加一筆 + 本檔加
-一行。
+Each pipeline emits one outcome at termination; non-success outcomes carry `failure_reason` for
+forensic + event projection. **The machine SoT is `REGISTRY` in `Tooling/state/failures.py`**
+(traits derive the infra/projection/cooldown sets; tests bind to it); this doc is its human
+narrative layer — the full mapping of trigger conditions and cascade semantics lives **only
+here**; do not add mapping tables in other docs. New reason = one registry entry + one line here.
 
-> 名詞：worker 現只剩 `Formalizer`（Goal 臂 = prove/split、Problem 臂 = mint）/
-> `Strategist` / `Scholar` / `Librarian`。表中「Builder」「Backward」「Forward」指
-> Formalizer 的三個歷史前身——reason 語彙沿用、觸發位置照舊（prove 臂沿 Builder、split
-> 臂沿 Backward、mint 臂沿 Forward），僅 pre-merge queue row 還會以舊 kind 名出現。
+> Terminology: the only remaining workers are `Formalizer` (Goal arm = prove/split, Problem
+> arm = mint) / `Strategist` / `Scholar` / `Librarian`. "Builder", "Backward", "Forward" in the
+> tables are the Formalizer's three historical predecessors — reason vocabulary is inherited,
+> trigger sites unchanged (prove arm follows Builder, split arm Backward, mint arm Forward);
+> only pre-merge queue rows still appear under the old kind names.
 
 ---
 
 ## 1. Pipeline outcomes
 
-每條 pipeline 終結時的 outcome 字串（pipeline.PipelineResult.outcome）：
+Outcome string when a pipeline terminates (pipeline.PipelineResult.outcome):
 
-| outcome | 適用 | 意義 | cascade 大原則 |
+| outcome | applies to | meaning | cascade principle |
 |---|---|---|---|
-| `proved` | Formalizer | 證明完成（hint 前置、leaf-bypass、或 sorry-free mint） | goal `proved` |
-| `success` | Formalizer | strategy 提交（patch + sub-goals 落定 + build 過） | goal `attempting` |
-| `failed` | Formalizer | 帶 `failure_reason`、見 §2（terminal decline / infra rc / goal_not_found） | 依 reason 變 |
-| `exhausted` | Formalizer | helper budget 用盡、最後 retry 的 reason 反映在 `failure_reason` | (helper 已 ++ attempts)；達 SHELVE 轉 strategist review、不自動 shelve；否則 status 不動讓下次重派 |
-| `moot` | Formalizer | helper 入場 / mid-loop cascade re-check 發現 goal 已終態 | uniform no-op（不動 state、不寫 dead_attempts、不 ++ attempts） |
+| `proved` | Formalizer | proof complete (hint-prefixed, leaf-bypass, or sorry-free mint) | goal `proved` |
+| `success` | Formalizer | strategy committed (patch + sub-goals placed + build passes) | goal `attempting` |
+| `failed` | Formalizer | carries `failure_reason`, see §2 (terminal decline / infra rc / goal_not_found) | varies by reason |
+| `exhausted` | Formalizer | helper budget spent; the final retry's reason is reflected in `failure_reason` | (helper already ++ attempts); at SHELVE goes to strategist review, no auto-shelve; otherwise status untouched so the goal gets re-dispatched |
+| `moot` | Formalizer | helper entry / mid-loop cascade re-check finds the goal already terminal | uniform no-op (no state change, no dead_attempts row, no attempts++) |
 
-**cascade 共通規則**（表格欄只列 reason 特異處）：
-- 預設：失敗 spawn 由 helper **當場**寫一筆 dead_attempt + attempts++（v38：pipelines row 在 dispatch 時即以 `running` INSERT，FK 從頭滿足，故不再 buffer-then-flush——舊協議在 worker thread 例外死亡時把 forensic rows 連 stack frame 一起丟掉、增量卻已入帳，goal 7486 2026-08-08）；達 SHELVE_THRESHOLD → **轉 `pending_strategist_review` 交 Strategist 裁決，不再自動 shelve**（bfs_refill 也會在派工前攔截 over-threshold goal 轉 review）。真正的 shelve 只來自 Strategist ConfirmShelve 或個別硬終態分支
-- BUILDER_THRESHOLD 升級路由已隨 Formalizer 合併退役（無 config key；prove/split 由 agent 在 session 內自決）
-- **Strategist Inject 例外**：pipeline 帶 `decision_id` 時 budget gate 與 attempts 上限**完全 bypass**——Strategist 看完 failure replay 認可後框架不二猜；唯一守住的是 goal status 已終態則 `moot`
-- 七種 provider-infra reason（spawn_fast_fail / quota_exhausted / missing_dep / gateway_unreachable / transient_timeout / system_killed / unclassified_spawn_failure）→ 不增 attempts、不寫 dead_attempt。除 quota 外設 30s target cooldown；`quota_exhausted` 走 per-kind 指數退避（30s×2ⁿ cap 600s）+ flush 同 kind queue + 可轉 quota-wait。CONSEC daemon-exit：spawn_fast_fail=10（撞頂先向 usage endpoint 確認、真 quota 則轉 quota-wait 不退出）、gateway_unreachable=8、transient_timeout 不進 CONSEC
-- 四條 decline 的 cascade：agent_declined → attempts++（entry_kind 路由已隨 v33 移除）；agent_infeasible → attempts++ + goal `disproved` + propagate；parent_needs_fix → attempts++ + goal `dead` + propagate；agent_shelved / no_nl_correspondence → attempts++ + 轉 pending_strategist_review、不 propagate
-- **soft-shelve 的上行**（`_maybe_stall_parent_strategies` → `_maybe_review_goal_out_of_routes`，07-09 `453c0636`）：子目標 soft-shelve 後父 strategy 的子目標全部結清 ⇒ strategy 轉 `stalled`、父目標交給 T2 review（否則 `attempting` 且無活 strategy 的目標永遠沒人碰，BFS 只吃 `open`）。**aliveness 判準含承諾**（07-30，b6_1 四層級聯):`shelved` 子目標若其最新 ConfirmShelve 所屬批次仍有未結清 Inject，算 **alive** ⇒ 不 stall、不 review，父節點單純等——與 `pending_strategist_review` 算 alive 同一條理由（有排程要發生的事）。批次語意保證連續性:最後一個 Inject 結清的同時 `maybe_enqueue_inject_batch_done` 就排好 wake,所以不需要逾期計時器;承諾未兌現的情況由問題層級 stall 判準(`_subtree_has_live_frontier`,`attempting` 本身不算 live frontier)一次叫醒,而非每層一次。無承諾的 shelved 行為不變
+**Common cascade rules** (table columns list only reason-specific behavior):
+- Default: the helper writes one dead_attempt + attempts++ **on the spot** for each failed spawn (v38: the pipelines row is INSERTed as `running` at dispatch, so the FK is satisfied from the start and there is no more buffer-then-flush — the old protocol lost forensic rows together with the stack frame when a worker thread died of an exception, while the increment had already been booked; goal 7486, 2026-08-08); at SHELVE_THRESHOLD → **transition to `pending_strategist_review` for Strategist adjudication, no more auto-shelve** (bfs_refill also intercepts over-threshold goals into review before dispatch). Real shelves come only from Strategist ConfirmShelve or individual hard-terminal branches
+- The BUILDER_THRESHOLD escalation route retired with the Formalizer merge (no config key; prove/split is decided by the agent within the session)
+- **Strategist Inject exception**: when a pipeline carries a `decision_id`, the budget gate and attempts cap are **fully bypassed** — once the Strategist has reviewed the failure replay and approved, the framework does not second-guess; the only remaining guard is `moot` when the goal status is already terminal
+- The seven provider-infra reasons (spawn_fast_fail / quota_exhausted / missing_dep / gateway_unreachable / transient_timeout / system_killed / unclassified_spawn_failure) → no attempts++, no dead_attempt row. All except quota set a 30s target cooldown; `quota_exhausted` uses per-kind exponential backoff (30s×2ⁿ cap 600s) + flush of the same-kind queue + may transition to quota-wait. CONSEC daemon-exit: spawn_fast_fail=10 (on hitting the cap, first confirm against the usage endpoint; real quota transitions to quota-wait instead of exiting), gateway_unreachable=8, transient_timeout not counted in CONSEC
+- Cascades for the four declines: agent_declined → attempts++ (entry_kind routing removed with v33); agent_infeasible → attempts++ + goal `disproved` + propagate; parent_needs_fix → attempts++ + goal `dead` + propagate; agent_shelved / no_nl_correspondence → attempts++ + transition to pending_strategist_review, no propagation
+- **Upward path of soft-shelve** (`_maybe_stall_parent_strategies` → `_maybe_review_goal_out_of_routes`, 07-09 `453c0636`): after a sub-goal soft-shelves, once all sub-goals of the parent strategy are settled ⇒ the strategy goes `stalled` and the parent goal goes to T2 review (otherwise a goal that is `attempting` with no live strategy is never touched again — BFS only consumes `open`). **The aliveness criterion includes promises** (07-30, b6_1 four-level cascade): a `shelved` sub-goal counts as **alive** if the batch owning its latest ConfirmShelve still has unsettled Injects ⇒ no stall, no review, the parent simply waits — same rationale as `pending_strategist_review` counting as alive (something is scheduled to happen). Batch semantics guarantee continuity: `maybe_enqueue_inject_batch_done` schedules the wake the moment the last Inject settles, so no overdue timer is needed; unfulfilled promises are caught once by the problem-level stall criterion (`_subtree_has_live_frontier`; `attempting` itself does not count as live frontier), not once per level. Shelved goals without promises behave as before
 
 ---
 
-## 2. Failure reasons（master table）
+## 2. Failure reasons (master table)
 
-Phase 7 後 retry 邏輯下沉到 in-pipeline retry helper（`Tooling/pipeline/_retry.py`）。
-attempts ↔ dead_attempts 的 1:1 invariant：每個失敗 spawn 由 helper **當場**寫一筆
-dead_attempt + attempts++（v38 起 pipelines row 在 dispatch 時即存在，FK 直接滿足；
-表中「buffer + retry」的「buffer」自 v38 起讀作「立即寫入 DB 後續 retry」——舊的
-buffer-then-flush 在 worker 例外死亡時遺失 forensic rows 而增量已入帳）。cascade 對非
-terminal-decline 的失敗（lake error、forbidden_lemma 等）只做 status transition、
-不再做 attempts++（已由 helper 當場計數）。
+Since Phase 7 the retry logic lives in the in-pipeline retry helper (`Tooling/pipeline/_retry.py`).
+The 1:1 invariant attempts ↔ dead_attempts: for each failed spawn the helper writes one
+dead_attempt + attempts++ **on the spot** (since v38 the pipelines row exists at dispatch, so
+the FK is directly satisfied; "buffer + retry" in the table reads, since v38, as "written to DB
+immediately, then retried" — the old buffer-then-flush lost forensic rows on worker exception
+death while the increment was already booked). For non-terminal-decline failures (lake error,
+forbidden_lemma, etc.) the cascade only does the status transition and no longer does
+attempts++ (already counted on the spot by the helper).
 
-> 名詞：「verify-collapse」= 把舊版的 Verify worker_kind 折疊成主迴圈 inline
-> housekeeping。pre-collapse 的 Strategy-target `dead_attempts` row 留在 DB
-> 作為歷史；新 pipeline 不再產生這類 row。詳見 `data-flow.md` §4。
+> Terminology: "verify-collapse" = folding the old Verify worker_kind into inline main-loop
+> housekeeping. Pre-collapse Strategy-target `dead_attempts` rows remain in the DB as
+> history; new pipelines no longer produce such rows. See `data-flow.md` §4.
 
-| failure_reason | 出處 | 觸發條件 | helper 處理 | cascade 處理 | event_type 投影 |
+| failure_reason | origin | trigger | helper handling | cascade handling | event_type projection |
 |---|---|---|---|---|---|
-| `lake_build_error` | Builder + Backward | Phase 2 patch / Backward strategy 組裝 build 失敗 | buffer + 同 session 下一輪 retry（retry_context 帶 stderr） | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `forbidden_lemma` | Builder + Backward | patch 文本命中 Manifest `forbidden_lemmas` | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `forbidden_metaprogramming` | Backward + Forward | patch / sub-goal stub / mint 候選帶 elaboration-time metaprogramming 入口（`elab`/`macro_rules`/`#eval`/`initialize`/`unsafe`/`@[implemented_by]`/`set_option debug.skipKernelTC` 等；掃描器=`Tooling/state/metaprog.py`，去註解後比對）——elab-time 代碼以**框架權限**執行(sandbox escape)、且 `Environment.add` 類插入不過 kernel 也不現形於 `#print axioms` | buffer + retry（retry_context 帶「寫純 theorem/def、soundness 由 kernel+公理閘扛」） | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `parse_proposal_fail` | Backward | patch.lean 缺；或 patch=1 new=0 + sorry body + 無 decline directive（Phase 6.5 後 patch body 非 sorry 視為 leaf-bypass、不算失敗）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `patch_signature_mismatch` | Backward | agent 改了鎖死的 `theorem sX <binders> : <type>` 簽名 | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `naming_violation` | Backward | sub-goal slug 違反 charset / length lint（lowercase `[a-z][a-z0-9_]*`、≤ 60 chars；camelCase framework auto-normalize、衝突 framework auto-suffix，皆不算 violation；只剩 digit-start / punctuation / unicode 等不可機械修者） | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `circular_decomposition` | Backward | sub-goal verbatim 重述其 strict ancestor（同名 + theorem-head 全等）= proving X by reducing to X、零進展;`_2` auto-suffix 會掩蓋成無限退化子樹 | buffer + retry（retry_context 帶「換個分解」提示） | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `batch_reference_cycle` | Backward | 同批 sub-goal stub 互相引用成環——Lean 模組不可互 import、無擺放順序（task #84 起非環邊由框架機械注入 import,環是唯一不可注入者;mirror 會在 session 內預測） | buffer + retry（合併 statement 或改寫消引用） | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `axiom_violation` | Builder + Backward | Manifest 有 `axioms_whitelist` 時，confirm-build 報 `axiom_error` 或用到 whitelist 外的 rogue axiom（含 `sorryAx`）→ 還原 backup、reject | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `cite_unproved_sibling` | Builder + Backward | cite-gate：patch 引用的 sibling `L_<slug>` 尚未 proved（orphan / open / dead / disproved）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `patch_body_contains_sorry` | Backward | leaf-bypass patch body 仍含 `sorry`（既非合法 decomposition、也非真 leaf）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `same_as_disproved` | Backward | sub-goal verbatim 重述本 problem 內已 `disproved` 的 statement（`_retry.py` `_TERMINAL_DECLINE_REASONS`）| terminal exit（不 retry）| (helper 已 ++)；走 generic failed | `direct_attempt` |
-| `same_as_dead_unchanged` | Backward | sub-goal 重述本 problem 內 `dead` twin,且 twin 死後無任何新 proved——世界未變的盲重試;detail 附 twin 最後失敗 forensic;twin 死後有新 proved 則放行為 novel | terminal exit（不 retry）| 走 generic failed | `direct_attempt` |
-| `duplicate_strategy` | Backward | 分解無 novel sub-goal 且 link 集合與同 goal 上既有 proposed/stalled 策略完全相同——byte-identical 再主張（P3;detail 點名既有 s<id>）| terminal exit（不 retry）| 走 generic failed | `direct_attempt` |
-| `no_progress` | Backward | sub-goal 經 isDefEq 偵測 definitionally 等於正在拆的 goal 本身（零進展；比 `circular_decomposition` 的同名文字比對更深的 dedupe tier）| buffer + retry（換個分解）| (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `agent_no_annotation` | Builder + Backward (Phase 2) | rc=0、build 過但 patch.lean leading comment 空白 | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `agent_no_output` | Builder Phase 2 | rc=0 但 agent 沒寫 `patch*.lean` | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `agent_rc_nonzero` | (歷史) | 舊的「其餘 rc」預設值,2026-08-08 由 `unclassified_spawn_failure` 取代;registry 保留供舊 dead_attempts 列解讀 | — | — | `direct_attempt` |
-| `unclassified_spawn_failure` | Formalizer（`_spawn_failure`） | rc≠0、rc≠124、wall-clock ≥ 10s——**沒有任何判準認得的死法**。owner 裁決 2026-08-08:計數欄問的是「worker 有沒有得到**公平的機會**而失敗」,不明原因不得計入(這個專案遇過的每一種死法——NTSTATUS、Bun panic、gateway 500、pagefile 耗盡——都是先以未知 rc 出現、被默默算在 agent 頭上,直到有人稽核才現形;分類表不可能窮盡,所以預設翻面) | 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、**連續 `CONSEC_UNCLASSIFIED_LIMIT`=5 次 → daemon 退出 rc=2 交給 operator**(框架故障 strategist 無能為力,交給它只會讓故障被改寫成數學) | 不投影(infra) |
-| `agent_timeout` | Builder + Backward | claude rc=124（SIGKILL at WORKER_TIMEOUT_SEC、預設 900s、`dispatch.spawn_timeout_sec`） | **salvage parse 一次**（idle-window guard 後 active agent 可能 disk 上有 valid output 但沒 exit 乾淨）：parse 返 terminal-success / decline → 直接 attach；返 non-terminal failure → fold 到 detail、走原 postmortem（寫 `.drafts/`）+ buffer + 強制 exhaust（不再續 retry） | (helper 已 ++)；exhausted → status transition；salvage 成功時 reason 走 success/decline 而非 timeout | `direct_attempt` |
-| `agent_declined` | Builder | agent 寫 `-- decline: needs_decomposition`（unified directive system, 2026-05-10） | terminal exit（不 buffer 自身）| **attempts++**；達 SHELVE 轉 review（entry_kind 路由已隨 v33 移除；Formalizer 在 session 內自行 split，此 reason 實務只剩 mint 的 `library_sufficient` 與 Librarian decline 在用） | `direct_attempt` |
-| `agent_infeasible` | Builder + Backward | agent 寫 `-- decline: unprovable`（含反例；舊名 `parent_type_infeasible`） | terminal exit（不 buffer 自身）| **attempts++** + goal `disproved` + `_propagate_disproved` | `infeasible_sub`（投到 parent goal、不到自己；filter `_NON_AGENT_REASONS` 排除 self） |
-| `parent_needs_fix` | Builder + Backward | agent 寫 `-- decline: return_to_parent`（含具體 fix hint：缺哪個 hypothesis / 換哪個結構） | terminal exit（不 buffer 自身）| **attempts++** + goal `dead` + `_propagate_dead`；description 投到 parent context 的 fix hint section | `infeasible_sub`（同上；renderer 用 `failure_reason` 區分 fix-hint vs counterexample） |
-| `agent_shelved` | Builder + Backward | agent 寫 `-- decline: shelve`（無反例、純 give up） | terminal exit（不 buffer 自身）| **attempts++** + `_enqueue_strategist_review`（轉 pending_strategist_review、不 propagate） | `infeasible_sub`（同上；soft 訊號、留給 Strategist 將來覆核） |
-| `no_nl_correspondence` | Formalizer（intake sentinel 或 work-turn `-- decline:`） | NL-first（2026-07-25）：goal 或必須發明的 sub-goal 對應不到任何 Programme Proof 步驟——不發明數學、上交 | terminal exit（不 buffer 自身）| **attempts++** + 轉 pending_strategist_review、不 propagate（Strategist 在 Proof 裡論證到封閉或退役該宣稱） | 不投影（`agent_visible=False`；decline note 經 review context 呈給 Strategist） |
-| `agent_stuck_thinking` | Formalizer（`_retry.py`） | watchdog 判定 thinking trap（rc=128）、fresh-sid takeover 後仍未產出 terminal | buffer + 續 retry（takeover 本身不耗 budget） | (helper 已 ++)；exhausted → status transition。**注意：尚未入 `failures.py` REGISTRY**（traits 全走 default，屬待修） | `direct_attempt` |
-| `agent_bailed` | Backward (rescue option d) | watchdog wall_cap → rescue spawn 中、agent 自評沒把握、寫 `_progress.md` 到 attempts_dir 後退出（無 patch.lean / 無 split） | terminal exit（不 buffer 自身）| **attempts++** + 過 SHELVE 才 shelve（goal 留 open / attempting、下次 dispatch 再派）；outer wrapper 把 `_progress.md` persist 到 `.drafts/backward_g<id>.md` 給下輪 cold-spawn 看 | `direct_attempt` |
-| `goal_no_longer_open` | Backward | parse 階段 race 偵測：lake build 完但 goal 已 proved/shelved | terminal exit（不 buffer 自身）| 走 generic `failed`/attempts++（dispatcher 寫 final dead_attempt） | 不投影（`agent_visible=False`） |
-| `subgoal_slug_collision` | Backward | placement 前 `proof_store` ownership guard：sub-goal 的 `L_<slug>.lean` 路徑已被**別的** goal 擁有（`_resolve_slug_collisions` 漏掉的 cross-batch / re-decomposition 撞名）→ 結構性拒寫、防 clobber-then-orphan DB↔file drift | terminal exit（不 buffer 自身、未寫任何檔）| 走 generic `failed`/attempts++ | `direct_attempt` |
-| `forward_no_new_goal` | Forward | 無 `new_<slug>.lean` / 檔不可讀 / elaborate 失敗 / metadata 缺（`Forward rationale:` 等）/ slug 撞 Manifest statement vocab；agent decline `library_sufficient` 另走 `agent_declined` terminal | buffer + retry（elaborate stderr 帶 `retry_context`、budget=FORWARD_RETRY_BUDGET=3） | Forward cascade：不動任何 goal、寫 inject decision outcome（infra 失敗則 re-enqueue 同 decision_id、`763179f`） | 不投影（target=Problem、goal_history 投影只看 Goal-target rows） |
-| `quota_exhausted` | Builder + Backward | rc=126（gemini quota 耗盡）| 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra） |
-| `missing_dep` | Builder + Backward | rc=127（CLI 缺）| 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra） |
-| `spawn_fast_fail` | Builder + Backward | rc≠0 且 wall-clock < 10s（claude.exe crash / cwd） | 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、CONSEC=10 觸發 daemon 退出 rc=2 | 不投影（infra） |
-| `system_killed` | Formalizer（`_spawn_failure`） | NTSTATUS 形 rc ≥ 0x40000000（0xC0000409 fail-fast / 0xC0000142 DLL-init / 0x40010004 debugger-terminate）或 stderr 帶 Bun crash banner——OS/CLI runtime 殺掉 spawn,非 agent 行為（2026-08-08 post-mortem:六筆這類 rc 走 `agent_rc_nonzero` 燒 attempts,把五個健康 goal 衝進 review） | 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra、death note） |
-| `gateway_unreachable` | Builder + Backward (1db4e8c) | worker thread 收到 URLError / OSError(ECONNREFUSED/ECONNRESET/ENETUNREACH/ETIMEDOUT) / Windows WinError 10061/10054/64 — gateway HTTP transport 完全失聯 | 早返（dispatcher 端、不進 helper）| **不增 attempts**、設 30s cooldown、CONSEC=8 觸發 daemon 退出 rc=2（gateway 永久死亡時不無限重試） | 不投影（infra） |
-| `transient_timeout` | Builder + Backward (post-pilot fix) | worker thread 收到 `TimeoutError`（lsp_client.py:169 的 `$/lean/rpc/call` 超時、slot 競爭 RPC 等不到等）| 早返（dispatcher 端）| **不增 attempts**、設 30s cooldown、**不進 CONSEC**（slot 競爭是健康過載、不是 gateway 死、若併計 circuit breaker 會在 244-題 benchmark 下誤殺） | 不投影（infra） |
-| `verify_infra` | Forward mint 臂 + Backward (2026-08-12) | `lifecycle.verify_file` 回 `{"error": …, "transient": True}`——gateway **有應答**但回 5xx 且撐過 ~50s 重試預算,最常見是活 session 底下槽位消失(`no slot claimed`) | 早返(pipeline 端)| **不增 attempts**、設 30s cooldown、**不進 CONSEC**(進程活著在講話;而且這類**成群到達**——08-11 四分鐘三筆、08-12 五分鐘兩筆——併計會誤殺 daemon) | 不投影(infra;`agent_visible=False`——「你的槽位不見了」沒有教學價值) |
-| `framework_verify_error` | Forward mint 臂 + Backward (2026-08-12) | 同一個 `error` 的另一半:`transient=False`——4xx、target 檔不存在、回應格式壞。重試救不了(框架要錯了東西) | 早返(pipeline 端)| **不增 attempts**、無 cooldown、不進 CONSEC | 不投影(infra) |
-| `superseded` (legacy) | pre-collapse Verify worker | verify-collapse 後不再產生新 row、僅歷史 db 有 | n/a | n/a | 不投影 |
+| `lake_build_error` | Builder + Backward | Phase 2 patch / Backward strategy assembly build fails | buffer + retry next round in same session (retry_context carries stderr) | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `forbidden_lemma` | Builder + Backward | patch text hits Manifest `forbidden_lemmas` | buffer + retry | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `forbidden_metaprogramming` | Backward + Forward | patch / sub-goal stub / mint candidate contains an elaboration-time metaprogramming entry point (`elab`/`macro_rules`/`#eval`/`initialize`/`unsafe`/`@[implemented_by]`/`set_option debug.skipKernelTC` etc.; scanner=`Tooling/state/metaprog.py`, matched after comment stripping) — elab-time code runs with **framework privileges** (sandbox escape), and `Environment.add`-style insertions neither pass the kernel nor show up in `#print axioms` | buffer + retry (retry_context carries "write plain theorem/def; soundness is carried by the kernel + axiom gate") | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `parse_proposal_fail` | Backward | patch.lean missing; or patch=1 new=0 + sorry body + no decline directive (after Phase 6.5 a non-sorry patch body counts as leaf-bypass, not a failure) | buffer + retry | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `patch_signature_mismatch` | Backward | agent changed the locked `theorem sX <binders> : <type>` signature | buffer + retry | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `naming_violation` | Backward | sub-goal slug violates charset / length lint (lowercase `[a-z][a-z0-9_]*`, ≤ 60 chars; camelCase framework auto-normalize and collision framework auto-suffix are not violations; only the mechanically unfixable remain — digit-start / punctuation / unicode etc.) | buffer + retry | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `circular_decomposition` | Backward | sub-goal verbatim restates a strict ancestor (same name + theorem-head identical) = proving X by reducing to X, zero progress; the `_2` auto-suffix would mask it as an infinitely degenerating subtree | buffer + retry (retry_context carries a "try a different decomposition" hint) | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `batch_reference_cycle` | Backward | sub-goal stubs in the same batch reference each other cyclically — Lean modules cannot mutually import, no valid placement order (since task #84 non-cycle edges get imports mechanically injected by the framework; a cycle is the only thing that cannot be injected; the mirror predicts this within the session) | buffer + retry (merge statements or rewrite to remove the reference) | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `axiom_violation` | Builder + Backward | when the Manifest has `axioms_whitelist`, confirm-build reports `axiom_error` or a rogue axiom outside the whitelist is used (including `sorryAx`) → restore backup, reject | buffer + retry | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `cite_unproved_sibling` | Builder + Backward | cite-gate: the patch cites a sibling `L_<slug>` not yet proved (orphan / open / dead / disproved) | buffer + retry | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `patch_body_contains_sorry` | Backward | leaf-bypass patch body still contains `sorry` (neither a legal decomposition nor a true leaf) | buffer + retry | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `same_as_disproved` | Backward | sub-goal verbatim restates a statement already `disproved` within this problem (`_retry.py` `_TERMINAL_DECLINE_REASONS`) | terminal exit (no retry) | (helper already ++); generic failed | `direct_attempt` |
+| `same_as_dead_unchanged` | Backward | sub-goal restates a `dead` twin within this problem, with nothing newly proved since the twin died — a blind retry in an unchanged world; detail attaches the twin's last failure forensic; if anything was proved after the twin died it passes as novel | terminal exit (no retry) | generic failed | `direct_attempt` |
+| `duplicate_strategy` | Backward | decomposition has no novel sub-goal and its link set is identical to an existing proposed/stalled strategy on the same goal — a byte-identical re-claim (P3; detail names the existing s<id>) | terminal exit (no retry) | generic failed | `direct_attempt` |
+| `no_progress` | Backward | sub-goal detected via isDefEq as definitionally equal to the goal being split itself (zero progress; a deeper dedupe tier than `circular_decomposition`'s same-name textual comparison) | buffer + retry (different decomposition) | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `agent_no_annotation` | Builder + Backward (Phase 2) | rc=0, build passes but patch.lean leading comment is blank | buffer + retry | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `agent_no_output` | Builder Phase 2 | rc=0 but the agent wrote no `patch*.lean` | buffer + retry | (helper already ++); exhausted → status transition | `direct_attempt` |
+| `agent_rc_nonzero` | (historical) | the old "any other rc" default; replaced 2026-08-08 by `unclassified_spawn_failure`; kept in the registry to interpret old dead_attempts rows | — | — | `direct_attempt` |
+| `unclassified_spawn_failure` | Formalizer (`_spawn_failure`) | rc≠0, rc≠124, wall-clock ≥ 10s — **a death no criterion recognizes**. Owner ruling 2026-08-08: the counter asks whether the worker got a **fair chance** and failed; unexplained deaths must not be counted (every kind of death this project has seen — NTSTATUS, Bun panic, gateway 500, pagefile exhaustion — first appeared as an unknown rc silently charged to the agent until an audit surfaced it; the classification table can never be exhaustive, so the default flips) | early return, does not buffer itself, no budget spent | **no attempts++**, 30s cooldown, **`CONSEC_UNCLASSIFIED_LIMIT`=5 consecutive → daemon exits rc=2, handed to the operator** (a framework fault the strategist can do nothing about; handing it over only gets the fault rewritten as mathematics) | not projected (infra) |
+| `agent_timeout` | Builder + Backward | claude rc=124 (SIGKILL at WORKER_TIMEOUT_SEC, default 900s, `dispatch.spawn_timeout_sec`) | **salvage parse once** (after the idle-window guard an active agent may have valid output on disk without a clean exit): parse returns terminal-success / decline → attach directly; returns non-terminal failure → fold into detail, run the original postmortem (writes `.drafts/`) + buffer + forced exhaust (no further retry) | (helper already ++); exhausted → status transition; on successful salvage the reason goes success/decline rather than timeout | `direct_attempt` |
+| `agent_declined` | Builder | agent writes `-- decline: needs_decomposition` (unified directive system, 2026-05-10) | terminal exit (does not buffer itself) | **attempts++**; at SHELVE goes to review (entry_kind routing removed with v33; the Formalizer splits within its own session, so in practice this reason is only used by mint's `library_sufficient` and Librarian declines) | `direct_attempt` |
+| `agent_infeasible` | Builder + Backward | agent writes `-- decline: unprovable` (incl. counterexample; formerly `parent_type_infeasible`) | terminal exit (does not buffer itself) | **attempts++** + goal `disproved` + `_propagate_disproved` | `infeasible_sub` (projected to the parent goal, not to itself; filter `_NON_AGENT_REASONS` excludes self) |
+| `parent_needs_fix` | Builder + Backward | agent writes `-- decline: return_to_parent` (with a concrete fix hint: which hypothesis is missing / which structure to swap) | terminal exit (does not buffer itself) | **attempts++** + goal `dead` + `_propagate_dead`; description projected into the parent context's fix hint section | `infeasible_sub` (as above; the renderer uses `failure_reason` to distinguish fix-hint vs counterexample) |
+| `agent_shelved` | Builder + Backward | agent writes `-- decline: shelve` (no counterexample, pure give-up) | terminal exit (does not buffer itself) | **attempts++** + `_enqueue_strategist_review` (to pending_strategist_review, no propagation) | `infeasible_sub` (as above; soft signal, left for future Strategist review) |
+| `no_nl_correspondence` | Formalizer (intake sentinel or work-turn `-- decline:`) | NL-first (2026-07-25): the goal, or a sub-goal that would have to be invented, maps to no Programme Proof step — don't invent mathematics, hand it up | terminal exit (does not buffer itself) | **attempts++** + to pending_strategist_review, no propagation (the Strategist argues it to closure in the Proof or retires the claim) | not projected (`agent_visible=False`; the decline note reaches the Strategist via review context) |
+| `agent_stuck_thinking` | Formalizer (`_retry.py`) | watchdog rules a thinking trap (rc=128); still no terminal output after fresh-sid takeover | buffer + keep retrying (the takeover itself costs no budget) | (helper already ++); exhausted → status transition. **Note: not yet in the `failures.py` REGISTRY** (traits all take defaults; pending fix) | `direct_attempt` |
+| `agent_bailed` | Backward (rescue option d) | during the watchdog wall_cap → rescue spawn, the agent judges itself unlikely to succeed and exits after writing `_progress.md` to attempts_dir (no patch.lean / no split) | terminal exit (does not buffer itself) | **attempts++** + shelve only past SHELVE (goal stays open / attempting, re-dispatched next time); the outer wrapper persists `_progress.md` to `.drafts/backward_g<id>.md` for the next cold spawn | `direct_attempt` |
+| `goal_no_longer_open` | Backward | race detected at parse stage: lake build finished but the goal is already proved/shelved | terminal exit (does not buffer itself) | generic `failed`/attempts++ (dispatcher writes the final dead_attempt) | not projected (`agent_visible=False`) |
+| `subgoal_slug_collision` | Backward | pre-placement `proof_store` ownership guard: the sub-goal's `L_<slug>.lean` path is already owned by a **different** goal (cross-batch / re-decomposition collisions missed by `_resolve_slug_collisions`) → structural write refusal, prevents clobber-then-orphan DB↔file drift | terminal exit (does not buffer itself, wrote no files) | generic `failed`/attempts++ | `direct_attempt` |
+| `forward_no_new_goal` | Forward | no `new_<slug>.lean` / file unreadable / elaborate failure / metadata missing (`Forward rationale:` etc.) / slug collides with Manifest statement vocab; an agent decline `library_sufficient` goes through `agent_declined` terminal instead | buffer + retry (elaborate stderr in `retry_context`, budget=FORWARD_RETRY_BUDGET=3) | Forward cascade: touches no goal, writes the inject decision outcome (infra failure re-enqueues the same decision_id, `763179f`) | not projected (target=Problem; goal_history projection only reads Goal-target rows) |
+| `quota_exhausted` | Builder + Backward | rc=126 (gemini quota exhausted) | early return, does not buffer itself, no budget spent | **no attempts++**, 30s cooldown, not in CONSEC | not projected (infra) |
+| `missing_dep` | Builder + Backward | rc=127 (CLI missing) | early return, does not buffer itself, no budget spent | **no attempts++**, 30s cooldown, not in CONSEC | not projected (infra) |
+| `spawn_fast_fail` | Builder + Backward | rc≠0 and wall-clock < 10s (claude.exe crash / cwd) | early return, does not buffer itself, no budget spent | **no attempts++**, 30s cooldown, CONSEC=10 triggers daemon exit rc=2 | not projected (infra) |
+| `system_killed` | Formalizer (`_spawn_failure`) | NTSTATUS-shaped rc ≥ 0x40000000 (0xC0000409 fail-fast / 0xC0000142 DLL-init / 0x40010004 debugger-terminate) or stderr with a Bun crash banner — the OS/CLI runtime killed the spawn, not agent behavior (2026-08-08 post-mortem: six such rcs went through `agent_rc_nonzero`, burned attempts, and pushed five healthy goals into review) | early return, does not buffer itself, no budget spent | **no attempts++**, 30s cooldown, not in CONSEC | not projected (infra, death note) |
+| `gateway_unreachable` | Builder + Backward (1db4e8c) | worker thread got URLError / OSError(ECONNREFUSED/ECONNRESET/ENETUNREACH/ETIMEDOUT) / Windows WinError 10061/10054/64 — gateway HTTP transport completely unreachable | early return (dispatcher side, never enters the helper) | **no attempts++**, 30s cooldown, CONSEC=8 triggers daemon exit rc=2 (no infinite retry when the gateway is permanently dead) | not projected (infra) |
+| `transient_timeout` | Builder + Backward (post-pilot fix) | worker thread got a `TimeoutError` (`$/lean/rpc/call` timeout at lsp_client.py:169, slot-contention RPC starvation, etc.) | early return (dispatcher side) | **no attempts++**, 30s cooldown, **not in CONSEC** (slot contention is healthy overload, not a dead gateway; counting it would make the circuit breaker misfire under a 244-problem benchmark) | not projected (infra) |
+| `verify_infra` | Forward mint arm + Backward (2026-08-12) | `lifecycle.verify_file` returns `{"error": …, "transient": True}` — the gateway **does respond** but returns 5xx and outlasts the ~50s retry budget; most common: slots vanishing under a live session (`no slot claimed`) | early return (pipeline side) | **no attempts++**, 30s cooldown, **not in CONSEC** (the process is alive and talking; also these **arrive in clusters** — three in four minutes on 08-11, two in five minutes on 08-12 — counting them would falsely kill the daemon) | not projected (infra; `agent_visible=False` — "your slot disappeared" has no teaching value) |
+| `framework_verify_error` | Forward mint arm + Backward (2026-08-12) | the other half of the same `error`: `transient=False` — 4xx, target file missing, malformed response. Retry cannot fix it (the framework asked for the wrong thing) | early return (pipeline side) | **no attempts++**, no cooldown, not in CONSEC | not projected (infra) |
+| `superseded` (legacy) | pre-collapse Verify worker | no new rows produced after verify-collapse; historical DBs only | n/a | n/a | not projected |
 
-**Framework-level reasons（罕見、framework / DB / FS race 觸發）**：
+**Framework-level reasons** (rare; triggered by framework / DB / FS races):
 
-| failure_reason | 出處 | 觸發條件 |
+| failure_reason | origin | trigger |
 |---|---|---|
-| `goal_not_found` | Builder + Backward | `db.get_goal(goal_id)` 回 None（DB / dispatch race） |
-| `problem_not_found` | dispatcher（#125） | queue row 的 problem 無可載入的 Manifest（daemon 啟動後才 `init` 的 late-init 題）→ 30s target cooldown，防 1ms crashloop |
-| `lean_file_missing` | Builder | parent goal 的 `.lean` 在 disk 不存在 |
-| `missing_parent_stub` | Backward | 讀 parent lean 失敗（OSError） |
-| `parent_stub_not_decomposable` | Backward | skeleton 從 parent stub 抽不出簽名 |
-| `goal_no_longer_open` | Backward | 跑到中途 goal status 已非 `'open'`（race protection、_abort 前回滾寫入的檔） |
-| `unknown_kind` | dispatcher | `_run_pipeline` 收到非 Builder/Backward 的 task_kind（unreachable in current code、enum 完整性保留） |
-| `worker_exception` | dispatcher（v38, 2026-08-08） | worker thread 以**非 infra** 未攔截例外死亡：cascade 會對 Goal target 記一次 attempts++，此 forensic row 由 dispatcher 例外處理器當場補上（pipelines row 自 dispatch 起存在、FK 可寫），使增量必有證據；infra 分類（gateway_unreachable 等）不增 attempts 也不寫此 row |
+| `goal_not_found` | Builder + Backward | `db.get_goal(goal_id)` returns None (DB / dispatch race) |
+| `problem_not_found` | dispatcher (#125) | the queue row's problem has no loadable Manifest (a late-init problem `init`ed after daemon start) → 30s target cooldown, prevents a 1ms crashloop |
+| `lean_file_missing` | Builder | parent goal's `.lean` does not exist on disk |
+| `missing_parent_stub` | Backward | reading the parent lean failed (OSError) |
+| `parent_stub_not_decomposable` | Backward | skeleton cannot extract a signature from the parent stub |
+| `goal_no_longer_open` | Backward | mid-run the goal status is no longer `'open'` (race protection; `_abort` first rolls back written files) |
+| `unknown_kind` | dispatcher | `_run_pipeline` got a task_kind that is neither Builder nor Backward (unreachable in current code; kept for enum completeness) |
+| `worker_exception` | dispatcher (v38, 2026-08-08) | worker thread died of an uncaught **non-infra** exception: the cascade books one attempts++ against the Goal target, and this forensic row is written on the spot by the dispatcher's exception handler (the pipelines row exists since dispatch, so the FK is writable), so every increment has evidence; infra classifications (gateway_unreachable etc.) neither ++ attempts nor write this row |
 
-這些走 generic cascade（attempts++）、**event 不投影**（agent 看不到也不能改；
-`dead_attempts` 仍 INSERT 給 operator forensic）。例外：`missing_parent_stub` 有專屬分支
-——attempts++ 後**直接 shelved + 上拋**（不等門檻；stub 檔消失會造成 tight-loop 重派）。
+These go through the generic cascade (attempts++), **events not projected** (the agent can neither
+see nor act on them; `dead_attempts` is still INSERTed for operator forensics). Exception:
+`missing_parent_stub` has a dedicated branch — after attempts++ it goes **straight to shelved +
+propagates up** (no threshold wait; a vanished stub file causes a tight-loop re-dispatch).
 
-**Notes**：
-- rc → reason 有**兩套映射**：pipeline 內 `_spawn_failure`（124→`agent_timeout`、NTSTATUS/runtime crash→`system_killed`、<10s→`spawn_fast_fail`、**其餘→`unclassified_spawn_failure`,不計 attempts**）與 channel 級 `failures.rc_to_reason`（124→`transient_timeout`、125/128/未知→`spawn_fast_fail`；Strategist/Adversary 用）。rc 語彙另含 125 stale-session、128 stuck-thinking、129 shutdown（`llm/base.py` `SpawnRC`）。
-- `agent_declined` 是跨 pipeline 共用 string：mint 的 `library_sufficient`、Librarian 的「無法機械化」都走它。split 臂沒有此 escape（退出用 `unprovable` / `return_to_parent` / `shelve`）。
-- `lake_build_error` 在 prove 臂來自 patch build 失敗；在 split 臂來自 strategy 組裝 batch build 失敗。directive 詞彙設計史見 `docs/archive/design/decline_directives.md`。
+**Notes**:
+- rc → reason has **two mappings**: the in-pipeline `_spawn_failure` (124→`agent_timeout`, NTSTATUS/runtime crash→`system_killed`, <10s→`spawn_fast_fail`, **everything else→`unclassified_spawn_failure`, no attempts counted**) and the channel-level `failures.rc_to_reason` (124→`transient_timeout`, 125/128/unknown→`spawn_fast_fail`; used by Strategist/Adversary). The rc vocabulary also includes 125 stale-session, 128 stuck-thinking, 129 shutdown (`llm/base.py` `SpawnRC`).
+- `agent_declined` is a string shared across pipelines: mint's `library_sufficient` and the Librarian's "cannot be mechanized" both use it. The split arm has no such escape (it exits via `unprovable` / `return_to_parent` / `shelve`).
+- `lake_build_error` comes from patch build failure on the prove arm; on the split arm, from strategy assembly batch build failure. Design history of the directive vocabulary: `docs/archive/design/decline_directives.md`.
 
-**Strategist / Librarian failure_reasons（非 Goal-target、不進上面的 master table）**：
+**Strategist / Librarian failure_reasons** (not Goal-target; not in the master table above):
 
-這兩個 pipeline 的 target 不是一般 Goal，cascade 與 event 投影都跟 Builder/Backward 不同：失敗**不**動 sub-goal、**不**投影到任何 Context.md（target≠Goal、`events.py` 只看 Goal-target rows）。
+These two pipelines' targets are not ordinary Goals; cascade and event projection both differ from Builder/Backward: failures do **not** touch sub-goals and do **not** project into any Context.md (target≠Goal; `events.py` only reads Goal-target rows).
 
-Strategist（`Tooling/pipeline/strategist.py`）：
-- `strategist_schema_invalid` — `decision.json` 解析過但 `verify_decisions` / 提案包機械檢查不過；同 session resume 修訂，輪數上限 `strategist.verify_retry`（預設 6，與 Adversary 反駁共用計數）
-- `provider_misconfigured`（rc 123，2026-07-30 隨 Antigravity provider 加入）— provider 結構性不可用：CLI 不認的 model slug、憑證被拒（Gemini CLI 個人層 2026-06-18 停服）、或工具因缺 `permissions.allow` 規則被 headless 自動拒絕。**`agy` 對後者回 `status: SUCCESS` 但什麼都沒寫**，所以 provider 自己驗 attempts dir 有無產物，無產物即回 123。traits：`provider_infra`（不燒 goal attempts——數學沒失敗）、`cooldown_scope='kind'`（整條通道壞掉不是單一 target）、無 death note（讀者是 operator 不是 agent）。**重試治不了它**——修 `~/.gemini/antigravity-cli/settings.json` 或 model 設定；授權細節全記在 `Tooling/llm/antigravity_cli.py` 檔頭
-- `strategist_noop` — Strategist 合法地決定 Noop（當下無事可做）；非錯誤、記錄用
-- `strategist_proposal_rejected` — Adversary 於修訂輪用盡後仍反駁：提案+全部批評存 `programme_revisions`（status='rejected'）、session 拋棄、下一 wake 只帶一行被拒紀錄盲重推；target cooldown 節流連續拒絕循環；不 burn root.attempts
-- **每條丟棄路徑都留紀錄**（v34 `programme_revisions.discard_reason`）：Adversary 反駁 / 提案包機械檢查駁回 / 修訂 spawn rc≠0 / 修訂輪交不出 decision.json / 判官 spawn 掛或兩次交不出裁決——全部寫 `status='rejected'` 列並記下是哪條通道丟的；`rejection_notice` 把該理由帶進下一 wake 並明說「該批未派出」。理由：`_plan.md` 在 spawn 一結束就落盤（判決之前），被丟棄的批次會留下宣稱已派的筆記（SG 07-29 燒掉兩個 wake）。提案文本在早期 verify 駁回時尚未讀進記憶體，`_discard_proposal` 退而從 attempts dir 讀 `proposal.md`
-- 另含共用的 `agent_no_output`。**Adversary 通道**：judge spawn 的 **infra rc**（`is_infra`）先在 `review` 內重試 `INFRA_SPAWN_RETRIES` 次（15s backoff），耗盡才回 `rc_to_reason` 的 infra reason——provider 的一次抽風不該作廢 Strategist 已完成的提案（#132，SG 07-30 實測 6.2min/28k tokens）；`verdict.json` 缺失或解析不過走**獨立**的 `VERDICT_TRIES` 預算（判官兩次交不出裁決＝wake 級失敗）→ `agent_no_output`。同族修法也套在 strategist 修訂輪 spawn 上。無 Adversary 專屬 reason string
+Strategist (`Tooling/pipeline/strategist.py`):
+- `strategist_schema_invalid` — `decision.json` parses but fails `verify_decisions` / the proposal-package mechanical checks; revised in a same-session resume, round cap `strategist.verify_retry` (default 6, counter shared with Adversary rebuttals)
+- `provider_misconfigured` (rc 123, added 2026-07-30 with the Antigravity provider) — the provider is structurally unusable: a model slug the CLI does not recognize, rejected credentials (Gemini CLI personal tier discontinued 2026-06-18), or a tool auto-denied headlessly for lack of a `permissions.allow` rule. **For the latter, `agy` returns `status: SUCCESS` while writing nothing**, so the provider itself checks the attempts dir for artifacts and returns 123 when there are none. Traits: `provider_infra` (does not burn goal attempts — the math did not fail), `cooldown_scope='kind'` (a broken channel is not a single target), no death note (the reader is the operator, not an agent). **Retry cannot fix it** — fix `~/.gemini/antigravity-cli/settings.json` or the model config; authorization details are all recorded in the header of `Tooling/llm/antigravity_cli.py`
+- `strategist_noop` — the Strategist legitimately decides Noop (nothing to do right now); not an error, record-keeping only
+- `strategist_proposal_rejected` — the Adversary still objects after revision rounds are spent: proposal + all critiques stored in `programme_revisions` (status='rejected'), session discarded, next wake carries only a one-line rejection record and re-derives blind; target cooldown throttles consecutive rejection loops; does not burn root.attempts
+- **Every discard path leaves a record** (v34 `programme_revisions.discard_reason`): Adversary rebuttal / proposal-package mechanical rejection / revision spawn rc≠0 / revision round failing to deliver decision.json / judge spawn dying or twice failing to deliver a verdict — all write a `status='rejected'` row noting which channel discarded it; `rejection_notice` carries the reason into the next wake and states explicitly that the batch was never dispatched. Rationale: `_plan.md` lands on disk the moment the spawn ends (before the verdict), so a discarded batch leaves notes claiming it was dispatched (SG 07-29 burned two wakes). When an early verify rejection happens before the proposal text was read into memory, `_discard_proposal` falls back to reading `proposal.md` from the attempts dir
+- Also shares `agent_no_output`. **Adversary channel**: judge spawn **infra rc** (`is_infra`) is first retried inside `review` up to `INFRA_SPAWN_RETRIES` times (15s backoff); only when spent does it return the infra reason from `rc_to_reason` — a single provider hiccup must not void a proposal the Strategist already finished (#132, SG 07-30 measured 6.2min/28k tokens); a missing or unparseable `verdict.json` uses the **independent** `VERDICT_TRIES` budget (the judge twice failing to deliver a verdict = wake-level failure) → `agent_no_output`. The same family of fixes also applies to strategist revision-round spawns. No Adversary-specific reason string
 
-Librarian（`Tooling/pipeline/librarian/`）：失敗走 `core/librarian_sched.py` `_advance_librarian_chain` 的 **per-unit fail-count**（`librarian_fail_counts`、跨 restart 持久）；連續失敗超過 `LIBRARIAN_MAX_CHAIN_RETRIES`（=2，即第 3 次）→ 該 unit **STALL**（不再 refill、不動 goal、無 shelve）。`librarian_file_busy` 不計數（另一 worker 正持有該檔）。
-- **migrate**：`librarian_migrate_not_mechanical`（需 LLM、非純機械 relabel）/ `librarian_migrate_hole_unfilled`（relabel 後仍有 sorry 洞）/ `librarian_migrate_build_failed`（搬出的檔 build 不過）
-- **classify**：`librarian_not_classified`（前置 classify 未完成）/ `librarian_schema_invalid`（classify agent 輸出 schema 不合）/ `librarian_bad_work_kind`（dispatch 收到未知 work_kind）/ `librarian_missing_prompt`
-- **cleanup**：`librarian_cleaned_build_failed`（精修後 build 不過）/ `librarian_warnings_remain`（build 過但有殘留 warning、Mathlib-PR 零-warning bar 未達；最常見卡點 = unused hypothesis binder + line-length，cleanup 須機械/agentic 清到零）/ `librarian_verify_failed` / `librarian_gate_failed`（per-file Mathlib-PR gate 未過）/ `librarian_axiom_violation`（**post-rewrite 公理閘**：cleanup 的 LLM 改寫段（simplify / near-dup bridge / audit 整檔重寫）是 migrate 公理閘之後唯一能改變 decl 公理集的階段，收尾對最終文本重跑 per-decl `#print axioms ⊆ whitelist`；`axiom` 宣告一律 hard-fail）
-- **bridge**：`librarian_bridge_not_mechanical` / `librarian_no_root` / `librarian_axiom_violation`（deliverable 分支：cite_drop 之後對每個 harvested 檔跑 per-decl 公理閘——deliverable 題無 root 可重推、builds-only 蓋不到公理面；classic 題由 Gate B 的 root 閉包 probe 覆蓋）
-- **跨檔 / upstream**：`librarian_file_busy`（不計數）/ `librarian_file_owned_by_other` / `librarian_integrity_error`（DB↔檔 drift）/ `librarian_needs_upstream_unresolvable` / `librarian_reopened_upstream`
-- **共用**：`agent_error`（Librarian agent spawn rc≠0）/ `agent_no_output` / `agent_declined`（agent 自評該 unit 無法機械化）
+Librarian (`Tooling/pipeline/librarian/`): failures go through the **per-unit fail-count** of `core/librarian_sched.py` `_advance_librarian_chain` (`librarian_fail_counts`, persistent across restarts); consecutive failures beyond `LIBRARIAN_MAX_CHAIN_RETRIES` (=2, i.e. the 3rd) → the unit **STALLs** (no more refill, no goal touched, no shelve). `librarian_file_busy` does not count (another worker holds the file).
+- **migrate**: `librarian_migrate_not_mechanical` (needs LLM, not a purely mechanical relabel) / `librarian_migrate_hole_unfilled` (sorry holes remain after relabel) / `librarian_migrate_build_failed` (the moved file does not build)
+- **classify**: `librarian_not_classified` (prerequisite classify incomplete) / `librarian_schema_invalid` (classify agent output fails schema) / `librarian_bad_work_kind` (dispatch got an unknown work_kind) / `librarian_missing_prompt`
+- **cleanup**: `librarian_cleaned_build_failed` (does not build after polish) / `librarian_warnings_remain` (builds but warnings remain, Mathlib-PR zero-warning bar unmet; most common sticking points = unused hypothesis binder + line-length; cleanup must clear to zero mechanically/agentically) / `librarian_verify_failed` / `librarian_gate_failed` (per-file Mathlib-PR gate failed) / `librarian_axiom_violation` (**post-rewrite axiom gate**: cleanup's LLM rewrite stages (simplify / near-dup bridge / audit whole-file rewrite) are the only stage after migrate's axiom gate that can change a decl's axiom set; at the end, per-decl `#print axioms ⊆ whitelist` is re-run on the final text; an `axiom` declaration is always a hard-fail)
+- **bridge**: `librarian_bridge_not_mechanical` / `librarian_no_root` / `librarian_axiom_violation` (deliverable branch: after cite_drop, run the per-decl axiom gate on every harvested file — deliverable problems have no root to re-derive from and builds-only does not cover the axiom surface; classic problems are covered by Gate B's root closure probe)
+- **cross-file / upstream**: `librarian_file_busy` (not counted) / `librarian_file_owned_by_other` / `librarian_integrity_error` (DB↔file drift) / `librarian_needs_upstream_unresolvable` / `librarian_reopened_upstream`
+- **shared**: `agent_error` (Librarian agent spawn rc≠0) / `agent_no_output` / `agent_declined` (the agent judges the unit cannot be mechanized)
 
-**Scholar（paper v2, D11）**：`scholar_no_query`（FetchPaper decision row 無 query——commit 端 bug 或 decision 被手改）/ `paper_unfetchable`（解析成功但無白名單可抓副本；精確請求（DOI/URL）寫進 decision `outcome_detail`、人工通道接手）。兩者不計 goal attempts；不投影是因 target=Problem（goal_history 只投 Goal-target row），非 reason 過濾。
+**Scholar (paper v2, D11)**: `scholar_no_query` (FetchPaper decision row has no query — commit-side bug or hand-edited decision) / `paper_unfetchable` (parse succeeded but no whitelisted copy to fetch; the precise request (DOI/URL) is written into the decision's `outcome_detail`, manual channel takes over). Neither counts goal attempts; the non-projection is because target=Problem (goal_history only projects Goal-target rows), not reason filtering.
 
-`daemon_shutdown`（`_retry.py`、rc=129）— daemon 收到關閉訊號時 in-flight retry 的收尾
-reason。**注意**：registry 目前標 `origin='framework'` 而非 infra，落 generic cascade
-——實際會 attempts++，與「關機不該燒 budget」的意圖不符（已知缺陷、待修 registry）。
+`daemon_shutdown` (`_retry.py`, rc=129) — the wrap-up reason for in-flight retries when the
+daemon receives a shutdown signal. **Note**: the registry currently marks it `origin='framework'`
+rather than infra, so it falls into the generic cascade — it actually does attempts++, contrary
+to the intent that shutdown should not burn budget (known defect; registry fix pending).
 
 ---
 
-## 3. Event types（goal_history v1）
+## 3. Event types (goal_history v1)
 
-`Tooling/agent/context.py` 的 `compile_context` 經 `events.py` 投影層產生 event 物件、注入到
-`## Goal history` umbrella section（refactor 進行中、見 `goal_history_unified.md`）。
+`compile_context` in `Tooling/agent/context.py` produces event objects through the `events.py`
+projection layer and injects them into the `## Goal history` umbrella section (refactor in
+progress, see `goal_history_unified.md`).
 
-| event_type | DB 來源 | digest 結構 | 注入到誰的 Context.md | actionability |
+| event_type | DB source | digest structure | injected into whose Context.md | actionability |
 |---|---|---|---|---|
-| `direct_attempt` | `dead_attempts` where `target_kind='Goal'` AND `failure_reason NOT IN _NON_AGENT_REASONS` | `failure_reason` + 截斷 `failure_detail` + 簡短 PROPOSAL excerpt | `dead_attempts.target_id`（自己這個 goal） | must-see |
-| `verify_failure` | `dead_attempts` where `target_kind='Strategy'`（pre-collapse row、verify-collapse 後不再產生） | strategy 的 `proposal_md` 截斷 + lake stderr 摘要 | `strategies.goal_id` | must-see |
-| `dead_strategy` | `strategies` where `status='dead'` AND `proposal_md != ''` AND ≥1 linked sub-goal | `proposal_md` 截斷 + 該 strategy 拆出的 sub-goal slug 列表 | `strategies.goal_id` | must-see |
-| `infeasible_sub` | `dead_attempts` where `failure_reason IN ('agent_infeasible','parent_needs_fix','agent_shelved')` JOIN `strategy_subgoals` 找 parent | sub-goal slug + `failure_reason` tag + 摘要（`_extract_root_cause` 抽 `## Root cause` / `## Fix hint` / `## Counterexample`）| **parent goal id**（不是失敗的 sub 自己） | must-see |
-| (filtered out) | `dead_attempts` where `failure_reason IN _NON_AGENT_REASONS` | — | — | 不投影 |
+| `direct_attempt` | `dead_attempts` where `target_kind='Goal'` AND `failure_reason NOT IN _NON_AGENT_REASONS` | `failure_reason` + truncated `failure_detail` + short PROPOSAL excerpt | `dead_attempts.target_id` (this goal itself) | must-see |
+| `verify_failure` | `dead_attempts` where `target_kind='Strategy'` (pre-collapse rows; no longer produced after verify-collapse) | truncated strategy `proposal_md` + lake stderr summary | `strategies.goal_id` | must-see |
+| `dead_strategy` | `strategies` where `status='dead'` AND `proposal_md != ''` AND ≥1 linked sub-goal | truncated `proposal_md` + list of sub-goal slugs the strategy split out | `strategies.goal_id` | must-see |
+| `infeasible_sub` | `dead_attempts` where `failure_reason IN ('agent_infeasible','parent_needs_fix','agent_shelved')` JOIN `strategy_subgoals` to find the parent | sub-goal slug + `failure_reason` tag + summary (`_extract_root_cause` extracts `## Root cause` / `## Fix hint` / `## Counterexample`) | **parent goal id** (not the failed sub itself) | must-see |
+| (filtered out) | `dead_attempts` where `failure_reason IN _NON_AGENT_REASONS` | — | — | not projected |
 
-**`_NON_AGENT_REASONS`** — 不投影 reason set。**推導自 `failures.py` REGISTRY 中
-`agent_visible=False` 的全體**（events.py 只 re-export、SQL `NOT IN` 引用），現含 12 條：
-- `spawn_fast_fail` — infra 故障（claude.exe crash / cwd / quota）
-- `agent_infeasible` / `parent_needs_fix` / `agent_shelved` — 三條 cascade-up decline 改投成 `infeasible_sub`（到 parent context）、不在自己 goal 的 direct_attempts 重複出現
-- `no_nl_correspondence` — decline note 走 review context 呈 Strategist、不進 goal history
-- `goal_not_found`, `problem_not_found`, `lean_file_missing`, `missing_parent_stub`, `parent_stub_not_decomposable`, `goal_no_longer_open`, `unknown_kind` — framework / DB / FS race、agent 看不到也不能改
+**`_NON_AGENT_REASONS`** — the set of non-projected reasons. **Derived from the full set of
+`agent_visible=False` entries in the `failures.py` REGISTRY** (events.py only re-exports; the SQL `NOT IN` references it), currently 12 entries:
+- `spawn_fast_fail` — infra fault (claude.exe crash / cwd / quota)
+- `agent_infeasible` / `parent_needs_fix` / `agent_shelved` — the three cascade-up declines are re-projected as `infeasible_sub` (into the parent context); not repeated in the failing goal's own direct_attempts
+- `no_nl_correspondence` — the decline note reaches the Strategist via review context, not goal history
+- `goal_not_found`, `problem_not_found`, `lean_file_missing`, `missing_parent_stub`, `parent_stub_not_decomposable`, `goal_no_longer_open`, `unknown_kind` — framework / DB / FS races; the agent can neither see nor act on them
 
-**audience 規則的兩個 axis**（不再 kind-gate Builder/Backward）：
+**The two axes of the audience rules** (no more kind-gating on Builder/Backward):
 
-1. **Target locality** — event 的 target 跟當下 dispatch goal 的關係（自己 / 自己的 strategy / parent 的 sub）
-2. **Actionability** — must-see / on-demand / 不投影
+1. **Target locality** — the event target's relation to the currently dispatched goal (self / own strategy / parent's sub)
+2. **Actionability** — must-see / on-demand / not projected
 
-詳細 axis 設計、kind-gating 為何能消失、實作 mapping → `docs/archive/goal_history_unified.md` §「Audience 規則」。
+Detailed axis design, why kind-gating could disappear, implementation mapping → `docs/archive/goal_history_unified.md` §"Audience rules".
 
-**Edge cases**：
+**Edge cases**:
 
-- **`dead_strategy` ↔ `verify_failure` 重疊**：同一條 dead strategy 可能在兩處都有對應 row（status='dead' + dead_attempts target_kind='Strategy'）。投影層 dedupe — `dead_strategy` 取得的 strategy id 集合先扣掉 `verify_failure` 涵蓋的（`compile_context` 算 exclude 集 + `events.dead_strategies` 的 SQL `NOT IN`；只在 audience 含 verify_failure 時生效）。
-- **`agent_infeasible` 雙身分**：DB row 跟其他 direct_attempt 同形（`target_kind='Goal'`、`target_id=失敗的 sub-goal`），但 actionable signal 在 parent。投影層判斷 `failure_reason == 'agent_infeasible'` 改投成 `infeasible_sub`、`target_goal` 改 parent。沒 parent（root 自己 infeasible，理論上不可能）→ drop。
-- **Empty bucket**：某 event_type 在某 goal 為空 → sub-section header 不寫、companion 檔不寫（避免空檔污染 sandbox）。
+- **`dead_strategy` ↔ `verify_failure` overlap**: the same dead strategy can have a corresponding row in both places (status='dead' + dead_attempts target_kind='Strategy'). The projection layer dedupes — the strategy-id set for `dead_strategy` first subtracts those covered by `verify_failure` (`compile_context` computes the exclude set + SQL `NOT IN` in `events.dead_strategies`; effective only when the audience includes verify_failure).
+- **`agent_infeasible` dual identity**: the DB row looks like any other direct_attempt (`target_kind='Goal'`, `target_id=the failed sub-goal`), but the actionable signal sits at the parent. The projection layer checks `failure_reason == 'agent_infeasible'` and re-projects as `infeasible_sub` with `target_goal` set to the parent. No parent (root itself infeasible, theoretically impossible) → drop.
+- **Empty bucket**: an event_type empty for a goal → no sub-section header, no companion file (avoids empty files polluting the sandbox).
 
 ---
 
-## 4. Crash-window 補償對照表（task #11、2026-07-04 盤點）
+## 4. Crash-window compensation table (task #11, 2026-07-04 inventory)
 
-狀態傳播非交易性（每個 db helper 自帶 commit；§13 拒絕兩段式）。本表 = 「daemon 死在
-commit 邊界之間會留下什麼 × 誰救」的窮舉結論；完整逐窗口證據見盤點記錄（session task #11）。
-補償層：**R**=startup `recovery.recover_at_startup`、**T**=per-tick `reconcile_stuck_states`、
-**B**=`db.reconcile_settled_inject_outcomes`、**S**=`consistency.consistency_sweep`
-（`asterism drift-check` 第二層；`repair_unambiguous` 在 R 內自動修無歧義子集）、
-**G**=root integrity gate + `proof_store.inventory`。
+State propagation is non-transactional (every db helper commits on its own; §13 rejected
+two-phase). This table = the exhaustive conclusion of "what does a daemon dying between commit
+boundaries leave behind × who rescues it"; full per-window evidence in the inventory record
+(session task #11).
+Compensation layers: **R**=startup `recovery.recover_at_startup`, **T**=per-tick `reconcile_stuck_states`,
+**B**=`db.reconcile_settled_inject_outcomes`, **S**=`consistency.consistency_sweep`
+(second layer of `asterism drift-check`; `repair_unambiguous` auto-repairs the unambiguous
+subset inside R), **G**=root integrity gate + `proof_store.inventory`.
 
-| 窗口類 | 半套狀態 | 處置 |
+| Window class | Half-done state | Handling |
 |---|---|---|
-| A1/A4 verify promote 檔先行 | alias 檔寫了、strategy 未 succeeded / backup 未清 | R（backup 還原/清理）+ 重新 ready_for_verify ✅ |
-| A2 succeeded↔proved 之間 | succeeded strategy + 未 proved goal | R 重開重解（dedupe 收斂）；**S 謂詞** `succeeded_strategy_unproved_goal` 使其可見 |
-| A3/F3/F4 sibling sweep / cascade 半途 | terminal goal 下殘留 live strategy、殘活/殭屍子樹 | **R+S**：`repair_unambiguous` 補完 cascade 欠的那一步（proved→superseded、killed→dead、走 checked mutator）；`stalled` 無合法邊、report-only；殭屍樹由 `unreachable_alive_goal` 謂詞可見 |
-| B1 revival 檔寫了未 flip | shelved goal 檔=alias 非 stub | **已根治**：`_revive_shelved_alias` 冪等化（只認自己筆跡：本 canonical 的 import+apply 委派）→ 續跑 build-verify+flip；S 謂詞 `revival_pending` 監測 |
-| C1 rollback 半途 | 部分還原 | gate 重跑收斂；bisect 可能多殺一條上游良民（明文接受、代價=一次 re-Backward）|
-| D1-D6 backward 放置各窗口 | 有檔無 row / 半 INSERT / 佔位 strategy | R（half-baked 清理+orphan sweep+redispatch）✅；D2 殭屍 row 由 S 可見；D6 bulk-dead 的 inject outcome 由 B 補 |
-| E1-E5 forward 放置各窗口 | 有檔無 row / 未 detached / 無 backlink | R sweep+redispatch 收斂（可能重複鑄造、slug 撞則失敗回填）；E2 殭屍由 S `unreachable_alive_goal` 可見 |
-| F1/F2 inject outcome/batch-wake 遺失 | terminal 但 decision NULL / wake 丟失 | B 補 outcome ✅；wake 由 routine interval 兜底 ♻️ |
-| F5/F6 enqueue 遺失 | pending_review / Forward 重排無 queue row | T 每 tick 補 ✅（T 的設計目的）|
-| G1-G3 收割/queue 窗口 | worker commit 完成未 cascade / queue row 丟 | R 全套；queue 內容全部可自 durable state 重導出（架構性保證）✅ |
-| G2 attempts>dead_attempts | 帳面 drift | **明文接受**：attempts 是 threshold SoT 且該 LLM call 真發生過；dead_attempts 純 forensic |
-| H1 programme_revisions 寫入（v30） | rejection/pass row 與 batch link / PROGRAMME.md render 之間 | **未盤點**——依維護規則欠一次窗口分析（render 可自 DB 重導出、風險低；rejection row 半套待驗證） |
-| H2 problems.state FSM（v29） | problem transition 與連動寫入之間 | **未盤點**——`apply_problem_transition` 是唯一 mutator，crash 窗口待分析 |
-| H3 Delegate 開組序列（v35） | group INSERT → decision row → `opened_by` 回填 → 錨轉 attempting → 新組席位 enqueue，各步自帶 commit | 部分有救：席位丟失由 T1 兜底（新組鐘 NULL、一個 interval 內被撈）；「組已終態但 Delegate outcome NULL」由 **B**（`reconcile_settled_inject_outcomes` 的 group 分支，有測試）補。「有組無 opened_by」「錨已轉但 decision 未落」**待盤點** |
-| H4 ReturnToParent 序列（v35） | decision row → 錨 shelve+級聯 → `groups.set_status('returned')`（連鎖填父組 outcome + batch-done enqueue） | 同 H3：outcome 側由 B 補；中段半套**待盤點** |
-| H5 子組輕量 Ingest（v35） | `set_status('delivered')` 單寫+commit | 窗口極窄；outcome 側由 B 補 ✅ |
-| H6 charter 單一副本 | charter 只存 `groups` 表、無檔案側鏡像 | **明文接受**：不屬 proofs/ chokepoint 管轄、drift-check 不覆蓋；DB 即 SoT |
-| E 類補註 | mint 已改以 Formalizer kind 重排 | E1-E5 的救援結論不變，列名對應 forward 放置路徑 |
+| A1/A4 verify promote, file first | alias file written, strategy not succeeded / backup not cleared | R (backup restore/cleanup) + re-ready_for_verify ✅ |
+| A2 between succeeded↔proved | succeeded strategy + goal not proved | R reopens and re-solves (dedupe converges); **S predicate** `succeeded_strategy_unproved_goal` makes it visible |
+| A3/F3/F4 sibling sweep / cascade midway | live strategies left under a terminal goal, half-alive/zombie subtrees | **R+S**: `repair_unambiguous` completes the step the cascade owed (proved→superseded, killed→dead, via checked mutator); `stalled` has no legal edge, report-only; zombie trees visible via the `unreachable_alive_goal` predicate |
+| B1 revival file written, not flipped | shelved goal file=alias not stub | **Fixed for good**: `_revive_shelved_alias` made idempotent (only recognizes its own handwriting: this canonical's import+apply delegation) → resumes build-verify+flip; S predicate `revival_pending` monitors |
+| C1 rollback midway | partial restore | gate re-run converges; bisect may kill one extra upstream innocent (accepted explicitly, cost = one re-Backward) |
+| D1-D6 backward placement windows | file without row / half INSERT / placeholder strategy | R (half-baked cleanup + orphan sweep + redispatch) ✅; D2 zombie rows visible via S; D6 bulk-dead inject outcomes backfilled by B |
+| E1-E5 forward placement windows | file without row / not detached / no backlink | R sweep+redispatch converges (may re-mint; slug collision fails and backfills); E2 zombies visible via S `unreachable_alive_goal` |
+| F1/F2 inject outcome/batch-wake lost | terminal but decision NULL / wake lost | B backfills the outcome ✅; wakes backstopped by the routine interval ♻️ |
+| F5/F6 enqueue lost | pending_review / Forward re-dispatch without queue row | T backfills every tick ✅ (T's design purpose) |
+| G1-G3 harvest/queue windows | worker commit finished but no cascade / queue row lost | full R; queue contents entirely re-derivable from durable state (architectural guarantee) ✅ |
+| G2 attempts>dead_attempts | ledger drift | **Accepted explicitly**: attempts is the threshold SoT and the LLM call really happened; dead_attempts is pure forensics |
+| H1 programme_revisions writes (v30) | between rejection/pass row and batch link / PROGRAMME.md render | **Not inventoried** — owes one window analysis per the maintenance rule (render re-derivable from DB, low risk; half-done rejection rows unverified) |
+| H2 problems.state FSM (v29) | between problem transition and its companion writes | **Not inventoried** — `apply_problem_transition` is the only mutator; crash windows pending analysis |
+| H3 Delegate group-open sequence (v35) | group INSERT → decision row → `opened_by` backfill → anchor to attempting → new-group seat enqueue, each step committing on its own | Partly rescued: lost seats backstopped by T1 (new group clock NULL, picked up within one interval); "group terminal but Delegate outcome NULL" backfilled by **B** (the group branch of `reconcile_settled_inject_outcomes`, tested). "Group without opened_by" and "anchor transitioned but decision not landed" **pending inventory** |
+| H4 ReturnToParent sequence (v35) | decision row → anchor shelve+cascade → `groups.set_status('returned')` (chained: fill parent-group outcome + batch-done enqueue) | Same as H3: the outcome side backfilled by B; the half-done middle **pending inventory** |
+| H5 child-group lightweight Ingest (v35) | `set_status('delivered')` single write+commit | Window extremely narrow; outcome side backfilled by B ✅ |
+| H6 charter single copy | charter lives only in the `groups` table, no file-side mirror | **Accepted explicitly**: outside the proofs/ chokepoint's jurisdiction, not covered by drift-check; the DB is the SoT |
+| E-class addendum | mint is now re-enqueued under the Formalizer kind | E1-E5 rescue conclusions unchanged; row names map to the forward placement paths |
 
-維護規則：**新增傳播路徑（新的多 commit 序列）必須在本表加一行**、並三選一：指認既有救援層 /
-新增 S 謂詞 / 明文接受＋理由。（H1/H2 與 H3/H4 的中段窗口即依此規則掛帳、待盤點。）deferred：commit-fault-injection harness（對每條傳播入口掃
-「第 N 次 commit 後 crash」、跑三層 reconcile 斷言 sweep 全綠）——等 S 上線觀察殘餘再決定。
+Maintenance rule: **every new propagation path (a new multi-commit sequence) must add a row to
+this table**, plus one of three: name an existing rescue layer / add an S predicate / accept
+explicitly with rationale. (H1/H2 and the middle windows of H3/H4 are booked under this rule,
+pending inventory.) Deferred: a commit-fault-injection harness (for every propagation entry
+point, sweep "crash after the Nth commit" and assert all three reconcile layers sweep green) —
+wait until S has been live for a while and observe the residue before deciding.
 
 ---
 
-## 5. 跨參考
+## 5. Cross-references
 
-- 動態 flow（pipeline 完整流程含失敗）：`docs/data-flow.md`
-- goal_history v1 audience 規則 / 實作步驟設計史：`docs/archive/design/goal_history_unified.md`
-- reason registry（機器 SoT、traits 定義）：`Tooling/state/failures.py`
-- cascade 完整邏輯：`Tooling/state/transitions.py` `cascade_one`（dispatcher 僅 re-export）
-- session retry / postmortem 機制：`Tooling/pipeline/_retry.py`、`pipeline/_drafts.py`
+- Dynamic flow (full pipeline flow incl. failures): `docs/data-flow.md`
+- goal_history v1 audience rules / implementation design history: `docs/archive/design/goal_history_unified.md`
+- reason registry (machine SoT, trait definitions): `Tooling/state/failures.py`
+- full cascade logic: `Tooling/state/transitions.py` `cascade_one` (dispatcher only re-exports)
+- session retry / postmortem mechanism: `Tooling/pipeline/_retry.py`, `pipeline/_drafts.py`

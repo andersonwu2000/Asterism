@@ -1,462 +1,480 @@
-# Asterism — 資料流向
+# Asterism — Data Flow
 
-本檔講**動態**：dispatcher 一輪 tick 怎麼跑、每條 pipeline 的流程、跨 pipeline 共用的機制。
-靜態形狀（角色、不變量、schema）見 `docs/architecture.md`；失敗語彙的完整對照**只在**
-`docs/failure_modes.md` §2，本檔不重複。
+This doc covers **dynamics**: how one dispatcher tick runs, each pipeline's flow, and the
+mechanisms shared across pipelines. Static shape (roles, invariants, schema) is in
+`docs/architecture.md`; the full failure-vocabulary mapping lives **only** in
+`docs/failure_modes.md` §2 and is not repeated here.
 
-> 原寫於 2026-05-06；2026-07-29 對照代碼全面重寫（Formalizer 合併、research mode、常數校正）；
-> 2026-08-02 補討論小組樹（v35、席位 per-group）。
-> 文中數值皆為**程式預設**；本 repo 的覆寫在 `Asterism.yaml`，以它為準。
-
----
-
-## 0. 先讀：兩個全域慣例
-
-**編譯驗證走 LSP gateway，不是 cold `lake build`。**
-所有 pipeline 的 elaborate / build 驗證都打常駐的 LSP gateway warm worker（`lake serve`），
-省掉每次 5–15s 的 cold 啟動。少數例外**刻意** cold：dedupe 的 apply/isDefEq probe、每個
-problem 首次 dispatch 前的 Defs/Root pre-flight、Librarian 的異閉包 decl gate / 最終
-warn-gate / import-swap 後 rebuild-gate（warm slot 只服務同閉包整檔 gate）。
-
-**`dispatch.pool == gateway workers`，1:1 綁定 + own-slot 紀律（#118）。**
-worker 池大小等於 gateway 後端數、一起伸縮（實際格數再扣 RAM clamp 與 serve UI 保留的
-`gateway.interactive_slots`）。pipeline 每次 spawn 前 `/register` claim 一格，生命週期內
-的驗證都打**自己這格**（`verify_in_session` 帶 session token；共用分派在
-`_axiom.verify_on_own_slot`，無 token 時 fall back `verify_file`）。`verify_file` 是
-**borrow** 入口（gateway 挑格、會踢掉該格 warm 內容），只給非-pipeline context 用：主線程
-housekeeping（G1 revival、root integrity gate）、operator CLI、以及 spawn 前的框架 probe
-（hint 前置、skeleton 簽名、intake 前驗證）。borrow 挑格 unclaimed 優先。
+> Originally written 2026-05-06; fully rewritten against the code 2026-07-29 (Formalizer merge, research mode, constant corrections);
+> 2026-08-02 added the discussion-group tree (v35, per-group seats).
+> All numbers in this doc are **program defaults**; this repo's overrides live in `Asterism.yaml`, which is authoritative.
 
 ---
 
-## 1. 三層儲存
+## 0. Read first: two global conventions
 
-| 層 | 位置 | 壽命 | 用途 |
+**Compile verification goes through the LSP gateway, not cold `lake build`.**
+All pipelines' elaborate / build verification hits the resident LSP gateway warm workers (`lake serve`),
+saving the 5–15s cold startup each time. A few exceptions are **deliberately** cold: dedupe's
+apply/isDefEq probes, each problem's Defs/Root pre-flight before first dispatch, and the Librarian's
+foreign-closure decl gate / final warn-gate / post-import-swap rebuild-gate
+(warm slots only serve same-closure whole-file gates).
+
+**`dispatch.pool == gateway workers`, 1:1 binding + own-slot discipline (#118).**
+Worker pool size equals the gateway backend count and they scale together (actual slot count minus
+the RAM clamp and the `gateway.interactive_slots` reserved for the serve UI). Each pipeline claims
+one slot via `/register` before spawn; all verification during its lifetime hits
+**its own slot** (`verify_in_session` with session token; shared dispatch lives in
+`_axiom.verify_on_own_slot`, falling back to `verify_file` when there is no token). `verify_file` is
+the **borrow** entry (gateway picks a slot, evicting that slot's warm content), reserved for
+non-pipeline contexts: main-thread housekeeping (G1 revival, root integrity gate), operator CLI,
+and pre-spawn framework probes (hint pre-pass, skeleton signature, pre-intake verification).
+Borrow prefers unclaimed slots.
+
+---
+
+## 1. Three storage tiers
+
+| Tier | Location | Lifetime | Purpose |
 |---|---|---|---|
-| **暫存** | `.attempts/<pipeline_id>/` | 一次 spawn | agent 工作目錄；結束無條件 `rmtree` |
-| **跨 spawn** | `Problems/<p>/.drafts/<kind>_g<gid>.md` | 該 goal 證完前 | timeout 後留給下次的進度筆記 |
-| **永久** | DB + `proofs/L_*.lean` + `_strategy_s*.lean` + `Root.lean` | 與 problem 同壽 | 單一真實來源（SoT） |
+| **Ephemeral** | `.attempts/<pipeline_id>/` | one spawn | agent working dir; unconditionally `rmtree` on exit |
+| **Cross-spawn** | `Problems/<p>/.drafts/<kind>_g<gid>.md` | until that goal is proved | progress notes left after a timeout for the next attempt |
+| **Permanent** | DB + `proofs/L_*.lean` + `_strategy_s*.lean` + `Root.lean` | lives as long as the problem | single source of truth (SoT) |
 
-agent 寫進 `.attempts/<pid>/` 的所有東西（不論成敗），在 `rmtree` 前先打包進
-`dead_attempts.artifacts`。**DB 永遠是 SoT。**
+Everything the agent writes into `.attempts/<pid>/` (success or not) is packed into
+`dead_attempts.artifacts` before the `rmtree`. **The DB is always the SoT.**
 
 ---
 
-## 2. 一輪 dispatcher tick
+## 2. One dispatcher tick
 
-主迴圈每輪依固定順序跑：
+The main loop runs each tick in a fixed order:
 
-| # | 步驟 | 做什麼 |
+| # | Step | What it does |
 |---|---|---|
-| 1 | **cascade** | 收割上一輪完成的 pipeline outcome，套 goal/strategy 狀態轉移（詳 `failure_modes.md` §2） |
-| 2 | **verify housekeeping** | 組裝 sub-goal 全 proved 的 strategy、寫 alias 進 parent；跑 shelved-revival（§4） |
-| 3 | **post-proved gate** | root 剛 flip proved 的 problem：修 drift → root 完整性驗證 → 刷 TREE（§4 末段） |
-| 4 | **librarian refill** | opt-in 且已 Ingest 的 problem 排 Library 化工作（§3.5） |
-| 5 | **exit check** | `all_problems_ingested` ∧ 無 Librarian 待辦 ∧ 無 outstanding harvest → daemon 退出 |
-| 5b | **quota-wait gate** | 訂閱額度確認耗盡 → 睡到 resets_at、暫停一切 spawn（DB 側 trigger 照跑；budget 鐘扣除等待時間） |
-| 6 | **bfs refill** | open goal 一律排 `Formalizer`；`attempts ≥ SHELVE_THRESHOLD` 的改送 strategist review、不派工 |
-| 7 | **strategist triggers** | 排 routine（T1）/ stall（T4）喚醒；v35 起**席位 per-group**（`groups_needing_t1` / `groups_stalled`、queue 列 `target_kind='Group'`；legacy Problem 列仍認）；wake 只投給 `problems.state='active'`（WAKE_LEGALITY） |
-| 7b | **reconcile_stuck_states** | per-tick 安全網：孤兒 pending_review / NULL-outcome Inject 修復 |
-| 7c | **lease sweep** | 釋放 owner 已死**或**逾 TTL（6h）的 leased queue row（Windows 會重用 PID，雙判準） |
-| 8 | **spawn** | 有空格就 pop queue、派 pipeline 進 worker thread |
+| 1 | **cascade** | Harvest the previous tick's completed pipeline outcomes, apply goal/strategy state transitions (details in `failure_modes.md` §2) |
+| 2 | **verify housekeeping** | Assemble strategies whose sub-goals are all proved, write the alias into the parent; run shelved-revival (§4) |
+| 3 | **post-proved gate** | Problems whose root just flipped proved: fix drift → root integrity verification → refresh TREE (end of §4) |
+| 4 | **librarian refill** | Schedule Library-ization work for opt-in, already-Ingested problems (§3.5) |
+| 5 | **exit check** | `all_problems_ingested` ∧ no Librarian backlog ∧ no outstanding harvest → daemon exits |
+| 5b | **quota-wait gate** | Subscription quota confirmed exhausted → sleep until resets_at, pause all spawns (DB-side triggers still run; budget clock deducts the wait) |
+| 6 | **bfs refill** | Open goals always enqueue `Formalizer`; those with `attempts ≥ SHELVE_THRESHOLD` go to strategist review instead, no dispatch |
+| 7 | **strategist triggers** | Schedule routine (T1) / stall (T4) wakes; since v35 seats are **per-group** (`groups_needing_t1` / `groups_stalled`, queue rows `target_kind='Group'`; legacy Problem rows still recognized); wakes only delivered to `problems.state='active'` (WAKE_LEGALITY) |
+| 7b | **reconcile_stuck_states** | Per-tick safety net: repairs orphaned pending_review / NULL-outcome Inject |
+| 7c | **lease sweep** | Release leased queue rows whose owner is dead **or** past TTL (6h) (Windows reuses PIDs, hence both criteria) |
+| 8 | **spawn** | While slots are free, pop the queue and dispatch pipelines into worker threads |
 
-tick 尾端另有：`--once` 退出、idle 退出（無 in-flight、queue 空、無 open goal、無 ready
-strategy）、週期性 TREE.md 重繪、budget 到期退出。daemon 也會偵測 source/config 指紋漂移，
-drain 後 spawn 後繼 daemon 換代（`dispatch.handoff_on_code_change`）。
+The tail of the tick also handles: `--once` exit, idle exit (no in-flight, empty queue, no open
+goals, no ready strategies), periodic TREE.md redraw, budget-expiry exit. The daemon also detects
+source/config fingerprint drift, drains, then spawns a successor daemon for handoff
+(`dispatch.handoff_on_code_change`).
 
-### Step 8 — spawn 細節
+### Step 8 — spawn details
 
-**v17 起 pop = lease claim**：row 標 `owner_pid`+`leased_at` 而非刪除（並發 dispatcher 搶
-不到同一 row；lease row 對去重查詢照樣算「在 queue」），pipeline 結束才 `complete_queue_row`
-刪除。pop／flush／startup 清理都按 daemon `--scope` 過濾。**NL-first 閘**：gateway 未 warm
-時只 pop 非-Lean kind（Strategist/Scholar 先走，Lean 工作留在 queue）。
+**Since v17, pop = lease claim**: the row is marked `owner_pid`+`leased_at` instead of deleted
+(concurrent dispatchers can't grab the same row; leased rows still count as "in queue" for dedup
+queries); only at pipeline end does `complete_queue_row` delete it. Pop / flush / startup cleanup
+all filter by the daemon's `--scope`. **NL-first gate**: while the gateway is not yet warm, only
+non-Lean kinds are popped (Strategist/Scholar go first, Lean work stays in the queue).
 
-pop 到 spawn 之間依序：
+Between pop and spawn, in order:
 
-1. 3-tuple `(target_id, kind, decision_id)` 去重（同 batch 的 mint siblings 靠 decision_id 區分、可並行）
-2. 跳過 quota cooldown 中的 kind
-3. 已 Ingest 的 problem 的 Strategist row 直接丟棄（stale）
-4. **lazy verify gate**：該 problem 本次 daemon run 首次 dispatch，先付一次 `lake build Defs+Root`（~5–15s）；失敗就 quarantine
-5. `pool.submit(_run_pipeline, ...)` 進 worker thread
+1. 3-tuple `(target_id, kind, decision_id)` dedup (mint siblings in the same batch are distinguished by decision_id and may run in parallel)
+2. Skip kinds in quota cooldown
+3. Strategist rows for already-Ingested problems are dropped outright (stale)
+4. **lazy verify gate**: on a problem's first dispatch in this daemon run, pay one `lake build Defs+Root` (~5–15s); on failure, quarantine
+5. `pool.submit(_run_pipeline, ...)` into a worker thread
 
-> 活的 queue kind 只有四種：`Strategist` / `Formalizer` / `Scholar` / `Librarian`。
-> `Builder`/`Backward`/`Forward` 是合併前的 legacy row 名，dispatcher 仍認得、同樣路由。
+> Only four live queue kinds: `Strategist` / `Formalizer` / `Scholar` / `Librarian`.
+> `Builder`/`Backward`/`Forward` are legacy row names from before the merge; the dispatcher still recognizes and routes them the same way.
 
 ---
 
 ## 3. Pipeline flows
 
-### 3.0 共同骨架
+### 3.0 Common skeleton
 
-**一條 pipeline = 一個 claude session 的完整 lifecycle**（含 retry），收在
-`Tooling/pipeline/_retry.py` 的 `run_with_session_retries`。outcome 五種：
-`proved` / `success` / `failed` / `exhausted` / `moot`。
+**One pipeline = the full lifecycle of one claude session** (including retries), housed in
+`run_with_session_retries` in `Tooling/pipeline/_retry.py`. Five outcomes:
+`proved` / `success` / `failed` / `exhausted` / `moot`.
 
-**入場**：預寫框架要鎖的檔（§5）→ **intake**（fresh 短 session 寫 `intake.json`：
-proceed / decline；decline 詞彙只有 `no_nl_correspondence` 與 `unprovable`，後者必附反例
-note、否則 fail-open 放行）→ proceed 才跑 presearch + 編 Context.md。intake 的 session
-接著被 work loop resume（continuation），不浪費。
+**Entry**: pre-write the framework-locked files (§5) → **intake** (fresh short session writes `intake.json`:
+proceed / decline; the only decline vocabulary is `no_nl_correspondence` and `unprovable`, the
+latter must attach a counterexample note or fail-open lets it proceed) → only on proceed run
+presearch + compile Context.md. The intake session is then resumed by the work loop
+(continuation), nothing wasted.
 
-**retry loop（最多 budget 圈；budget = SHELVE_THRESHOLD − goal.attempts）**
+**Retry loop (at most budget rounds; budget = SHELVE_THRESHOLD − goal.attempts)**
 
-每圈先 cascade re-check（goal 已終態 → `moot`），再 spawn，依 rc 分支：
+Each round first cascade re-checks (goal already terminal → `moot`), then spawns, branching on rc:
 
-| rc | 意義 | 處理 |
+| rc | Meaning | Handling |
 |---|---|---|
-| 0 | 正常返回 | `parse_fn` → terminal 就 return；非 terminal failure → buffer + 下一圈 warm resume |
-| 124 | timeout（SIGKILL） | 先 salvage parse 一次；不成再 postmortem 寫 `.drafts/` → `exhausted`（§6.2） |
-| 125 | stale session（僅 warm） | 原地重 mint sid + cold 重 spawn，不耗 budget |
-| 128 | thinking-trap watchdog | fresh-sid takeover 續跑，不耗 budget（reason `agent_stuck_thinking`） |
-| 129 | daemon 關閉 | 收尾 reason `daemon_shutdown` |
-| 126 / 127 / fast-fail | infra | 早返 `failed`，不耗 budget、不 buffer（§6.3） |
+| 0 | normal return | `parse_fn` → return if terminal; non-terminal failure → buffer + warm resume next round |
+| 124 | timeout (SIGKILL) | try one salvage parse; failing that, postmortem writes `.drafts/` → `exhausted` (§6.2) |
+| 125 | stale session (warm only) | re-mint sid in place + cold re-spawn, no budget spent |
+| 128 | thinking-trap watchdog | fresh-sid takeover continues, no budget spent (reason `agent_stuck_thinking`) |
+| 129 | daemon shutdown | wrap up with reason `daemon_shutdown` |
+| 126 / 127 / fast-fail | infra | early-return `failed`, no budget spent, not buffered (§6.3) |
 
-**收尾**：dispatcher 寫 pipelines row → flush 累積的 pending_failures（每筆一條
-dead_attempt）→ `cascade_one` 套狀態轉移 → 清 `.attempts/`；成功 outcome 才清 `.drafts/`。
+**Wrap-up**: dispatcher writes the pipelines row → flushes the accumulated pending_failures (one
+dead_attempt per entry) → `cascade_one` applies state transitions → clears `.attempts/`; only
+successful outcomes clear `.drafts/`.
 
-容易誤解的點：
+Easy to misread:
 
-- **attempts++ 是即時的**（每圈失敗當下），dead_attempt row 延到 flush 才寫；daemon 中途
-  被 kill 會讓 attempts 多一筆（帳面 drift、明文接受）。
-- **`.drafts/` 清除條件依 kind**：成功 token（`proved`/`success`）與 `moot` 清；
-  `failed`/`exhausted` 保留給下次 cold restart。
+- **attempts++ is immediate** (at the moment each round fails); the dead_attempt row waits until
+  flush. A daemon killed mid-run leaves attempts one higher (ledger drift, explicitly accepted).
+- **`.drafts/` clearing depends on kind**: success tokens (`proved`/`success`) and `moot` clear it;
+  `failed`/`exhausted` keep it for the next cold restart.
 
-**Strategist Inject 例外**：pipeline 帶 `decision_id` 時 budget gate 完全 bypass（budget
-給滿、不查 attempts 上限）——Strategist 看完 failure replay 仍下指令，框架不二猜；唯一
-守住的是 goal status 已終態則 `moot`。收斂責任在 Strategist 的 ConfirmShelve 紀律。
+**Strategist Inject exception**: when the pipeline carries a `decision_id`, the budget gate is fully
+bypassed (full budget, no attempts-cap check) — the Strategist saw the failure replay and still
+gave the order; the framework does not second-guess. The only check kept: goal status already
+terminal → `moot`. Convergence responsibility rests on the Strategist's ConfirmShelve discipline.
 
 ---
 
-### 3.1 Formalizer — goal job（prove / split）
+### 3.1 Formalizer — goal job (prove / split)
 
-對一個 goal 決定「直接證」或「拆解」，agent 在同一 session 內自主選擇。OR-aware：每條
-strategy 用隔離檔名（scratch `_strategy_s<sid>.lean`、定理名 `s<sid>` 框架鎖定），parent
-的 `lean_path` 不動、留待 §4 Verify 勝出時改寫。
+Decides for one goal between "prove directly" and "decompose"; the agent chooses autonomously
+within the same session. OR-aware: each strategy uses an isolated filename (scratch
+`_strategy_s<sid>.lean`, theorem name `s<sid>` framework-locked); the parent's `lean_path` is
+untouched, rewritten only when a strategy wins at §4 Verify.
 
-**hint 前置（零 spawn）**：`goal.attempts == 0` 時先把 strategy skeleton 的 body 換成
-`by hint` probe——Lean 跑 mathlib `register_hint` 註冊的 tactic 集，命中就把具名 winner
-寫進 `patch.lean`、走與 agent patch **完全相同**的 commit 閘；失敗無聲落入正常流程。
+**hint pre-pass (zero spawns)**: when `goal.attempts == 0`, first swap the strategy skeleton's body
+for a `by hint` probe — Lean runs the tactic set registered via mathlib's `register_hint`; on a hit
+the named winner is written into `patch.lean` and goes through the **exact same** commit gate as an
+agent patch; on a miss it falls silently into the normal flow.
 
-**入場**：INSERT 新 strategy 拿 fresh `s<sid>`（不重用死 strategy）→ 從 parent stub 算
-skeleton（沿用宣告 kind、改名 `s<sid>`、body sorry；stub 抽不出簽名時用 declInfo oracle
-的 `ppSignature` 重建，再不行才 `parent_stub_not_decomposable`）→ 預寫 `patch.lean`。
+**Entry**: INSERT a new strategy to get a fresh `s<sid>` (dead strategies are not reused) → compute
+the skeleton from the parent stub (keep the declared kind, rename to `s<sid>`, body sorry; when the
+signature cannot be extracted from the stub, rebuild it with the declInfo oracle's
+`ppSignature`, and only failing that `parent_stub_not_decomposable`) → pre-write `patch.lean`.
 
-**parse_fn（每圈一次）**：
+**parse_fn (once per round)**:
 
-1. bail 偵測：`_progress.md` 有內容 + patch 未動 + 無 `new_*.lean` → `agent_bailed`
-2. glob `patch*.lean` → 缺檔 `parse_proposal_fail`
-3. 檔頂 `-- decline:` 分流：`unprovable` / `return_to_parent` / `shelve` / `needs_decomposition` / `no_nl_correspondence`
-4. 簽名未被改（比對 skeleton）→ 否則 `patch_signature_mismatch`
-5. **leaf-bypass**：0 個 `new_*.lean` 且 body 非 sorry → 當 0-subgoal strategy：forbidden
-   grep + 單檔 verify + 公理閘 + race guard → 過就 commit
-6. `forbidden_lemmas` grep（patch + 所有 `new_*.lean`）
-7. sub-goal slug 驗證（lowercase、≤60 chars；撞名 auto-suffix）
-8. **dedupe**：batch probe `apply @<canonical> <;> assumption` 比對候選池（ancestor /
-   sibling orphan / 跨 branch proved / 同題 disproved），前置 slug-pattern 預檢與
-   no-progress 守門。命中 alive → 寫 alias 並 build-verify（不過就退回開新 sub-goal）；
-   命中 disproved → 整批 abort
-9. 搬檔到 `proofs/` + 自動注入 import（agent 常忘）
-10. cite gate（decomp 路徑允許 auto-link 收進可平行的 open siblings）
-11. scratch 不得殘留 sorry → `patch_body_contains_sorry`
-12. `verify_file` batch（subs + scratch）→ 失敗 unlink + `lake_build_error`
-13. race guard：goal 已非 open/attempting → unlink + `goal_no_longer_open`
-14. INSERT goals + strategy_subgoals；sorry-free / dedupe-hit 的 sub 直接 proved
+1. bail detection: `_progress.md` has content + patch untouched + no `new_*.lean` → `agent_bailed`
+2. glob `patch*.lean` → missing file `parse_proposal_fail`
+3. file-top `-- decline:` branches: `unprovable` / `return_to_parent` / `shelve` / `needs_decomposition` / `no_nl_correspondence`
+4. signature unmodified (compared against the skeleton) → otherwise `patch_signature_mismatch`
+5. **leaf-bypass**: 0 `new_*.lean` files and body not sorry → treated as a 0-subgoal strategy: forbidden
+   grep + single-file verify + axiom gate + race guard → commit if all pass
+6. `forbidden_lemmas` grep (patch + all `new_*.lean`)
+7. sub-goal slug validation (lowercase, ≤60 chars; name collisions auto-suffix)
+8. **dedupe**: batch probe `apply @<canonical> <;> assumption` against the candidate pool (ancestors /
+   sibling orphans / cross-branch proved / same-problem disproved), preceded by a slug-pattern
+   pre-check and a no-progress guard. Hit on alive → write alias and build-verify (on failure fall back to opening a new sub-goal);
+   hit on disproved → abort the whole batch
+9. Move files to `proofs/` + auto-inject imports (agents often forget)
+10. cite gate (the decomp path allows auto-link to absorb parallelizable open siblings)
+11. scratch must not retain sorry → `patch_body_contains_sorry`
+12. `verify_file` batch (subs + scratch) → on failure unlink + `lake_build_error`
+13. race guard: goal no longer open/attempting → unlink + `goal_no_longer_open`
+14. INSERT goals + strategy_subgoals; sorry-free / dedupe-hit subs go straight to proved
 15. UPDATE strategy → `outcome='success'`
 
-結束時 `outcome != 'success'` → strategy 標 dead（infra reason 或空 row 則直接 DELETE）。
-各 failure_reason 的 cascade 語意見 `failure_modes.md` §2。
+On exit, `outcome != 'success'` → strategy marked dead (infra reasons or empty rows are DELETEd
+outright). Cascade semantics of each failure_reason: `failure_modes.md` §2.
 
 ---
 
 ### 3.2 Formalizer — mint job
 
-Strategist 用無 target 的 `Inject` 派（shape-derived），產一條新 toolkit lemma 進池。
-`target_kind='Problem'`；同 batch 的多條 mint 以 decision_id 區分、可並行。lemma kind：
-`theorem` / `def` / `structure` / `class` / `inductive` / `instance`（具名）。
+Dispatched by the Strategist via a targetless `Inject` (shape-derived); produces one new toolkit
+lemma into the pool. `target_kind='Problem'`; multiple mints in one batch are distinguished by
+decision_id and may run in parallel. Lemma kinds:
+`theorem` / `def` / `structure` / `class` / `inductive` / `instance` (named).
 
-流程（`forward.py`；retry budget = `FORWARD_RETRY_BUDGET`）：
+Flow (`forward.py`; retry budget = `FORWARD_RETRY_BUDGET`):
 
-1. LSP edit-mode 針對**固定檔** `new_forward.lean`（框架預寫 seed scaffold），agent 就地編輯
-2. intake 同 goal job（decline 兩詞彙）；work-turn decline `-- decline: library_sufficient` → `agent_declined` 終態
-3. `extract_forward_metadata`：slug / rationale / kind / sorry_free；缺欄或 kind 不認得 → `parse_rejected`；`inductive` 帶 sorry 直接拒
-4. auto-prepend imports → self_verify（`verify_file` probe；build error → `forward_no_new_goal` + retry_context）
-5. **Defs 語彙保護**：non-theorem kind 的 slug 撞 Manifest statement 詞彙 → 拒、導向 `RequestUserAmend(Defs.lean)`
-6. sorry-bearing 且無型別註記 → declInfo oracle 補簽名，補不到才拒
-7. **dedupe 三分支**：同題 alive/parked 孿生 → `reuse`（Inject 重指到既有 goal、cascade-shelved 的復活+detach，不新建）；命中 proved → 落地 alias；其餘正常 commit
-8. `commit_forward_lemma`：搬到 `proofs/L_<slug>.lean` + INSERT goal（sorry_free → proved、否則 open；一律 `detached=1`）
-9. shelved_link（G1）：反向 probe 同題 shelved goals，命中先記 link，等 X proved 時 §4 補寫 alias
-10. 無條件回填 decision 的 `produced_goal_id`；proved 時直接 propagate inject outcome
+1. LSP edit-mode against the **fixed file** `new_forward.lean` (framework pre-writes the seed scaffold); the agent edits in place
+2. intake same as the goal job (two decline vocab words); work-turn decline `-- decline: library_sufficient` → `agent_declined` terminal
+3. `extract_forward_metadata`: slug / rationale / kind / sorry_free; missing fields or unrecognized kind → `parse_rejected`; `inductive` carrying sorry rejected outright
+4. auto-prepend imports → self_verify (`verify_file` probe; build error → `forward_no_new_goal` + retry_context)
+5. **Defs vocabulary protection**: a non-theorem kind whose slug collides with Manifest statement vocabulary → reject, steer toward `RequestUserAmend(Defs.lean)`
+6. sorry-bearing with no type annotation → declInfo oracle fills in the signature, reject only when it can't
+7. **dedupe, three branches**: same-problem alive/parked twin → `reuse` (Inject repointed to the existing goal; cascade-shelved ones revived + detached, no new row); hit on proved → land an alias; otherwise commit normally
+8. `commit_forward_lemma`: move to `proofs/L_<slug>.lean` + INSERT goal (sorry_free → proved, else open; always `detached=1`)
+9. shelved_link (G1): reverse-probe same-problem shelved goals; on a hit record the link now, §4 writes the alias once X is proved
+10. Unconditionally backfill the decision's `produced_goal_id`; when proved, propagate the inject outcome directly
 
-失敗不動任何 goal 的 attempts（mint 是 goal-less 的）；infra 失敗 re-enqueue 同
-decision_id。防亂提雙線：dedupe 擋重複、Strategist 自己在 failure replay 看結果調整 brief。
+Failures touch no goal's attempts (mint is goal-less); infra failures re-enqueue the same
+decision_id. Two lines of defense against junk proposals: dedupe blocks duplicates, and the
+Strategist adjusts its briefs from the results in the failure replay.
 
 ---
 
 ### 3.3 Strategist
 
-`target_kind='Group'`（v35 起席位屬於**組**；legacy `Problem` 列仍認、映射到頂層組）。
-**trigger 三種**（spawn 時判定，優先序 routine > inject_batch_done > pending_review >
-stall）：
+`target_kind='Group'` (since v35 seats belong to **groups**; legacy `Problem` rows still
+recognized, mapped to the top-level group).
+**Three triggers** (determined at spawn time, priority routine > inject_batch_done > pending_review >
+stall):
 
-| trigger | 何時 |
+| trigger | When |
 |---|---|
-| `routine` | 離上次 routine commit ≥ `strategist.interval_min`（預設 120 min；鐘住 `groups.last_routine_at`、per-group；problem 級舊鐘 dual-write 中、待 Stage D 退役）。wake 第一階段先做 belief audit |
-| `inject_batch_done` | 某 batch（Inject/Delegate 同吃一個批次帳）全部 outcome 落地；**或 spawn 時該組為 structural stall**（fresh 組 / deadlock / root 已證待 Ingest 都算「empty batch done」；牆態偵測 per-group、`is_group_stalled`） |
-| `pending_review` | goal 轉 `pending_strategist_review`（decline 上交或 attempts 達標）；路由到**擁有那顆 goal 的組** |
+| `routine` | ≥ `strategist.interval_min` since the last routine commit (default 120 min; clock lives in `groups.last_routine_at`, per-group; the legacy problem-level clock is dual-written, slated for retirement at Stage D). The wake's first phase runs a belief audit |
+| `inject_batch_done` | All outcomes of some batch (Inject/Delegate share one batch ledger) have landed; **or the group is in structural stall at spawn time** (fresh group / deadlock / root proved awaiting Ingest all count as "empty batch done"; wall-state detection is per-group, `is_group_stalled`) |
+| `pending_review` | A goal turns `pending_strategist_review` (decline escalation or attempts threshold); routed to **the group owning that goal** |
 
-所有 wake 先過 `problem_accepts_wake`：`problems.state` 非 `active` 一律拒收。
-同 problem 的多個組可各自持有席位；`_strategist_inflight` 以組為單位去重。
+All wakes first pass `problem_accepts_wake`: any `problems.state` other than `active` is refused.
+Multiple groups of the same problem can each hold a seat; `_strategist_inflight` dedups per group.
 
-**提案包 + Adversary 迴圈**（research mode，一律開啟）：
+**Proposal package + Adversary loop** (research mode, always on):
 
-1. spawn 產 `decision.json`（JSON array）＋ 非豁免批必附 `proposal.md`（`# Title` /
-   `## Argument` / `## Proof` / `## Roadmap`；豁免 kind = {FetchPaper, RequestUserAmend,
-   Noop}；非 endgame 批必附 ≥1 實驗 = Inject / AttemptDisproof）
-2. 機械檢查（schema、cross-decision invariant、包形狀）不過 → 同 session 修訂
-3. 過機械檢查 → **Adversary**：每輪 fresh sub-spawn，在硬隔離投影目錄審提案包、產
-   per-criterion `verdict.json`，pass/rebut 由框架推導；rebut → 同 session 帶批評修訂
-4. 機械錯誤與 rebuttal **共用**輪數上限 `strategist.verify_retry`（預設 6）；到頂仍被
-   反駁 → `strategist_proposal_rejected`：提案+批評存 `programme_revisions`
-   （status='rejected'）、session 拋棄、下一 wake 只帶一行紀錄盲重推、target cooldown
-5. 通過 → commit 決策批 + `programme.record_pass`（重繪 `PROGRAMME.md`）
+1. spawn produces `decision.json` (JSON array) + non-exempt batches must attach `proposal.md` (`# Title` /
+   `## Argument` / `## Proof` / `## Roadmap`; exempt kinds = {FetchPaper, RequestUserAmend,
+   Noop}; non-endgame batches must include ≥1 experiment = Inject / AttemptDisproof)
+2. Mechanical checks (schema, cross-decision invariants, package shape) fail → revise in the same session
+3. Past mechanical checks → **Adversary**: each round a fresh sub-spawn reviews the proposal
+   package in a hard-isolated projection directory and produces per-criterion `verdict.json`;
+   pass/rebut is derived by the framework; rebut → revise in the same session with the critique
+4. Mechanical errors and rebuttals **share** the round cap `strategist.verify_retry` (default 6);
+   still rebutted at the cap → `strategist_proposal_rejected`: proposal + critique stored in
+   `programme_revisions` (status='rejected'), session discarded, the next wake carries only a
+   one-line record for a blind re-derivation, target cooldown
+5. Pass → commit the decision batch + `programme.record_pass` (redraws `PROGRAMME.md`)
 
-**commit_decisions 副作用**（決策九種）：
+**commit_decisions side effects** (nine decision kinds):
 
-| decision | 動作 |
+| decision | Action |
 |---|---|
-| `Inject`（無 target） | enqueue mint（Formalizer/Problem）+ decision row（寫 batch_id） |
-| `Inject`（有 target） | 強制 reopen + 必要時 detach + un-stall 上游 strategy + enqueue Formalizer |
+| `Inject` (no target) | enqueue mint (Formalizer/Problem) + decision row (writes batch_id) |
+| `Inject` (with target) | force reopen + detach when needed + un-stall the upstream strategy + enqueue Formalizer |
 | `ConfirmShelve` | goal terminal(shelved) + propagate |
-| `EmitDirective` | 設 problem 常駐指令 |
-| `RequestUserAmend` | 寫 `.proposed_<file>` + problem 轉 `awaiting_human` |
-| `MarkDeliverable` | 標 deliverable（anchor+claim） |
-| `Ingest` | **頂層組**：蓋 `ingested_at`（唯一終態；root 在場未 proved 則框架拒絕）；library:true 再走 sign-off/harvest。**子組**：輕量版——組標 `delivered`、喚醒父組，不碰簽核/harvest/problem FSM；閘=錨 proved（救援形狀）或本組標過 ≥1 deliverable（無錨形狀） |
-| `FetchPaper` | enqueue Scholar（payload 帶 query/reason；outcome 由 Scholar 回填） |
-| `AttemptDisproof` | 框架**機械**否定手術鑄 ¬P goal（不讓 LLM 改寫語句、防 strawman） |
-| `Delegate` | INSERT 新組（charter=brief）+ 立即排新組席位；帶 target 時錨轉 `attempting`。outcome 保持 NULL 至子組終態——與同批 Inject 共用批次帳、都終態才喚醒父組 |
-| `ReturnToParent` | 子組限定：組標 `returned`、救援錨落 `shelved`（含級聯）、父組 Delegate outcome=`failed:returned`、喚醒父組 |
-| `Noop` | 只 INSERT audit row |
+| `EmitDirective` | set the problem's standing directive |
+| `RequestUserAmend` | write `.proposed_<file>` + problem transitions to `awaiting_human` |
+| `MarkDeliverable` | mark a deliverable (anchor+claim) |
+| `Ingest` | **Top-level group**: stamps `ingested_at` (the only terminal state; refused by the framework if a root is present but not proved); library:true additionally goes through sign-off/harvest. **Sub-group**: lightweight — group marked `delivered`, wakes the parent group, touches no sign-off/harvest/problem FSM; gate = anchor proved (rescue shape) or ≥1 deliverable marked by this group (anchorless shape) |
+| `FetchPaper` | enqueue Scholar (payload carries query/reason; outcome backfilled by Scholar) |
+| `AttemptDisproof` | the framework **mechanically** performs the negation surgery to mint the ¬P goal (the LLM never rewrites the statement — anti-strawman) |
+| `Delegate` | INSERT a new group (charter=brief) + immediately schedule the new group's seat; with a target, the anchor turns `attempting`. Outcome stays NULL until the sub-group reaches a terminal state — shares the batch ledger with same-batch Injects; the parent group wakes only when all are terminal |
+| `ReturnToParent` | sub-group only: group marked `returned`, rescue anchor lands `shelved` (with cascade), parent's Delegate outcome=`failed:returned`, wakes the parent group |
+| `Noop` | only INSERTs an audit row |
 
-收尾：batch 層 touch `last_strategist_at`（routine 另 touch `last_routine_at`、才 re-arm
-時鐘）；routine wake 另可經 `kb_curation.json` sidecar 增修全域 lessons（上限 10 ops）。
+Wrap-up: the batch layer touches `last_strategist_at` (routine additionally touches `last_routine_at`,
+which is what re-arms the clock); routine wakes may also add/edit global lessons via the
+`kb_curation.json` sidecar (cap 10 ops).
 
 ---
 
 ### 3.4 Scholar
 
-`FetchPaper` 決策派出的單階段 spawn：用 `Tooling.papers.search` / `papers.fetch` 在白名單
-來源找副本，成功 → 論文入 `Papers/<shelf-id>/` + 綁定 `problem_papers`（`paper_fetched`）；
-找不到可抓副本 → `paper_unfetchable`，精確請求寫進 decision `outcome_detail` 交人工通道。
+Single-stage spawn dispatched by a `FetchPaper` decision: uses `Tooling.papers.search` / `papers.fetch`
+to find a copy from whitelisted sources; success → paper lands in `Papers/<shelf-id>/` + bound via `problem_papers` (`paper_fetched`);
+no fetchable copy → `paper_unfetchable`, with the precise request written into the decision's `outcome_detail` for the human channel.
 
 ---
 
 ### 3.5 Librarian
 
-把已證 problem 收成 mathlib 形狀的 `Library/`。自動啟動條件：Manifest `library: true` ∧
-已 Ingest ∧ 尚無 harvest 產物；sign-off pending 時一切自動路徑暫停。
+Harvests proved problems into mathlib-shaped `Library/`. Auto-start condition: Manifest `library: true` ∧
+Ingested ∧ no harvest artifacts yet; while sign-off is pending, all automatic paths pause.
 
-鏈式 `dedup → classify → migrate → cleanup → bridge`，work-kind 由 `library_decls`
-lifecycle 推出、tick 層每次成功後重新 derive 直到排空。`migrate`/`cleanup` 以整檔為平行
-單位。
+Chained `dedup → classify → migrate → cleanup → bridge`; the work-kind is derived from the
+`library_decls` lifecycle, re-derived at the tick layer after each success until drained.
+`migrate`/`cleanup` parallelize with whole files as the unit.
 
-| 步驟 | 形式 | 做什麼 |
+| Step | Form | What it does |
 |---|---|---|
-| **dedup** | 純機械 | 限縮到 harvest 目標的 live 使用閉包，標 `keep → deduped` |
-| **classify** | one-shot JSON spawn | agent 給檔案佈局+順序；框架 SCC-merge + toposort 修正 |
-| **migrate** | LSP + commit-retry | 一次寫整檔 decls → commit gate → `migrated` |
-| **cleanup** | LLM 多段 + 機械收尾 | per-file 精修（drop/merge/simplify/audit/rename/import-min）；零-warning 硬閘 + post-rewrite 公理閘 → `cleaned`/`dropped` |
-| **bridge** | 無 agent | Gate B 整體意義驗證，PASS 回填簽名 + 標 `library_bridged_at`、終止 chain |
+| **dedup** | purely mechanical | Narrow to the live usage closure of the harvest targets, mark `keep → deduped` |
+| **classify** | one-shot JSON spawn | agent proposes file layout + order; framework corrects via SCC-merge + toposort |
+| **migrate** | LSP + commit-retry | write the whole file's decls at once → commit gate → `migrated` |
+| **cleanup** | multi-stage LLM + mechanical wrap-up | per-file refinement (drop/merge/simplify/audit/rename/import-min); zero-warning hard gate + post-rewrite axiom gate → `cleaned`/`dropped` |
+| **bridge** | no agent | Gate B whole-meaning verification; PASS backfills signatures + stamps `library_bridged_at`, ends the chain |
 
-**commit gate（每次 migrate；cleanup 收尾與 deliverable bridge 共用）**：Gate A import
-閉包 ⊆ {Mathlib, Library, Init, Std, Batteries, Lean}；整檔 0 error 0 sorry；per-decl
-`#print axioms` ⊆ whitelist；Gate D 對 `def` 做 `rfl` def-equivalence；任何 `axiom` 宣告
-hard-fail。失敗 rollback、chain 卡在該檔，連續失敗超過 `LIBRARIAN_MAX_CHAIN_RETRIES`
-（=2，即第 3 次）→ STALLED。
+**commit gate (every migrate; shared by the cleanup wrap-up and the deliverable bridge)**: Gate A import
+closure ⊆ {Mathlib, Library, Init, Std, Batteries, Lean}; whole file 0 errors 0 sorry; per-decl
+`#print axioms` ⊆ whitelist; Gate D checks `rfl` def-equivalence for `def`s; any `axiom` declaration
+hard-fails. Failure rolls back and the chain sticks at that file; consecutive failures beyond `LIBRARIAN_MAX_CHAIN_RETRIES`
+(=2, i.e. the 3rd) → STALLED.
 
-**post-rewrite 公理閘（cleanup 收尾）**：cleanup 的 LLM 改寫段是 migrate 閘之後唯一能改
-公理集的地方（例：`by native_decide` 拉進 `Lean.ofReduceBool`），收尾對**最終文本**重跑
-per-decl 公理檢查，不過 → `librarian_axiom_violation`、該檔留 `migrated` 重試。
+**post-rewrite axiom gate (cleanup wrap-up)**: cleanup's LLM rewrite stage is the only place after
+the migrate gate that can change the axiom set (e.g. `by native_decide` pulls in `Lean.ofReduceBool`);
+the wrap-up reruns the per-decl axiom check against the **final text**; failure → `librarian_axiom_violation`, the file stays `migrated` for retry.
 
-**Gate B（bridge、「定海神針」）**：從 Library 重新推導出原始 root（Defs-free），
-statement-pin + import 閉包 + build + axiom whitelist。marker 存在 = Library 真的能重證
-原題。deliverable 題（無 root 可重推）改為：builds-only + 對每個 harvested 檔最終文本跑
-per-decl 公理閘。
+**Gate B (bridge, the "linchpin")**: re-derive the original root from the Library (Defs-free):
+statement-pin + import closure + build + axiom whitelist. Marker present = the Library can genuinely
+re-prove the original problem. Deliverable problems (no root to re-derive) instead get: builds-only + the
+per-decl axiom gate on each harvested file's final text.
 
-> 三道 Gate：**A** import 閉包、**B** root 重推、**D** def-equivalence。沒有 Gate C。
+> Three gates: **A** import closure, **B** root re-derivation, **D** def-equivalence. There is no Gate C.
 
 ---
 
 ## 4. Verify housekeeping
 
-每輪 tick 在 cascade 之後跑，**純框架、無 LLM、單執行緒**。每圈撈兩種待辦（最多
-`max_iters=8` 圈）：
+Runs after cascade each tick, **pure framework, no LLM, single-threaded**. Each iteration fetches
+two kinds of pending work (at most `max_iters=8` iterations):
 
-- **ready strategies**：`proposed` ∧ scratch 非空 ∧ parent 不在終態 ∧ 所有 sub-goal proved
-- **revivals（G1）**：shelved goal S 的 `alias_target_id = X` 且 X 已 proved
+- **ready strategies**: `proposed` ∧ non-empty scratch ∧ parent not terminal ∧ all sub-goals proved
+- **revivals (G1)**: shelved goal S with `alias_target_id = X` and X now proved
 
-**對每條 ready strategy**：parent `.lean` 原子改寫成 alias（import strategy module +
-`def <parent_slug> := @...s<sid>`；簽名鎖死保證 type 相符、純字串模板）→ strategy
-`succeeded`、parent `proved`（樂觀標）、siblings `superseded`→ 背景 olean 暖機
-（`OleanWarmer` 獨立 thread 跑 cold build，不佔主線程也不佔 LLM pool；kill switch
-`verify.olean_warm`）。parent 可能是更上層的 sub-goal，下一圈連鎖撈到。
+**For each ready strategy**: atomically rewrite the parent `.lean` into an alias (import strategy module +
+`def <parent_slug> := @...s<sid>`; the locked signature guarantees type match, pure string templating) → strategy
+`succeeded`, parent `proved` (optimistic), siblings `superseded` → background olean warm-up
+(`OleanWarmer` runs the cold build on its own thread, occupying neither the main thread nor the LLM pool; kill switch
+`verify.olean_warm`). The parent may itself be a higher-level sub-goal, picked up by the chain on the next iteration.
 
-**對每個 revival (S, X)**：S 的 sorry body 重寫成 `apply <X> <;> assumption` + build-verify
-（不過就還原、留 shelved）→ S 轉 proved + propagate。
+**For each revival (S, X)**: S's sorry body is rewritten to `apply <X> <;> assumption` + build-verify
+(on failure restore, stays shelved) → S turns proved + propagate.
 
-### root 完整性閘（§2 step 3 的核心）
+### Root integrity gate (the core of §2 step 3)
 
-root flip proved 後跑單一 integrity gate：`axiom_probe(Problems.<p>.main)`（900s cap、
-唯一一次完整 elaboration），同時抓 alias 鏈 drift 與漏網 sorryAx。
+After root flips proved, run the single integrity gate: `axiom_probe(Problems.<p>.main)` (900s cap,
+the only full elaboration), catching both alias-chain drift and escaped sorryAx.
 
-- **happy path**：`set_integrity_verified(1)` + 清 cascade backup。不寫 Library 檔、不退出
-  daemon（Library 化與退出各由 §2 step 4/5 決定）。
-- **rogue sorryAx**：`bisect_sorryax_source` 找元凶 strategy → `rollback_cascade_chain`
-  逐層還原（root 退出 proved、下個 tick 重拆元凶）；該題已 Ingest → 自動撤銷 + Librarian
-  un-harvest 全自動下架。
+- **happy path**: `set_integrity_verified(1)` + clear cascade backups. Writes no Library files, does not exit the
+  daemon (Library-ization and exit are each decided by §2 steps 4/5).
+- **rogue sorryAx**: `bisect_sorryax_source` finds the culprit strategy → `rollback_cascade_chain`
+  restores level by level (root drops out of proved; next tick re-decomposes the culprit); if the problem was already Ingested → automatic revocation + Librarian
+  un-harvest, fully automatic takedown.
 
-> 實證 41+ 次 cascade verify 0 攔截——所以 per-level verify 是純機械 alias rewrite、不逐層
-> elaborate；root gate 是 false-proved 的最後修正網，實務極少 fire 但不可拆。
+> Empirically 41+ cascade verifies with 0 interceptions — hence per-level verify is a purely mechanical alias rewrite with no per-level
+> elaboration; the root gate is the last correction net for false-proved, rarely fires in practice but must not be removed.
 
 ---
 
-## 5. Spawn 前準備
+## 5. Pre-spawn preparation
 
-### Context.md 編譯
+### Context.md compilation
 
-每次 spawn 前框架從 DB 編一份 `Context.md`。**agent 看到的訊息都從這裡來**（companion 檔
-只是備援）。三支編譯器：`compile_context`（Formalizer goal job）、
-`compile_forward_context`（mint）、`compile_strategist_context`。section 不適用時整段省略。
+Before each spawn the framework compiles a `Context.md` from the DB. **Everything the agent sees comes from here** (companion files
+are only fallback). Three compilers: `compile_context` (Formalizer goal job),
+`compile_forward_context` (mint), `compile_strategist_context`. Inapplicable sections are omitted entirely.
 
-**goal job**（`compile_context`），由上而下：BRIEF inline → KB lessons（跨 spawn 不變、
-放最前吃 prompt cache）→ paper index → **Programme `## Proof`**（NL-first 前提）→
-directive → Strategist brief（Inject 時）→ goal statement → Library available →
-strategy naming → parent goal & strategy → mathlib lemmas（過去 lake error）→
-Candidate lemmas（pre-search；在場時取代 proved-siblings 段）→ **catalog 指標**（精確
-statement 在 `CATALOG.md` companion）→ 上次進度筆記 / 上次 patch → Goal history
-（umbrella、4 sub-section；投影邏輯在 `pipeline/events.py`，設計史
-`docs/archive/design/goal_history_unified.md`）。
+**goal job** (`compile_context`), top to bottom: BRIEF inline → KB lessons (invariant across spawns,
+put first for the prompt cache) → paper index → **Programme `## Proof`** (the NL-first premise) →
+directive → Strategist brief (on Inject) → goal statement → Library available →
+strategy naming → parent goal & strategy → mathlib lemmas (past lake errors) →
+Candidate lemmas (pre-search; when present, replaces the proved-siblings section) → **catalog pointer** (exact
+statements in the `CATALOG.md` companion) → previous progress note / previous patch → Goal history
+(umbrella, 4 sub-sections; projection logic in `pipeline/events.py`, design history in
+`docs/archive/design/goal_history_unified.md`).
 
-**mint**（`compile_forward_context`）：brief → Library inventory → 過去 mint 提案 →
-active goals → Manifest meta → paper index。（無 TREE、**無 Programme 段**。）
+**mint** (`compile_forward_context`): brief → Library inventory → past mint proposals →
+active goals → Manifest meta → paper index. (No TREE, **no Programme section**.)
 
-**Strategist**（`compile_strategist_context`）：trigger →（pending_review 才有：失敗
-replay / 既有 strategies / ancestor chain）→ stall warning + Ingest availability →
-disproof guidance → **Programme**（現行 rev 全文 + Adversary reservations + 上輪 rejection
-一行）→ directive → plan note（`.drafts/strategist_plan.md` 私人筆記）→ 已完成 Inject
-batches（帶 landed decl 名）→ pending reopen-promises → active goals → recent decisions →
-TREE → catalog → Manifest meta →（routine 才有：KB curation surface）。
+**Strategist** (`compile_strategist_context`): trigger → (pending_review only: failure
+replay / existing strategies / ancestor chain) → stall warning + Ingest availability →
+disproof guidance → **Programme** (current rev full text + Adversary reservations + one line for the last rejection)
+→ directive → plan note (`.drafts/strategist_plan.md`, private notes) → completed Inject
+batches (with landed decl names) → pending reopen-promises → active goals → recent decisions →
+TREE → catalog → Manifest meta → (routine only: KB curation surface).
 
 ### Sandbox
 
-agent cwd 鎖在 problem_dir：
+agent cwd locked to problem_dir:
 
-- **`--add-dir`**：problem_dir、attempts_dir、`.lake/packages/`、`Library/`、`Papers/`
-  （各自存在時）。**Adversary 例外：全部清空**，trust boundary 只剩投影目錄
-- **讀禁止**：其他 `Problems/<...>/`；operator 狀態（`~/.claude/projects/**` deny +
-  auto-memory 關閉 + `spawn_guard` PreToolUse 白名單 hook）
-- **工具**：`Read` / `Write` / `Edit` / `Grep` / `Bash`，Bash 只白名單
-  `python -m Tooling.knowledge.loogle` 與 `python -m json.tool`（Scholar 另加
-  `papers.search` / `papers.fetch`；spawn env 注入 repo root 到 `PYTHONPATH`）；LSP MCP
-  工具（apply_edit / goal_at / errors_at / validate_file）
-- **spawn flags**：`--setting-sources ""`（CLAUDE.md 一律不載入）、user 檔
-  （Manifest/Defs/Root/PROGRAMME）Write+Edit 全 disallow
+- **`--add-dir`**: problem_dir, attempts_dir, `.lake/packages/`, `Library/`, `Papers/`
+  (each when present). **Adversary exception: all cleared**, trust boundary reduced to the projection directory
+- **Read forbidden**: other `Problems/<...>/`; operator state (`~/.claude/projects/**` deny +
+  auto-memory off + `spawn_guard` PreToolUse whitelist hook)
+- **Tools**: `Read` / `Write` / `Edit` / `Grep` / `Bash`, Bash whitelisted to only
+  `python -m Tooling.knowledge.loogle` and `python -m json.tool` (Scholar additionally gets
+  `papers.search` / `papers.fetch`; spawn env injects the repo root into `PYTHONPATH`); LSP MCP
+  tools (apply_edit / goal_at / errors_at / validate_file)
+- **spawn flags**: `--setting-sources ""` (CLAUDE.md never loaded); user files
+  (Manifest/Defs/Root/PROGRAMME) fully disallowed for Write+Edit
 
-### 預寫框架要鎖的檔
+### Pre-written framework-locked files
 
-| job | 預寫 |
+| job | Pre-written |
 |---|---|
-| Formalizer goal job | `patch.lean` = strategy skeleton（簽名鎖死、agent 只改 body） |
-| Formalizer mint | `new_forward.lean` seed scaffold（imports + namespace、就地編輯） |
-| Strategist | 不寫 patch，輸出 `decision.json`（+ `proposal.md`） |
+| Formalizer goal job | `patch.lean` = strategy skeleton (signature locked, agent edits body only) |
+| Formalizer mint | `new_forward.lean` seed scaffold (imports + namespace, edited in place) |
+| Strategist | no patch; outputs `decision.json` (+ `proposal.md`) |
 
 ---
 
-## 6. Spawn 後的失敗 / 中斷處理
+## 6. Post-spawn failure / interruption handling
 
-### 6.1 普通失敗 retry
+### 6.1 Ordinary failure retry
 
-（build 沒過、forbidden_lemma、無 annotation 等）helper 把 snapshot buffer 進
-pending_failures、抽 stderr 進 detail，下一圈 warm resume 帶 retry_context。budget 用盡 →
-`exhausted`。普通失敗**不寫 `.drafts/`**——session 記憶 + retry_context 已是接續媒介。
+(build failure, forbidden_lemma, missing annotation, etc.) The helper buffers a snapshot into
+pending_failures, extracts stderr into detail, and the next round warm-resumes with retry_context. Budget exhausted →
+`exhausted`. Ordinary failures **do not write `.drafts/`** — session memory + retry_context are already the continuation medium.
 
-**Reflection callback**：helper 完成（成功、exhausted、或 decline directive）後在同
-thread spawn 第二個 claude（`--resume`、120s cap）對這條 pipeline 寫一行 lesson 進
-`LESSONS.md`。best-effort、infra failure 不觸發、kill switch `lessons.reflection_enabled`。
-另有獨立的 framework feedback tail step（`feedback.enabled`）與 infra 死因筆記通道。
+**Reflection callback**: after the helper finishes (success, exhausted, or a decline directive), a
+second claude is spawned on the same thread (`--resume`, 120s cap) to write a one-line lesson about this pipeline into
+`LESSONS.md`. Best-effort, not triggered on infra failures, kill switch `lessons.reflection_enabled`.
+There is also an independent framework feedback tail step (`feedback.enabled`) and an infra death-note channel.
 
-### 6.2 Timeout（rc=124）
+### 6.2 Timeout (rc=124)
 
-主 spawn 超過 `dispatch.spawn_timeout_sec`（預設 900s）被 SIGKILL。處理順序：
+The main spawn exceeds `dispatch.spawn_timeout_sec` (default 900s) and gets SIGKILL. Handling order:
 
-1. **salvage parse**：agent 可能已在 disk 留下 valid 輸出——直接跑一次 `parse_fn`，得到
-   terminal success/decline 就照常收（timeout 也能算成功）
-2. salvage 不成且 watchdog 判定 thinking trap → fresh-sid takeover 續跑（不 exhaust）
-3. 否則 **postmortem**：`claude --resume` + 短 prompt（180s cap）「用 150 字寫下方向/卡
-   點」存 `_progress.md` → 複製到 `.drafts/<kind>_g<gid>.md` → `exhausted`（不續 retry）
+1. **salvage parse**: the agent may already have left valid output on disk — run `parse_fn` once; a
+   terminal success/decline is collected as usual (a timeout can still count as success)
+2. salvage fails and the watchdog rules a thinking trap → fresh-sid takeover continues (no exhaust)
+3. otherwise **postmortem**: `claude --resume` + short prompt (180s cap) "write down your direction/blockers
+   in 150 words" saved to `_progress.md` → copied to `.drafts/<kind>_g<gid>.md` → `exhausted` (no further retry)
 
-下次 dispatch（fresh pipeline）編 Context 時 inline 成「## Your previous progress note」。
+The next dispatch (fresh pipeline) inlines it into Context as "## Your previous progress note".
 
-> timeout 強制 exhaust 的理由：思考路徑卡死、同 session resume 會撞同卡點；`.drafts/` 的
-> 目的就是給 cold restart。postmortem 自己死了也只是 best-effort 損失。
+> Why timeout forces exhaust: the thinking path is stuck; resuming the same session would hit the same wall. `.drafts/`
+> exists precisely for the cold restart. If the postmortem itself dies, it's only a best-effort loss.
 
-### 6.3 Infra 噪訊（不耗 budget、不寫 dead_attempt）
+### 6.3 Infra noise (no budget spent, no dead_attempt written)
 
-五種 `PROVIDER_INFRA_REASONS`：
+Five `PROVIDER_INFRA_REASONS`:
 
-| reason | 觸發 | 處置 |
+| reason | Trigger | Handling |
 |---|---|---|
-| `spawn_fast_fail` | rc≠0 且 wall-clock < 10s | 30s target cooldown；連續 10 次 → 先問 usage endpoint，確認 quota 就轉 quota-wait，否則 daemon 退出 rc=2 |
-| `quota_exhausted` | rc=126 | **per-kind 指數退避**（30s×2ⁿ、cap 600s）+ flush 同 kind queue + 可進 quota-wait |
-| `missing_dep` | rc=127（CLI 缺） | 30s cooldown、operator-fix |
-| `gateway_unreachable` | HTTP transport 失聯 | 30s cooldown；連續 8 次 → daemon 退出 rc=2 |
-| `transient_timeout` | RPC 超時（slot 競爭） | 30s cooldown、**不進任何 CONSEC**（健康過載非死亡） |
+| `spawn_fast_fail` | rc≠0 and wall-clock < 10s | 30s target cooldown; 10 in a row → ask the usage endpoint first, switch to quota-wait if quota is confirmed, else daemon exits rc=2 |
+| `quota_exhausted` | rc=126 | **per-kind exponential backoff** (30s×2ⁿ, cap 600s) + flush same-kind queue + may enter quota-wait |
+| `missing_dep` | rc=127 (CLI missing) | 30s cooldown, operator-fix |
+| `gateway_unreachable` | HTTP transport lost | 30s cooldown; 8 in a row → daemon exits rc=2 |
+| `transient_timeout` | RPC timeout (slot contention) | 30s cooldown, **enters no CONSEC counter** (healthy overload, not death) |
 
-cooldown 期內 bfs_refill 跳過該 (target, kind)；`.attempts/<pid>/_spawn.stderr` 留 forensic。
+During cooldown, bfs_refill skips that (target, kind); `.attempts/<pid>/_spawn.stderr` is kept for forensics.
 
 ---
 
-## 7. 關鍵常數（程式預設；覆寫看 `Asterism.yaml`）
+## 7. Key constants (program defaults; overrides in `Asterism.yaml`)
 
-| 常數 | 預設 | 出處 |
+| Constant | Default | Source |
 |---|---|---|
-| `dispatch.pool`（= gateway workers） | 4 | config.py（另受 RAM clamp 與 interactive_slots 扣減） |
-| `SHELVE_THRESHOLD` | 8 | `dispatch.shelve_threshold`（達標轉 strategist review，不再自動 shelve） |
-| 主 spawn 硬上限（SIGKILL） | 900s | `dispatch.spawn_timeout_sec` / `WORKER_TIMEOUT_SEC` |
-| intake 短 turn 上限 | 300s | `dispatch.intake_timeout_sec` |
-| Strategist wake 硬上限 | 10800s | `strategist.timeout_sec`（hang guard） |
-| Adversary 輪上限 | 7200s | `adversary.timeout_sec` |
+| `dispatch.pool` (= gateway workers) | 4 | config.py (also subject to the RAM clamp and interactive_slots deduction) |
+| `SHELVE_THRESHOLD` | 8 | `dispatch.shelve_threshold` (at threshold goes to strategist review, no longer auto-shelves) |
+| main spawn hard cap (SIGKILL) | 900s | `dispatch.spawn_timeout_sec` / `WORKER_TIMEOUT_SEC` |
+| intake short-turn cap | 300s | `dispatch.intake_timeout_sec` |
+| Strategist wake hard cap | 10800s | `strategist.timeout_sec` (hang guard) |
+| Adversary round cap | 7200s | `adversary.timeout_sec` |
 | postmortem / reflection cap | 180s / 120s | `POSTMORTEM_TIMEOUT_SEC` / `_REFLECTION_TIMEOUT_SEC` |
-| spawn_fast_fail 門檻 | 10s | `SPAWN_FAST_FAIL_SEC` |
+| spawn_fast_fail threshold | 10s | `SPAWN_FAST_FAIL_SEC` |
 | spawn cooldown / quota backoff | 30s / 30s×2ⁿ cap 600s | `SPAWN_COOLDOWN_SEC` / `QUOTA_BACKOFF_*` |
-| 連續 fast-fail / gateway 失聯上限 | 10 / 8 | `CONSEC_*_LIMIT`（daemon 退出 rc=2） |
+| consecutive fast-fail / gateway-loss caps | 10 / 8 | `CONSEC_*_LIMIT` (daemon exits rc=2) |
 | queue lease TTL | 6h | `LEASE_TTL_SEC` |
 | Strategist routine interval | 120 min | `strategist.interval_min` |
-| Strategist verify/Adversary 修訂輪 | 6 | `strategist.verify_retry` |
+| Strategist verify/Adversary revision rounds | 6 | `strategist.verify_retry` |
 | mint retry budget | 3 | `FORWARD_RETRY_BUDGET` |
-| verify housekeeping 迭代上限 | 8 | `max_iters` |
-| Librarian chain 重試上限 | 2（第 3 次 STALL） | `LIBRARIAN_MAX_CHAIN_RETRIES` |
+| verify housekeeping iteration cap | 8 | `max_iters` |
+| Librarian chain retry cap | 2 (STALL on the 3rd) | `LIBRARIAN_MAX_CHAIN_RETRIES` |
 
 ---
 
-## 8. 設計取捨速查
+## 8. Design trade-offs quick reference
 
-| 決策 | 為什麼 |
+| Decision | Why |
 |---|---|
-| Context.md 必看訊息 inline、companion 只當備援 | 教訓：agent 不會主動讀 companion |
-| Timeout 走 postmortem 而非邊想邊存 | 主任務不被 deliverable 維護分心 |
-| Pipeline = session lifecycle、retry 收進 pipeline 內 | sid 是 local var，無跨 pipeline 攜帶 |
-| 編譯統一走 LSP gateway | 省每次 5–15s cold 啟動 |
-| Verify inline、不佔 worker slot；verify-time LLM 修復取消 | 純框架操作；LLM 修復實證 0 觸發 |
-| Builder/Backward/Forward 合併為 Formalizer | 證/拆是同一個判斷，分 kind 造成路由 hack 與 context 斷裂 |
-| OR passive（cap=1）不 eager fanout | 強模型下純浪費 token |
-| Dedupe 用 apply-probe | Lean 懂 α/β/η/defeq；字串比對命中率低 |
-| hint 前置 + 寫回具名 winner | 接 mathlib curated set；artifact 留具名 tactic |
-| Infra 失敗不算 agent error | 不燒 goal 預算 |
-| 提案包過 Adversary 才 commit | 任務與行動之間需要受評的整份論證（research mode） |
+| Must-see info inlined in Context.md, companions only fallback | Lesson: agents don't proactively read companions |
+| Timeout goes to postmortem, not save-as-you-think | The main task isn't distracted by deliverable upkeep |
+| Pipeline = session lifecycle, retry folded inside the pipeline | sid is a local var, nothing carries across pipelines |
+| Compilation unified through the LSP gateway | Saves the 5–15s cold startup each time |
+| Verify inline, occupies no worker slot; verify-time LLM repair dropped | Pure framework operation; LLM repair empirically fired 0 times |
+| Builder/Backward/Forward merged into Formalizer | Prove/split is one judgment; separate kinds caused routing hacks and context breaks |
+| OR passive (cap=1), no eager fanout | Pure token waste under strong models |
+| Dedupe uses apply-probe | Lean understands α/β/η/defeq; string comparison has a low hit rate |
+| hint pre-pass + write back the named winner | Taps mathlib's curated set; the artifact keeps the named tactic |
+| Infra failures don't count as agent errors | Don't burn goal budget |
+| Proposal package must pass the Adversary before commit | Between task and action there must be a reviewed full argument (research mode) |
 
 ---
 
-## 9. 跨參考
+## 9. Cross-references
 
-- 靜態形狀（角色、不變量、schema）：`docs/architecture.md`
-- 失敗 reason × 觸發 × cascade × event 完整對照：`docs/failure_modes.md` §2
-- Goal history umbrella 設計史：`docs/archive/design/goal_history_unified.md`
+- Static shape (roles, invariants, schema): `docs/architecture.md`
+- Full failure reason × trigger × cascade × event mapping: `docs/failure_modes.md` §2
+- Goal history umbrella design history: `docs/archive/design/goal_history_unified.md`
