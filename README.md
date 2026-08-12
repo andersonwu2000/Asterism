@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-11
+- Improved the briefings handed to the automated prover agents, clarifying time limits, where searches may look, what a hand-off must include, and which tools are actually available to use.
+- Held the agent that judges proof attempts to the same standards as the one that writes them, and gave reviews enough time that their supporting evidence is no longer cut short.
+- Simplified the planning agent's decision loop, folding the step that declares a result ready into its main mathematical reasoning turn.
+- Made project metadata get written once at creation so it cannot silently go stale, and let each group of problems carry its own conventions, inherited once from its parent.
+
 ### 2026-08-10
 - Replaced the proving agents' general shell access with purpose-built tools — file inspection, content-anchored edits, and a network-isolated calculator — that give instructive feedback instead of raw errors.
 - Tightened data boundaries, so each model provider now declares what it enforces and what it may read, with tests guarding the operator's own data as well as outside access.
@@ -209,12 +215,6 @@ Programme revisions and worker declines now appear on the project's timeline and
 - Added a self-audit step that curates the accumulated knowledge base of proof lessons and prunes instructions made redundant by machine-generated context.
 - Redesigned the web progress dashboard and fixed a dozen defects found in review, including cleaner grouping of goals and hiding of empty proof branches.
 - Hardened sandboxing of spawned worker processes with a filesystem whitelist and fixed logging for background handoff tasks.
-
-### 2026-07-12
-- Gave each problem an explicit lifecycle state machine with checked transitions, so the system can only act on a problem when its state legally allows it.
-- Hardened soundness guarantees: proofs are now pinned to a verified snapshot of the user's files, spawned provers cannot write outside their sandbox, and unauthorized axioms are stripped before a proof is accepted.
-- Fixed several scheduling and bookkeeping bugs, including one where truncated error output made a failed proof attempt look like a success.
-- Polished the web dashboard with layout fixes and a performance improvement when opening large problem sets.
 
 <!-- ASTERISM-PROGRESS:END -->
 
