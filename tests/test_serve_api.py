@@ -1355,10 +1355,28 @@ def test_create_problem_structured(workspace: Path) -> None:
             "Manifest.md").read_text(encoding="utf-8")
     assert text.startswith("---\n")
     assert "problem: Test.structured" in text
-    assert "- propext" in text            # default whitelist filled in
-    assert "- sperner*" in text
-    assert "library: true" in text
+    # Creation writes IDENTITY only (2026-08-11, frontmatter dissolve
+    # completed): the settings live in `problem_settings`, the UI edits
+    # the DB and never re-renders this block, so a copy written here
+    # went stale the first time anyone changed anything — measured, two
+    # problems already disagreed. The explicit creation-time values go
+    # straight to the DB, which is where every gate reads them, and
+    # `asterism drift-check` now fails on any file/DB divergence.
+    assert "axioms_whitelist" not in text
+    assert "sperner*" not in text
+    assert "library:" not in text
+    # the BODY still goes through verbatim — this test posts its own
+    # `## Statement`, and what the writer stopped emitting is the
+    # settings block, not the caller's prose
     assert "## Statement" in text
+    from Tooling.state import settings as _settings
+    conn = db.connect(workspace / "asterism.db")
+    try:
+        stored = _settings.read(conn, "Test.structured")
+    finally:
+        conn.close()
+    assert stored["forbidden_lemmas"] == ["sperner*"]
+    assert stored["library"] is True
 
 
 def test_manifest_get_and_update(workspace: Path) -> None:
