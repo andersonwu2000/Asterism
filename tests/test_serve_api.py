@@ -1587,6 +1587,19 @@ def test_lean_eval_warming_and_validation(workspace: Path,
     r = client.post("/api/lean/eval",
                     json={"parts": [{"id": "p", "code": "#check 1"}]})
     assert r.status_code == 200 and r.json()["status"] == "warming"
+    # WAIT for the kick, and assert it — the docstring claimed "ONE
+    # warm-up kick" and nothing checked it, while the warm-up runs in a
+    # daemon thread. Unsynchronised, that thread can outlive this test's
+    # patch and reach the REAL `start_gateway`, which launches a Lean
+    # gateway mid-suite and can kill the operator's warm one. Same shape
+    # as the shutdown thread (`_schedule_process_exit`); asserting the
+    # effect is also what pins the thread inside the patch's lifetime.
+    for _ in range(50):
+        if kicks:
+            break
+        import time as _t
+        _t.sleep(0.02)
+    assert kicks == [workspace]
     assert client.post("/api/lean/eval",
                        json={"parts": [{"id": "p", "code": "  "}]}
                        ).status_code == 400
@@ -1769,7 +1782,14 @@ def test_shutdown_with_force_stops_the_engine_first(
     monkeypatch.setattr(_cli, "daemon_stop",
                         lambda ws, force=False: (calls.append(
                             f"daemon(force={force})"), (0, "stopped"))[1])
-    monkeypatch.setattr(_app.os, "_exit", lambda code: calls.append("exit"))
+    # Replace the whole SCHEDULING mechanism, not just `os._exit`.
+    # Patching the exit call alone leaves a thread sleeping past
+    # teardown, and it wakes into the real one and kills the pytest
+    # worker — see `_schedule_process_exit` for the full autopsy. The
+    # contract under test is the ORDER, which never needed a process to
+    # actually die.
+    monkeypatch.setattr(_app, "_schedule_process_exit",
+                        lambda: calls.append("exit"))
     from Tooling.lsp import lifecycle as _gw
     monkeypatch.setattr(_gw, "_ping_health", lambda timeout=1.0: {"pid": 222})
     monkeypatch.setattr(_gw, "_kill_stale_gateway",

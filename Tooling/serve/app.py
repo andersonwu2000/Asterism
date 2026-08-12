@@ -202,6 +202,33 @@ def spawn_claude_login() -> None:
         raise OSError("no terminal spawner for this platform")
 
 
+def _schedule_process_exit(delay: float = 0.4) -> None:
+    """Exit AFTER the response has flushed — this is the process the
+    caller is talking to, so it cannot exit inside the handler.
+
+    A named module-level seam, and the name is the point: a test must be
+    able to replace the WHOLE mechanism, not just its last instruction.
+    Patching `os._exit` alone does not work here and the failure is
+    vicious — `monkeypatch` is undone at teardown while this thread is
+    still sleeping, so it wakes into the REAL `os._exit` and kills the
+    pytest worker. Under xdist that reads as `node down: Not properly
+    terminated` in whatever test happened to be running 0.4s later, six
+    different victims across six runs, and never reproducible alone
+    because a single-file run was exiting anyway — with code 0, which
+    is what `os._exit(0)` leaves behind (found by the engine side,
+    2026-08-12; reproduced here before fixing).
+
+    The general shape, worth remembering: a background thread that
+    outlives the patch meant to contain it. Anything that defers a side
+    effect past the end of a test needs a seam at the SCHEDULING point.
+    """
+    def _bye() -> None:
+        time.sleep(delay)
+        os._exit(0)
+
+    threading.Thread(target=_bye, daemon=True).start()
+
+
 def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     workspace = workspace.resolve()
     app = FastAPI(title="Asterism", docs_url=None, redoc_url=None)
@@ -1248,14 +1275,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             print(f"[shutdown] gateway stop: {e}", flush=True)
 
         stopped.append("console")
-
-        def _bye() -> None:
-            # after the response has flushed: this is the process the
-            # caller is talking to, so it cannot exit inside the handler
-            time.sleep(0.4)
-            os._exit(0)
-
-        threading.Thread(target=_bye, daemon=True).start()
+        _schedule_process_exit()
         return {"stopped": stopped}
 
     # -- SSE log tail -----------------------------------------------------
