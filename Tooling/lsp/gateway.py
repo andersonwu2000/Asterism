@@ -2547,6 +2547,92 @@ def _declhead_submission(content: str) -> "dict":
 
 @mcp.tool()
 @_offload_to_thread
+def withdraw_stub(slug: str = "") -> str:
+    """Withdraw a sub-goal you declared this session: deletes
+    `new_<slug>.lean` from your attempts directory.
+
+    Use it when a `new_<slug>.lean` turned out redundant — its content
+    got folded into `patch.lean`, or the decomposition went another way.
+    A stub left behind is submitted as a sub-goal, and one that declares
+    nothing (or the wrong name) is rejected at commit.
+
+    Nothing else is reachable: the path is built from `slug`, must be a
+    `new_*.lean`, and must resolve inside this session's attempts
+    directory. `patch.lean` is not withdrawable.
+
+    Args:
+      slug: the sub-goal's slug — `new_<slug>.lean`, without the prefix
+            or the extension.
+    """
+    # 2026-08-12, g7557: the commit gate told an agent to "delete the
+    # file", and the agent has no delete tool — Bash closed on 08-11 and
+    # its file surface is write-only. It emptied the file (refused: the
+    # gate wants a declaration), then wrote `theorem r4_scratch : True
+    # := trivial` purely to satisfy the name check, and did the same to
+    # a second dead stub. Two vacuous sub-goals, born proved, proving
+    # nothing — and 48 minutes with two `parse_proposal_fail` deaths on
+    # the way. A gate must name an action the agent can perform.
+    #
+    # Deleting adds no destructive power it lacked: it can already
+    # overwrite any of these files with `Write`, and `WorkArea.__exit__`
+    # rmtrees the whole attempts directory at pipeline exit. What it
+    # adds is a way to SAY "withdrawn" instead of inventing one.
+    _recv_ts = _ts_now()
+    meta = _current_session()
+    if meta is None:
+        return json.dumps({"error":
+            "no session — X-Asterism-Session header missing or unknown",
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
+    name = (slug or "").strip()
+    if not name:
+        return _arg_help(
+            "withdraw_stub",
+            'the parameter is `slug`, the sub-goal name — e.g. '
+            'withdraw_stub(slug="r4_scratch") to drop new_r4_scratch.lean')
+    # Strip what an agent is likely to pass by mistake, then demand the
+    # remainder be a bare slug: a path separator or `..` never survives.
+    if name.startswith("new_"):
+        name = name[4:]
+    if name.endswith(".lean"):
+        name = name[:-5]
+    if not re.fullmatch(r"[A-Za-z0-9_]+", name):
+        return json.dumps({"error": (
+            f"{slug!r} is not a slug. Pass the sub-goal name alone "
+            f"(letters, digits, underscore) — the file path is built "
+            f"here, not passed in."),
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
+    attempts_dir = meta.target_path.parent.resolve()
+    target = (attempts_dir / f"new_{name}.lean").resolve()
+    if target.parent != attempts_dir or not target.name.startswith("new_"):
+        return json.dumps({"error": (
+            f"refusing: {target} is outside this session's attempts "
+            f"directory or is not a new_<slug>.lean stub."),
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
+    if not target.is_file():
+        return json.dumps(
+            {"withdrawn": False, "slug": name,
+             "note": f"new_{name}.lean is not in the attempts directory — "
+                     f"nothing to withdraw.",
+             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()},
+            ensure_ascii=False)
+    try:
+        target.unlink()
+    except OSError as exc:
+        return json.dumps({"error": f"could not remove {target.name}: {exc}",
+                           "_server_recv_ts": _recv_ts,
+                           "_server_send_ts": _ts_now()})
+    _log_for(meta, {"event": "stub_withdrawn", "slug": name})
+    return json.dumps(
+        {"withdrawn": True, "slug": name,
+         "note": (f"new_{name}.lean is gone; it will not be submitted as a "
+                  f"sub-goal. Make sure nothing still cites {name} — a "
+                  f"citation with no declaration fails the build."),
+         "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()},
+        ensure_ascii=False)
+
+
+@mcp.tool()
+@_offload_to_thread
 def validate_file(content: str = "") -> str:
     """Validate a candidate Lean file (typically a `new_<slug>.lean`
     sub-goal stub, or the assembled strategy patch). Auto-prepends

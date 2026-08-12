@@ -69,13 +69,15 @@ def test_install_windows_event_loop_policy_noop_on_non_win32(
     assert calls["n"] == 0
 
 
-def test_four_tools_registered() -> None:
-    """The gateway exposes the same 4 tools as the per-spawn server
-    (apply_edit / goal_at / errors_at / validate_file) so agents see
-    an identical surface."""
+def test_the_lean_tool_surface_is_exactly_this() -> None:
+    """The tool list IS the capability whitelist (2026-07-31 ruling), so
+    it is pinned rather than counted. `withdraw_stub` joined on
+    2026-08-12: the commit gate had been telling agents to delete a
+    redundant stub file, and nothing in their surface could delete
+    anything."""
     names = {t.name for t in lsp_gateway.mcp._tool_manager.list_tools()}
     assert names == {"apply_edit", "goal_at", "errors_at",
-                     "validate_file"}
+                     "validate_file", "withdraw_stub"}
 
 
 def test_format_diag_normalizes_lsp_shape() -> None:
@@ -2472,3 +2474,114 @@ def test_the_gate_quotes_a_measured_cost_not_a_hard_coded_one(tmp_path):
     msg = lsp_gateway._heartbeat_gate(
         m, "set_option maxHeartbeats 4000000 in\n")
     assert "240s" in msg
+
+
+# ─── withdraw_stub: the action the gate had been asking for ───
+#
+# 2026-08-12, g7557: the commit gate said "delete the file" and the
+# worker's surface is write-only (Bash closed 08-11). It emptied the
+# file — refused, the gate wanted a declaration — then wrote
+# `theorem r4_scratch : True := trivial` purely to satisfy the name
+# check, and did the same to a second dead stub. Two sub-goals born
+# proved, proving nothing, after 48 minutes and two parse_proposal_fail
+# deaths.
+
+def _stub_session(tmp_path: Path, monkeypatch, *names: str):
+    attempts = tmp_path / ".attempts" / "pipe-w"
+    attempts.mkdir(parents=True)
+    for n in names:
+        (attempts / n).write_text("import Mathlib\n", encoding="utf-8")
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="pipe-w", target_path=attempts / "patch.lean",
+        problem="p", workspace=tmp_path, log_path=None, file_content="")
+    monkeypatch.setattr(lsp_gateway, "_current_session", lambda: meta)
+    return attempts
+
+
+def test_withdraw_removes_the_named_stub(tmp_path, monkeypatch):
+    attempts = _stub_session(tmp_path, monkeypatch,
+                             "new_r4_scratch.lean", "new_keep_me.lean")
+    out = json.loads(asyncio.run(lsp_gateway.withdraw_stub(slug="r4_scratch")))
+    assert out["withdrawn"] is True
+    assert not (attempts / "new_r4_scratch.lean").exists()
+    assert (attempts / "new_keep_me.lean").exists()
+
+
+def test_withdraw_accepts_what_an_agent_will_actually_type(
+    tmp_path, monkeypatch,
+):
+    """It has just been reading `new_<slug>.lean` in build errors, so it
+    will paste that. Accept the filename, keep the path construction
+    here."""
+    attempts = _stub_session(tmp_path, monkeypatch, "new_r4_scratch.lean")
+    out = json.loads(asyncio.run(lsp_gateway.withdraw_stub(slug="new_r4_scratch.lean")))
+    assert out["withdrawn"] is True
+    assert not (attempts / "new_r4_scratch.lean").exists()
+
+
+def test_withdraw_cannot_reach_out_of_the_attempts_directory(
+    tmp_path, monkeypatch,
+):
+    """The blast radius IS the containment argument: this is the agent's
+    own scratch directory, rmtree'd at pipeline exit."""
+    attempts = _stub_session(tmp_path, monkeypatch, "new_keep_me.lean")
+    victim = tmp_path / "Root.lean"
+    victim.write_text("theorem main : True := trivial\n", encoding="utf-8")
+    for evil in ("../../Root", r"..\..\Root", "/etc/passwd",
+                 "sub/dir/x", "keep_me/../../../Root"):
+        out = json.loads(asyncio.run(lsp_gateway.withdraw_stub(slug=evil)))
+        assert "error" in out, evil
+    assert victim.exists()
+    assert (attempts / "new_keep_me.lean").exists()
+
+
+def test_withdraw_will_not_touch_the_patch(tmp_path, monkeypatch):
+    """`patch.lean` is the deliverable; only `new_*.lean` is a stub."""
+    attempts = _stub_session(tmp_path, monkeypatch)
+    (attempts / "patch.lean").write_text("theorem s : True := trivial\n",
+                                         encoding="utf-8")
+    out = json.loads(asyncio.run(lsp_gateway.withdraw_stub(slug="patch")))
+    assert out.get("withdrawn") is False   # new_patch.lean does not exist
+    assert (attempts / "patch.lean").exists()
+
+
+def test_withdrawing_something_absent_is_not_an_error(tmp_path, monkeypatch):
+    """Idempotent: a retry after a dropped response must not look like a
+    new failure."""
+    _stub_session(tmp_path, monkeypatch)
+    out = json.loads(asyncio.run(lsp_gateway.withdraw_stub(slug="never_existed")))
+    assert out["withdrawn"] is False and "error" not in out
+
+
+def test_the_response_warns_about_dangling_citations(tmp_path, monkeypatch):
+    _stub_session(tmp_path, monkeypatch, "new_gone.lean")
+    out = json.loads(asyncio.run(lsp_gateway.withdraw_stub(slug="gone")))
+    assert "cites" in out["note"] and "gone" in out["note"]
+
+
+def test_an_emptied_stub_reads_as_withdrawn(tmp_path):
+    """The fallback an agent reaches for when a tool call fails — and
+    what g7557 tried first, before inventing `: True := trivial` to get
+    past the declaration check. One list, so the commit gate and the
+    bail detector cannot disagree about whether this attempt
+    decomposed."""
+    from Tooling.pipeline import _live_stubs
+    d = tmp_path / "att"
+    d.mkdir()
+    (d / "new_real.lean").write_text("theorem real : True := trivial\n",
+                                     encoding="utf-8")
+    (d / "new_withdrawn.lean").write_text("", encoding="utf-8")
+    (d / "new_blank.lean").write_text("\n   \n", encoding="utf-8")
+    assert [p.name for p in _live_stubs(d)] == ["new_real.lean"]
+
+
+def test_the_commit_gate_names_an_action_the_worker_can_perform():
+    """It said "delete the file" to an agent whose file surface is
+    write-only. Every message that prescribes an exit has to name one
+    that exists (third instance today)."""
+    src = (Path(__file__).resolve().parents[1] / "Tooling" / "pipeline"
+           / "backward.py").read_text(encoding="utf-8")
+    i = src.index("has no `(theorem|def|structure|class) ")
+    msg = src[i:i + 500]
+    assert "withdraw_stub" in msg
+    assert "delete the file before submitting" not in msg

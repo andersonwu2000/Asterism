@@ -602,7 +602,8 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         _extract_statement_from_lean, _grep_forbidden,
         _inject_imports_for_subs, _is_sorry_stub,
         _lean_path_to_module, _normalize_signature,
-        _safe_glob, _signature_prefix, _slug_from_filename,
+        _live_stubs, _safe_glob, _signature_prefix,
+        _slug_from_filename,
         DECLINE_TO_FAILURE_REASON,
     )
     from ._retry import SpawnCtx, run_lsp_edit_loop
@@ -1020,7 +1021,8 @@ def _backward_parse_and_commit(
         _extract_statement_from_lean, _grep_forbidden,
         _inject_imports_for_subs, _is_sorry_stub,
         _lean_path_to_module, _normalize_signature,
-        _safe_glob, _signature_prefix, _slug_from_filename,
+        _live_stubs, _safe_glob, _signature_prefix,
+        _slug_from_filename,
         DECLINE_TO_FAILURE_REASON,
     )
 
@@ -1097,7 +1099,7 @@ def _backward_parse_and_commit(
             note = ""
         if note:
             bail_leading = _extract_leading_comments(main_patch_text)
-            bail_new_subs = _safe_glob(attempts_dir, "new_*.lean")
+            bail_new_subs = _live_stubs(attempts_dir)
             if (not bail_leading.strip()
                     and not bail_new_subs
                     and _is_sorry_stub(main_patch_text)):
@@ -1148,7 +1150,7 @@ def _backward_parse_and_commit(
             leading,
         )
 
-    new_subs = _safe_glob(attempts_dir, "new_*.lean")
+    new_subs = _live_stubs(attempts_dir)
     if not new_subs:
         # Phase 6.5 — Backward leaf-bypass salvage. Mirrors
         # `_try_promote_sorry_free` at the sub-goal level: when the
@@ -1585,8 +1587,9 @@ def _backward_parse_and_commit(
                 "parse_proposal_fail",
                 f"new_{slug}.lean has no `(theorem|def|structure|class) "
                 f"{slug} ...` declaration. If this sub-goal turned out "
-                f"redundant during your decomposition, delete the file "
-                f"before submitting (don't leave a placeholder comment).",
+                f"redundant during your decomposition, withdraw it with "
+                f"`withdraw_stub(slug=\"{slug}\")` — the old wording said "
+                f"to delete the file, which no worker tool can do.",
                 leading,
             )
 

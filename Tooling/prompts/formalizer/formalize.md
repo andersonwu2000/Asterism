@@ -16,6 +16,7 @@ Four MCP tools talk to a live Lean server already holding **your `patch.lean` sa
 - `mcp__lsp__goal_at(line, col)` — read the proof goal at any position.
 - `mcp__lsp__errors_at(line=None)` — list current diagnostics.
 - `mcp__lsp__validate_file(content)` — elaborate a standalone candidate (auto-prepends Mathlib + Defs + your patch's `open`s); returns two independent verdicts: `diagnostics` = Lean compilation, `submission` = commit-gate rehearsal — both must be clean (`ok:true` covers only the former). Run it on `patch.lean` too before finishing.
+- `mcp__lsp__withdraw_stub(slug)` — drop a `new_<slug>.lean` you no longer want submitted as a sub-goal.
 - `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"decl":"foo"}])` — several read questions in one call; `decl` answers from the framework's record. `compute(code)` runs a Python calculation (numpy; no filesystem, no network — and it proves nothing, only the Lean kernel does).
 
 ## Outsource the heavy parts

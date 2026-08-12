@@ -370,6 +370,30 @@ def _spawn_failure(rc: int, attempts_dir: Path, spawn_dur: float,
 _IMPORT_LINE_RE = re.compile(r"(?m)^import\s")
 
 
+def _live_stubs(attempts_dir: Path) -> list[Path]:
+    """The `new_<slug>.lean` stubs this attempt actually declares.
+
+    An EMPTY one is withdrawn, not malformed. `withdraw_stub` is the
+    tool for that and the commit gate names it, but emptying the file is
+    what an agent reaches for when a tool call fails: g7557 did exactly
+    that on 2026-08-12, was refused (the gate wanted a declaration in
+    it), and invented `theorem <slug> : True := trivial` to satisfy the
+    name check — a sub-goal born proved that proves nothing. Reading the
+    empty file as the withdrawal it plainly is removes the motive.
+
+    Every caller that asks "did this attempt decompose?" goes through
+    here, so the answer cannot differ between the commit gate and the
+    bail detector."""
+    out: list[Path] = []
+    for p in _safe_glob(attempts_dir, "new_*.lean"):
+        try:
+            if p.read_text(encoding="utf-8", errors="replace").strip():
+                out.append(p)
+        except OSError:
+            out.append(p)   # unreadable is not "withdrawn" — keep it
+    return out
+
+
 def _safe_glob(directory: Path, pattern: str) -> list[Path]:
     """Drop-in replacement for `directory.glob(pattern)` that survives
     Windows-reserved characters in sibling filenames.
