@@ -229,3 +229,56 @@ def test_forensics_never_breaks_the_probe(monkeypatch):
         raise RuntimeError("no workspace")
     monkeypatch.setattr(provision, "_workspace", boom)
     provision._forensics(["py"], "nowhere", 1.0, TimeoutError("x"))
+
+
+# ─── the sandbox runs in the gateway, because the tool server can't ───
+#
+# `compute` shipped 2026-08-10 on the stdio MCP server that claude
+# spawns as its own child, and never worked once in production: twelve
+# consecutive calls timed out at 60s on a bare `print('alive')`. The
+# control spawn settled it — the very interpreter hosting that server,
+# same flags, same cwd, hung identically, while a shell runs the same
+# command in 95ms. No subprocess started from that server ever runs, so
+# the venv was never the problem and no amount of fixing it would have
+# helped.
+
+def test_the_tool_does_not_spawn_the_sandbox_itself() -> None:
+    """The regression that matters: a future edit that "simplifies" the
+    tool back to calling `sandbox.run` locally restores a path that has
+    never once worked."""
+    import inspect as _inspect
+    src = _inspect.getsource(mcp_tools.compute)
+    assert "_compute_via_gateway" in src
+    assert "sandbox" not in src, (
+        "compute must not reach the sandbox from this process — no "
+        "subprocess started here runs (2026-08-11)")
+
+
+def test_a_gateway_that_does_not_answer_says_whose_fault_it_is(monkeypatch):
+    """The old message named the venv and guessed "base Python upgraded
+    under it?" — a hard-coded explanation for a generic failure, and it
+    sent every reader after the wrong thing for two days. The agent must
+    be told this is the framework's fault and that working around it is
+    not the move."""
+    import urllib.request
+
+    def boom(*a, **kw):
+        raise OSError("connection refused")
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    out = mcp_tools._compute_via_gateway("print(1)")
+    assert "framework fault" in out
+    assert "retry once" in out
+    assert "working around it" in out
+    assert "base Python upgraded" not in out
+
+
+def test_the_gateway_endpoint_runs_the_same_sandbox() -> None:
+    """Moving WHERE `sandbox.run` is called must not change what it
+    does — same isolation, same caps, same contract."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1] / "Tooling" / "lsp"
+           / "gateway.py").read_text(encoding="utf-8")
+    i = src.index('@mcp.custom_route("/compute"')
+    body = src[i:i + 2500]
+    assert "from ..sandbox import run as _sandbox_run" in body
+    assert "asyncio.to_thread" in body      # never block the event loop

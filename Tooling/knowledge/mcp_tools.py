@@ -170,13 +170,67 @@ def compute(code: str = "") -> str:
     `print()`. Each call is a fresh process, so define everything you
     use. Time and memory are capped by the framework.
     """
-    from ..sandbox import run as _run
     if not (code or "").strip():
         return _ARG_HELP.format(
             tool="compute",
             hint='the parameter is `code`, a string — e.g. '
                  'compute(code="print(sum(1/k**2 for k in range(1, 10**6)))")')
-    return _run(code).render()
+    return _compute_via_gateway(code)
+
+
+#: The sandbox runs in the GATEWAY, not here.
+#:
+#: Measured 2026-08-11: no subprocess started from this stdio server
+#: ever runs. Twelve consecutive `compute` calls returned "sandbox
+#: interpreter will not start … timed out after 60 seconds", and the
+#: control spawn — the very interpreter hosting this server, same
+#: creation flags, same cwd — hung identically, while the same command
+#: from a shell takes 95ms. So the venv was never the problem and this
+#: tool had not worked once since it shipped on 08-10: agents lost
+#: their only calculator the same day the shell closed, and the polite
+#: "unavailable" message read as "temporarily down" rather than "never
+#: worked here". An Adversary hand-checked ~15 sums and abandoned a
+#: brute-force enumeration; a Strategist did a 256-family sweep in its
+#: own output and hit the 64k token ceiling.
+#:
+#: The gateway spawns `lake serve` and a pool of lean workers all day,
+#: and `pin_check._gateway_probe` already calls it over plain HTTP from
+#: THIS server on every loogle hit — so both halves of this path were
+#: already proven in production before it carried compute.
+_GATEWAY_TIMEOUT_SEC = 180
+
+
+def _compute_via_gateway(code: str) -> str:
+    import json
+    import os
+    import urllib.error
+    import urllib.request
+
+    from ..sandbox import ComputeResult
+    port = os.environ.get("ASTERISM_GATEWAY_PORT", "8765")
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/compute",
+        data=json.dumps({"code": code}).encode("utf-8"),
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=_GATEWAY_TIMEOUT_SEC) as r:
+            data = json.loads(r.read())
+    except Exception as exc:  # noqa: BLE001
+        # Say which side failed. The old message named the venv and
+        # guessed "base Python upgraded under it?", and that hard-coded
+        # guess sent every reader — including the operator — after the
+        # wrong thing for two days.
+        return ComputeResult(
+            rc=127, seconds=0.0,
+            output=f"[compute] the framework's compute service did not "
+                   f"answer ({type(exc).__name__}: {str(exc)[:160]}). This "
+                   f"is a framework fault, not a problem with your code: "
+                   f"retry once, and if it repeats say so in your "
+                   f"framework feedback rather than working around it.",
+        ).render()
+    return ComputeResult(rc=int(data.get("rc", 1)),
+                         output=str(data.get("output") or ""),
+                         seconds=float(data.get("seconds") or 0.0)).render()
 
 
 @mcp.tool()

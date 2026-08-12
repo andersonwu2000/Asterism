@@ -3236,6 +3236,49 @@ async def verify_session(request: Request):
     return JSONResponse(result, status_code=status)
 
 
+@mcp.custom_route("/compute", methods=["POST"])
+async def compute_endpoint(request: Request):
+    """Run sandboxed Python here, because the tool server cannot.
+
+    `compute` shipped on 2026-08-10 as a tool on the `asterism_tools`
+    STDIO server, which claude spawns as its own child. Measured
+    2026-08-11: **no subprocess started from that server ever runs** —
+    the sandbox interpreter timed out at 60s on a bare `print('alive')`
+    twelve consecutive times, and the control spawn (the very
+    interpreter hosting the server, same flags, same cwd) hung
+    identically. From a shell the same command takes 95ms. So it was
+    never the venv, and the tool had not worked once in production.
+
+    This process has no such problem: it spawns `lake serve` and a
+    pool of lean workers continuously. And the stdio server already
+    reaches it over plain HTTP (`knowledge/pin_check._gateway_probe`
+    borrows `/verify` on every loogle call), so the client side is a
+    proven path rather than a new one.
+
+    Body:    {"code": "<python>"}
+    Returns: {"rc": int, "output": str, "seconds": float}
+
+    The sandbox's own guarantees are unchanged — separate interpreter,
+    no framework on `sys.path`, memory/wall-clock caps, PEP 578 audit
+    hook — because this moves WHERE `sandbox.run` is called, not what
+    it does.
+    """
+    try:
+        data = await request.json()
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": f"invalid JSON: {e}"}, status_code=400)
+    code = str(data.get("code") or "")
+    from ..sandbox import run as _sandbox_run
+    try:
+        res = await asyncio.to_thread(_sandbox_run, code)
+    except Exception as e:  # noqa: BLE001 — reported, never swallowed
+        return JSONResponse(
+            {"rc": 1, "output": f"[compute] gateway-side failure: "
+                                f"{type(e).__name__}: {e}", "seconds": 0.0})
+    return JSONResponse({"rc": res.rc, "output": res.output,
+                         "seconds": res.seconds})
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request):
     """Liveness check. Reports worker pool status + active sessions
