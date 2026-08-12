@@ -72,6 +72,29 @@ REGISTRY: "dict[str, FailureTraits]" = {
                       death_note=True),
     "gateway_unreachable": _T("provider_infra", cooldown_scope="target"),
     "transient_timeout": _T("provider_infra", cooldown_scope="target"),
+    # The gateway answered, and what it said was "I failed" — a 5xx that
+    # survived `lifecycle.verify_file`'s ~50s retry budget, most often a
+    # slot that went away under a live session. Distinct from
+    # `gateway_unreachable` on purpose: the process is up and talking, so
+    # this must NOT feed the consecutive-unreachable breaker that kills
+    # the daemon — and these arrive in CLUSTERS (three in four minutes on
+    # 08-11, two in five on 08-12), exactly the shape that would trip it.
+    #
+    # It exists because the same failure wore three labels: 5 rows
+    # `gateway_unreachable` (relabelled BY HAND on 08-11 — data, not
+    # classifier, so it recurred), 4 `forward_no_new_goal`, and one
+    # `lake_build_error` whose own detail began "verify infra error".
+    # That last one charged a goal attempt and told the agent its Lean
+    # was broken. `agent_visible=False`: there is no lesson in it.
+    "verify_infra": _T("provider_infra", agent_visible=False,
+                       cooldown_scope="target"),
+    # The other half of an `error` from verify: a 4xx, a missing target,
+    # a malformed response. Retrying cannot help — the framework asked
+    # for the wrong thing — so no cooldown and no agent lesson, but it
+    # is still not the mathematics failing.
+    "framework_verify_error": _T("framework", agent_visible=False),
+    # (the predicate that picks between those two lives in
+    #  `verify_error_reason` at the foot of this module)
     # The provider is structurally unusable: a model slug the CLI does
     # not know, refused credentials, or a tool auto-denied for want of a
     # permission rule (the Antigravity CLI reports that last one as
@@ -315,3 +338,30 @@ def rc_to_reason(rc: int, *, rc_contract: "str | None" = None) -> str:
     if rc_contract in ("uninformative", "undeclared"):
         return "unclassified_spawn_failure"
     return "spawn_fast_fail"
+
+
+def verify_error_reason(result: "dict") -> "str | None":
+    """Which failure an `error` from `lifecycle.verify_file` is — or None
+    when the result carries no error at all.
+
+    The distinction the callers kept losing: an `error` key is the
+    GATEWAY reporting its own failure, while a Lean failure is
+    `ok: False` WITH diagnostics. Two arms collapsed them, and both
+    charged infra deaths to the mathematics — Backward named it
+    `lake_build_error` while writing "verify infra error" into the
+    detail of the same row (08-12, g7553), and Forward's `not ok`
+    branch swallowed the error case whole (4 rows).
+
+    `transient` is the split, and it is a field `verify_file` has always
+    returned: True once the 5xx survived its ~50s retry budget (the
+    gateway is up and answering, our slot went away — worth another
+    dispatch), False for 4xx / missing target / malformed response
+    (retrying asks the same wrong question again).
+
+    One predicate, because two arms answering this separately is how
+    they came to disagree.
+    """
+    if not result.get("error"):
+        return None
+    return ("verify_infra" if result.get("transient")
+            else "framework_verify_error")

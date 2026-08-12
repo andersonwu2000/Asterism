@@ -29,6 +29,10 @@ def test_provider_infra_set_pinned():
     assert failures.PROVIDER_INFRA_REASONS == {
         "spawn_fast_fail", "quota_exhausted", "missing_dep",
         "gateway_unreachable", "transient_timeout",
+        # 08-12: the gateway answered its own 5xx (a slot that went away
+        # under a live session). Provider-infra so it never burns a goal
+        # attempt — one of these used to arrive as `lake_build_error`.
+        "verify_infra",
         # 07-30: shutdown kills must not burn goal attempts (SG#14 class).
         "daemon_shutdown",
         # 07-30: agy provider — bad model slug / refused credentials /
@@ -74,6 +78,10 @@ def test_non_agent_set_pinned():
         # v38 (08-08): worker thread died by a non-infra exception; the
         # forensic row pairs cascade_one's attempts++ (goal-7486 class).
         "worker_exception",
+        # 08-12: the gateway's own 5xx / 4xx on a verify. There is no
+        # lesson in "your slot went away" — the row that used to carry
+        # it said `lake_build_error`, i.e. "your Lean is broken".
+        "verify_infra", "framework_verify_error",
     }
 
 
@@ -85,6 +93,9 @@ def test_target_cooldown_set_pinned():
         # #125: ghost queue rows (no loadable Manifest) must not be
         # re-dispatched in a tight T4-pumped loop.
         "problem_not_found",
+        # 08-12: a lost slot is worth one beat before the same
+        # (target, kind) goes back at the same gateway.
+        "verify_infra",
     }
 
 
@@ -158,8 +169,13 @@ def test_return_value_emitted_reasons_registered():
     `_reject("librarian_schema_invalid", …)`) were invisible, and all
     four were silently missing from the REGISTRY while doc + emitters
     agreed they exist. Pin them explicitly."""
+    # 08-12: both verify-error reasons travel the same way — one through
+    # a local `reason = …` (the keyword scan grabbed `"transient"` out of
+    # the `v.get("transient")` inside an inline conditional and demanded
+    # THAT be registered), one positionally through backward's `_abort`.
     for r in ("agent_timeout", "agent_rc_nonzero",
-              "librarian_schema_invalid", "librarian_verify_failed"):
+              "librarian_schema_invalid", "librarian_verify_failed",
+              "verify_infra", "framework_verify_error"):
         assert r in failures.REGISTRY, (
             f"{r} is emitted via a non-keyword path and must stay "
             f"registered")
@@ -178,3 +194,59 @@ def test_every_registered_reason_is_produced():
     assert not dead, (
         f"registered but never produced/referenced in Tooling/: {dead} — "
         "remove the entry or wire the producer")
+
+
+# ─── an `error` from verify is the gateway's failure, not the Lean's ───
+#
+# 08-12: the same gateway 500 (`no slot claimed`) reached the DB under
+# three different reasons — 5 rows `gateway_unreachable` (relabelled BY
+# HAND the day before, so the classifier kept producing more), 4
+# `forward_no_new_goal`, and one `lake_build_error` whose own detail
+# began "verify infra error". That last one burned a goal attempt and
+# told the agent its Lean was broken.
+
+def test_a_transient_verify_error_is_infra_not_mathematics():
+    assert failures.verify_error_reason(
+        {"error": "gateway HTTP 500: no slot claimed",
+         "transient": True}) == "verify_infra"
+
+
+def test_a_non_transient_verify_error_is_the_framework_asking_wrong():
+    """4xx / missing target / malformed response: retrying asks the same
+    wrong question again, so it gets no cooldown — but it is still not
+    the mathematics failing."""
+    assert failures.verify_error_reason(
+        {"error": "target file not found: X.lean",
+         "transient": False}) == "framework_verify_error"
+
+
+def test_a_lean_failure_is_left_alone():
+    """The predicate must not swallow a real build failure: that shape is
+    `ok: False` WITH diagnostics and no `error` key, and it belongs to
+    the agent."""
+    assert failures.verify_error_reason(
+        {"ok": False, "diagnostics": [{"message": "unknown identifier"}]}
+    ) is None
+    assert failures.verify_error_reason({"ok": True}) is None
+
+
+def test_verify_infra_never_burns_an_attempt_and_teaches_nothing():
+    """The two traits that were wrong in production: `lake_build_error`
+    is origin 'agent' (attempts++) and agent_visible."""
+    assert "verify_infra" in failures.PROVIDER_INFRA_REASONS
+    assert failures.REGISTRY["verify_infra"].agent_visible is False
+    assert failures.REGISTRY["framework_verify_error"].agent_visible is False
+
+
+def test_neither_arm_hard_codes_a_reason_for_a_verify_error():
+    """Both arms must ASK, because answering separately is how they came
+    to disagree. Pins the call sites, not just the predicate."""
+    fwd = (ROOT / "Tooling" / "pipeline" / "forward.py").read_text(
+        encoding="utf-8")
+    bwd = (ROOT / "Tooling" / "pipeline" / "backward.py").read_text(
+        encoding="utf-8")
+    assert "verify_error_reason(v)" in fwd
+    assert "verify_error_reason(v)" in bwd
+    # The exact regression: an error dict answered with the Lean reason.
+    assert 'failure_reason="forward_no_new_goal",\n                failure_detail=f"lake elaborate failed: {v.get(\'error\'' \
+        not in fwd

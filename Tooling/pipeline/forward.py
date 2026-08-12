@@ -42,6 +42,7 @@ from typing import Any  # noqa: F401 — used in string annotations (mfst/return
 
 from . import _presearch
 from ..state import assemble, db, metaprog, proof_store, transitions
+from ..state import failures as _failures
 from ..state import manifest as _manifest_mod
 
 
@@ -817,10 +818,22 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 outcome="failed", failure_reason="forward_no_new_goal",
                 failure_detail=f"verify_file raised: {type(e).__name__}: {e}",
             )
+        # An `error` key is the GATEWAY reporting its own failure; a Lean
+        # failure is `ok: False` WITH diagnostics. Collapsing the two
+        # charged infra deaths to the mathematics — 4 rows here, and one
+        # in backward whose detail literally began "verify infra error"
+        # (08-12). `transient` is the structured signal `verify_file`
+        # already returns; it was simply never read.
+        reason = _failures.verify_error_reason(v)
+        if reason:
+            return PipelineResult(
+                outcome="failed", failure_reason=reason,
+                failure_detail=f"lake elaborate failed: {v['error']}",
+            )
         if not v.get("ok"):
             return PipelineResult(
                 outcome="failed", failure_reason="forward_no_new_goal",
-                failure_detail=f"lake elaborate failed: {v.get('error', v)}",
+                failure_detail=f"lake elaborate failed: {v}",
             )
         err_diag = [
             d for d in (v.get("diagnostics") or [])

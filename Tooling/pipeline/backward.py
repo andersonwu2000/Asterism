@@ -1287,8 +1287,13 @@ def _backward_parse_and_commit(
             v = _verify_owned(scratch_dest, write_olean=True)
             if "error" in v:
                 _rm_scratch()
+                # The reason used to be `lake_build_error` while the
+                # detail said "verify infra error" in the same
+                # expression — so the row burned a goal attempt and told
+                # the agent its Lean was broken (08-12, g7553).
+                from ..state.failures import verify_error_reason
                 return _abort(
-                    "lake_build_error",
+                    verify_error_reason(v) or "lake_build_error",
                     diagnostics.annotate_failure_detail(
                         f"verify infra error: {v['error']}"),
                     leading)

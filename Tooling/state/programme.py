@@ -472,6 +472,12 @@ _INFRA_DISCARD_CHANNELS = frozenset({
     # either — same reasoning, and the invariant test below enforces
     # that every provider-infra reason lands on this side.
     "unclassified_spawn_failure",
+    # 08-12: the gateway answered its own 5xx mid-verify (a slot that
+    # went away). A lost slot is not a counter-argument, and
+    # `framework_verify_error` joins it for the same reason even though
+    # its origin is 'framework' rather than provider-infra: asking verify
+    # the wrong question says nothing about the mathematics.
+    "verify_infra", "framework_verify_error",
 })
 
 
