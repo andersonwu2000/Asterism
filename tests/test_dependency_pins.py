@@ -70,3 +70,29 @@ def test_ceilings_sit_at_the_next_major():
     assert not offenders, (
         "pin ceilings at the next major only:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_pytest_addopts_only_names_flags_the_extras_can_supply():
+    """A config knob and the dependency that makes it legal move together.
+
+    2026-08-11 `addopts = "-n auto"` landed without `pytest-xdist` in the
+    dev extra. pytest does not warn about an unknown flag — it exits 4
+    on a usage error BEFORE collecting anything, so both CI jobs went
+    red without running a single test, and stayed red for a day while
+    the local suite (which had xdist from elsewhere) was green. The
+    declaration and the environment disagreed and only the remote one
+    was honest.
+    """
+    data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    addopts = data["tool"]["pytest"]["ini_options"].get("addopts", "")
+    dev = {Requirement(r).name
+           for r in data["project"]["optional-dependencies"]["dev"]}
+    #: flag in addopts -> the distribution that defines it
+    needs = {"-n": "pytest-xdist", "--cov": "pytest-cov",
+             "--forked": "pytest-forked", "--timeout": "pytest-timeout"}
+    for flag, dist in needs.items():
+        if flag in addopts.split():
+            assert dist in dev, (
+                f"addopts passes {flag} but the dev extra does not install "
+                f"{dist} — pytest exits 4 on an unrecognised argument, "
+                f"before it collects anything")

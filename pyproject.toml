@@ -40,6 +40,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.4,<10",
+    # `addopts = "-n auto"` below is not optional tuning — without xdist
+    # installed pytest refuses the flag and exits 4 BEFORE collecting a
+    # single test. That is how CI ran red from 2026-08-11 (e421b920 set
+    # the flag, the extra did not follow) while the local suite, which
+    # had xdist from somewhere else, stayed green: a config knob and the
+    # dependency that makes it legal have to move together.
+    "pytest-xdist>=3.8,<4",
     "ruff>=0.15,<1",
     # starlette/fastapi TestClient transport for tests/test_serve_api.py
     "httpx>=0.28,<1",
