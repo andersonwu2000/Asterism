@@ -188,9 +188,17 @@ def test_the_installed_cli_matches_its_declaration_right_now(
     `--model` / a nonexistent `--resume` id are answered locally, so
     this costs nothing and works with the subscription exhausted.
 
-    A FAILURE here is not a broken test — it is the guard doing its job
-    from inside CI: update `capabilities.tested_version` (and re-verify
-    the marker tables) in the same change that acknowledges the new CLI.
+    A FAILURE here is not a broken test — it is the guard doing its job:
+    re-measure what the record vouches for, then update
+    `capabilities.tested_version` in the same change.
+
+    Two grains, on purpose (2026-08-12). The marker check is EXACT and
+    live: it re-measures on every run, so it costs nothing to keep
+    strict and it is the only thing that catches a `tested_version`
+    bumped without re-measuring (the 1.1.8 → 1.1.11 lie of 08-09). The
+    version check is per minor SERIES: claude and agy ship patches every
+    few days, exact equality left this red for a week at a time, and a
+    permanently red guard is one nobody reads.
     """
     if drift_guard.resolve_executable(provider) is None:
         pytest.skip(f"{provider} CLI not installed on this machine")
@@ -199,5 +207,39 @@ def test_the_installed_cli_matches_its_declaration_right_now(
     assert snap["marker_ok"], (
         f"{provider}: {drift_guard.PROBES[provider].marker_source} no "
         f"longer matches the CLI's own output — {snap}")
-    assert drift_guard.installed_version(provider) == \
-        caps.CAPABILITIES[provider].tested_version
+    installed = drift_guard.installed_version(provider)
+    declared = caps.CAPABILITIES[provider].tested_version
+    assert drift_guard.same_series(installed, declared), (
+        f"{provider}: installed {installed}, record vouched at {declared} "
+        f"— a different minor series, so re-measure the rc contract, the "
+        f"permission semantics and the stream shape before bumping it")
+
+
+# ─── the grain the version pin vouches at (2026-08-12) ───
+
+def test_a_patch_bump_is_the_same_series():
+    """Both of today's reds were patch-level — claude 2.1.224→2.1.226,
+    agy 1.1.11→1.1.12 — and neither moved a fact the record vouches
+    for."""
+    assert drift_guard.same_series("2.1.226", "2.1.224")
+    assert drift_guard.same_series("1.1.12", "1.1.11")
+
+
+def test_a_minor_bump_still_fires():
+    """Where the expensive facts actually move."""
+    assert not drift_guard.same_series("2.2.0", "2.1.224")
+    assert not drift_guard.same_series("2.1.224", "3.0.1")
+
+
+def test_the_series_check_cannot_catch_a_lie_inside_one_series():
+    """Stated rather than hidden: 08-09's `tested_version` 1.1.8 → 1.1.11
+    was a bare `--version` bump while the facts stayed 1.1.8's, and this
+    comparison waves it through — exactly as exact-equality did, since
+    the field had already been edited. The guard for that is the live
+    marker probe, which is why THAT one stays exact."""
+    assert drift_guard.same_series("1.1.11", "1.1.8")
+
+
+def test_missing_versions_never_pass_silently():
+    for a, b in (("2.1.226", None), (None, "2.1.226"), (None, None)):
+        assert not drift_guard.same_series(a, b)

@@ -163,6 +163,35 @@ def _run(argv: "list[str]", cwd: "Path | None") -> "tuple[int, str]":
     return r.returncode, ((r.stdout or "") + "\n" + (r.stderr or ""))
 
 
+def series(version: "str | None") -> "str | None":
+    """`2.1.226` → `2.1`. The grain the capability record vouches at."""
+    if not version:
+        return None
+    parts = str(version).strip().split(".")
+    return ".".join(parts[:2]) if len(parts) >= 2 else str(version).strip()
+
+
+def same_series(a: "str | None", b: "str | None") -> bool:
+    """Do these two versions share a minor series?
+
+    Exact equality was the rule until 2026-08-12, and it made this guard
+    useless by making it permanent: claude and agy ship patches every
+    few days, so the pin sat red for a week at a time and stopped being
+    read. A guard nobody reads protects nothing.
+
+    A patch bump is now silent and a minor bump still fires, because
+    that is where the record's expensive facts — rc contract, permission
+    semantics, stream shape, 15 probes on 2026-07-30 — actually move.
+    What this does NOT do is catch a lie inside one series: on
+    2026-08-09 `tested_version` went 1.1.8 → 1.1.11 on a bare
+    `--version` while the facts stayed 1.1.8's, and this comparison
+    would wave that through exactly as the old one did. The guard for
+    THAT is the live marker probe below, which re-measures on every run
+    and is deliberately left exact."""
+    sa, sb = series(a), series(b)
+    return sa is not None and sa == sb
+
+
 def installed_version(provider: str) -> "str | None":
     """`<cli> --version`, or None when the CLI is absent / mute."""
     caps = capabilities.capabilities_for(provider)
@@ -265,13 +294,16 @@ def check(workspace: Path,
 
         version = installed_version(provider)
         entry["version"] = version
-        if version and caps.tested_version and version != caps.tested_version:
+        if version and caps.tested_version and not same_series(
+                version, caps.tested_version):
             warnings.append(
                 f"{provider}: installed {version}, capabilities declared "
-                f"against {caps.tested_version}. The marker tables "
-                f"validated at {caps.tested_version} are "
-                f"{', '.join(caps.marker_tables) or '(none declared)'} — "
-                f"re-verify them, then update `tested_version`.")
+                f"against {caps.tested_version} — a different {series(version)}"
+                f" series. Re-measure the FACTS this record vouches for "
+                f"(rc contract, permission semantics, stream shape) and the "
+                f"marker tables "
+                f"{', '.join(caps.marker_tables) or '(none declared)'}, then "
+                f"update `tested_version`.")
 
         snap = behaviour_snapshot(provider, workspace=workspace)
         if snap is None:
