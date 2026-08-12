@@ -525,11 +525,59 @@ def _delivered_programme_companion(conn: sqlite3.Connection, problem: str,
 BATCHES_COMPANION = "BATCHES.md"
 
 
-def _write_batches_companion(attempts_dir: "Path | None",
+def _step_artifact_lines(conn: sqlite3.Connection,
+                         row: sqlite3.Row) -> "list[str]":
+    """What the step LEFT BEHIND, as opposed to how its worker exited.
+
+    An `outcome` records the exit; the Strategist is instructed to read
+    the scoreboard mechanically, and the two are routinely opposite.
+    Measured 2026-08-11 (its own report): a step labelled `failed:dead`
+    had left a `proposed` strategy with one brick already proved and one
+    open child, and a step labelled `exhausted:forward_no_new_goal` had
+    created the group's deliverable node and linked it — so the wake
+    "re-dispatched work that already landed and missed leaves that were
+    ready", and "every real fact I acted on came from re-reading
+    TREE.md". The operator hit the same misreading the same day tracing
+    g7491 by hand.
+
+    This is the lazy layer on purpose (companion file, no inline bytes):
+    the numbers are all re-derivable by reading the DB or the tree, which
+    is exactly this file's admission criterion. What the scoreboard keeps
+    is what cannot be re-derived — outcome, attribution, the signature.
+    """
+    gid = row["produced_goal_id"] if "produced_goal_id" in row.keys() else None
+    if not gid:
+        return []
+    try:
+        strategies = list(conn.execute(
+            "SELECT id, status FROM strategies WHERE goal_id = ?"
+            " ORDER BY id", (int(gid),)))
+    except (sqlite3.Error, TypeError, ValueError):
+        return []
+    if not strategies:
+        return []
+    out = ["", "#### what it left (current tree state)", ""]
+    for s in strategies:
+        subs = list(conn.execute(
+            "SELECT g.slug, g.status FROM strategy_subgoals ss"
+            " JOIN goals g ON g.id = ss.subgoal_id"
+            " WHERE ss.strategy_id = ? ORDER BY ss.position", (s["id"],)))
+        head = f"- strategy `s{s['id']}` — {s['status']}"
+        if not subs:
+            out.append(head + ", no sub-goals")
+            continue
+        done = sum(1 for x in subs if x["status"] == "proved")
+        out.append(f"{head}, {done}/{len(subs)} sub-goals proved")
+        out += [f"    - `{x['slug']}` — {x['status']}" for x in subs]
+    return out
+
+
+def _write_batches_companion(conn: sqlite3.Connection,
+                             attempts_dir: "Path | None",
                              order: "list[str]",
                              grouped: "dict[str, list[sqlite3.Row]]",
                              step_idx) -> bool:
-    """`BATCHES.md` — every completed step's brief and worker reply, whole.
+    """`BATCHES.md` — every completed step's brief, reply, and what it left.
 
     The inline scoreboard used to carry both bodies cut at 1200 bytes, and
     SG briefs run 1.2-9.5KB, so the cut landed mid-sentence — once on the
@@ -556,6 +604,7 @@ def _write_batches_companion(attempts_dir: "Path | None",
             if r["landed_slug"]:
                 lines.append(f"landed `{r['landed_slug']}`"
                              f" — `{r['landed_path'] or '?'}`")
+            lines += _step_artifact_lines(conn, r)
             lines += ["", "#### brief", "",
                       str(r["brief"] or "(none)").strip(), ""]
             detail = str(r["outcome_detail"] or "").strip()
@@ -617,7 +666,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     rows = list(conn.execute(
         f"SELECT d.id, d.batch_id, d.brief, d.payload, d.outcome,"
         f" d.outcome_detail, d.updated_at, d.produced_kind,"
-        f" d.decision_kind, d.produced_group_id,"
+        f" d.decision_kind, d.produced_group_id, d.produced_goal_id,"
         f" g.slug AS landed_slug, g.status AS landed_status,"
         f" g.is_deliverable AS landed_marked,"
         f" g.statement AS landed_statement, g.lean_path AS landed_path"
@@ -645,7 +694,8 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
         except (ValueError, TypeError):
             return 0
 
-    lazy = _write_batches_companion(attempts_dir, order, grouped, _step_idx)
+    lazy = _write_batches_companion(conn, attempts_dir, order, grouped,
+                                    _step_idx)
     if lazy:
         out += [f"Full brief and worker reply per step:"
                 f" `{BATCHES_COMPANION}`, beside this file.", ""]

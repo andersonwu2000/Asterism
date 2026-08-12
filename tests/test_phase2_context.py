@@ -1615,3 +1615,82 @@ def test_workers_receive_conventions_on_both_dispatch_paths(
     lines2 = worker_context._section_strategist_directive(
         conn, "p", goal_id=gid)
     assert "NEVER nest a namespace" in "\n".join(lines2)
+
+
+def test_what_a_step_left_lands_in_the_companion_not_the_scoreboard(
+    workspace: Path, conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """`outcome` records how the worker EXITED. The Strategist is told to
+    read the scoreboard mechanically, and the two are routinely opposite:
+    2026-08-11 a step labelled `failed:dead` had left a `proposed`
+    strategy with one brick proved and one open child, so the wake
+    "re-dispatched work that already landed and missed leaves that were
+    ready" and every fact it acted on came from re-reading TREE.md.
+
+    The artifacts go to the LAZY layer, not inline: they are re-derivable
+    by reading the DB or the tree, which is this companion's admission
+    criterion, and the Context was slimmed the session before."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    gid = db.insert_goal(
+        conn, problem="p", slug="parent_brick",
+        lean_path="Problems/p/proofs/L_parent_brick.lean",
+        statement="P", origin="backward", status="attempting")
+    sub_ok = db.insert_goal(
+        conn, problem="p", slug="child_landed",
+        lean_path="Problems/p/proofs/L_child_landed.lean",
+        statement="A", origin="backward", status="proved")
+    sub_open = db.insert_goal(
+        conn, problem="p", slug="child_open",
+        lean_path="Problems/p/proofs/L_child_open.lean",
+        statement="B", origin="backward", status="open")
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, scratch_path, status,"
+        " proposal_md, created_by, created_at)"
+        " VALUES (?, '', '', 'proposed', '', 'pid-x', ?)", (gid, db.now()))
+    sid = int(cur.lastrowid)
+    conn.executemany(
+        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
+        " VALUES (?, ?, ?)", [(sid, sub_ok, 0), (sid, sub_open, 1)])
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, brief, payload, batch_id, outcome,"
+        " produced_goal_id, created_at, updated_at)"
+        " VALUES ('p', 0, 'routine', 'Inject', 'b', '{}', 'b-art',"
+        "         'failed:dead', ?, ?, ?)", (gid, db.now(), db.now()))
+    conn.commit()
+
+    attempts = tmp_path / "_att_art"
+    attempts.mkdir()
+    inline = "\n".join(phase2_context._section_inject_batch_outcomes(
+        conn, "p", attempts_dir=attempts))
+    companion = (attempts / phase2_context.BATCHES_COMPANION).read_text(
+        encoding="utf-8")
+
+    # the artifacts the label hides are in the companion...
+    assert "what it left" in companion
+    assert f"s{sid}" in companion and "proposed" in companion
+    assert "child_landed" in companion and "1/2 sub-goals proved" in companion
+    assert "child_open" in companion
+    # ...and the scoreboard did not grow to carry them
+    assert "child_landed" not in inline
+    assert "what it left" not in inline
+
+
+def test_a_step_with_no_strategy_adds_nothing() -> None:
+    """No artifacts, no header — an empty section is worse than none in a
+    file the agent pays to open."""
+    import sqlite3 as _sq
+    c = _sq.connect(":memory:")
+    c.row_factory = _sq.Row
+    c.execute("CREATE TABLE strategies (id INTEGER PRIMARY KEY, goal_id INT,"
+              " status TEXT)")
+    row = {"produced_goal_id": 99}
+
+    class _R(dict):
+        def keys(self):
+            return super().keys()
+
+    assert phase2_context._step_artifact_lines(c, _R(row)) == []
+    assert phase2_context._step_artifact_lines(
+        c, _R({"produced_goal_id": None})) == []
