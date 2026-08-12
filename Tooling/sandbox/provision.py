@@ -71,15 +71,49 @@ def _forensics(argv: "list[str]", cwd: str, elapsed: float,
     """
     import datetime
     import os
+    import time
     try:
         log = _workspace() / ".asterism" / "logs" / "compute_probe.log"
         log.parent.mkdir(parents=True, exist_ok=True)
+        # THE discriminator. A TimeoutExpired carries whatever the child
+        # wrote before it was killed, and that single fact splits the
+        # remaining hypotheses in half: `alive` present means the
+        # interpreter ran and exited fine and what hung is our side of
+        # the pipe; absent means it never got that far. Without it the
+        # evidence says only "60 seconds passed", which is what three
+        # earlier records already said.
+        partial = ""
+        for attr in ("stdout", "stderr", "output"):
+            v = getattr(exc, attr, None)
+            if v:
+                partial += f" {attr}={v if isinstance(v, str) else v.decode('utf-8', 'replace')!r}"
+        # Control spawn. Everything measured so far says "60 seconds
+        # passed and the child never ran", which fits two very different
+        # faults: this ONE executable cannot start here, or this process
+        # cannot start ANYTHING. Same flags, same cwd, a base interpreter
+        # that is known good from a shell, and a budget short enough that
+        # asking costs nothing when the answer is "fine".
+        control = "not attempted"
+        try:
+            from ..core.process_group import no_window_creationflags
+            t = time.monotonic()
+            r = subprocess.run([sys.executable, "-c", "print('control')"],
+                               capture_output=True, text=True, timeout=15,
+                               cwd=cwd,
+                               creationflags=no_window_creationflags())
+            control = (f"rc={r.returncode} out={(r.stdout or '').strip()!r} "
+                       f"in {time.monotonic() - t:.1f}s")
+        except Exception as cexc:  # noqa: BLE001
+            control = f"{type(cexc).__name__}: {str(cexc)[:120]}"
         with log.open("a", encoding="utf-8") as fh:
             fh.write(
                 f"{datetime.datetime.now(datetime.timezone.utc).isoformat()}"
                 f" pid={os.getpid()} ppid={os.getppid()}"
                 f" elapsed={elapsed:.1f}s"
                 f" {type(exc).__name__}: {str(exc)[:200]}\n"
+                f"    child_output:{partial or ' (nothing — it never wrote)'}\n"
+                f"    control_spawn(base interpreter, same flags/cwd): "
+                f"{control}\n"
                 f"    argv={argv}\n"
                 f"    cwd={cwd!r} exists={os.path.isdir(cwd)}\n"
                 f"    env_keys={sorted(os.environ)}\n"
