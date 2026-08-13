@@ -16,7 +16,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..state import brief, db, kb, kb_ingest, manifest, tree
+from ..state import brief, db, kb, kb_ingest, manifest, satellites, tree
 from . import dispatcher, fsutil
 from ..quality import prune
 
@@ -738,19 +738,12 @@ def _robust_rmtree(path: Path, retries: int = 5,
 
 
 #: Everything `proofs/` may hold that belongs to a RUN rather than to the
-#: problem. One list, because the sweeper and the "did we forget to sweep"
-#: verifier both read it: they used to carry separate copies of the same
-#: tuple, so the check shared the sweeper's blind spot and could never
-#: report what the sweeper missed. It missed `patch.lean` — a Backward
-#: worker's sandbox output whose home is the attempts dir; one that landed
-#: here on 2026-07-14 outlived the SLC reset three weeks later, still
-#: importing four `L_*` modules the same reset had deleted.
-PROOFS_SWEEP_PATTERNS = (
-    "L_*.lean", "_strategy_*.lean",          # the problem's own bricks
-    "patch.lean", "new_*.lean",              # worker sandbox outputs
-    "*.backup", "*.verify_backup", "*.verify_backup_s*",
-    "*.lean.tmp", "*.lean.tmp_s*",           # verify staging, sid-keyed
-)
+#: problem — read from the satellite registry (`state/satellites.py`),
+#: which is the one home for "what does a problem own on disk": the
+#: sweeper, the verifier and the complement audit all read the same
+#: entries, so none of them can drift into a private blind spot the
+#: way the pre-d45a17b9 duplicated tuple did.
+PROOFS_SWEEP_PATTERNS = satellites.swept(satellites.SCOPE_PROOFS)
 
 
 def cmd_reset(args: argparse.Namespace) -> int:
@@ -790,6 +783,17 @@ def cmd_reset(args: argparse.Namespace) -> int:
     conn.execute("PRAGMA foreign_keys = ON")
     n_goals, n_strats = wipe_problem_rows(conn, problem)
     conn.commit()
+    # DB complement audit, REPORT ONLY: rows still referencing this
+    # problem in any table the schema-derived classification can ask
+    # (state/satellites.py). A non-zero count is a wipe blind spot —
+    # reported for the operator, never auto-deleted: widening what
+    # reset destroys is a human decision made on this evidence.
+    leftover_rows = satellites.db_leftovers(conn, problem)
+    if leftover_rows:
+        print(f"  Note: DB rows still referencing {problem} after the "
+              f"wipe (left in place — a wipe blind spot to triage):")
+        for table, n in sorted(leftover_rows.items()):
+            print(f"    ? {table}: {n} row(s)")
     return _reset_problem_files(workspace, pdir, problem, n_goals, n_strats)
 
 
@@ -976,44 +980,28 @@ def _reset_problem_files(workspace: Path, pdir: Path, problem: str,
                     failed_files.append(f.name)
 
     # Sweep gateway warmup artifacts. Current location is
-    # `.asterism/runtime_slots/_gateway_slot_<i>.lean` (per-worker
-    # didOpen surface). The workspace-root patterns + legacy
-    # `_gateway_smoke_*.lean` / `_axiom_probe_*.lean` are retained for
-    # migration cleanup of pre-move daemons / pre-current-design runs.
+    # `.asterism/runtime_slots/`; the workspace-root patterns are
+    # retained for migration cleanup of pre-move daemons. Patterns and
+    # their rationale live in the satellite registry.
     runtime_slots = workspace / ".asterism" / "runtime_slots"
     if runtime_slots.exists():
-        for f in runtime_slots.glob("_gateway_slot_*.lean"):
-            if _robust_unlink(f):
-                deleted_files.append(f"{runtime_slots.name}/{f.name}")
-            else:
-                failed_files.append(f.name)
-    for pattern in ("_gateway_slot_*.lean", "_gateway_smoke_*.lean",
-                     "_axiom_probe_*.lean"):
+        for pattern in satellites.swept(satellites.SCOPE_RUNTIME_SLOTS):
+            for f in runtime_slots.glob(pattern):
+                if _robust_unlink(f):
+                    deleted_files.append(f"{runtime_slots.name}/{f.name}")
+                else:
+                    failed_files.append(f.name)
+    for pattern in satellites.swept(satellites.SCOPE_WORKSPACE):
         for f in workspace.glob(pattern):
             if _robust_unlink(f):
                 deleted_files.append(f.name)
             else:
                 failed_files.append(f.name)
 
-    # Drop per-problem artifacts that aren't in proofs/:
-    #   - TREE.md: live tree rendering; goal rows gone → render
-    #     would say "no root goal" anyway
-    #   - LESSONS.md: legacy Model-A reflection cache. No longer created
-    #     (Phase 12 Model B moved lessons into the KB); swept only to
-    #     clean a pre-Model-B problem dir that still carries one
-    #   - Root.lean.backup: spawn-side snapshot from in-pipeline retry
-    #     path; only an unclean shutdown leaves it behind
-    #   - PROGRAMME.md: rendered from programme_revisions (wiped above);
-    #     the file carries the run's full route/thesis — left behind it
-    #     would hand a rerun the prior run's winning worldview (leak
-    #     audit for the model-comparison rerun, 2026-07-19)
-    #   - _plan.md: strategists sometimes write the plan note at the
-    #     problem root instead of .drafts/ (a5 run did); same leak class
-    #     as PROGRAMME.md
-    # BRIEF.md is intentionally NOT swept — it's auto-regenerated at
-    # daemon startup from Manifest+Library.
-    for name in ("TREE.md", "LESSONS.md", "Root.lean.backup",
-                 "PROGRAMME.md", "_plan.md"):
+    # Per-problem artifacts that aren't in proofs/ — the swept names,
+    # the kept names (Manifest/Defs/Root/BRIEF) and the reason for
+    # each are the registry's to state, not this loop's.
+    for name in satellites.swept(satellites.SCOPE_PROBLEM_ROOT):
         p = pdir / name
         if p.exists():
             if _robust_unlink(p):
@@ -1021,39 +1009,14 @@ def _reset_problem_files(workspace: Path, pdir: Path, problem: str,
             else:
                 failed_files.append(name)
 
-    # Drop .drafts/ (postmortem progress notes from prior timed-out
-    # spawns). Reset is meant to wipe state for a clean
-    # baseline run; carrying over partial sketches would pre-bias a
-    # clean reset.
-    drafts_dir = pdir / ".drafts"
-    if drafts_dir.exists():
-        if not _robust_rmtree(drafts_dir):
-            failed_files.append(".drafts/")
-
-    # Drop .presearch/ (per-goal candidate-lemma cache, keyed by goal id).
-    # Same clean-baseline rationale as .drafts — plus a real hazard the
-    # drafts don't have: after a reset that recreates the DB, goal ids
-    # restart, and a surviving `.presearch/g<id>.md` from the old world is
-    # silently served as the pre-search cache for an UNRELATED new goal
-    # with the same id (stale candidate lemmas injected into its Context).
-    presearch_dir = pdir / ".presearch"
-    if presearch_dir.exists():
-        if not _robust_rmtree(presearch_dir):
-            failed_files.append(".presearch/")
-
-    # Drop .groups/ (per-sub-group `PROGRAMME.md`, keyed by group id).
-    # The top group's programme is the problem-root PROGRAMME.md swept
-    # above; sub-groups project into `.groups/<id>/`, so sweeping only the
-    # root was half a fix — task #167, where a rerun's revision 2 cited
-    # `.groups/369` from the run before it. `DELETE FROM groups` clears
-    # the DB side, which makes it the `.presearch` hazard exactly: ids are
-    # re-issued after a reset, and a surviving directory becomes an
-    # UNRELATED new group's research programme — the one file whose whole
-    # job is to carry a worldview forward.
-    groups_dir = pdir / ".groups"
-    if groups_dir.exists():
-        if not _robust_rmtree(groups_dir):
-            failed_files.append(".groups/")
+    # Run-scoped directories (.drafts / .presearch / .groups): all three
+    # carry id-keyed or worldview state that must not leak into a rerun
+    # — each entry's `why` in the registry records the specific hazard.
+    for name in satellites.swept(satellites.SCOPE_PROBLEM_ROOT, dirs=True):
+        d = pdir / name
+        if d.exists():
+            if not _robust_rmtree(d):
+                failed_files.append(f"{name}/")
 
     if failed_files:
         print(f"FAIL: reset {problem}: could not remove "
@@ -1074,25 +1037,30 @@ def _reset_problem_files(workspace: Path, pdir: Path, problem: str,
     # longer the canonical source.)
     root_lean = pdir / "Root.lean"
 
-    # Post-reset verification: scan the directories we cleaned and
-    # raise loudly if anything we expected gone is still there. This
-    # catches both "_robust_unlink reported success but file came
-    # back" (race against a process still spawning) and any pattern
-    # we forgot to sweep.
+    # Post-reset verification: every SWEPT registry entry, re-checked.
+    # Derived from the same registry the sweeper read, so the verifier
+    # cannot lag the sweep list — and it now covers every swept entry
+    # (PROGRAMME.md / _plan.md / the three dot-dirs included), where the
+    # old hand-list re-checked only a subset. It catches "unlink
+    # reported success but the file came back" (a process still
+    # spawning) as well as a registry entry the loops above mishandled.
     leftovers: list[str] = []
     if proofs_dir.exists():
-        for pattern in PROOFS_SWEEP_PATTERNS:
+        for pattern in satellites.swept(satellites.SCOPE_PROOFS):
             for f in proofs_dir.glob(pattern):
                 leftovers.append(f"proofs/{f.name}")
-    for name in ("LESSONS.md", "Root.lean.backup", "TREE.md"):
+    for name in satellites.swept(satellites.SCOPE_PROBLEM_ROOT):
         if (pdir / name).exists():
             leftovers.append(name)
+    for name in satellites.swept(satellites.SCOPE_PROBLEM_ROOT, dirs=True):
+        if (pdir / name).exists():
+            leftovers.append(f"{name}/")
     runtime_slots = workspace / ".asterism" / "runtime_slots"
     if runtime_slots.exists():
-        for f in runtime_slots.glob("_gateway_slot_*.lean"):
-            leftovers.append(f"{runtime_slots.name}/{f.name}")
-    for pattern in ("_gateway_slot_*.lean", "_gateway_smoke_*.lean",
-                     "_axiom_probe_*.lean"):
+        for pattern in satellites.swept(satellites.SCOPE_RUNTIME_SLOTS):
+            for f in runtime_slots.glob(pattern):
+                leftovers.append(f"{runtime_slots.name}/{f.name}")
+    for pattern in satellites.swept(satellites.SCOPE_WORKSPACE):
         for f in workspace.glob(pattern):
             leftovers.append(f.name)
     if leftovers:
@@ -1102,6 +1070,23 @@ def _reset_problem_files(workspace: Path, pdir: Path, problem: str,
         for name in leftovers:
             print(f"  - {name}", file=sys.stderr)
         return 2
+
+    # Complement audit, REPORT ONLY: anything present that NO registry
+    # entry claims — swept or kept. This is the question the verifier
+    # above structurally cannot ask (it only re-checks what the sweeper
+    # already knows), and the d45a17b9 lesson is that the two must not
+    # share a source. An unclaimed path may be the framework's next
+    # unregistered artifact or the user's own file, which is exactly
+    # why nothing here deletes: register it, or ignore it, is the
+    # operator's call.
+    unclaimed = satellites.file_complement(pdir)
+    if unclaimed:
+        print(f"  Note: {len(unclaimed)} path(s) in the problem dir "
+              f"that no satellite-registry entry claims (kept, not "
+              f"touched — register framework artifacts in "
+              f"state/satellites.py):")
+        for name in unclaimed:
+            print(f"    ? {name}")
 
     print(f"OK: reset {problem}")
     print(f"  DB rows: {n_goals} goals, {n_strats} strategies cleared")
