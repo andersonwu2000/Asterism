@@ -19,6 +19,8 @@ from pathlib import Path
 
 from .. import agent, pipeline
 from . import config, fsutil, quota, quota_wait
+from .admission import (ADMIT, DENY_KIND_COOLED, DENY_TARGET_COOLED,
+                        admission)
 from ..state import db, manifest, thresholds, transitions, tree
 from ..state import failures as _failures
 from ..state import groups as _groups
@@ -429,11 +431,13 @@ def bfs_refill(conn: sqlite3.Connection,
         ).fetchone()
         return row is not None
 
-    def cooled(tid: str, kind: str) -> bool:
-        return cd.get((tid, kind), 0.0) > now
-
-    def kind_cooled(kind: str) -> bool:
-        return qcd.get(kind, 0.0) > now
+    def admits(tid: str, kind: str) -> str:
+        """The shared door predicate — see `admission`. Local copies of
+        these two comparisons lived here and in the pop loop until
+        2026-08-13, when the pop loop's absence of the per-target half
+        let ten fast-fails land in 51 seconds."""
+        return admission(tid, kind, cooldown_until=cd,
+                         quota_cooldown_kind=qcd, now=now)
 
     # Strategies ready for verify are no longer enqueued as Verify
     # pipelines. They're processed inline in `verify_housekeeping` at
@@ -497,9 +501,9 @@ def bfs_refill(conn: sqlite3.Connection,
             transitions._enqueue_strategist_review(conn, int(g["id"]))
             continue
         kind = "Formalizer"
-        if kind_cooled(kind):
+        if admits(gid, kind) != ADMIT:
             continue
-        if in_flight(gid, kind) == 0 and not cooled(gid, kind):
+        if in_flight(gid, kind) == 0:
             db.enqueue(conn, kind=kind, target_id=gid, priority=2,
                        problem=str(g["problem"]))
 
@@ -2637,25 +2641,31 @@ def run(workspace: Path, *, once: bool = False,
             if _dispatch_is_duplicate(running, target_id, kind, decision_id):
                 db.complete_queue_row(conn, qid)
                 continue
-            # #103 — defense-in-depth: even after bfs_refill skips
-            # cooled kinds, a race (cooldown set between bfs_refill
-            # and pop) could leave a queued row for a now-cooled
-            # kind. Drop it; bfs_refill will repopulate post-cooldown.
-            if st.quota_cooldown_kind.get(kind, 0.0) > time.time():
+            # The door. `pool.submit(_run_pipeline` below is the only
+            # spawn site in the codebase, so one predicate here governs
+            # every dispatch there will ever be — including the next
+            # path someone adds that re-enqueues directly and never
+            # touches `bfs_refill`. Both refusals were previously
+            # written out by hand in this loop, and the per-target half
+            # was simply absent (2026-08-13: ten fast-fails in 51s).
+            #
+            # The two refusals part company in what they do to the ROW,
+            # which is why `admission` returns a reason and not a bool:
+            _verdict = admission(
+                target_id, kind, cooldown_until=st.cooldown_until,
+                quota_cooldown_kind=st.quota_cooldown_kind,
+                now=time.time())
+            if _verdict == DENY_KIND_COOLED:
+                # Kind-wide quota hold: DROP. The whole kind is parked,
+                # so refill re-derives this row once the hold lifts,
+                # and holding a lease meanwhile blocks refill's dedup.
                 db.complete_queue_row(conn, qid)
                 continue
-            # …and the PER-TARGET cooldown, which until 2026-08-13 only
-            # `bfs_refill` honoured. Every infra failure sets
-            # `cooldown_until[(target, kind)]`, but the rows that most
-            # need it do not come from refill: `strategist-retry` /
-            # `forward-retry` re-queue directly, so the next tick popped
-            # them straight back out. Measured that day: ten consecutive
-            # fast-fails in 51 SECONDS — 6.3s apart against a 30s
-            # cooldown — which outran the quota ledger's own 60s cache
-            # and reached the daemon-exit breaker before anything could
-            # notice the subscription window had closed. The brake was
-            # set the whole time; nobody at this end was reading it.
-            if st.cooldown_until.get((target_id, kind), 0.0) > time.time():
+            if _verdict == DENY_TARGET_COOLED:
+                # Per-target back-off: PUT BACK. This exact row is still
+                # wanted and only the clock is wrong — and it may have
+                # come from a retry path that refill would never
+                # re-derive. See `db.unclaim_queue_row`.
                 deferred_rows.append(qid)
                 continue
             # Drop a queued Strategist whose problem already committed
