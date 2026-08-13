@@ -192,6 +192,17 @@ def file_complement(pdir: Path) -> "list[str]":
 
 # ──────────────────────────────── DB side ────────────────────────────────
 
+#: `pipelines.target_id` for a Problem-kind row is either the problem
+#: name or the Librarian's composed `problem\x1ffile` key. This SQL
+#: fragment is the decoder both the per-problem question and the global
+#: orphan audit ask through — one spelling of one fact, because the two
+#: asking it differently is how the audit came to disagree with the
+#: wipe about which rows even belong to a problem.
+PROBLEM_OF_TARGET = (
+    "(CASE WHEN instr(target_id, char(31)) > 0 "
+    " THEN substr(target_id, 1, instr(target_id, char(31)) - 1) "
+    " ELSE target_id END)")
+
 #: Problem linkage the schema cannot express, declared by hand. The
 #: predicate answers "rows referencing problem :p"; None means the rows
 #: are keyed by ids whose referents a wipe deletes first, so the
@@ -199,10 +210,12 @@ def file_complement(pdir: Path) -> "list[str]":
 #: orphan audit can see the leftovers.
 POLYMORPHIC_TABLES: "dict[str, tuple[str | None, str]]" = {
     "pipelines": (
-        "target_kind = 'Problem' AND target_id = :p",
+        "target_kind = 'Problem' AND " + PROBLEM_OF_TARGET + " = :p",
         "target_kind/target_id rows; Goal/Strategy/Group targets are "
-        "id-keyed and orphan-auditable only (68 Group-target orphans "
-        "measured 2026-08-13, pre-existing)"),
+        "id-keyed and orphan-auditable only. The Group kind arrived in "
+        "v35 and the wipe's hand-written kind list did not follow it "
+        "until 2026-08-14 (68 pipelines + 54 dead_attempts stranded, "
+        "swept then and covered by the wipe since)"),
     "dead_attempts": (
         None,
         "polymorphic target + pipeline_id FK; per-problem rows hang off "
@@ -217,12 +230,13 @@ POLYMORPHIC_TABLES: "dict[str, tuple[str | None, str]]" = {
 #: Problem-keyed tables a wipe DELIBERATELY leaves alone. Each entry is
 #: a standing ruling, visible here instead of silent in the wipe.
 SURVIVES_RESET: "dict[str, str]" = {
-    "spawn_usage": (
-        "token/wall spend telemetry — a record of money already spent, "
-        "not of run state. Kept on reset AND on problem deletion "
-        "(2,351 rows for the deleted putnam_2025_b6 measured "
-        "2026-08-13). Deliberateness unconfirmed by the owner; flip "
-        "this entry into the wipe only on their ruling."),
+    # `spawn_usage` sat here from 2026-08-13 to 2026-08-14 as an
+    # undeclared survivor turned declared one: token/wall telemetry,
+    # argued to be a record of money already spent rather than of run
+    # state, and marked "deliberateness unconfirmed by the owner". The
+    # owner's ruling was to WIPE it, so it left this dict for
+    # `wipe_problem_rows` — which is the intended traffic direction
+    # here. An entry is a standing ruling, not a resting place.
     "librarian_fail_counts": (
         "defused at the next classify "
         "(clear_librarian_fail_counts_for_problem) rather than swept; "
@@ -323,14 +337,23 @@ def orphan_rows(conn: sqlite3.Connection) -> "dict[str, int]":
             "AND target_id NOT IN (SELECT CAST(id AS TEXT) FROM goals)",
         "pipelines(Strategy target gone)":
             "SELECT COUNT(*) FROM pipelines WHERE target_kind='Strategy' "
-            "AND target_id NOT IN "
+            "AND " + PROBLEM_OF_TARGET + " NOT IN "
             "(SELECT CAST(id AS TEXT) FROM strategies)",
         "pipelines(Group target gone)":
             "SELECT COUNT(*) FROM pipelines WHERE target_kind='Group' "
             "AND target_id NOT IN (SELECT CAST(id AS TEXT) FROM groups)",
+        # Two key shapes share this column. A Forward pipeline's
+        # target_id IS the problem name; a Librarian per-file unit's is
+        # the composed `problem\x1ffile` (the in-process dispatch
+        # identity, see `dispatcher._lib_encode`). Comparing the raw
+        # column against `problems` therefore indicted 1,063 rows on
+        # 2026-08-14 whose problems all exist — an auditor that cries
+        # wolf a thousand times is one nobody reads, which is the exact
+        # failure this module was built to prevent. Decode, then ask.
         "pipelines(Problem target gone)":
             "SELECT COUNT(*) FROM pipelines WHERE target_kind='Problem' "
-            "AND target_id NOT IN (SELECT name FROM problems)",
+            "AND " + PROBLEM_OF_TARGET + " NOT IN "
+            "(SELECT name FROM problems)",
         "dead_attempts(Goal target gone)":
             "SELECT COUNT(*) FROM dead_attempts WHERE target_kind='Goal' "
             "AND target_id NOT IN (SELECT CAST(id AS TEXT) FROM goals)",

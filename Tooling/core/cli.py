@@ -895,14 +895,25 @@ def wipe_problem_rows(conn, problem: str) -> "tuple[int, int]":
     # constraint failed` because the earlier dead_attempts DELETE
     # passes only filtered by target_kind IN ('Strategy', 'Goal'),
     # missing the 'Problem' kind Forward writes).
+    #
+    # Two key shapes live in `pipelines.target_id` under this one kind:
+    # the bare problem name (Forward) and the Librarian's composed
+    # `problem\x1ffile` unit key. An exact `= ?` reads only the first,
+    # so every per-file Librarian row outlived its problem — the same
+    # gap as the Group targets above, found the same day by the same
+    # audit, and larger. Both callers ask through the ONE decoder in
+    # `state.satellites`, so the wipe and the auditor cannot disagree
+    # about which rows belong to a problem (they did, 1,063 times).
+    _tgt = satellites.PROBLEM_OF_TARGET
     conn.execute(
-        "DELETE FROM dead_attempts WHERE pipeline_id IN "
-        "(SELECT id FROM pipelines WHERE target_kind='Problem' "
-        " AND target_id = ?)",
+        f"DELETE FROM dead_attempts WHERE pipeline_id IN "
+        f"(SELECT id FROM pipelines WHERE target_kind='Problem' "
+        f" AND {_tgt} = ?)",
         (problem,),
     )
     conn.execute(
-        "DELETE FROM pipelines WHERE target_kind='Problem' AND target_id = ?",
+        f"DELETE FROM pipelines WHERE target_kind='Problem' "
+        f"AND {_tgt} = ?",
         (problem,),
     )
     # Catch-all queue sweep BY PROBLEM: the goal/strategy-targeted
@@ -933,11 +944,53 @@ def wipe_problem_rows(conn, problem: str) -> "tuple[int, int]":
                  (problem,))
     conn.execute("DELETE FROM programme_revisions WHERE problem = ?",
                  (problem,))
-    # Discussion groups (v35). Order-independent by construction: the
-    # self-FK cascades to descendants and the two mutual references with
-    # strategist_decisions are both ON DELETE SET NULL — this table and
-    # that one point at each other, so no delete order is right for both.
+    # Discussion groups (v35), and the polymorphic rows that TARGET them.
+    #
+    # The target-kind list in this function was written when there were
+    # three kinds; v35 added a fourth and only the `groups` row itself
+    # was swept, so every Group-targeted pipeline and dead_attempt
+    # outlived its group — 68 pipelines + 54 dead_attempts measured
+    # 2026-08-14, the oldest from the 2026-07 sub-group runs. Nothing
+    # broke, which is why it survived: the rows are invisible until a
+    # forensics query joins through a group id that no longer resolves.
+    # (Ruling: delete, 2026-08-14. Task #208.)
+    #
+    # Ids first, rows after: once `groups` is gone the question "which
+    # groups did this problem own" is unanswerable and only the global
+    # orphan audit can see the leftovers.
+    grids = [str(r[0]) for r in conn.execute(
+        "SELECT id FROM groups WHERE problem = ?", (problem,)).fetchall()]
+    if grids:
+        ph = ",".join("?" * len(grids))
+        # dead_attempts.pipeline_id → pipelines FK: both the rows that
+        # NAME a group and the rows that hang off a group's pipeline
+        # must go before the pipelines themselves.
+        conn.execute(
+            f"DELETE FROM dead_attempts WHERE target_kind='Group' "
+            f"AND target_id IN ({ph})", grids)
+        conn.execute(
+            f"DELETE FROM dead_attempts WHERE pipeline_id IN "
+            f"(SELECT id FROM pipelines WHERE target_kind='Group' "
+            f" AND target_id IN ({ph}))", grids)
+        conn.execute(
+            f"DELETE FROM pipelines WHERE target_kind='Group' "
+            f"AND target_id IN ({ph})", grids)
+    # Order-independent by construction: the self-FK cascades to
+    # descendants (a sub-group carries its ancestor's `problem`, so the
+    # id sweep above covers the whole subtree) and the two mutual
+    # references with strategist_decisions are both ON DELETE SET NULL —
+    # this table and that one point at each other, so no delete order is
+    # right for both.
     conn.execute("DELETE FROM groups WHERE problem = ?", (problem,))
+    # Spend telemetry (v21). It used to survive both reset and problem
+    # deletion, on the reasoning that money already spent is a record of
+    # the world rather than of run state — 2,351 rows for a
+    # putnam_2025_b6 that no longer exists, measured 2026-08-14. The
+    # owner ruled otherwise: the accounting is per-problem, so it leaves
+    # with the problem. Nothing reads it across a reset boundary
+    # (`knowledge_stats` joins pipelines, `serve.data` groups by
+    # problem), so the rows had no reader that outlived their subject.
+    conn.execute("DELETE FROM spawn_usage WHERE problem = ?", (problem,))
     conn.execute("DELETE FROM problems WHERE name = ?", (problem,))
     return len(gids), len(sids)
 

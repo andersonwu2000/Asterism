@@ -132,6 +132,18 @@ def _seed_full_problem(mem, problem: str = "wilson") -> None:
         "INSERT INTO groups (problem, charter, status, created_at,"
         " updated_at) VALUES (?, 'the root charter', 'active', ?, ?)",
         (problem, now, now))
+    grid = mem.execute("SELECT id FROM groups WHERE problem = ?",
+                       (problem,)).fetchone()["id"]
+    # The fourth target kind (v35). Both shapes: a row that NAMES the
+    # group, and a dead_attempt hanging off that pipeline by FK.
+    mem.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at) VALUES ('pid-g', 'Strategist', ?, 'Group',"
+        " 'failed', 'failed', ?)", (str(grid), now))
+    mem.execute(
+        "INSERT INTO dead_attempts (target_id, target_kind, pipeline_id,"
+        " failure_reason, ts) VALUES (?, 'Group', 'pid-g',"
+        " 'agent_declined', ?)", (str(grid), now))
     mem.execute(
         "INSERT INTO librarian_fail_counts (target_id, n, updated_at)"
         " VALUES (? || char(31) || 'file.lean', 2, ?)", (problem, now))
@@ -146,9 +158,9 @@ def test_db_leftovers_sees_what_the_wipe_leaves(mem) -> None:
     """The complement auditor against the REAL wipe. Two facts pinned:
 
     1. Everything `wipe_problem_rows` promises to clear really goes —
-       the only rows the auditor reports afterwards are the two
-       DECLARED survivors' (skipped) and the librarian prefix rows,
-       whose survival is itself a declared ruling.
+       the only rows the auditor reports afterwards are the declared
+       survivor's (skipped): the librarian prefix rows, whose survival
+       is itself a declared ruling.
     2. The auditor is not decorative: before the wipe it sees rows in
        every askable table."""
     _seed_full_problem(mem)
@@ -157,8 +169,11 @@ def test_db_leftovers_sees_what_the_wipe_leaves(mem) -> None:
     assert before.get("goals") == 1
     assert before.get("queue") == 1
     assert before.get("pipelines") == 1
-    # Declared survivors are skipped even while their rows exist.
-    assert "spawn_usage" not in before
+    # Spend telemetry is askable now — it left SURVIVES_RESET on the
+    # owner's 2026-08-14 ruling, so the auditor is entitled to it and
+    # the wipe must answer for it like any other problem-keyed table.
+    assert before.get("spawn_usage") == 1
+    # The one remaining declared survivor is skipped while its rows exist.
     assert "librarian_fail_counts" not in before
 
     cli.wipe_problem_rows(mem, "wilson")
@@ -169,18 +184,107 @@ def test_db_leftovers_sees_what_the_wipe_leaves(mem) -> None:
         f"either the wipe grew a blind spot or a new table joined "
         f"without reset coverage. Do NOT silently widen the wipe; "
         f"report it.")
-    # The declared survivors DID survive — the ruling is real, not
-    # a stale entry covering for an already-clean table.
-    assert mem.execute("SELECT COUNT(*) FROM spawn_usage").fetchone()[0] == 1
+    assert mem.execute("SELECT COUNT(*) FROM spawn_usage").fetchone()[0] == 0
+    # The declared survivor DID survive — the ruling is real, not a
+    # stale entry covering for an already-clean table.
     assert mem.execute(
         "SELECT COUNT(*) FROM librarian_fail_counts").fetchone()[0] == 1
 
 
+def test_the_wipe_takes_the_group_targeted_rows_with_the_group(mem) -> None:
+    """The v35 gap, closed 2026-08-14. `db_leftovers` cannot see this
+    class — Group targets are id-keyed, and the ids are gone by the time
+    anyone asks — so the global orphan audit is the only witness, and
+    this is the test that would have caught it in 2026-07."""
+    _seed_full_problem(mem)
+    assert mem.execute(
+        "SELECT COUNT(*) FROM pipelines WHERE target_kind='Group'"
+    ).fetchone()[0] == 1
+
+    cli.wipe_problem_rows(mem, "wilson")
+    mem.commit()
+    assert satellites.orphan_rows(mem) == {}, (
+        "the wipe stranded rows whose referent it deleted")
+    assert mem.execute(
+        "SELECT COUNT(*) FROM pipelines WHERE target_kind='Group'"
+    ).fetchone()[0] == 0
+    assert mem.execute(
+        "SELECT COUNT(*) FROM dead_attempts WHERE target_kind='Group'"
+    ).fetchone()[0] == 0
+
+
+def test_another_problems_group_rows_are_untouched(mem) -> None:
+    """Widening a DELETE is the dangerous direction. The sweep is by
+    the problem's OWN group ids, so a second problem's identically
+    shaped rows must survive intact."""
+    _seed_full_problem(mem, "wilson")
+    now = db.now()
+    mem.execute("INSERT INTO problems (name, manifest_path, created_at)"
+                " VALUES ('bystander', 'Manifest.md', ?)", (now,))
+    mem.execute(
+        "INSERT INTO groups (problem, charter, status, created_at,"
+        " updated_at) VALUES ('bystander', 'other charter', 'active', ?, ?)",
+        (now, now))
+    mem.execute(
+        "INSERT INTO spawn_usage (pipeline_id, kind, problem, input_tokens,"
+        " output_tokens, ts)"
+        " VALUES ('pid-g2', 'Strategist', 'bystander', 1, 1, ?)", (now,))
+    survivor = mem.execute(
+        "SELECT id FROM groups WHERE problem = 'bystander'").fetchone()["id"]
+    mem.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at) VALUES ('pid-g2', 'Strategist', ?, 'Group',"
+        " 'succeeded', 'proved', ?)", (str(survivor), now))
+    mem.commit()
+
+    cli.wipe_problem_rows(mem, "wilson")
+    mem.commit()
+    kept = mem.execute(
+        "SELECT COUNT(*) FROM pipelines WHERE target_kind='Group'"
+        " AND target_id = ?", (str(survivor),)).fetchone()[0]
+    assert kept == 1
+    assert mem.execute(
+        "SELECT COUNT(*) FROM spawn_usage WHERE problem = 'bystander'"
+    ).fetchone()[0] == 1
+
+
+def test_the_librarian_unit_key_is_decoded_not_compared_raw(mem) -> None:
+    """One column, two key shapes. A Librarian per-file pipeline stores
+    `problem\\x1ffile`; comparing that raw against `problems` indicted
+    1,063 live rows on 2026-08-14 — an auditor that cries wolf a
+    thousand times is one nobody reads. Both directions pinned: a unit
+    of a LIVE problem is not an orphan, a unit of a DELETED one is."""
+    now = db.now()
+    mem.execute("INSERT INTO problems (name, manifest_path, created_at)"
+                " VALUES ('wilson', 'Manifest.md', ?)", (now,))
+    mem.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at) VALUES ('pid-l', 'Librarian',"
+        " 'wilson' || char(31) || 'Library/W/Basic.lean', 'Problem',"
+        " 'succeeded', 'proved', ?)", (now,))
+    mem.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at) VALUES ('pid-l2', 'Librarian',"
+        " 'ghost' || char(31) || 'Library/G/Basic.lean', 'Problem',"
+        " 'succeeded', 'proved', ?)", (now,))
+    mem.commit()
+    assert satellites.orphan_rows(mem).get(
+        "pipelines(Problem target gone)") == 1
+
+    # …and the per-problem question sees it too, so the wipe is held to
+    # it: an exact `=` comparison read zero of these.
+    assert satellites.db_leftovers(mem, "wilson").get("pipelines") == 1
+    cli.wipe_problem_rows(mem, "wilson")
+    mem.commit()
+    assert satellites.db_leftovers(mem, "wilson") == {}
+
+
 def test_orphan_rows_sees_the_group_target_class(mem) -> None:
-    """The 2026-08-13 finding, as a fixture: Group-targeted pipelines
-    rows survive a reset because the wipe clears Goal/Strategy/Problem
-    targets only. The global orphan audit is the grain that sees them
-    (68 real ones measured on the live DB)."""
+    """The 2026-08-13 finding, as a fixture: before the wipe learned the
+    fourth target kind, Group-targeted pipelines rows outlived a reset
+    because it cleared Goal/Strategy/Problem targets only. The global
+    orphan audit is the grain that sees them (68 real ones measured on
+    the live DB), and it stays the audit for whatever kind comes next."""
     now = db.now()
     mem.execute(
         "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
