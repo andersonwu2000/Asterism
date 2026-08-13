@@ -293,11 +293,23 @@ def _artifact_audit(*, kind: str, problem_dir: Path,
     Antigravity side then ran with `command(*)` allowed, every agy
     command shells through powershell, and a shell is a write channel
     that routes around the `write_file` deny rules. That premise is
-    gone. Both providers are now capability-closed — `command(*)` and
-    `read_url(*)` are DENIED on agy with `write_file` allowed only under
-    `.attempts/` (probe-verified), `DEFAULT_BASH_ALLOWED` is empty on
-    claude, and all agent capability goes through the framework-owned
-    MCP tool list. Neither layer ever enforced anything either: the
+    gone on the agy side — `command(*)` and `read_url(*)` are DENIED
+    there with `write_file` allowed only under `.attempts/`
+    (probe-verified).
+
+    IT IS NOT GONE ON CLAUDE, and this docstring said it was
+    (corrected 2026-08-10). `DEFAULT_BASH_ALLOWED` being empty does NOT
+    close the shell: `--allowedTools` is an ADDITIVE pre-approval list,
+    and the spawn also carries `--permission-mode acceptEdits`, under
+    which headless `-p` runs Bash whether or not a pattern names it.
+    Transcript proof four days after the retirement — 2026-08-04T03:22Z,
+    an SLC worker ran `sed -n '238p' <ctx> > D:\\Asterism\\.attempts\\
+    <pid>\\line238.txt` with the redirect target UNQUOTED, bash ate every
+    backslash, and the file landed in the spawn's cwd (the problem dir)
+    under a flattened name. So an arbitrary shell, and therefore an
+    arbitrary write channel, is open on claude and only `spawn_guard`
+    stands in front of it — whose Bash branch guards HOME, not the write
+    roots. Neither layer ever enforced anything either: the
     user-file pin and the commit chokepoint / axiom gate / `drift-check`
     are the enforcement, and both digest sweeps grew with the proof tree
     while answering a question nothing could act on. ~290 spawns of the
