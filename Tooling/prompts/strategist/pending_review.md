@@ -81,6 +81,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 - Same-batch Injects must be independent (concurrent dispatch); one that waits, even through a parked goal, stays `ConfirmShelve`d for the next batch.
 - The mathematics — claims, arguments, lemma names, invariant constructions, proof techniques — is yours. Tactics, Lean syntax, statement shape (ranges, off-by-ones, constants) are the worker's.
 - Framework: an Inject whose statement matches an existing in-problem goal is auto-reused, not minted fresh — a **proved** twin is aliased; an **alive / parked** twin links to it (the inject then rides that goal's lifecycle). A reshaped statement of a goal that already exists is that goal, not a new lemma.
+- Framework behaviour is quoted, not inferred — a prompt rule, a gate message, or the directive. Unsourced, it cannot justify a plan or a deferral.
 
 ## Examples
 

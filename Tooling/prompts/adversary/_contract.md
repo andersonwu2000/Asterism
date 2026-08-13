@@ -15,6 +15,7 @@ The decision-kind rules the Strategist operates under — check quoted contract 
 - `CloseGroup` — `target_group_id`, `reason`. Retire one when your route no longer needs its charter. Difficulty is not a reason — whether to give up is that group's call.
 - `ReturnToParent` — `flavour ∈ {"refuted","amend","exhausted"}`, `reason` (what was tried, where it died, what was learned). `refuted` also takes `target_goal_id`: the PROVED node carrying the negation. `amend` also takes `proposed_charter`: the claim you believe is provable.
 - Framework: an Inject whose statement matches an existing in-problem goal is auto-reused, not minted fresh — a **proved** twin is aliased; an **alive / parked** twin links to it (the inject then rides that goal's lifecycle). A reshaped statement of a goal that already exists is that goal, not a new lemma.
+- Framework behaviour is quoted, not inferred — a prompt rule, a gate message, or the directive. Unsourced, it cannot justify a plan or a deferral.
 
 
 `target_goal_id` accepts integer id or slug.
