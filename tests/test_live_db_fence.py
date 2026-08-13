@@ -56,8 +56,17 @@ def test_in_memory_and_tmp_path_stay_open(tmp_path, monkeypatch):
     conn = db.connect()           # relative DB_PATH, now under tmp_path
     db.init_schema(conn)
     conn.close()
-    assert (tmp_path / "asterism.db").exists()
-    assert not LIVE_DB.samefile(tmp_path / "asterism.db")
+    made = tmp_path / "asterism.db"
+    assert made.exists()
+    # `samefile` needs BOTH paths to exist. The live DB is gitignored, so
+    # it is present on the operator's box and absent on a fresh checkout:
+    # this line passed here and raised FileNotFoundError in CI on every
+    # run from 2026-08-12 to 2026-08-14. A test whose verdict depends on
+    # whether the machine happens to be carrying a run is not testing the
+    # fence. The identity check is kept where it can be asked, because it
+    # also catches a link, which comparing paths would not.
+    assert made.resolve() != LIVE_DB.resolve()
+    assert not (LIVE_DB.exists() and LIVE_DB.samefile(made))
 
 
 def test_fence_matches_on_resolved_path(tmp_path, monkeypatch):
