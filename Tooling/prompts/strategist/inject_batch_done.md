@@ -9,8 +9,7 @@ Tools: Read / Write / Edit / Grep / `inspect([{"grep":"Bar","in":"proofs/*.lean"
 - **Read Context.md** (`## Completed Inject batches`, `## Pending reopen-promises`, active goals, TREE).
 
 <!-- #if has_history -->
-- **Meta-analysis first.** Reflect on your prior decisions:
-   - Cross-check `## Recent decisions` for repeating failure patterns → step back and reassess the math logic and methodology.
+- **Meta-analysis first.** Cross-check `## Recent decisions` for repeating failure patterns.
 
 - **Process each reopen-promise** (your prior `ConfirmShelve` rows parked waiting for this batch):
    - Brick landed, gap closed → `Inject(target_goal_id, proof=...)` back to the original goal naming which brick to cite
