@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .. import agent, pipeline
-from . import config, fsutil, quota, quota_wait
+from . import config, fsutil, gateway_health, quota, quota_wait
 from .admission import (ADMIT, DENY_KIND_BACKOFF, DENY_QUOTA,
                         DENY_TARGET_COOLED, admission)
 from ..state import db, manifest, thresholds, transitions, tree
@@ -1110,6 +1110,11 @@ class SchedulerState:
     # Independent gateway_unreachable breaker (run #17: 48 strategies piled
     # up busy-looping against a dead gateway before this existed).
     consec_gateway_unreachable: int = 0
+    # When the free `/health` probe first failed after a spawn reported
+    # the gateway unreachable — the clock for `gateway_health`.
+    # None means "not holding": either nothing has failed yet, or the
+    # gateway answered and the hold was lifted.
+    gateway_down_since: "float | None" = None
     # Consecutive `unclassified_spawn_failure` (2026-08-08). Unknown
     # causes no longer burn goal attempts, so nothing else would ever
     # stop a goal dying the same unexplained way forever. Escalation
@@ -1149,28 +1154,23 @@ def _ensure_manifest(conn, manifests, problem: str) -> bool:
     return False
 
 
+#: How long the free `/health` probe may keep answering nothing before
+#: the daemon gives up. DERIVED, not chosen: it is exactly the wall
+#: clock the spawn-counting breaker would have spent reaching its limit,
+#: so the moment of death does not move — only its price does. Pinned by
+#: a test, because two constants that must stay in step are precisely
+#: the pair someone tunes one of (the 900s/780s lesson).
+GATEWAY_DOWN_GRACE_SEC = CONSEC_GATEWAY_UNREACHABLE_LIMIT * SPAWN_COOLDOWN_SEC
+
+
 def _gateway_unreachable_backoff(st: "SchedulerState", pool, *,
                                  kind: str, tk: str, tid: str) -> bool:
-    """Shared gateway-unreachable back-off + circuit breaker (task #9 —
-    formerly two verbatim copies in the normal-result and worker-exception
-    cascade paths; editing the breaker rule meant editing both). Returns
-    True when the breaker trips (caller exits the daemon with rc=2)."""
-    st.cooldown_until[(tid, kind)] = time.time() + SPAWN_COOLDOWN_SEC
-    st.consec_gateway_unreachable += 1
-    print(f"[cooldown] {kind} {tk}={tid} cooled "
-          f"{SPAWN_COOLDOWN_SEC:.0f}s after "
-          f"gateway_unreachable "
-          f"(consec={st.consec_gateway_unreachable})",
-          flush=True)
-    if st.consec_gateway_unreachable >= CONSEC_GATEWAY_UNREACHABLE_LIMIT:
-        print(f"[dispatcher] "
-              f"{st.consec_gateway_unreachable} "
-              f"consecutive gateway_unreachable — "
-              f"gateway appears permanently dead; "
-              f"exiting. Restart daemon (gateway "
-              f"will be re-launched) and inspect "
-              f".asterism/logs/gateway.log for the "
-              f"underlying crash.", flush=True)
+    """Policy wrapper over `gateway_health.unreachable_backoff`: this
+    file owns the numbers and the one place that may end a run."""
+    if gateway_health.unreachable_backoff(
+            st, kind=kind, tk=tk, tid=tid,
+            cooldown_sec=SPAWN_COOLDOWN_SEC,
+            limit=CONSEC_GATEWAY_UNREACHABLE_LIMIT):
         _exit_pool_fast(pool)
         return True
     return False
@@ -2630,7 +2630,10 @@ def run(workspace: Path, *, once: bool = False,
         # the loop, never inside it: releasing immediately would let the
         # very next `pop_queue` hand back the same row and spin.
         deferred_rows: "list[int]" = []
-        while (not (stopping or drifting or quota_waiting
+        # Free liveness check, dormant until a spawn has already told us
+        # the gateway is unreachable. See `core.gateway_health`.
+        gateway_down = gateway_health.liveness_gate(st)
+        while (not (stopping or drifting or quota_waiting or gateway_down
                     or gateway_warm["failed"])
                 and len(futures) < pool_size):
             row = db.pop_queue(
@@ -2765,13 +2768,17 @@ def run(workspace: Path, *, once: bool = False,
         for _qid in deferred_rows:
             db.unclaim_queue_row(conn, _qid)
 
-        # Deferred warm-failure exit: keep the pre-NL-first semantics
-        # (refuse to run without a healthy gateway + green contract),
-        # but only after the in-flight NL work drains — its commits are
-        # durable and the next start picks them up.
-        if gateway_warm["failed"] and not futures:
-            print(f"[gateway] warm-up failed: {gateway_warm['failed']} "
-                  f"— NL work drained, exiting", flush=True)
+        # Deferred gateway exit — warm-up failure, or a hold that
+        # outlived its grace (`gateway_health.fatal_reason` owns WHICH
+        # endings exist; this owns the ending). Keeps the pre-NL-first
+        # semantics, but only after in-flight NL work drains: those
+        # commits are durable and the next start picks them up.
+        _fatal = None if futures else gateway_health.fatal_reason(
+            st, warm_failed=gateway_warm["failed"], holding=gateway_down,
+            now=time.time(), grace_sec=GATEWAY_DOWN_GRACE_SEC)
+        if _fatal:
+            print(f"[gateway] {_fatal} — NL work drained, exiting",
+                  flush=True)
             pool.shutdown(wait=True)
             db.release_own_leases(conn)
             return 2

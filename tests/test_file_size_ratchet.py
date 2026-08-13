@@ -243,7 +243,17 @@ _WATERMARKS = {
     # evidence class (`trigger_quota_classified`) so a non-quota trip
     # that parks on a confirmed window indicts the stale markers out
     # loud instead of being covered by the endpoint. Conscious bump.
-    "Tooling/core/dispatcher.py": 2868,
+    # 2868→2875 (2026-08-14): the gateway liveness gate (#203) — ask
+    # `/health` before buying another spawn against a gateway a spawn
+    # already reported unreachable. The ratchet did its job here: the
+    # feature arrived +87 and the whole concern moved out to
+    # `core/gateway_health.py`, which also let the warm-failure and
+    # held-gateway endings become ONE exit instead of two blocks doing
+    # the same three things. +7 is what is left: the scheduler-state
+    # field, the derived grace constant, and the policy wrapper that
+    # keeps the numbers and the only run-ending call in this file.
+    # Conscious bump.
+    "Tooling/core/dispatcher.py": 2875,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
