@@ -262,7 +262,7 @@ def _section_stall_warning(conn: sqlite3.Connection,
         " current Forward batch is addressing.",
         "",
         "**`Noop` is not appropriate while this section is present.**"
-        " Choose one of: `Inject(target_goal_id=..., brief=...)`"
+        " Choose one of: `Inject(target_goal_id=..., proof=...)`"
         " (work a `shelved` / `pending_strategist_review` / `frozen`"
         " goal — `frozen` is the root before its first launch, and it"
         " is the only dispatch path to it), a"
@@ -572,6 +572,22 @@ def _step_artifact_lines(conn: sqlite3.Connection,
     return out
 
 
+def _prose_label(decision_kind: "str | None") -> str:
+    """What to CALL a decision's prose when showing it back to the agent.
+
+    One column, two contracts (`strategist._parse_one`): an Inject's
+    prose is the `proof` that settles its brick; a Delegate's is the
+    `brief` that charters a group. They share the DB column `brief`
+    because a decision carries one piece of prose — but echoing the
+    COLUMN name at the agent teaches the wrong field name for Inject,
+    and the agent writes back what it was shown. That is the whole
+    mechanism by which a 2026-08-11 rename of the wire field kept
+    costing rejected batches into 2026-08-14: the spec moved, and every
+    surface that still spelled it the old way taught the old way.
+    """
+    return "proof" if decision_kind == "Inject" else "brief"
+
+
 def _write_batches_companion(conn: sqlite3.Connection,
                              attempts_dir: "Path | None",
                              order: "list[str]",
@@ -591,7 +607,7 @@ def _write_batches_companion(conn: sqlite3.Connection,
     attribution, the landed signature."""
     if attempts_dir is None:
         return False
-    lines = ["# Completed Inject batches — full briefs and replies",
+    lines = ["# Completed Inject batches — full proofs and replies",
              "_Machine-generated per spawn. The inline"
              " `## Completed Inject batches` section carries the"
              " scoreboard; the untruncated text lives here._", ""]
@@ -605,7 +621,7 @@ def _write_batches_companion(conn: sqlite3.Connection,
                 lines.append(f"landed `{r['landed_slug']}`"
                              f" — `{r['landed_path'] or '?'}`")
             lines += _step_artifact_lines(conn, r)
-            lines += ["", "#### brief", "",
+            lines += ["", f"#### {_prose_label(r['decision_kind'])}", "",
                       str(r["brief"] or "(none)").strip(), ""]
             detail = str(r["outcome_detail"] or "").strip()
             if detail:
@@ -697,7 +713,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     lazy = _write_batches_companion(conn, attempts_dir, order, grouped,
                                     _step_idx)
     if lazy:
-        out += [f"Full brief and worker reply per step:"
+        out += [f"Full proof/brief and worker reply per step:"
                 f" `{BATCHES_COMPANION}`, beside this file.", ""]
 
     for bid in order:
@@ -821,13 +837,14 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                 # makes that one hop instead of a search.
                 out.append(f"  file: `{r['landed_path']}`")
             detail = (r["outcome_detail"] or "").strip()
+            _label = _prose_label(r["decision_kind"])
             if lazy:
                 out.append(
-                    f"  brief + reply: `{BATCHES_COMPANION}` step {idx}"
+                    f"  {_label} + reply: `{BATCHES_COMPANION}` step {idx}"
                     if detail else
-                    f"  brief: `{BATCHES_COMPANION}` step {idx}")
+                    f"  {_label}: `{BATCHES_COMPANION}` step {idx}")
             else:
-                out.append(f"  brief: {brief}")
+                out.append(f"  {_label}: {brief}")
                 if detail:
                     if len(detail) > 1200:
                         detail = detail[:1200].rstrip() + "…"
@@ -1048,7 +1065,7 @@ def _section_pending_reopens(conn: sqlite3.Connection,
         "Inject set — and that follow-up set has now fully landed. "
         "Strategist's own batch-time promise is the trigger; this is "
         "the moment to evaluate `Inject(target_goal_id=<id>, "
-        "brief=...)` vs a further mint vs a second "
+        "proof=...)` vs a further mint vs a second "
         "`ConfirmShelve` with a refined promise. Fortuitous unblock by "
         "unrelated Forwards is handled "
         "automatically by the G1 dedupe revival pass — no need to "
@@ -1185,7 +1202,7 @@ def _section_failure_replay(conn: sqlite3.Connection,
             brief = str(r["brief"])
             if len(brief) > 200:
                 brief = brief[:200] + "…"
-            out.append(f"  brief: {brief}")
+            out.append(f"  {_prose_label(r['decision_kind'])}: {brief}")
         # A failed decision's WHY (FetchPaper unfetchable detail, a dead
         # redispatch's forensics) — without it the replay teaches only
         # THAT it failed, and the same move gets re-tried blind.

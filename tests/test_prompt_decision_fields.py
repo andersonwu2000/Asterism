@@ -114,6 +114,90 @@ def test_the_examples_actually_parse(  # noqa: D401 — reads as a statement
     assert not broken, "examples the parser cannot read:\n" + "\n".join(broken)
 
 
+# ---------------------------------------------------------------------
+# The OTHER home (2026-08-14)
+# ---------------------------------------------------------------------
+#
+# The pin above walks `Tooling/prompts/*.md`. That is not where the
+# Strategist reads most of its instructions when something has gone
+# wrong: a rejection message, a stall gate, a Context section — all
+# built in Python, all telling it what to write next, and none of them
+# covered here. Eight of them still said `Inject(…, brief=…)` on
+# 2026-08-14, three days after the rename, and the ones that matter
+# most are the rejection messages: the agent is told how to fix its
+# batch, does exactly that, and is refused again.
+#
+# So the same question gets asked of both homes.
+
+CODE = Path(__file__).resolve().parents[1] / "Tooling"
+
+#: `Inject(… field=…)` / `Delegate(… field=…)` written as a call shape,
+#: in prose or in a message string. `[^)\n]*` keeps it to one line so a
+#: stray paren later in a paragraph cannot swallow the rest of a file.
+_CALL = re.compile(r"\b(Inject|Delegate)\(([^)\n]*)\)")
+_KWARG = re.compile(r"\b(brief|proof)\s*=")
+
+
+def _call_shapes() -> "list[tuple[str, int, str, str]]":
+    """(where, line, kind, field) for every call shape that names a
+    prose field, across BOTH homes."""
+    out = []
+    files = list(PROMPTS.rglob("*.md")) + [
+        p for p in CODE.rglob("*.py")
+        # The operator's local zh-TW prompt drafts are not shipped and
+        # are deliberately not committed; they are not a surface an
+        # agent ever reads.
+        if "prompts_zhtw_ref" not in p.parts]
+    for f in sorted(files):
+        s = f.read_text(encoding="utf-8", errors="replace")
+        for m in _CALL.finditer(s):
+            for kw in _KWARG.finditer(m.group(2)):
+                out.append((str(f.relative_to(CODE.parent)),
+                            s[:m.start()].count("\n") + 1,
+                            m.group(1), kw.group(1)))
+    return out
+
+
+def test_there_are_call_shapes_to_check() -> None:
+    """Same anti-vacuity guard as above — and it has teeth twice over,
+    because a regex that stops matching would hide the very drift this
+    file exists for."""
+    shapes = _call_shapes()
+    assert shapes, "no call shapes found at all — did the phrasing move?"
+    assert any(k == "Inject" for _w, _l, k, _f in shapes)
+
+
+def test_every_call_shape_names_the_field_its_kind_reads() -> None:
+    """Prose and generated messages, held to the parser's answer.
+
+    A call shape is copied more literally than a spec paragraph is
+    read — it looks like the thing you type — which is why the examples
+    outlived the rename in the first place."""
+    wrong = []
+    for where, ln, kind, field in _call_shapes():
+        want = _field_the_parser_reads(kind)
+        if field != want:
+            wrong.append(f"  {where}:{ln} — {kind}({field}=…) but the "
+                         f"parser reads {want!r}")
+    assert not wrong, (
+        "these tell the Strategist to write a field the parser will "
+        "refuse; the ones inside rejection messages are worse than the "
+        "prompts, because they fire when it is already in trouble:\n"
+        + "\n".join(wrong))
+
+
+def test_the_label_shown_back_follows_the_kind() -> None:
+    """The third surface: what the framework CALLS a decision's prose
+    when it echoes it back in Context. The DB column is `brief` for both
+    kinds, and printing the column name taught `brief` for Injects on
+    every wake. `_prose_label` is the one place that answers it."""
+    from Tooling.agent.phase2_context import _prose_label
+    assert _prose_label("Inject") == _field_the_parser_reads("Inject")
+    assert _prose_label("Delegate") == _field_the_parser_reads("Delegate")
+    # An unknown kind must not silently claim to be a proof.
+    assert _prose_label(None) == "brief"
+
+
 def test_delegate_has_no_worked_example_yet() -> None:
     """Recorded, not enforced. `Delegate` is the ONE kind whose prose
     field differs from `Inject`'s, and it is the one kind with no
