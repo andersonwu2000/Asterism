@@ -3346,6 +3346,22 @@ def complete_queue_row(conn: sqlite3.Connection, row_id: int) -> None:
     conn.commit()
 
 
+def unclaim_queue_row(conn: sqlite3.Connection, row_id: int) -> None:
+    """Put a popped row BACK — "not yet", not "never".
+
+    The pop loop's other skips all `complete_queue_row` (delete), on the
+    reasoning that refill re-derives whatever still needs doing. A
+    per-target cooldown is different in kind: the work is still wanted
+    and the only thing wrong is the clock, so deleting it would depend
+    on refill re-deriving a row that a retry path — not refill — put
+    there. Releasing the lease keeps the row exactly where it was and
+    lets the next tick claim it once the cooldown has passed."""
+    conn.execute(
+        "UPDATE queue SET owner_pid = NULL, leased_at = NULL WHERE id = ?",
+        (row_id,))
+    conn.commit()
+
+
 def release_own_leases(conn: sqlite3.Connection, *,
                        owner_pid: "int | None" = None) -> int:
     """Graceful-shutdown lease sweep: release every queue lease held by

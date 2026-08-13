@@ -179,17 +179,21 @@ def test_maybe_enter_disabled_never_probes(monkeypatch):
         raise AssertionError("probe must not fire when disabled")
     monkeypatch.setattr(usage_quota, "fetch_usage", forbidden)
     st = SchedulerState()
-    assert quota_wait.maybe_enter(
-        st, enabled=False, source="test") is False
+    assert not quota_wait.maybe_enter(
+        st, enabled=False, source="test")
     assert st.quota_wait_until == 0.0
 
 
 def test_maybe_enter_unconfirmed_is_false(monkeypatch):
+    """A reachable endpoint saying "you are fine" does not park — and
+    since 2026-08-13 it also says WHY it did not, because HEALTHY and
+    UNKNOWN license opposite escalations at the breaker."""
     monkeypatch.setattr(usage_quota, "fetch_usage", lambda: {
         "five_hour": {"utilization": 10.0, "resets_at": None}})
     st = SchedulerState()
-    assert quota_wait.maybe_enter(
-        st, enabled=True, source="test") is False
+    probe = quota_wait.maybe_enter(st, enabled=True, source="test")
+    assert not probe
+    assert probe.verdict == quota_wait.HEALTHY
     assert st.quota_wait_until == 0.0
 
 
@@ -200,8 +204,7 @@ def test_maybe_enter_confirmed_sets_wait(monkeypatch):
         "five_hour": {"utilization": 100.0, "resets_at": _iso(reset)}})
     st = SchedulerState()
     before = time.time()
-    assert quota_wait.maybe_enter(
-        st, enabled=True, source="test") is True
+    assert quota_wait.maybe_enter(st, enabled=True, source="test")
     assert st.quota_wait_until == reset + quota_wait.QUOTA_WAIT_JITTER_SEC
     assert before <= st.quota_wait_entered <= time.time()
 
@@ -215,8 +218,7 @@ def test_maybe_enter_extends_never_shrinks(monkeypatch):
     monkeypatch.setattr(usage_quota, "fetch_usage", lambda: {
         "five_hour": {"utilization": 100.0, "resets_at": _iso(near)}})
     entered_before = st.quota_wait_entered
-    assert quota_wait.maybe_enter(
-        st, enabled=True, source="test") is True
+    assert quota_wait.maybe_enter(st, enabled=True, source="test")
     assert st.quota_wait_until == far  # max() kept the later deadline
     assert st.quota_wait_entered == entered_before  # pause window intact
 

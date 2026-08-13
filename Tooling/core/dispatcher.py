@@ -1082,6 +1082,12 @@ class SchedulerState:
     # Global consecutive spawn_fast_fail counter; breaker exits the daemon
     # at CONSEC_SPAWN_FAIL_LIMIT (claude.exe persistently broken).
     consec_fast_fails: int = 0
+    # How many times in a row the breaker tripped and the usage endpoint
+    # refused to say whether it was quota (2026-08-13). Each one buys a
+    # bounded hold instead of an exit; the count is what stops "cannot
+    # tell" from becoming an indefinite silent wait. Cleared by any
+    # spawn that succeeds — the same evidence that clears the others.
+    consec_unconfirmed_trips: int = 0
     # Independent gateway_unreachable breaker (run #17: 48 strategies piled
     # up busy-looping against a dead gateway before this existed).
     consec_gateway_unreachable: int = 0
@@ -2202,21 +2208,35 @@ def run(workspace: Path, *, once: bool = False,
                                 # the endpoint's own 429 at the moment
                                 # quota dies is congestion, not
                                 # evidence.
-                                if quota_wait.maybe_enter(
-                                        st, enabled=quota_wait_enabled,
-                                        probe_attempts=(
-                                            quota_wait
-                                            .QUOTA_CONFIRM_ATTEMPTS),
-                                        source=(f"{st.consec_fast_fails} "
-                                                f"consecutive "
-                                                f"spawn_fast_fails")):
+                                _trip = (f"{st.consec_fast_fails} "
+                                         f"consecutive spawn_fast_fails")
+                                _probe = quota_wait.maybe_enter(
+                                    st, enabled=quota_wait_enabled,
+                                    probe_attempts=(
+                                        quota_wait.QUOTA_CONFIRM_ATTEMPTS),
+                                    source=_trip)
+                                if _probe:
+                                    st.consec_fast_fails = 0
+                                    st.consec_unconfirmed_trips = 0
+                                elif (quota_wait_enabled
+                                      and _probe.verdict == quota_wait.UNKNOWN
+                                      and quota_wait.hold_unconfirmed(
+                                          st, source=_trip)):
+                                    # Held, not exited — see hold_unconfirmed.
                                     st.consec_fast_fails = 0
                                 else:
+                                    _why = (
+                                        "the usage endpoint confirms quota is "
+                                        "healthy, so this is the provider, "
+                                        "not the window"
+                                        if _probe.verdict == quota_wait.HEALTHY
+                                        else "and the usage endpoint never "
+                                             "answered, so quota could be "
+                                             "neither confirmed nor ruled out")
                                     print(f"[dispatcher] "
                                           f"{st.consec_fast_fails} "
                                           f"consecutive spawn_fast_fails — "
-                                          f"claude.exe or provider appears "
-                                          f"broken; exiting. Inspect "
+                                          f"{_why}; exiting. Inspect "
                                           f".attempts/<pid>/_spawn.stderr "
                                           f"for the underlying error.",
                                           flush=True)
@@ -2237,6 +2257,7 @@ def run(workspace: Path, *, once: bool = False,
                         st.consec_fast_fails = 0
                         st.consec_gateway_unreachable = 0
                         st.consec_unclassified = 0
+                        st.consec_unconfirmed_trips = 0
                         # #103 — any non-quota, non-infra outcome on this
                         # kind proves the provider responded: clear the
                         # per-kind quota backoff so dispatch resumes
@@ -2562,6 +2583,10 @@ def run(workspace: Path, *, once: bool = False,
         # corners mean defense-in-depth here is cheap.
         # While the gateway is still warming, only NL kinds pop —
         # Lean rows stay queued (unleased) for the ready flip.
+        # Rows popped this pass that are still cooling. Released AFTER
+        # the loop, never inside it: releasing immediately would let the
+        # very next `pop_queue` hand back the same row and spin.
+        deferred_rows: "list[int]" = []
         while (not (stopping or drifting or quota_waiting
                     or gateway_warm["failed"])
                 and len(futures) < pool_size):
@@ -2619,6 +2644,20 @@ def run(workspace: Path, *, once: bool = False,
             if st.quota_cooldown_kind.get(kind, 0.0) > time.time():
                 db.complete_queue_row(conn, qid)
                 continue
+            # …and the PER-TARGET cooldown, which until 2026-08-13 only
+            # `bfs_refill` honoured. Every infra failure sets
+            # `cooldown_until[(target, kind)]`, but the rows that most
+            # need it do not come from refill: `strategist-retry` /
+            # `forward-retry` re-queue directly, so the next tick popped
+            # them straight back out. Measured that day: ten consecutive
+            # fast-fails in 51 SECONDS — 6.3s apart against a 30s
+            # cooldown — which outran the quota ledger's own 60s cache
+            # and reached the daemon-exit breaker before anything could
+            # notice the subscription window had closed. The brake was
+            # set the whole time; nobody at this end was reading it.
+            if st.cooldown_until.get((target_id, kind), 0.0) > time.time():
+                deferred_rows.append(qid)
+                continue
             # Drop a queued Strategist whose problem already committed
             # Ingest (e.g. a wake that raced the terminal commit). It
             # would only spawn + Noop. See `_strategist_row_is_stale`.
@@ -2670,6 +2709,12 @@ def run(workspace: Path, *, once: bool = False,
                          if _disp_file else target_id)
             print(f"[dispatch] {kind} {target_kind}={_disp_tid} "
                   f"pid={pipeline_id[:8]}", flush=True)
+
+        # Hand the still-cooling rows back, now that the pop loop cannot
+        # immediately re-claim them. Release, not delete: the work is
+        # still wanted (see `db.unclaim_queue_row`).
+        for _qid in deferred_rows:
+            db.unclaim_queue_row(conn, _qid)
 
         # Deferred warm-failure exit: keep the pre-NL-first semantics
         # (refuse to run without a healthy gateway + green contract),

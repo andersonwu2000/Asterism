@@ -262,16 +262,86 @@ _STALE_SESSION_MARKER = "no conversation found with session id"
 # would otherwise consume retry budget on a deterministically-failing
 # spawn. Reclassify to SpawnRC.QUOTA_EXHAUSTED (= 126) so the retry
 # helper short-circuits and the dispatcher applies cooldown via the
-# standard infra-reason path. Markers chosen from observed claude.exe
-# output ("You've hit your limit · resets … 8am") plus standard
-# Anthropic API error phrasings. Lowercased before matching.
-_QUOTA_MARKERS = (
-    "you've hit your limit",
-    "you have hit your limit",
-    "usage limit reached",
-    "rate limit",
-    "rate_limit_exceeded",
+# standard infra-reason path.
+#
+# The prose list was written 2026-05-08 against the then-current
+# wording, "You've hit your limit · resets … 8am". By 2026-07-03 the
+# CLI was saying "You've hit your SESSION limit · resets 7pm
+# (Asia/Taipei)" — one word, and every marker missed. Six weeks later
+# (2026-08-13) a five-hour window died mid-run, was charged as
+# `spawn_fast_fail` (whose meaning is "claude.exe is broken"), and the
+# daemon exited. So the middle word is a wildcard now: the sentence
+# names WHICH limit, and which one it is was never the point.
+_QUOTA_PROSE_RE = re.compile(
+    r"hit your (?:\w+ )?limit"          # …your limit / …your session limit
+    r"|usage limit reached"
+    r"|rate limit"
+    r"|rate_limit_exceeded",
+    re.IGNORECASE,
 )
+
+#: Epoch when claude says the window reopens, or None. Read (and
+#: consumed) through `core.quota.reset_epoch`, exactly like agy's and
+#: codex's. See `_quota_refusal` for why this is worth more than the
+#: usage endpoint on the one day it matters.
+_last_quota_reset: "float | None" = None
+
+
+def take_quota_reset() -> "float | None":
+    global _last_quota_reset
+    v, _last_quota_reset = _last_quota_reset, None
+    return v
+
+
+def _quota_refusal(stdout: str, stderr: str) -> "tuple[bool, float | None]":
+    """Did this spawn die because the subscription window is spent, and
+    when does it reopen? `(exhausted, resets_at_epoch or None)`.
+
+    STRUCTURED FIRST. The stream carries
+
+        {"type": "rate_limit_event",
+         "rate_limit_info": {"status": "rejected",
+                             "rateLimitType": "five_hour",
+                             "resetsAt": 1786618800, …}}
+
+    which answers both questions exactly, and `status` is what makes it
+    safe: the same event type also rides along as a warning while
+    requests are still being served, so a bare "rate_limit" substring
+    scan would convict a perfectly healthy spawn. That is why the prose
+    list below stays PROSE and never learns the underscore spelling.
+
+    `resetsAt` matters more than the reclassification. The framework's
+    other way of learning a reset time is the usage endpoint, and on
+    2026-08-13 that endpoint failed four consecutive probes at the exact
+    moment the window died (congestion at the boundary is expected —
+    every client asks at once). The spawn's own refusal carried the
+    answer the whole time and cost nothing to read.
+
+    Prose is the fallback: older CLIs, and any path where the event is
+    absent but the sentence is not.
+    """
+    reset: "float | None" = None
+    exhausted = False
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if '"rate_limit_event"' not in line:
+            continue
+        try:
+            info = json.loads(line).get("rate_limit_info") or {}
+        except (ValueError, AttributeError):
+            continue
+        if str(info.get("status", "")).lower() != "rejected":
+            continue        # a warning event — requests are still served
+        exhausted = True
+        try:
+            at = float(info.get("resetsAt"))
+        except (TypeError, ValueError):
+            at = 0.0
+        if at > 0:
+            reset = at if reset is None else max(reset, at)
+    if exhausted:
+        return True, reset
+    return bool(_QUOTA_PROSE_RE.search((stdout or "") + "\n" + (stderr or ""))), None
 # Watchdog policy: single point-in-time check at `trap_check_sec` (the
 # in-spawn wall-clock when the framework decides whether to abandon
 # the broken session for a fresh-sid takeover). At that moment we
@@ -1514,10 +1584,20 @@ class ClaudeCliProvider:
         # bails the daemon. Reclassify to QUOTA_EXHAUSTED so the
         # standard infra-reason cooldown path applies.
         if rc != 0:
-            combined = ((stdout or "") + "\n" + (stderr or "")).lower()
-            if any(m in combined for m in _QUOTA_MARKERS):
+            spent, resets_at = _quota_refusal(stdout or "", stderr or "")
+            if spent:
+                global _last_quota_reset
+                if resets_at:
+                    _last_quota_reset = resets_at
+                if resets_at:
+                    from datetime import datetime as _dt, timezone as _tz
+                    when = (" — reopens " + _dt.fromtimestamp(
+                        resets_at, _tz.utc).strftime("%Y-%m-%d %H:%M UTC"))
+                else:
+                    when = (" — no reset time stated; the caller falls "
+                            "back to its own backoff")
                 print(f"[llm:claude] quota exhausted (rc={rc} → "
-                      f"{SpawnRC.QUOTA_EXHAUSTED})", flush=True)
+                      f"{SpawnRC.QUOTA_EXHAUSTED}){when}", flush=True)
                 return SpawnRC.QUOTA_EXHAUSTED
         return rc
 

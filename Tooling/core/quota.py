@@ -208,11 +208,19 @@ _ENDPOINT_PROBES: "dict[str, Callable[[], list[Block]]]" = {
 #: This exists because the dispatcher had grown `if seat == "antigravity"`
 #: inline — the exact name-keyed special case `llm/capabilities` was
 #: written to stop, and a second backend would have made it a second
-#: branch. The two live sources answer the same question from opposite
+#: branch. The live sources answer the same question from different
 #: materials: agy parses "Resets in 2h46m25s" out of its refusal prose,
 #: codex reads `rate_limits.primary.resets_at` out of the rollout file
-#: its own spawn wrote. Neither is an endpoint — both are consumed once
-#: and cleared, so a stale epoch cannot be replayed onto a later block.
+#: its own spawn wrote, claude reads `resetsAt` off the
+#: `rate_limit_event` in its own stream. All are consumed once and
+#: cleared, so a stale epoch cannot be replayed onto a later block.
+#:
+#: claude is here DESPITE having a usage endpoint, and that is the
+#: point rather than an inconsistency: the endpoint is the thing that
+#: fails when every client on the account queries it in the same second
+#: the window dies (2026-08-13, four consecutive probe failures, daemon
+#: exit). The refusal a spawn already paid for is free and arrives
+#: exactly when the endpoint is least able to answer.
 _RESET_SOURCES: "dict[str, Callable[[], float | None]]" = {}
 
 
@@ -222,8 +230,10 @@ def _load_reset_sources() -> None:
     if _RESET_SOURCES:
         return
     from ..llm import antigravity_cli as _agy
+    from ..llm import claude_cli as _claude
     from ..llm import codex_cli as _codex
     _RESET_SOURCES["antigravity"] = _agy.take_quota_reset
+    _RESET_SOURCES["claude"] = _claude.take_quota_reset
     _RESET_SOURCES["codex"] = _codex.take_quota_reset
 
 

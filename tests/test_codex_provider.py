@@ -228,13 +228,21 @@ def test_no_rollout_is_not_an_error(tmp_path: Path) -> None:
 
 def test_the_reset_source_is_chosen_by_declaration_not_by_name() -> None:
     """The dispatcher used to carry `if seat == "antigravity"` inline.
-    Both live providers now answer through the declaration, and a
-    backend nobody measured gets None rather than a guess."""
+    Every live provider now answers through the declaration, and a
+    backend nobody measured gets None rather than a guess.
+
+    claude joined the list on 2026-08-13, and the assertion here used to
+    read `is False` on the reasoning that a provider with a usage
+    endpoint has no need to state its own reset. That reasoning broke on
+    the one day it mattered: the endpoint is exactly what fails when
+    every client on the account queries it in the second the window
+    dies, and the refusal a spawn already paid for carried `resetsAt`
+    the whole time. Having both is not redundancy."""
     from Tooling.core import quota
     from Tooling.llm import capabilities as caps
-    assert caps.capabilities_for("codex").states_quota_reset is True
-    assert caps.capabilities_for("antigravity").states_quota_reset is True
-    assert caps.capabilities_for("claude").states_quota_reset is False
+    for backend in ("codex", "antigravity", "claude"):
+        assert caps.capabilities_for(backend).states_quota_reset is True
+    # Nothing observed yet ⇒ still None; the source is consume-once.
     assert quota.reset_epoch("claude") is None
     assert quota.reset_epoch("no-such-backend") is None
 

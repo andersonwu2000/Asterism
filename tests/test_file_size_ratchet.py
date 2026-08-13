@@ -219,7 +219,15 @@ _WATERMARKS = {
     # else would ever halt a goal dying the same unexplained way, and
     # the escalation goes to the operator rather than the Strategist.
     # Conscious bump.
-    "Tooling/core/dispatcher.py": 2800,
+    # 2800→2830 (2026-08-13): the breaker learned a third answer. "The
+    # usage endpoint did not respond" was being spent as "the endpoint
+    # says quota is healthy", so four failed probes convicted claude.exe
+    # and exited the daemon while another thread parked to that same
+    # window's real reset. Plus the pop loop finally reading the
+    # per-target cooldown it had been setting all along — without it,
+    # ten fast-fails arrived in 51 seconds and outran the quota ledger's
+    # own cache. Conscious bump.
+    "Tooling/core/dispatcher.py": 2830,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
@@ -349,7 +357,12 @@ _WATERMARKS = {
     # INSERT-at-completion `record_pipeline`, plus the SCHEMA comment
     # documenting why the row must exist from dispatch (eager
     # dead_attempts, the goal-7486 drift class). Conscious bump.
-    "Tooling/state/db.py": 3790,
+    # 3790→3805 (2026-08-13): `unclaim_queue_row` — "not yet" as
+    # distinct from "never". Every other pop-loop skip deletes the row
+    # on the reasoning that refill re-derives it, which is false for the
+    # rows a retry path enqueued directly; a cooling one is put back
+    # instead. Conscious bump.
+    "Tooling/state/db.py": 3805,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,

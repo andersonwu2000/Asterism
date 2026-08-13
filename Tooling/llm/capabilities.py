@@ -391,6 +391,14 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
     "claude": ProviderCapabilities(
         name="claude",
         usage_endpoint=True,
+        # …AND it states its own reset time, which is not redundant with
+        # the endpoint — it is the fallback for the one moment the
+        # endpoint is least reliable. 2026-08-13: a five-hour window
+        # died, every client asked the usage API at once, four
+        # consecutive probes failed, and the daemon exited unable to
+        # tell quota from a broken exe. The refusing spawn had carried
+        # `resetsAt` in its own output the whole time.
+        states_quota_reset=True,
         stream_events=True,
         # `--include-partial-messages`: a `content_block_delta` every
         # ~1.5s inside a thinking block (measured 2026-08-07 on both
@@ -402,11 +410,19 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         enforcement_strength=ENFORCEMENT_HARD,
         # Flags on the command line; what is granted is what applies.
         allow_honoured_actions=ALLOW_HONOURED_ALL,
-        # Measured 2026-08-09 on this machine (`claude --version` →
-        # "2.1.224 (Claude Code)"). An external project pins 2.1.221;
-        # our marker tables were first written against the 2.1 line.
-        tested_version="2.1.224",
-        marker_tables=("Tooling.llm.claude_cli._QUOTA_MARKERS",
+        # Measured 2026-08-13 (`claude --version` → "2.1.226"), the
+        # version whose refusal is the corpus in
+        # `tests/test_quota_refusal.py`.
+        tested_version="2.1.226",
+        # This guard checks the tables EXIST, which is not the same as
+        # checking they still match. `_QUOTA_MARKERS` passed it happily
+        # for the six weeks its wording was stale (2026-08-13): the
+        # stale-session marker beside it kept working — it reads stderr,
+        # which stream-json never touched — so string matching looked
+        # reliable from here while the quota half silently matched
+        # nothing. The structured `rate_limit_event` path is the real
+        # answer to that; the prose below it is the fallback.
+        marker_tables=("Tooling.llm.claude_cli._QUOTA_PROSE_RE",
                        "Tooling.llm.claude_cli._STALE_SESSION_MARKER"),
         single_instance_lock=False,
         install_method=INSTALL_BY_COMMAND,
