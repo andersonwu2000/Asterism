@@ -274,7 +274,10 @@ _WATERMARKS = {
     # 1740→1750 (2026-08-06): 'Delegate' joins the promise-carrier set in
     # `_awaiting_promised_batch` (v35 seam — a park waiting on a
     # sub-group escalated the root to review). Conscious bump.
-    "Tooling/state/transitions.py": 1750,
+    # 1750→1755 (2026-08-13): GOAL_FAILED_TERMINALS derived view — the
+    # {"disproved","dead"} predicate was hand-copied in four modules;
+    # its declaration belongs in the vocabulary's home. Conscious bump.
+    "Tooling/state/transitions.py": 1755,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.

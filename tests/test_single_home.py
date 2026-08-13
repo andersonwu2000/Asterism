@@ -28,6 +28,26 @@ closing: the failure mode it targets is the LAZY path — someone typing
 the two strings they happen to care about — which is the path every one
 of the incidents actually took. A deliberate evasion is not the threat
 model on a solo repo.
+
+TWO MATCH MODES. Trait registries (`failures.REGISTRY`,
+`capabilities.CAPABILITIES`) use SUBSET matching: any literal drawn
+wholly from their keys is a hand-rolled predicate that should be a
+trait. State vocabularies (`transitions.*`, `db.BATCH_DECISION_KINDS`)
+use EXACT matching instead: a proper subset of a state vocabulary is
+usually a legitimate bespoke predicate (43 of them measured across
+Tooling/ on 2026-08-13 — "hard-terminals minus proved" and kin), so
+subset mode would criminalize working code; a literal EQUAL to the
+whole table is the signature of a copy (9 of 9 measured hits were
+true copies, since converted). The exact tables carry no grandfather
+list on purpose: an allowlisted exact copy that later drifts becomes a
+proper subset and silently leaves the lint's sight, which is precisely
+the failure the lint exists to catch. Repeated proper subsets across
+modules deserve a DECLARED derived view (`GOAL_FAILED_TERMINALS` was
+minted for exactly that), which then joins the exact tables here.
+
+`WAKE_LEGALITY` is deliberately not a table of its own: its key set is
+pinned to `PROBLEM_STATES` by design, so a copy of one is a copy of
+the other, and `PROBLEM_STATES` is the named vocabulary.
 """
 from __future__ import annotations
 
@@ -37,20 +57,23 @@ from pathlib import Path
 import pytest
 
 from Tooling.llm import capabilities
-from Tooling.state import failures
+from Tooling.state import db as _db
+from Tooling.state import failures, transitions
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLING = ROOT / "Tooling"
 
 
 class _Table:
-    """A declared vocabulary, its home, and what a consumer should do
-    instead of copying it."""
+    """A declared vocabulary, its home, what a consumer should do
+    instead of copying it, and how a copy is recognized (`match`:
+    "subset" for trait registries, "exact" for state vocabularies)."""
 
     def __init__(self, name: str, keys: "set[str]", home: "set[str]",
-                 instead: str) -> None:
-        self.name, self.keys, self.home, self.instead = (
-            name, keys, home, instead)
+                 instead: str, match: str = "subset") -> None:
+        assert match in ("subset", "exact")
+        self.name, self.keys, self.home, self.instead, self.match = (
+            name, keys, home, instead, match)
 
 
 def _tables() -> "list[_Table]":
@@ -70,6 +93,31 @@ def _tables() -> "list[_Table]":
             "ask the declaration: `capabilities.capabilities_for(name)."
             "<field>`. A list of provider NAMES is the name-keyed "
             "special case `capabilities.py` was written to abolish",
+        ),
+    ] + [
+        _Table(
+            f"transitions.{attr}", set(getattr(transitions, attr)),
+            {"Tooling/state/transitions.py"},
+            f"use `transitions.{attr}` — the whole set spelled out by "
+            f"hand is a copy that goes quietly stale the day the "
+            f"vocabulary gains a member; a DIFFERENT set you actually "
+            f"mean is a bespoke predicate and passes untouched",
+            match="exact",
+        )
+        for attr in (
+            "GOAL_STATES", "GOAL_TERMINALS", "GOAL_HARD_TERMINALS",
+            "GOAL_FAILED_TERMINALS", "STRATEGY_STATES",
+            "STRATEGY_TERMINALS", "PROBLEM_STATES",
+            "PROVED_RECEIPT_KINDS",
+        )
+    ] + [
+        _Table(
+            "db.BATCH_DECISION_KINDS", set(_db.BATCH_DECISION_KINDS),
+            {"Tooling/state/db.py"},
+            "use `db.BATCH_DECISION_KINDS` (its docstring exists to stop "
+            "a future kind landing in two consumers and being forgotten "
+            "in the third — which is what a literal copy guarantees)",
+            match="exact",
         ),
     ]
 
@@ -137,7 +185,11 @@ def _violations() -> "list[tuple[str, int, tuple[str, ...], _Table]]":
             if rel in table.home:
                 continue
             for lineno, vals in _literal_string_groups(path):
-                if all(v in table.keys for v in vals):
+                if table.match == "exact":
+                    hit = set(vals) == table.keys
+                else:
+                    hit = all(v in table.keys for v in vals)
+                if hit:
                     found.append((rel, lineno, vals, table))
     return found
 

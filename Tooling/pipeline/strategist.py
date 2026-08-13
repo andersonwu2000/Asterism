@@ -111,9 +111,12 @@ _ENDGAME_KINDS: frozenset[str] = frozenset({"MarkDeliverable", "Ingest"})
 #: `Delegate` counts as this batch's experiment — handing a burden to a
 #: group IS dispatching work, and it is the one experiment whose result
 #: the Proof is NOT required to predict (see the closure-law carve-out
-#: in `verify_decision`).
-_EXPERIMENT_KINDS: frozenset[str] = frozenset(
-    {"Inject", "Delegate"})
+#: in `verify_decision`). "Counts as an experiment" and "dispatches work
+#: into the batch cycle" are the same fact, so this derives from the
+#: single definition — a future work-dispatching kind joins the ≥1-
+#: experiment rule the moment it joins the batch, instead of being
+#: remembered here separately.
+_EXPERIMENT_KINDS: frozenset[str] = frozenset(db.BATCH_DECISION_KINDS)
 PROPOSAL_BASENAME = "proposal.md"
 
 
@@ -457,7 +460,7 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         if str(g["problem"]) != problem:
             return (f"target goal belongs to problem "
                     f"{g['problem']!r}, not {problem!r}")
-        if str(g["status"]) in ("proved", "disproved", "dead"):
+        if str(g["status"]) in transitions.GOAL_HARD_TERMINALS:
             return (f"target_goal_id={target} is {g['status']!r}; "
                     f"Inject cannot redispatch a terminal goal. "
                     f"proved/disproved/dead are hard terminals; "
@@ -526,7 +529,7 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
             if str(g["problem"]) != problem:
                 return (f"target goal belongs to problem {g['problem']!r}, "
                         f"not this Strategist's {problem!r}")
-            if str(g["status"]) in ("proved", "disproved", "dead"):
+            if str(g["status"]) in transitions.GOAL_HARD_TERMINALS:
                 return (f"target g{decision.target_id} is "
                         f"{g['status']!r} — a settled goal has nothing "
                         f"for a group to work")
@@ -2055,9 +2058,8 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         # class-level backstop, but short-circuiting here also skips the
         # _propagate_shelve cascade and keeps the decision's outcome benign.
         _g = db.get_goal(conn, gid)
-        if _g is not None and str(_g["status"]) in (
-            "proved", "disproved", "dead",
-        ):
+        if _g is not None and \
+                str(_g["status"]) in transitions.GOAL_HARD_TERMINALS:
             print(f"[strategist] ConfirmShelve(g{gid}) no-op — goal already "
                   f"{_g['status']!r}; not downgrading a terminal goal",
                   flush=True)

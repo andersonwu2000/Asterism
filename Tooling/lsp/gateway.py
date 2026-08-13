@@ -57,7 +57,7 @@ from . import edits as _edits
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from ..state import assemble, db, manifest, metaprog
+from ..state import assemble, db, manifest, metaprog, transitions
 from .client import LspClient
 
 
@@ -2333,7 +2333,7 @@ def _citation_submission(content: str, problem: str, workspace: "Path",
                                 "new_<slug>.lean sub-goal instead"})
                 # else: typo / cross-problem — lake's unknown-identifier covers it
                 continue
-            if status in ("dead", "disproved"):
+            if status in transitions.GOAL_FAILED_TERMINALS:
                 issues.append({
                     "slug": slug, "status": status, "severity": "error",
                     "hint": "hard-terminal; re-declare its statement as your "

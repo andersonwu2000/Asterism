@@ -1399,10 +1399,11 @@ def propagate_inject_outcome_from_goal(
     ).fetchone()
     if g is None:
         return None
+    from . import transitions
     status = str(g["status"])
     if status == "proved":
         outcome = "success"
-    elif status in ("disproved", "dead"):
+    elif status in transitions.GOAL_FAILED_TERMINALS:
         outcome = f"failed:{status}"
     else:
         return None  # not terminal (incl. shelved — reopenable); wait
@@ -2959,7 +2960,8 @@ def update_strategy_status(conn: sqlite3.Connection, strategy_id: int,
     # fully resolved. Mirrors the goal-side handling in
     # `_set_goal_terminal_and_propagate`. No-op for non-terminal
     # transitions and for strategies not tied to an Inject decision.
-    if status in ("succeeded", "dead", "superseded"):
+    from . import transitions
+    if status in transitions.STRATEGY_TERMINALS:
         d = propagate_inject_outcome_from_strategy(conn, strategy_id)
         if d is not None:
             maybe_enqueue_inject_batch_done(conn, d)
@@ -3087,6 +3089,7 @@ def reconcile_settled_inject_outcomes(
     if scope is not None:
         sql += " AND sd.problem LIKE ?"
         args = (scope,)
+    from . import transitions
     rows = list(conn.execute(sql, args))
     resolved = 0
     for r in rows:
@@ -3096,7 +3099,7 @@ def reconcile_settled_inject_outcomes(
         if sid is not None:
             sstat = (str(r["strat_status"])
                      if r["strat_status"] is not None else None)
-            if sstat in ("succeeded", "superseded", "dead"):
+            if sstat in transitions.STRATEGY_TERMINALS:
                 filled = propagate_inject_outcome_from_strategy(
                     conn, int(sid))
             elif sstat == "proposed":
@@ -3130,7 +3133,7 @@ def reconcile_settled_inject_outcomes(
                     resolved += 1
                     continue
         elif r["produced_goal_id"] is not None and \
-                str(r["goal_status"]) in ("proved", "disproved", "dead"):
+                str(r["goal_status"]) in transitions.GOAL_HARD_TERMINALS:
             # `shelved` intentionally excluded — reopenable/parked, not a
             # settled inject (see propagate_inject_outcome_from_goal). The
             # stall predicate's active-check governs T4 suppression instead.

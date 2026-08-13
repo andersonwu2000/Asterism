@@ -75,6 +75,10 @@ STRATEGY_STATES: frozenset[str] = frozenset({
 # `disproved`/`dead` are stronger negatives than `shelved`).
 GOAL_HARD_TERMINALS: frozenset[str] = frozenset({"proved", "disproved", "dead"})
 GOAL_TERMINALS: frozenset[str] = GOAL_HARD_TERMINALS | {"shelved"}
+#: Hard-settled AND failed: never citable, never revived by a proof —
+#: the cite-gate / ancestor-walk / `failed:<status>` predicate, named so
+#: consumers stop hand-copying {"disproved", "dead"} (found in 4 modules).
+GOAL_FAILED_TERMINALS: frozenset[str] = GOAL_HARD_TERMINALS - {"proved"}
 STRATEGY_TERMINALS: frozenset[str] = frozenset({"succeeded", "dead", "superseded"})
 
 # ---------------------------------------------------------------------------
@@ -916,7 +920,7 @@ def _has_hard_terminal_ancestor(conn: sqlite3.Connection,
                 ).fetchone()
                 if grow is None:
                     continue
-                if grow["status"] in ("disproved", "dead"):
+                if grow["status"] in GOAL_FAILED_TERMINALS:
                     return True, str(grow["status"])
                 next_frontier.append(parent_id)
         frontier = next_frontier

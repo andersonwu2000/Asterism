@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..pipeline.librarian.astslice import _library_module_of
 from ..quality.librarian.gates import IMPORT_LINE_PATTERN
-from ..state import db
+from ..state import db, transitions
 
 
 # ---------------------------------------------------------------------
@@ -826,7 +826,7 @@ _TO_STATUS_VERB = {
     "frozen": "frozen",
     "pending_strategist_review": "for_review",
 }
-_SETTLED = frozenset({"proved", "shelved", "disproved", "dead"})
+_SETTLED = transitions.GOAL_TERMINALS
 
 #: how far along a goal's life each verb sits — the tiebreaker when a
 #: brick is asked for and lands inside the same clock minute

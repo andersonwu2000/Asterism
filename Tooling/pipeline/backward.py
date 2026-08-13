@@ -360,7 +360,7 @@ def _partition_sibling_reuse(
         if sib is None:
             kept.append((slug, ns))
             continue
-        if str(sib["status"]) in ("dead", "disproved"):
+        if str(sib["status"]) in transitions.GOAL_FAILED_TERMINALS:
             # Cite-gate would reject these → keep for a fresh `_2` fork.
             kept.append((slug, ns))
             continue

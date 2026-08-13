@@ -21,11 +21,13 @@ from __future__ import annotations
 import sqlite3
 
 from . import db as _db
+from . import transitions as _transitions
 
-# Hard-terminal goal statuses: a completed cascade never leaves a live
+# Terminal goal statuses: a completed cascade never leaves a live
 # strategy under one of these (proved → siblings superseded; the rest →
-# inward-killed dead).
-_TERMINAL_GOAL = ("proved", "disproved", "dead", "shelved")
+# inward-killed dead). Tuple form because the sites splat it into SQL
+# placeholders.
+_TERMINAL_GOAL = tuple(_transitions.GOAL_TERMINALS)
 
 # Phase 6 — single-source alive seed (root ∪ detached) lives in db.py;
 # this copy already had the correct shape, now it can't drift.
