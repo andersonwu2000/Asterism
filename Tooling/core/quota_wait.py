@@ -205,8 +205,38 @@ def _confirmed_available() -> bool:
     return not exhausted
 
 
+def _warn_detector_substitution(source: str) -> None:
+    """A high-level evidence source just confirmed what a low-level
+    detector failed to say — say so, loudly, instead of covering.
+
+    This is the instrument 2026-08-13's post-mortem asked for. The
+    claude quota prose markers stopped matching around 2026-07-03 (the
+    vendor sentence gained a word) and NOTHING noticed for six weeks,
+    because every time a refusal was misfiled as `spawn_fast_fail` the
+    breaker asked the usage endpoint, the endpoint confirmed the
+    window, the daemon parked correctly — and the successful cover-up
+    left no trace that the detector was dead. Correct behaviour,
+    silent substitution. This print is the trace."""
+    try:
+        from ..llm import capabilities as _caps
+        tables = [t for t in _caps.capabilities_for("claude").marker_tables
+                  if "_QUOTA" in t]
+    except Exception:  # noqa: BLE001 — a warning must not break the park
+        tables = []
+    print(f"[quota-wait] DETECTOR SUBSTITUTION — {source} reached this "
+          f"park classified as NON-quota (the spawn-side refusal markers "
+          f"said nothing), yet the usage endpoint confirms a window is "
+          f"exhausted. The endpoint is covering for a stale detector"
+          f"{': ' + ', '.join(tables) if tables else ''}. Read the "
+          f"tripping spawns' .attempts/<pid>/_spawn.stderr, keep the "
+          f"verbatim refusal, and pin it beside the marker table's "
+          f"corpus test — this exact silence hid a dead marker list "
+          f"from 2026-07-03 to 2026-08-13.", flush=True)
+
+
 def maybe_enter(st, *, enabled: bool, source: str,
-                probe_attempts: int = 1) -> QuotaProbe:
+                probe_attempts: int = 1,
+                trigger_quota_classified: bool) -> QuotaProbe:
     """Enter (or extend) the global quota-wait if the usage endpoint
     confirms exhaustion.
 
@@ -216,7 +246,16 @@ def maybe_enter(st, *, enabled: bool, source: str,
     WHY it did not park, because HEALTHY and UNKNOWN license completely
     different escalations and used to be the same `False`.
     `probe_attempts` forwards to the probe's transient-failure retry
-    budget."""
+    budget.
+
+    `trigger_quota_classified` is the caller stating, structurally,
+    whether the evidence that brought it here was ALREADY classified as
+    quota by the spawn-side markers (rc=126) or not (the fast-fail
+    breaker). Required, no default: when a NON-quota trigger parks on a
+    CONFIRMED window, the endpoint has just covered for a refusal the
+    markers missed, and that substitution must be audible — see
+    `_warn_detector_substitution`. A default would let the next call
+    site opt out of the question by not reading it."""
     if not enabled:
         return QuotaProbe(False, UNKNOWN)
     now = time.time()
@@ -234,6 +273,8 @@ def maybe_enter(st, *, enabled: bool, source: str,
           f"({(st.quota_wait_until - now) / 60:.0f} min), then "
           f"resuming automatically (dispatch.quota_wait=false restores "
           f"exit-on-quota)", flush=True)
+    if not trigger_quota_classified:
+        _warn_detector_substitution(source)
     return QuotaProbe(True, EXHAUSTED, st.quota_wait_until)
 
 
@@ -326,7 +367,10 @@ def tick(st, now: float, *, enabled: bool) -> bool:
     st.quota_wait_paused += now - st.quota_wait_entered
     st.quota_wait_until = 0.0
     st.quota_wait_logged_at = 0.0
-    if maybe_enter(st, enabled=enabled, source="reset-time re-probe"):
+    # A re-probe of a wait we are already in carries no fresh spawn
+    # evidence, so there is no detector to indict — classified=True.
+    if maybe_enter(st, enabled=enabled, source="reset-time re-probe",
+                   trigger_quota_classified=True):
         return True
     # Confirmed clear (or endpoint unreachable — spawns will re-raise
     # the evidence if quota is in fact still gone): fresh start.

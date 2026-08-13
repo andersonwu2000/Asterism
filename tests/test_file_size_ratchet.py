@@ -239,7 +239,11 @@ _WATERMARKS = {
     # that stayed. The two helpers that could live elsewhere already
     # did move (`admission`, `quota.report_block_changes`). Conscious
     # bump.
-    "Tooling/core/dispatcher.py": 2865,
+    # 2865→2868 (2026-08-13): both `maybe_enter` call sites state their
+    # evidence class (`trigger_quota_classified`) so a non-quota trip
+    # that parks on a confirmed window indicts the stale markers out
+    # loud instead of being covered by the endpoint. Conscious bump.
+    "Tooling/core/dispatcher.py": 2868,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

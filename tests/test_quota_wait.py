@@ -180,7 +180,8 @@ def test_maybe_enter_disabled_never_probes(monkeypatch):
     monkeypatch.setattr(usage_quota, "fetch_usage", forbidden)
     st = SchedulerState()
     assert not quota_wait.maybe_enter(
-        st, enabled=False, source="test")
+        st, enabled=False, source="test",
+        trigger_quota_classified=True)
     assert st.quota_wait_until == 0.0
 
 
@@ -191,7 +192,8 @@ def test_maybe_enter_unconfirmed_is_false(monkeypatch):
     monkeypatch.setattr(usage_quota, "fetch_usage", lambda: {
         "five_hour": {"utilization": 10.0, "resets_at": None}})
     st = SchedulerState()
-    probe = quota_wait.maybe_enter(st, enabled=True, source="test")
+    probe = quota_wait.maybe_enter(st, enabled=True, source="test",
+                                   trigger_quota_classified=True)
     assert not probe
     assert probe.verdict == quota_wait.HEALTHY
     assert st.quota_wait_until == 0.0
@@ -204,7 +206,8 @@ def test_maybe_enter_confirmed_sets_wait(monkeypatch):
         "five_hour": {"utilization": 100.0, "resets_at": _iso(reset)}})
     st = SchedulerState()
     before = time.time()
-    assert quota_wait.maybe_enter(st, enabled=True, source="test")
+    assert quota_wait.maybe_enter(st, enabled=True, source="test",
+                                   trigger_quota_classified=True)
     assert st.quota_wait_until == reset + quota_wait.QUOTA_WAIT_JITTER_SEC
     assert before <= st.quota_wait_entered <= time.time()
 
@@ -218,9 +221,79 @@ def test_maybe_enter_extends_never_shrinks(monkeypatch):
     monkeypatch.setattr(usage_quota, "fetch_usage", lambda: {
         "five_hour": {"utilization": 100.0, "resets_at": _iso(near)}})
     entered_before = st.quota_wait_entered
-    assert quota_wait.maybe_enter(st, enabled=True, source="test")
+    assert quota_wait.maybe_enter(st, enabled=True, source="test",
+                                   trigger_quota_classified=True)
     assert st.quota_wait_until == far  # max() kept the later deadline
     assert st.quota_wait_entered == entered_before  # pause window intact
+
+
+# ---------------------------------------------- audible substitution (08-13)
+#
+# The claude quota prose markers were dead from ~2026-07-03 to
+# 2026-08-13 and nothing noticed, because every misfiled refusal was
+# rescued by the breaker's endpoint probe: correct behaviour, silent
+# substitution. `maybe_enter` now requires the caller to state whether
+# its trigger evidence was quota-classified, and a NON-quota trigger
+# that parks on a CONFIRMED window indicts the detectors out loud.
+
+
+def _exhausted_payload():
+    reset = float(round(time.time()) + 3600)
+    return {"five_hour": {"utilization": 100.0, "resets_at": _iso(reset)}}
+
+
+def test_nonquota_trigger_parking_on_confirmed_window_is_audible(
+        monkeypatch, capsys):
+    monkeypatch.setattr(usage_quota, "fetch_usage", _exhausted_payload)
+    st = SchedulerState()
+    assert quota_wait.maybe_enter(st, enabled=True,
+                                  source="5 consecutive spawn_fast_fails",
+                                  trigger_quota_classified=False)
+    out = capsys.readouterr().out
+    assert "DETECTOR SUBSTITUTION" in out
+    # Names the table to fix and the action to take — not just the smell.
+    assert "_QUOTA_PROSE_RE" in out
+    assert "_spawn.stderr" in out
+
+
+def test_quota_classified_trigger_parks_quietly(monkeypatch, capsys):
+    """rc=126 means the markers already did their job — same park, no
+    indictment."""
+    monkeypatch.setattr(usage_quota, "fetch_usage", _exhausted_payload)
+    st = SchedulerState()
+    assert quota_wait.maybe_enter(st, enabled=True,
+                                  source="Formalizer quota_exhausted",
+                                  trigger_quota_classified=True)
+    assert "DETECTOR SUBSTITUTION" not in capsys.readouterr().out
+
+
+def test_no_substitution_warning_without_a_confirmed_window(
+        monkeypatch, capsys):
+    """UNKNOWN/HEALTHY confirm nothing, so there is nothing to indict —
+    the warning must not fire on suspicion."""
+    def _boom():
+        raise OSError("endpoint offline")
+    monkeypatch.setattr(usage_quota, "fetch_usage", _boom)
+    st = SchedulerState()
+    probe = quota_wait.maybe_enter(st, enabled=True, source="trip",
+                                   trigger_quota_classified=False)
+    assert not probe and probe.verdict == quota_wait.UNKNOWN
+    assert "DETECTOR SUBSTITUTION" not in capsys.readouterr().out
+
+
+def test_dispatcher_states_the_evidence_class_at_both_sites():
+    """The flag is only honest if each call site states the right value:
+    rc=126 (markers fired) is True, the fast-fail breaker (markers said
+    nothing) is False. Pinned at the source so moving the rule's
+    statement without its enforcement fails here."""
+    src = inspect.getsource(dispatcher.run)
+    rc126 = src.split('source=f"{kind} quota_exhausted"')[0]
+    assert rc126.rstrip().endswith("st, enabled=quota_wait_enabled,"), \
+        "rc=126 call site changed shape — re-pin this test"
+    after = src.split('source=f"{kind} quota_exhausted"')[1]
+    assert "trigger_quota_classified=True" in after[:200]
+    breaker = src.split("source=_trip")[1]
+    assert "trigger_quota_classified=False" in breaker[:200]
 
 
 # ------------------------------------------------------------- tick machine

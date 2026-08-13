@@ -2181,9 +2181,12 @@ def run(workspace: Path, *, once: bool = False,
                         # backoff cap. Unconfirmed (transient 429 /
                         # endpoint offline) keeps the exponential
                         # backoff above.
+                        # classified=True: rc=126 means the spawn-side
+                        # markers DID call this quota — no substitution.
                         quota_wait.maybe_enter(
                             st, enabled=quota_wait_enabled,
-                            source=f"{kind} quota_exhausted")
+                            source=f"{kind} quota_exhausted",
+                            trigger_quota_classified=True)
                     elif (outcome == "failed"
                           and reason in _failures.TARGET_COOLDOWN_REASONS):
                         st.cooldown_until[(tid, kind)] = (
@@ -2233,11 +2236,16 @@ def run(workspace: Path, *, once: bool = False,
                                 # evidence.
                                 _trip = (f"{st.consec_fast_fails} "
                                          f"consecutive spawn_fast_fails")
+                                # classified=False: these spawns were
+                                # charged as exe breakage; a confirmed
+                                # window means the markers missed a
+                                # refusal, and maybe_enter says so.
                                 _probe = quota_wait.maybe_enter(
                                     st, enabled=quota_wait_enabled,
                                     probe_attempts=(
                                         quota_wait.QUOTA_CONFIRM_ATTEMPTS),
-                                    source=_trip)
+                                    source=_trip,
+                                    trigger_quota_classified=False)
                                 if _probe:
                                     st.consec_fast_fails = 0
                                     st.consec_unconfirmed_trips = 0
