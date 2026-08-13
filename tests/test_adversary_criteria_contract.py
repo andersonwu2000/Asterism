@@ -91,6 +91,58 @@ def test_the_parser_actually_refuses_a_bare_clear_there() -> None:
     assert v is not None, f"a NAMED clear on {n} must be accepted: {err}"
 
 
+# ─── fired vs reservation, and the verified-record clause ────────────
+#
+# Two sentences the judge is graded by, each of which had to be written
+# twice before it held. They are pinned WITH their escape hatch: a rule
+# that forbids something without naming the way out is the failure mode
+# this repo keeps paying for.
+
+
+def test_the_fired_reservation_boundary_is_substantive() -> None:
+    """It used to be "a defect you can name belongs on its criterion's
+    line", which collided head-on with "reservations: only for concerns
+    that fire no criterion" — every nameable defect had to rebut the
+    whole batch, so a misnumbered heading cost a round. Judges reported
+    the collision twice on 2026-08-12.
+
+    The boundary is now about SUBJECT (mathematics and route vs
+    bookkeeping), with the leak sealed: a format defect whose underlying
+    fact will not check is not bookkeeping, it is honesty."""
+    assert "Fired is for the mathematics and the route" in TEXT
+    assert "bookkeeping or format defect is a reservation" in TEXT
+    assert "unless its underlying fact fails checking" in TEXT, (
+        "without this clause a wrong number could be filed as a "
+        "presentation nit — the check is what tells the two apart")
+    assert "A defect you can name belongs on its criterion's line" \
+        not in TEXT, "the superseded sentence is still there, contradicting"
+
+
+def test_a_verified_record_can_be_contradicted_only_by_proof() -> None:
+    """Criterion 2 refuses a route that contradicts a verified Programme
+    record — the case the old wording missed, because such a route was
+    never WALKED and so never "failed". union_closed had kernel-verified
+    that reaching 1/2 must exploit exact closure; a proposal denying that
+    should die at the gate rather than after the machine time.
+
+    Pinned together with its escape hatch, deliberately: a criterion
+    that forbids without naming a way out teaches the author to hide the
+    contradiction instead of overturning the record."""
+    crit2 = _CRITERION.sub(lambda m: m.group(0), TEXT)  # keep TEXT intact
+    assert "contradicts a verified Programme record" in crit2
+    assert "A verified record is overridden by proof, not conjecture." \
+        in TEXT, "the override path must be stated, not implied"
+
+
+def test_the_route_clause_kept_its_two_original_refusals() -> None:
+    """Adding a third refusal must not quietly drop the first two."""
+    line = next(ln for ln in TEXT.splitlines()
+                if ln.startswith("2. **Reachability**"))
+    assert "stops short of it" in line
+    assert "re-walks a failed route unchanged" in line
+    assert "contradicts a verified Programme record" in line
+
+
 def test_every_other_criterion_still_takes_a_bare_clear() -> None:
     """The rule is one criterion's, not a general tax on brevity."""
     import json

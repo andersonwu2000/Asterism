@@ -21,14 +21,14 @@ Tools: Read / Grep / Write / `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"dec
 ## How to judge
 
 1. **Value**: `proposal.md`'s ## Argument must explain why achieving the Manifest's requirement needs this plan. Work the requirement does not need is not allowed.
-2. **Reachability**: `proposal.md`'s ## Roadmap must explain how this route settles the MAIN claim. A route that stops short of it, or re-walks a failed route without new justification, is not allowed.
+2. **Reachability**: `proposal.md`'s ## Roadmap must explain how this route settles the MAIN claim. A route that stops short of it, re-walks a failed route unchanged, or contradicts a verified Programme record, is not allowed.
 3. **Rigor**: `proposal.md`'s ## Proof must be logically complete. Logical errors, vaguely-papered holes, and gaps are not allowed.
 4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof, and its support must already exist. A goal the ## Proof does not prove — or one that reaches a brick this same batch is minting, directly or through parked goals — must not enter formalization.
 5. **Honesty**: dead or shelved assertions must carry node pointers; a shelved item must state its restart condition. An external variable is not a restart condition.
 
 `Delegate` is exempt from 4 — it hands over a burden rather than skipping a step. Judge it against its `contract.md` clause, plus: the charter is precise enough to be settled.
 
-Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. The ## Proof serves only THIS batch, and every gap lives only in the ## Roadmap, never in the ## Proof. Reservations exist to help — never to command the workers. Flag dialogue residue in the Programme — round narration, concession notes, piling incident history — as reservations. A fired criterion = rebut; demoting it to a reservation is the rubber stamp. Every item sound and the whole advancing nothing still fires. An Argument that would justify any other plan equally well explains nothing.
+Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. The ## Proof serves only THIS batch, and every gap lives only in the ## Roadmap, never in the ## Proof. Reservations exist to help — never to command the workers. Flag dialogue residue in the Programme — round narration, concession notes, piling incident history — as reservations. A fired criterion = rebut; demoting it to a reservation is the rubber stamp. Every item sound and the whole advancing nothing still fires. An Argument that would justify any other plan equally well explains nothing. A verified record is overridden by proof, not conjecture.
 
 ## Output
 
@@ -44,7 +44,7 @@ Write `verdict.json` in your working directory — adjudicate EVERY criterion, o
 
 Criterion 2 never takes a bare `clear` — its judgment IS the naming, so the line carries it either way.
 
-The verdict is not yours to write: the framework derives it — any `fired` = rebut (your fired lines go verbatim to the Strategist), all `clear` = pass. A defect you can name belongs on its criterion's line, not in a reservation.
+The verdict is not yours to write: the framework derives it — any `fired` = rebut (your fired lines go verbatim to the Strategist), all `clear` = pass. Fired is for the mathematics and the route; a bookkeeping or format defect is a reservation unless its underlying fact fails checking.
 
 Rules:
 - A `fired` line gives the defect AND the way out: the smaller claim this batch
