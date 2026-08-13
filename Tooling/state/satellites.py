@@ -323,7 +323,15 @@ def orphan_rows(conn: sqlite3.Connection) -> "dict[str, int]":
     """Global referential complement: rows whose referent no longer
     exists. This is the only grain that can see the id-keyed leftovers
     a per-problem question cannot (their parent rows are already
-    gone). REPORT ONLY, same rule as everything here."""
+    gone). REPORT ONLY, same rule as everything here.
+
+    THE FLOOR IS ZERO. On 2026-08-14 the operator's live DB was swept to
+    empty (owner ruling, #209: 38 fossils from June/July, every one of
+    their classes covered by today's wipe). That is worth stating
+    because a standing non-zero teaches the next reader that the noise
+    IS the baseline — after which two genuinely new rows read as
+    weather. Anything this reports now is new, and means the wipe grew
+    a blind spot."""
     checks: "dict[str, str]" = {
         "strategies(goal gone)":
             "SELECT COUNT(*) FROM strategies WHERE goal_id NOT IN "
