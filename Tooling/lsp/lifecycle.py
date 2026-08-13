@@ -30,6 +30,52 @@ import urllib.request
 from pathlib import Path
 
 
+class GatewayRefused(RuntimeError):
+    """The gateway ANSWERED, and what it said was a 5xx with a reason.
+
+    Distinct from a transport failure on purpose. `urllib` models both
+    as `URLError` (`HTTPError` is a subclass), so a dispatcher that
+    classifies on the base type reads "the gateway replied 'no free
+    worker slot'" as "the gateway is unreachable" — and 8 of those in a
+    row kill the daemon. On 2026-08-13 that is exactly what happened,
+    to a gateway that was up, healthy, and telling us the truth in the
+    response body we never read.
+
+    Carries the gateway's own words. `status` is the HTTP code;
+    `detail` is the `error` field it sent, or the raw body when the
+    body was not the JSON we expected."""
+
+    def __init__(self, status: int, detail: str, *, endpoint: str) -> None:
+        self.status = status
+        self.detail = detail
+        self.endpoint = endpoint
+        super().__init__(f"gateway {endpoint} refused ({status}): {detail}")
+
+
+def read_http_error(exc: "urllib.error.HTTPError", *,
+                    endpoint: str) -> GatewayRefused:
+    """Turn an `HTTPError` into the refusal it actually is, body and all.
+
+    The body is the whole point: `/register` returns "no free worker
+    slot — pool exhausted", "target file not found: <path>" and the
+    backend-not-ready error through the same 500, and only the body
+    tells them apart. `str(HTTPError)` is "HTTP Error 500: Internal
+    Server Error" for all three."""
+    import json as _json
+    detail = ""
+    try:
+        raw = exc.read().decode("utf-8", "replace").strip()
+    except Exception:  # noqa: BLE001 — a body we cannot read is not fatal
+        raw = ""
+    if raw:
+        try:
+            parsed = _json.loads(raw)
+            detail = str(parsed.get("error") or raw)
+        except (ValueError, AttributeError):
+            detail = raw
+    return GatewayRefused(exc.code, detail or "(no body)", endpoint=endpoint)
+
+
 def _gateway_port(workspace: Path | None = None) -> int:
     """Resolve gateway HTTP port via env / yaml / default chain. Both
     daemon-side (this module) and gateway-side (lsp_gateway.main) read
@@ -907,6 +953,15 @@ def register_session(*, pipeline_id: str, target_path: Path, problem: str,
             data = json.loads(resp.read().decode("utf-8"))
         tok = data.get("session_token")
         return tok or None
+    except urllib.error.HTTPError as exc:
+        # Falling back to cold is correct and stays correct — but do it
+        # OUT LOUD with the gateway's own sentence. Silence here means a
+        # pool that has been exhausted for an hour looks identical to a
+        # gateway that is simply busy, and the cleanup span just gets
+        # quietly slower forever.
+        print(f"[gateway] {read_http_error(exc, endpoint='/register')} "
+              f"— this gate runs cold", flush=True)
+        return None
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
         return None
 

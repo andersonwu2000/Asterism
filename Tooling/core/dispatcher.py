@@ -222,6 +222,20 @@ def _classify_worker_exception(exc: BaseException) -> str:
             getattr(exc, "winerror", None) in (1455, 8)
             or exc.errno == errno.ENOMEM):
         return "system_killed"
+    # The gateway ANSWERED — 5xx is a verdict, not silence. This branch
+    # must precede the URLError one below because `HTTPError` is a
+    # SUBCLASS of `URLError`: without it, "no free worker slot — pool
+    # exhausted" is filed as "the gateway is unreachable" and feeds the
+    # consecutive-unreachable breaker that exits the daemon. That is the
+    # 2026-08-13 stop: a healthy gateway holding leaked slots from a
+    # killed predecessor, 8 rounds, ~780s, daemon gone. `failures.py`
+    # already drew this distinction for the verify path when it created
+    # `verify_infra` ("the process is up and talking, so this must NOT
+    # feed the breaker") — the lesson simply never reached the
+    # dispatcher's own classifier.
+    from ..lsp.lifecycle import GatewayRefused
+    if isinstance(exc, (GatewayRefused, urllib.error.HTTPError)):
+        return "verify_infra"
     if isinstance(exc, urllib.error.URLError):
         return "gateway_unreachable"
     if isinstance(exc, OSError):
@@ -2110,15 +2124,15 @@ def run(workspace: Path, *, once: bool = False,
                         # None and the ledger never learned a thing.
                         _seat = _pipeline_seats().get(str(kind).lower())
                         if _seat is not None:
-                            _until = None
-                            if _seat[0] == "antigravity":
-                                # agy has no usage API but its refusal
-                                # says when it recovers ("Resets in
-                                # 2h46m25s"). Without it the block falls
-                                # back to a 15-minute guess and the
-                                # backoff keeps probing a 3-hour wall.
-                                from ..llm import antigravity_cli as _agy
-                                _until = _agy.take_quota_reset()
+                            # A provider that STATES when its window
+                            # reopens gets slept to; one that does not
+                            # falls back to the blind backoff, which for
+                            # agy's 3-hour wall meant probing it all the
+                            # way down. Asked of the DECLARATION, not the
+                            # name — this was `if seat == "antigravity"`
+                            # inline until codex arrived and would have
+                            # made it two branches.
+                            _until = quota.reset_epoch(_seat[0])
                             _quota_ledger.observe(
                                 _seat[0], _seat[1], until=_until,
                                 detail=f"{kind} spawn refused on quota")
@@ -2350,20 +2364,33 @@ def run(workspace: Path, *, once: bool = False,
                         # yield a 30s back-off — without this, the same
                         # Backward gets re-dispatched on the next tick
                         # and re-fails.
-                        if infra_reason == "transient_timeout":
+                        if infra_reason == "gateway_unreachable":
+                            if _gateway_unreachable_backoff(
+                                    st, pool, kind=kind, tk=tk, tid=tid):
+                                return 2
+                        elif (infra_reason
+                              in _failures.TARGET_COOLDOWN_REASONS):
+                            # Registry-driven, like the normal-result path
+                            # above — NOT a hand-written list. This branch
+                            # used to name `transient_timeout` alone, so
+                            # every other cooling reason arriving as a
+                            # worker exception got re-dispatched on the
+                            # very next tick with no back-off. It went
+                            # unnoticed only because `_classify_worker_
+                            # exception` returned exactly two reasons; the
+                            # moment it learned a third (`verify_infra`,
+                            # 2026-08-13) the omission would have turned a
+                            # daemon that dies in 13 minutes into one that
+                            # hot-loops full spawns forever, which is the
+                            # more expensive failure.
                             st.cooldown_until[(tid, kind)] = (
                                 time.time() + SPAWN_COOLDOWN_SEC)
                             print(f"[cooldown] {kind} {tk}={tid} cooled "
                                   f"{SPAWN_COOLDOWN_SEC:.0f}s after "
-                                  f"transient_timeout (slot contention "
-                                  f"or RPC budget exceeded; no consec "
-                                  f"increment — circuit breaker reserved "
-                                  f"for true gateway death)",
+                                  f"{infra_reason} (no consec increment — "
+                                  f"the circuit breaker is reserved for "
+                                  f"true gateway death)",
                                   flush=True)
-                        elif infra_reason == "gateway_unreachable":
-                            if _gateway_unreachable_backoff(
-                                    st, pool, kind=kind, tk=tk, tid=tid):
-                                return 2
                     except Exception as exc2:
                         # Cascade itself bombing is a deeper bug; log
                         # but don't crash the daemon (other work may

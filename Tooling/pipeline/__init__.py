@@ -119,8 +119,19 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
     req = _u.Request(base + "/register", data=register_body,
                      headers={"Content-Type": "application/json"},
                      method="POST")
-    with _u.urlopen(req, timeout=120) as resp:
-        body = resp.read().decode("utf-8")
+    # A 5xx here is the gateway TALKING, not the gateway being gone, and
+    # what it says is the whole diagnosis: "no free worker slot — pool
+    # exhausted" vs "target file not found: …" vs backend-not-ready all
+    # arrive as the same 500. Letting the raw HTTPError fly discards the
+    # body and leaves `str(exc)` = "HTTP Error 500: Internal Server
+    # Error" — which is what the operator read for a whole night while
+    # the answer sat in the response.
+    try:
+        with _u.urlopen(req, timeout=120) as resp:
+            body = resp.read().decode("utf-8")
+    except _ue.HTTPError as exc:
+        from ..lsp.lifecycle import read_http_error
+        raise read_http_error(exc, endpoint="/register") from exc
     payload = json.loads(body)
     token = payload.get("session_token")
     if not token:
@@ -150,7 +161,7 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
     return config_path
 
 
-def _release_session(attempts_dir: Path) -> None:
+def _release_session(attempts_dir: Path) -> bool:
     """Release the gateway session registered in `attempts_dir` (best-effort).
     Pairs with `_write_mcp_config`: each spawn registers a session token in
     `attempts_dir/_gateway_session.token`; a tight per-decl / per-file loop
@@ -158,16 +169,28 @@ def _release_session(attempts_dir: Path) -> None:
     exhausts (the Nth /register 500s on slot exhaustion). Builder relies on
     `_write_mcp_config`'s inline release-of-prior-token across its own warm
     retries instead, so it is the per-iteration loops (migrate hole-fill,
-    cleanup audit) that call this in a `finally`."""
+    cleanup audit) that call this in a `finally`.
+
+    Returns whether a token was found (so a caller that is about to DELETE
+    `attempts_dir` can report how many slots it handed back). The release
+    itself is best-effort by design — a gateway that is already gone owes
+    nothing — so the return says "there was one to release", not "the
+    gateway acknowledged"."""
     from ..lsp import lifecycle as _gw
     tok = attempts_dir / "_gateway_session.token"
-    if tok.exists():
+    if not tok.exists():
+        return False
+    try:
         t = tok.read_text(encoding="utf-8").strip()
-        if t:
-            try:
-                _gw.release_session(t)
-            except Exception:  # noqa: BLE001 — best-effort teardown
-                pass
+    except OSError:
+        return False
+    if not t:
+        return False
+    try:
+        _gw.release_session(t)
+    except Exception:  # noqa: BLE001 — best-effort teardown
+        pass
+    return True
 
 
 # Regression fix from the pipeline.py → pipeline/ package split: that
@@ -577,7 +600,7 @@ DECLINE_TO_FAILURE_REASON = {
 # Cross-pipeline helpers
 # ---------------------------------------------------------------------
 
-def _attempt_postmortem(*, kind: str, prompt_path: Path,
+def _attempt_postmortem(*, seat: str, prompt_path: Path,
                         problem_dir: Path, attempts_dir: Path,
                         session_id: str) -> None:
     """Short follow-up spawn after a main-spawn timeout.
@@ -597,7 +620,8 @@ def _attempt_postmortem(*, kind: str, prompt_path: Path,
     """
     try:
         agent.spawn_llm(
-            kind=kind,
+            # The seat the WORK spawn used — see `_hooks.make_goal_hooks`.
+            kind=seat,
             prompt_path=prompt_path,
             problem_dir=problem_dir,
             attempts_dir=attempts_dir,

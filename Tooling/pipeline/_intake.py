@@ -81,12 +81,41 @@ def run_intake(*, prompt_dir: Path, attempts_dir: Path,
         sentinel.unlink()
     except OSError:
         pass
+    # The intake turn READS — Context.md is the whole assignment — and
+    # until 2026-08-12 it was dispatched with no MCP at all. That was a
+    # claude-shaped assumption: claude has a native `Read`, so nobody
+    # noticed the stage handing an agent a reading task and no way to
+    # read. codex has no native file tool once the shell is closed, and
+    # said so rather than guessing:
+    #
+    #   "Unable to complete: the environment is read-only and provides
+    #    no file-reading tool, so I could not inspect `Context.md` or
+    #    write `intake.json` without inventing a verdict."
+    #
+    # Its rollout shows zero tool calls, because it had zero tools. The
+    # economy gate then fails open on the missing sentinel, so the whole
+    # stage was silently a no-op for that provider — three consecutive
+    # spawns, 18k-103k input tokens each, buying nothing.
+    #
+    # `asterism_tools` only: intake touches no Lean, and registering a
+    # gateway session would open a backend slot nobody uses — the same
+    # reasoning `write_tools_mcp_config` was written for.
+    mcp_path = None
+    if workspace is not None:
+        try:
+            from . import write_tools_mcp_config
+            mcp_path = write_tools_mcp_config(attempts_dir, workspace)
+        except OSError as exc:
+            print(f"[intake] {label}: could not write the tools MCP config "
+                  f"({exc}) — the turn will run without `inspect`",
+                  flush=True)
     rc = agent.spawn_llm(
         kind="formalizer",
         prompt_path=prompt_dir / "formalizer" / "intake.md",
         problem_dir=problem_dir,
         attempts_dir=attempts_dir,
         session_id=sid,
+        mcp_config_path=mcp_path,
         timeout_sec_override=intake_timeout_sec(workspace),
     )
     if rc in INTAKE_INFRA_RCS:

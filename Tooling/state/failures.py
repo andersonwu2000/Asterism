@@ -86,6 +86,16 @@ REGISTRY: "dict[str, FailureTraits]" = {
     # `lake_build_error` whose own detail began "verify infra error".
     # That last one charged a goal attempt and told the agent its Lean
     # was broken. `agent_visible=False`: there is no lesson in it.
+    #
+    # 2026-08-13: the name says `verify` because that is where the shape
+    # was first seen, but the CLASS is "the gateway answered 5xx", and
+    # `/register` is in it too — a reused gateway holding a dead
+    # daemon's slots answers "no free worker slot — pool exhausted"
+    # through the same door. `dispatcher._classify_worker_exception`
+    # now routes any `HTTPError` / `GatewayRefused` here for exactly
+    # that reason. Kept as one reason rather than minting a per-endpoint
+    # twin: same evidence, same handling, and a second spelling is how
+    # the first three labels happened.
     "verify_infra": _T("provider_infra", agent_visible=False,
                        cooldown_scope="target"),
     # The other half of an `error` from verify: a 4xx, a missing target,

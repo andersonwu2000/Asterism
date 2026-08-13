@@ -240,6 +240,19 @@ def _compute_via_gateway(code: str) -> str:
     try:
         with urllib.request.urlopen(req, timeout=_GATEWAY_TIMEOUT_SEC) as r:
             data = json.loads(r.read())
+    except urllib.error.HTTPError as exc:
+        # The service ANSWERED and named its own failure in the body;
+        # `str(HTTPError)` is "HTTP Error 500: Internal Server Error" for
+        # every cause alike. Telling the agent "did not answer" when it
+        # did — and hiding what it said — sends it to the wait-vs-report
+        # fork with no way to choose.
+        from ..lsp.lifecycle import read_http_error
+        refused = read_http_error(exc, endpoint="/compute")
+        return ComputeResult(
+            rc=127, seconds=0.0,
+            output=f"[compute] the framework's compute service refused "
+                   f"this call: {refused.detail[:300]}",
+        ).render()
     except Exception as exc:  # noqa: BLE001
         # Say which side failed, and WHICH of the two silences this is.
         # The old message named the venv and guessed "base Python

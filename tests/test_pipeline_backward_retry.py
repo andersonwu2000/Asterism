@@ -402,7 +402,14 @@ def test_backward_timeout_dispatches_postmortem_with_correct_args(
     assert pm_call["is_postmortem"] is True
     assert pm_call["session_id"] == main_call["session_id"]
     assert pm_call["prompt_path"].name == "backward_postmortem.md"
-    assert pm_call["kind"] == "backward"
+    # THE invariant, and it used to be asserted backwards: a resume turn
+    # must be dispatched with the SAME seat that minted the session it
+    # resumes. This line said `"backward"` — a seat retired in the
+    # Formalizer merge — which is precisely the defect: on a mixed-
+    # provider setup the postmortem asked the DEFAULT provider to resume
+    # a session id another provider had issued, and `_progress.md`
+    # rescue died silently (measured 2026-08-13 on codex).
+    assert pm_call["kind"] == main_call["kind"] == "formalizer"
 
 
 def test_backward_wrapper_no_persist_when_no_postmortem_note(

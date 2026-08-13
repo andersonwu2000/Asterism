@@ -293,7 +293,7 @@ def test_attempt_reflection_retracts_directive_on_sentinel(
     monkeypatch.setattr(_reflection.agent, "spawn_llm", fake_spawn)
 
     _reflection.attempt_reflection(
-        kind="backward", sid="s1", slug="g", outcome="failed", goal_id=1,
+        kind="backward", seat="formalizer", sid="s1", slug="g", outcome="failed", goal_id=1,
         problem="p", problem_dir=problem_dir, attempts_dir=attempts,
         prompt_dir=prompt_dir, workspace=tmp_path)
     assert _read_directive_p() is None          # retracted
@@ -321,7 +321,7 @@ def test_attempt_reflection_bounds_giant_directive(
     monkeypatch.setattr(_reflection.agent, "spawn_llm", fake_spawn)
 
     _reflection.attempt_reflection(
-        kind="backward", sid="s1", slug="g", outcome="success", goal_id=1,
+        kind="backward", seat="formalizer", sid="s1", slug="g", outcome="success", goal_id=1,
         problem="p", problem_dir=problem_dir, attempts_dir=attempts,
         prompt_dir=prompt_dir, workspace=tmp_path)
     assert captured, "reflection spawn never fired"
@@ -347,7 +347,7 @@ def test_attempt_reflection_keeps_directive_without_sentinel(
     problem_dir, attempts, prompt_dir = _setup_reflection_ws(tmp_path, "keep me")
     monkeypatch.setattr(_reflection.agent, "spawn_llm", lambda **kw: 0)
     _reflection.attempt_reflection(
-        kind="backward", sid="s1", slug="g", outcome="failed", goal_id=1,
+        kind="backward", seat="formalizer", sid="s1", slug="g", outcome="failed", goal_id=1,
         problem="p", problem_dir=problem_dir, attempts_dir=attempts,
         prompt_dir=prompt_dir, workspace=tmp_path)
     assert _read_directive_p() == "keep me"     # untouched
@@ -391,7 +391,7 @@ def test_attempt_reflection_uses_full_problem_name_for_kb(
     monkeypatch.setattr(_reflection.agent, "spawn_llm", fake_spawn)
 
     _reflection.attempt_reflection(
-        kind="backward", sid="sX", slug="g", outcome="proved", goal_id=gid,
+        kind="backward", seat="formalizer", sid="sX", slug="g", outcome="proved", goal_id=gid,
         problem="Geometry.foo", problem_dir=problem_dir, attempts_dir=attempts,
         prompt_dir=prompt_dir, workspace=tmp_path)
 

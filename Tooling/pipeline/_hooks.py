@@ -11,17 +11,30 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def make_goal_hooks(*, kind: str, goal, problem_dir: Path,
+def make_goal_hooks(*, kind: str, seat: str, goal, problem_dir: Path,
                     attempts_dir: Path, prompt_dir: Path,
                     workspace: Path, postmortem_prompt: Path):
     """The (postmortem_fn, reflection_fn, feedback_fn, death_fn) tuple for
     a goal-targeted pipeline spawn. `goal` is the sqlite goal row (slug /
-    id / problem)."""
+    id / problem).
+
+    `kind` NAMES the record (log lines, `agent_feedback.md`, death rows).
+    `seat` DISPATCHES.
+    THE SEAT, NOT THE LABEL. A tail turn RESUMES the session the work
+    spawn minted, so it must be dispatched with the same seat the work
+    spawn used — otherwise the provider lookup lands somewhere else and
+    the resume is handed a session id that provider never issued.
+    Measured 2026-08-13: the mint arm labels its tail `forward`, a seat
+    retired in the Formalizer merge, so `forward.provider` fell back to
+    the default and `claude --resume <codex-session-id>` returned rc=1
+    on four consecutive runs — silent on an all-claude setup, where
+    both names happen to resolve to the same provider.
+    """
 
     def postmortem_fn(sid: str) -> None:
         from . import _attempt_postmortem
         _attempt_postmortem(
-            kind=kind, prompt_path=postmortem_prompt,
+            seat=seat, prompt_path=postmortem_prompt,
             problem_dir=problem_dir, attempts_dir=attempts_dir,
             session_id=sid)
 
@@ -30,7 +43,7 @@ def make_goal_hooks(*, kind: str, goal, problem_dir: Path,
         if not _reflection_enabled(workspace):
             return
         attempt_reflection(
-            kind=kind, sid=sid, slug=goal["slug"],
+            kind=kind, seat=seat, sid=sid, slug=goal["slug"],
             outcome=(result.failure_reason or result.outcome),
             goal_id=int(goal["id"]), problem=str(goal["problem"]),
             problem_dir=problem_dir, attempts_dir=attempts_dir,
@@ -39,7 +52,7 @@ def make_goal_hooks(*, kind: str, goal, problem_dir: Path,
     def feedback_fn(sid: str, result) -> None:
         from . import _feedback
         _feedback.attempt_feedback(
-            kind=kind, sid=sid, slug=goal["slug"],
+            kind=kind, seat=seat, sid=sid, slug=goal["slug"],
             outcome=(result.failure_reason or result.outcome),
             problem_dir=problem_dir, attempts_dir=attempts_dir,
             workspace=workspace)

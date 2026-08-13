@@ -2643,7 +2643,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # turn never pollutes a verify-retry's session. No-op unless feedback is on.
     from . import _feedback
     _feedback.attempt_feedback(
-        kind="strategist", sid=sid, slug=str(trigger_kind or "strategist"),
+        kind="strategist", seat="strategist", sid=sid,
+        slug=str(trigger_kind or "strategist"),
         outcome="success", problem_dir=problem_dir,
         attempts_dir=attempts_dir, workspace=workspace)
     return PipelineResult(

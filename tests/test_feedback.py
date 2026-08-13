@@ -109,7 +109,7 @@ def test_attempt_feedback_disabled_is_noop(tmp_path, monkeypatch):
     att = _attempts(tmp_path)
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    _feedback.attempt_feedback(kind="strategist", sid="s1", slug="inject_done",
+    _feedback.attempt_feedback(kind="strategist", seat="strategist", sid="s1", slug="inject_done",
                                outcome="success", problem_dir=pdir,
                                attempts_dir=att, workspace=tmp_path)
     assert calls == []                               # no resume spawn when off
@@ -131,7 +131,7 @@ def test_attempt_feedback_resumes_session_and_records(ws_on, monkeypatch):
     att = _attempts(ws_on)
     pdir = ws_on / "Problems" / "p"
     pdir.mkdir(parents=True)
-    _feedback.attempt_feedback(kind="cleanup:audit", sid="sid-9", slug="Foo.lean",
+    _feedback.attempt_feedback(kind="cleanup:audit", seat="librarian", sid="sid-9", slug="Foo.lean",
                                outcome="success", problem_dir=pdir,
                                attempts_dir=att, workspace=ws_on)
     # resumed the just-finished session (not a cold spawn)
@@ -148,7 +148,7 @@ def test_attempt_feedback_no_sid_is_noop(ws_on, monkeypatch):
     att = _attempts(ws_on)
     pdir = ws_on / "Problems" / "p"
     pdir.mkdir(parents=True)
-    _feedback.attempt_feedback(kind="forward", sid="", slug="f",
+    _feedback.attempt_feedback(kind="forward", seat="formalizer", sid="", slug="f",
                                outcome="success", problem_dir=pdir,
                                attempts_dir=att, workspace=ws_on)
     assert calls == []                               # empty sid → can't resume
@@ -164,10 +164,39 @@ def test_attempt_feedback_logs_diagnostic_on_dry_spawn(ws_on, monkeypatch, capsy
     att = _attempts(ws_on)
     pdir = ws_on / "Problems" / "p"
     pdir.mkdir(parents=True)
-    _feedback.attempt_feedback(kind="cleanup:audit", sid="sid-x", slug="Foo.lean",
+    _feedback.attempt_feedback(kind="cleanup:audit", seat="librarian", sid="sid-x", slug="Foo.lean",
                                outcome="success", problem_dir=pdir,
                                attempts_dir=att, workspace=ws_on)
     out = capsys.readouterr().out
     assert "[feedback] cleanup:audit/Foo.lean: spawn rc=1" in out
     assert "scratch_written=False" in out
     assert not (ws_on / _OUT).exists()               # nothing landed (no scratch)
+
+
+def test_a_tail_turn_dispatches_with_the_seat_not_the_label(
+    tmp_path, monkeypatch,
+) -> None:
+    """A tail turn RESUMES the work spawn's session, so it must be
+    dispatched with the work spawn's seat. The label is a different
+    thing and belongs only in the record.
+
+    Measured 2026-08-13: the mint arm labelled its tail `forward` — a
+    seat retired in the Formalizer merge — so `forward.provider` fell
+    back to the default and `claude --resume <codex-session-id>`
+    returned rc=1 on four consecutive runs. Invisible on an all-claude
+    setup, where both names resolve to the same provider, which is why
+    only a mixed configuration exposed it."""
+    monkeypatch.setenv("ASTERISM_FEEDBACK_ENABLED", "true")
+    from Tooling import agent
+    calls = []
+    monkeypatch.setattr(agent, "spawn_llm", lambda **k: calls.append(k) or 0)
+    att = _attempts(tmp_path)
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    _feedback.attempt_feedback(
+        kind="forward", seat="formalizer", sid="sid-1", slug="inject7",
+        outcome="proved", problem_dir=pdir, attempts_dir=att,
+        workspace=tmp_path)
+    assert calls, "no resume spawn was dispatched"
+    assert calls[0]["kind"] == "formalizer", (
+        "the tail turn resolved its provider from the record label")

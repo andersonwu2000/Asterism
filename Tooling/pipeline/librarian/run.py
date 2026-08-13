@@ -548,7 +548,9 @@ def _run_structured(conn, *, problem, work_kind, workspace,
     # (the sid is still resumable here); reject paths already feed prev_error.
     if is_classify:
         _feedback.attempt_feedback(
-            kind="classify", sid=sid, slug="layout",
+            # classify dispatches its own work spawn as `classify`,
+            # so label and seat coincide here — unlike the mint arm.
+            kind="classify", seat="classify", sid=sid, slug="layout",
             outcome="success", problem_dir=problem_dir,
             attempts_dir=attempts_dir, workspace=workspace)
     return PipelineResult(outcome="success")

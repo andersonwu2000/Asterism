@@ -73,6 +73,26 @@ def _attempt_owner_alive(attempt_dir: Path) -> bool:
     return _pid_alive(data.get("owner_pid"))
 
 
+def _release_gateway_session(attempt_dir: Path) -> bool:
+    """Hand back the gateway worker slot this dead spawn still holds.
+
+    Delegates to `pipeline._release_session` rather than re-deriving the
+    token path here — one spelling of "where the session token lives",
+    since this is the second caller and the first one (the per-iteration
+    loops) already had it right. Returns whether there was a token to
+    release; the POST itself is best-effort.
+
+    Import is local and the whole thing is wrapped: recovery must run to
+    completion on a machine where the gateway is down, and a slot that
+    goes unreleased here is a leak the gateway's own sweep will still
+    catch — just an hour later instead of now."""
+    try:
+        from ..pipeline import _release_session
+        return _release_session(attempt_dir)
+    except Exception:  # noqa: BLE001 — never let cleanup fail recovery
+        return False
+
+
 def _pipeline_problem(conn: sqlite3.Connection, target_id: str,
                       target_kind: str) -> "str | None":
     """Resolve a pipelines row's target to its problem name (for scope
@@ -285,6 +305,7 @@ def recover_at_startup(conn: sqlite3.Connection,
 
     attempts_cleared = 0
     attempts_live_skipped = 0
+    sessions_released = 0
     backups_handled = 0
     tmps_removed = 0
     patches_salvaged = 0
@@ -318,6 +339,22 @@ def recover_at_startup(conn: sqlite3.Connection,
                 if _attempt_owner_alive(d):
                     attempts_live_skipped += 1
                     continue
+                # Hand the gateway slot back BEFORE deleting the dir that
+                # holds the only handle to it. The gateway outlives
+                # daemons on purpose, so a reused one still carries this
+                # dead spawn's claim — and `_gateway_session.token` lives
+                # inside `d`. Deleting first destroyed the evidence twice
+                # over on 2026-08-13: no token to release, and no sandbox
+                # manifest either, so the gateway's own liveness probe
+                # read "owner unknown → assume alive" and held 3 of 4
+                # slots until the 3600s ceiling. The next daemon's every
+                # /register got "no free worker slot" and it self-exited
+                # in ~780s. Best-effort by nature (the gateway may be
+                # down, or about to be relaunched for version skew) —
+                # cost is one HTTP POST against a process that is
+                # already answering /health.
+                if _release_gateway_session(d):
+                    sessions_released += 1
                 try:
                     shutil.rmtree(d)
                     attempts_cleared += 1
@@ -362,6 +399,7 @@ def recover_at_startup(conn: sqlite3.Connection,
             or pipelines_finalized or strategies_killed
             or goals_reopened or goals_attempting_fixup
             or attempts_cleared or attempts_live_skipped
+            or sessions_released
             or backups_handled or tmps_removed
             or patches_salvaged or probes_removed
             or orphans_swept or orphans_kept_cited):
@@ -376,7 +414,8 @@ def recover_at_startup(conn: sqlite3.Connection,
               f"(orphan-success fixup), "
               f"salvaged {patches_salvaged} orphan patches, "
               f"removed {attempts_cleared} orphan attempts dirs "
-              f"(spared {attempts_live_skipped} live), "
+              f"(spared {attempts_live_skipped} live, "
+              f"handed back {sessions_released} gateway slot(s)), "
               f"handled {backups_handled} lean backups, "
               f"removed {tmps_removed} stale .tmp files, "
               f"swept {probes_removed} stale migrate probes, "

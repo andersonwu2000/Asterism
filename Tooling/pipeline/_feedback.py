@@ -129,7 +129,8 @@ def _prefix(*, kind: str, model: str, outcome: str, problem: str,
 
 
 def record_survivor(workspace: Path | None, *, attempts_dir: Path,
-                    kind: str, slug: str, problem: str, outcome: str) -> None:
+                    kind: str, slug: str, problem: str, outcome: str,
+                    seat: "str | None" = None) -> None:
     """Read the survivor agent's scratch answer and, if it said something,
     append a metadata-prefixed line to the shared file. No-op when feedback
     is disabled, the scratch file is missing/empty, or the answer is the
@@ -148,7 +149,12 @@ def record_survivor(workspace: Path | None, *, attempts_dir: Path,
     lines = [ln.rstrip() for ln in body.splitlines() if ln.strip()]
     if not lines:
         return
-    model = _resolve_model(kind, workspace)
+    # The MODEL is a property of the seat, not of the label: there is no
+    # `forward.model` or `cleanup:audit.model` key, so resolving from the
+    # label wrote `?` into every such record (2026-08-13). Callers that
+    # only ever label (record_death, the record-shape tests) pass no seat
+    # and keep the old reading.
+    model = _resolve_model(seat or kind, workspace)
     first = lines[0]
     rec = _prefix(kind=kind, model=model, outcome=outcome,
                   problem=problem, slug=slug) + first
@@ -175,7 +181,8 @@ _FEEDBACK_PROMPT_FILENAME = "_feedback_prompt.md"
 _FEEDBACK_TIMEOUT_SEC = 90
 
 
-def attempt_feedback(*, kind: str, sid: str, slug: str, outcome: str,
+def attempt_feedback(*, kind: str, seat: str, sid: str,
+                     slug: str, outcome: str,
                      problem_dir: Path, attempts_dir: Path,
                      workspace: Path | None,
                      problem_label: str | None = None) -> None:
@@ -202,7 +209,7 @@ def attempt_feedback(*, kind: str, sid: str, slug: str, outcome: str,
         # is_postmortem=True → provider uses `--resume <sid>` and loads the
         # prompt verbatim (same path reflection uses for its resume turn).
         rc = agent.spawn_llm(
-            kind=kind, prompt_path=ppath, problem_dir=problem_dir,
+            kind=seat, prompt_path=ppath, problem_dir=problem_dir,
             attempts_dir=attempts_dir, session_id=sid,
             is_postmortem=True, timeout_sec=_FEEDBACK_TIMEOUT_SEC)
         wrote = scratch_path(attempts_dir).exists()
@@ -219,7 +226,7 @@ def attempt_feedback(*, kind: str, sid: str, slug: str, outcome: str,
         # the record honestly.
         record_survivor(workspace, attempts_dir=attempts_dir, kind=kind,
                         slug=slug, problem=problem_label or problem_dir.name,
-                        outcome=outcome)
+                        outcome=outcome, seat=seat)
     except Exception as exc:  # noqa: BLE001 — feedback must never break pipeline
         print(f"[feedback] {kind}/{slug}: raised {type(exc).__name__}: {exc}",
               flush=True)

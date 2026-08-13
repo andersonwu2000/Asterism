@@ -778,25 +778,31 @@ def _current_session() -> SessionMetadata | None:
 
 # ─── Stale-claim sweep (#118 follow-up) ────────────────
 
-# When to START ASKING whether a claim has leaked — NOT when to
-# reclaim. The distinction is the 2026-08-11 bug: this used to be the
-# reclaim threshold, justified by "worker timeouts are 600s (main) +
-# 180s (postmortem), so 900s is well above WORKER_TIMEOUT". Then
-# `dispatch.spawn_timeout_sec` went 960 → 1800 and the premise
-# inverted — the TTL became HALF the life a worker is granted, and the
-# sweep started taking slots away from workers that were merely
-# waiting on a heavy elaboration. Measured: 57 reclaims in one day,
-# all in the 900-960s band, including pipeline d9c3e052 which went on
-# issuing tool calls for another 20 minutes afterwards. Its next call
-# got "no slot claimed", which was charged to the goal as a
-# `lake_build_error` — infra death wearing mathematics' clothes.
+# A silence threshold that no longer gates anything, kept for one job:
+# it is the floor under `claim_ceiling_sec` (see `main`). The history is
+# worth keeping because the constant got demoted twice, both times for
+# the same reason.
 #
-# Silence is measured on the TOOL clock (`last_active`, updated in
-# `_acquire_slot`), and a worker waiting on Lean is silent by
-# definition. The watchdog learned this on 2026-08-08 and moved its NL
-# layer onto the stream clock; the lesson did not travel here. Rather
-# than pick a better silence threshold, ASK: the owner's pid is on
-# disk, so liveness is a question with an answer.
+# It began as the reclaim threshold, justified by "worker timeouts are
+# 600s (main) + 180s (postmortem), so 900s is well above
+# WORKER_TIMEOUT". Then `dispatch.spawn_timeout_sec` went 960 → 1800
+# and the premise inverted — the TTL became HALF the life a worker is
+# granted, and the sweep started taking slots from workers that were
+# merely waiting on a heavy elaboration. Measured: 57 reclaims in one
+# day, all in the 900-960s band, including pipeline d9c3e052 which went
+# on issuing tool calls for another 20 minutes afterwards. Its next call
+# got "no slot claimed", charged to the goal as a `lake_build_error` —
+# infra death wearing mathematics' clothes. 2026-08-11 demoted it from
+# "when to reclaim" to "when to start asking".
+#
+# 2026-08-13 removed the second role too. Silence is measured on the
+# TOOL clock (`last_active`, updated in `_acquire_slot`), and a worker
+# waiting on Lean is silent by definition — so silence was never
+# evidence about the owner in either direction. Making it the
+# PRECONDITION for asking meant a process that died at second one was
+# not asked about until 900s, which is how a leak outlived the daemon
+# that could have survived it. The question is cheap and the answer is
+# on disk: `_sweep_stale_claims` now asks every pass.
 _LEASE_TTL_SEC = 900.0
 _SWEEP_INTERVAL_SEC = 60.0
 
@@ -866,8 +872,24 @@ def _sweep_stale_claims() -> int:
     spawn dirs on disk + workers_busy=0. /release urlopen failures
     silently leaked claims; the daemon eventually self-exited via
     CONSEC_GATEWAY_UNREACHABLE_LIMIT=8 once concurrent dispatches
-    couldn't find any free slot. Activity-TTL self-heals before that
-    safety net trips."""
+    couldn't find any free slot.
+
+    That last sentence used to end "Activity-TTL self-heals before that
+    safety net trips." 2026-08-13 falsified it, and not narrowly: a
+    killed daemon left 3 of 4 slots claimed, the next daemon REUSED the
+    gateway (same code fingerprint, so the version-skew gate passed),
+    every /register answered "no free worker slot", and the breaker
+    fired at ~780s. The cure could not have raced the disease, because
+    the cure was not running: the owner-liveness question was gated
+    behind `_LEASE_TTL_SEC` of silence, so a process that had been dead
+    since second one was not even ASKED about until 900s — and with its
+    attempts dir already deleted by the next daemon's recovery sweep,
+    the answer would have been "unknown → alive", holding the slot to
+    the 3600s ceiling.
+
+    So the gate is gone. Death is not a function of silence: ask every
+    pass. Silence still governs the LIVE and UNKNOWN owners, via the
+    ceiling — that part was always the point."""
     now = time.monotonic()
     reclaimed = 0
     with _state.sessions_lock:
@@ -876,24 +898,29 @@ def _sweep_stale_claims() -> int:
         # the same lock that /register / /release use to serialize
         # claim transitions. The work per session is O(workers) for
         # the slot lookup which is bounded (~4 in production), so
-        # holding the lock for the full pass is cheap.
-        stale = [
-            (tok, meta) for tok, meta in _state.sessions.items()
-            if now - meta.last_active > _LEASE_TTL_SEC
-        ]
-        for tok, meta in stale:
+        # holding the lock for the full pass is cheap — and so is the
+        # liveness probe (one small JSON read + one pid check), which
+        # is why asking every pass costs nothing worth gating.
+        for tok, meta in list(_state.sessions.items()):
             inactive_for = now - meta.last_active
             over_ceiling = inactive_for > _state.claim_ceiling_sec
-            # Past the TTL, silence is a QUESTION, not a verdict. Ask
-            # the owner's pid. Sparing a live owner is not
-            # unconditional: a slot is 25% of the pool, and an orphan
-            # process (a daemon that died outside its Job Object) would
-            # otherwise hold one forever with nobody left to sweep it.
-            # So there is an absolute ceiling, past which the claim goes
-            # regardless — a LIVE owner older than the spawn budget
-            # means the watchdog that should have killed it did not, and
-            # that is worth both the slot and a loud line.
-            if not over_ceiling and _owner_alive(meta):
+            # Two independent grounds, neither derived from the other:
+            #   * the owner is PROVABLY gone — reclaim now, at any age.
+            #     A dead process will not issue another tool call, so
+            #     there is nothing to protect and nothing to wait for.
+            #   * the claim is past the absolute ceiling — reclaim
+            #     regardless of liveness. A slot is 25% of the pool and
+            #     an orphan (a daemon that died outside its Job Object)
+            #     would otherwise hold one forever with nobody left to
+            #     sweep it. A LIVE owner older than the spawn budget
+            #     means the watchdog that should have killed it did
+            #     not, and that is worth both the slot and a loud line.
+            # An owner we cannot identify (the serve UI's editor, agy's
+            # LSP bridge — no attempts dir at all) reads as alive by
+            # `_owner_alive`'s deliberate default, so only the ceiling
+            # ever takes its slot.
+            owner_gone = not _owner_alive(meta)
+            if not (owner_gone or over_ceiling):
                 continue
             _state.sessions.pop(tok, None)
             for slot in _state.workers:
@@ -915,8 +942,9 @@ def _sweep_stale_claims() -> int:
                 print(
                     f"[gateway] reclaimed leaked slot for "
                     f"pipeline {meta.pipeline_id[:8]} "
-                    f"({inactive_for:.0f}s inactive > "
-                    f"{_LEASE_TTL_SEC:.0f}s TTL; owner pid is gone)",
+                    f"(owner pid is gone; it had been silent "
+                    f"{inactive_for:.0f}s, which is NOT why — death is "
+                    f"not a function of silence)",
                     file=sys.stderr, flush=True,
                 )
     return reclaimed

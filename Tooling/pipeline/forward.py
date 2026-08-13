@@ -1033,7 +1033,9 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
     def forward_feedback(sid: str, result) -> None:
         from . import _feedback
         _feedback.attempt_feedback(
-            kind="forward", sid=sid,
+            # `forward` is the record label; the mint work spawn is
+            # dispatched as `formalizer` (no `forward:` seat exists).
+            kind="forward", seat="formalizer", sid=sid,
             slug=(f"inject{decision_id}" if decision_id else "forward"),
             outcome=(result.failure_reason or result.outcome),
             problem_dir=problem_dir, attempts_dir=attempts_dir,

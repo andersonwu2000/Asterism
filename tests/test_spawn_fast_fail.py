@@ -343,6 +343,91 @@ def test_classify_worker_exception_urlerror_is_gateway_unreachable() -> None:
     assert _classify_worker_exception(exc) == "gateway_unreachable"
 
 
+def test_a_5xx_is_the_gateway_talking_not_the_gateway_missing() -> None:
+    """`HTTPError` is a SUBCLASS of `URLError`, and that inheritance
+    cost a night's run (2026-08-13).
+
+    A gateway holding a killed daemon's leaked slots answers
+    /register with 500 "no free worker slot — pool exhausted". Filed
+    as `gateway_unreachable`, eight of those trip the
+    consecutive-unreachable breaker and exit the daemon — a process
+    that was up, healthy, and telling us exactly what was wrong. The
+    HTTPError branch must therefore come FIRST; if anyone ever reorders
+    them, this test is the thing that notices."""
+    import io
+    import urllib.error
+    from Tooling.core.dispatcher import _classify_worker_exception
+    exc = urllib.error.HTTPError(
+        "http://127.0.0.1:8765/register", 500, "Internal Server Error",
+        {}, io.BytesIO(b'{"error": "no free worker slot"}'))
+    assert _classify_worker_exception(exc) == "verify_infra"
+
+
+def test_a_named_gateway_refusal_classifies_the_same_way() -> None:
+    """The typed refusal the register client now raises must land on
+    the same reason as the raw HTTPError it replaces — otherwise
+    reading the response body would have quietly changed the failure
+    accounting."""
+    from Tooling.core.dispatcher import _classify_worker_exception
+    from Tooling.lsp.lifecycle import GatewayRefused
+    exc = GatewayRefused(500, "no free worker slot — pool exhausted",
+                         endpoint="/register")
+    assert _classify_worker_exception(exc) == "verify_infra"
+
+
+def test_gateway_refusal_does_not_feed_the_daemon_death_breaker() -> None:
+    """The point of the reason, not just its spelling: whatever
+    `verify_infra` is called, it must not be the reason the breaker
+    counts. `failures.py` drew this line for the verify path; the
+    dispatcher's classifier now shares it."""
+    from Tooling.state.failures import REGISTRY
+    # Same no-attempts++ semantics as the unreachable case...
+    assert REGISTRY["verify_infra"].origin == "provider_infra"
+    assert REGISTRY["verify_infra"].cooldown_scope == "target"
+    # ...but a DIFFERENT reason string, which is the whole point: the
+    # breaker counts `gateway_unreachable`, and only that.
+    assert "verify_infra" in REGISTRY and "gateway_unreachable" in REGISTRY
+    # agent_visible=False: a slot shortage is not a lesson about Lean.
+    assert REGISTRY["verify_infra"].agent_visible is False
+
+
+def test_every_reason_the_classifier_can_return_earns_a_cooldown() -> None:
+    """A classified worker exception must cool its target, or the
+    dispatcher re-fires the same full spawn on the very next tick.
+
+    The worker-exception path used to name its cooling reasons by hand
+    while the normal-result path read them from the registry. That was
+    survivable only while the classifier returned exactly the two
+    reasons the hand-list happened to contain — a coincidence, not an
+    invariant. Teaching the classifier a third (`verify_infra`,
+    2026-08-13) would have traded a daemon that exits in ~13 minutes
+    for one that hot-loops spawns with no back-off at all.
+
+    Read out of the AST rather than by calling with sample exceptions:
+    the failure mode is a NEW return value nobody wrote a sample for."""
+    import ast
+    import inspect
+    import textwrap
+    from Tooling.core import dispatcher
+    from Tooling.state.failures import TARGET_COOLDOWN_REASONS
+    tree = ast.parse(textwrap.dedent(
+        inspect.getsource(dispatcher._classify_worker_exception)))
+    reasons = {
+        node.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+        and node.value.value  # "" is the unclassified fall-through
+    }
+    assert reasons, "could not read the classifier's return values"
+    assert not sorted(r for r in reasons
+                      if r not in TARGET_COOLDOWN_REASONS), (
+        f"these reasons are returned by _classify_worker_exception but "
+        f"declare no target cooldown in failures.py: "
+        f"{sorted(reasons - TARGET_COOLDOWN_REASONS)}")
+
+
 def test_classify_worker_exception_oserror_econnrefused() -> None:
     """OSError with ECONNREFUSED errno also maps (cross-platform)."""
     import errno

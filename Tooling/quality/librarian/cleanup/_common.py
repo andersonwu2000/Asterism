@@ -771,7 +771,7 @@ def spawn_collect(workspace: Path, problem: str, prompt_path: Path,
     # `cleanup:polish` / `cleanup:audit` / …; no-op unless feedback is enabled.
     fm = re.search(r"`([^`]+\.lean)`", context_text)
     _feedback.attempt_feedback(
-        kind=f"cleanup:{prompt_path.stem}", sid=sid,
+        kind=f"cleanup:{prompt_path.stem}", seat="librarian", sid=sid,
         slug=(fm.group(1).rsplit("/", 1)[-1] if fm else prompt_path.stem),
         outcome="success", problem_dir=problem_dir,
         attempts_dir=attempts, workspace=workspace)

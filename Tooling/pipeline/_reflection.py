@@ -117,6 +117,7 @@ def _clear_directive(problem: str) -> None:
 
 def attempt_reflection(*,
                        kind: str,
+                       seat: str,
                        sid: str,
                        slug: str,
                        outcome: str,
@@ -201,7 +202,7 @@ def attempt_reflection(*,
             rendered_path.write_text(rendered, encoding="utf-8")
 
             agent.spawn_llm(
-                kind=kind,
+                kind=seat,
                 prompt_path=rendered_path,
                 problem_dir=problem_dir,
                 attempts_dir=attempts_dir,

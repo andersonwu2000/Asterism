@@ -1425,12 +1425,19 @@ def test_sweep_reclaims_session_inactive_beyond_ttl(
 def test_sweep_preserves_fresh_session(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """Session with `last_active` newer than TTL stays put."""
+    """A session that is working stays put.
+
+    `owner` is explicit now (2026-08-13). It used to default to a dead
+    pid and the test still passed, because recent `last_active` alone
+    bought the session a reprieve — which is precisely the gate that let
+    a killed daemon's claims outlive it. A genuinely fresh session has a
+    LIVE owner; that is what protects it, and that is what this pins."""
+    import os
     import time as _t
     slots = _build_fake_pool(monkeypatch, tmp_path, n=2)
     now = _t.monotonic()
     fresh = _make_meta(tmp_path, pipeline_id="pipe-fresh",
-                       last_active=now - 1.0)
+                       last_active=now - 1.0, owner=os.getpid())
     slots[0].claimed_by = "pipe-fresh"
     with _state.sessions_lock:
         _state.sessions["fresh-tok"] = fresh
@@ -1449,12 +1456,15 @@ def test_sweep_handles_mixed_stale_and_fresh(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """Real-world steady-state: some slots are active mid-spawn, some
-    are leaks from prior crashes. Sweep reclaims only the stale ones."""
+    are leaks from prior crashes. Sweep reclaims only the leaks — and
+    "active mid-spawn" means a live owner, not merely a recent tool
+    call (see `test_sweep_preserves_fresh_session`)."""
+    import os
     import time as _t
     slots = _build_fake_pool(monkeypatch, tmp_path, n=4)
     now = _t.monotonic()
     fresh = _make_meta(tmp_path, pipeline_id="pipe-fresh",
-                       last_active=now - 5.0)
+                       last_active=now - 5.0, owner=os.getpid())
     stale1 = _make_meta(tmp_path, pipeline_id="pipe-stale1",
                         last_active=now - lsp_gateway._LEASE_TTL_SEC - 10)
     stale2 = _make_meta(tmp_path, pipeline_id="pipe-stale2",
@@ -1570,6 +1580,38 @@ def test_a_dead_owner_past_the_ttl_is_still_reclaimed(
     n, held = _sweep_one(monkeypatch, tmp_path,
                          inactive=lsp_gateway._LEASE_TTL_SEC + 60,
                          owner="dead")
+    assert n == 1
+    assert held is None
+
+
+def test_a_dead_owner_is_reclaimed_before_it_has_been_quiet_at_all(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Death is not a function of silence (2026-08-13).
+
+    Asking about the owner used to require `_LEASE_TTL_SEC` of silence
+    FIRST. So a process that died at second one was not asked about for
+    900s — and that gap is the whole incident: a killed daemon left 3 of
+    4 slots claimed, its successor reused the gateway, every /register
+    answered "no free worker slot", and the breaker exited the daemon at
+    ~780s. Zero silence, dead owner, reclaimed now."""
+    n, held = _sweep_one(monkeypatch, tmp_path, inactive=0.0, owner="dead")
+    assert n == 1
+    assert held is None
+
+
+def test_the_cure_cannot_be_slower_than_the_disease(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The reclaim decision must not consult the silence threshold.
+
+    Pinned as INDEPENDENCE rather than as "900 < 780", because the
+    numbers are exactly what drifted: the TTL was chosen against a 780s
+    worker life, `spawn_timeout_sec` later doubled, and the two clocks
+    were never compared again. Whatever anyone sets the threshold to —
+    here, a day — a provably dead owner is still released this pass."""
+    monkeypatch.setattr(lsp_gateway, "_LEASE_TTL_SEC", 86_400.0)
+    n, held = _sweep_one(monkeypatch, tmp_path, inactive=1.0, owner="dead")
     assert n == 1
     assert held is None
 

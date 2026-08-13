@@ -777,7 +777,10 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     from ._hooks import make_goal_hooks
     (backward_postmortem, backward_reflection,
      backward_feedback, backward_death) = make_goal_hooks(
-        kind="backward", goal=goal, problem_dir=problem_dir,
+        # label `backward`; the work spawn below is dispatched as
+        # `formalizer`, and the tail turns resume ITS session.
+        kind="backward", seat="formalizer",
+        goal=goal, problem_dir=problem_dir,
         attempts_dir=attempts_dir, prompt_dir=PROMPT_DIR,
         workspace=workspace,
         postmortem_prompt=PROMPT_DIR / "backward" / "backward_postmortem.md")

@@ -531,7 +531,8 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
         # record's label names the real problem.
         from . import _feedback
         _feedback.attempt_feedback(
-            kind="adversary", sid=sid, slug=f"r{round_no}",
+            kind="adversary", seat="adversary", sid=sid,
+            slug=f"r{round_no}",
             outcome=str(verdict.get("verdict", "")),
             problem_dir=proj, attempts_dir=proj,
             workspace=attempts_dir.parent.parent,

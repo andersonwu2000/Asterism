@@ -398,7 +398,8 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
 
         def feedback(sid: str, result: "PipelineResult", _att=attempts) -> None:
             _feedback.attempt_feedback(
-                kind="cleanup:audit", sid=sid, slug=leaf,
+                kind="cleanup:audit", seat="librarian", sid=sid,
+                slug=leaf,
                 outcome=("success" if result.outcome == "success"
                          else "exhausted"),
                 problem_dir=problem_dir, attempts_dir=_att, workspace=workspace)
