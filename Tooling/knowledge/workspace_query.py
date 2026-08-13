@@ -331,13 +331,30 @@ def _rel(p: Path, cwd: Path) -> str:
 
 def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                 max_chars: int = 8000) -> str:
-    """Answer each query, labelled and capped, in one string."""
+    """Answer each query, labelled and capped, in one string.
+
+    The budget is PER QUERY, and it used to be per call. The tool asks
+    for a batch — the argument is a list and the help text shows two
+    questions — and then a single cap fell across the concatenation, so
+    the last questions in a batch lost answers that had already been
+    computed, under one footer reading "whole result truncated" that
+    named none of them. The agent could not tell WHICH answer it was
+    missing, only that something was gone.
+
+    So each query gets its own slice of the budget and says so in its
+    own block, with the one instruction that recovers it: ask that
+    query alone. Dividing rather than sharing also makes the batch's
+    cost predictable — an early query cannot starve a later one.
+    """
     here = Path(cwd or Path.cwd())
     deny = _deny_roots(here)
     if not isinstance(queries, list) or not queries:
         return ("inspect: pass a list of queries, e.g. "
                 '[{"decl": "uc_four_set_deficit"}, '
                 '{"grep": "BoundedOrder", "in": "proofs/*.lean"}]')
+    # A floor so a large batch still returns something usable per query
+    # rather than a column of ellipses.
+    per_query = max(600, max_chars // max(1, len(queries)))
     blocks: "list[str]" = []
     for n, q in enumerate(queries, 1):
         if not isinstance(q, dict):
@@ -351,15 +368,20 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                     body = fn(q, here, deny)
                 except Exception as exc:  # noqa: BLE001 — one bad query
                     body = [f"failed: {type(exc).__name__}: {exc}"]
-                blocks.append(head + "\n" + "\n".join(body))
+                text = "\n".join(body)
+                if len(text) > per_query:
+                    # Name the query, say what it cost, and give the one
+                    # move that recovers the rest.
+                    text = (text[:per_query]
+                            + f"\n… [{n}] truncated at {per_query} chars "
+                              f"of this call's {max_chars} shared across "
+                              f"{len(queries)} quer"
+                              f"{'y' if len(queries) == 1 else 'ies'}. "
+                              f"Re-run THIS query alone to see the rest.")
+                blocks.append(head + "\n" + text)
                 break
         else:
             blocks.append(
                 f"[{n}] no known query key in {sorted(q)}. Use one of: "
                 f"decl, grep, read, find, size.")
-    out = "\n\n".join(blocks)
-    if len(out) > max_chars:
-        out = (out[:max_chars]
-               + f"\n\n… whole result truncated at {max_chars} chars. "
-                 f"Ask fewer questions per call, or lower `max`.")
-    return out
+    return "\n\n".join(blocks)

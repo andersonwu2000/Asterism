@@ -19,7 +19,7 @@ Also check `## Recent decisions` for your prior decisions and their outcomes.
    - Sent back — the worker found the argument does not settle the goal (`return_to_nl`): uncovered, mis-aimed, or false as stated
 
 - **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions. Validate `decision.json` with `validate_json` before finishing.
-   - Tactical → `Inject(target_goal_id, brief=...)` back to the original goal pointing at the missed API or correct sub-path
+   - Tactical → `Inject(target_goal_id, proof=...)` back to the original goal pointing at the missed API or correct sub-path
    - Structural → `ConfirmShelve` this goal + `Inject` on ancestor with reframed angle
    - Ontological → `ConfirmShelve` + escalate upward (or `RequestUserAmend` if user file is wrong)
    - Missing prereq → a no-target `Inject` to mint the brick + `ConfirmShelve` to park
@@ -87,7 +87,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 ```json
 // tactical — agent missed existing mathlib API
 [{"kind": "Inject", "target_goal_id": "sub_lemma_X",
-  "brief": "Roadmap: sub-lemma X\nAgent shelved citing 'mathlib lacks X', but Grep confirmed `Module.End.X` exists. Cite it directly — don't reconstruct."}]
+  "proof": "Roadmap: sub-lemma X\nAgent shelved citing 'mathlib lacks X', but Grep confirmed `Module.End.X` exists. Cite it directly — don't reconstruct."}]
 ```
 
 ```json
@@ -95,15 +95,15 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 [{"kind": "ConfirmShelve", "target_goal_id": "child_lemma",
   "reason": "Agent's disproof is correct: the hypotheses constrain A and B jointly, never B alone. The parent split asks the impossible."},
  {"kind": "Inject", "target_goal_id": "parent_goal",
-  "brief": "Roadmap: joint invariant\nReframe the parent: carry A and B as one invariant and induct so both co-evolve, instead of splitting B off into a sub-goal that loses the coupling."}]
+  "proof": "Roadmap: joint invariant\nReframe the parent: carry A and B as one invariant and induct so both co-evolve, instead of splitting B off into a sub-goal that loses the coupling."}]
 ```
 
 ```json
 // missing prereq(s) → mint(s) + park (N mints allowed per batch)
 [{"kind": "Inject",
-  "brief": "Roadmap: equidecomp composition\n## Need\nA composition lemma for `Equidecomp.trans` over partial bijections (Grep + loogle confirmed missing)."},
+  "proof": "Roadmap: equidecomp composition\n## Need\nA composition lemma for `Equidecomp.trans` over partial bijections (Grep + loogle confirmed missing)."},
  {"kind": "Inject",
-  "brief": "Roadmap: equidecomp composition\n## Need\nThe inverse lemma for `Equidecomp.symm`, independent of the above."},
+  "proof": "Roadmap: equidecomp composition\n## Need\nThe inverse lemma for `Equidecomp.symm`, independent of the above."},
  {"kind": "ConfirmShelve", "target_goal_id": 1743,
   "reason": "Parked pending both minted bricks; reassess after they land."}]
 ```

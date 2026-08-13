@@ -15,7 +15,7 @@ Tools: Read / Write / Edit / Grep / `inspect([{"grep":"Bar","in":"proofs/*.lean"
    - Cross-check `## Recent decisions` for repeating failure patterns → step back and reassess the math logic and methodology.
 
 - **Process each reopen-promise** (your prior `ConfirmShelve` rows parked waiting for this batch):
-   - Brick landed, gap closed → `Inject(target_goal_id, brief=...)` back to the original goal naming which brick to cite
+   - Brick landed, gap closed → `Inject(target_goal_id, proof=...)` back to the original goal naming which brick to cite
    - Brick landed but gap remains → `Inject` a new brick + `ConfirmShelve` to keep parked
    - Brick didn't land / proof direction was wrong → `ConfirmShelve` this goal + `Inject` a reframed angle on its upper goal
    - Permanently superseded → standalone `ConfirmShelve` (no paired Inject)
@@ -83,15 +83,15 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 ```json
 // brick landed as expected → re-dispatch the parked goal
 [{"kind": "Inject", "target_goal_id": "succ_glue",
-  "brief": "Roadmap: succ glue\nBrick `block_enum_consecutive` (batch 8027877c) landed — provides the Fin-index layout that previously blocked. Cite `block_enum_consecutive` directly; don't reconstruct the enumeration."}]
+  "proof": "Roadmap: succ glue\nBrick `block_enum_consecutive` (batch 8027877c) landed — provides the Fin-index layout that previously blocked. Cite `block_enum_consecutive` directly; don't reconstruct the enumeration."}]
 ```
 
 ```json
 // gap remains → brick(s) + keep parked (N mints allowed per batch)
 [{"kind": "Inject",
-  "brief": "Roadmap: remaining gap\n## Need\nFollow-up brick Y to fill remaining gap..."},
+  "proof": "Roadmap: remaining gap\n## Need\nFollow-up brick Y to fill remaining gap..."},
  {"kind": "Inject",
-  "brief": "Roadmap: remaining gap\n## Need\nBrick Z, independent of Y..."},
+  "proof": "Roadmap: remaining gap\n## Need\nBrick Z, independent of Y..."},
  {"kind": "ConfirmShelve", "target_goal_id": 2950,
   "reason": "Still parked; awaits bricks Y + Z"}]
 ```
@@ -101,5 +101,5 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 [{"kind": "ConfirmShelve", "target_goal_id": "child_lemma",
   "reason": "Two Injects died the same way: the parent's split assumes a lemma that is false in isolation."},
  {"kind": "Inject", "target_goal_id": "parent_goal",
-  "brief": "Roadmap: reframe\nStop splitting A from B; carry them as one joint invariant and induct so both co-evolve."}]
+  "proof": "Roadmap: reframe\nStop splitting A from B; carry them as one joint invariant and induct so both co-evolve."}]
 ```

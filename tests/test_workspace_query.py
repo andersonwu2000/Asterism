@@ -142,3 +142,44 @@ def test_decl_degrades_without_a_database(here: Path) -> None:
     agent would read as "that declaration does not exist"."""
     out = wq.run_queries([{"decl": "a_bound"}], cwd=here)
     assert "unavailable" in out or "no declaration named" in out
+
+
+# ── the budget is per query, not per call (2026-08-13) ──────────────
+#
+# `inspect` asks for a batch — the argument is a list and the help text
+# shows two questions — and a single cap used to fall across the
+# concatenation. The last questions in a batch lost answers that had
+# already been computed, under one footer reading "whole result
+# truncated" that named none of them: the agent could tell something
+# was missing but not WHICH, so the only recovery was to re-ask
+# everything one at a time.
+
+
+def test_one_greedy_query_cannot_eat_a_later_answer(tmp_path):
+    here = tmp_path
+    (here / "big.lean").write_text("x" * 5000 + "\n", encoding="utf-8")
+    (here / "small.lean").write_text("needle here\n", encoding="utf-8")
+    out = wq.run_queries(
+        [{"read": "big.lean"}, {"grep": "needle", "in": "*.lean"}],
+        cwd=here, max_chars=2000)
+    assert "needle" in out, (
+        "the second query's answer was computed and then thrown away by "
+        "the first query's size — that is the bug this pins")
+
+
+def test_a_truncated_query_names_itself_and_the_way_back(tmp_path):
+    here = tmp_path
+    (here / "big.lean").write_text("y" * 9000 + "\n", encoding="utf-8")
+    out = wq.run_queries([{"read": "big.lean"}, {"decl": "nope"}],
+                         cwd=here, max_chars=2000)
+    assert "[1] truncated at" in out, "the cut must name which query it cut"
+    assert "Re-run THIS query alone" in out, (
+        "a truncation notice has to name an action the reader can take")
+
+
+def test_a_single_query_still_gets_the_whole_budget(tmp_path):
+    here = tmp_path
+    (here / "big.lean").write_text("z" * 5000 + "\n", encoding="utf-8")
+    out = wq.run_queries([{"read": "big.lean"}], cwd=here, max_chars=4000)
+    assert len(out) > 3500, (
+        "dividing the budget must not penalise the un-batched case")
