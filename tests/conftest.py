@@ -54,6 +54,10 @@ _FENCED_EXES = frozenset({
     # spawn does. Its two legitimate probes are `free_cli_probe`-marked
     # and pass the argv check below (`--version`, the drift-guard tail).
     "agy", "agy.exe", "agy.cmd",
+    # codex is the third quota-burning backend (seated 2026-08-13). Its
+    # one legitimate probe is `free_cli_probe`-marked and passes the
+    # argv check below (`--version`, the drift-guard tail).
+    "codex", "codex.exe", "codex.cmd",
     "lake", "lake.exe", "lean", "lean.exe",
     "lean-asterism-server", "lean-asterism-server.exe",
     "loogle", "loogle.exe",

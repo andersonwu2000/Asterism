@@ -48,7 +48,21 @@ unrelated string:
           tier downgraded) shows up here rather than as a mid-run
           `provider_misconfigured` storm. Measured 2026-08-09: 4.2s.
 
-Both probes run in a background thread and every failure mode is a
+  codex   `exec --skip-git-repo-check -c sandbox_mode="<invalid>"`
+          → rc=1, 'Error loading config.toml: unknown variant `<value>`,
+          expected one of `read-only`, `workspace-write`, ...' — two
+          `_MISCONFIG_MARKERS` in one output ("error loading config.toml"
+          and "unknown variant"), and the config-load failure aborts
+          BEFORE auth, stdin and the network. Measured 2026-08-13
+          (v0.147.0, ~1.5s), against both an empty CODEX_HOME and the
+          real one. Do NOT "simplify" this to an unknown top-level FIELD:
+          that was measured the same day to be silently tolerated, after
+          which the CLI goes straight to the API — a real turn on the
+          operator's account. An invalid `--model` is server-validated
+          too, unlike agy's. The illegal ENUM value is the one shape
+          proven to die client-side.
+
+The probes run in a background thread and every failure mode is a
 warning. A guard that can stop a run is a new way for the run to die.
 
 WHERE THE SNAPSHOT LIVES: `<workspace>/.asterism/provider_snapshots.json`.
@@ -83,6 +97,8 @@ SNAPSHOT_REL = Path(".asterism") / "provider_snapshots.json"
 _DEAD_SESSION_UUID = "00000000-0000-4000-8000-000000000000"
 #: A model slug no vendor will ever ship. Same reason.
 _INVALID_MODEL_SLUG = "asterism-drift-probe-not-a-model"
+#: An illegal value for codex's `sandbox_mode` enum. Same reason.
+_INVALID_SANDBOX_MODE = "asterism-drift-probe-not-a-mode"
 
 _PROBE_TIMEOUT_SEC = 30
 
@@ -119,6 +135,13 @@ def _agy_keep(line: str) -> bool:
             or line.startswith("  "))
 
 
+def _codex_keep(line: str) -> bool:
+    low = line.lower()
+    return ("error loading config.toml" in low
+            or "unknown variant" in low
+            or low.startswith("in `"))
+
+
 PROBES: "dict[str, BehaviourProbe]" = {
     "claude": BehaviourProbe(
         argv_tail=("--resume", _DEAD_SESSION_UUID, "-p", "x"),
@@ -133,6 +156,17 @@ PROBES: "dict[str, BehaviourProbe]" = {
         marker_source="Tooling.llm.antigravity_cli._MISCONFIG_MARKERS",
         keep_line=_agy_keep,
         redact=((_INVALID_MODEL_SLUG, "<slug>"),),
+    ),
+    # The one shape measured to die client-side — see the module
+    # docstring before changing ANY of these arguments; the obvious
+    # "simpler" variants were measured to reach the API.
+    "codex": BehaviourProbe(
+        argv_tail=("exec", "--skip-git-repo-check",
+                   "-c", f'sandbox_mode="{_INVALID_SANDBOX_MODE}"'),
+        must_contain="unknown variant",
+        marker_source="Tooling.llm.codex_cli._MISCONFIG_MARKERS",
+        keep_line=_codex_keep,
+        redact=((_INVALID_SANDBOX_MODE, "<value>"),),
     ),
 }
 
@@ -185,11 +219,6 @@ UNVERIFIED: "dict[str, str]" = {
         "second channel (`rate_limits` in the rollout) that the prose "
         "is only a fallback for — so this table is the less load-"
         "bearing half. Still unwatched, still worth capturing.",
-    "Tooling.llm.codex_cli._MISCONFIG_MARKERS":
-        "no free probe wired yet. Unlike the two above this one IS "
-        "cheaply probeable — an invalid `--model` slug should do for "
-        "codex what it already does for agy — so this is a gap in the "
-        "PROBES table, not in the world.",
 }
 
 
@@ -229,6 +258,13 @@ def resolve_executable(provider: str) -> "str | None":
         # answer; see `claude_cli.resolve_claude_executable`.
         from .claude_cli import resolve_claude_executable
         return resolve_claude_executable()
+    if name == "codex":
+        # Not `shutil.which` either: npm puts both `codex` (a shell
+        # script Popen cannot execute — [WinError 193], the provider's
+        # first live spawn, 2026-08-12) and `codex.cmd` on PATH, and
+        # which() hands back the former. The provider owns the answer.
+        from .codex_cli import resolve_codex_executable
+        return resolve_codex_executable()
     return shutil.which(name)
 
 
@@ -456,10 +492,11 @@ def run_and_report(workspace: Path) -> "list[str]":
 def start_background(workspace: Path) -> threading.Thread:
     """Run the guard off the startup path.
 
-    Both probes are CLI cold starts (~2.5s + ~4.2s measured 2026-08-09),
-    which is small but not free, and nothing about dispatch depends on
-    the answer — so the daemon must not wait for it. The warnings land
-    in the run log a few seconds in, beside the seat banner.
+    Each probe is a CLI cold start (claude ~2.5s + agy ~4.2s measured
+    2026-08-09; codex ~1.5s measured 2026-08-13), which is small but not
+    free, and nothing about dispatch depends on the answer — so the
+    daemon must not wait for it. The warnings land in the run log a few
+    seconds in, beside the seat banner.
 
     Opt out with `ASTERISM_SKIP_PROVIDER_DRIFT_CHECK=1` (a machine with
     no CLIs installed, or a test harness that must not shell out).

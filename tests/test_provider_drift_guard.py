@@ -130,6 +130,60 @@ def test_the_agy_probe_exercises_a_real_misconfig_marker() -> None:
     assert probe.must_contain in agy._MISCONFIG_MARKERS
 
 
+#: Verbatim from codex v0.147.0, 2026-08-13 — the config-load failure
+#: the probe provokes. `<value>` is what the redaction leaves behind.
+_CODEX_OK = (
+    "Error loading config.toml: unknown variant `<value>`, expected one "
+    "of `read-only`, `workspace-write`, `danger-full-access`\n"
+    "in `sandbox_mode`\n"
+)
+
+
+def test_the_codex_probe_exercises_a_real_misconfig_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two markers in one output, and the second is the one pinned:
+    "unknown variant" is `_MISCONFIG_MARKERS`' enum-shaped entry, and
+    "error loading config.toml" rides along in the signature. The probe
+    argv is load-bearing in a way the other providers' are not — the
+    obvious variants (unknown top-level field, invalid `--model`) were
+    measured on 2026-08-13 to reach the real API — so this test also
+    pins the argv shape."""
+    from Tooling.llm import codex_cli
+    probe = drift_guard.PROBES["codex"]
+    assert probe.must_contain in codex_cli._MISCONFIG_MARKERS
+    assert "error loading config.toml" in codex_cli._MISCONFIG_MARKERS
+    # The one client-side-fatal shape: an illegal ENUM value via `-c`.
+    assert probe.argv_tail[0] == "exec"
+    assert any(a.startswith('sandbox_mode="') for a in probe.argv_tail)
+    assert "--model" not in probe.argv_tail
+    _fake_cli(monkeypatch,
+              version=caps.CAPABILITIES["codex"].tested_version,
+              probe_out=_CODEX_OK)
+    assert drift_guard.check(tmp_path, ("codex",)) == []
+    stored = json.loads(
+        (tmp_path / drift_guard.SNAPSHOT_REL).read_text(encoding="utf-8"))
+    assert stored["codex"]["probe"]["marker_ok"] is True
+    # Both marker phrases survive into the stored signature, so a
+    # rewording of EITHER shows up as a snapshot diff.
+    sig = "\n".join(stored["codex"]["probe"]["signature"]).lower()
+    assert "unknown variant" in sig
+    assert "error loading config.toml" in sig
+
+
+def test_a_dead_codex_marker_names_its_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rot direction: codex rewords the config error, the misconfig
+    classifier goes silent, and the warning must say WHICH table died."""
+    _fake_cli(monkeypatch,
+              version=caps.CAPABILITIES["codex"].tested_version,
+              probe_out="error: configuration file is malformed\n")
+    warnings = drift_guard.check(tmp_path, ("codex",))
+    assert any("DEAD SILENT" in w for w in warnings)
+    assert any("codex_cli._MISCONFIG_MARKERS" in w for w in warnings)
+
+
 # ---------------------------------------------------------------------
 # Coverage: a table nobody watches must SAY so (2026-08-13)
 # ---------------------------------------------------------------------
@@ -249,13 +303,14 @@ def test_start_background_can_be_switched_off(
 # ---------------------------------------------------------------------
 
 @pytest.mark.free_cli_probe
-@pytest.mark.parametrize("provider", ["claude", "antigravity"])
+@pytest.mark.parametrize("provider", ["claude", "antigravity", "codex"])
 def test_the_installed_cli_matches_its_declaration_right_now(
     provider: str, tmp_path: Path,
 ) -> None:
-    """The real thing, against the real CLI. `--version` and an invalid
-    `--model` / a nonexistent `--resume` id are answered locally, so
-    this costs nothing and works with the subscription exhausted.
+    """The real thing, against the real CLI. A nonexistent `--resume` id
+    (claude), an invalid `--model` (agy) and an illegal `sandbox_mode`
+    enum value (codex) are all answered locally, so this costs nothing
+    and works with the subscription exhausted.
 
     A FAILURE here is not a broken test — it is the guard doing its job:
     re-measure what the record vouches for, then update
