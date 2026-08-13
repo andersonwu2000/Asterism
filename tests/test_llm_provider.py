@@ -1162,8 +1162,14 @@ def test_gemini_resolve_prefers_cmd_extension_on_windows(
     from Tooling.llm import base as _base
     from Tooling.llm import gemini_cli
     monkeypatch.setattr(_base.sys, "platform", "win32")
-    monkeypatch.setattr(_base.os, "environ",
-                        {"PATHEXT": ".COM;.EXE;.BAT;.CMD"})
+    # Claiming to be win32 changes `sys.platform` and NOTHING ELSE, so
+    # `os.pathsep` is still the host's. PATHEXT has to be joined with the
+    # separator the code will actually split on, or on Linux the whole
+    # string survives as one bogus "extension" and the resolver returns
+    # None — which is exactly how this passed here and failed in CI's
+    # ubuntu job from 2026-08-12 to 2026-08-14.
+    monkeypatch.setattr(_base.os, "environ", {
+        "PATHEXT": _base.os.pathsep.join((".COM", ".EXE", ".BAT", ".CMD"))})
     seen: list = []
 
     def fake_which(name):
@@ -1200,10 +1206,24 @@ def test_a_bare_shim_alone_reads_as_not_installed(
     the framework charges to the goal as a failed attempt."""
     from Tooling.llm import base as _base
     monkeypatch.setattr(_base.sys, "platform", "win32")
-    monkeypatch.setattr(_base.os, "environ", {"PATHEXT": ".EXE;.CMD"})
-    monkeypatch.setattr(_base.shutil, "which",
-                        lambda n: r"C:\npm\claude" if n == "claude" else None)
+    # Same host/pretend split as the test above — and here it mattered in
+    # the quieter direction: with PATHEXT unsplittable this assertion
+    # still held, because NO extension got probed rather than because the
+    # bare shim was refused. It was passing on ubuntu for the wrong
+    # reason, which is worse than the red one next door.
+    monkeypatch.setattr(_base.os, "environ",
+                        {"PATHEXT": _base.os.pathsep.join((".EXE", ".CMD"))})
+    probed: list = []
+
+    def _which(n):
+        probed.append(n)
+        return r"C:\npm\claude" if n == "claude" else None
+
+    monkeypatch.setattr(_base.shutil, "which", _which)
     assert _base.which_launchable("claude") is None
+    assert "claude.EXE" in probed, (
+        "the extensions were never probed, so 'not installed' here says "
+        "nothing about the shim")
 
 
 def test_gemini_spawn_returns_127_on_filenotfounderror(
