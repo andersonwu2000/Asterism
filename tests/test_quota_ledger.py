@@ -294,12 +294,19 @@ def test_a_bound_group_is_released_only_as_a_whole(monkeypatch):
     assert {"strategist", "adversary"} <= clear
 
 
-def _state_with_hold(kind="Strategist", until=9e9):
-    from Tooling.core.dispatcher import SchedulerState
-    st = SchedulerState()
-    st.quota_cooldown_kind[kind] = until
-    return st
-
+# ---------------------------------------------------------------------
+# Hold and release, through the dispatch path (2026-08-06 / 08-11)
+# ---------------------------------------------------------------------
+#
+# These used to drive `quota_wait.sync_quota_holds`, a reconciler that
+# mirrored the ledger into `SchedulerState.quota_cooldown_kind`. It is
+# gone (2026-08-13): the dispatcher asks the ledger once per tick and
+# hands the answer to `admission`, so there is no mirrored state.
+#
+# The tests kept their subjects. The release direction in particular is
+# worth more now than it was, because it has become a claim about
+# STRUCTURE rather than about code that runs: nothing holds the fact, so
+# nothing can fail to let go of it.
 
 _FABLE_SEATS = {
     "strategist": ("claude", "claude-opus-5"),
@@ -309,59 +316,94 @@ _FABLE_SEATS = {
 }
 
 
-def test_the_hold_lifts_when_the_endpoint_says_the_seat_is_clear(monkeypatch):
-    """The 2026-08-11 production shape, end to end through the
-    dispatcher's own wiring — the layer where seat-vs-kind spelling has
-    already broken this once."""
-    from Tooling.core import quota_wait
+def _admits(kind: str, *, backoff=None) -> str:
+    """The dispatcher's own question, asked the dispatcher's own way:
+    ledger → `quota.blocked_dispatch_kinds` → `admission`. Going through
+    the shared translation is the point — a private seat/kind conversion
+    in this file would be the second spelling that broke the first
+    version of the hold in production (2026-08-07)."""
+    from Tooling.core.admission import admission
+    blocked = quota.blocked_dispatch_kinds(Ledger(ttl=0.0), _FABLE_SEATS)
+    return admission("g1", kind, cooldown_until={},
+                     kind_backoff=backoff or {},
+                     blocked_kinds=set(blocked), now=1000.0)
 
+
+def test_the_hold_lifts_when_the_endpoint_says_the_seat_is_clear(monkeypatch):
+    """The 2026-08-11 production shape: a Fable weekly cap held the
+    Strategist for eight hours across the account switch that had
+    already lifted it.
+
+    There is no longer any code that performs this release — the ledger
+    simply stops reporting the block and the next tick admits. The bug
+    class died with the state it needed."""
+    from Tooling.core.admission import ADMIT
     monkeypatch.setattr(quota, "_PROBES", {"claude": lambda: []})
-    st = _state_with_hold()
-    quota_wait.sync_quota_holds(st, Ledger(ttl=0.0), _FABLE_SEATS)
-    assert "Strategist" not in st.quota_cooldown_kind
+    assert _admits("Strategist") == ADMIT
 
 
 def test_the_hold_survives_a_silent_endpoint(monkeypatch):
-    from Tooling.core import quota_wait
+    """Silence must not read as recovery: releasing on no-answer drops a
+    real cap, while holding on no-answer only costs a wait.
 
+    An unanswered probe contributes no blocks, so the ledger reports
+    none — and the hold that matters in that case is the rc=126 brake
+    the failing spawns themselves set. Pinned together here so the pair
+    cannot drift apart."""
+    from Tooling.core.admission import DENY_KIND_BACKOFF
     monkeypatch.setattr(quota, "_PROBES", {"claude": _boom})
-    st = _state_with_hold()
-    quota_wait.sync_quota_holds(st, Ledger(ttl=0.0), _FABLE_SEATS)
-    assert st.quota_cooldown_kind.get("Strategist") == 9e9
+    assert _admits("Strategist", backoff={"Strategist": 9e9}) \
+        == DENY_KIND_BACKOFF
 
 
 def test_the_hold_survives_while_the_bound_seat_is_still_capped(monkeypatch):
-    from Tooling.core import quota_wait
-
+    """BOUND: the author and the judge live or die together. A capped
+    Fable judge holds the Opus Strategist, because a proposal nobody can
+    review is 25-28k output tokens that get discarded (11 of them,
+    2026-08-06)."""
+    from Tooling.core.admission import DENY_QUOTA
     monkeypatch.setattr(quota, "_PROBES",
                         {"claude": lambda: [Block("claude", "Fable", 9e9)]})
-    st = _state_with_hold()
-    quota_wait.sync_quota_holds(st, Ledger(ttl=0.0), _FABLE_SEATS)
-    assert st.quota_cooldown_kind.get("Strategist") == 9e9
+    assert _admits("Strategist") == DENY_QUOTA
 
 
-def test_the_release_does_not_touch_the_rc126_backoff(monkeypatch):
-    """The exponential backoff shares this map but is a rate-limit
-    brake, not a quota fact: clearing it here would let a refusing
-    provider be hammered every tick. It has its own release, at the
-    dispatch site, on the first non-quota outcome."""
-    from Tooling.core import quota_wait
+def test_a_clear_ledger_does_not_release_the_rc126_backoff(monkeypatch):
+    """The brake is a rate limit, not a quota fact: releasing it because
+    the endpoint looks clear would let a refusing provider be hammered
+    every tick. It has its own map and its own release, at the dispatch
+    site, on the first non-quota outcome.
 
+    This used to require care — the two shared one table, so the
+    reconciler had to remember not to clear half of it. Now they are
+    different arguments and the care is structural."""
+    from Tooling.core.admission import DENY_KIND_BACKOFF
     monkeypatch.setattr(quota, "_PROBES", {"claude": lambda: []})
-    st = _state_with_hold(until=1e9)
-    st.consec_quota_per_kind["Strategist"] = 3
-    quota_wait.sync_quota_holds(st, Ledger(ttl=0.0), _FABLE_SEATS)
-    assert st.quota_cooldown_kind.get("Strategist") == 1e9
+    assert _admits("Strategist", backoff={"Strategist": 9e9}) \
+        == DENY_KIND_BACKOFF
 
 
 def test_holding_still_works_after_all_this(monkeypatch):
-    """The other end of the relation, through the same entry point."""
-    from Tooling.core import quota_wait
-
+    """The other end of the relation, and the 2026-08-06 lesson: a cap
+    naming ONE model must not stop the pipelines seated on a different
+    one. Fable's weekly cap holds strategist+adversary; the sonnet-seated
+    formalizer keeps running."""
+    from Tooling.core.admission import ADMIT, DENY_QUOTA
     monkeypatch.setattr(quota, "_PROBES",
                         {"claude": lambda: [Block("claude", "Fable", 9e9,
                                                   "weekly cap")]})
-    st = _state_with_hold(until=0.0)
-    quota_wait.sync_quota_holds(st, Ledger(ttl=0.0), _FABLE_SEATS)
-    assert st.quota_cooldown_kind.get("Strategist") == 9e9
-    assert st.quota_cooldown_kind.get("Formalizer") is None
+    assert _admits("Strategist") == DENY_QUOTA
+    assert _admits("Formalizer") == ADMIT
+
+
+def test_the_seat_to_kind_translation_has_one_home(monkeypatch):
+    """`blocked_kinds` answers in seat names; the queue speaks dispatch
+    kinds. The translation is `quota.blocked_dispatch_kinds` and nowhere
+    else — a private copy at a call site is exactly what shipped the
+    hold as a silent no-op on 2026-08-07."""
+    monkeypatch.setattr(quota, "_PROBES",
+                        {"claude": lambda: [Block("claude", "Fable", 9e9)]})
+    out = quota.blocked_dispatch_kinds(Ledger(ttl=0.0), _FABLE_SEATS)
+    assert set(out) == {"Strategist"}, (
+        "expected QUEUE kinds, not seat names — got " + repr(sorted(out)))
+    # pre-search is a station: held through its group, never on its own
+    assert "presearch" not in out and "Presearch" not in out

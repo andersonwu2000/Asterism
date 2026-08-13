@@ -1722,7 +1722,7 @@ def test_bfs_refill_kind_cooldown_blocks_enqueue(
     from Tooling.core.dispatcher import bfs_refill
     _seed_goal(conn, problem="sg")
     qcd = {"Formalizer": time.time() + 60.0}
-    bfs_refill(conn, running=set(), quota_cooldown_kind=qcd)
+    bfs_refill(conn, running=set(), kind_backoff=qcd)
     assert db.queue_size(conn) == 0
 
 
@@ -1735,7 +1735,7 @@ def test_bfs_refill_kind_cooldown_only_affects_matching_kind(
     from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn, problem="sg")
     bfs_refill(conn, running=set(),
-               quota_cooldown_kind={"Librarian": time.time() + 60.0})
+               kind_backoff={"Librarian": time.time() + 60.0})
     assert db.queue_count(conn, target_id=str(gid), kind="Formalizer") == 1
 
 
@@ -1747,7 +1747,7 @@ def test_bfs_refill_expired_kind_cooldown_no_block(
     from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn, problem="sg")
     bfs_refill(conn, running=set(),
-               quota_cooldown_kind={"Formalizer": time.time() - 60.0})
+               kind_backoff={"Formalizer": time.time() - 60.0})
     assert db.queue_count(conn, target_id=str(gid), kind="Formalizer") == 1
 
 

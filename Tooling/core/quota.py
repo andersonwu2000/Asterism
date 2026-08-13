@@ -71,6 +71,54 @@ DISPATCH_KIND: "dict[str, str]" = {
 }
 
 
+def blocked_dispatch_kinds(ledger, seats: dict) -> "dict[str, Block]":
+    """Which QUEUE KINDS cannot be dispatched, and why.
+
+    `Ledger.blocked_kinds` answers in seat names because seats are what
+    the config names. The queue speaks dispatch kinds. Translating is
+    not a formality: writing a seat name into a structure the refill
+    pass reads by kind is what made the first version of the per-seat
+    hold a silent no-op in production (2026-08-07), and `DISPATCH_KIND`
+    exists directly above for that reason.
+
+    So the translation lives HERE, beside the table, rather than at the
+    call site — the dispatcher asks this and so do its tests, which is
+    the difference between one spelling and two. Seats with no dispatch
+    kind are stations inside another pipeline (pre-search); they are
+    held through their `BOUND` group, never on their own.
+    """
+    out: "dict[str, Block]" = {}
+    for seat, blk in ledger.blocked_kinds(seats).items():
+        kind = DISPATCH_KIND.get(seat)
+        if kind is not None:
+            out[kind] = blk
+    return out
+
+
+def report_block_changes(previous: "set[str]",
+                         blocks: "dict[str, Block]") -> "set[str]":
+    """Announce holds and releases as they CHANGE; return the new set.
+
+    `previous` is presentation state and nothing more — the caller keeps
+    it in a local, never on the scheduler, because the moment a quota
+    hold is stored somewhere it acquires a release path that can be got
+    wrong (it was, for eight hours, on 2026-08-11). The ledger is asked
+    every tick; this only decides when to speak.
+    """
+    current = set(blocks)
+    if current == previous:
+        return previous
+    for kind, blk in sorted(blocks.items()):
+        if kind not in previous:
+            print(f"[quota] {kind} held — {blk.provider}"
+                  f"{'/' + blk.model if blk.model else ''}: "
+                  f"{blk.detail or 'exhausted'}", flush=True)
+    for kind in sorted(previous - current):
+        print(f"[quota] {kind} released — the ledger no longer reports "
+              f"its seat capped", flush=True)
+    return current
+
+
 @dataclass(frozen=True)
 class Block:
     """One spawn surface that is unavailable, and until when.

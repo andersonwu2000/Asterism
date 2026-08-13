@@ -23,7 +23,7 @@ import pytest
 
 from Tooling.core import dispatcher
 from Tooling.core.admission import (
-    ADMIT, DENY_KIND_COOLED, DENY_TARGET_COOLED, admission)
+    ADMIT, DENY_KIND_BACKOFF, DENY_QUOTA, DENY_TARGET_COOLED, admission)
 
 SRC = Path(dispatcher.__file__).read_text(encoding="utf-8")
 
@@ -32,26 +32,26 @@ SRC = Path(dispatcher.__file__).read_text(encoding="utf-8")
 
 def test_an_uncooled_pair_is_admitted():
     assert admission("g1", "Formalizer", cooldown_until={},
-                     quota_cooldown_kind={}, now=100.0) == ADMIT
+                     kind_backoff={}, blocked_kinds=set(), now=100.0) == ADMIT
 
 
 def test_a_kind_wide_hold_denies_by_kind():
     assert admission(
         "g1", "Formalizer", cooldown_until={},
-        quota_cooldown_kind={"Formalizer": 200.0},
-        now=100.0) == DENY_KIND_COOLED
+        kind_backoff={"Formalizer": 200.0}, blocked_kinds=set(),
+        now=100.0) == DENY_KIND_BACKOFF
 
 
 def test_a_per_target_backoff_denies_by_target():
     assert admission(
         "g1", "Formalizer", cooldown_until={("g1", "Formalizer"): 200.0},
-        quota_cooldown_kind={}, now=100.0) == DENY_TARGET_COOLED
+        kind_backoff={}, blocked_kinds=set(), now=100.0) == DENY_TARGET_COOLED
 
 
 def test_a_cooldown_on_a_different_target_does_not_leak():
     assert admission(
         "g1", "Formalizer", cooldown_until={("g2", "Formalizer"): 200.0},
-        quota_cooldown_kind={}, now=100.0) == ADMIT
+        kind_backoff={}, blocked_kinds=set(), now=100.0) == ADMIT
 
 
 def test_an_expired_cooldown_admits():
@@ -59,7 +59,7 @@ def test_an_expired_cooldown_admits():
     assert admission(
         "g1", "Formalizer",
         cooldown_until={("g1", "Formalizer"): 50.0},
-        quota_cooldown_kind={"Formalizer": 50.0},
+        kind_backoff={"Formalizer": 50.0}, blocked_kinds=set(),
         now=100.0) == ADMIT
 
 
@@ -67,7 +67,7 @@ def test_absent_maps_mean_no_cooldown_anywhere():
     """`bfs_refill` is called with neither map in most tests and in the
     `--once` paths; None must not read as "everything is cooled"."""
     assert admission("g1", "Formalizer", cooldown_until=None,
-                     quota_cooldown_kind=None, now=100.0) == ADMIT
+                     kind_backoff=None, blocked_kinds=None, now=100.0) == ADMIT
 
 
 def test_the_kind_hold_wins_when_both_apply():
@@ -78,8 +78,8 @@ def test_the_kind_hold_wins_when_both_apply():
     assert admission(
         "g1", "Formalizer",
         cooldown_until={("g1", "Formalizer"): 200.0},
-        quota_cooldown_kind={"Formalizer": 200.0},
-        now=100.0) == DENY_KIND_COOLED
+        kind_backoff={"Formalizer": 200.0}, blocked_kinds=set(),
+        now=100.0) == DENY_KIND_BACKOFF
 
 
 # ─── the properties a later edit would quietly remove ─────────────────
@@ -161,28 +161,28 @@ def test_the_two_refusals_are_not_the_same_string() -> None:
     """They mean different things to the row — drop vs put back — and a
     tidy-up that unified them would resurrect the bug in the form where
     a retry-enqueued row gets deleted and never re-derived."""
-    assert DENY_KIND_COOLED != DENY_TARGET_COOLED
-    assert ADMIT not in (DENY_KIND_COOLED, DENY_TARGET_COOLED)
+    assert DENY_KIND_BACKOFF != DENY_TARGET_COOLED
+    assert ADMIT not in (DENY_KIND_BACKOFF, DENY_TARGET_COOLED)
     assert not ADMIT, "the admitted verdict must be falsy-empty"
 
 
-@pytest.mark.parametrize("const,handler", [
-    ("DENY_KIND_COOLED", "complete_queue_row"),
-    ("DENY_TARGET_COOLED", "deferred_rows.append"),
+@pytest.mark.parametrize("marker,handler", [
+    ("_verdict in (DENY_QUOTA, DENY_KIND_BACKOFF)", "complete_queue_row"),
+    ("_verdict == DENY_TARGET_COOLED", "deferred_rows.append"),
 ])
 def test_the_pop_loop_still_handles_each_verdict_its_own_way(
-    const: str, handler: str,
+    marker: str, handler: str,
 ) -> None:
-    """Pins the pairing itself: a row under a kind hold is deleted (the
-    kind is parked; refill re-derives), a row under a target back-off is
-    unclaimed (this row is still wanted and refill may never have known
-    about it)."""
-    marker = f"_verdict == {const}"
-    assert marker in SRC, f"the pop loop no longer branches on {const}"
+    """Pins the pairing itself: a row parked kind-wide is deleted (refill
+    re-derives it once the park lifts), a row under a per-target back-off
+    is unclaimed (still wanted, and refill may never have known about
+    it). The two kind verdicts share a handler on purpose — they differ
+    in WHO OWNS the fact, not in what the row deserves."""
+    assert marker in SRC, f"the pop loop no longer branches on `{marker}`"
     block = SRC.split(marker, 1)[1][:400]
     assert handler in block, (
-        f"{const} no longer routes to {handler} — the two refusals "
-        f"have started to converge")
+        f"`{marker}` no longer routes to {handler} — the refusals have "
+        f"started to converge")
 
 
 def test_the_predicate_agrees_with_a_live_scheduler_state() -> None:
@@ -191,9 +191,36 @@ def test_the_predicate_agrees_with_a_live_scheduler_state() -> None:
     st = dispatcher.SchedulerState()
     now = time.time()
     st.cooldown_until[("g9", "Formalizer")] = now + 60
-    st.quota_cooldown_kind["Strategist"] = now + 60
+    st.kind_backoff_until["Strategist"] = now + 60
     ask = dict(cooldown_until=st.cooldown_until,
-               quota_cooldown_kind=st.quota_cooldown_kind, now=now)
+               kind_backoff=st.kind_backoff_until,
+               blocked_kinds={"Librarian"}, now=now)
     assert admission("g9", "Formalizer", **ask) == DENY_TARGET_COOLED
-    assert admission("g9", "Strategist", **ask) == DENY_KIND_COOLED
+    assert admission("g9", "Strategist", **ask) == DENY_KIND_BACKOFF
+    assert admission("g9", "Librarian", **ask) == DENY_QUOTA
     assert admission("g8", "Formalizer", **ask) == ADMIT
+
+
+def test_the_quota_fact_is_not_stored_on_the_scheduler() -> None:
+    """The reconciler is gone because the mirror is gone. If a quota map
+    ever reappears on `SchedulerState`, someone has started keeping a
+    second copy of the ledger's answer — and the release half of that
+    copy is what held the Strategist for eight hours on 2026-08-11."""
+    st = dispatcher.SchedulerState()
+    # What must NOT come back: a per-kind map of quota HOLDS. Counters
+    # are a different animal and stay — `consec_quota_per_kind` is the
+    # breaker's ammunition, which the dispatcher genuinely owns; one
+    # adjudication point does not mean one bucket for all state.
+    holds = {
+        f for f, v in st.__dict__.items()
+        if "quota" in f and isinstance(v, dict)
+        and not f.startswith("consec_")
+    }
+    assert not holds, (
+        f"quota holds are the ledger's, asked per tick and never "
+        f"mirrored — a copy here needs releasing, and its release is "
+        f"what broke on 2026-08-11: {sorted(holds)}")
+    assert "kind_backoff_until" in st.__dict__, (
+        "the rc=126 rate brake IS the dispatcher's own and must stay")
+    assert "consec_quota_per_kind" in st.__dict__, (
+        "the breaker's counter is not quota state and was not moved")

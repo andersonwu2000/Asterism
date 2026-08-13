@@ -227,7 +227,16 @@ _WATERMARKS = {
     # per-target cooldown it had been setting all along — without it,
     # ten fast-fails arrived in 51 seconds and outran the quota ledger's
     # own cache. Conscious bump.
-    "Tooling/core/dispatcher.py": 2830,
+    # 2830→2865 (2026-08-13): ledger sovereignty. `sync_quota_holds` and
+    # `SchedulerState.quota_cooldown_kind` are GONE — the quota fact is
+    # asked of `core.quota` each tick instead of mirrored here, so the
+    # release path that held the Strategist for eight hours (08-11) has
+    # no state left to get wrong. Net across `Tooling/core` is smaller;
+    # this file keeps the incident's explanation plus the rc=126 brake
+    # that stayed. The two helpers that could live elsewhere already
+    # did move (`admission`, `quota.report_block_changes`). Conscious
+    # bump.
+    "Tooling/core/dispatcher.py": 2865,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

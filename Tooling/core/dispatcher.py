@@ -19,8 +19,8 @@ from pathlib import Path
 
 from .. import agent, pipeline
 from . import config, fsutil, quota, quota_wait
-from .admission import (ADMIT, DENY_KIND_COOLED, DENY_TARGET_COOLED,
-                        admission)
+from .admission import (ADMIT, DENY_KIND_BACKOFF, DENY_QUOTA,
+                        DENY_TARGET_COOLED, admission)
 from ..state import db, manifest, thresholds, transitions, tree
 from ..state import failures as _failures
 from ..state import groups as _groups
@@ -374,7 +374,8 @@ def bfs_refill(conn: sqlite3.Connection,
                cooldown_until: dict[tuple[str, str], float] | None = None,
                *,
                scope: str | None = None,
-               quota_cooldown_kind: dict[str, float] | None = None,
+               kind_backoff: dict[str, float] | None = None,
+               blocked_kinds: "set[str] | None" = None,
                verified_problems: dict[str, bool] | None = None,
                ) -> None:
     """Enqueue dispatchable tasks. `running` is the in-memory live set
@@ -389,10 +390,16 @@ def bfs_refill(conn: sqlite3.Connection,
     are skipped this tick. Set after a spawn_fast_fail cascade so
     transient claude / network failures don't burst-retry at 2s/call.
 
-    `quota_cooldown_kind` is the kind-wide variant: quota_exhausted is
-    provider-level, not target-level — gating one (tid, kind) leaves
-    243 other Backwards free to burn through the cap. While a kind is
-    cooled here every enqueue of that kind is skipped this tick.
+    The two kind-wide inputs are separate on purpose, and used to be one
+    map: quota is provider-level, not target-level — gating one
+    (tid, kind) leaves 243 other Backwards free to burn through the cap.
+
+    `blocked_kinds` is the quota ledger's answer for this tick, handed
+    in by the caller rather than stored anywhere. `kind_backoff` is the
+    rc=126 exponential rate brake, which the dispatcher does own. Both
+    suppress a whole kind; only one of them is a fact about the outside
+    world, and mixing them is what made the release direction
+    unwritable (see `core/admission.py`).
 
     `scope` (optional SQL LIKE pattern): when set, only enqueue goals
     whose problem matches. Lets a daemon run be restricted to a
@@ -401,7 +408,8 @@ def bfs_refill(conn: sqlite3.Connection,
     """
     now = time.time()
     cd = cooldown_until or {}
-    qcd = quota_cooldown_kind or {}
+    kb = kind_backoff or {}
+    blocked = blocked_kinds or set()
 
     def in_flight(tid: str, kind: str) -> int:
         # Phase 2.5 — running key is (target_id, kind, decision_id);
@@ -436,8 +444,8 @@ def bfs_refill(conn: sqlite3.Connection,
         these two comparisons lived here and in the pop loop until
         2026-08-13, when the pop loop's absence of the per-target half
         let ten fast-fails land in 51 seconds."""
-        return admission(tid, kind, cooldown_until=cd,
-                         quota_cooldown_kind=qcd, now=now)
+        return admission(tid, kind, cooldown_until=cd, kind_backoff=kb,
+                         blocked_kinds=blocked, now=now)
 
     # Strategies ready for verify are no longer enqueued as Verify
     # pipelines. They're processed inline in `verify_housekeeping` at
@@ -1071,8 +1079,15 @@ class SchedulerState:
     """
     # (tid, kind) → wall time before which bfs_refill/pop skip the pair.
     cooldown_until: "dict[tuple[str, str], float]" = field(default_factory=dict)
-    # Per-kind provider-quota backoff (#103): kind → resume time / consec.
-    quota_cooldown_kind: "dict[str, float]" = field(default_factory=dict)
+    # Per-kind rc=126 exponential RATE BRAKE (#103): kind → resume time.
+    # NOT quota state — that is `core.quota.Ledger`'s, asked fresh each
+    # tick and never mirrored here. The two shared this map until
+    # 2026-08-13, and the mixing is why the release direction could not
+    # be written safely: clearing the map would have released a live
+    # rate brake, so `sync_quota_holds` cleared neither, and a Fable
+    # weekly cap outlived the account switch that fixed it by eight
+    # hours (2026-08-11).
+    kind_backoff_until: "dict[str, float]" = field(default_factory=dict)
     consec_quota_per_kind: "dict[str, int]" = field(default_factory=dict)
     # Quota-wait (dispatch.quota_wait): global dispatch pause until the
     # subscription window resets. In-memory on purpose: a restart
@@ -2027,6 +2042,10 @@ def run(workspace: Path, *, once: bool = False,
         in ("true", "1", "yes", "on"))
     drifting = False
     fp_checked_at = time.monotonic()
+    #: Last tick's quota-blocked kinds, for change-only logging. A local,
+    #: not scheduler state, and deliberately so: nothing may mistake it
+    #: for the authority. The ledger is the fact.
+    _prev_blocked: "set[str]" = set()
     while True:
         # Graceful stop (charter §5-3): stop file present → no new
         # spawns; drain in-flight workers via the normal cascade below;
@@ -2116,7 +2135,7 @@ def run(workspace: Path, *, once: bool = False,
                             QUOTA_BACKOFF_BASE_SEC * (2 ** (n - 1)),
                             QUOTA_BACKOFF_CAP_SEC,
                         )
-                        st.quota_cooldown_kind[kind] = time.time() + backoff
+                        st.kind_backoff_until[kind] = time.time() + backoff
                         # Tell the ledger what this spawn just learned.
                         # A provider with no usage API (agy has none —
                         # `agy --help` carries no quota subcommand) can
@@ -2263,15 +2282,17 @@ def run(workspace: Path, *, once: bool = False,
                         st.consec_unclassified = 0
                         st.consec_unconfirmed_trips = 0
                         # #103 — any non-quota, non-infra outcome on this
-                        # kind proves the provider responded: clear the
-                        # per-kind quota backoff so dispatch resumes
-                        # fresh. (Other infra reasons above are orthogonal
-                        # to quota — handled in their own branch and don't
-                        # touch quota state.)
+                        # kind proves the provider responded: release the
+                        # rc=126 rate brake so dispatch resumes fresh.
+                        # (Other infra reasons above are orthogonal to
+                        # quota — handled in their own branch.) The
+                        # QUOTA FACT is not touched here and never was
+                        # ours to touch: the ledger holds it and is
+                        # re-asked next tick.
                         if kind in st.consec_quota_per_kind:
                             st.consec_quota_per_kind.pop(kind, None)
-                            st.quota_cooldown_kind.pop(kind, None)
-                            print(f"[cooldown] {kind} quota state reset "
+                            st.kind_backoff_until.pop(kind, None)
+                            print(f"[cooldown] {kind} rate brake released "
                                   f"(non-quota outcome confirms provider "
                                   f"responsive)", flush=True)
                     # `strategist_noop` is a non-success outcome but means
@@ -2536,19 +2557,29 @@ def run(workspace: Path, *, once: bool = False,
         # different one. 2026-08-06 held a single boolean and paused a
         # whole run — formalizer on Gemini, judge movable to Opus, and
         # neither had a quota problem; eleven finished proposals were
-        # discarded for a Fable weekly cap. The ledger writes into the
-        # kind-cooldown map the refill pass already honours, so blocked
-        # seats simply stop being dispatched while the rest keep going.
-        # Extend-only (max): the rc=126 backoffs live in the same map.
-        quota_wait.sync_quota_holds(st, _quota_ledger, _pipeline_seats())
+        # discarded for a Fable weekly cap.
+        #
+        # ASKED, not mirrored (2026-08-13). This used to call
+        # `sync_quota_holds`, a reconciler that copied the ledger's
+        # answer into `st.quota_cooldown_kind` and popped it back out
+        # again — a second home for one fact, and its release half
+        # shipped broken: a Fable weekly cap held the Strategist for
+        # eight hours across the account switch that had already lifted
+        # it (2026-08-11). The ledger is now read directly, once per
+        # tick, and there is no held state to forget to release.
+        _blocks = quota.blocked_dispatch_kinds(
+            _quota_ledger, _pipeline_seats())
+        blocked_kinds = set(_blocks)
+        _prev_blocked = quota.report_block_changes(_prev_blocked, _blocks)
 
         # Refill queue (uses in-memory `running` for dedup; st.cooldown_until
-        # holds spawn_fast_fail back-offs; st.quota_cooldown_kind holds the
-        # per-kind quota backoff (#103); scope restricts to a benchmark
-        # subset like `minif2f_%`).
+        # holds spawn_fast_fail back-offs; st.kind_backoff_until holds the
+        # rc=126 rate brake; scope restricts to a benchmark subset like
+        # `minif2f_%`).
         if not quota_waiting:
             bfs_refill(conn, running, st.cooldown_until, scope=scope,
-                       quota_cooldown_kind=st.quota_cooldown_kind,
+                       kind_backoff=st.kind_backoff_until,
+                       blocked_kinds=blocked_kinds,
                        verified_problems=st.verified_problems)
 
         # Phase 2 — Strategist T0/T1 triggers (T2 pending_review fires at
@@ -2653,12 +2684,12 @@ def run(workspace: Path, *, once: bool = False,
             # which is why `admission` returns a reason and not a bool:
             _verdict = admission(
                 target_id, kind, cooldown_until=st.cooldown_until,
-                quota_cooldown_kind=st.quota_cooldown_kind,
-                now=time.time())
-            if _verdict == DENY_KIND_COOLED:
-                # Kind-wide quota hold: DROP. The whole kind is parked,
-                # so refill re-derives this row once the hold lifts,
-                # and holding a lease meanwhile blocks refill's dedup.
+                kind_backoff=st.kind_backoff_until,
+                blocked_kinds=blocked_kinds, now=time.time())
+            if _verdict in (DENY_QUOTA, DENY_KIND_BACKOFF):
+                # Kind-wide: DROP. The whole kind is parked, so refill
+                # re-derives this row once it lifts, and holding a lease
+                # meanwhile blocks refill's dedup.
                 db.complete_queue_row(conn, qid)
                 continue
             if _verdict == DENY_TARGET_COOLED:

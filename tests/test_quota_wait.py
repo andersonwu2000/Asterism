@@ -246,12 +246,12 @@ def test_tick_expiry_resumes_and_accumulates_pause(monkeypatch):
     st.quota_wait_entered = 1000.0
     st.quota_wait_until = 1500.0
     st.consec_quota_per_kind["Forward"] = 3
-    st.quota_cooldown_kind["Forward"] = 2000.0
+    st.kind_backoff_until["Forward"] = 2000.0
     assert quota_wait.tick(st, 1600.0, enabled=True) is False
     assert st.quota_wait_until == 0.0
     assert st.quota_wait_paused == 600.0  # 1600 - entered(1000)
     assert st.consec_quota_per_kind == {}  # fresh start
-    assert st.quota_cooldown_kind == {}
+    assert st.kind_backoff_until == {}
 
 
 def test_tick_expiry_rearms_when_still_exhausted(monkeypatch):
