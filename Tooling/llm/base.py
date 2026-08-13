@@ -27,10 +27,47 @@ SpawnRC is an IntEnum):
 """
 from __future__ import annotations
 
+import os
+import shutil
+import sys
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
 from typing import Protocol
+
+
+def which_launchable(name: "str") -> "str | None":
+    """`shutil.which`, minus the Windows trap that costs a whole spawn.
+
+    An npm-installed CLI puts TWO files on PATH: `foo` (a POSIX shell
+    script, for Git Bash) and `foo.cmd` (for Windows). `shutil.which`
+    returns the extensionless one — and `CreateProcess` cannot run it:
+    `[WinError 193] %1 is not a valid Win32 application`, raised at
+    Popen, so the pipeline sees a worker exception rather than anything
+    resembling "the CLI is not launchable".
+
+    MEASURED on this machine 2026-08-12: `codex`, `gemini` and `npm`
+    itself all resolve to the extensionless shim; `claude` and `agy`
+    happen to be `.EXE` today, which is the only reason this never bit
+    before — and `claude_cli.resolve_claude_executable` already carries
+    an `npm/claude.cmd` fallback, so a machine that installed claude
+    through npm is one `which` away from the same failure.
+
+    So: try the PATHEXT spellings first and accept the bare name only
+    when it is itself launchable (a real `.exe` found under its own
+    name, or any name on POSIX).
+    """
+    if sys.platform != "win32":
+        return shutil.which(name)
+    exts = [e for e in os.environ.get("PATHEXT", "").split(os.pathsep) if e]
+    for ext in exts:
+        found = shutil.which(name + ext)
+        if found:
+            return found
+    found = shutil.which(name)
+    if found and Path(found).suffix.upper() in {e.upper() for e in exts}:
+        return found
+    return None
 
 
 class SpawnRC(IntEnum):

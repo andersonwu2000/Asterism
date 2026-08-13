@@ -59,6 +59,9 @@ def get_provider(kind: str | None = None) -> Provider:
     if name in ("antigravity", "agy"):
         from .antigravity_cli import AntigravityCliProvider
         return AntigravityCliProvider()
+    if name == "codex":
+        from .codex_cli import CodexCliProvider
+        return CodexCliProvider()
     raise ValueError(f"unknown ASTERISM_LLM_PROVIDER={name!r}")
 
 

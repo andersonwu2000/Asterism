@@ -92,7 +92,18 @@ class StreamParser:
     watchdog (or the post-spawn TIMEOUT branch) on a different thread.
     """
 
-    def __init__(self) -> None:
+    #: Item types that mean "the agent ACTED" — the tool-cadence clock's
+    #: heartbeat on the codex dialect. `reasoning` is deliberately absent:
+    #: thinking is what the tool clock exists to distinguish from acting.
+    _CODEX_TOOL_ITEMS = frozenset({
+        "command_execution", "mcp_tool_call", "file_change", "web_search",
+        "todo_list",
+    })
+
+    def __init__(self, dialect: str = "claude") -> None:
+        if dialect not in ("claude", "codex"):
+            raise ValueError(f"unknown stream dialect {dialect!r}")
+        self._dialect = dialect
         self._lock = threading.Lock()
         now = time.monotonic()
         self._state = ParserState.IDLE
@@ -145,6 +156,9 @@ class StreamParser:
         except (json.JSONDecodeError, ValueError):
             return
         if not isinstance(obj, dict):
+            return
+        if self._dialect == "codex":
+            self._feed_codex(obj)
             return
         if obj.get("type") != "stream_event":
             return
@@ -216,6 +230,71 @@ class StreamParser:
                 self._set_state(ParserState.FINALIZED)
             # Other event types (e.g. content_block_delta) don't change
             # state — they confirm activity but don't transition.
+
+    def _feed_codex(self, obj: dict) -> None:
+        """`codex exec --json`. Same state machine, different words.
+
+        The mapping is forced by one fact: codex emits NO text deltas.
+        Its documented vocabulary is thread/turn/item/error and the
+        agent's prose arrives whole inside `item.completed`, so the
+        stream-idle clock reads only as coarse as the item cadence. That
+        makes the tool clock the honest one here — which is fine for the
+        formalizer family it will serve, and is why `capabilities` says
+        an NL seat on codex is timeout-only rather than pretending this
+        parser gives it a silence clock it cannot give.
+
+        `turn.completed` carries the whole turn's usage at once (claude
+        splits it across message_start and message_delta), so the
+        accounting lands in one place instead of two.
+        """
+        etype = obj.get("type")
+        if not isinstance(etype, str):
+            return
+        item = obj.get("item") if isinstance(obj.get("item"), dict) else {}
+        itype = item.get("type")
+        with self._lock:
+            self._last_event_ts = time.monotonic()
+            if etype == "turn.started":
+                self._last_stop_reason = None
+                self._turn_output = 0
+                self._set_state(ParserState.IN_MESSAGE)
+            elif etype == "item.started" and itype in self._CODEX_TOOL_ITEMS:
+                self._set_state(ParserState.MID_TOOL)
+                self._last_tool_use_ts = time.monotonic()
+            elif etype == "item.started" and itype == "reasoning":
+                self._set_state(ParserState.MID_THINKING)
+            elif etype == "item.completed":
+                if itype == "agent_message":
+                    self._set_state(ParserState.MID_TEXT)
+                elif itype in self._CODEX_TOOL_ITEMS:
+                    # A tool that finishes is as much evidence of acting
+                    # as one that starts — and an item whose `started`
+                    # was lost (reader attached late) would otherwise
+                    # never stamp the tool clock at all.
+                    self._last_tool_use_ts = time.monotonic()
+                    self._set_state(ParserState.IN_MESSAGE)
+            elif etype == "turn.completed":
+                u = obj.get("usage") or {}
+                for src, dst in (("input_tokens", "input_tokens"),
+                                 ("cached_input_tokens",
+                                  "cache_read_input_tokens"),
+                                 ("cache_write_input_tokens",
+                                  "cache_creation_input_tokens"),
+                                 ("output_tokens", "output_tokens")):
+                    v = u.get(src)
+                    if isinstance(v, int):
+                        self._usage[dst] += v
+                self._messages_seen += 1
+                self._usage["turns"] += 1
+                self._turn_output = 0
+                self._last_stop_reason = "end_turn"
+                self._set_state(ParserState.FINALIZED)
+            elif etype in ("turn.failed", "error"):
+                # NOT `end_turn`: the completion-reclaim path must not
+                # read a failed turn as "the agent finished cleanly and
+                # the process is merely hung".
+                self._last_stop_reason = "error"
+                self._set_state(ParserState.FINALIZED)
 
     def usage(self) -> "dict[str, int]":
         """Per-spawn token totals accumulated so far (task #7). An

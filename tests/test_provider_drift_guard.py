@@ -145,7 +145,7 @@ def test_an_undeclared_provider_is_skipped_and_warned_once(
 ) -> None:
     monkeypatch.setattr(drift_guard, "resolve_executable",
                         lambda _p: "fake.exe")
-    assert drift_guard.check(tmp_path, ("codex",)) == []
+    assert drift_guard.check(tmp_path, ("no-such-backend",)) == []
     assert "[capabilities]" in capsys.readouterr().out
 
 

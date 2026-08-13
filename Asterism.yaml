@@ -96,6 +96,12 @@ dispatch:
 formalizer:
   provider: claude
   model: claude-sonnet-5
+  # 2026-08-13: back off codex after the smoke run. The seat is proven
+  # on codex (Test.codex_probe: brick proved, seven-tool roll-call
+  # recorded, intake sentinel written) — restore with
+  #   provider: codex / model: gpt-5.6-luna / reasoning_effort: xhigh
+  # `reasoning_effort` is codex-only; claude derives its thinking budget
+  # per spawn from the wall clock.
   # Seat choice is routine; the durable fact is WHY this seat is
   # expensive on agy. Measured 2026-08-10 — and NOT for the reason first
   # written here: agy does have a cache and reports it (`cache_read_tokens`,
@@ -211,6 +217,9 @@ scholar:
   model: claude-sonnet-5
 
 adversary:
+  # 2026-08-13: back on fable (user). The 08-12 detour to opus-5 was
+  # only because fable's weekly window was spent and the ledger BINDs
+  # {strategist, adversary} — a blocked judge stops the pair.
   model: claude-fable-5        # 2026-08-10 (user): the strongest model goes to
                                # the judge, not the planner. The rule below
                                # still holds — a judge ABOVE its author

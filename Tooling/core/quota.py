@@ -200,6 +200,52 @@ _ENDPOINT_PROBES: "dict[str, Callable[[], list[Block]]]" = {
     "claude": _claude_blocks,
 }
 
+#: Where a provider that STATES its reset time keeps the answer. Same
+#: shape and same rule as `_ENDPOINT_PROBES`: a provider is wired here
+#: only if its declaration says it states one, and `reset_epoch` reads
+#: the DECLARATION, never the name.
+#:
+#: This exists because the dispatcher had grown `if seat == "antigravity"`
+#: inline — the exact name-keyed special case `llm/capabilities` was
+#: written to stop, and a second backend would have made it a second
+#: branch. The two live sources answer the same question from opposite
+#: materials: agy parses "Resets in 2h46m25s" out of its refusal prose,
+#: codex reads `rate_limits.primary.resets_at` out of the rollout file
+#: its own spawn wrote. Neither is an endpoint — both are consumed once
+#: and cleared, so a stale epoch cannot be replayed onto a later block.
+_RESET_SOURCES: "dict[str, Callable[[], float | None]]" = {}
+
+
+def _load_reset_sources() -> None:
+    """Import the reset sources lazily — a provider module pulls in its
+    CLI helpers, and `core.quota` is imported by paths that must not."""
+    if _RESET_SOURCES:
+        return
+    from ..llm import antigravity_cli as _agy
+    from ..llm import codex_cli as _codex
+    _RESET_SOURCES["antigravity"] = _agy.take_quota_reset
+    _RESET_SOURCES["codex"] = _codex.take_quota_reset
+
+
+def reset_epoch(provider: "str | None") -> "float | None":
+    """When this provider says its window reopens, or None.
+
+    None means "nobody stated one", and the caller must fall back to its
+    own backoff rather than invent a time — the same discipline
+    `_no_endpoint` keeps for the usage question."""
+    from ..llm import capabilities as _caps
+    caps = _caps.capabilities_for(provider)
+    if not caps.states_quota_reset:
+        return None
+    _load_reset_sources()
+    source = _RESET_SOURCES.get(caps.name)
+    if source is None:
+        print(f"[quota] provider {caps.name!r} declares it states a quota "
+              f"reset time but core/quota.py wires no source for it — its "
+              f"blocks will fall back to the blind backoff", flush=True)
+        return None
+    return source()
+
 
 def register_declared_probes() -> None:
     """Wire every declared provider to a probe, chosen by its

@@ -246,7 +246,7 @@ class ProviderCapabilities:
     """One provider's answer to "what can you tell us?".
 
     EVERY default is the pessimistic / unknown value. Constructing
-    `ProviderCapabilities(name='codex')` yields a provider that cannot
+    `ProviderCapabilities(name='no-such-backend')` yields one that cannot
     report quota, emits no stream, resumes nothing, has an undeclared
     rc contract and an undeclared enforcement surface — which is the
     truth about a backend nobody has measured.
@@ -260,6 +260,28 @@ class ProviderCapabilities:
     #: Read by `core/quota` to decide whether a provider gets a live
     #: probe or only the observed-from-failures channel.
     usage_endpoint: bool = False
+    #: The THIRD shape of the same question, and it needs its own field
+    #: rather than a third state on the boolean above, because the two
+    #: are answered by different machinery at different times. codex
+    #: cannot be ASKED how much quota is left — but it WRITES the answer
+    #: (`rate_limits`: used_percent / window_minutes / resets_at /
+    #: rate_limit_reached_type) into its own rollout file, once per turn.
+    #: With a per-spawn CODEX_HOME that file is the spawn's private
+    #: ledger, so the reading is exact and needs no attribution. What it
+    #: is NOT: a pre-flight probe. Nothing can be known before the first
+    #: spawn of a window, which is why this does not set
+    #: `usage_endpoint` — a consumer that wants to ask BEFORE spending
+    #: must still treat this provider as unmeasurable.
+    usage_from_session_log: bool = False
+    #: Can this provider SAY when a spent window reopens? Independent of
+    #: both fields above, because the material differs: agy has no usage
+    #: API at all yet its refusal carries "Resets in 2h46m25s", and codex
+    #: has no endpoint yet writes `resets_at` into its own rollout. What
+    #: the consumer needs is neither an endpoint nor a log format, just
+    #: "is there an epoch to sleep to" — `core.quota.reset_epoch` reads
+    #: this and dispatches to the wired source. False means the caller
+    #: must fall back to its blind backoff instead of inventing a time.
+    states_quota_reset: bool = False
     #: Does the CLI emit parseable incremental events? claude: yes
     #: (`--output-format stream-json --include-partial-messages`, which
     #: `llm/stream_parser.py` consumes). agy: no — one JSON envelope at
@@ -267,6 +289,17 @@ class ProviderCapabilities:
     #: nothing to sample and the retry helper must NOT report a
     #: detector verdict.
     stream_events: bool = False
+    #: …and are those events FINER than one per tool call? The stream
+    #: clock exists to tell "four minutes into one thinking block" apart
+    #: from "dead", and only a text/thinking delta can do that: claude
+    #: emits one every ~1.5s, codex emits none at all (agent prose
+    #: arrives whole inside `item.completed`). Without this field a
+    #: `stream_events=True` codex would be handed the stream clock and
+    #: measure a healthy NL spawn as silent — the 2026-08-07 failure,
+    #: rebuilt out of a coarser stream instead of the wrong clock.
+    #: Meaningless when `stream_events` is False; `liveness_clock` reads
+    #: the pair.
+    stream_text_deltas: bool = False
     #: How a second turn reaches the first turn's memory.
     session_resume: str = RESUME_UNDECLARED
     #: What the process exit code means. TRI-STATE — see the RC_*
@@ -359,6 +392,11 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         name="claude",
         usage_endpoint=True,
         stream_events=True,
+        # `--include-partial-messages`: a `content_block_delta` every
+        # ~1.5s inside a thinking block (measured 2026-08-07 on both
+        # sonnet-5 and opus-5). This is what makes the stream clock
+        # possible at all, and claude is the only backend that has it.
+        stream_text_deltas=True,
         session_resume=RESUME_CALLER_SESSION_ID,
         rc_contract=RC_STRUCTURED,
         enforcement_strength=ENFORCEMENT_HARD,
@@ -423,6 +461,10 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         session_resume=RESUME_PROVIDER_CONVERSATION_ID,
         # agy exits 1 for EVERY ERROR envelope regardless of cause.
         rc_contract=RC_UNINFORMATIVE,
+        # No usage API, but the refusal itself says when it comes back
+        # ("Individual quota reached … Resets in 2h46m25s"), parsed by
+        # `antigravity_cli._record_quota_reset`.
+        states_quota_reset=True,
         # `deny` absolute, `allow` partly ignored (read_url) — 15 probes
         # on 2026-07-30; see ENFORCEMENT_DENY_ONLY.
         enforcement_strength=ENFORCEMENT_DENY_ONLY,
@@ -522,6 +564,88 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         auth_state=AUTH_STATE_READABLE,
         notes="no subprocess, no CLI version to probe",
     ),
+    "codex": ProviderCapabilities(
+        name="codex",
+        # Nothing to ask. See `usage_from_session_log` below for the
+        # shape the answer actually takes.
+        usage_endpoint=False,
+        usage_from_session_log=True,
+        # `rate_limits.primary.resets_at` in the same rollout event.
+        states_quota_reset=True,
+        # `StreamParser(dialect="codex")` consumes it: `turn.started`,
+        # `item.started`/`item.completed` per tool call, `turn.completed`
+        # with the turn's usage. So the tool-cadence clock and the token
+        # books are real here.
+        #
+        # THE LIMIT, and it is a real one: codex emits NO text deltas —
+        # agent prose arrives whole inside `item.completed`. The
+        # stream-idle clock exists to tell "four minutes into one
+        # thinking block" apart from "dead", and these events cannot do
+        # that. So a formalizer on codex is fully covered while a
+        # STRATEGIST or ADVERSARY on codex would be measured by a clock
+        # that reads long, healthy thinking as silence — the exact
+        # mistake that killed seven healthy claude spawns on 2026-08-07.
+        # `STREAM_IDLE_KINDS` is what keeps that honest: those two kinds
+        # ask for the stream clock, codex cannot serve it, and
+        # `liveness_clock` must therefore hand them TIMEOUT_ONLY rather
+        # than quietly substituting the tool clock.
+        stream_events=True,
+        # `codex exec resume <id>` on an id CODEX mints and reports in
+        # `thread.started` — the agy contract, not claude's.
+        session_resume=RESUME_PROVIDER_CONVERSATION_ID,
+        # No vendor documentation lists exit codes, so this was
+        # measured (2026-08-12, four probes, 0.147.0) — and the answer
+        # is that the rc cannot be read as a cause IN EITHER DIRECTION:
+        #   bad config key         rc=1
+        #   missing credential     rc=1
+        #   success                rc=0
+        #   API 400, model refused rc=0  ← and this is the dangerous one
+        # A hard API refusal exits ZERO. Reading rc=0 as "the agent had
+        # its fair chance" would charge a goal for the vendor rejecting
+        # the request. The real outcome rides the event stream instead:
+        # `{"type":"error"}` and `{"type":"turn.failed"}` both carry the
+        # message while rc stays 0, which is why `codex_cli` classifies
+        # on events first and rc second.
+        # NOT covered: a usage-limit refusal has never been observed, so
+        # `_QUOTA_MARKERS` is still a guess — the quota signal we DO
+        # trust is `rate_limits.rate_limit_reached_type` from the
+        # rollout, not prose.
+        rc_contract=RC_UNINFORMATIVE,
+        # Measured 2026-08-12: the tool surface is governed by FEATURE
+        # FLAGS, and the two that matter behave as written — with
+        # `shell_tool=false` the shell is gone, with `apps=false` the
+        # account's Gmail/Calendar/Sites connectors are gone, with
+        # `[agents] enabled=false` the sub-agent tools are gone. One
+        # documented switch is INERT in the other direction:
+        # `[tools] web_search = false` leaves `web__run` live and it
+        # really searches. So removal works, granting is not uniformly
+        # honoured — the same asymmetry agy has, reached by a different
+        # road.
+        enforcement_strength=ENFORCEMENT_DENY_ONLY,
+        # MCP is the one action measured to honour its grant: with
+        # `default_tools_approval_mode = "approve"` the call executes
+        # (proved out-of-band by the probe server's own log), and
+        # without it every call comes back `user cancelled MCP tool
+        # call`. Nothing else has been measured, and the default empty
+        # set is the right answer for the rest.
+        allow_honoured_actions=frozenset({"mcp"}),
+        tested_version="0.147.0",
+        marker_tables=("Tooling.llm.codex_cli._QUOTA_MARKERS",
+                       "Tooling.llm.codex_cli._MISCONFIG_MARKERS"),
+        single_instance_lock=False,
+        install_method=INSTALL_BY_COMMAND,
+        install_command="npm install -g @openai/codex",
+        auth_flow=AUTH_OWN_OAUTH,
+        # `~/.codex/auth.json` — readable, and copyable: a spawn
+        # authenticates from a copy under its own CODEX_HOME (measured
+        # 2026-08-12), which is what makes the per-spawn envelope cheap.
+        auth_state=AUTH_STATE_READABLE,
+        readiness_argv=("login", "status"),
+        notes=("capability surface is a per-spawn CODEX_HOME + "
+               "config.toml; `[features]` is the tool gate, not "
+               "`[tools]`; a worker with the shell off has NO file-read "
+               "tool and reaches the workspace only through MCP"),
+    ),
 }
 
 #: config spellings -> canonical name (mirrors `llm.get_provider`).
@@ -603,9 +727,17 @@ def liveness_clock(provider: "str | None", kind: str) -> str:
     has never had one, and the retry helper duly printed
     `[detector verdict: active]` about a detector that does not exist.
     """
-    if not capabilities_for(provider).stream_events:
+    caps = capabilities_for(provider)
+    if not caps.stream_events:
         return LIVENESS_TIMEOUT_ONLY
-    return LIVENESS_STREAM if kind in STREAM_IDLE_KINDS else LIVENESS_TOOL
+    if kind not in STREAM_IDLE_KINDS:
+        return LIVENESS_TOOL
+    # An NL kind asks for the stream clock. A stream with no sub-tool
+    # granularity cannot serve it, and substituting the tool clock here
+    # would be the 2026-08-07 kill rebuilt from a different cause. Say
+    # "no clock" out loud instead.
+    return (LIVENESS_STREAM if caps.stream_text_deltas
+            else LIVENESS_TIMEOUT_ONLY)
 
 
 # -------------------------------------------------- undeclared warning

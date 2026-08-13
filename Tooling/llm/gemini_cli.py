@@ -75,13 +75,14 @@ def resolve_gemini_executable() -> str | None:
     return the shim, so we explicitly probe `.cmd` / `.bat` / `.exe`
     first on Windows. Linux / macOS skip this and fall through to the
     plain name.
+
+    The probe itself now lives in `base.which_launchable` — this module
+    had the knowledge first and wrote it down (the WinError 2 mechanism
+    above), claude carried a third partial copy in its npm fallback, and
+    codex learned it the expensive way on 2026-08-13. One spelling.
     """
-    if sys.platform == "win32":
-        for ext in (".cmd", ".bat", ".exe"):
-            p = shutil.which(f"gemini{ext}")
-            if p:
-                return p
-    return shutil.which("gemini")
+    from .base import which_launchable
+    return which_launchable("gemini")
 
 # Substrings that confirm an apparent rc=0 was actually a quota / rate
 # refusal masquerading as success. Lowercased before matching.

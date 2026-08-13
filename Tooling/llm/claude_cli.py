@@ -353,12 +353,25 @@ def resolve_claude_executable() -> "str | None":
     provider, beside `antigravity_cli.resolve_agy_executable`, so the
     next consumer inherits the knowledge instead of a third variant.
 
-    NOT used by `spawn` below, deliberately: the spawn's argv[0] is the
-    bare name and its gate is the matching `shutil.which`, so those two
-    agree with each other. Changing the engine's launch path is a
-    behaviour change on the hot path and belongs to whoever needs it.
+    USED by `spawn` below, since 2026-08-13. It used to say the spawn's
+    bare-name argv[0] and its `shutil.which` gate "agree with each
+    other" — and on an npm install that sentence is false: `which`
+    accepts the extensionless shim so the gate PASSES, while bare-name
+    Popen goes through CreateProcess, which only finds `.exe`, and
+    raises WinError 2 from inside the spawn. That surfaces as a generic
+    worker exception, is charged to the goal as a failed attempt, and
+    re-wakes the planner — the exact bill codex paid on 2026-08-12
+    (~106k output tokens against a CLI that never launched). The
+    mechanism was already measured and written down one module over, in
+    `gemini_cli.resolve_gemini_executable`.
+
+    The change is equivalence-provable on a healthy machine: this
+    returns the very `.exe` `shutil.which` was already finding, so
+    argv[0] goes from a name to that same file. It only differs where
+    the old path was going to fail.
     """
-    p = shutil.which("claude")
+    from .base import which_launchable
+    p = which_launchable("claude")
     if p:
         return p
     candidates = [Path.home() / ".local" / "bin" / "claude.exe"]
@@ -383,6 +396,7 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
               stuck_flag: list, done_flag: list, timeout_sec: int,
               parser: StreamParser,
               kind: str = "",
+              provider: str = PROVIDER_NAME,
               trap_check_sec_override: int | None = None) -> None:
     """Two jobs while the spawn runs:
 
@@ -487,7 +501,10 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
     _now = time.monotonic()
     tool_idle = parser.silence_seconds(_now)
     stream_idle = parser.stream_idle_seconds(_now)
-    stream_metric = (capabilities.liveness_clock(PROVIDER_NAME, kind)
+    # WHOSE clock: the choice is (provider, kind), and reading the
+    # provider off a module constant made this function claude-only for
+    # no reason — the state machine it samples is dialect-agnostic.
+    stream_metric = (capabilities.liveness_clock(provider, kind)
                      == capabilities.LIVENESS_STREAM)
     silence = stream_idle if stream_metric else tool_idle
     verdict_state = snap.state.value
@@ -985,10 +1002,11 @@ class ClaudeCliProvider:
         # path without burning another `claude` subprocess startup.
         if is_shutdown_requested():
             return SpawnRC.SHUTDOWN
-        if not shutil.which("claude"):
+        exe = resolve_claude_executable()
+        if not exe:
             print("[llm:claude] claude CLI not found; skipping spawn",
                   flush=True)
-            return 127
+            return SpawnRC.MISSING_DEP
 
         model = resolve_model(req.kind)
 
@@ -1205,7 +1223,7 @@ class ClaudeCliProvider:
             output_flags = ["--output-format", "text"]
         _assert_prompt_fits(prompt)
         cmd = [
-            "claude",
+            exe,
             "--model", model,
             "-p", prompt,
             "--permission-mode", "acceptEdits",
@@ -1309,12 +1327,26 @@ class ClaudeCliProvider:
         # is the root-cause layer — no memory section in the spawn
         # system prompt, so the spawn never learns the shared dir.
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
-        proc = subprocess.Popen(
-            cmd, env=env, cwd=str(req.problem_dir),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace",
-            creationflags=no_window_creationflags(),
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd, env=env, cwd=str(req.problem_dir),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace",
+                creationflags=no_window_creationflags(),
+            )
+        except OSError as exc:
+            # "the CLI could not be STARTED" is knowable only here. One
+            # level up, the dispatcher sees a bare OSError and cannot
+            # tell it from any other file operation a worker failed at,
+            # so guessing there would be a diagnosis wearing a
+            # classifier's clothes. MISSING_DEP is infra: it does not
+            # charge the goal and does not manufacture planner work.
+            print(f"[llm:claude] could not launch {cmd[0]!r}: {exc}",
+                  flush=True)
+            _write_spawn_stderr(req.attempts_dir,
+                                f"(could not launch {cmd[0]!r}: {exc})",
+                                "", SpawnRC.MISSING_DEP)
+            return SpawnRC.MISSING_DEP
         # Register so dispatcher's request_shutdown can kill us on
         # budget-exceeded / gateway-permadown exit paths. Without this
         # the proc.wait below blocks for up to req.timeout_sec (~960s)

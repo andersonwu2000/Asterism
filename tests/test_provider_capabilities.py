@@ -39,7 +39,7 @@ def _declared(name: str, **kw) -> caps.ProviderCapabilities:
 def test_a_new_provider_declares_nothing_by_default() -> None:
     """The whole reason the tri-state exists. `codex` is next in line;
     it must not inherit a safe-looking value it never gave."""
-    fresh = caps.ProviderCapabilities(name="codex")
+    fresh = caps.ProviderCapabilities(name="no-such-backend")
     assert fresh.rc_contract == caps.RC_UNDECLARED
     assert fresh.declared is False
     # …and every other field is the pessimistic reading too.
@@ -78,11 +78,14 @@ def test_aliases_resolve_to_the_canonical_declaration() -> None:
 def test_undeclared_warning_fires_once_and_names_the_provider(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert caps.warn_if_undeclared("codex", context="unit test") is True
+    # The stand-in must be a name that is not in the table and never
+    # will be: `codex` played this role until it landed 2026-08-12.
+    assert caps.warn_if_undeclared("no-such-backend",
+                                   context="unit test") is True
     first = capsys.readouterr().out
-    assert "[capabilities]" in first and "codex" in first
+    assert "[capabilities]" in first and "no-such-backend" in first
     # …and repeats do not spam the run log.
-    assert caps.warn_if_undeclared("codex") is True
+    assert caps.warn_if_undeclared("no-such-backend") is True
     assert capsys.readouterr().out == ""
     # A declared provider never warns.
     assert caps.warn_if_undeclared("claude") is False
@@ -150,7 +153,7 @@ def test_an_undeclared_provider_gets_no_quota_probe() -> None:
     in the honest empty case rather than being asked a question it
     cannot answer."""
     from Tooling.core import quota
-    assert caps.capabilities_for("codex").usage_endpoint is False
+    assert caps.capabilities_for("no-such-backend").usage_endpoint is False
     # the live wiring for the shipped no-endpoint providers
     assert quota._PROBES["antigravity"] is quota._no_endpoint
     assert quota._PROBES["openai"] is quota._no_endpoint
@@ -181,7 +184,7 @@ def test_liveness_clock_follows_stream_events_not_the_provider_name(
 
 
 def test_an_undeclared_provider_gets_the_timeout_only_clock() -> None:
-    assert (caps.liveness_clock("codex", "formalizer")
+    assert (caps.liveness_clock("no-such-backend", "formalizer")
             == caps.LIVENESS_TIMEOUT_ONLY)
 
 
@@ -305,7 +308,7 @@ def test_spawn_failure_on_an_undeclared_provider_degrades_and_warns(
     would make adding a backend a two-step landing whose first step is
     a dead framework."""
     from Tooling.pipeline import _spawn_failure
-    monkeypatch.setenv("ASTERISM_FORMALIZER_PROVIDER", "codex")
+    monkeypatch.setenv("ASTERISM_FORMALIZER_PROVIDER", "no-such-backend")
     reason, detail = _spawn_failure(7, tmp_path, 900.0, kind="formalizer")
     assert reason == "unclassified_spawn_failure"
     assert "declared no rc contract" in detail

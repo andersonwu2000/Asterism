@@ -1153,33 +1153,57 @@ def test_gemini_resolve_prefers_cmd_extension_on_windows(
     """npm installs `gemini` (no-extension bash shim) and `gemini.cmd`
     side-by-side on Windows. shutil.which without extension may return
     the shim, which CreateProcess (subprocess.run) cannot launch
-    (WinError 2). Resolver must probe `.cmd` first on win32."""
+    (WinError 2). Resolver must probe `.cmd` first on win32.
+
+    The probe moved to `base.which_launchable` on 2026-08-13 — gemini
+    had this knowledge first and wrote it down, claude carried a partial
+    third copy, and codex paid for it. The invariant is unchanged; only
+    its address is, so the stubs point at the one spelling now."""
+    from Tooling.llm import base as _base
     from Tooling.llm import gemini_cli
-    monkeypatch.setattr(gemini_cli.sys, "platform", "win32")
+    monkeypatch.setattr(_base.sys, "platform", "win32")
+    monkeypatch.setattr(_base.os, "environ",
+                        {"PATHEXT": ".COM;.EXE;.BAT;.CMD"})
     seen: list = []
 
     def fake_which(name):
         seen.append(name)
-        if name == "gemini.cmd":
+        if name == "gemini.CMD":
             return r"C:\npm\gemini.cmd"
         if name == "gemini":
             return r"C:\npm\gemini"
         return None
 
-    monkeypatch.setattr(gemini_cli.shutil, "which", fake_which)
+    monkeypatch.setattr(_base.shutil, "which", fake_which)
     assert gemini_cli.resolve_gemini_executable() == r"C:\npm\gemini.cmd"
-    # Resolver must have probed gemini.cmd BEFORE the no-extension shim
-    assert seen[0] == "gemini.cmd"
+    # …and an EXTENSION was probed before the no-extension shim.
+    assert seen[0] != "gemini"
 
 
 def test_gemini_resolve_uses_plain_name_on_posix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from Tooling.llm import base as _base
     from Tooling.llm import gemini_cli
-    monkeypatch.setattr(gemini_cli.sys, "platform", "linux")
-    monkeypatch.setattr(gemini_cli.shutil, "which",
+    monkeypatch.setattr(_base.sys, "platform", "linux")
+    monkeypatch.setattr(_base.shutil, "which",
                         lambda n: "/usr/bin/gemini" if n == "gemini" else None)
     assert gemini_cli.resolve_gemini_executable() == "/usr/bin/gemini"
+
+
+def test_a_bare_shim_alone_reads_as_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The half that matters: when ONLY the extensionless shim is on
+    PATH, the answer must be "not installed" — not a path that passes
+    the gate and then raises WinError 2 / 193 from inside Popen, which
+    the framework charges to the goal as a failed attempt."""
+    from Tooling.llm import base as _base
+    monkeypatch.setattr(_base.sys, "platform", "win32")
+    monkeypatch.setattr(_base.os, "environ", {"PATHEXT": ".EXE;.CMD"})
+    monkeypatch.setattr(_base.shutil, "which",
+                        lambda n: r"C:\npm\claude" if n == "claude" else None)
+    assert _base.which_launchable("claude") is None
 
 
 def test_gemini_spawn_returns_127_on_filenotfounderror(

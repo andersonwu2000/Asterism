@@ -39,7 +39,8 @@ def _info(provider: str) -> dict:
 
 
 @pytest.mark.parametrize("provider",
-                         ["claude", "antigravity", "gemini", "openai"])
+                         ["claude", "antigravity", "gemini", "openai",
+                          "codex"])
 def test_declared_providers_answer_the_whole_contract(provider: str) -> None:
     info = _info(provider)
     assert _CONTRACT <= set(info)
@@ -47,11 +48,13 @@ def test_declared_providers_answer_the_whole_contract(provider: str) -> None:
 
 
 def test_an_unknown_provider_is_an_answer_not_a_crash() -> None:
-    """The GPT/codex case, before it exists. `capabilities_for` returns
-    an all-undeclared object on purpose, and the installer renders that
-    as "you set this one up yourself" — so a new backend needs no
-    installer change at all, which is the point."""
-    info = _info("codex")
+    """`capabilities_for` returns an all-undeclared object on purpose,
+    and the installer renders that as "you set this one up yourself" —
+    so a new backend needs no installer change at all, which is the
+    point. This was written with `codex` as the example while codex was
+    hypothetical; it landed 2026-08-12, so the stand-in moved to a name
+    that cannot stop being hypothetical. The invariant is unchanged."""
+    info = _info("no-such-backend")
     assert _CONTRACT <= set(info)
     assert info["install_method"] == "undeclared"
     assert info["install_command"] is None

@@ -75,6 +75,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "explainer.model": "serve chat-explainer spawn model (teammate serve/chat.py; registered here to keep the drift gate green)",
     "<kind>.model": "per-pipeline model override (ASTERISM_<KIND>_MODEL → ASTERISM_AGENT_MODEL)",
     "<kind>.provider": "per-pipeline LLM provider (ASTERISM_<KIND>_PROVIDER → ASTERISM_LLM_PROVIDER; 'claude')",
+    "<kind>.reasoning_effort": "per-pipeline reasoning depth, codex only (ASTERISM_<KIND>_REASONING_EFFORT; 'xhigh'). claude carries no such knob — its thinking budget is set per spawn from the wall-clock budget.",
 }
 
 # Module-level cache so reading the file once per daemon-run avoids
