@@ -161,8 +161,9 @@ const EVENT_TITLE: Record<string, string> = {
   frozen: 'held out of play — the root after you amended its statement',
   for_review: 'handed to the strategist to judge',
   deliverable:
-    'engine term: MarkDeliverable — this result became one of the claims the' +
-    ' problem promises, and one of the things you sign off on',
+    'engine term: MarkDeliverable — a result was marked as delivered. Only the' +
+    ' TOP group marks things you sign off on; a sub-group is handing a brick to' +
+    ' the group above it, which is bookkeeping between machines',
   ingested: "the finished work was accepted as the problem's final state",
   rev: 'a Programme revision was adopted — the standing argument changed',
   proposal: 'a revision the adversarial reviewer rejected — editing, not a change of record',

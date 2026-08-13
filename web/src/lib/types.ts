@@ -45,6 +45,14 @@ export interface Goal {
   detached: boolean
   alias_target_id: number | null
   is_deliverable: boolean
+  /** which discussion group marked it (v35). `is_deliverable` alone is
+   * "somebody marked it" — these two say WHO, and to whom the promise
+   * was made. */
+  marked_by_group?: number | null
+  /** the promise is to YOU: the top group's claim, what sign-off
+   * vouches for. A sub-group's mark is a delivery to the group above
+   * it, which is bookkeeping between machines. */
+  human_facing_claim?: boolean
   statement: string
   /** binders+conclusion display form read from the stub (the DB
    * statement is often the bare conclusion); null = statement stands */

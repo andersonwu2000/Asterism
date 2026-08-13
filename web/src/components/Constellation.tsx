@@ -164,7 +164,11 @@ function nodeStyle(
  * anchors next, supporting Props recede. */
 function radius(g: Goal): number {
   if (g.origin === 'root') return 9
-  if (g.is_deliverable) return 8.5
+  // "bigger = more important", applied to the two kinds of promise: a
+  // claim YOU sign outranks a brick a sub-group delivered to the group
+  // above it. Both are landmarks; only one is yours.
+  if (g.human_facing_claim) return 8.5
+  if (g.is_deliverable) return 7
   if (DEF_KINDS.has(g.kind)) return 6.5
   return 4.5
 }
@@ -237,7 +241,7 @@ export default function Constellation({
       for (let i = 0; i < s.length; i++) a = (a * 31 + s.charCodeAt(i)) | 0
     }
     for (const g of goals)
-      mix(`${g.id}:${g.status}:${g.attempts}:${g.dead_attempts}:${g.in_flight ? 1 : 0}:${g.is_deliverable ? 1 : 0};`)
+      mix(`${g.id}:${g.status}:${g.attempts}:${g.dead_attempts}:${g.in_flight ? 1 : 0}:${g.is_deliverable ? 1 : 0}:${g.human_facing_claim ? 1 : 0};`)
     for (const s of strategies) mix(`${s.id}:${s.status};`)
     for (const e of strategyEdges) mix(`${e.strategy_id}>${e.subgoal_id}:${e.position};`)
     for (const e of anchorEdges) mix(`${e.from}>${e.to};`)
@@ -818,7 +822,7 @@ export default function Constellation({
       if (g.status === 'dead') dead = true
       if (live && g.attempts > 0) attempts = true
       if (g.origin === 'root') root = true
-      if (g.is_deliverable) claim = true
+      if (g.human_facing_claim) claim = true
       if (isAnchor(g)) anchor = true
     }
     return {
@@ -1240,8 +1244,17 @@ export default function Constellation({
                   anchors — defs in the kernel closure of a claim, NOT
                   every def (a scratch def nobody's claim depends on
                   carries no vouching obligation; owner, 2026-07-14) */}
+              {/* the ring is DEFINED as a sign-off surface (DESIGN.md:
+                  "Single ring = a sign-off surface (root / claim /
+                  anchor). No other permanent rings"). Until 2026-08-13
+                  it followed `is_deliverable`, which is "somebody
+                  marked it" — so on union_closed 23 bricks a sub-group
+                  had delivered to the group ABOVE it wore a ring that
+                  said the human signs them, and 1 that actually does
+                  looked the same. The law was already written; the
+                  data only just learned to say which is which. */}
               {(n.goal.origin === 'root' ||
-                n.goal.is_deliverable ||
+                n.goal.human_facing_claim ||
                 isAnchor(n.goal)) && (
                 <circle
                   r={r + 5.5 * boost}
@@ -1360,7 +1373,7 @@ export default function Constellation({
                   // No labels in the survey view (owner): the ring IS
                   // the far-zoom identity — names arrive with zoom.
                   y={
-                    r * (n.goal.is_deliverable || n.goal.origin === 'root' ? 1.6 : 1) +
+                    r * (n.goal.human_facing_claim || n.goal.origin === 'root' ? 1.6 : 1) +
                     ((rowCounts.get(n.y) ?? 0) > 8 && n.col % 2 === 1 ? 26 : 15) / kq
                   }
                   textAnchor="middle"

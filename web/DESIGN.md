@@ -77,6 +77,16 @@ the ladder via `::picker(select)` where supported.
 - **Diamond = definition (data); circle = proposition.**
 - **Single ring = a sign-off surface** (root / claim / anchor); bigger
   = more important. No other permanent rings.
+- **A sign-off surface is one the READER signs.** v35 problems run
+  several discussion groups, and a sub-group's `MarkDeliverable` is a
+  brick handed to the group above it — machine bookkeeping, not a
+  promise to the human. Read `human_facing_claim`, never
+  `is_deliverable`, for anything that says "you vouch for this": on
+  union_closed that was 1 of 24, and for a week the other 23 wore a
+  ring saying otherwise (2026-08-13). They still draw, one size down
+  and unringed, and the panel calls them *delivered* — the sky is
+  always complete, so the fix is to mark them honestly, never to hide
+  them.
 - State is brightness: while work is live the unproved stars carry the
   light and the proved mass recedes; a finished sky flips back to
   trophy. Writing-now = the star itself blinks.

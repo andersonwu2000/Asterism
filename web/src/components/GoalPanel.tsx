@@ -172,14 +172,27 @@ export default function GoalPanel({
               <span className="text-ink-faint" title={originTitle(data.origin)}>
                 {originLabel(data.origin)}
               </span>
-              {data.is_deliverable && (
-                <span
-                  className="text-star"
-                  title="a result the human vouches for at sign-off (engine term: deliverable)"
-                >
-                  claim
-                </span>
-              )}
+              {data.is_deliverable &&
+                (data.human_facing_claim ? (
+                  <span
+                    className="text-star"
+                    title="a result YOU vouch for at sign-off — the top group's promise (engine term: deliverable)"
+                  >
+                    claim
+                  </span>
+                ) : (
+                  /* a sub-group's mark is a delivery to the group above
+                     it, not a promise to the reader. Same flag in the
+                     DB, different audience — and calling both "claim"
+                     asked the human to vouch for 23 pieces of machine
+                     bookkeeping (owner, 2026-08-12). */
+                  <span
+                    className="text-ink-faint"
+                    title="a brick a discussion group delivered to the group above it — tracked between groups, not something you sign off on (engine term: deliverable, marked by a sub-group)"
+                  >
+                    delivered
+                  </span>
+                ))}
               {data.disproof_of && (
                 <span
                   className="text-warn"

@@ -168,7 +168,22 @@ function GoalsList({
               >
                 {g.slug}
               </button>
-              {g.is_deliverable && <span className="ml-1.5 text-star" title="claim — you sign off on this">◈</span>}
+              {/* ◈ is the sign-off mark; a sub-group's delivery is not
+                  one, so it gets the quiet word instead of the glyph */}
+              {g.human_facing_claim ? (
+                <span className="ml-1.5 text-star" title="claim — you sign off on this">
+                  ◈
+                </span>
+              ) : (
+                g.is_deliverable && (
+                  <span
+                    className="ml-1.5 text-[10px] text-ink-faint"
+                    title="delivered by a discussion group to the group above it — not something you sign off on"
+                  >
+                    delivered
+                  </span>
+                )
+              )}
               {g.disproof_of && (
                 <span
                   className="ml-1.5 text-[11px] text-warn"
