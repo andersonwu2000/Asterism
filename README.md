@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-12
+- Fixed a batch of reliability problems in the service that coordinates automated proof attempts, including misattributed errors, mishandled worker sessions, and unresponsive workers now being followed up rather than written off.
+- Repaired the sandboxed calculator, which had been rejecting valid mathematical expressions and hiding its own startup failures.
+- Cleaned up record-keeping so each proof attempt is logged exactly once, failures are classified correctly, and completed steps report what they produced rather than only how they exited.
+- Added a way to retract placeholder proofs flagged by pre-commit checks, moved public documentation to English, and fixed a continuous-integration configuration issue.
+
 ### 2026-08-11
 - Improved the briefings handed to the automated prover agents, clarifying time limits, where searches may look, what a hand-off must include, and which tools are actually available to use.
 - Held the agent that judges proof attempts to the same standards as the one that writes them, and gave reviews enough time that their supporting evidence is no longer cut short.
@@ -209,12 +215,6 @@ Programme revisions and worker declines now appear on the project's timeline and
 - Trimmed the system's working memory to keep only recent context and deferred loading reference material until it is actually needed.
 - Made the automated prover pause until its usage quota resets rather than shutting down when it hits the limit.
 - Fixed cross-platform reliability problems on Windows and POSIX systems and applied self-audit corrections to earlier work.
-
-### 2026-07-13
-- Reworked the context given to the proving agents, adding an auto-generated index of already-proved results with full statements and replacing bulky search-tree dumps with compact on-demand summaries.
-- Added a self-audit step that curates the accumulated knowledge base of proof lessons and prunes instructions made redundant by machine-generated context.
-- Redesigned the web progress dashboard and fixed a dozen defects found in review, including cleaner grouping of goals and hiding of empty proof branches.
-- Hardened sandboxing of spawned worker processes with a filesystem whitelist and fixed logging for background handoff tasks.
 
 <!-- ASTERISM-PROGRESS:END -->
 
