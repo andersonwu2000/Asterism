@@ -1110,11 +1110,13 @@ class SchedulerState:
     # Independent gateway_unreachable breaker (run #17: 48 strategies piled
     # up busy-looping against a dead gateway before this existed).
     consec_gateway_unreachable: int = 0
-    # When the free `/health` probe first failed after a spawn reported
-    # the gateway unreachable — the clock for `gateway_health`.
-    # None means "not holding": either nothing has failed yet, or the
-    # gateway answered and the hold was lifted.
+    # Two clocks owned by `core.gateway_health`, both None when idle.
+    # `gateway_down_since`: when `/health` first went silent after a
+    # spawn reported the gateway unreachable (None = not holding).
+    # `gateway_relaunched_at`: when the one self-heal credit was spent
+    # (None = unspent, or earned back by a successful pipeline).
     gateway_down_since: "float | None" = None
+    gateway_relaunched_at: "float | None" = None
     # Consecutive `unclassified_spawn_failure` (2026-08-08). Unknown
     # causes no longer burn goal attempts, so nothing else would ever
     # stop a goal dying the same unexplained way forever. Escalation
@@ -1845,6 +1847,14 @@ def run(workspace: Path, *, once: bool = False,
     budget_sec = config.get(
         "dispatch.budget_sec", default=1800,
         env_var="ASTERISM_BUDGET_SEC", cast=int, workspace=workspace)
+    # One work unit's worth of time — what a relaunched gateway must
+    # outlive (or beat with a finished pipeline) to earn its self-heal
+    # credit back. Same field the spawns themselves are capped by, so
+    # the two cannot drift into disagreeing about what "long enough to
+    # be doing something" means.
+    spawn_budget_sec = config.get(
+        "dispatch.spawn_timeout_sec", default=1800,
+        env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int, workspace=workspace)
     # Quota-wait switch (user 2026-07-14): on = a CONFIRMED-exhausted
     # subscription window pauses dispatch until resets_at instead of
     # exiting (breaker consult + sleep-to-reset). Off = quota bursts
@@ -2288,6 +2298,9 @@ def run(workspace: Path, *, once: bool = False,
                         st.consec_fast_fails = 0
                         st.consec_gateway_unreachable = 0
                         st.consec_unclassified = 0
+                        # A pipeline finished, so a relaunched gateway
+                        # has earned its credit back (gateway_health).
+                        st.gateway_relaunched_at = None
                         st.consec_unconfirmed_trips = 0
                         # #103 — any non-quota, non-infra outcome on this
                         # kind proves the provider responded: release the
@@ -2773,10 +2786,15 @@ def run(workspace: Path, *, once: bool = False,
         # endings exist; this owns the ending). Keeps the pre-NL-first
         # semantics, but only after in-flight NL work drains: those
         # commits are durable and the next start picks them up.
-        _fatal = None if futures else gateway_health.fatal_reason(
-            st, warm_failed=gateway_warm["failed"], holding=gateway_down,
-            now=time.time(), grace_sec=GATEWAY_DOWN_GRACE_SEC)
-        if _fatal:
+        _healed, _fatal = (None, None) if futures else \
+            gateway_health.resolve_fatal(
+                st, workspace, warm_failed=gateway_warm["failed"],
+                holding=gateway_down, now=time.time(),
+                grace_sec=GATEWAY_DOWN_GRACE_SEC,
+                budget_sec=spawn_budget_sec)
+        if _healed is not None:
+            gateway_warm = _healed
+        elif _fatal:
             print(f"[gateway] {_fatal} — NL work drained, exiting",
                   flush=True)
             pool.shutdown(wait=True)

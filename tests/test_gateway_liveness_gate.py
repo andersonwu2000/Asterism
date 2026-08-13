@@ -108,13 +108,111 @@ def test_the_two_fatal_endings_are_one_question(
         st, now=kw.pop("now", 0.0), grace_sec=grace, **kw)
 
     assert ask(warm_failed=None, holding=False) is None
-    assert "warm-up failed" in ask(
-        warm_failed="lean interface-contract gate red", holding=False)
+    assert ask(warm_failed="lean interface-contract gate red",
+               holding=False) == (
+        gateway_health.FATAL_WARM,
+        "warm-up failed: lean interface-contract gate red")
     # Holding is not yet fatal — that is the whole point of the grace.
     st.gateway_down_since = 100.0
     assert ask(warm_failed=None, holding=True, now=100.0) is None
-    reason = ask(warm_failed=None, holding=True, now=100.0 + grace)
-    assert reason is not None and "gateway.log" in reason
+    kind, _ = ask(warm_failed=None, holding=True, now=100.0 + grace)
+    # The KINDS differ because only one of them can be healed by
+    # trying again: a gateway that failed its own gate will fail it
+    # again, a process that died may have died of something passing.
+    assert kind == gateway_health.FATAL_GONE
+
+
+# ---------------------------------------------------------------------
+# The one self-heal credit (owner ruling 2026-08-14)
+# ---------------------------------------------------------------------
+
+BUDGET = 1800.0  # `dispatch.spawn_timeout_sec` — one work unit's time
+
+
+def test_the_first_death_is_healed_and_the_second_is_not(
+    st: dispatcher.SchedulerState, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gateway may die once of something passing. Dying again before
+    it has done anything is a crash loop, and relaunching a crash loop
+    all night looks exactly like patience."""
+    started: list = []
+    monkeypatch.setattr(gateway_health, "relaunch",
+                        lambda _st, _ws: started.append(_ws) or {"ready": 0})
+    st.gateway_down_since = 0.0
+    ask = lambda now: gateway_health.resolve_fatal(  # noqa: E731
+        st, "WS", warm_failed=None, holding=True, now=now,
+        grace_sec=dispatcher.GATEWAY_DOWN_GRACE_SEC, budget_sec=BUDGET)
+
+    healed, fatal = ask(dispatcher.GATEWAY_DOWN_GRACE_SEC)
+    assert healed is not None and fatal is None and started == ["WS"]
+
+    # Second death, credit spent (the real `relaunch` sets this; the
+    # stub cannot, so state it explicitly).
+    st.gateway_relaunched_at = 10.0
+    healed, fatal = ask(10.0 + BUDGET - 1)
+    assert healed is None and fatal is not None
+    assert "crash loop" in fatal and "gateway.log" in fatal
+
+
+def test_a_finished_pipeline_buys_the_credit_back(
+    st: dispatcher.SchedulerState,
+) -> None:
+    """The primary evidence is WORK DONE, not time survived: a gateway
+    that lives twenty minutes serving nothing and dies is the same
+    crash loop with a longer fuse. The dispatcher's success branch is
+    what clears the mark."""
+    st.gateway_relaunched_at = 10.0
+    assert not gateway_health.may_relaunch(st, 20.0, BUDGET)
+    st.gateway_relaunched_at = None       # ← a pipeline succeeded
+    assert gateway_health.may_relaunch(st, 20.0, BUDGET)
+
+
+def test_the_clock_only_covers_the_case_where_nothing_was_asked(
+    st: dispatcher.SchedulerState,
+) -> None:
+    """The fallback for an empty queue, where nothing could have
+    succeeded because nothing was requested. One work unit of survival,
+    then the next death counts as new."""
+    st.gateway_relaunched_at = 10.0
+    assert not gateway_health.may_relaunch(st, 10.0 + BUDGET - 1, BUDGET)
+    assert gateway_health.may_relaunch(st, 10.0 + BUDGET, BUDGET)
+
+
+def test_a_warm_failure_is_never_healed(
+    st: dispatcher.SchedulerState, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Relaunching repeats it. The gate that failed is the same gate the
+    new gateway will face, and its usual verdict is that the warm
+    workers themselves are what the red contract indicts."""
+    monkeypatch.setattr(gateway_health, "relaunch",
+                        lambda *_a: pytest.fail("relaunched a warm failure"))
+    healed, fatal = gateway_health.resolve_fatal(
+        st, "WS", warm_failed="lean interface-contract gate red",
+        holding=False, now=0.0,
+        grace_sec=dispatcher.GATEWAY_DOWN_GRACE_SEC, budget_sec=BUDGET)
+    assert healed is None and "warm-up failed" in fatal
+
+
+def test_the_credit_survives_nothing_being_wrong(
+    st: dispatcher.SchedulerState,
+) -> None:
+    """No fatal condition means no verdict at all — neither half of the
+    answer may be filled in, or the caller would exit a healthy run."""
+    assert gateway_health.resolve_fatal(
+        st, "WS", warm_failed=None, holding=False, now=0.0,
+        grace_sec=dispatcher.GATEWAY_DOWN_GRACE_SEC,
+        budget_sec=BUDGET) == (None, None)
+
+
+def test_the_credit_window_is_the_spawn_budget_not_a_new_number(
+) -> None:
+    """The window is `dispatch.spawn_timeout_sec` — this system's
+    definition of one work unit's worth of time — read from config by
+    the dispatcher, never a constant invented here."""
+    import inspect
+    src = inspect.getsource(dispatcher.run)
+    assert "dispatch.spawn_timeout_sec" in src
+    assert "budget_sec=spawn_budget_sec" in src
 
 
 def test_the_grace_is_derived_from_the_breaker_it_replaces() -> None:

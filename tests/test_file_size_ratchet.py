@@ -253,7 +253,15 @@ _WATERMARKS = {
     # field, the derived grace constant, and the policy wrapper that
     # keeps the numbers and the only run-ending call in this file.
     # Conscious bump.
-    "Tooling/core/dispatcher.py": 2875,
+    # 2875→2893 (2026-08-14): the bounded self-heal (#203, owner ruling)
+    # — one relaunch of a gateway that died, credit earned back by a
+    # finished pipeline or by outliving `dispatch.spawn_timeout_sec`.
+    # The decision and the relaunch are `gateway_health.resolve_fatal`'s;
+    # what lands here is the state field, the config read for that window
+    # (a fourth number, so it goes with the other numbers), the
+    # success-branch line that returns the credit, and the two-line
+    # widening of the exit block. Conscious bump.
+    "Tooling/core/dispatcher.py": 2893,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

@@ -15,12 +15,19 @@ The two mechanisms here are not redundant and neither covers the other:
                          when the process is simply gone — and it costs
                          a local HTTP GET rather than a spawn.
 
+`resolve_fatal` then decides what a fatal gateway means: ONE bounded
+self-heal (owner ruling 2026-08-14) for the case a relaunch can
+actually fix, a loud rc=2 for everything else. A repeating machinery
+fault must reach the operator — an unbounded relaunch loop warms for
+five minutes, dies, and repeats all night while looking like patience.
+
 POLICY LIVES IN THE CALLER. The numbers (how long to cool, how many
-consecutive failures, how long to hold) stay in `core.dispatcher` with
-the rest of the scheduler's constants and are passed in; this module
-owns the mechanism only. Nothing here exits the daemon either: the
-functions return a verdict and the dispatcher acts on it, so the one
-place that can end a run stays the one place that could before.
+consecutive failures, how long to hold, how long a relaunch must
+survive) stay in `core.dispatcher` with the rest of the scheduler's
+constants and are passed in; this module owns the mechanism only.
+Nothing here exits the daemon either: the functions return a verdict
+and the dispatcher acts on it, so the one place that can end a run
+stays the one place that could before.
 """
 from __future__ import annotations
 
@@ -45,10 +52,9 @@ def liveness_gate(st) -> bool:
     rest of `URLError`). In the failure state that ambiguity is
     harmless — waiting out a warm is exactly right.
 
-    This does NOT relaunch the gateway. Self-healing changes what the
-    daemon does to a run in flight and is the owner's call (#203);
-    holding is not — it only stops us buying spawns for a process we
-    can see is not there.
+    Holding is all this does. The bounded self-heal that may follow it
+    is `resolve_fatal`'s (one credit, owner ruling 2026-08-14); this
+    only stops us buying spawns for a process we can see is not there.
     """
     if st.consec_gateway_unreachable <= 0:
         return False
@@ -83,26 +89,114 @@ def down_expired(st, now: float, grace_sec: float) -> bool:
             and now - st.gateway_down_since >= grace_sec)
 
 
+#: The gateway came up and then failed its own gate — relaunching
+#: repeats the same failure, so this ending is always final.
+FATAL_WARM = "warm"
+#: The gateway was serving and then stopped answering. A process can
+#: die once for reasons that do not recur, which is the only case a
+#: relaunch can help.
+FATAL_GONE = "gone"
+
+
 def fatal_reason(st, *, warm_failed: "str | None", holding: bool,
-                 now: float, grace_sec: float) -> "str | None":
+                 now: float, grace_sec: float) -> "tuple[str, str] | None":
     """The gateway's two fatal endings, asked as one question.
 
-    Both mean the same thing — the gateway is not usable and will not
-    become usable — and both take the same action: drain the in-flight
-    NL work (its commits are durable), release the leases, exit rc=2.
-    They were written as two blocks, which is how the second one nearly
-    shipped without draining.
+    Both mean the gateway is not usable, and both take the same action:
+    drain the in-flight NL work (its commits are durable), release the
+    leases, exit rc=2. They were written as two blocks, which is how the
+    second one nearly shipped without draining.
 
-    Returns the reason to print, or None to keep running.
+    Returns `(kind, message)` or None. The KIND matters because only one
+    of them can be healed by trying again.
     """
     if warm_failed:
-        return f"warm-up failed: {warm_failed}"
+        return FATAL_WARM, f"warm-up failed: {warm_failed}"
     if holding and down_expired(st, now, grace_sec):
-        return (f"/health silent for {grace_sec:.0f}s — the gateway is "
-                f"gone and is not coming back on its own. Restart the "
-                f"daemon (it relaunches the gateway) and read "
-                f".asterism/logs/gateway.log for the underlying crash")
+        return FATAL_GONE, (
+            f"/health silent for {grace_sec:.0f}s — the gateway is gone")
     return None
+
+
+def may_relaunch(st, now: float, budget_sec: float) -> bool:
+    """Is a self-heal credit available?
+
+    ONE relaunch, and the credit comes back only once the new gateway
+    has shown the relaunch was worth it. Two ways to show it, whichever
+    lands first:
+
+      * a pipeline completed successfully — the direct evidence, cleared
+        by the dispatcher's own success branch (`gateway_relaunched_at`
+        back to None);
+      * `budget_sec` elapsed — `dispatch.spawn_timeout_sec`, this
+        system's definition of one work unit's worth of time. This is
+        the empty-queue case, where nothing could have succeeded because
+        nothing was asked.
+
+    Dying before either is a CRASH LOOP, and the loud exit is correct
+    for it: a gateway that dies from something structural (a worker
+    eating the box's memory, an olean that will not load) would
+    otherwise relaunch, warm for five minutes, die, and repeat all
+    night while looking exactly like patience. Single accidents the
+    machine absorbs; repeating machinery faults go to the operator —
+    the standing ruling from the `unclassified_spawn_failure` breaker
+    (2026-08-08), for the same reason.
+
+    A plain "did it live long enough" timer would NOT do: a gateway that
+    lives twenty minutes serving nothing and then dies is the same crash
+    loop with a longer fuse. That is why the primary evidence is work
+    done, and the clock is only the fallback for when no work was asked.
+    """
+    if st.gateway_relaunched_at is None:
+        return True
+    return now - st.gateway_relaunched_at >= budget_sec
+
+
+def relaunch(st, workspace) -> dict:
+    """Spend the credit: kill whatever is left, start a fresh gateway in
+    the background, and hand back the new warm state.
+
+    Same path the daemon uses at startup, so the semantics that already
+    exist carry over unchanged — Lean kinds stay queued while
+    `ready` is False and NL kinds keep dispatching through the warm.
+    `kill_current_gateway` is a no-op when nothing answers, which is the
+    usual case here; `start_gateway` owns the rest (it waits for a
+    gateway that is mid-warm rather than racing it for the port).
+    """
+    from ..lsp import lifecycle
+    from . import warmup
+    st.gateway_relaunched_at = time.time()
+    st.consec_gateway_unreachable = 0
+    st.gateway_down_since = None
+    print("[gateway] gone — spending the one self-heal credit: killing "
+          "any remnant and warming a fresh gateway. If this one dies "
+          "before it finishes a pipeline, that is a crash loop and the "
+          "daemon exits instead of trying again.", flush=True)
+    lifecycle.kill_current_gateway()
+    return warmup.start_background(workspace)
+
+
+def resolve_fatal(st, workspace, *, warm_failed: "str | None",
+                  holding: bool, now: float, grace_sec: float,
+                  budget_sec: float) -> "tuple[dict | None, str | None]":
+    """The whole "gateway is unusable" decision: `(new_warm, message)`.
+
+    Exactly one is ever non-None. A new warm state means we healed and
+    the run continues; a message means this run is over.
+    """
+    fatal = fatal_reason(st, warm_failed=warm_failed, holding=holding,
+                         now=now, grace_sec=grace_sec)
+    if fatal is None:
+        return None, None
+    kind, message = fatal
+    if kind == FATAL_GONE and may_relaunch(st, now, budget_sec):
+        return relaunch(st, workspace), None
+    if kind == FATAL_GONE and st.gateway_relaunched_at is not None:
+        message += (" again, and the self-heal credit is already spent "
+                    "— this is a crash loop, not an accident")
+    return None, (
+        f"{message}. Restart the daemon (it relaunches the gateway) and "
+        f"read .asterism/logs/gateway.log for the underlying crash")
 
 
 def unreachable_backoff(st, *, kind: str, tk: str, tid: str,
