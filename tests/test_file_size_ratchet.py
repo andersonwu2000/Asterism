@@ -128,7 +128,10 @@ _WATERMARKS = {
     "Tooling/pipeline/librarian/context.py": 430,
     "Tooling/pipeline/librarian/execute.py": 1190,  # +universe hoist/dedup (#72)
     "Tooling/pipeline/librarian/bridge.py": 390,
-    "Tooling/pipeline/librarian/run.py": 560,
+    # 560→570 (2026-08-13): harvest seeds scope to the top group —
+    # the Library is curated for people, so what enters it is what the
+    # top group promoted (user ruling). Conscious bump.
+    "Tooling/pipeline/librarian/run.py": 570,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour
@@ -371,7 +374,13 @@ _WATERMARKS = {
     # on the reasoning that refill re-derives it, which is false for the
     # rows a retry path enqueued directly; a cooling one is put back
     # instead. Conscious bump.
-    "Tooling/state/db.py": 3805,
+    # 3805→3840 (2026-08-13): `top_group_id` — one home for
+    # `parent_group_id IS NULL`, which was spelled inline in four
+    # places — plus the `deliverables` docstring finally naming WHICH
+    # callers may scope. The old text read as an unconditional
+    # instruction and following it everywhere would have cut 21 proved
+    # bricks out of harvest. Conscious bump.
+    "Tooling/state/db.py": 3840,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,

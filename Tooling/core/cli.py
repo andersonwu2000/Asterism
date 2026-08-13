@@ -2179,7 +2179,11 @@ def _find_reject_victims(conn, workspace, *, reject_gid, problem, fqn,
     from ..pipeline._constants import canonicalize_anchor_pending
     victims: list[tuple[int, str]] = []
     warnings: list[tuple[str, str]] = []
-    for d in db.deliverables(conn, problem=problem):
+    # Same scope as the sign-off page this pairs with: a person can only
+    # reject a claim they were shown, so the cascade may only walk the
+    # top group's deliverables (`db.deliverables`).
+    for d in db.deliverables(conn, problem=problem,
+                             group_id=db.top_group_id(conn, problem)):
         did = int(d["id"])
         if did == reject_gid:
             continue

@@ -32,7 +32,15 @@ def review_data(conn, workspace: Path, *,
     from ..pipeline._constants import (anchor_closure_goal,
                                        canonicalize_anchor_pending,
                                        fold_generated_companions)
-    dels = db.deliverables(conn, problem=problem)
+    # The human signs off on what the TOP group claimed. A sub-group's
+    # MarkDeliverable is a result handed up to its parent to track, not
+    # a claim addressed to a person — see `db.deliverables`. Unscoped,
+    # union_closed asked for a vouch on 24 items of which 23 were
+    # inter-group scaffolding. `None` (a problem older than groups)
+    # keeps the whole list, which is what those problems always showed.
+    dels = db.deliverables(conn, problem=problem,
+                           group_id=db.top_group_id(conn, problem)
+                           if problem else None)
     out: "list[dict]" = []
     union: set[str] = set()
     # Manifest intent text + change history (self-audit 2026-07-12

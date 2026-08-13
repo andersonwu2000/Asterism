@@ -425,6 +425,25 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
 
     goal_docs = _goal_docs(conn, problem)
     disproofs = _disproof_links(conn, problem)
+    # Who marked each deliverable, and whether that is the group that
+    # faces the human (2026-08-13, user ruling). `is_deliverable` is a
+    # plain "somebody marked it": the TOP group's Mark is a claim the
+    # human signs off on, a sub-group's is a result handed up to its
+    # parent to track. Both are worth drawing; drawing them the SAME is
+    # what put 23 of union_closed's 24 diamonds on the map as things a
+    # person was being asked to vouch for.
+    #
+    # Shipped as ownership rather than as a filter on purpose: the map
+    # should distinguish, not hide. `db.deliverables` is where the
+    # surfaces that must actually narrow (sign-off, harvest) do it.
+    _top_gid = db.top_group_id(conn, problem)
+    marked_by = {
+        int(r["target_id"]): (r["group_id"] and int(r["group_id"]))
+        for r in conn.execute(
+            "SELECT target_id, group_id FROM strategist_decisions"
+            " WHERE decision_kind = 'MarkDeliverable' AND problem = ?"
+            " ORDER BY id", (problem,))
+    }
     goals = []
     for g in conn.execute(
             "SELECT id, slug, status, kind, origin, depth, detached,"
@@ -448,6 +467,13 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
             "detached": bool(g["detached"]),
             "alias_target_id": g["alias_target_id"],
             "is_deliverable": bool(g["is_deliverable"]),
+            # Which group's Mark this is, and the one bit the map needs
+            # to draw it right: is it addressed to the human, or handed
+            # up to a parent group? None on both when nothing marked it.
+            "marked_by_group": marked_by.get(int(g["id"])),
+            "human_facing_claim": bool(
+                g["is_deliverable"] and _top_gid is not None
+                and marked_by.get(int(g["id"])) == _top_gid),
             "statement": str(g["statement"]),
             "lean_path": str(g["lean_path"]),
             "created_at": str(g["created_at"]),

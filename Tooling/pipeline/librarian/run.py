@@ -97,7 +97,15 @@ def _reachable_from_root(conn, problem, workspace, slugs) -> "set[str]":
     rs = _root_source(conn, problem, workspace)
     root_slug = rs[0] if rs else "main"
     usage = _inv.usage_graph(workspace, problem, set(slugs), root_source=rs)
-    dels = db.deliverables(conn, problem=problem)
+    # TOP-GROUP deliverables only (2026-08-13, user ruling). The Library
+    # is curated for people, so what enters it is what the top group
+    # promoted; a sub-group's Mark is a hand-off to its parent, and a
+    # result the parent never promoted is scaffolding rather than a
+    # library item. Seeds shrink, but the walk below still pulls in
+    # everything those seeds actually depend on — a sub-group brick that
+    # a promoted claim cites arrives through the closure, as it should.
+    dels = db.deliverables(conn, problem=problem,
+                           group_id=db.top_group_id(conn, problem))
     seeds = [str(d["slug"]) for d in dels] if dels else [root_slug]
     reachable: set[str] = set()
     stack = list(seeds)

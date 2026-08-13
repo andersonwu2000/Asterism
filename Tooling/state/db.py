@@ -1152,6 +1152,23 @@ def scholar_fetch_count(conn: sqlite3.Connection, problem: str) -> int:
         (problem,)).fetchone()[0])
 
 
+def top_group_id(conn: sqlite3.Connection,
+                 problem: str) -> "int | None":
+    """The problem's top group — the one that faces the human.
+
+    `parent_group_id IS NULL` was spelled inline in four places before
+    2026-08-13, which is three more than a fact should have. None means
+    the problem predates groups; callers treat that as "no scoping
+    possible" and see everything, which is what those problems always
+    showed.
+    """
+    row = conn.execute(
+        "SELECT id FROM groups WHERE problem = ?"
+        "   AND parent_group_id IS NULL ORDER BY id LIMIT 1",
+        (problem,)).fetchone()
+    return int(row["id"]) if row else None
+
+
 def deliverables(conn: sqlite3.Connection,
                  problem: str | None = None,
                  group_id: "int | None" = None) -> list[sqlite3.Row]:
@@ -1162,9 +1179,35 @@ def deliverables(conn: sqlite3.Connection,
     v35 — `group_id` narrows to the deliverables THAT group marked.
     `is_deliverable` stays a plain "somebody marked it"; whose it is
     comes from the `MarkDeliverable` decision, the same derivation goal
-    ownership uses. Without this the top-level sign-off surface would
-    list every sub-group's internal parts as things the human is being
-    asked to vouch for, and the anchor closure would follow them.
+    ownership uses.
+
+    WHICH CALLERS SCOPE, AND WHY (2026-08-13, user ruling). Only the top
+    group talks to the human; a sub-group's Mark is a result handed UP
+    to its parent to track, not a claim addressed to anybody outside.
+    So the surfaces that exist for a person scope to
+    `top_group_id(problem)`:
+
+      * `quality/review.py` — the sign-off page. Unscoped it asked the
+        human to vouch for 23 of union_closed's 24 deliverables that
+        were internal hand-offs between sub-groups.
+      * `core/cli._find_reject_victims` — its companion: a person can
+        only reject a claim they were shown.
+      * `pipeline/librarian/run` — harvest seeds. The Library is
+        curated FOR people, so what reaches it is what the top group
+        promoted. A sub-group result not promoted is scaffolding.
+
+    And which do NOT, because the premise above does not hold for them:
+
+      * `pipeline/strategist` (the Ingest gate's existence check) asks
+        "did this problem produce anything at all", a question about
+        the machine's work rather than the human's reading list.
+      * `agent/phase2_context` already passes an explicit sub-group id;
+        that IS the sub-group's own hand-off summary.
+
+    This paragraph exists because the version above it read as an
+    unconditional instruction, and following it everywhere would have
+    silently cut 21 proved bricks out of harvest — a display bug is
+    annoying, a harvest bug loses finished work.
     """
     if group_id is not None:
         return conn.execute(
