@@ -1624,6 +1624,16 @@ def _section_your_group(conn: sqlite3.Connection, problem: str,
     return [
         "## Your group", "",
         "Your charter and the chain above it: `charter.md`.", "",
+        # The charter::Manifest equation, stated on the ONE surface that
+        # knows which level this spawn is (2026-08-13). The static
+        # prompt says "Manifest" because it is written for the top
+        # group; a sub-group that reads it literally plans against the
+        # problem's Manifest instead of its own charter, and its judge —
+        # whose criteria say the same word — grades it against the root.
+        # Overriding here rather than branching the criteria text is why
+        # the judge's rules stay level-independent.
+        "- Your mission is your charter — every \"Manifest\" in your "
+        "instructions means it; `Manifest.md` is ancestral context.",
         "- `Ingest` here delivers your bricks upward and ends this "
         "group, not the problem.",
         "- `ReturnToParent` — `flavour ∈ "

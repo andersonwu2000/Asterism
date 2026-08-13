@@ -326,6 +326,13 @@ def build_projection(*, round_no: int, attempts_dir: Path,
 
 CRITERIA_KEYS = ("1", "2", "3", "4", "5")
 
+#: The criterion whose `clear` must carry its naming (see the check in
+#: `parse_verdict`). Held to `Tooling/prompts/adversary/adversary.md` by
+#: `tests/test_adversary_criteria_contract.py`: the prompt states the
+#: rule, this enforces it, and a judge that obeys a prompt its verifier
+#: disagrees with loses the round.
+NAMING_CRITERION = "2"
+
 
 def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
     """Validate the per-criterion verdict.json and DERIVE the ruling.
@@ -362,18 +369,27 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
         # hit. The DISCRIMINATOR is the leading word (word-boundary, so
         # "clearly…" stays malformed); suffix prose is tolerated.
         if re.match(r"clear\b", s, re.IGNORECASE):
-            # #159 (2026-08-04): criterion 1's judgment IS the naming —
-            # the entry that closes the MAIN claim and the remaining
-            # distance. Ten SLC revs cleared it with the bare word,
-            # leaving the attention device without an auditable trace,
-            # on the one criterion built to catch a main claim orbiting
-            # untouched. Mechanical, not honor-system: bare clear on
-            # "1" is malformed.
-            if k == "1" and not s[len("clear"):].strip(" -—–:"):
+            # #159 (2026-08-04): the naming criterion's judgment IS the
+            # naming — the entry that closes the MAIN claim and the
+            # remaining distance. Ten SLC revs cleared it with the bare
+            # word, leaving the attention device without an auditable
+            # trace, on the one criterion built to catch a main claim
+            # orbiting untouched. Mechanical, not honor-system.
+            #
+            # It is criterion 2 as of 2026-08-13, when Value and
+            # Reachability swapped places: the naming belongs to
+            # Reachability (does this route reach the MAIN claim), and
+            # Reachability moved to 2. This constant is the ENFORCEMENT
+            # half of a prompt rule — the prompt says "Criterion 2 never
+            # takes a bare clear" — and the two must move together or a
+            # judge that obeys the prompt has its verdict refused.
+            # `test_adversary_criteria_contract.py` holds them level.
+            if k == NAMING_CRITERION and not s[len("clear"):].strip(" -—–:"):
                 return None, (
-                    "criterion 1 never takes a bare \"clear\" — its "
-                    "judgment IS the naming: `\"clear: <entry that "
-                    "closes the MAIN claim> — <what still stands>\"`")
+                    f"criterion {NAMING_CRITERION} never takes a bare "
+                    f"\"clear\" — its judgment IS the naming: `\"clear: "
+                    f"<entry that closes the MAIN claim> — <what still "
+                    f"stands>\"`")
             continue
         if re.match(r"fired\b", s, re.IGNORECASE):
             reason = (s.split(":", 1)[1].strip() if ":" in s

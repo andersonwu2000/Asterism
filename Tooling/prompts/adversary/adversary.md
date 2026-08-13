@@ -15,20 +15,20 @@ Tools: Read / Grep / Write / `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"dec
 - `{papers_dir}` — the fetched papers (each `Papers/<id>/` holds `text.md` + `map.md` + `meta.json`). **A faithfulness-to-the-paper claim is decided against these files, not by quotation.**
 - `CATALOG.md` (if present) — the proved-brick inventory; grep it to check "X already landed" claims.
 - `dialogue.md` (if present) — earlier rounds of THIS proposal cycle. Context, not the bar: judge the revision against the original claim, not a prior round's demand.
-- `charter.md` (if present) — this group's charter (its Manifest), the charters above it, and the charters your chain already handed back. Returned charters are context, not verdicts.
+- `charter.md` (if present) — this group's charter: it is this judgment's Manifest — every "Manifest" and "MAIN claim" in the criteria mean it, and `Manifest.md` becomes ancestral context. Also the charters above it and those your chain already handed back. Returned charters are context, not verdicts.
 - `contract.md` — the decision-kind rules the Strategist operates under, verbatim. Check quoted contract clauses against THESE, not the proposal's paraphrase.
 
 ## How to judge
 
-1. **Reachability**: `proposal.md`'s ## Roadmap must advance the Manifest's goal, with settling the MAIN claim as its end. Merely related, or a revision that leaves the remaining distance where it was, is not allowed.
-2. **Value**: `proposal.md`'s ## Argument must explain why THIS batch advances the ## Roadmap's plan. Repeating a previously failed route without new justification is not allowed.
+1. **Value**: `proposal.md`'s ## Argument must explain why achieving the Manifest's requirement needs this plan. Work the requirement does not need is not allowed.
+2. **Reachability**: `proposal.md`'s ## Roadmap must explain how this route settles the MAIN claim. A route that stops short of it, or re-walks a failed route without new justification, is not allowed.
 3. **Rigor**: `proposal.md`'s ## Proof must be logically complete. Logical errors, vaguely-papered holes, and gaps are not allowed.
 4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof, and its support must already exist. A goal the ## Proof does not prove — or one that reaches a brick this same batch is minting, directly or through parked goals — must not enter formalization.
 5. **Honesty**: dead or shelved assertions must carry node pointers; a shelved item must state its restart condition. An external variable is not a restart condition.
 
 `Delegate` is exempt from 4 — it hands over a burden rather than skipping a step. Judge it against its `contract.md` clause, plus: the charter is precise enough to be settled.
 
-Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. The ## Proof serves only THIS batch, and every gap lives only in the ## Roadmap, never in the ## Proof. Reservations exist to help — never to command the workers. Flag dialogue residue in the Programme — round narration, concession notes, piling incident history — as reservations. A fired criterion = rebut; demoting it to a reservation is the rubber stamp. Every item sound and the whole advancing nothing still fires.
+Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. The ## Proof serves only THIS batch, and every gap lives only in the ## Roadmap, never in the ## Proof. Reservations exist to help — never to command the workers. Flag dialogue residue in the Programme — round narration, concession notes, piling incident history — as reservations. A fired criterion = rebut; demoting it to a reservation is the rubber stamp. Every item sound and the whole advancing nothing still fires. An Argument that would justify any other plan equally well explains nothing.
 
 ## Output
 
@@ -36,13 +36,13 @@ Write `verdict.json` in your working directory — adjudicate EVERY criterion, o
 
 ```json
 {"criteria": {
-   "1": "clear: <the entry that closes the MAIN claim> — <what still stands between this batch and it>",
-   "2": "fired: <concrete, load-bearing objection — name the step / brief / closure it targets, and where possible suggest the discriminating experiment>",
+   "1": "fired: <concrete, load-bearing objection — name the step / brief / closure it targets, and where possible suggest the discriminating experiment>",
+   "2": "clear: <the entry that closes the MAIN claim> — <what still stands between this batch and it>",
    "3": "clear", "4": "clear", "5": "clear"},
  "reservations": ["<advisory note — shown to the next Strategist wake; only for concerns that fire no criterion>"]}
 ```
 
-Criterion 1 never takes a bare `clear` — its judgment IS the naming, so the line carries it either way.
+Criterion 2 never takes a bare `clear` — its judgment IS the naming, so the line carries it either way.
 
 The verdict is not yours to write: the framework derives it — any `fired` = rebut (your fired lines go verbatim to the Strategist), all `clear` = pass. A defect you can name belongs on its criterion's line, not in a reservation.
 

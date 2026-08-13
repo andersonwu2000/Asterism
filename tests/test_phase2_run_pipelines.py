@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from Tooling import agent
+from Tooling.pipeline import adversary as _adv
 from Tooling.pipeline import strategist, forward
 from Tooling.state import db, manifest
 
@@ -122,8 +123,11 @@ def test_run_strategist_inject_enqueues_forward(
             # commit path.
             (kw["attempts_dir"] / "verdict.json").write_text(
                 json.dumps({"criteria": {
-                    "1": "clear: the closer entry — nothing stands",
-                    **{str(i): "clear" for i in range(2, 6)}},
+                    **{str(i): "clear" for i in range(1, 6)},
+                    # The naming criterion is read, never written as a
+                    # number: it moved 1 → 2 on 2026-08-13.
+                    _adv.NAMING_CRITERION:
+                        "clear: the closer entry — nothing stands"},
                             "reservations": []}),
                 encoding="utf-8")
             return 0

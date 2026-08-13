@@ -149,11 +149,15 @@ def test_the_verifier_no_longer_reads_the_brief_at_all(tmp_path: Path):
 # ------------------------------------------------- verdict contract
 
 def _criteria(**fired: str) -> dict:
-    """All-clear criteria dict, with named criteria fired. Criterion 1
-    carries its mandatory naming (#159: bare clear on \"1\" is
-    malformed)."""
+    """All-clear criteria dict, with named criteria fired. The naming
+    criterion carries its mandatory naming (#159: a bare clear there is
+    malformed). Read from `adversary.NAMING_CRITERION` rather than
+    written as "1": the criteria were renumbered on 2026-08-13 and a
+    hard-coded number here would have made six tests assert yesterday's
+    contract."""
     c = {k: "clear" for k in adversary.CRITERIA_KEYS}
-    c["1"] = "clear: the closer entry — one prerequisite stands"
+    c[adversary.NAMING_CRITERION] = (
+        "clear: the closer entry — one prerequisite stands")
     for k, reason in fired.items():
         c[k.lstrip("c")] = f"fired: {reason}"
     return c
@@ -183,20 +187,22 @@ def test_parse_verdict_derives_ruling():
 
 
 def test_criterion_one_never_takes_a_bare_clear():
-    """#159: ten SLC revs cleared criterion 1 with the bare word — the
-    attention-forcing device (name the MAIN-claim entry + remaining
-    distance) was bypassed by the output template, on the one criterion
-    built to catch a main claim orbiting untouched. Mechanical: bare
-    clear on "1" is malformed; other criteria keep bare clear."""
+    """#159: ten SLC revs cleared the naming criterion with the bare
+    word — the attention-forcing device (name the MAIN-claim entry +
+    remaining distance) was bypassed by the output template, on the one
+    criterion built to catch a main claim orbiting untouched.
+    Mechanical: a bare clear there is malformed; other criteria keep
+    bare clear."""
+    n = adversary.NAMING_CRITERION
     bare = {k: "clear" for k in adversary.CRITERIA_KEYS}
     v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
-    assert v is None and "criterion 1" in err and "naming" in err
+    assert v is None and f"criterion {n}" in err and "naming" in err
     # Punctuation-only annotation is still bare.
-    bare["1"] = "clear: "
+    bare[n] = "clear: "
     v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
-    assert v is None and "criterion 1" in err
+    assert v is None and f"criterion {n}" in err
     # A real naming passes.
-    bare["1"] = "clear: entry closing the main claim — two steps stand"
+    bare[n] = "clear: entry closing the main claim — two steps stand"
     v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
     assert err == "" and v["verdict"] == "pass"
 
@@ -1038,9 +1044,14 @@ def test_parse_verdict_tolerates_annotated_clear_and_fired() -> None:
     match discarded two full adversary rounds per hit, failing the
     whole wake as agent_no_output. Prefix-keyed with a word boundary:
     annotations tolerated, "clearly…" still malformed."""
+    # The annotated form sits on the NAMING criterion (which requires an
+    # annotation anyway) and the bare capitalised one on a criterion
+    # that allows it — the subject here is annotation tolerance, not the
+    # naming rule, and after the 2026-08-13 renumber those are different
+    # numbers than they used to be.
     v, err = adversary.parse_verdict(json.dumps({"criteria": {
-        "1": "clear — I checked the chain end to end",
-        "2": "Clear",
+        "1": "Clear",
+        "2": "clear — I checked the chain end to end",
         "3": "fired — the merge is not forced",
         "4": "fired: the Proof skips the boundary case",
         "5": "clear"}}))

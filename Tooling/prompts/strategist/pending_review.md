@@ -36,14 +36,14 @@ Before committing, `Grep` mathlib briefly for any concept the agent claims is mi
 Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships a Programme revision: Write `proposal.md` (bare filename, in your attempts dir) —
 
     # <Title>       one line: this batch's goal
-    ## Argument     why THIS batch: what the latest outcomes showed, why these experiments advance the Roadmap
+    ## Argument     why achieving the Manifest's requirement needs this plan — grounded in the latest outcomes
     ## Proof        this batch's mathematics, written as a mathematician writes proofs: a complete
                     argument for every claim this batch dispatches. No gaps here — an unclosed
                     claim belongs in the Roadmap, not the Proof. The worker's only share is the
                     Lean shape. Write the whole argument here first, then copy each
                     brick's part into its Inject's `proof`. (Nothing new to argue →
                     the single line "No new mathematics this batch.")
-    ## Roadmap      the route, and the ONLY home for gaps: ordered next goals and open questions
+    ## Roadmap      the route, and how it settles the MAIN claim; the ONLY home for gaps: ordered next goals and open questions
                     with their status and the plan to close them — near entries brief-ready, far
                     entries coarse; a closure names the exact instantiation that died AND a
                     restart condition the system itself can produce

@@ -442,11 +442,12 @@ def _verdict_json(**criteria: str) -> str:
     pre-44ff4321 shape, stayed green, and the live console reported
     every rebut as `passed`."""
     import json as _json
-    from Tooling.pipeline.adversary import CRITERIA_KEYS
+    from Tooling.pipeline.adversary import (CRITERIA_KEYS,
+                                            NAMING_CRITERION)
     body = {"criteria": {k: criteria.get(
                              f"c{k}",
                              "clear: closer entry — nothing stands"
-                             if k == "1" else "clear")
+                             if k == NAMING_CRITERION else "clear")
                          for k in CRITERIA_KEYS},
             "reservations": []}
     return _json.dumps(body)
