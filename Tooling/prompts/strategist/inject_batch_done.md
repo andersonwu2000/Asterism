@@ -10,8 +10,6 @@ Tools: Read / Write / Edit / Grep / `inspect([{"grep":"Bar","in":"proofs/*.lean"
 
 <!-- #if has_history -->
 - **Meta-analysis first.** Reflect on your prior decisions:
-   - If the batch has failed decisions (agent disproved a statement, a minted brick was mis-specified, proof direction was wrong, etc.) → change the proof structure or brief writing.
-   - A declined mint shows its reason as `why:` in `## Completed Inject batches`. If it says your brief was under-specified (e.g. called a step "trivial" but named no lemma), name the specific lemma / state the obligation shape concretely in the re-Inject — don't just rephrase the same vague brief.
    - Cross-check `## Recent decisions` for repeating failure patterns → step back and reassess the math logic and methodology.
 
 - **Process each reopen-promise** (your prior `ConfirmShelve` rows parked waiting for this batch):
@@ -63,7 +61,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 ## Decision kinds
 - `Inject` — `proof` or `proof_file` (bare filename in your attempts dir — Write it there, no JSON escaping). The part of this batch's `## Proof` that settles this brick, copied across with the vocabulary it uses. It is what the worker formalizes against; the worker does not read the rest. Two shapes:
   - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself.
-  - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never brief a mint with an alive goal's statement.
+  - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone (the batch still needs its ≥1 experiment). Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `Delegate` — `brief` or `brief_file` (the charter: a precise claim the new group must settle), optional `target_goal_id`, optional `reason`. For a claim you cannot yet prove. Your Proof must be complete GIVEN it; it must not depend on your conclusion or any charter above you. With `target_goal_id`: that goal becomes the anchor. Several plausible routes, none yet provable → one group per route, in the same batch; competing hypotheses are a portfolio, not a queue.
 - `FetchPaper` — `query` (citation or description), `reason`. A route leaning on an unverified literature claim — this is open, this is known — fetches before spending batches on it. Papers calibrate the Roadmap; they are not a proof to transcribe.

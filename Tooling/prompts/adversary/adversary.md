@@ -7,7 +7,7 @@ Tools: Read / Grep / Write / `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"dec
 - `Manifest.md` — the user's task. The fixed reference point.
 - `PROGRAMME.md` — the current (last passed) Programme revision, followed by its execution record: the terminal results (proved / dead with anchoring) since it passed. **Check the candidate Argument's account against those results.**
 - `proposal.md` — the CANDIDATE revision under judgment: `# Title` (this batch's goal), `## Argument` (why this batch), `## Proof` (this batch's complete arguments — no gaps), `## Roadmap` (the route, and the only home for gaps and open questions; closure entries name the exact dead instantiation and a self-producible restart condition).
-- `decisions.md` — this batch's experiments (Inject briefs) and other decisions; goal targets are annotated `(slug, status)`.
+- `decisions.md` — this batch's decisions (its experiments among them); goal targets are annotated `(slug, status)`.
 - `directive.md` (if present) — the operator's standing directive for this problem (human-written); context, not a criterion.
 - `Root.lean` / `Defs.lean` (if present) — the formal statement and definitions. **Check claims about the formal goal against these, not the Manifest's prose.**
 - `TREE.md` (if present) — the live goal tree (names + statuses); check tree-shape and status claims here.
@@ -36,7 +36,7 @@ Write `verdict.json` in your working directory — adjudicate EVERY criterion, o
 
 ```json
 {"criteria": {
-   "1": "fired: <concrete, load-bearing objection — name the step / brief / closure it targets, and where possible suggest the discriminating experiment>",
+   "1": "fired: <concrete, load-bearing objection — name the step / decision / closure it targets, and where possible suggest the discriminating experiment>",
    "2": "clear: <the entry that closes the MAIN claim> — <what still stands between this batch and it>",
    "3": "clear", "4": "clear", "5": "clear"},
  "reservations": ["<advisory note — shown to the next Strategist wake; only for concerns that fire no criterion>"]}
