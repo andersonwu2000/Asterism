@@ -130,6 +130,75 @@ def test_the_agy_probe_exercises_a_real_misconfig_marker() -> None:
     assert probe.must_contain in agy._MISCONFIG_MARKERS
 
 
+# ---------------------------------------------------------------------
+# Coverage: a table nobody watches must SAY so (2026-08-13)
+# ---------------------------------------------------------------------
+#
+# The guard's docstring claimed it watched every quota and misconfig
+# detector we own. `PROBES` exercises one table per provider; seven are
+# declared. `claude_cli`'s quota prose went unwatched from roughly
+# 2026-07-03 to 2026-08-13 — and the guard reported GREEN throughout,
+# for the other table. Silence and coverage were indistinguishable.
+
+
+def test_every_declared_marker_table_declares_its_coverage() -> None:
+    """The teeth. A new marker table must classify itself as live-probe,
+    corpus, or unverified — there is no default, so the next one cannot
+    arrive unwatched AND unremarked the way five of these did."""
+    coverage = drift_guard.marker_coverage()
+    assert coverage, "no marker tables declared at all — did the schema move?"
+    unclassified = sorted(k for k, v in coverage.items()
+                          if v == "UNCLASSIFIED")
+    assert not unclassified, (
+        "these marker tables are watched by nothing and say nothing "
+        "about it — add a probe, pin a captured sample in "
+        "COVERED_BY_CORPUS, or state the reason in UNVERIFIED:\n  "
+        + "\n  ".join(unclassified))
+
+
+def test_a_live_probe_claim_names_a_real_probe() -> None:
+    """`live-probe` is the only kind that asserts something about the
+    CLI as installed right now, so it must not be claimable by writing
+    the words: it is derived from `PROBES`, and every probe's
+    `marker_source` must be a table someone actually declared."""
+    declared = {d for c in caps.CAPABILITIES.values()
+                for d in c.marker_tables}
+    for name, probe in drift_guard.PROBES.items():
+        assert probe.marker_source in declared, (
+            f"{name}'s probe exercises {probe.marker_source!r}, which no "
+            f"capability entry declares — the probe and the declaration "
+            f"have drifted apart")
+
+
+def test_the_three_coverage_kinds_are_disjoint() -> None:
+    """A table in two buckets means two people believe someone else is
+    watching it."""
+    by_probe = {p.marker_source for p in drift_guard.PROBES.values()}
+    corpus = set(drift_guard.COVERED_BY_CORPUS)
+    unverified = set(drift_guard.UNVERIFIED)
+    assert not (by_probe & corpus)
+    assert not (by_probe & unverified)
+    assert not (corpus & unverified)
+
+
+def test_every_unverified_entry_gives_a_reason() -> None:
+    """"Unverified" without a reason is just silence with extra steps —
+    and the reason is what tells the next reader whether the gap is in
+    the world (a refusal costs real quota to trigger) or in us (nobody
+    wired the probe yet)."""
+    for dotted, why in drift_guard.UNVERIFIED.items():
+        assert len(why.strip()) > 40, f"{dotted}: reason too thin"
+
+
+def test_a_corpus_claim_points_at_a_test_that_exists() -> None:
+    from pathlib import Path as _P
+    root = _P(__file__).resolve().parents[1]
+    for dotted, where in drift_guard.COVERED_BY_CORPUS.items():
+        rel = where.split(" ", 1)[0]
+        assert (root / rel).exists(), (
+            f"{dotted} claims coverage by {rel!r}, which does not exist")
+
+
 def test_a_missing_cli_is_silent_not_a_warning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

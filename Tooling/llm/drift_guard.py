@@ -10,16 +10,24 @@ Two different questions, and the second is the one that has teeth.
 
 2. BEHAVIOUR. Version equality cannot catch "same CLI version, changed
    server-side wording", and that is the most brittle thing in this
-   system: EVERY quota and misconfig detector we own is a substring
-   match against vendor prose —
-   `antigravity_cli._QUOTA_MARKERS` / `._MISCONFIG_MARKERS` /
-   `._TIMEOUT_MARKERS`, `claude_cli._QUOTA_MARKERS` /
-   `._STALE_SESSION_MARKER`. When one of those stops matching nothing
-   errors: a quota refusal becomes an ordinary failure, the backoff
-   probes a three-hour wall, and the first symptom is a run that got
-   nowhere. So the guard captures a small BEHAVIOUR SNAPSHOT and diffs
-   it against the stored one, and it surfaces in the first seconds of
-   daemon start instead of mid-run.
+   system: nearly every quota and misconfig detector we own is a
+   substring match against vendor prose, and `capabilities.marker_tables`
+   is where each provider declares which tables those are. When one of
+   them stops matching, nothing errors: a quota refusal becomes an
+   ordinary failure, the backoff probes a three-hour wall, and the first
+   symptom is a run that got nowhere. So the guard captures a small
+   BEHAVIOUR SNAPSHOT and diffs it against the stored one, and it
+   surfaces in the first seconds of daemon start instead of mid-run.
+
+   READ `marker_coverage()` BEFORE TRUSTING THIS PARAGRAPH. It used to
+   claim the guard covered every one of those tables, and it did not —
+   `PROBES` exercises one table per provider and seven are declared.
+   `claude_cli`'s quota prose sat unwatched from roughly 2026-07-03
+   (the vendor sentence gained a word) to 2026-08-13 (a window died and
+   the daemon exited calling a healthy provider broken), and the reason
+   nobody noticed is that the guard reported green the whole time — for
+   the OTHER table. Coverage is now declared per table and a test fails
+   on anything unclassified.
 
 The probes are chosen so they are FREE — no API call, no token, no
 quota — and so that each one exercises a real marker rather than some
@@ -127,6 +135,84 @@ PROBES: "dict[str, BehaviourProbe]" = {
         redact=((_INVALID_MODEL_SLUG, "<slug>"),),
     ),
 }
+
+
+# ─── Which declared marker table is covered by what ───────────────────
+#
+# The docstring above promised this guard watches every quota and
+# misconfig detector we own. It did not. `PROBES` exercises ONE table
+# per provider, `capabilities.marker_tables` declares seven, and the
+# five in between were watched by nothing — including
+# `claude_cli`'s quota prose, which stopped matching around 2026-07-03
+# (the CLI's sentence gained the word "session") and was not noticed
+# until 2026-08-13, when a window died and the daemon exited calling a
+# healthy provider broken.
+#
+# Nothing here probes anything new. What it does is make SILENCE
+# IMPOSSIBLE: every declared table must say which of three kinds of
+# coverage it has, and `test_provider_drift_guard.py` fails if one is
+# unclassified. A table nobody watches is now a table that says so.
+#
+# The three kinds are not a quality ranking of the tables; they are a
+# statement about what the world lets us check for free:
+
+#: Pinned against a REAL captured sample of the vendor's output. Not a
+#: live probe — it cannot notice a change made this morning — but it
+#: cannot rot into agreeing with itself either, which is how the
+#: hand-written May wording survived: the marker and the test that
+#: exercised it were both written from the same guess.
+COVERED_BY_CORPUS: "dict[str, str]" = {
+    "Tooling.llm.claude_cli._QUOTA_PROSE_RE":
+        "tests/test_quota_refusal.py — the 2026-08-13 five-hour refusal "
+        "copied verbatim out of .attempts/9006e09d-…/_spawn.stderr, "
+        "prose and rate_limit_event both",
+}
+
+#: No free probe and no captured sample. Each entry states WHY, and what
+#: would close it — an honest gap beats a probe that exercises some
+#: unrelated string and reports green.
+UNVERIFIED: "dict[str, str]" = {
+    "Tooling.llm.antigravity_cli._QUOTA_MARKERS":
+        "a quota refusal cannot be triggered for free — it requires "
+        "actually spending the account's window. Closes the day one is "
+        "captured: keep the refusal text from the next agy quota death "
+        "and pin it the way claude's is.",
+    "Tooling.llm.antigravity_cli._TIMEOUT_MARKERS":
+        "the vendor's own timeout wording; reproducing it means waiting "
+        "out a real timeout on a real call. Same fix — capture one.",
+    "Tooling.llm.codex_cli._QUOTA_MARKERS":
+        "same as agy's, and codex's quota signal has a structured "
+        "second channel (`rate_limits` in the rollout) that the prose "
+        "is only a fallback for — so this table is the less load-"
+        "bearing half. Still unwatched, still worth capturing.",
+    "Tooling.llm.codex_cli._MISCONFIG_MARKERS":
+        "no free probe wired yet. Unlike the two above this one IS "
+        "cheaply probeable — an invalid `--model` slug should do for "
+        "codex what it already does for agy — so this is a gap in the "
+        "PROBES table, not in the world.",
+}
+
+
+def marker_coverage() -> "dict[str, str]":
+    """Every declared marker table → how it is watched.
+
+    `live-probe` / `corpus` / `unverified`. Built by asking
+    `capabilities` what exists rather than by listing tables here: a
+    second list of the same names is the thing this whole exercise is
+    about."""
+    by_probe = {p.marker_source for p in PROBES.values()}
+    out: "dict[str, str]" = {}
+    for caps in capabilities.CAPABILITIES.values():
+        for dotted in caps.marker_tables:
+            if dotted in by_probe:
+                out[dotted] = "live-probe"
+            elif dotted in COVERED_BY_CORPUS:
+                out[dotted] = "corpus"
+            elif dotted in UNVERIFIED:
+                out[dotted] = "unverified"
+            else:
+                out[dotted] = "UNCLASSIFIED"
+    return out
 
 
 def resolve_executable(provider: str) -> "str | None":
