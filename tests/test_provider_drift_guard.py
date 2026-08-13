@@ -253,6 +253,64 @@ def test_a_corpus_claim_points_at_a_test_that_exists() -> None:
             f"{dotted} claims coverage by {rel!r}, which does not exist")
 
 
+# ---------------------------------------------------------------------
+# "Did not answer" is not "answered wrong" (2026-08-14)
+# ---------------------------------------------------------------------
+
+
+def _mute_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A CLI that is installed but never answers the probe."""
+    import subprocess
+
+    monkeypatch.setattr(drift_guard, "resolve_executable",
+                        lambda _p: "fake.exe")
+
+    def _run(argv, cwd):
+        if argv[1:2] == ["--version"]:
+            return 0, caps.CAPABILITIES["antigravity"].tested_version
+        raise subprocess.TimeoutExpired(argv, 20)
+
+    monkeypatch.setattr(drift_guard, "_run", _run)
+
+
+def test_an_unanswered_probe_is_unmeasured_not_a_dead_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The distinction that cost a red suite. A probe that times out
+    used to report `marker_ok: False`, which reads as "the vendor
+    reworded its error and a detector just went silent" — the loudest
+    thing this guard can say, produced by a busy box."""
+    _mute_cli(monkeypatch)
+    snap = drift_guard.behaviour_snapshot("antigravity", workspace=tmp_path)
+    assert snap is not None and snap["marker_ok"] is None
+    assert "TimeoutExpired" in snap["error"]
+    warnings = drift_guard.check(tmp_path, ("antigravity",))
+    assert any("could not be run" in w for w in warnings)
+    assert not any("DEAD SILENT" in w for w in warnings)
+
+
+def test_an_unanswered_probe_does_not_fake_a_snapshot_diff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The second false alarm hiding behind the first: an unmeasured
+    probe carries an EMPTY signature, so the diff against the last real
+    one would announce that the vendor's wording moved. The stored
+    snapshot must survive a failed measurement untouched — otherwise
+    the NEXT run diffs against the empty one and lies twice."""
+    _fake_cli(monkeypatch, version=caps.CAPABILITIES["antigravity"]
+              .tested_version, probe_out=_AGY_OK)
+    assert drift_guard.check(tmp_path, ("antigravity",)) == []
+    good = json.loads((tmp_path / drift_guard.SNAPSHOT_REL)
+                      .read_text(encoding="utf-8"))["antigravity"]["probe"]
+
+    _mute_cli(monkeypatch)
+    warnings = drift_guard.check(tmp_path, ("antigravity",))
+    assert not any("CHANGED" in w for w in warnings)
+    kept = json.loads((tmp_path / drift_guard.SNAPSHOT_REL)
+                      .read_text(encoding="utf-8"))["antigravity"]["probe"]
+    assert kept == good
+
+
 def test_a_missing_cli_is_silent_not_a_warning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -323,15 +381,29 @@ def test_the_installed_cli_matches_its_declaration_right_now(
     version check is per minor SERIES: claude and agy ship patches every
     few days, exact equality left this red for a week at a time, and a
     permanently red guard is one nobody reads.
+
+    What it must NOT do is go red for weather. This shells out to a real
+    vendor CLI, so under the full suite it competes with every other
+    subprocess and the probe sometimes never answers — observed once on
+    2026-08-13, green alone and green on the next full run. That is not
+    a measurement of the codebase, and letting it fail turns "the suite
+    is green" into a dice roll (the #200 lesson, one day old at the
+    time). An UNANSWERED probe skips; a probe that answers and
+    contradicts the record still fails, which is the whole point.
     """
     if drift_guard.resolve_executable(provider) is None:
         pytest.skip(f"{provider} CLI not installed on this machine")
     snap = drift_guard.behaviour_snapshot(provider, workspace=tmp_path)
     assert snap is not None
+    if snap["marker_ok"] is None:
+        pytest.skip(f"{provider} CLI did not answer its free probe "
+                    f"({snap.get('error')}) — nothing measured")
     assert snap["marker_ok"], (
         f"{provider}: {drift_guard.PROBES[provider].marker_source} no "
         f"longer matches the CLI's own output — {snap}")
     installed = drift_guard.installed_version(provider)
+    if installed is None:
+        pytest.skip(f"{provider} CLI did not answer `--version`")
     declared = caps.CAPABILITIES[provider].tested_version
     assert drift_guard.same_series(installed, declared), (
         f"{provider}: installed {installed}, record vouched at {declared} "

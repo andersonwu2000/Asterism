@@ -342,6 +342,20 @@ def behaviour_snapshot(provider: str, *,
 
     None when there is no probe or the CLI is not installed. Never
     raises: a probe that cannot run is a warning, not a failure.
+
+    `marker_ok` is TRI-STATE and the third state is the point:
+
+      True   the CLI answered and the marker still matches
+      False  the CLI answered and the marker is GONE — a detector died
+      None   the CLI never answered (timeout / OSError), so nothing was
+             measured at all
+
+    False used to cover both of the last two, which made "the vendor
+    reworded its error" and "the box was busy for ten seconds"
+    indistinguishable — production reported a DEAD SILENT detector that
+    was fine, and the live test in the suite went red for weather
+    (2026-08-13). Same collapse `QuotaProbe` was created to undo one
+    layer up; an unanswered question is not a negative answer.
     """
     name = capabilities.canonical(provider)
     probe = PROBES.get(name)
@@ -353,7 +367,7 @@ def behaviour_snapshot(provider: str, *,
     try:
         rc, out = _run([exe, *probe.argv_tail], workspace)
     except (subprocess.TimeoutExpired, OSError) as exc:
-        return {"rc": None, "marker_ok": False, "signature": [],
+        return {"rc": None, "marker_ok": None, "signature": [],
                 "error": f"{type(exc).__name__}: {exc}"}
     for src, dst in probe.redact:
         out = out.replace(src, dst)
@@ -433,6 +447,22 @@ def check(workspace: Path,
             continue
         entry["probe"] = snap
         probe = PROBES[capabilities.canonical(provider)]
+        if snap.get("marker_ok") is None:
+            # The probe never ran. Say THAT — not "the detector died".
+            # Both used to print the DEAD SILENT line, so a busy box
+            # produced a five-line indictment of a marker table nobody
+            # had touched, and the operator learned to discount the
+            # channel. Nothing below can be asked either: an empty
+            # signature would diff against the last real one and claim
+            # the wording moved.
+            warnings.append(
+                f"{provider}: the behaviour probe could not be run "
+                f"({snap.get('error')}) — NOTHING was measured this "
+                f"time, so {probe.marker_source} is neither confirmed "
+                f"nor indicted. The stored snapshot is unchanged.")
+            entry["probe"] = (stored.get(provider) or {}).get("probe", snap)
+            fresh[provider] = entry
+            continue
         if not snap.get("marker_ok"):
             warnings.append(
                 f"{provider}: the behaviour probe no longer produces "
