@@ -684,8 +684,92 @@ def _workspace_of(problem_dir: Path) -> "Path | None":
     return None
 
 
+#: Where an agy spawn's conversation goes to survive its home. Mirrors
+#: `codex_cli._TRANSCRIPT_DIRNAME` because the cause is identical: the
+#: home IS the capability envelope, so it must be per-spawn, and
+#: `.attempts/<pid>/` is rmtree'd by `WorkArea.__exit__`.
+#:
+#: WHAT THIS COST, measured 2026-08-15. Asked why the agy formalizer
+#: burned 74x the fresh input of the claude one, the answer was in agy's
+#: own per-turn store and the store was gone: of 214 surviving
+#: conversations, 122 are adversary and 43 strategist and NONE is a
+#: formalizer — every one of them predates the per-spawn home (v.
+#: 2026-08-02). The four expensive spawns were 08-07 and 08-10.
+#:
+#: The codex note next door said agy keeps its transcripts "in the CLI's
+#: OWN home, outside the framework's scratch". That was true before
+#: 08-02 and false after, and believing it is why codex got this fix in
+#: this same session while agy did not.
+_TRANSCRIPT_DIRNAME = "agy_sessions"
+
+
+def transcript_dir(workspace: Path, pipeline_id: str) -> Path:
+    return workspace / ".asterism" / _TRANSCRIPT_DIRNAME / pipeline_id
+
+
+def _preserve_transcript(req: LLMRequest, home: Path) -> None:
+    """Copy this spawn's conversation out of the doomed home; leave
+    everything else in it to die.
+
+    COPY THE -wal AND THE -shm, not just the `.db`. agy writes in WAL
+    mode and the tail of the conversation can sit entirely in the
+    sidecar: a `.db` lifted on its own opens as `database disk image is
+    malformed` — measured while trying to read the surviving stores an
+    hour before this was written, on the first file opened.
+
+    Per artifact, never all-or-nothing: one unreadable conversation must
+    not take the others down with it (`codex_cli._preserve_transcript`,
+    same paragraph, learned the same way).
+
+    The home still dies. It carries the spawn's permission surface and
+    its gateway session token, and neither should outlive the attempt.
+    Transcript survives, envelope does not."""
+    src = home / ".gemini" / "antigravity-cli" / "conversations"
+    try:
+        dbs = sorted(src.glob("*.db"))
+        if not dbs:
+            return
+        attempts = Path(req.attempts_dir)
+        dest = transcript_dir(attempts.resolve().parent.parent, attempts.name)
+        dest.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"[llm:agy] could not preserve the transcript: {exc}",
+              flush=True)
+        return
+    saved: "list[str]" = []
+    for db in dbs:
+        for suffix in (".db", ".db-wal", ".db-shm"):
+            part = db.with_suffix(suffix)
+            if not part.is_file():
+                continue
+            try:
+                shutil.copyfile(part, dest / part.name)
+            except OSError as exc:
+                print(f"[llm:agy] {part.name} not preserved: {exc}",
+                      flush=True)
+        saved.append(db.stem[:8])
+    if saved:
+        print(f"[llm:agy] transcript preserved → {dest} ({', '.join(saved)})",
+              flush=True)
+
+
 class AntigravityCliProvider:
     def spawn(self, req: LLMRequest) -> int:
+        """Preservation is the outer `finally` of every exit path.
+
+        The home is built inside the spawn and torn down with the
+        attempts dir, so this cannot sit at either end alone — and the
+        paths that most need a transcript are the ones that return
+        early: the timeout, and the spawn killed mid-thought."""
+        home_box: "list[Path]" = []
+        try:
+            return self._spawn_inner(req, home_box)
+        finally:
+            if home_box:
+                _preserve_transcript(req, home_box[0])
+
+    def _spawn_inner(self, req: LLMRequest,
+                     home_box: "list[Path]") -> int:
         exe = resolve_agy_executable()
         if not exe:
             print("[llm:agy] agy CLI not found "
@@ -705,6 +789,7 @@ class AntigravityCliProvider:
                                 "capability envelope could not be built",
                                 RC_MISCONFIGURED)
             return RC_MISCONFIGURED
+        home_box.append(home)
         prompt = self._build_prompt(req)
         # THE DEGRADATION, wired rather than merely declared. agy emits
         # ONE json envelope when it is finished and nothing before it,

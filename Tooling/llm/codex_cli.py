@@ -419,15 +419,19 @@ def _note_quota(limits: "dict | None") -> bool:
 
 
 #: Where a codex spawn's reasoning goes to survive its sandbox. Chosen
-#: to match what the other two backends already do rather than to
-#: invent something: claude keeps its transcripts in
-#: `~/.claude/projects/<munged-cwd>/*.jsonl` and agy in
-#: `~/.gemini/antigravity-cli/conversations/*.db` — in the CLI's OWN
-#: home, outside the framework's scratch, and neither is ever pruned
-#: (measured 2026-08-12: 2.7 GB / 6,310 files back to 06-10 on claude,
-#: 744 MB / 642 files on agy). codex is the odd one out only because
-#: its home has to be per-spawn (that home IS the capability envelope),
-#: and `.attempts/<pid>/` is rmtree'd by `WorkArea.__exit__`.
+#: to match claude, which keeps its transcripts in
+#: `~/.claude/projects/<munged-cwd>/*.jsonl` — the CLI's own home,
+#: outside the framework's scratch, never pruned (measured 2026-08-12:
+#: 2.7 GB / 6,310 files back to 06-10).
+#:
+#: CORRECTED 2026-08-15: this note used to name agy alongside claude and
+#: call codex "the odd one out". agy's home has been per-spawn since
+#: 2026-08-02 for the same reason codex's is — the home IS the
+#: capability envelope — so its conversations were going down with
+#: `.attempts/<pid>/` too. The 744 MB measured here on 08-12 was the
+#: pre-08-02 residue, still sitting in the global home; nothing had been
+#: added to it for ten days. Two backends had the bug and this comment
+#: is why only one was fixed. See `antigravity_cli._preserve_transcript`.
 _TRANSCRIPT_DIRNAME = "codex_sessions"
 
 
