@@ -749,11 +749,107 @@ def _register_session_internal(
     return token, None
 
 
+#: A slot whose worker holds more private bytes than this is recycled
+#: when it next falls idle and unclaimed. 0 disables.
+#:
+#: DELIBERATELY far below `gateway.lean_memory_cap_mb` (8192), because
+#: the two answer different questions and must not be collapsed:
+#:
+#:   the job cap   how much may ONE elaboration commit before the OS
+#:                 kills it — a hard ceiling against the 102 GB worker
+#:                 that took the box down on 2026-08-10.
+#:   this          how fat may a slot get ACROSS elaborations before it
+#:                 is cheaper to start it over. Soft, and it swaps a
+#:                 process rather than killing work.
+#:
+#: Measured 2026-08-14 on union_closed: baseline 0.65-0.8 GB (Mathlib +
+#: the problem's 285-brick closure), and a claimed slot serving the
+#: `decide`-heavy 634 family reached 2.58 GB in ~36 minutes and then sat
+#: flat. 1500 sits above every observed baseline and below every
+#: observed fat slot.
+SLOT_RECYCLE_MB_DEFAULT = 1500
+
+
+def _recycle_slot_if_heavy(slot: "WorkerSlot") -> None:
+    """Restart one slot's worker if it has grown fat — close the
+    document, re-open it warm.
+
+    WHEN. Only at this boundary, and only on a slot that is unclaimed
+    and not busy. That makes the timing free without having to detect
+    it: the NL layer (Strategist, Adversary, Scholar, Librarian) never
+    registers a session at all — `write_tools_mcp_config`, not
+    `_write_mcp_config` — so a debate round is minutes of Lean idleness,
+    and this lands in it by construction rather than by asking what
+    time it is.
+
+    WHY A CLOSE. `did_change_full` swaps the content and keeps the
+    process; the heap is what needs to go, so the document has to.
+
+    NOT THE OTHER TWO MECHANISMS. The job cap kills a runaway single
+    elaboration; the wedge watchdog restarts the backend when an
+    elaborate hangs past 600s — and that one, by construction, only ever
+    fires while Lean is BUSY. Neither can do this and this can do
+    neither: a slot at 2.6 GB is not wedged and not over any cap, it is
+    just expensive to keep.
+
+    Failure leaves the slot OPEN. A recycle that half-completes would
+    take a worker out of the pool for the rest of the run, which is a
+    worse outcome than any amount of memory, so the re-open is attempted
+    again on the error path and the failure is printed rather than
+    raised.
+    """
+    cap_mb = SLOT_RECYCLE_MB_DEFAULT
+    try:
+        from ..core import config as _cfg
+        cap_mb = int(_cfg.get("gateway.slot_recycle_mb",
+                              default=SLOT_RECYCLE_MB_DEFAULT,
+                              env_var="ASTERISM_SLOT_RECYCLE_MB",
+                              cast=int))
+    except Exception:  # noqa: BLE001 — a policy knob may not halt release
+        pass
+    if cap_mb <= 0 or _state.backend is None:
+        return
+    if not slot.lock.acquire(blocking=False):
+        return                      # busy: not ours to touch
+    try:
+        if slot.claimed_by is not None:
+            return                  # re-claimed between release and here
+        mb = _slot_private_mb().get(slot.slot_id)
+        if mb is None or mb < cap_mb:
+            return
+        print(f"[gateway] slot {slot.slot_id} recycling — {mb} MB private "
+              f"(> {cap_mb} MB) and idle. Its worker restarts; no session "
+              f"holds it.", file=sys.stderr, flush=True)
+        t0 = time.perf_counter()
+        try:
+            _state.backend.did_close(slot.slot_path)
+            _state.backend.did_open(slot.slot_path, WARMUP_CONTENT)
+            _state.backend.wait_for_file_done(slot.slot_uri, timeout=300)
+            after = _slot_private_mb().get(slot.slot_id)
+            print(f"[gateway] slot {slot.slot_id} recycled in "
+                  f"{time.perf_counter() - t0:.1f}s — "
+                  f"{mb} MB -> {after if after is not None else '?'} MB",
+                  file=sys.stderr, flush=True)
+        except Exception as exc:  # noqa: BLE001 — never lose a slot
+            print(f"[gateway] slot {slot.slot_id} recycle FAILED "
+                  f"({type(exc).__name__}: {exc}) — re-opening so the "
+                  f"slot stays in the pool", file=sys.stderr, flush=True)
+            try:
+                _state.backend.did_open(slot.slot_path, WARMUP_CONTENT)
+            except Exception:  # noqa: BLE001
+                print(f"[gateway] slot {slot.slot_id} could not be "
+                      f"re-opened — it will cold-warm on its next claim",
+                      file=sys.stderr, flush=True)
+    finally:
+        slot.lock.release()
+
+
 def _release_session_internal(token: str) -> None:
     """Drop session metadata and release this pipeline's claimed worker
     slot (1:1 lifecycle, #118). `content_pipeline_id` is left untouched
     — the next claim will didChange its own content in regardless, so
     clearing it eagerly buys nothing. Idempotent on unknown tokens."""
+    freed: "WorkerSlot | None" = None
     with _state.sessions_lock:
         meta = _state.sessions.pop(token, None)
         if meta is None:
@@ -763,9 +859,14 @@ def _release_session_internal(token: str) -> None:
         for slot in _state.workers:
             if slot.claimed_by == meta.pipeline_id:
                 slot.claimed_by = None
+                freed = slot
                 break
     _log_for(meta, {"event": "session_released",
                     "pipeline_id": meta.pipeline_id})
+    # OUTSIDE sessions_lock: the recycle re-warms a worker (tens of
+    # seconds) and must not hold the lock every register waits on.
+    if freed is not None:
+        _recycle_slot_if_heavy(freed)
 
 
 def _current_session() -> SessionMetadata | None:
@@ -3667,6 +3768,63 @@ async def compute_endpoint(request: Request):
                          "seconds": res.seconds, "killed": res.killed})
 
 
+def _slot_private_mb() -> "dict[int, int | None]":
+    """slot_id -> the worker's PRIVATE bytes, in MB. None = not measured.
+
+    The mapping is free and exact: Lean runs one worker per open
+    document and puts the document's URI on its own command line
+    (`lean-asterism-server --worker file:///…/_gateway_slot_3.lean`),
+    so nothing here depends on process order or on counting.
+
+    PRIVATE, never RSS. The mathlib olean region is mmap'd shared across
+    every worker, and working-set counts it once per process: measured
+    2026-08-14, five workers reported 17.93 GB of working set against
+    5.38 GB private, on a box with 11.5 GB actually in use. An earlier
+    pass at this investigation reported a 20 GB phantom for exactly that
+    reason.
+
+    Never raises and never blocks: `/health` is a liveness probe, and a
+    reader that cannot tell "the gateway is dead" from "psutil hiccuped"
+    is worse than no reading at all. A slot that cannot be measured
+    reports None — which is not zero.
+    """
+    out: "dict[int, int | None]" = {s.slot_id: None for s in _state.workers}
+    try:
+        import psutil
+        by_uri: "dict[str, int]" = {}
+        me = psutil.Process(os.getpid())
+        for proc in me.children(recursive=True):
+            try:
+                argv = proc.cmdline()
+            except (psutil.Error, OSError):
+                continue
+            if "--worker" not in argv:
+                continue
+            uri = next((a for a in argv if a.startswith("file://")), None)
+            if uri is None:
+                continue
+            try:
+                mem = proc.memory_info()
+            except (psutil.Error, OSError):
+                continue
+            # `private` is Windows-only; elsewhere USS is the same
+            # question ("pages this process alone would free").
+            priv = getattr(mem, "private", None)
+            if priv is None:
+                try:
+                    priv = proc.memory_full_info().uss
+                except (psutil.Error, OSError):
+                    continue
+            by_uri[uri] = int(priv)
+        for slot in _state.workers:
+            hit = by_uri.get(slot.slot_uri)
+            if hit is not None:
+                out[slot.slot_id] = hit // (1024 * 1024)
+    except Exception:  # noqa: BLE001 — health must answer regardless
+        pass
+    return out
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request):
     """Liveness check. Reports worker pool status + active sessions
@@ -3720,6 +3878,12 @@ async def health(request: Request):
         "sessions_active": n_sessions,
         "init_error": _state.init_error,
         "acquires": counters,
+        # Per-slot PRIVATE bytes (MB), the reading the recycle policy
+        # runs on. Until 2026-08-14 slot memory was on no surface at
+        # all: a 2.7 GB slot against a 0.67 GB baseline was found by
+        # hand-walking the process table, and could only be found that
+        # way. None = could not measure this slot.
+        "slot_private_mb": _slot_private_mb(),
         # PID so a reusing daemon can detect a stale worker-count (≠
         # dispatch.pool) and kill+relaunch this gateway to match the yaml.
         "pid": os.getpid(),

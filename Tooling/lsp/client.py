@@ -403,6 +403,23 @@ class LspClient:
             }
         })
 
+    def did_close(self, file_path: Path) -> None:
+        """Close a document — which ENDS ITS WORKER PROCESS.
+
+        Lean runs one `lean-asterism-server --worker <uri>` per open
+        document, so this is the only handle the framework has on a
+        single worker's lifetime. `did_change_full` swaps the content
+        but keeps the same process and therefore the same heap: it
+        cannot recycle memory, which is why slot recycling needs this
+        verb rather than a content swap (measured 2026-08-14).
+
+        No reply to wait for — the worker's death is asynchronous, and
+        the caller re-opens and waits on `wait_for_file_done`.
+        """
+        self.notify("textDocument/didClose", {
+            "textDocument": {"uri": Path(file_path).resolve().as_uri()},
+        })
+
     def did_change_full(self, file_path: Path, full_text: str,
                         version: int) -> None:
         _guard_metaprogramming(file_path, full_text)
