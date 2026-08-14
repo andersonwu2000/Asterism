@@ -1001,6 +1001,27 @@ def _strategist_row_is_stale(conn: sqlite3.Connection,
     _gid, problem = _strategist_target(conn, str(target_id), kind_str)
     if problem is None:
         return kind_str == "Group"
+    # A group at a terminal status holds no seat — `db.groups_needing_t1`
+    # has said so since v35 and filters the periodic clock on it. The
+    # EVENT path never learned it: `maybe_enqueue_inject_batch_done`
+    # wakes whichever group authored the settling batch, and a group that
+    # Ingested while one of its own Injects was still in flight gets
+    # woken by that Inject landing. It then plans a fresh batch on a
+    # charter it has already delivered, and the judge passes it, having
+    # no way to know the group left.
+    #
+    # Measured 2026-08-13/14 on union_closed: groups 383 and 381 ran two
+    # post-delivery batches each — four batches, five adversary rounds,
+    # on charters whose parents had already consumed the bricks. One fact
+    # ("terminal groups do not dispatch") with two homes, and only the
+    # clock knew it. This is the door every dispatch passes.
+    if kind_str == "Group":
+        from ..state import groups as _groups
+        row = conn.execute(
+            "SELECT status FROM groups WHERE id = ?",
+            (str(target_id),)).fetchone()
+        if row is not None and str(row["status"]) in _groups.TERMINAL_STATUSES:
+            return True
     return db.problem_ingested(conn, problem)
 
 

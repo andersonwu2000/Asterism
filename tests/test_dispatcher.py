@@ -1048,6 +1048,42 @@ def test_strategist_row_is_stale(conn: sqlite3.Connection) -> None:
                                     "Strategist") is False
 
 
+def test_a_terminal_group_holds_no_seat(conn: sqlite3.Connection) -> None:
+    """`groups_needing_t1` has filtered the periodic clock on `active`
+    since v35. The EVENT path never learned it: a group that Ingests
+    while one of its own Injects is still in flight gets woken by that
+    Inject landing (`maybe_enqueue_inject_batch_done` wakes whichever
+    group authored the batch), plans a fresh batch on a charter it has
+    already delivered, and the judge passes it — it has no way to know
+    the group left.
+
+    Measured 2026-08-13/14 on union_closed: groups 383 and 381 ran two
+    post-delivery batches EACH. This is the door every dispatch passes,
+    so this is where the fact belongs."""
+    from Tooling.core.dispatcher import _strategist_row_is_stale
+    from Tooling.state import groups as _groups
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at,"
+        " bootstrap_done) VALUES ('q', 'Problems/q/Manifest.md', ?, 1)",
+        (db.now(),))
+    top = _groups.ensure_top_group(conn, "q")
+    sub = _groups.open_group(conn, problem="q", parent_group_id=top,
+                             charter="settle X")
+    assert _strategist_row_is_stale(conn, str(sub), "Strategist",
+                                    "Group") is False
+    for terminal in ("delivered", "returned", "closed"):
+        conn.execute("UPDATE groups SET status = ? WHERE id = ?",
+                     (terminal, sub))
+        assert _strategist_row_is_stale(
+            conn, str(sub), "Strategist", "Group") is True, terminal
+    # The top group is not exempt from the rule, only from ever being
+    # terminal while the problem is live — and a live sub-group stays
+    # dispatchable, which is the half that must not regress.
+    conn.execute("UPDATE groups SET status = 'active' WHERE id = ?", (sub,))
+    assert _strategist_row_is_stale(conn, str(sub), "Strategist",
+                                    "Group") is False
+
+
 def test_attempt_owner_alive(tmp_path: Path) -> None:
     """#90 liveness probe: live owner_pid → True; dead pid or missing
     manifest → False (orphan, safe to clean)."""

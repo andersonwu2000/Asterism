@@ -418,11 +418,34 @@ def assert_main_thread(caller: str) -> None:
     print(msg, flush=True)
 
 
+#: Self-edges that are NOT idempotent, because ARRIVING is the event.
+#: Reaching a terminal group status fills the opening `Delegate`'s
+#: outcome and wakes the parent (`groups.set_status`), so a second
+#: arrival wakes the parent a second time about a delivery it already
+#: consumed — the exact "parent already woken while its child runs on"
+#: that `GROUP_EDGES` says it exists to make unrepresentable. It was
+#: representable: `_check` waved every `frm == to` through without
+#: consulting the table, and groups 381 and 383 each delivered twice on
+#: 2026-08-13/14.
+NON_IDEMPOTENT_SELF: "frozenset[tuple[str, str]]" = frozenset(
+    ("group", s) for s in ("delivered", "returned", "closed"))
+
+
 def _check(entity: str, frm: str | None, to: str,
            edges: "frozenset[tuple[str, str]]", event: str) -> None:
+    if frm is not None and frm == to and (entity, to) in NON_IDEMPOTENT_SELF:
+        msg = (f"[transition-violation] {entity} {frm!r} -> {to!r} "
+               f"(event={event or '?'}) REPEATS a terminal arrival — the "
+               f"first one already notified upstream")
+        if _strict():
+            raise IllegalTransition(msg)
+        print(msg, flush=True)
+        return
     if frm is None or frm == to:
         # Row absent (caller will no-op the write anyway) or idempotent
-        # self-edge — always permitted.
+        # self-edge — permitted unless arriving is itself the event
+        # (`NON_IDEMPOTENT_SELF`). `goal proved -> proved` is the case
+        # this exemption was written for and keeps.
         return
     if (frm, to) not in edges:
         msg = (f"[transition-violation] {entity} {frm!r} -> {to!r} "

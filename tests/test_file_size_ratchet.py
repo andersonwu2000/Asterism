@@ -261,7 +261,15 @@ _WATERMARKS = {
     # (a fourth number, so it goes with the other numbers), the
     # success-branch line that returns the credit, and the two-line
     # widening of the exit block. Conscious bump.
-    "Tooling/core/dispatcher.py": 2893,
+    # 2893→2914 (2026-08-14): the door learns that a TERMINAL GROUP holds
+    # no seat. `groups_needing_t1` has filtered the periodic clock on
+    # `active` since v35 and the event relay never learned it, so groups
+    # 383 and 381 each ran two batches on charters they had already
+    # delivered. The check goes at the pop-loop door because that is the
+    # one place every dispatch passes; anywhere else needs a copy per
+    # enqueuer, which is the shape this day was spent removing.
+    # Conscious bump.
+    "Tooling/core/dispatcher.py": 2914,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
@@ -299,7 +307,13 @@ _WATERMARKS = {
     # 1750→1755 (2026-08-13): GOAL_FAILED_TERMINALS derived view — the
     # {"disproved","dead"} predicate was hand-copied in four modules;
     # its declaration belongs in the vocabulary's home. Conscious bump.
-    "Tooling/state/transitions.py": 1755,
+    # 1755→1776 (2026-08-14): `NON_IDEMPOTENT_SELF` — a self-edge is
+    # idempotent only when arriving is not itself the event. Reaching a
+    # terminal GROUP status notifies the parent, so a second arrival
+    # notifies twice; `_check` had been waving every `frm == to` past the
+    # table that says this is the one thing it exists to forbid.
+    # Conscious bump.
+    "Tooling/state/transitions.py": 1776,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.

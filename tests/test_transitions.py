@@ -154,6 +154,41 @@ def test_revive_cli_reenters_revoked(tmp_path: Path,
     c.close()
 
 
+def test_a_terminal_group_arrival_does_not_repeat(
+    conn: sqlite3.Connection, capsys,
+) -> None:
+    """`GROUP_EDGES` says a resurrection is "the class this table exists
+    to make unrepresentable" — and `_check` waved every `frm == to`
+    through without ever consulting the table, so the second arrival was
+    free. Groups 381 and 383 each delivered TWICE on 2026-08-13/14: the
+    second `set_status('delivered')` re-ran the terminal side effects,
+    which fill the opening `Delegate`'s outcome and wake the parent
+    about a delivery it had already consumed.
+
+    ARRIVING is the event, so the arrival is not idempotent. `goal
+    proved -> proved` is what the exemption was written for and keeps
+    it."""
+    from Tooling.state import groups as _groups, transitions as _t
+    conn.execute(
+        "INSERT OR IGNORE INTO problems (name, manifest_path, created_at)"
+        " VALUES ('gterm', 'Manifest.md', ?)", (db.now(),))
+    top = _groups.ensure_top_group(conn, "gterm")
+    sub = _groups.open_group(conn, problem="gterm", parent_group_id=top,
+                             charter="c")
+    _groups.set_status(conn, sub, "delivered", event="group_delivered")
+    # Tests run strict (`conftest` sets ASTERISM_STRICT_TRANSITIONS), so
+    # the violation raises here and prints in production — the same
+    # split every other edge in this table gets.
+    with pytest.raises(transitions.IllegalTransition, match="REPEATS"):
+        _groups.set_status(conn, sub, "delivered", event="group_delivered")
+
+    # The exemption the rule keeps: a goal re-reaching 'proved' is a
+    # genuine no-op and must stay silent.
+    capsys.readouterr()
+    _t._check("goal", "proved", "proved", _t.GOAL_EDGES, "reproved")
+    assert "transition-violation" not in capsys.readouterr().out
+
+
 def test_wake_legality_matrix_covers_all_states():
     """FSM P3: every problem state has a matrix row; only 'active'
     accepts wakes, and its row is exactly the trigger vocabulary."""
