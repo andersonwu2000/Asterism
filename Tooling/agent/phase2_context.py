@@ -672,9 +672,36 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     # one wall the strategist already reads — bounded to 5 entries.
     decline_lines = _recent_decline_lines(conn, problem)
     batch_ids = db.unacknowledged_inject_batches(conn, problem, group_id)
+    # WORK STILL RUNNING IS NOT WORK THAT VANISHED. This section lists
+    # batches that have fully terminated, so a batch with a spawn still
+    # in flight appears nowhere — and "in flight" then reads exactly
+    # like "lost". Both readers of this section paid for that: the
+    # Strategist re-dispatched what was already running, and the judge
+    # spent a whole round reconstructing chronology by hand (08-12/13,
+    # the largest cluster in that week's feedback). One line, from the
+    # rows the DB already has.
+    try:
+        live = list(conn.execute(
+            "SELECT batch_id, COUNT(*) n FROM strategist_decisions"
+            " WHERE problem = ? AND outcome IS NULL AND batch_id IS NOT NULL"
+            " GROUP BY batch_id ORDER BY MAX(updated_at) DESC", (problem,)))
+    except sqlite3.OperationalError:
+        live = []
+    in_flight = [f"`{str(r['batch_id'])[:8]}` ({r['n']} step(s))"
+                 for r in live]
     if not batch_ids:
+        if in_flight:
+            return (["## Dispatched, still running", "",
+                     "Not finished, and therefore not below: "
+                     + ", ".join(in_flight)
+                     + ". Their outcomes reach you on the batch-done "
+                       "wake — do not re-dispatch them.", ""]
+                    + decline_lines)
         return decline_lines
     out = ["## Completed Inject batches (newest first)", ""]
+    if in_flight:
+        out += ["_Still running, so not listed below: "
+                + ", ".join(in_flight) + "._", ""]
     placeholders = ",".join("?" * len(batch_ids))
     # Inject rows only: every wake's decisions share the batch_id, so
     # ConfirmShelve/EmitDirective siblings used to render as brief-less
@@ -1198,7 +1225,8 @@ def _section_failure_replay(conn: sqlite3.Connection,
             f"trigger={r['trigger_kind']} → "
             f"`{r['decision_kind']}`"
             + (f" target={r['target_id']}" if r['target_id'] else "")
-            + (f" outcome={r['outcome']}" if r['outcome'] else "")
+            + (f" outcome={r['outcome']}" if r['outcome']
+               else "  [IN FLIGHT — dispatched, no result yet]")
         )
         if r["reason"]:
             reason = str(r["reason"])

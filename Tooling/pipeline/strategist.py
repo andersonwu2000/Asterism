@@ -891,15 +891,30 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
         within one batch — contradictory intent, almost certainly an
         agent error. Order independent: either ordering is rejected.
 
-    Returns '' if all pass, an error message otherwise (first failure
-    short-circuits). Caller must abort the commit when this returns
-    non-empty — `commit_decisions` assumes verify passed.
+    Returns '' if all pass, otherwise EVERY per-decision failure in one
+    message. Caller must abort the commit when this returns non-empty —
+    `commit_decisions` assumes verify passed.
+
+    It used to stop at the first one, so a batch with three defects cost
+    three wakes to learn three sentences the verifier already knew on
+    the first pass (08-13 strategist report). The author cannot see
+    these checks; the round trip is the only channel, and metering it
+    one rejection at a time is the framework charging for its own
+    silence. Cross-decision checks still run only on a clean set —
+    their premise is that each decision is individually valid.
     """
+    failures: "list[str]" = []
     for i, d in enumerate(decisions):
         err = verify_decision(d, conn, problem=problem,
                               group_id=group_id, workspace=workspace)
         if err:
-            return (f"decision #{i}: {err}" if len(decisions) > 1 else err)
+            failures.append(
+                f"decision #{i}: {err}" if len(decisions) > 1 else err)
+    if failures:
+        if len(failures) == 1:
+            return failures[0]
+        return (f"{len(failures)} decisions were rejected — fix all of "
+                f"them in the next batch:\n" + "\n".join(failures))
 
     # Cross-decision: no ConfirmShelve(G) + goal-targeted Inject(
     # target=G) pair. The Inject force-reopens G (shelved /
