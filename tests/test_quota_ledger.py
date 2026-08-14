@@ -199,6 +199,56 @@ def test_probed_and_observed_blocks_coexist(monkeypatch):
     assert led.blocked("claude", "claude-opus-5") is None
 
 
+def test_an_endpoint_answer_supersedes_the_guess_it_parsed(monkeypatch):
+    """The 2026-08-14 stall, as a test.
+
+    A refusal sentence carries a reset time; `observe()` stores it. That
+    time is a GUESS about the vendor. When the same provider also
+    answers an endpoint, the endpoint is the better clock — and after an
+    account switch it is the only one that knows. Without this, the
+    daemon printed "resuming dispatch early" (the endpoint had answered)
+    and then dispatched nothing for twenty minutes, silently, because
+    the parsed hold was still standing."""
+    caps = {"blocked": True}
+    monkeypatch.setattr(quota, "_PROBES", {
+        "claude": lambda: ([Block("claude", None, 9e9)]
+                           if caps["blocked"] else [])})
+    led = Ledger(ttl=0.0, clock=lambda: 1_000.0)
+    led.observe("claude", None, until=9e9, detail="reopens 05:40 UTC")
+    assert led.blocked("claude", "claude-opus-5") is not None
+
+    caps["blocked"] = False          # ← the account switch
+    assert led.blocked("claude", "claude-opus-5") is None, (
+        "the parsed refusal outlived the endpoint that superseded it")
+
+
+def test_an_endpoint_that_still_says_capped_keeps_the_observed_hold(
+    monkeypatch,
+):
+    """The release is driven by the endpoint's ANSWER, not by the mere
+    fact that it replied. A provider still reporting a cap must not have
+    its observed hold dropped out from under it."""
+    monkeypatch.setattr(quota, "_PROBES",
+                        {"claude": lambda: [Block("claude", None, 9e9)]})
+    led = Ledger(ttl=0.0, clock=lambda: 1_000.0)
+    led.observe("claude", None, until=9e9)
+    assert led.blocked("claude", "claude-opus-5") is not None
+
+
+def test_a_silent_provider_keeps_its_parsed_ttl(monkeypatch):
+    """`_no_endpoint`'s argument, kept: agy cannot be confirmed clear by
+    anyone, so its own TTL is the only honest clock it has and nothing
+    may shorten it. A probe that returns None is 'nobody answered' — not
+    an all-clear."""
+    monkeypatch.setattr(quota, "_PROBES", {"antigravity": lambda: None})
+    now = {"t": 1_000.0}
+    led = Ledger(ttl=0.0, clock=lambda: now["t"])
+    led.observe("antigravity", None)
+    assert led.blocked("antigravity", "gemini-3.6-flash-high") is not None
+    now["t"] += Ledger.OBSERVED_TTL_SEC + 1
+    assert led.blocked("antigravity", "gemini-3.6-flash-high") is None
+
+
 def test_every_dispatchable_seat_maps_to_its_queue_kind():
     """The bug this pins, found in production within an hour of shipping
     (2026-08-07): the ledger answers in SEAT names (config keys,

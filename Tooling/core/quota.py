@@ -233,10 +233,14 @@ def _no_endpoint() -> "list[Block] | None":
     confirmation nobody gave it — not agy being treated unfairly. The
     cure is an endpoint, not a heuristic.
 
-    Which is also why its holds are never released early by
-    `confirmed_clear`: an `observe()` block on such a provider carries
-    its own TTL and expires on its own, and that TTL is the only honest
-    clock available for it.
+    Which is also why its holds are never released early: an `observe()`
+    block on such a provider carries its own TTL and expires on its own,
+    and that TTL is the only honest clock available for it. A provider
+    that DOES answer an endpoint is the other case — `Ledger.refresh`
+    drops its observed blocks the moment the endpoint says clear, since
+    there the parsed TTL is a guess with a better answer standing next
+    to it. That rule was missing until 2026-08-14 and cost a live run
+    its recovery from an account switch.
     """
     return None
 
@@ -409,6 +413,27 @@ class Ledger:
         else:
             self._probed = [b for b in self._probed
                             if b.until is None or b.until > now]
+        # An observed block is a TTL parsed out of a refusal sentence —
+        # a guess about when the vendor will let us back in. For a
+        # provider that also answers an endpoint, the endpoint is the
+        # better clock, and when it says this surface is clear the guess
+        # is superseded. Endpoint-less providers keep the guess, which
+        # is the whole argument in `_no_endpoint`: their TTL is the only
+        # honest clock they have.
+        #
+        # 2026-08-14, measured: an account switch restored claude's
+        # quota, `quota_wait`'s endpoint probe saw it and printed
+        # "resuming dispatch early" — and dispatch did not resume,
+        # because the observed block parsed from the earlier refusal
+        # ("reopens 05:40 UTC") still stood. The daemon sat awake
+        # dispatching nothing, in silence, because `report_block_changes`
+        # speaks only on change and nothing had changed. Two clocks for
+        # one fact; only one of them could be told the news.
+        if self._answered:
+            self._observed = [
+                b for b in self._observed
+                if b.provider not in self._answered
+                or any(p.covers(b.provider, b.model) for p in self._probed)]
         self._blocks = self._probed + self._observed
         return self._blocks
 
