@@ -1169,13 +1169,21 @@ def test_projection_ships_the_strategists_context_verbatim(
     # nothing rewritten, so every quotation stays checkable.
     assert shipped.endswith(body)
     # Above it, a framework label naming what this file is (2026-08-07):
-    # a snapshot frozen at spawn, shipped next to LIVE TREE/CATALOG. The
-    # judge fired criterion 5 on that gap 5× in one run and said so in
-    # its own feedback; same move as the PROGRAMME weld label.
+    # a snapshot frozen at spawn. The judge fired criterion 5 on that
+    # gap 5× in one run and said so in its own feedback; same move as
+    # the PROGRAMME weld label.
+    #
+    # This used to also assert "live files are authoritative", which is
+    # how a wrong sentence became a contract: `TREE.md` in the
+    # projection is a COPY taken at round start, so the label was
+    # ranking the STALER render above the record and the test was
+    # holding it there (2026-08-15). What the label owes the judge is
+    # the age of each file and a pointer to the thing that is actually
+    # live; `test_no_false_liveness_claims.py` pins that.
     label = shipped[:-len(body)]
     assert "Framework label" in label
     assert "SNAPSHOT" in label
-    assert "live files are authoritative" in label
+    assert "live files are authoritative" not in label
 
 
 def test_projection_without_a_context_file_is_not_an_error(

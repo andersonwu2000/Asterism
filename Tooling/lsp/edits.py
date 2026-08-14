@@ -34,6 +34,49 @@ CLOSEST_CONTEXT_CHARS = 400
 #: Cap on match locations listed for an ambiguous anchor.
 MAX_AMBIGUOUS_SHOWN = 6
 
+#: What continues a Lean name. NOT `\w`: the incident this exists for is
+#: an anchor `end Problems` binding inside
+#: `end Problems.Combinatorics.union_closed`, where the character on the
+#: boundary is a DOT. An ASCII word boundary lets the dot through and
+#: the bug survives its own fix. Lean identifiers also carry `_`, `'`,
+#: `!`, `?`, subscripts and Greek letters, so the test is "does the
+#: character continue a name", not "is it alphanumeric".
+_NAME_CHAR = re.compile(r"[^\W]|['ʼ_.!?₀-₉ₐ-ₜͰ-Ͽᴀ-ᵿ]",
+                        re.UNICODE)
+
+
+def _continues_a_name(ch: str) -> bool:
+    return bool(ch) and bool(_NAME_CHAR.match(ch))
+
+
+def _splits_a_name(content: str, at: int, needle: str) -> "str | None":
+    """The full name an anchor edge lands inside, or None.
+
+    A match is only the text the agent named if neither end sits in the
+    middle of an identifier. When one does, the tool used to edit a span
+    the agent never described AND REPORT SUCCESS — `end Problems`
+    resolved against `end Problems.Combinatorics.union_closed`, the span
+    stopped 13 characters early, and `.Combinatorics.union_closed` was
+    left dangling in the file with a clean verdict on top of it.
+
+    Returns the offending whole name so the refusal can quote it: a
+    refusal that says only "no" costs the same round trip as a wrong
+    edit and teaches less."""
+    lo, hi = at, at + len(needle)
+    left_bad = (_continues_a_name(content[lo - 1:lo])
+                and _continues_a_name(needle[:1]))
+    right_bad = (_continues_a_name(content[hi:hi + 1])
+                 and _continues_a_name(needle[-1:]))
+    if not (left_bad or right_bad):
+        return None
+    s = lo
+    while s > 0 and _continues_a_name(content[s - 1]):
+        s -= 1
+    e = hi
+    while e < len(content) and _continues_a_name(content[e]):
+        e += 1
+    return content[s:e]
+
 
 @dataclass(frozen=True)
 class Span:
@@ -134,6 +177,13 @@ def _find_unique(content: str, needle: str, index: int, label: str,
         if len(hits) > MAX_AMBIGUOUS_SHOWN:
             break
         at = content.find(needle, at + 1)
+    if len(hits) == 1:
+        whole = _splits_a_name(content, hits[0], needle)
+        if whole is not None:
+            raise EditError(
+                index,
+                f"{label} matches inside `{whole}` — the edit would take a "
+                f"span you did not name. Anchor on the whole name.")
     if not hits:
         closest = _closest_region(content[start:], needle)
         raise EditError(

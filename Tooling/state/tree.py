@@ -158,6 +158,12 @@ def _walk_goal(conn: sqlite3.Connection, goal_id: int,
             )
 
 
+def _stamp() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
 def render(conn: sqlite3.Connection, problem: str) -> str:
     """Build the TREE.md content for `problem` — the full tree, every
     node expanded. Returns the string; caller decides where to write it.
@@ -184,7 +190,14 @@ def render(conn: sqlite3.Connection, problem: str) -> str:
     lines = [
         f"# {problem} — TREE",
         "",
-        "_Auto-updated by dispatcher on every cascade._",
+        # AS-OF, not just provenance. Several readers compare this
+        # file against a live `inspect`, and one of them is a judge
+        # deciding a verdict; with no timestamp a disagreement
+        # reads as a defect in whoever quoted the other one
+        # (08-13 judge report).
+        f"_Written {_stamp()} by the dispatcher, which rewrites it"
+        f" on every cascade. The record is the DB —"
+        ' `inspect({"decl": "<slug>"})` reads it live._',
         "",
     ]
     visited: set[int] = set()

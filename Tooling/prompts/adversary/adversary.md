@@ -10,7 +10,7 @@ Tools: Read / Grep / Write / `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"dec
 - `decisions.md` — this batch's decisions (its experiments among them); goal targets are annotated `(slug, status)`.
 - `directive.md` (if present) — the operator's standing directive for this problem (human-written); context, not a criterion.
 - `Root.lean` / `Defs.lean` (if present) — the formal statement and definitions. **Check claims about the formal goal against these, not the Manifest's prose.**
-- `TREE.md` (if present) — the live goal tree (names + statuses); check tree-shape and status claims here.
+- `TREE.md` (if present) — the goal tree (names + statuses) as it stood when this round started; check tree-shape and status claims here, and `inspect({"decl": "<slug>"})` when a status decides your verdict — that reads the record itself.
 - `{proofs_dir}` — the problem's landed proof files, all of them, readable in place. **A renamed/RETARGETED dispute is decided by these files, not by quotation.**
 - `{papers_dir}` — the fetched papers (each `Papers/<id>/` holds `text.md` + `map.md` + `meta.json`). **A faithfulness-to-the-paper claim is decided against these files, not by quotation.**
 - `CATALOG.md` (if present) — the proved-brick inventory; grep it to check "X already landed" claims.

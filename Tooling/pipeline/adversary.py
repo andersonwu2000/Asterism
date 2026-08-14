@@ -228,8 +228,12 @@ def build_projection(*, round_no: int, attempts_dir: Path,
         # Label it, same move as the PROGRAMME weld below and for the
         # same reason: judged against the wrong referent it manufactures
         # defects. This file is the author's snapshot, frozen when the
-        # wake spawned; `TREE.md` / `CATALOG.md` beside it are LIVE and
-        # rebuilt every round. A long debate (7 and 10 rounds, 60-90min,
+        # wake spawned; `CATALOG.md` beside it is regenerated every
+        # round and `TREE.md` is a COPY of a file the dispatcher writes
+        # on cascades, so it can trail the record too — the label says
+        # so rather than calling either of them live (08-15: the label
+        # pointed the judge at the staler of two renders and called it
+        # authoritative). A long debate (7 and 10 rounds, 60-90min,
         # 2026-08-06) widens that gap monotonically while sibling groups
         # land bricks, and the judge then fires criterion 5 on "roadmap
         # says landed, TREE says open" — a contradiction the packet
@@ -247,13 +251,16 @@ def build_projection(*, round_no: int, attempts_dir: Path,
         (proj / "Context.md").write_text(
             "_(Framework label — not part of the file. This is the"
             f" author's context SNAPSHOT, taken {_taken} when the wake"
-            " spawned; it is what the author saw. `TREE.md` and"
-            " `CATALOG.md` in this projection are LIVE, rebuilt for this"
-            " round. Where the two disagree about what has landed, the"
-            " live files are authoritative and the difference is this"
-            " packet's timing — not a defect in the proposal. Judge the"
-            " proposal's claims against the live files; use this"
-            " snapshot to check what the author quotes.)_\n\n"
+            " spawned; it is what the author saw. `CATALOG.md` is"
+            " regenerated for this round; `TREE.md` is a COPY of the"
+            " problem's tree file as it stood when this round"
+            " started, and that file is itself written by the"
+            " dispatcher on cascades, so it can trail the record."
+            " Where they disagree about what has landed, later is"
+            " closer to the truth and the difference is this"
+            " packet's timing, not a defect in the proposal. When a"
+            " status decides your verdict, ask the record:"
+            " `inspect({\"decl\": \"<slug>\"})` reads it live.)_\n\n"
             + ctx.read_text(encoding="utf-8"), encoding="utf-8")
     # CATALOG.md is lazily machine-generated per assembly and never
     # lives in problem_dir — generate it into the projection directly
