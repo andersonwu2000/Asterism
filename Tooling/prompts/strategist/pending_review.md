@@ -38,15 +38,18 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
     # <Title>       one line: this batch's goal
     ## Argument     why achieving the Manifest's requirement needs this plan — grounded in the latest outcomes
     ## Proof        this batch's mathematics, written as a mathematician writes proofs: a complete
-                    argument for every claim this batch dispatches. No gaps here — an unclosed
-                    claim belongs in the Roadmap, not the Proof. The worker's only share is the
-                    Lean shape. Write the whole argument here first, then copy each
-                    brick's part into its Inject's `proof`. (Nothing new to argue →
+                    argument for every claim this batch dispatches. Nothing unproven here —
+                    an unclosed claim belongs in AHEAD, not the Proof. The worker's only
+                    share is the Lean shape. Write the whole argument here first, then copy
+                    each brick's part into its Inject's `proof`. (Nothing new to argue →
                     the single line "No new mathematics this batch.")
-    ## Roadmap      the route, and how it settles the MAIN claim; the ONLY home for gaps: ordered next goals and open questions
-                    with their status and the plan to close them — near entries brief-ready, far
-                    entries coarse; a closure names the exact instantiation that died AND a
-                    restart condition the system itself can produce
+    ## Roadmap      how this route settles the MAIN claim, in three bullet bands:
+                    PAST — closures (each: the dead instantiation + a restart condition
+                    the system itself can produce);
+                    NOW — dispatched work and brief-ready next goals, flagging what is
+                    argued but not yet kernel-checked;
+                    AHEAD — candidates, open questions, the exit — near detailed, far coarse.
+                    Cite entries by phrase — revisions reorder.
     ## Conventions  optional: standing guidance every worker sees on every spawn —
                     conventions and footguns, short and general; revise or drop freely
 
@@ -54,10 +57,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 
 **Write for the record, not the reviewer** — fold accepted criticisms into corrected text; no round numbers, no concession notes, no adversary attribution.
 
-- Every Inject is proven in the Proof — inject only what is fully argued; anything short of rigorous closure stays in the Roadmap awaiting a later batch, or goes to a `Delegate`. The `proof` field carries the argument that settles it; the worker settles the Lean shape — the claim must not drift.
-- Boldness lives in the Roadmap — name candidate constructions and hypotheses there, labeled as hypotheses; rigor lives in the Proof — a candidate enters it only once its argument is closed.
-- Name Roadmap entries by phrase, never by position — numbers change as revisions reorder entries.
-- Mark formal↔informal claims not yet kernel-checked in the Roadmap.
+- Every Inject is proven in the Proof — inject only what is fully argued; anything short of rigorous closure stays in AHEAD awaiting a later batch, or goes to a `Delegate`. The `proof` field carries the argument that settles it; the worker settles the Lean shape — the claim must not drift.
 - Every route-moving batch carries ≥1 experiment — an Inject or a `Delegate` (Ingest batches exempt). Retiring work is not an experiment.
 - Before submitting, re-check your ## Proof for correctness: every step's direction and quantifier scope, and any step that assumes structure the hypothesis does not give.
 

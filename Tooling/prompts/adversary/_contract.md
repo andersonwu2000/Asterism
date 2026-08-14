@@ -22,10 +22,7 @@ The decision-kind rules the Strategist operates under — check quoted contract 
 
 Standing rules the batch itself must satisfy — same source, same words:
 
-- Every Inject is proven in the Proof — inject only what is fully argued; anything short of rigorous closure stays in the Roadmap awaiting a later batch, or goes to a `Delegate`. The `proof` field carries the argument that settles it; the worker settles the Lean shape — the claim must not drift.
-- Boldness lives in the Roadmap — name candidate constructions and hypotheses there, labeled as hypotheses; rigor lives in the Proof — a candidate enters it only once its argument is closed.
-- Name Roadmap entries by phrase, never by position — numbers change as revisions reorder entries.
-- Mark formal↔informal claims not yet kernel-checked in the Roadmap.
+- Every Inject is proven in the Proof — inject only what is fully argued; anything short of rigorous closure stays in AHEAD awaiting a later batch, or goes to a `Delegate`. The `proof` field carries the argument that settles it; the worker settles the Lean shape — the claim must not drift.
 - Every route-moving batch carries ≥1 experiment — an Inject or a `Delegate` (Ingest batches exempt). Retiring work is not an experiment.
 - Same-batch Injects must be independent (concurrent dispatch); one that waits, even through a parked goal, stays `ConfirmShelve`d for the next batch.
 - The mathematics — claims, arguments, lemma names, invariant constructions, proof techniques — is yours. Tactics, Lean syntax, statement shape (ranges, off-by-ones, constants) are the worker's.

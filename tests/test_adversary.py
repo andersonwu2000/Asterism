@@ -920,13 +920,18 @@ def test_contract_standing_rules_are_real_wake_rules() -> None:
     """The guard above stops at the `target_goal_id` line, so it reads
     the decision-kind half of the judge's copy and nothing else. Below
     that sits `Standing rules the batch itself must satisfy — same
-    source, same words`: seven bullets the judge cites when it fires,
-    and until 2026-08-14 no test compared any of them to anything.
+    source, same words`: the bullets the judge cites when it fires, and
+    until 2026-08-14 no test compared any of them to anything.
 
     They were all still verbatim when this was written — but "correct
     today" is what an unguarded copy always looks like right up to the
     edit that splits it, and the judge quoting a clause the Strategist
     was never given is a rebuttal the Strategist cannot act on.
+
+    The floor was 6 and is 4: the Roadmap's three time bands absorbed
+    three bullets whose whole content was a band (2026-08-14). Lower it
+    only alongside a deletion you meant — its job is to fail when the
+    section moves and the parse silently finds nothing.
     """
     import re as _re
     root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
@@ -944,7 +949,7 @@ def test_contract_standing_rules_are_real_wake_rules() -> None:
     tail = tail.split("\n\n`ReturnToParent`", 1)[0]
     bullets = [b.strip("\n") for b in _re.split(r"\n(?=- )", tail)
                if b.strip().startswith("- ")]
-    assert len(bullets) >= 6, (
+    assert len(bullets) >= 4, (
         f"only {len(bullets)} standing rules parsed — the section moved, "
         f"and a guard that parses nothing passes everything")
     for b in bullets:
