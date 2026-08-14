@@ -2913,12 +2913,23 @@ def validate_file(content: str = "") -> str:
                 # swallow into a clean verdict — record it so the response
                 # reports indeterminate, not a false ok:true (#102).
                 timed_out = True
-            diags = backend.diagnostics_for(slot.slot_uri)
-            # validate_file's content isn't the session's "real" mirror,
-            # just a probe. Clear content_pipeline_id so the next tool
-            # call (still on this claimed slot) didChanges back to the
-            # session's `file_content`.
-            slot.content_pipeline_id = None
+            try:
+                diags = backend.diagnostics_for(slot.slot_uri)
+            finally:
+                # validate_file's content isn't the session's "real"
+                # mirror, just a probe. Clear content_pipeline_id so the
+                # next tool call (still on this claimed slot) didChanges
+                # back to the session's `file_content`.
+                #
+                # IN A `finally` BECAUSE THE SLOT IS ALREADY DIRTY. The
+                # candidate text went in at `did_change_full` above; if
+                # anything after that raises, the outer handler reports
+                # the failure and the slot keeps the CANDIDATE text
+                # under the SESSION's ownership marker — every later
+                # `errors_at` then serves the probe's diagnostics as the
+                # file's, hot, until something else invalidates. Nothing
+                # here is allowed to skip the disown.
+                slot.content_pipeline_id = None
     except Exception as exc:  # noqa: BLE001 — reported, not swallowed
         # `ok: false` with zero diagnostics and no reason reads, to an
         # agent, as "your file is broken and I won't say where". Every

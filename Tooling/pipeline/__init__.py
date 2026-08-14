@@ -83,7 +83,21 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
     import urllib.request as _u
     import urllib.error as _ue
     config_path = attempts_dir / "_mcp_config.json"
-    log_path = attempts_dir / "_mcp.jsonl"
+    # OUTSIDE the attempts dir, which is rmtree'd at cleanup. This is the
+    # per-call record of every gateway tool the spawn used — slot kind,
+    # convergence, timings — and nothing reads it back, so its only
+    # purpose is being there afterwards. It used to live beside the
+    # config: on 2026-08-15 a defect that produced 59 agent reports over
+    # two days had to be diagnosed from feedback prose alone, because not
+    # one of the 59 incidents had left a machine-readable trace. Same
+    # class as the provider transcripts moved out on the same day.
+    log_dir = workspace / ".asterism" / "mcp_logs"
+    log_path = log_dir / f"{pipeline_id}.jsonl"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # Best-effort: a log we cannot place must not stop a spawn.
+        log_path = attempts_dir / "_mcp.jsonl"
     token_file = attempts_dir / "_gateway_session.token"
     from ..core import config as _cfg
     gateway_port = _cfg.get(
