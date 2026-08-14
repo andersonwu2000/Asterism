@@ -129,20 +129,35 @@ def validate_json(text: str = "") -> str:
 def inspect(queries: list = None) -> str:
     """Ask several questions about the files here, in one call.
 
-    Each query is an object; results come back labelled and capped.
+    Each query is an object; results come back labelled.
 
         [{"decl":  "uc_four_set_deficit"},
+         {"read":  "Context.md", "sections": ["Programme"]},
+         {"read":  "Manifest.md", "outline": true},
          {"grep":  "BoundedOrder", "in": "proofs/*.lean", "context": 3},
-         {"read":  "CATALOG.md", "lines": "380-420"},
+         {"read":  "patch.lean", "lines": "380-420"},
          {"find":  "*deficit*.lean"},
          {"size":  "proofs/*.lean"}]
+
+    ASK EVERYTHING YOU NEED IN ONE CALL. Each query gets its own full
+    budget — a second question never shrinks the answer to the first —
+    and a round trip costs far more than an extra query does.
+
+    READ BY THE SECTION. `sections` takes heading text (`## Programme`
+    → "Programme") and returns that heading with everything under it.
+    The framework's documents — Context.md, Manifest.md, PROGRAMME.md,
+    CATALOG.md, decisions.md — are written with stable headings, so this
+    is the cheap way to read them; naming a section you already know
+    beats paging. `outline: true` returns the map (headings, line
+    ranges, sizes) when you do not know which section you want. `lines`
+    is for files with no headings, such as `.lean`. With none of the
+    three, `read` returns the whole file.
 
     `decl` answers from the framework's own record — the statement, the
     file and whether it is proved — so use it instead of grepping for a
     keyword at the start of a line. `in` and `read` take paths relative
-    to your own directory, or globs. `max` raises a query's own line cap;
-    a truncated answer always says how many lines were dropped and how
-    to see them.
+    to your own directory, or globs. A truncated answer always says
+    where to resume, with no overlap.
     """
     from . import workspace_query
     if not queries:
@@ -151,7 +166,10 @@ def inspect(queries: list = None) -> str:
             hint='the parameter is `queries`, a list — e.g. '
                  'inspect(queries=[{"decl": "foo"}, '
                  '{"grep": "Bar", "in": "proofs/*.lean"}])')
-    return workspace_query.run_queries(queries, max_chars=MAX_CHARS)
+    # No `max_chars`: `inspect` budgets PER QUERY (workspace_query
+    # owns the number), unlike the single-answer tools above which this
+    # module's `MAX_CHARS` still governs.
+    return workspace_query.run_queries(queries)
 
 
 @mcp.tool()

@@ -32,11 +32,35 @@ import os
 import re
 from pathlib import Path
 
-#: Per-query line cap when the caller does not choose one.
+#: Per-query line cap when the caller does not choose one. Applies to
+#: the queries that return a LIST of hits (`grep`, `find`, `size`),
+#: where 40 is a sane page. It does NOT apply to `read`: a document is
+#: read by the section, and a section arrives whole (see `_q_read`).
 DEFAULT_MAX = 40
 #: Ceiling on one query's cap, so `max: 100000` cannot be used to dump
 #: the tree into a context window.
 MAX_MAX = 400
+
+#: Byte budget for ONE query's answer. NOT a pool: every query in a
+#: batch gets this much, and asking a second question never shrinks the
+#: answer to the first. It used to be `8000 // len(queries)` with a 600
+#: floor, which punished the very batching the tool asks for — measured
+#: 2026-08-15 on the codex probe: 24 of 51 calls carried exactly ONE
+#: query, 24 of 51 answers came back truncated, and half of that run's
+#: turns were `inspect` round-trips at ~4,273 fresh tokens each. Sized
+#: at 12KB because the largest single section across the 1,459 framework
+#: documents agents actually read is 9.5KB (p90: 2.4KB).
+PER_QUERY_CHARS = 12_000
+#: Queries answered in one call. The call-level limit is a COUNT, not a
+#: byte pool, and that is the whole point: a count defers whole
+#: questions by name, while a shared byte budget has to cut into
+#: answers that were already computed. Every answer is complete or
+#: explicitly deferred.
+MAX_QUERIES = 20
+
+#: A markdown heading, which is how a framework document declares its
+#: sections. Level 1-4 only: deeper is prose formatting, not structure.
+_HEADING_RE = re.compile(r"^(#{1,4})\s+(\S.*?)\s*$")
 #: Bytes read from any single file. Lean proofs are small; a stray
 #: multi-megabyte artifact should not stall the call.
 _MAX_FILE_BYTES = 4_000_000
@@ -222,7 +246,50 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
     return kept + ([note] if note else [])
 
 
+def _sections(lines: "list[str]") -> "list[tuple[str, int, int, int]]":
+    """(heading text, level, first line, last line) for each section.
+
+    A section runs to the next heading of the SAME OR SHALLOWER level, so
+    asking for `## Programme` brings its `###` subsections with it — the
+    nesting a reader means when it names a section. Line numbers are
+    1-based and inclusive, so they can be handed straight back as
+    `lines`."""
+    heads = []
+    for i, ln in enumerate(lines, 1):
+        m = _HEADING_RE.match(ln)
+        if m:
+            heads.append((m.group(2), len(m.group(1)), i))
+    out = []
+    for k, (text, level, start) in enumerate(heads):
+        end = len(lines)
+        for text2, level2, start2 in heads[k + 1:]:
+            if level2 <= level:
+                end = start2 - 1
+                break
+        out.append((text, level, start, end))
+    return out
+
+
+def _numbered(lines: "list[str]", a: int, b: int) -> "list[str]":
+    return [f"{n:>5}  {lines[n - 1]}"
+            for n in range(max(1, a), min(len(lines), b) + 1)]
+
+
 def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
+    """A document is read by the SECTION; a window is the fallback.
+
+    `sections: ["Programme"]` is the cheap, precise request a framework
+    document supports by construction — its headings are a stable API,
+    written by the same code that writes the prose. `outline: true` buys
+    the map when the caller does not know which section it wants, and
+    `lines` still serves files with no headings at all (`.lean`).
+
+    What is gone is the old default: 40 numbered lines, which turned
+    reading one 25KB `Context.md` into a four-call ladder and still
+    delivered it truncated. Measured 2026-08-15: `Context.md` was read
+    22 times across 6 codex sessions, and 24 of that run's 51 answers
+    carried a truncation notice.
+    """
     spec = str(q.get("read") or "")
     p = (cwd / spec) if not Path(spec).is_absolute() else Path(spec)
     root = _denied(p.resolve(), deny)
@@ -230,8 +297,46 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
         return [f"{p} is operator-private (under {root}) — Context.md, "
                 f"BRIEF.md and the Manifest carry what you are meant to know"]
     if not p.is_file():
-        return [f"no file at {p}; {_nearest_existing(p)}"]
+        return [f"no file at {p}; {_nearest_existing(p, cwd)}"]
     lines = _read_text(p).splitlines()
+    secs = _sections(lines)
+
+    if q.get("outline"):
+        if not secs:
+            return [f"{len(lines)} lines, no markdown headings — this file "
+                    f"has no sections. Read it whole, or a window with "
+                    f'`lines: "1-200"`.']
+        out = [f"{len(secs)} sections, {len(lines)} lines:"]
+        for text, level, a, b in secs:
+            size = sum(len(lines[n - 1]) + 1 for n in range(a, b + 1))
+            out.append(f'  {"#" * level} {text}   lines {a}-{b}, '
+                       f'{size:,} chars')
+        out.append('Ask for one with `sections: ["<heading text>"]`.')
+        return out
+
+    want = q.get("sections")
+    if want is not None:
+        names = [str(w) for w in (want if isinstance(want, list) else [want])]
+        by_name = {text.lower(): (text, a, b) for text, _l, a, b in secs}
+        chosen: "list[str]" = []
+        missing: "list[str]" = []
+        for name in names:
+            hit = by_name.get(name.strip().lower())
+            if hit is None:
+                missing.append(name)
+                continue
+            text, a, b = hit
+            chosen.append(f"── {text}  (lines {a}-{b})")
+            chosen += _numbered(lines, a, b)
+        if missing:
+            # No fuzzy matching: a near-miss that silently answers with
+            # the wrong section is worse than a refusal that names the
+            # real ones.
+            have = ", ".join(f"{t!r}" for t, _l, _a, _b in secs) or "(none)"
+            chosen.append(f"no section named {', '.join(map(repr, missing))} "
+                          f"in this file. It has: {have}")
+        return chosen or [f"{len(lines)} lines, no sections matched"]
+
     rng = str(q.get("lines") or "").strip()
     if rng:
         lo, _, hi = rng.partition("-")
@@ -240,13 +345,15 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
             b = int(hi) if hi else len(lines)
         except ValueError:
             return [f"bad `lines` {rng!r} — use \"380-420\", \"-40\" or \"40-\""]
-        chosen = [f"{n:>5}  {lines[n - 1]}"
-                  for n in range(max(1, a), min(len(lines), b) + 1)]
-    else:
-        chosen = [f"{n:>5}  {ln}" for n, ln in enumerate(lines, 1)]
-    kept, note = _cap(chosen, q.get("max", DEFAULT_MAX),
-                      ", or ask for a line range with `lines`")
-    return kept + ([note] if note else [])
+        return _numbered(lines, a, b)
+    # Whole file. The byte budget in `run_queries` bounds it and says
+    # where to resume; an explicit `max` still caps by line for a caller
+    # that wants a peek.
+    if q.get("max") is not None:
+        kept, note = _cap(_numbered(lines, 1, len(lines)), q["max"],
+                          ", or name a section with `sections`")
+        return kept + ([note] if note else [])
+    return _numbered(lines, 1, len(lines))
 
 
 def _q_find(q: dict, cwd: Path, deny) -> "list[str]":
@@ -373,34 +480,56 @@ def _rel(p: Path, cwd: Path) -> str:
         return p.as_posix()
 
 
+def _resume_hint(text: str, kept: str, q: dict) -> str:
+    """Where to pick up, with NO overlap and nothing to count by hand.
+
+    The numbered output makes this exact: the last line that survived
+    the cut is the last one the reader has, so the next request starts
+    at the one after it. A hint that says "re-run this query alone"
+    (the old one) is not a continuation — it re-sends everything the
+    reader already paid for."""
+    last = 0
+    for ln in kept.splitlines():
+        head = ln[:5].strip()
+        if head.isdigit():
+            last = int(head)
+    if not last:
+        return "Narrow the query."
+    if "read" in q:
+        return (f'Continue from line {last + 1}: '
+                f'{{"read": {str(q["read"])!r}, "lines": "{last + 1}-"}} '
+                f'— or name a section with `sections` / map it with '
+                f'`outline: true`.')
+    return f"Continue from line {last + 1} with `lines`."
+
+
 def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
-                max_chars: int = 8000) -> str:
-    """Answer each query, labelled and capped, in one string.
+                per_query_chars: int = PER_QUERY_CHARS,
+                max_queries: int = MAX_QUERIES) -> str:
+    """Answer each query, labelled, in one string.
 
-    The budget is PER QUERY, and it used to be per call. The tool asks
-    for a batch — the argument is a list and the help text shows two
-    questions — and then a single cap fell across the concatenation, so
-    the last questions in a batch lost answers that had already been
-    computed, under one footer reading "whole result truncated" that
-    named none of them. The agent could not tell WHICH answer it was
-    missing, only that something was gone.
+    EVERY QUERY GETS THE WHOLE BUDGET. It used to get `8000 //
+    len(queries)`, and that was a pool: a second question shrank the
+    answer to the first, so the tool asked for batches and then charged
+    for them. Agents learned the lesson the pricing taught — on the
+    2026-08-15 codex probe, 24 of 51 calls carried exactly one query,
+    and half that run's turns were `inspect` round-trips at ~4,273 fresh
+    tokens each. Batching is now free.
 
-    So each query gets its own slice of the budget and says so in its
-    own block, with the one instruction that recovers it: ask that
-    query alone. Dividing rather than sharing also makes the batch's
-    cost predictable — an early query cannot starve a later one.
+    The call-level limit is a COUNT, not a byte pool. A count defers
+    whole questions by name and answers the rest in full; a shared
+    budget has to cut into answers that were already computed. Every
+    answer here is complete, or explicitly named as deferred.
     """
     here = Path(cwd or Path.cwd())
     deny = _deny_roots(here)
     if not isinstance(queries, list) or not queries:
         return ("inspect: pass a list of queries, e.g. "
                 '[{"decl": "uc_four_set_deficit"}, '
-                '{"grep": "BoundedOrder", "in": "proofs/*.lean"}]')
-    # A floor so a large batch still returns something usable per query
-    # rather than a column of ellipses.
-    per_query = max(600, max_chars // max(1, len(queries)))
+                '{"read": "Context.md", "sections": ["Programme"]}]')
+    deferred = queries[max_queries:]
     blocks: "list[str]" = []
-    for n, q in enumerate(queries, 1):
+    for n, q in enumerate(queries[:max_queries], 1):
         if not isinstance(q, dict):
             blocks.append(f"[{n}] not a query object: {q!r}")
             continue
@@ -413,19 +542,23 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                 except Exception as exc:  # noqa: BLE001 — one bad query
                     body = [f"failed: {type(exc).__name__}: {exc}"]
                 text = "\n".join(body)
-                if len(text) > per_query:
-                    # Name the query, say what it cost, and give the one
-                    # move that recovers the rest.
-                    text = (text[:per_query]
-                            + f"\n… [{n}] truncated at {per_query} chars "
-                              f"of this call's {max_chars} shared across "
-                              f"{len(queries)} quer"
-                              f"{'y' if len(queries) == 1 else 'ies'}. "
-                              f"Re-run THIS query alone to see the rest.")
+                if len(text) > per_query_chars:
+                    kept = text[:per_query_chars]
+                    text = (kept + f"\n… [{n}] truncated at "
+                                   f"{per_query_chars:,} chars. "
+                            + _resume_hint(text, kept, q))
                 blocks.append(head + "\n" + text)
                 break
         else:
             blocks.append(
                 f"[{n}] no known query key in {sorted(q)}. Use one of: "
                 f"decl, grep, read, find, size.")
+    if deferred:
+        listed = "; ".join(
+            f"[{max_queries + i}] {sorted(d) if isinstance(d, dict) else d}"
+            for i, d in enumerate(deferred, 1))
+        blocks.append(f"— {len(deferred)} quer"
+                      f"{'y' if len(deferred) == 1 else 'ies'} not answered: "
+                      f"this call carried {len(queries)} and the limit is "
+                      f"{max_queries}. Send these in a second call: {listed}")
     return "\n\n".join(blocks)

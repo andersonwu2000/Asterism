@@ -35,7 +35,7 @@ def test_a_relative_path_miss_names_where_the_file_is(tmp_path: Path):
                                          encoding="utf-8")
 
     out = wq.run_queries([{"grep": "uc_634", "in": "CATALOG.md"}],
-                         cwd=cwd, max_chars=400)
+                         cwd=cwd, per_query_chars=400)
 
     assert "CATALOG.md" in out
     assert str(attempts / "CATALOG.md") in out, out
@@ -53,7 +53,7 @@ def test_an_absolute_find_pattern_is_answered_not_refused(tmp_path: Path):
     (cwd / "proofs" / "L_a.lean").write_text("x\n", encoding="utf-8")
 
     out = wq.run_queries(
-        [{"find": str(cwd / "proofs" / "*.lean")}], cwd=cwd, max_chars=400)
+        [{"find": str(cwd / "proofs" / "*.lean")}], cwd=cwd, per_query_chars=400)
 
     assert "NotImplementedError" not in out, out
     assert "L_a.lean" in out, out
@@ -67,7 +67,7 @@ def test_a_genuinely_missing_file_still_says_what_is_there(tmp_path: Path):
     (cwd / "real.lean").write_text("x\n", encoding="utf-8")
 
     out = wq.run_queries([{"grep": "x", "in": "nope.md"}],
-                         cwd=cwd, max_chars=400)
+                         cwd=cwd, per_query_chars=400)
 
     assert "nearest existing directory" in out, out
     assert "real.lean" in out, out

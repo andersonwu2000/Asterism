@@ -73,11 +73,17 @@ def test_a_wrong_path_answers_with_what_is_actually_there(
     here: Path,
 ) -> None:
     """Before this, a mistyped path cost a whole round-trip: the agent
-    got "no such file" and spent its next turn running `ls`."""
+    got "no such file" and spent its next turn running `ls`.
+
+    `read` now gets the same answer `grep` already got — the file's REAL
+    path, when one of that name exists (2026-08-15; the two had drifted,
+    and the weaker of the two answers was the one on the hotter query).
+    The directory-listing fallback for a name that exists nowhere is
+    pinned in `test_inspect_path_answers.py`."""
     out = wq.run_queries([{"read": "prooofs/L_a.lean"}], cwd=here)
     assert "no file at" in out
-    assert "nearest existing directory" in out
-    assert "proofs/" in out and "Manifest.md" in out
+    assert "use that path" in out
+    assert "proofs" in out and "L_a.lean" in out
 
 
 def test_the_read_fence_is_the_same_one_every_channel_uses(
@@ -144,7 +150,7 @@ def test_decl_degrades_without_a_database(here: Path) -> None:
     assert "unavailable" in out or "no declaration named" in out
 
 
-# ── the budget is per query, not per call (2026-08-13) ──────────────
+# ── the budget is per query, not per call (2026-08-13 / 08-15) ──────
 #
 # `inspect` asks for a batch — the argument is a list and the help text
 # shows two questions — and a single cap used to fall across the
@@ -153,6 +159,15 @@ def test_decl_degrades_without_a_database(here: Path) -> None:
 # truncated" that named none of them: the agent could tell something
 # was missing but not WHICH, so the only recovery was to re-ask
 # everything one at a time.
+#
+# 08-13 divided the cap instead of sharing it (`8000 // len(queries)`),
+# which fixed the anonymity and left the pricing: a batch still shrank
+# its own answers, so a third question cost the first two a third of
+# their content each. On the 08-15 codex probe 24 of 51 calls carried
+# exactly ONE query and 24 of 51 answers came back truncated — the
+# agent had read the price list correctly. The budget is now per query
+# and NOT a pool, and the call-level limit is a query COUNT that defers
+# whole questions by name.
 
 
 def test_one_greedy_query_cannot_eat_a_later_answer(tmp_path):
@@ -161,7 +176,7 @@ def test_one_greedy_query_cannot_eat_a_later_answer(tmp_path):
     (here / "small.lean").write_text("needle here\n", encoding="utf-8")
     out = wq.run_queries(
         [{"read": "big.lean"}, {"grep": "needle", "in": "*.lean"}],
-        cwd=here, max_chars=2000)
+        cwd=here, per_query_chars=2000)
     assert "needle" in out, (
         "the second query's answer was computed and then thrown away by "
         "the first query's size — that is the bug this pins")
@@ -171,15 +186,20 @@ def test_a_truncated_query_names_itself_and_the_way_back(tmp_path):
     here = tmp_path
     (here / "big.lean").write_text("y" * 9000 + "\n", encoding="utf-8")
     out = wq.run_queries([{"read": "big.lean"}, {"decl": "nope"}],
-                         cwd=here, max_chars=2000)
+                         cwd=here, per_query_chars=2000)
     assert "[1] truncated at" in out, "the cut must name which query it cut"
-    assert "Re-run THIS query alone" in out, (
+    # "Re-run THIS query alone" was the old way back, and it was not a
+    # way back at all: it re-sends every line the reader has already
+    # paid for. The numbered output makes the continuation exact.
+    assert "Continue from line" in out, (
         "a truncation notice has to name an action the reader can take")
+    assert "Re-run THIS query alone" not in out
 
 
 def test_a_single_query_still_gets_the_whole_budget(tmp_path):
     here = tmp_path
     (here / "big.lean").write_text("z" * 5000 + "\n", encoding="utf-8")
-    out = wq.run_queries([{"read": "big.lean"}], cwd=here, max_chars=4000)
+    out = wq.run_queries([{"read": "big.lean"}], cwd=here,
+                         per_query_chars=4000)
     assert len(out) > 3500, (
         "dividing the budget must not penalise the un-batched case")
