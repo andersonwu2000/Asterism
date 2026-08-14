@@ -115,12 +115,44 @@ def _skipped(p: Path) -> bool:
     return any(part in _SKIP_DIRS for part in p.parts)
 
 
-def _nearest_existing(p: Path) -> str:
+def _find_by_basename(name: str, cwd: Path) -> "Path | None":
+    """Where a file of this name actually is, among the agent's roots.
+
+    A spawn works in TWO directories — the problem dir it is launched in
+    and the attempts dir its briefing, `Context.md` and `CATALOG.md` live
+    in — and a relative path resolves against only the first. So
+    `inspect({"grep": "…", "in": "CATALOG.md"})` failed, and the hint
+    walked up to the workspace root and listed the repo. Naming the file
+    where it IS costs one glob and saves the round trip."""
+    roots = [cwd]
+    # The workspace is found by walking UP from cwd, not from the
+    # environment: `workspace_of` reads env vars a caller may not have
+    # set, and a hint that only works in production is a hint that no
+    # test can hold.
+    for anc in cwd.resolve().parents:
+        if (anc / ".attempts").is_dir() or (anc / "Problems").is_dir():
+            roots.append(anc / ".attempts")
+            break
+    for root in roots:
+        try:
+            for cand in sorted(root.rglob(name)):
+                if cand.is_file() and not _skipped(cand):
+                    return cand
+        except OSError:
+            continue
+    return None
+
+
+def _nearest_existing(p: Path, cwd: "Path | None" = None) -> str:
     """What a wrong path costs should be nothing.
 
     Before this, a mistyped path cost a whole round-trip: the agent got
     "no such file" and spent its next turn on `ls` to find out what was
     actually there. Answer both at once."""
+    if cwd is not None:
+        found = _find_by_basename(p.name, cwd)
+        if found is not None:
+            return f"but a file of that name is at {found} — use that path"
     for d in p.parents:
         if d.is_dir():
             try:
@@ -166,7 +198,7 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
         return [f"bad pattern: {exc}"]
     files = _expand(where, cwd)
     if not files:
-        return [f"nothing to search at {where!r}; {_nearest_existing(cwd / where)}"]
+        return [f"nothing to search at {where!r}; {_nearest_existing(cwd / where, cwd)}"]
     hits: "list[str]" = []
     for f in files:
         root = _denied(f.resolve(), deny)
@@ -220,6 +252,18 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
 def _q_find(q: dict, cwd: Path, deny) -> "list[str]":
     pattern = str(q.get("find") or "*")
     base = (cwd / str(q.get("in") or ".")).resolve()
+    # An absolute pattern is the natural phrasing when the only path you
+    # were given is absolute (the Adversary's projection is), and
+    # `rglob` answers it with `NotImplementedError: Non-relative
+    # patterns are unsupported` — a Python type name, which tells an
+    # agent nothing it can act on. The request is unambiguous, so honour
+    # it: the directory part becomes the search root and the last
+    # component stays the pattern.
+    if Path(pattern).is_absolute() or (q.get("in") is None
+                                       and "/" in pattern):
+        p = Path(pattern)
+        base, pattern = (p.parent.resolve() if p.parent != p
+                         else base), p.name
     if not base.is_dir():
         return [f"no directory at {base}; {_nearest_existing(base)}"]
     out = [_rel(p, cwd) for p in sorted(base.rglob(pattern))
