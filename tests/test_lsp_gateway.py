@@ -2261,20 +2261,6 @@ def test_annotation_submission_stub_skip_carries_note() -> None:
     assert "stubs need no annotation" in out.get("note", "")
 
 
-def test_editor_line_count_one_law() -> None:
-    """apply_edit's range check and interactive_sync's full-buffer
-    replace must count lines identically (they drifted once: sync used
-    count("\n")+1, one high on trailing-newline buffers — every
-    chapter-probe sync bounced with "end_line N+1 out of range")."""
-    from Tooling.lsp.gateway import _editor_line_count
-    assert _editor_line_count("a\nb\n") == 2   # trailing \n: phantom excluded
-    assert _editor_line_count("a\nb") == 2
-    assert _editor_line_count("a\n") == 1
-    assert _editor_line_count("a") == 1
-    assert _editor_line_count("") == 0
-    assert _editor_line_count("\n") == 1
-
-
 def test_scope_balance_counts_namespace_and_section() -> None:
     """The syntactic scope counter behind apply_edit's `scope_warning`.
 

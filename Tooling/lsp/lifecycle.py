@@ -1030,7 +1030,10 @@ def interactive_register(content: str) -> dict:
 def interactive_sync(token: str, content: str,
                      line: "int | None" = None, col: int = 0) -> dict:
     """Full-buffer replace + elaborate; goal at (line, col) rides the
-    response when a cursor is given. {"diagnostics", "goal", "note"}."""
+    response when a cursor is given.
+    {"diagnostics", "goal", "note", "converged"} — `converged` false
+    means Lean had not finished, so an empty `diagnostics` is "no news
+    yet", not "clean"; `note` says so in words."""
     body: dict = {"token": token, "content": content}
     if line is not None:
         body["line"], body["col"] = line, col

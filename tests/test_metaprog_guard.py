@@ -79,10 +79,17 @@ def test_lsp_boundary_guards_every_elaboration(name) -> None:
 #:   validate_file     — pre-commit candidate probe
 #:   _verify_sync      — /verify (framework probe, borrow slot)
 #:   _verify_session_sync — /verify_session (framework probe, own slot)
-#: `interactive_sync` is deliberately absent: it delegates to apply_edit.
+#:   interactive_sync  — the browser editor's full-buffer set
+#:
+#: `interactive_sync` was exempt until 2026-08-15 on the grounds that it
+#: delegated to `apply_edit`; the exemption outlived the delegation by
+#: five days (the line-range `apply_edit(1, end, content)` retired in
+#: `1d7ad006`, and the call had been a TypeError ever since). A guard
+#: whose premise is "some other function checks it" is only as good as
+#: that call surviving — this list now asks every entry for its own.
 @pytest.mark.parametrize("name", [
     "apply_edit", "goal_at", "errors_at", "validate_file",
-    "_verify_sync", "_verify_session_sync",
+    "_verify_sync", "_verify_session_sync", "interactive_sync",
 ])
 def test_gateway_entry_scans_agent_text(name) -> None:
     src = _fn_source(GATEWAY, name)
@@ -90,13 +97,6 @@ def test_gateway_entry_scans_agent_text(name) -> None:
         f"gateway.{name} elaborates agent-supplied text and must scan it "
         "first (`_metaprog_error`) so the agent gets the rule, not a "
         "stack trace")
-
-
-def test_interactive_sync_delegates_to_apply_edit() -> None:
-    """The one gateway entry without its own scan — it must keep routing
-    through `apply_edit`, which has one."""
-    src = _fn_source(GATEWAY, "interactive_sync")
-    assert "apply_edit(" in src
 
 
 @pytest.mark.parametrize("path", [BACKWARD, FORWARD])

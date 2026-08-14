@@ -1828,17 +1828,6 @@ def _scope_balance(text: str) -> int:
     return opens - closes
 
 
-def _editor_line_count(text: str) -> int:
-    """Line count as an editor shows it: the empty element after a
-    trailing newline is NOT a line (bbe7169 — counting it let a range
-    overshoot land on the phantom slot and eat the file's last real
-    line). ONE law, shared by apply_edit's range check and
-    interactive_sync's full-buffer replace — they drifted apart once
-    and every chapter probe broke (QA, 2026-07-20)."""
-    lines = text.split("\n")
-    return len(lines) - 1 if lines and lines[-1] == "" else len(lines)
-
-
 @mcp.tool()
 @_offload_to_thread
 def apply_edit(edits: list = None) -> str:
@@ -1866,12 +1855,19 @@ def apply_edit(edits: list = None) -> str:
     """
     _recv_ts = _ts_now()
     meta = _current_session()
+    # A refusal is an outcome, and it was the only one that left no
+    # trace: `_log_for` sits past every early return below, so when an
+    # agent and the framework disagreed about whether an edit had landed
+    # there was nothing to consult (08-11, unresolvable to this day).
+    # Each refusal now logs before it returns. The no-session branch
+    # cannot: there is no session to log against.
     if meta is None:
         return json.dumps({"error":
             "no session — X-Asterism-Session header missing or unknown",
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     err = _ensure_backend_ready()
     if err:
+        _log_for(meta, {"event": "apply_edit", "outcome": "refused"})
         return json.dumps({"error": err,
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     t0 = time.perf_counter()
@@ -1883,6 +1879,7 @@ def apply_edit(edits: list = None) -> str:
     # corruption, agent_feedback 2026-07-18).
     _resync_err = _resync_buffer_from_disk(meta)
     if _resync_err:
+        _log_for(meta, {"event": "apply_edit", "outcome": "refused"})
         return json.dumps({"error": (
             f"{_resync_err}; edit aborted — the buffer may be stale and "
             "writing through it could clobber newer on-disk content. "
@@ -1901,6 +1898,7 @@ def apply_edit(edits: list = None) -> str:
         # round-trip later. That is the whole point of anchoring \u2014 a line
         # number has nothing to check itself against, so a stale one
         # spliced silently (42 agent reports in the week to 2026-08-10).
+        _log_for(meta, {"event": "apply_edit", "outcome": "refused"})
         return json.dumps(
             {"edit": "rejected \u2014 file unchanged", **exc.as_dict(),
              "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()},
@@ -1915,6 +1913,7 @@ def apply_edit(edits: list = None) -> str:
         # Refused PRE-write, like an unresolvable anchor: the file is
         # untouched and the cost was milliseconds. Asking after the
         # write would be asking after the bill.
+        _log_for(meta, {"event": "apply_edit", "outcome": "refused"})
         return json.dumps(
             {"edit": "held — file unchanged", "heartbeat_budget": _hb,
              "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()},
@@ -1947,6 +1946,7 @@ def apply_edit(edits: list = None) -> str:
     # blocked edit leaves neither the buffer nor the file carrying it.
     _mp = _metaprog_error(new_content, meta.target_path.name)
     if _mp is not None:
+        _log_for(meta, {"event": "apply_edit", "outcome": "refused"})
         return json.dumps({"error": _mp, "edit": "rejected — file unchanged",
                            "_server_recv_ts": _recv_ts,
                            "_server_send_ts": _ts_now()},
@@ -3177,27 +3177,70 @@ async def interactive_sync(request: Request):
         return JSONResponse({"error": "unknown interactive session"},
                             status_code=404)
     _session_ctx.set(token)
-    # ONE line-count law with apply_edit (`_editor_line_count`) — the
-    # old `count("\n") + 1` here was one high for any buffer ending in
-    # a newline (the probe assembler always emits one), so every
-    # chapter-probe sync bounced off apply_edit's range check with
-    # "end_line N+1 out of range 1..N" (QA, 2026-07-20).
-    end = max(1, _editor_line_count(meta.file_content))
-    edit_raw = await apply_edit(1, end, str(data.get("content") or ""))
-    edit = json.loads(edit_raw)
-    if edit.get("error"):
-        return JSONResponse({"error": edit["error"]}, status_code=500)
+    # A FULL-BUFFER SET, not an edit. The editor sends what the buffer
+    # now contains; there is no anchor and no old text to name. This
+    # used to call `apply_edit(1, end, content)` — the line-range
+    # signature retired on 2026-08-10 (`1d7ad006`) — so every sync since
+    # has been a TypeError surfacing as HTTP 500. The guard test could
+    # not see it: it greps this module for the string "apply_edit"
+    # rather than calling the endpoint, so it passed on a call that
+    # could never run.
+    _content = str(data.get("content") or "")
+    # ITS OWN SCAN NOW. This entry used to be exempt from the
+    # metaprogramming gate on the grounds that it delegated to
+    # `apply_edit`, which has one — and that delegation is what has just
+    # been removed, so the exemption's premise went with it. Every
+    # gateway path that hands text to a worker calls this first.
+    _mp = _metaprog_error(_content, meta.target_path.name)
+    if _mp is not None:
+        return JSONResponse({"error": _mp}, status_code=400)
+    meta.file_content = _content
+    # Write through to the scratch file, exactly as `apply_edit` did for
+    # this endpoint before. Not bookkeeping: `goal_at` — which the same
+    # request calls when a cursor rides along, and which every cursor
+    # move calls — starts by adopting DISK as the source of truth. A
+    # mirror-only sync would be reverted to the registration-time text
+    # by the next goal query, and the editor would show goals for a file
+    # the owner no longer has.
+    try:
+        meta.target_path.write_text(_content, encoding="utf-8")
+    except OSError as e:
+        return JSONResponse({"error": f"scratch write failed: {e}"},
+                            status_code=500)
+    backend = _state.backend
+    diags: list = []
+    converged = False
+    try:
+        with _acquire_slot(meta, swap_in=False) as (slot, _kind):
+            slot.file_version += 1
+            backend.clear_diagnostics(slot.slot_uri)
+            merged, _line_map = _compilation_for(meta)
+            backend.did_change_full(slot.slot_path, merged,
+                                    slot.file_version)
+            converged = _diags_converged(backend, slot)
+            diags = backend.diagnostics_for(slot.slot_uri)
+    except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+        return JSONResponse({"error": f"sync failed: {exc}"},
+                            status_code=500)
     resp = {
-        "diagnostics": edit.get("diagnostics") or [],
+        "diagnostics": diags,
         "goal": None,
         "note": None,
+        # Whether Lean FINISHED. Every agent-facing tool already carries
+        # this bit; the editor discarded it, so a timed-out elaborate
+        # showed the owner an empty error list — the same fake-clean the
+        # bit exists to prevent, on the one surface a human trusts most.
+        "converged": converged,
     }
+    if not converged:
+        resp["note"] = ("still elaborating — an empty diagnostic list "
+                        "here means 'no news yet', not 'clean'")
     line, col = data.get("line"), data.get("col")
     if isinstance(line, int):
         goal_raw = await goal_at(line, int(col or 0))
         goal = json.loads(goal_raw)
         resp["goal"] = goal.get("goal")
-        resp["note"] = goal.get("note")
+        resp["note"] = goal.get("note") or resp["note"]
     return JSONResponse(resp, status_code=200)
 
 
