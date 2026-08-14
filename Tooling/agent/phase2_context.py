@@ -1165,6 +1165,13 @@ def _section_active_goals(conn: sqlite3.Connection,
     return out
 
 
+# Longest `outcome_detail` on record is ~1.3 KB (a decline's prose) and
+# this section renders 5 rows, most carrying none — so the budget is
+# generous enough that nothing real gets cut, and bounded so one verbose
+# decline cannot own the section.
+_REPLAY_DETAIL_BUDGET = 800
+
+
 def _section_failure_replay(conn: sqlite3.Connection,
                             problem: str,
                             k: int = 5) -> list[str]:
@@ -1203,15 +1210,29 @@ def _section_failure_replay(conn: sqlite3.Connection,
             if len(brief) > 200:
                 brief = brief[:200] + "…"
             out.append(f"  {_prose_label(r['decision_kind'])}: {brief}")
-        # A failed decision's WHY (FetchPaper unfetchable detail, a dead
-        # redispatch's forensics) — without it the replay teaches only
-        # THAT it failed, and the same move gets re-tried blind.
-        if (str(r["outcome"] or "").startswith("failed")
-                and (r["outcome_detail"] or "").strip()):
-            why = " ".join(str(r["outcome_detail"]).split())
-            if len(why) > 200:
-                why = why[:200] + "…"
-            out.append(f"  why: {why}")
+        # A decision's WHY, whenever one was recorded — the test is
+        # "is there anything to say", not "is the outcome named
+        # `failed:`". Only that one family follows the prefix
+        # convention, so an outcome-name test mutes every other kind
+        # that carries detail: measured 2026-08-14, 36 rows silent, of
+        # which 17 were `paper_unfetchable` holding the whole Scholar
+        # report (identity resolved, DOI, why no whitelisted copy
+        # exists, the URL a human can open). The comment this replaces
+        # named FetchPaper as the case it existed for. A group read the
+        # resulting silence as "the fetch never ran", flagged its own
+        # correct record SUSPECT, and planned to spend another batch
+        # re-fetching a paper already ruled unfetchable.
+        detail = " ".join(str(r["outcome_detail"] or "").split())
+        if detail:
+            # Elide the middle, never the tail. Scholar puts the
+            # actionable half LAST — why it cannot be fetched, and
+            # where a human can read it — so a head truncation hides
+            # exactly the part that changes the next decision. There is
+            # no companion file behind this section to fall back on.
+            if len(detail) > _REPLAY_DETAIL_BUDGET:
+                half = _REPLAY_DETAIL_BUDGET // 2
+                detail = f"{detail[:half]} …… {detail[-half:]}"
+            out.append(f"  why: {detail}")
     out.append("")
     return out
 

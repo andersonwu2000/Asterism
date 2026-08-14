@@ -380,6 +380,58 @@ def _seed_inject_batch_done(conn: sqlite3.Connection, *, problem: str = "p",
     return ids
 
 
+def _seed_decision(conn: sqlite3.Connection, *, kind: str, outcome: str,
+                   detail: str, problem: str = "p") -> int:
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, outcome, outcome_detail, created_at, updated_at)"
+        " VALUES (?, 0, 'routine', ?, NULL, NULL, NULL, ?, NULL,"
+        "         ?, ?, ?, ?)",
+        (problem, kind, "{}", outcome, detail, ts, ts))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def test_recent_decisions_show_detail_whatever_the_outcome_is_called(
+    conn: sqlite3.Connection,
+) -> None:
+    """The replay's WHY line used to fire only on outcomes named
+    `failed:*`, and only that family follows the prefix convention.
+    `paper_unfetchable` carries the entire Scholar report — identity,
+    DOI, why no whitelisted copy exists — and was mute in all 17 rows
+    on 2026-08-14, so a group read the silence as "the fetch never
+    ran" and planned to spend a batch re-fetching it."""
+    _insert_problem(conn)
+    _seed_decision(
+        conn, kind="FetchPaper", outcome="paper_unfetchable",
+        detail="Identity resolved: T. P. Vaughan, EJC 23 (2002) 851-860."
+               " No arXiv-class copy exists; only ScienceDirect, which is"
+               " not on the fetch whitelist.")
+    text = "\n".join(phase2_context._section_failure_replay(conn, "p"))
+    assert "why:" in text
+    assert "not on the fetch whitelist" in text
+
+
+def test_a_long_outcome_detail_keeps_its_tail(
+    conn: sqlite3.Connection,
+) -> None:
+    """Head truncation hides what the author put last, and Scholar puts
+    the actionable half there: why it cannot be fetched, and the URL a
+    human can open. This section has no companion file to fall back
+    on, so the elision has to take the middle."""
+    _insert_problem(conn)
+    head = "IDENTITY " + "x" * 900
+    tail = " best human URL: https://doi.org/10.1006/eujc.2002.0586"
+    _seed_decision(conn, kind="FetchPaper", outcome="paper_unfetchable",
+                   detail=head + tail)
+    text = "\n".join(phase2_context._section_failure_replay(conn, "p"))
+    assert "IDENTITY" in text, "lost the head"
+    assert "10.1006/eujc.2002.0586" in text, "lost the tail"
+    assert "……" in text, "expected a middle elision, not a cut end"
+
+
 def test_batch_outcomes_filter_non_inject_and_flag_unattributed(
     conn: sqlite3.Connection,
 ) -> None:
