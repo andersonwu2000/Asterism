@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-13
+- Integrated a second language-model provider into the proving pipeline and fixed several faults uncovered during its first full run.
+- Sharpened the adversarial verification rules so that a claimed record is only overturned by an actual proof, with separate checks for necessity and sufficiency.
+- Repaired the resource-budgeting safeguards after three of them failed on the same afternoon, and made fallback accounting report itself explicitly.
+- Cleaned up internal bookkeeping by deduplicating configuration tables, unifying job dispatch, and tightening tests around prompts and result inspection.
+
 ### 2026-08-12
 - Fixed a batch of reliability problems in the service that coordinates automated proof attempts, including misattributed errors, mishandled worker sessions, and unresponsive workers now being followed up rather than written off.
 - Repaired the sandboxed calculator, which had been rejecting valid mathematical expressions and hiding its own startup failures.
@@ -210,11 +216,6 @@ Programme revisions and worker declines now appear on the project's timeline and
 ### 2026-07-15
 - Added an automated audit that flags when a prompt's stated routing no longer matches the project's central specification.
 - Worked through two batches of user-reported issues, fixing problems in how the system spawns provers, assembles context, and drafts proof skeletons.
-
-### 2026-07-14
-- Trimmed the system's working memory to keep only recent context and deferred loading reference material until it is actually needed.
-- Made the automated prover pause until its usage quota resets rather than shutting down when it hits the limit.
-- Fixed cross-platform reliability problems on Windows and POSIX systems and applied self-audit corrections to earlier work.
 
 <!-- ASTERISM-PROGRESS:END -->
 
