@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from Tooling.llm import capabilities as caps
+from Tooling.llm import envelope, capabilities as caps
 from Tooling.llm.base import LLMRequest
 
 
@@ -413,8 +413,8 @@ def _rendered_agy_actions(kind: str = "allow"):
     from pathlib import Path
     from types import SimpleNamespace
     from Tooling.llm import antigravity_cli as agy
-    spec = SimpleNamespace(
-        write_roots=(Path("D:/Asterism/.attempts/pid"),),
+    spec = envelope.Envelope(
+write_roots=(Path("D:/Asterism/.attempts/pid"),),
         mcp_config_path=None, read_deny_roots=())
     rendered = agy._spawn_permissions(spec, Path("D:/Asterism"))
     rules = rendered["permissions"][kind]
@@ -454,7 +454,8 @@ def test_agy_spawn_can_still_read_the_workspace() -> None:
     from pathlib import Path
     from types import SimpleNamespace
     from Tooling.llm import antigravity_cli as agy
-    spec = SimpleNamespace(write_roots=(Path("D:/Asterism/.attempts/pid"),),
+    spec = envelope.Envelope(
+write_roots=(Path("D:/Asterism/.attempts/pid"),),
                            mcp_config_path=None, read_deny_roots=())
     ws = Path("D:/Asterism")
     allow = agy._spawn_permissions(spec, ws)["permissions"]["allow"]

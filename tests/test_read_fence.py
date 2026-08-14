@@ -87,8 +87,8 @@ def test_unknown_problem_dir_denies_nothing_extra(workspace: Path) -> None:
 # ------------------------------------------------------- agy rendering
 
 def test_agy_renders_the_same_list_as_deny_rules(workspace: Path) -> None:
-    spec = SimpleNamespace(
-        write_roots=(workspace / ".attempts" / "pid",),
+    spec = envelope.Envelope(
+write_roots=(workspace / ".attempts" / "pid",),
         mcp_config_path=None,
         read_deny_roots=envelope.read_deny_roots(
             workspace, workspace / "Problems" / "sylvester_gallai"))

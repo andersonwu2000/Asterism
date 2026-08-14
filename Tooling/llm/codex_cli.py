@@ -298,6 +298,16 @@ def _render_config(req: LLMRequest, model: str, effort: str) -> str:
                   + ", ".join(_toml_str(str(p)) for p in spec.write_roots)
                   + "]"]
 
+    # `spec.read_allow_roots` is DECLARED NOT APPLICABLE here, not
+    # dropped. Per DELTA 1 codex has no file-reading tool at all with
+    # `shell_tool` and `apps` off, so there is no read to widen: every
+    # byte it learns arrives through our MCP, whose scope the framework
+    # sets. Saying so in code is the point — the same field was silently
+    # ignored by agy, where reads DO exist and an ungranted one is
+    # soft-denied mid-turn (2026-08-15, twelve wakes). If codex ever
+    # regains a read tool, this is the line that has to change with it.
+    _ = spec.read_allow_roots
+
     # Project trust. Kept because the operator's own config carries it
     # and it costs nothing — but NOT the thing that makes writing work:
     # a probe with the cwd trusted was refused identically to one

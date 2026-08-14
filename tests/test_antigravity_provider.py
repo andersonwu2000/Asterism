@@ -134,6 +134,60 @@ def test_json_output_counts_as_an_artifact(tmp_path: Path):
     assert agy._agent_artifact_present(d)
 
 
+def test_a_prepopulated_workdir_does_not_count_as_the_agents_output(
+        tmp_path: Path):
+    """The Adversary's attempts dir IS its projection, and the framework
+    fills it before the judge starts. Counting those files answered YES
+    for a judge that had written nothing, which switched OFF the one
+    detector built for this case (`RC_MISCONFIGURED`: "a tool was almost
+    certainly auto-denied… retrying will not help"). Measured
+    2026-08-15: a deterministic permission failure was laundered into
+    retryable `agent_no_output` and re-run twelve times, ~1.9M input
+    tokens, on a problem whose only brick was already proved."""
+    d = tmp_path / "adversary" / "r1"
+    d.mkdir(parents=True)
+    for name in ("proposal.md", "decisions.md", "contract.md",
+                 "Manifest.md", "CATALOG.md"):
+        (d / name).write_text("planted by the framework", encoding="utf-8")
+    planted = agy._dir_snapshot(d)
+
+    assert not agy._agent_artifact_present(d, planted), (
+        "the framework's own staging was counted as the judge's output")
+
+    (d / "verdict.json").write_text('{"verdict": "pass"}', encoding="utf-8")
+    assert agy._agent_artifact_present(d, planted), (
+        "a real artifact written after the snapshot must still count")
+
+
+def test_the_denial_is_read_out_of_agys_own_log(tmp_path: Path):
+    """The refusal reaches neither the model nor the envelope, so this
+    file is the only witness. Before this, a denied spawn was reported
+    as "left no usable artifact" and the sentence naming the path lived
+    inside a directory about to be deleted."""
+    home = tmp_path / "_agy_home"
+    logdir = home / ".gemini" / "antigravity-cli" / "log"
+    logdir.mkdir(parents=True)
+    (logdir / "cli-20260815_012744.log").write_text(
+        'ERROR: logging before google.Init: I0815 permission_manager.go:966] '
+        'permission check failed for read_file '
+        '"D:\\\\Asterism\\\\Problems\\\\Test\\\\p\\\\proofs": user denied\n'
+        'ERROR: I0815 tool_confirmation_manager.go:188] Print mode: '
+        'soft-denying tool confirmation "ListDir" at step 24\n',
+        encoding="utf-8")
+
+    said = agy._denied_actions(home)
+    assert len(said) == 2, said
+    assert "permission check failed for read_file" in said[0]
+    assert "proofs" in said[0]
+    assert "soft-denying" in said[1]
+
+
+def test_no_log_means_no_claim(tmp_path: Path):
+    """A spawn that never wrote a log must not produce an empty
+    accusation — the caller falls back to its own wording."""
+    assert agy._denied_actions(tmp_path / "nowhere") == []
+
+
 # ------------------------------------------------------- session map
 
 def test_session_map_round_trip(tmp_path: Path):
@@ -214,9 +268,16 @@ def test_error_envelope_with_artifact_is_not_a_failure(
                   '"output_tokens":1}}')
         stderr = ""
 
-    monkeypatch.setattr(agy.subprocess, "run", lambda *a, **k: _R())
     req = _req(tmp_path)
-    (req.attempts_dir / "decision.json").write_text("{}", encoding="utf-8")
+
+    def _run(*a, **k):
+        # written DURING the run: an artifact that predates the spawn is
+        # not evidence the agent produced anything (2026-08-15).
+        (req.attempts_dir / "decision.json").write_text("{}",
+                                                        encoding="utf-8")
+        return _R()
+
+    monkeypatch.setattr(agy.subprocess, "run", _run)
     assert agy.AntigravityCliProvider().spawn(req) == 0
     assert "recovered and left its artifact" in capsys.readouterr().out
 
@@ -274,7 +335,6 @@ def test_success_with_artifact_is_zero_and_records_session(
 ):
     monkeypatch.setattr(agy, "resolve_agy_executable", lambda: "agy")
     req = _req(tmp_path, session_id="sid-1")
-    (req.attempts_dir / "decision.json").write_text("[]", encoding="utf-8")
 
     class _R:
         returncode = 0
@@ -283,7 +343,16 @@ def test_success_with_artifact_is_zero_and_records_session(
                   '"usage":{"input_tokens":9,"output_tokens":3}}')
         stderr = ""
 
-    monkeypatch.setattr(agy.subprocess, "run", lambda *a, **k: _R())
+    def _run(*a, **k):
+        # The agent writes DURING the run, which is the only way the
+        # artifact check can tell its output from the framework's
+        # staging (a planted file is not evidence the agent did
+        # anything — 2026-08-15).
+        (req.attempts_dir / "decision.json").write_text("[]",
+                                                       encoding="utf-8")
+        return _R()
+
+    monkeypatch.setattr(agy.subprocess, "run", _run)
     assert agy.AntigravityCliProvider().spawn(req) == 0
     assert agy._load_session_map(req.attempts_dir) == {"sid-1": "conv-42"}
 

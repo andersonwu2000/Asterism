@@ -399,6 +399,12 @@ def _spawn_permissions(env_spec, workspace: "Path | None") -> dict:
     # the outside; only agy's own log tells them apart.
     if workspace is not None:
         allow.append(f"read_file({workspace})")
+    # Named grants that do NOT come with a workspace. The Adversary is
+    # the case: its `problem_dir` is its projection, so `workspace` is
+    # None above and this is its ONLY read. Without it agy soft-denies
+    # `list_dir` on the proofs directory and ends the turn — see
+    # `Envelope.read_allow_roots` for the incident.
+    allow += [f"read_file({p})" for p in env_spec.read_allow_roots]
     # …and the operator-private subtrees carved back out of it (#162,
     # user ruling 2026-08-10). The list is provider-independent and lives
     # in `envelope.py`, because the same exposure was never agy-specific:
@@ -553,22 +559,78 @@ def _record_usage(attempts_dir: Path, envelope: dict) -> None:
         pass
 
 
-def _agent_artifact_present(attempts_dir: Path) -> bool:
+def _agent_artifact_present(attempts_dir: Path,
+                            planted: "frozenset[str] | None" = None) -> bool:
     """Did the AGENT leave anything? See "THE HAZARD" in the module
     docstring: a silently-denied write returns SUCCESS, so the on-disk
     check is the only honest signal. `.json` counts — the old gemini
     provider's check listed only .lean/.md, which would have marked
-    every successful Adversary run (verdict.json) as no-output."""
+    every successful Adversary run (verdict.json) as no-output.
+
+    `planted` is the directory's contents BEFORE the spawn, and it is
+    what makes the answer mean what it says. Without it this counted
+    any `.md`/`.json` in the dir — and the Adversary's dir is its
+    projection, which the framework itself fills with `proposal.md`,
+    `Context.md`, `contract.md` and the rest before the judge starts.
+    So the answer was YES for a judge that had written nothing, which
+    turned OFF the one detector built for this exact case
+    (`RC_MISCONFIGURED`: "a tool was almost certainly auto-denied…
+    retrying will not help"). Measured 2026-08-15: a deterministic
+    permission failure was laundered into retryable `agent_no_output`
+    and re-run twelve times."""
     if not attempts_dir.is_dir():
         return False
+    planted = planted if planted is not None else frozenset()
     for p in attempts_dir.iterdir():
-        if p.name in _NON_ARTIFACTS:
+        if p.name in _NON_ARTIFACTS or p.name in planted:
             continue
         if p.is_dir():
             continue
         if p.suffix in (".lean", ".md", ".json", ".txt"):
             return True
     return False
+
+
+def _dir_snapshot(attempts_dir: Path) -> "frozenset[str]":
+    """What was already in the spawn's dir before it ran."""
+    try:
+        return frozenset(p.name for p in attempts_dir.iterdir())
+    except OSError:
+        return frozenset()
+
+
+#: agy's own wording for a refused action, in its own log. The refusal
+#: never reaches the model and never reaches the envelope, so this file
+#: is the only witness — see `Envelope.read_allow_roots`.
+_DENIAL_MARKERS = ("permission check failed for ", "soft-denying tool ")
+
+
+def _denied_actions(home: Path, limit: int = 4) -> "list[str]":
+    """What agy refused this spawn, in agy's words.
+
+    The framework used to report a denied spawn as "left no usable
+    artifact" and stop there, and the sentence that named the actual
+    path lived only inside a directory about to be deleted. Diagnosing
+    one instance on 2026-08-15 took the whole evening; the line was
+    always there."""
+    out: "list[str]" = []
+    try:
+        logs = sorted((home / ".gemini" / "antigravity-cli" / "log")
+                      .glob("*.log"))
+    except OSError:
+        return out
+    for log in logs:
+        try:
+            text = log.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if any(m in line for m in _DENIAL_MARKERS):
+                # Drop the vendor's log preamble; keep the sentence.
+                out.append(line.split("] ", 1)[-1].strip()[:200])
+                if len(out) >= limit:
+                    return out
+    return out
 
 
 def _classify(envelope: "dict | None", raw: str, rc: int) -> int:
@@ -828,6 +890,8 @@ class AntigravityCliProvider:
                                 RC_MISCONFIGURED)
             return RC_MISCONFIGURED
         home_box.append(home)
+        # Before the agent runs, so "did it leave anything" can mean it.
+        planted = _dir_snapshot(req.attempts_dir)
         prompt = self._build_prompt(req)
         # THE DEGRADATION, wired rather than merely declared. agy emits
         # ONE json envelope when it is finished and nothing before it,
@@ -915,7 +979,8 @@ class AntigravityCliProvider:
         # not.
         recovered = (status.upper() != "SUCCESS"
                      and str((envelope or {}).get("response") or "").strip()
-                     and _agent_artifact_present(req.attempts_dir))
+                     and _agent_artifact_present(req.attempts_dir,
+                                                planted))
         if recovered:
             print(f"[llm:agy] {req.kind}: status={status} but the agent "
                   f"recovered and left its artifact — "
@@ -932,18 +997,25 @@ class AntigravityCliProvider:
             return code
 
         # SUCCESS is not proof — see THE HAZARD.
-        if not _agent_artifact_present(req.attempts_dir):
+        if not _agent_artifact_present(req.attempts_dir, planted):
             try:
                 left = sorted(p.name for p in req.attempts_dir.iterdir())
             except OSError:
                 left = []
+            denials = _denied_actions(home)
             print(f"[llm:agy] {req.kind}: status=SUCCESS but the agent "
                   f"left no usable artifact in {req.attempts_dir} "
-                  f"(files: {', '.join(left) or 'none'}) — a tool was "
-                  f"almost certainly auto-denied (no matching "
-                  f"permissions.allow rule). Retrying will not help; fix "
-                  f"~/.gemini/antigravity-cli/settings.json.", flush=True)
-            _write_spawn_stderr(req.attempts_dir, raw, RC_MISCONFIGURED)
+                  f"(files: {', '.join(left) or 'none'}) — "
+                  + (f"agy denied: {'; '.join(denials)}" if denials else
+                     "a tool was almost certainly auto-denied (no "
+                     "matching permissions.allow rule)")
+                  + ". Retrying will not help; the envelope is wrong, "
+                    "not the agent.", flush=True)
+            _write_spawn_stderr(
+                req.attempts_dir,
+                raw + ("\n\n[permission denials from agy's own log]\n"
+                       + "\n".join(denials) if denials else ""),
+                RC_MISCONFIGURED)
             return RC_MISCONFIGURED
         return 0
 

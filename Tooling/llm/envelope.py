@@ -48,6 +48,24 @@ class Envelope:
     mcp_config_path: "Path | None"
     #: Subtrees this spawn may NOT read. See `read_deny_roots`.
     read_deny_roots: "tuple[Path, ...]" = ()
+    #: Named subtrees this spawn may read BEYOND its kind's own scope —
+    #: the Adversary's `proofs/` and `Papers/`. It lives here, in the
+    #: provider-independent envelope, because the caller's version
+    #: (`LLMRequest.extra_read_dirs`) was rendered by claude and silently
+    #: dropped by agy and codex, and on agy a read with no matching allow
+    #: is soft-denied, which ENDS THE TURN. Measured 2026-08-15: the
+    #: judge read every file in its projection, called `list_dir` on the
+    #: proofs directory its own prompt calls "readable in place", and the
+    #: CLI shut down 14 ms later — twelve times, ~1.9M input tokens,
+    #: surfaced only as `agent_no_output`.
+    #:
+    #: EXACTLY these directories, never the workspace. The Adversary's
+    #: `problem_dir` is its projection on purpose, so `_workspace_of`
+    #: returns None on purpose; restoring a workspace-wide read to make
+    #: that None go away would hand the judge the live problem dir,
+    #: sibling attempts and the author's scratch — the isolation that
+    #: fresh-per-round exists to keep.
+    read_allow_roots: "tuple[Path, ...]" = ()
 
     def write_roots_env(self) -> str:
         """`ASTERISM_SPAWN_WRITE_ROOTS` value (spawn_guard's parser)."""
@@ -297,4 +315,6 @@ def envelope_for(req: LLMRequest, *, library_dir: "Path | None" = None
                          if req.mcp_config_path is not None else None),
         read_deny_roots=read_deny_roots(workspace_of(problem_dir),
                                         problem_dir),
+        read_allow_roots=tuple(Path(p)
+                               for p in (req.extra_read_dirs or ())),
     )
