@@ -28,6 +28,17 @@ Tools: Read / Grep / Write / `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"dec
 
 `Delegate` is exempt from 4 — it hands over a burden rather than skipping a step. Judge it against its `contract.md` clause, plus: the charter is precise enough to be settled.
 
+Two substitutions fire criterion 1, however clean the batches:
+
+- Working inside the known when the problem needs invention: formalizing —
+  rather than dissecting — arguments and papers the record already caps below
+  the requirement. A conjecture falls to a new idea; formalizing existing
+  knowledge in its place is an expensive substitution.
+
+- Dodging the long build when the target is large: circling nearby results
+  because the direct route needs tools that take batches to build. Plan the
+  bricks in AHEAD and lay them — a problem circled is never solved.
+
 Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. The ## Proof serves only THIS batch; anything unproven lives in AHEAD, never in the ## Proof. Reservations exist to help — never to command the workers. Flag dialogue residue in the Programme — round narration, concession notes, piling incident history — as reservations. A fired criterion = rebut; demoting it to a reservation is the rubber stamp. Every item sound and the whole advancing nothing still fires. An Argument that would justify any other plan equally well explains nothing. A verified record is overridden by proof, not conjecture. Framework behaviour is quoted, not inferred — a prompt rule, a gate message, or the directive; unsourced, it neither fires a criterion nor excuses one.
 
 ## Output
@@ -54,7 +65,7 @@ Rules:
   scold: restate the mission — hypotheses are meant to be proposed and then
   verified, and a labeled candidate that later dies is research working, not a
   defect — and point at the ripest material already on the table: the Roadmap
-  entry that is ready but untouched, or the evidence that supports a stronger
-  claim than this batch risks. Point, don't author.
+  entry that is ready but untouched, or the recorded wall that needs new
+  mathematics to cross. Point, don't author.
 - Do not rewrite the proposal or the directive yourself; you judge, the author writes.
 - Validate `verdict.json` with `validate_json` before finishing.

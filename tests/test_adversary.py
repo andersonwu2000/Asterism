@@ -851,6 +851,32 @@ def _rendered_subgroup_section() -> str:
                      + _ctx._section_groups_in_flight(conn, "p", top))
 
 
+def test_the_two_antipatterns_are_one_text_in_four_files() -> None:
+    """Both sides must name the same two failure modes in the same
+    words — the author is told they wear the look of progress, the judge
+    is told they fire criterion 1, and if those descriptions drift the
+    judge rebuts on a shape the Strategist was told to write.
+
+    The disease is the one `research_mission_design.md` opens with —
+    "decently walking known ground forever" — and the union_closed
+    entropy track is the live instance: its own Roadmap records a
+    ceiling at ψ ≈ 0.382 while the requirement is 1/2, and batches kept
+    formalizing under it. Only the lead line differs between the two
+    sides; these two bullets do not.
+    """
+    root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
+    files = [root / "adversary" / "adversary.md"] + [
+        root / "strategist" / f for f in
+        ("routine.md", "inject_batch_done.md", "pending_review.md")]
+    for phrase in ("an expensive substitution",
+                   "a problem circled is never solved",
+                   "the record already caps below",
+                   "Plan the\n  bricks in AHEAD and lay them"):
+        for f in files:
+            assert phrase in f.read_text(encoding="utf-8"), (
+                f"{f.name} lost: {phrase!r}")
+
+
 def test_adversary_contract_section_matches_wake_prompts() -> None:
     """07-29 (A): the judge carries a verbatim copy of the Strategist's
     decision-kind contract so quoted contract clauses are checkable
