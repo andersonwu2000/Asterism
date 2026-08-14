@@ -265,17 +265,121 @@ def test_the_thread_map_round_trips(tmp_path: Path) -> None:
 def test_usage_lands_in_the_shape_spawn_usage_reads() -> None:
     """One writer, not two: `_persist_parser_state` already writes this
     file WITH the trap fields the retry helper reads, so the provider
-    must not write a usage-only version over the top of it."""
+    must not write a usage-only version over the top of it.
+
+    AND IN CLAUDE'S UNITS. `input_tokens` means "the fresh part" to
+    every consumer of `spawn_usage`; codex reports the WHOLE prompt
+    there with `cached_input_tokens` as a subset of it (measured on the
+    08-12 rollout, 28/28 turns: `total == input + output`). Copying both
+    across counted the cached prompt twice, so the fresh figure is the
+    difference.
+    """
     from Tooling.llm.stream_parser import StreamParser
     p = StreamParser(dialect="codex")
     p.feed_line('{"type":"turn.started"}')
     p.feed_line('{"type":"turn.completed","usage":{"input_tokens":7,'
                 '"cached_input_tokens":2,"cache_write_input_tokens":1,'
                 '"output_tokens":3}}')
-    assert p.usage() == {"turns": 1, "input_tokens": 7, "output_tokens": 3,
+    assert p.usage() == {"turns": 1, "input_tokens": 5, "output_tokens": 3,
                          "cache_read_input_tokens": 2,
                          "cache_creation_input_tokens": 1}
     assert not hasattr(codex_cli, "_record_usage")
+
+
+def test_a_resumed_spawn_is_billed_only_for_its_own_turns(
+    tmp_path: Path,
+) -> None:
+    """Codex re-reports the WHOLE conversation's totals on every resume,
+    and `spawn_usage` sums the rows it is handed. Without a baseline the
+    second stage re-bills the first — the 2.0x over-count measured on
+    Test.provider_probe on 2026-08-15, where one formalizer's three
+    stage rows summed to 1.11M prompt tokens against a session total of
+    550,619 (checked against the rollout, which agreed with the LAST row
+    exactly).
+    """
+    from Tooling.llm.stream_parser import StreamParser
+
+    # Stage 1, cold: nothing recorded for this thread yet.
+    p1 = StreamParser(dialect="codex",
+                      usage_baseline=codex_cli._usage_baseline(
+                          tmp_path, None))
+    p1.feed_line('{"type":"turn.completed","usage":{"input_tokens":22138,'
+                 '"cached_input_tokens":55296,"output_tokens":608}}')
+    assert p1.usage()["output_tokens"] == 608
+    codex_cli._remember_usage(tmp_path, "th-1", p1.cumulative_usage())
+
+    # Stage 2 resumes it. Codex reports the conversation so far; the
+    # spawn spent the difference.
+    p2 = StreamParser(dialect="codex",
+                      usage_baseline=codex_cli._usage_baseline(
+                          tmp_path, "th-1"))
+    p2.feed_line('{"type":"turn.completed","usage":{"input_tokens":80347,'
+                 '"cached_input_tokens":470272,"output_tokens":3187}}')
+    u2 = p2.usage()
+    assert u2["output_tokens"] == 3187 - 608
+    assert u2["cache_read_input_tokens"] == 470272 - 55296
+    # And the two rows now SUM to the session total, which is what a
+    # summing ledger needs them to do.
+    u1 = p1.usage()
+    assert (u1["cache_read_input_tokens"] + u2["cache_read_input_tokens"]
+            == 470272)
+    assert u1["output_tokens"] + u2["output_tokens"] == 3187
+
+
+def test_a_cold_thread_carries_no_baseline(tmp_path: Path) -> None:
+    """A fresh conversation starts the provider's count at zero, so the
+    whole figure belongs to this spawn. The Adversary depends on it: a
+    fresh projection per round means a new thread every time."""
+    assert codex_cli._usage_baseline(tmp_path, None) == {}
+    assert codex_cli._usage_baseline(tmp_path, "never-seen") == {}
+    codex_cli._remember_usage(tmp_path, "th-a", {"output_tokens": 5})
+    assert codex_cli._usage_baseline(tmp_path, "th-b") == {}
+    assert codex_cli._usage_baseline(tmp_path, "th-a") == {"output_tokens": 5}
+
+
+def test_two_threads_in_one_directory_do_not_cross_bill(
+    tmp_path: Path,
+) -> None:
+    """One pipeline id can carry two conversations — the Strategist's
+    and, under it, the judge's. Measured on 08-15: pipeline 40366c8a
+    held a 410k strategist session and a 545k adversary session. A
+    ledger keyed by pipeline rather than by thread would subtract one
+    from the other."""
+    codex_cli._remember_usage(tmp_path, "th-strategist",
+                              {"output_tokens": 6226})
+    codex_cli._remember_usage(tmp_path, "th-adversary",
+                              {"output_tokens": 6957})
+    assert codex_cli._usage_baseline(tmp_path, "th-strategist") == {
+        "output_tokens": 6226}
+    assert codex_cli._usage_baseline(tmp_path, "th-adversary") == {
+        "output_tokens": 6957}
+
+
+def test_a_corrupt_ledger_does_not_break_the_spawn(tmp_path: Path) -> None:
+    """Telemetry must never fail a spawn: an unreadable ledger means no
+    baseline (this spawn over-reports once), not a crash."""
+    (tmp_path / codex_cli._USAGE_LEDGER).write_text("{not json",
+                                                    encoding="utf-8")
+    assert codex_cli._usage_baseline(tmp_path, "th-1") == {}
+    codex_cli._remember_usage(tmp_path, "th-1", {"output_tokens": 3})
+    assert codex_cli._usage_baseline(tmp_path, "th-1") == {"output_tokens": 3}
+
+
+def test_a_fully_cached_turn_reports_no_fresh_input() -> None:
+    """The shape that made this visible: a resumed codex turn re-sends
+    the whole conversation and gets ~97% of it back from cache. Under
+    the old mapping that turn read as 35k FRESH tokens plus 34k cached —
+    a spawn that never happened, and a cache-hit rate of 49% where the
+    truth is 97%."""
+    from Tooling.llm.stream_parser import StreamParser
+    p = StreamParser(dialect="codex")
+    p.feed_line('{"type":"turn.completed","usage":{"input_tokens":35388,'
+                '"cached_input_tokens":34560,"output_tokens":166}}')
+    u = p.usage()
+    assert u["input_tokens"] == 828
+    assert u["cache_read_input_tokens"] == 34560
+    # The prompt is accounted for exactly once.
+    assert u["input_tokens"] + u["cache_read_input_tokens"] == 35388
 
 
 # ------------------------------------------------------ the home tree

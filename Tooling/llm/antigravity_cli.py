@@ -541,7 +541,16 @@ def _record_usage(attempts_dir: Path, envelope: dict) -> None:
     """Translate agy's usage block into the `_parser_state.json` shape
     `agent.runtime._record_spawn_usage` reads, so judge/strategist cost
     lands in `spawn_usage` exactly like a claude spawn (#107 / #126).
-    agy reports it directly — no stream parsing needed."""
+    agy reports it directly — no stream parsing needed.
+
+    PER CALL, NOT PER CONVERSATION — checked rather than assumed when
+    codex turned out to be the other way (DELTA 10 there). agy resumes a
+    conversation id just as codex resumes a thread, so the question is
+    the same one; the answer is different. Measured over the 95 recorded
+    agy pipelines carrying more than one spawn: 62 have a LATER row with
+    fewer output tokens than an earlier one, which a running total
+    cannot do. So these figures are increments and `spawn_usage` may sum
+    them, with no baseline to subtract."""
     u = envelope.get("usage") or {}
     try:
         (attempts_dir / "_parser_state.json").write_text(

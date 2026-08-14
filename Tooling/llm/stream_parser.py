@@ -100,10 +100,17 @@ class StreamParser:
         "todo_list",
     })
 
-    def __init__(self, dialect: str = "claude") -> None:
+    def __init__(self, dialect: str = "claude",
+                 usage_baseline: "dict[str, int] | None" = None) -> None:
         if dialect not in ("claude", "codex"):
             raise ValueError(f"unknown stream dialect {dialect!r}")
         self._dialect = dialect
+        # What the PROVIDER had already reported for this conversation
+        # before this spawn started. Only a backend whose usage figures
+        # are session-cumulative needs it (codex resumes a thread and
+        # re-reports the whole conversation's totals); claude reports
+        # per-call and passes nothing, so the default is a no-op.
+        self._usage_baseline = dict(usage_baseline or {})
         self._lock = threading.Lock()
         now = time.monotonic()
         self._state = ParserState.IDLE
@@ -275,15 +282,39 @@ class StreamParser:
                     self._set_state(ParserState.IN_MESSAGE)
             elif etype == "turn.completed":
                 u = obj.get("usage") or {}
-                for src, dst in (("input_tokens", "input_tokens"),
-                                 ("cached_input_tokens",
-                                  "cache_read_input_tokens"),
-                                 ("cache_write_input_tokens",
-                                  "cache_creation_input_tokens"),
-                                 ("output_tokens", "output_tokens")):
-                    v = u.get(src)
-                    if isinstance(v, int):
-                        self._usage[dst] += v
+                # CODEX'S `input_tokens` INCLUDES THE CACHED ONES; claude's
+                # excludes them. Measured on the 2026-08-12 probe rollout,
+                # 28/28 turns: `total_tokens == input_tokens +
+                # output_tokens`, with `cached_input_tokens` running up to
+                # 97% of `input_tokens` inside that same figure. Copying
+                # both fields across therefore counted the cached prompt
+                # TWICE and left `input_tokens` meaning "the whole prompt"
+                # on one backend and "the fresh part" on the other — and
+                # every consumer (cost report, cache-hit rate, the quota
+                # ledger) reads that field as fresh.
+                # ASSIGNED, NOT ACCUMULATED. Codex's figures are the
+                # SESSION's running totals, not this turn's — the same
+                # numbers grow across `codex exec resume`, so `+=` counts
+                # the whole conversation again on every turn. What this
+                # spawn actually spent is the difference against the
+                # baseline (see `usage`).
+                cached = u.get("cached_input_tokens")
+                cached = cached if isinstance(cached, int) else 0
+                total_in = u.get("input_tokens")
+                if isinstance(total_in, int):
+                    self._usage["input_tokens"] = max(0, total_in - cached)
+                self._usage["cache_read_input_tokens"] = cached
+                # `cache_write_input_tokens` has been 0 in every turn
+                # observed, so whether it too sits inside `input_tokens`
+                # is UNMEASURED. It is carried across as-is rather than
+                # subtracted on a guess; the first non-zero one should be
+                # checked against `total_tokens` before this is settled.
+                w = u.get("cache_write_input_tokens")
+                if isinstance(w, int):
+                    self._usage["cache_creation_input_tokens"] = w
+                out = u.get("output_tokens")
+                if isinstance(out, int):
+                    self._usage["output_tokens"] = out
                 self._messages_seen += 1
                 self._usage["turns"] += 1
                 self._turn_output = 0
@@ -297,9 +328,30 @@ class StreamParser:
                 self._set_state(ParserState.FINALIZED)
 
     def usage(self) -> "dict[str, int]":
-        """Per-spawn token totals accumulated so far (task #7). An
-        in-flight turn's output is included so a TIMEOUT kill still
-        reports what was spent."""
+        """What THIS SPAWN spent (task #7). An in-flight turn's output is
+        included so a TIMEOUT kill still reports what was spent.
+
+        On a backend that reports session-cumulative figures, this spawn's
+        share is the provider's number minus what it had already reported
+        for the same conversation — otherwise a resumed session re-bills
+        every earlier turn each time it wakes. Measured on the 08-15
+        codex probe before the baseline existed: one formalizer pipeline's
+        three stage rows summed to 1.11M prompt tokens against a session
+        total of 550,619, so the ledger read 2x the truth. `spawn_usage`
+        SUMS rows, so it has to be given increments.
+        """
+        with self._lock:
+            u = dict(self._usage)
+            u["output_tokens"] += self._turn_output
+            for k, base in self._usage_baseline.items():
+                if k in u and k != "turns":
+                    u[k] = max(0, u[k] - int(base))
+            return u
+
+    def cumulative_usage(self) -> "dict[str, int]":
+        """What the PROVIDER reported for the conversation, baseline
+        included — the value to carry forward as the next resume's
+        baseline. Identical to `usage` on a per-call backend."""
         with self._lock:
             u = dict(self._usage)
             u["output_tokens"] += self._turn_output

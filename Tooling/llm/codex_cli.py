@@ -3,7 +3,7 @@
 Behaviour is aligned to `claude_cli` wherever codex allows it, because
 claude is the backend with the most production hours and every deviation
 is a place where a failure looks different from the one the framework
-already knows how to read. Nine deviations were forced by the CLI, and
+already knows how to read. Ten deviations were forced by the CLI, and
 each is marked DELTA below and in the code:
 
   DELTA 1  NO READ TOOL AT ALL. With `shell_tool` and `apps` off (see
@@ -56,6 +56,18 @@ each is marked DELTA below and in the code:
            `codex exec` exit rather than run a worker with no tools —
            the loud failure the framework prefers over a silent one.
            claude has no equivalent.
+  DELTA 10 USAGE IS THE SESSION'S, NOT THE CALL'S — twice over. Its
+           `input_tokens` INCLUDES `cached_input_tokens` where claude's
+           excludes them, and the figures are the whole conversation's
+           running totals, re-reported in full by every `codex exec
+           resume`. `spawn_usage` sums the rows it is handed and reads
+           `input_tokens` as the fresh part, so both had to be undone
+           at the source: the parser subtracts the cached share, and a
+           per-thread ledger (`_USAGE_LEDGER`, beside `_SESSION_MAP`)
+           carries each conversation's running totals so a resumed
+           spawn is billed only for its own turns. Measured 2026-08-15
+           on Test.provider_probe: 2.0x over-count per pipeline, and a
+           cache-hit rate of 49% where the truth was 97%.
 
 What is NOT a delta, and is load-bearing because of it: the prompt is
 built by `claude_cli`'s own two helpers. They compose the template plus
@@ -371,6 +383,56 @@ def _remember_thread(attempts_dir: Path, sid: "str | None",
     try:
         (attempts_dir / _SESSION_MAP).write_text(json.dumps(data),
                                                  encoding="utf-8")
+    except OSError:
+        pass
+
+
+#: Per-thread running totals, so a resumed spawn is billed for its own
+#: turns rather than for the conversation. Beside `_SESSION_MAP` and
+#: per-pipeline for the same reason (DELTA 2): the Strategist's rounds
+#: share a directory and resume one thread; each Adversary round gets a
+#: fresh projection and starts a new one.
+_USAGE_LEDGER = "_codex_usage.json"
+
+
+def _usage_baseline(attempts_dir: Path, thread_id: "str | None") -> dict:
+    """What codex has already reported for `thread_id`.
+
+    Empty for a cold call — a new thread starts the count at zero, so
+    the whole figure is this spawn's. THIS IS THE WHOLE OF DELTA 10:
+    codex's `usage` block is the SESSION's totals and it keeps growing
+    across `codex exec resume`, while `spawn_usage` sums the rows it is
+    given. Handing it the raw figure billed every earlier turn again on
+    every wake — measured 2026-08-15 at 2.0x on a three-stage formalizer.
+    """
+    if not thread_id:
+        return {}
+    try:
+        data = json.loads(
+            (attempts_dir / _USAGE_LEDGER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    got = data.get(thread_id) if isinstance(data, dict) else None
+    return got if isinstance(got, dict) else {}
+
+
+def _remember_usage(attempts_dir: Path, thread_id: "str | None",
+                    cumulative: dict) -> None:
+    """Carry this conversation's running totals to the next resume."""
+    if not thread_id or not cumulative:
+        return
+    try:
+        raw = (attempts_dir / _USAGE_LEDGER).read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    data[thread_id] = {k: int(v) for k, v in cumulative.items()
+                       if isinstance(v, int)}
+    try:
+        (attempts_dir / _USAGE_LEDGER).write_text(json.dumps(data),
+                                                  encoding="utf-8")
     except OSError:
         pass
 
@@ -692,18 +754,26 @@ class CodexCliProvider:
         with _live_procs_lock:
             _live_procs.add(proc)
         try:
-            return self._run_proc(req, proc, prompt, home)
+            # `prior` is the thread this call resumes, or "" when cold —
+            # which is exactly the key its running totals are filed
+            # under, so the baseline is known BEFORE the stream starts
+            # rather than inferred from it.
+            return self._run_proc(req, proc, prompt, home,
+                                  resume_thread=prior if resuming else None)
         finally:
             with _live_procs_lock:
                 _live_procs.discard(proc)
 
     def _run_proc(self, req: LLMRequest, proc: subprocess.Popen,
-                  prompt: str, home: Path) -> int:
+                  prompt: str, home: Path,
+                  resume_thread: "str | None" = None) -> int:
         from .claude_cli import _watchdog, _persist_parser_state
         from .stream_parser import StreamParser
 
         events = _Events()
-        parser = StreamParser(dialect="codex")
+        parser = StreamParser(
+            dialect="codex",
+            usage_baseline=_usage_baseline(req.attempts_dir, resume_thread))
         stdout_chunks: "list[str]" = []
         stderr_chunks: "list[str]" = []
 
@@ -767,6 +837,12 @@ class CodexCliProvider:
         if events.thread_id:
             _remember_thread(req.attempts_dir, req.session_id,
                              events.thread_id)
+            # …and what the conversation has cost SO FAR, which is the
+            # next resume's baseline. Written after the persist above so
+            # a crash between the two loses the carry-forward (the next
+            # spawn over-reports) rather than the spawn's own row.
+            _remember_usage(req.attempts_dir, events.thread_id,
+                            parser.cumulative_usage())
 
         # The quota reading is taken BEFORE any rc branch: a spawn that
         # times out still spent tokens, and its rollout still carries the
