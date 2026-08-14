@@ -110,7 +110,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 [{"kind": "ConfirmShelve", "target_goal_id": "family_card_eq_finrank",
   "reason": "Branch reinvents Module.finrank_eq_card_basis (mathlib has)."},
  {"kind": "Inject", "target_goal_id": "extended_jordan_family",
-  "proof": "Roadmap: jordan family assembly\nSkip the card-decomposition chain; cite `Module.finrank_eq_card_basis` directly. See the Conventions entry on finrank/Basis API for signature."}]
+  "proof": "Skip the card-decomposition chain; cite `Module.finrank_eq_card_basis` directly. See the Conventions entry on finrank/Basis API for signature."}]
 ```
 
 ```json
@@ -118,5 +118,5 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 [{"kind": "ConfirmShelve", "target_goal_id": "lu_step_assembly",
   "reason": "Six dead strategies, one complaint: every sub-goal replicates the same witness term."},
  {"kind": "Inject",
-  "proof": "Roadmap: LU witness packaging\n## Need\nA `noncomputable def lu_assembled_lower` packaging `Matrix.reindex e e (Matrix.fromBlocks 1 0 w L')` so decomposition sub-goals can cite the witness by name instead of replicating it. (Grep + Loogle confirmed no mathlib analogue.)"}]
+  "proof": "## Need\nA `noncomputable def lu_assembled_lower` packaging `Matrix.reindex e e (Matrix.fromBlocks 1 0 w L')` so decomposition sub-goals can cite the witness by name instead of replicating it. (Grep + Loogle confirmed no mathlib analogue.)"}]
 ```

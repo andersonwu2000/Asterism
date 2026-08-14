@@ -99,7 +99,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 ```json
 // tactical — agent missed existing mathlib API
 [{"kind": "Inject", "target_goal_id": "sub_lemma_X",
-  "proof": "Roadmap: sub-lemma X\nAgent shelved citing 'mathlib lacks X', but Grep confirmed `Module.End.X` exists. Cite it directly — don't reconstruct."}]
+  "proof": "Agent shelved citing 'mathlib lacks X', but Grep confirmed `Module.End.X` exists. Cite it directly — don't reconstruct."}]
 ```
 
 ```json
@@ -107,15 +107,15 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 [{"kind": "ConfirmShelve", "target_goal_id": "child_lemma",
   "reason": "Agent's disproof is correct: the hypotheses constrain A and B jointly, never B alone. The parent split asks the impossible."},
  {"kind": "Inject", "target_goal_id": "parent_goal",
-  "proof": "Roadmap: joint invariant\nReframe the parent: carry A and B as one invariant and induct so both co-evolve, instead of splitting B off into a sub-goal that loses the coupling."}]
+  "proof": "Reframe the parent: carry A and B as one invariant and induct so both co-evolve, instead of splitting B off into a sub-goal that loses the coupling."}]
 ```
 
 ```json
 // missing prereq(s) → mint(s) + park (N mints allowed per batch)
 [{"kind": "Inject",
-  "proof": "Roadmap: equidecomp composition\n## Need\nA composition lemma for `Equidecomp.trans` over partial bijections (Grep + loogle confirmed missing)."},
+  "proof": "## Need\nA composition lemma for `Equidecomp.trans` over partial bijections (Grep + loogle confirmed missing)."},
  {"kind": "Inject",
-  "proof": "Roadmap: equidecomp composition\n## Need\nThe inverse lemma for `Equidecomp.symm`, independent of the above."},
+  "proof": "## Need\nThe inverse lemma for `Equidecomp.symm`, independent of the above."},
  {"kind": "ConfirmShelve", "target_goal_id": 1743,
   "reason": "Parked pending both minted bricks; reassess after they land."}]
 ```
