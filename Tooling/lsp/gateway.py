@@ -1256,7 +1256,7 @@ _DECL_SLUG_RE_TMPL = (
 
 
 def _collect_referenced_sibling_stubs(
-    attempts_dir: Path, content: str,
+    attempts_dir: Path, content: str, own_name: "str | None" = None,
 ) -> "list[tuple[str, str]]":
     """Sibling `new_<slug>.lean` stubs in `attempts_dir` that `content`
     REFERENCES (uses `<slug>` as an identifier) but does NOT itself
@@ -1274,6 +1274,22 @@ def _collect_referenced_sibling_stubs(
         return out
     texts: "dict[str, str]" = {}
     for stub in stubs:
+        # THE SESSION'S OWN TARGET IS NOT A SIBLING, and file identity is
+        # the only test that says so for every seat. The decl-name guard
+        # below ("does `content` declare `<slug>`") holds for Backward,
+        # whose stub file and theorem share a name — and never for
+        # Forward, whose target is `new_forward.lean` while its theorem
+        # is whatever the agent invented. So the target's DISK copy was
+        # inlined ahead of the live content, the unit carried the
+        # declaration twice, and the tools reported "has already been
+        # declared" against the very line the agent had just written.
+        # Latent since 2026-06-18; 45 reports on 08-13/14 alone, all
+        # Forward, none Backward. The reference test that let it in is a
+        # bare word match over the whole text INCLUDING COMMENTS, and
+        # the word came from the framework's own seed scaffold
+        # (`pipeline/forward.py`: "-- Write ONE forward lemma here").
+        if own_name is not None and stub.name == own_name:
+            continue
         slug = stub.stem[len("new_"):]
         if not slug:
             continue
@@ -1484,7 +1500,7 @@ def _parity_for(
 
 def _build_compilation_unit(
     content: str, problem: str, workspace: "Path", attempts_dir: "Path",
-    extra_opens: "list[str]" = (),
+    extra_opens: "list[str]" = (), own_name: "str | None" = None,
 ) -> "tuple[str, list[int | None], list[str]]":
     """The SINGLE compilation state every in-spawn LSP tool elaborates:
     framework imports + commit's proved-sibling auto-imports + `Defs.lean`
@@ -1504,7 +1520,8 @@ def _build_compilation_unit(
     `line_map` (even with no siblings: imports + opens are still prefix), so
     every tool remaps uniformly."""
     siblings = _toposort_siblings(
-        _collect_referenced_sibling_stubs(attempts_dir, content))
+        _collect_referenced_sibling_stubs(attempts_dir, content,
+                                          own_name))
     sib_texts = [t for _, t in siblings]
     declared = {s for s, _ in siblings}
     merged, line_map = _inline_sibling_stubs(
@@ -1595,7 +1612,7 @@ def _compilation_for(meta: SessionMetadata) -> "tuple[str, list[int | None]]":
         return meta.file_content, list(range(1, n + 1))
     merged, line_map, _ = _build_compilation_unit(
         meta.file_content, meta.problem, meta.workspace,
-        meta.target_path.parent)
+        meta.target_path.parent, own_name=meta.target_path.name)
     return merged, line_map
 
 
@@ -1706,14 +1723,25 @@ def _offload_to_thread(fn):
     return wrapper
 
 
-def _stub_fingerprint(attempts_dir: "Path") -> tuple:
-    """(name, mtime_ns, size) per `new_*.lean` in the attempts dir,
-    sorted — the sibling-stub half of the compilation unit's identity.
+def _stub_fingerprint(attempts_dir: "Path",
+                      own_name: "str | None" = None) -> tuple:
+    """(name, mtime_ns, size) per SIBLING `new_*.lean`, sorted — the
+    sibling half of the compilation unit's identity.
+
+    The session's own target is excluded, and that is not a detail: for
+    the Forward seat the target IS a `new_*.lean`, so every `apply_edit`
+    write-through moved the fingerprint, cleared the slot's ownership,
+    and sent the next read down the cold path to re-elaborate the unit
+    it had just elaborated. The fingerprint's job is "did a sibling
+    change under me"; the target's own edits are already tracked by the
+    mirror two lines below.
+
     OSError → () (best-effort; an unreadable dir just reads as empty)."""
     try:
         return tuple(sorted(
             (f.name, f.stat().st_mtime_ns, f.stat().st_size)
-            for f in attempts_dir.glob("new_*.lean")))
+            for f in attempts_dir.glob("new_*.lean")
+            if own_name is None or f.name != own_name))
     except OSError:
         return ()
 
@@ -1742,7 +1770,8 @@ def _resync_buffer_from_disk(meta: "SessionMetadata") -> "str | None":
     # Sibling-stub freshness rides the same resync (agent_feedback #4a):
     # a stub written AFTER the last elaboration changes the merged unit;
     # invalidate slot ownership so the next acquire re-elaborates.
-    fp = _stub_fingerprint(meta.target_path.parent)
+    fp = _stub_fingerprint(meta.target_path.parent,
+                           meta.target_path.name)
     if fp != meta.stub_fingerprint:
         meta.stub_fingerprint = fp
         for _slot in _state.workers:
@@ -2855,7 +2884,8 @@ def validate_file(content: str = "") -> str:
     # even with no siblings) so diagnostics remap uniformly.
     full_content, line_map, inlined_slugs = _build_compilation_unit(
         content, meta.problem, meta.workspace, meta.target_path.parent,
-        extra_opens=_harvest_open_lines(meta.file_content))
+        extra_opens=_harvest_open_lines(meta.file_content),
+        own_name=meta.target_path.name)
 
     t0 = time.perf_counter()
     diags: list = []
@@ -2977,7 +3007,7 @@ def validate_file(content: str = "") -> str:
     attempts_dir = meta.target_path.parent
     stub_map: "dict[str, str]" = {}
     for _slug, _text in _collect_referenced_sibling_stubs(
-            attempts_dir, content):
+            attempts_dir, content, meta.target_path.name):
         stub_map[_slug] = _text
     # content itself may BE one of the batch stubs (agent validates
     # new_<slug>.lean directly) — include it under its own slug.
