@@ -541,6 +541,18 @@ export interface ManifestData {
   pending_amend: boolean
 }
 
+/** the models one backend can run, as offered to the picker.
+ * `source: 'probe'` means the backend listed them itself (agy does);
+ * 'declared' means we keep the list because it cannot be asked, and
+ * the picker says so — a stale list is how a dead model name gets
+ * chosen. */
+export interface ModelGroup {
+  provider: string
+  models: string[]
+  source: 'probe' | 'declared' | string
+  installed: boolean
+}
+
 export interface ConfigSetting {
   key: string
   yaml: string | number | null
@@ -550,6 +562,35 @@ export interface ConfigSetting {
   /** present on .model keys: the UI offers these (typo-proof select);
    * the resolved value is always included */
   choices?: string[]
+  /** present on .model keys: the same offer, grouped by the backend
+   * that runs each name. ONE picker decides both — a seat's backend is
+   * implied by its model, so a second control would draw the fact
+   * twice and let the two disagree. */
+  groups?: ModelGroup[]
+}
+
+/** One backend, as `/api/meta` reports it: what it DECLARES about
+ * itself (how it installs, how it authenticates, whether that can even
+ * be checked) plus what this machine has of it. One shape for every
+ * vendor — the console had a component each until codex made three. */
+export interface ProviderRow {
+  name: string
+  installed: boolean
+  path: string | null
+  install_method: string
+  install_command: string | null
+  auth_flow: string
+  auth_state: 'readable' | 'opaque' | 'undeclared' | string
+  /** it declares a way to ask whether the account works */
+  can_probe: boolean
+  seats: { seat: string; model: string | null }[]
+  /** claude only: its session is a file, so it can say */
+  logged_in?: boolean
+  subscription?: string | null
+  /** antigravity only: which credential wins, and nothing errors when
+   * it is the wrong one */
+  identity?: string | null
+  identity_path?: string | null
 }
 
 export interface Meta {
@@ -567,6 +608,8 @@ export interface Meta {
     path: string | null
     roles: { role: string; model: string | null }[]
   }
+  /** every declared backend, one shape each */
+  providers?: ProviderRow[]
   /** the console's Lean-layer self-check (can break long after install) */
   lean_ready: { lake: boolean; mathlib: boolean }
 }

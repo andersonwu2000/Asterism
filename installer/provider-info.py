@@ -57,6 +57,20 @@ def _measure(name: str, cap) -> dict:
         verdict, path = agy_identity()
         out["identity"] = verdict
         out["identity_path"] = str(path) if path else None
+    elif cap.install_method == caps.INSTALL_NOT_NEEDED:
+        # reached over HTTP: there is no binary, and "not installed"
+        # would be a lie about something that needs no installing
+        exe = ""
+    else:
+        # Only claude and agy own a resolver (they have install homes a
+        # fresh PATH can miss). For the rest the CLI is named after the
+        # provider — codex ships `codex`. This is a GUESS from the name,
+        # and it is the same guess `serve/app.py::_provider_rows` makes;
+        # they must not drift, which is why it wants to be declared
+        # (`exe_name` in capabilities) rather than written twice. Until
+        # then: identical logic, and this comment on both sides.
+        import shutil
+        exe = shutil.which(name)
     out["installed"] = exe is not None
     out["exe"] = exe
     if exe is None:

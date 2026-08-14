@@ -295,6 +295,13 @@ def resolve_workspace(explicit: "Path | str | None" = None) -> Path:
 #: nothing had chosen and nothing would read. Removed 2026-08-07; the
 #: keys still parse from an old yaml, they are simply not offered.
 #: `test_config_ui_keys.py` ratchets this set.
+#: the seats a model/provider can be chosen for. One list so the two
+#: key families cannot drift apart — a seat that can pick a model must
+#: be able to pick the backend that runs it (2026-08-14: three backends
+#: are live and `<kind>.provider` was yaml-only).
+UI_SEATS = ("formalizer", "strategist", "presearch", "librarian",
+            "scholar", "adversary")
+
 UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
     "formalizer.model": (str, "model that turns the argued proof into Lean (prove/split/mint)"),
     "strategist.model": (str, "model that plans the campaign"),
@@ -315,15 +322,53 @@ UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
     ),
 }
 
+#: `<kind>.provider` for every seat, appended rather than written out:
+#: the seat list above is the single source, so adding a seat cannot
+#: leave its backend unchoosable.
+for _seat in UI_SEATS:
+    UI_EDITABLE_KEYS[f"{_seat}.provider"] = (
+        str, f"which backend runs the {_seat} seat")
+del _seat
+
 #: dropdown choices for `.model` keys — what the UI offers (free text
 #: stays possible via yaml/.env; the UI's job is killing typos). Keep
 #: in sync with the model tiers the pipelines actually target.
-MODEL_CHOICES: "list[str]" = [
-    "claude-fable-5",
-    "claude-opus-4-8",
-    "claude-sonnet-5",
-    "claude-haiku-4-5",
-]
+MODEL_CHOICES_BY_PROVIDER: "dict[str, list[str]]" = {
+    "claude": [
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+    ],
+    # `agy models` is the live list (11 as of 2026-08-09) and the UI asks
+    # the CLI for it; these are the tiers we actually seat, so the picker
+    # is useful before the probe returns.
+    "antigravity": [
+        "gemini-3.1-pro-high",
+        "gemini-3.6-flash-high",
+        "gemini-3.6-flash-medium",
+    ],
+    "codex": [
+        "gpt-5.6-luna",
+    ],
+}
+
+#: claude's list under its old name — the one place that still wants a
+#: bare list is a caller that has not asked which provider it means.
+MODEL_CHOICES: "list[str]" = MODEL_CHOICES_BY_PROVIDER["claude"]
+
+
+def models_for(provider: "str | None") -> "list[str]":
+    """What the picker may offer for a seat on this provider.
+
+    Empty means "nobody wrote a list down" — and the UI must then take
+    free text rather than offering another backend's names. A select of
+    claude models on a `provider: codex` seat is the exact failure the
+    select was introduced to prevent (a wrong model name only explodes
+    at the next spawn), one level up (2026-08-14).
+    """
+    from ..llm import capabilities as _caps
+    return list(MODEL_CHOICES_BY_PROVIDER.get(_caps.canonical(provider), []))
 
 _INT_BOUNDS = {
     "dispatch.pool": (1, 32),
@@ -352,6 +397,14 @@ def ui_settings(workspace: Path) -> "list[dict[str, object]]":
             cur = cur.get(part) if isinstance(cur, dict) else None
         resolved = get(key, workspace=workspace,
                        cast=int if typ is int else None)
+        if key.endswith(".provider"):
+            # resolve it the way the ENGINE resolves it, or this row and
+            # the model row beside it — which asks with the default —
+            # would disagree about the same seat on the same page
+            resolved = get(key,
+                           env_var=f"ASTERISM_{key.split('.')[0].upper()}_PROVIDER",
+                           legacy_env=("ASTERISM_LLM_PROVIDER",),
+                           default="claude", workspace=workspace)
         if typ is bool and resolved is not None:
             # env/.env supplies a string, yaml a real bool — one shape out
             resolved = str(resolved).strip().lower() in (
@@ -360,14 +413,35 @@ def ui_settings(workspace: Path) -> "list[dict[str, object]]":
             "key": key, "yaml": cur, "resolved": resolved,
             "type": typ.__name__, "description": desc,
         }
-        if key.endswith(".model"):
-            choices = list(MODEL_CHOICES)
+        if key.endswith(".provider"):
+            from ..llm import capabilities as _caps
+            # every DECLARED backend, so a seat can be moved to one the
+            # machine has not installed yet — the accounts panel is where
+            # "installed" is answered, and refusing the choice here would
+            # make the two panels argue
+            row["choices"] = sorted(_caps.CAPABILITIES)
+            if resolved and str(resolved) not in row["choices"]:
+                row["choices"] = [str(resolved), *row["choices"]]
+        elif key.endswith(".model"):
+            # the models of THIS SEAT's backend. A flat claude-only list
+            # offered `claude-fable-5` for a `provider: codex` seat —
+            # the very failure a select was introduced to prevent, one
+            # level up (2026-08-14).
+            seat = key.split(".", 1)[0]
+            prov = get(f"{seat}.provider",
+                       env_var=f"ASTERISM_{seat.upper()}_PROVIDER",
+                       legacy_env=("ASTERISM_LLM_PROVIDER",),
+                       default="claude", workspace=workspace)
+            choices = models_for(prov)
             # the resolved value (env/yaml may name anything) is always
             # a legal choice — never render a select that can't show
             # the current truth
             if resolved and str(resolved) not in choices:
                 choices.insert(0, str(resolved))
+            # empty = nobody wrote a list for this backend; the UI must
+            # take free text rather than offer another backend's names
             row["choices"] = choices
+            row["provider"] = prov
         elif typ is bool:
             # booleans render as a two-way select, never a free-text box.
             # Unset resolves to the ENGINE's default (mirrored below) —

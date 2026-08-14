@@ -1539,8 +1539,39 @@ def test_config_get_and_set(workspace: Path) -> None:
         elif row["type"] == "bool":
             assert row["choices"] == ["true", "false"], k
             assert row["resolved"] in ("true", "false"), k
+        elif k.endswith(".provider"):
+            # writable, but NOT its own control: the model picker sets
+            # it, because a seat's backend is implied by its model
+            assert "claude" in row["choices"] and "codex" in row["choices"], k
+            assert row["resolved"] in row["choices"], k
         else:
             assert "choices" not in row, k
+    # a model picker offers ITS OWN SEAT's backend's names. A flat
+    # claude-only list offered `claude-fable-5` for a codex seat, which
+    # is the failure a select was introduced to prevent, one level up
+    # (2026-08-14).
+    # ONE picker: a model row carries every backend's names, GROUPED,
+    # so choosing a model chooses the backend that runs it. Two controls
+    # would let them disagree — `provider: codex` with `claude-sonnet-5`
+    # is a run that dies at its first spawn (owner, 2026-08-14).
+    for seat in ("formalizer", "strategist"):
+        groups = by_key[f"{seat}.model"]["groups"]
+        assert {g["provider"] for g in groups} >= {"claude", "codex"}
+        # every name appears under exactly one backend, or "which one
+        # runs this?" has no answer
+        seen: dict = {}
+        for g in groups:
+            assert g["models"], g["provider"]
+            assert g["source"] in ("probe", "declared")
+            for m in g["models"]:
+                assert m not in seen, (m, g["provider"], seen.get(m))
+                seen[m] = g["provider"]
+        # unset is a real state (the picker shows "not set — the
+        # provider's default"); a SET value must be pickable, or the
+        # control cannot show the current truth
+        cur = by_key[f"{seat}.model"]["resolved"]
+        if cur:
+            assert str(cur) in seen
     assert by_key["dispatch.quota_wait"]["resolved"] == "false"
     r = c.post("/api/config",
                json={"key": "strategist.model", "value": "claude-fable-5"})

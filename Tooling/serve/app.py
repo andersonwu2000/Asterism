@@ -229,6 +229,82 @@ def _schedule_process_exit(delay: float = 0.4) -> None:
     threading.Thread(target=_bye, daemon=True).start()
 
 
+#: How to ASK a backend what it can run. Only agy answers today
+#: (`agy models`, ~2.5s, zero tokens); `codex --help` carries `--model`
+#: and no listing subcommand, and claude takes any name. This is the
+#: third provider fact the console has had to keep on its own side —
+#: after install and auth — so it wants declaring (`models_argv`)
+#: rather than living here.
+_MODELS_ARGV: "dict[str, tuple[str, ...]]" = {"antigravity": ("models",)}
+
+#: the probe costs a subprocess, and the settings page polls
+_models_memo: "dict[str, object]" = {"at": 0.0, "value": None}
+
+
+def _model_groups(workspace: Path, *, probe: bool = False) -> "list[dict]":
+    """Every model a seat may be pointed at, grouped by the backend
+    that runs it.
+
+    One picker, not two. A seat's backend is not an independent choice
+    — it is implied by the model — so offering both invites them to
+    disagree (`provider: codex` with `claude-sonnet-5` is a run that
+    dies at its first spawn) and draws one fact twice.
+
+    `probe=False` is the POLLED answer and never spawns anything: the
+    settings page is read every minute and a subprocess on that path is
+    what the side-effect fence exists to catch (it caught this, and it
+    was right). Asking a backend to list its models is an action, on its
+    own endpoint, memoized — `source` says which answer you are looking
+    at, because a declared list is how a retired model name stays
+    pickable.
+    """
+    import subprocess
+    import time as _t
+    from ..llm import capabilities as _caps
+    from ..core import config as _cfg
+    now = _t.monotonic()
+    if _models_memo["value"] is not None and \
+            now - float(_models_memo["at"]) < 600:
+        return _models_memo["value"]  # type: ignore[return-value]
+    out: "list[dict]" = []
+    for name in sorted(_caps.CAPABILITIES):
+        cap = _caps.capabilities_for(name)
+        if cap.install_method == _caps.INSTALL_NOT_NEEDED:
+            continue  # an HTTP endpoint takes whatever the server serves
+        exe = None
+        if name == "claude":
+            exe = claude_exe()
+        elif name == "antigravity":
+            from ..llm.antigravity_cli import resolve_agy_executable
+            exe = resolve_agy_executable()
+        else:
+            import shutil
+            exe = shutil.which(name)
+        models = list(_cfg.models_for(name))
+        source = "declared"
+        argv = _MODELS_ARGV.get(name) if probe else None
+        if argv and exe:
+            try:
+                r = subprocess.run([exe, *argv], capture_output=True,
+                                   text=True, timeout=30)
+                if r.returncode == 0:
+                    # `agy models` prints "<slug>\t<pretty name>"
+                    live = [ln.split("\t")[0].strip()
+                            for ln in (r.stdout or "").splitlines()
+                            if ln.strip() and not ln.startswith(" ")]
+                    live = [m for m in live if m and " " not in m]
+                    if live:
+                        models, source = live, "probe"
+            except (OSError, subprocess.SubprocessError):
+                pass  # keep the declared list; never blank the picker
+        if models:
+            out.append({"provider": name, "models": models,
+                        "source": source, "installed": exe is not None})
+    if probe:
+        _models_memo.update(at=now, value=out)
+    return out
+
+
 def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
     workspace = workspace.resolve()
     app = FastAPI(title="Asterism", docs_url=None, redoc_url=None)
@@ -294,8 +370,84 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             "inbox_count": inbox_n,
             "claude": _claude_status(),
             "antigravity": _agy_status(),
+            "providers": _provider_rows(),
             "lean_ready": _lean_ready(),
         }
+
+    def _provider_rows() -> "list[dict]":
+        """One row per DECLARED backend: what it is, and what this
+        machine has of it.
+
+        Written when codex became the third (2026-08-14). The accounts
+        panel had a hand-written component per vendor, which is the
+        branch-per-backend `llm/capabilities.py` exists to stop — in
+        copy rather than in code, and the fourth backend would have
+        wanted a fourth component.
+
+        Cheap facts only: `installed` is a path lookup and claude's
+        session is a file read. Readiness for an opaque backend costs a
+        subprocess (agy's probe is ~2.5s) and this rides the 5s meta
+        poll, so it is offered as an action, not measured here.
+        """
+        from ..llm import capabilities as _caps
+        from ..core import config as _cfg
+        rows: "list[dict]" = []
+        for name in sorted(_caps.CAPABILITIES):
+            cap = _caps.capabilities_for(name)
+            exe = None
+            extra: dict = {}
+            if name == "claude":
+                exe = claude_exe()
+                st = _claude_status()
+                extra = {"logged_in": st["logged_in"],
+                         "subscription": st["subscription"]}
+            elif name == "antigravity":
+                from ..llm.antigravity_cli import (agy_identity,
+                                                   resolve_agy_executable)
+                exe = resolve_agy_executable()
+                verdict, path = agy_identity()
+                extra = {"identity": verdict,
+                         "identity_path": str(path) if path else None}
+            elif cap.install_method == _caps.INSTALL_NOT_NEEDED:
+                # reached over HTTP — there is no binary to find, and
+                # saying "not installed" about one would be a lie
+                exe = ""
+            else:
+                # a GUESS from the name — codex ships `codex`. The
+                # installer bridge makes the identical guess
+                # (`installer/provider-info.py`); they must not drift,
+                # which is why it wants to be declared rather than
+                # written twice.
+                import shutil
+                exe = shutil.which(name)
+            seats = []
+            for seat in _cfg.UI_SEATS:
+                try:
+                    prov = _cfg.get(
+                        f"{seat}.provider",
+                        env_var=f"ASTERISM_{seat.upper()}_PROVIDER",
+                        legacy_env=("ASTERISM_LLM_PROVIDER",),
+                        default="claude", workspace=workspace)
+                except Exception:  # noqa: BLE001 — display garnish only
+                    continue
+                if _caps.canonical(prov) == name:
+                    seats.append({"seat": seat, "model": str(_cfg.get(
+                        f"{seat}.model",
+                        env_var=f"ASTERISM_{seat.upper()}_MODEL",
+                        default="", workspace=workspace) or "") or None})
+            rows.append({
+                "name": name,
+                "installed": exe is not None,
+                "path": exe or None,
+                "install_method": cap.install_method,
+                "install_command": cap.install_command,
+                "auth_flow": cap.auth_flow,
+                "auth_state": cap.auth_state,
+                "can_probe": bool(cap.readiness_argv),
+                "seats": seats,
+                **extra,
+            })
+        return rows
 
     def _agy_status() -> dict:
         """The OTHER account the framework can spend: Antigravity
@@ -389,6 +541,50 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                 pass
         return {"installed": installed, "logged_in": logged_in,
                 "subscription": subscription}
+
+    @app.post("/api/providers/{name}/check")
+    def provider_check(name: str) -> dict:
+        """Ask a backend whether the account behind it works.
+
+        An ACTION, not a poll: `auth_state: opaque` means no file holds
+        the answer, so the only honest check is making the CLI do
+        something that needs the account (agy: `models`, ~2.5s). It is a
+        necessary condition, never a sufficient one — nobody has
+        measured how these fail with no credentials at all — so the
+        answer is what happened, never "signed in".
+        """
+        from ..llm import capabilities as _caps
+        cap = _caps.capabilities_for(name)
+        if not cap.readiness_argv:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{name} declares no way to check it from here")
+        exe = None
+        if _caps.canonical(name) == "claude":
+            exe = claude_exe()
+        elif _caps.canonical(name) == "antigravity":
+            from ..llm.antigravity_cli import resolve_agy_executable
+            exe = resolve_agy_executable()
+        else:
+            import shutil
+            exe = shutil.which(name)
+        if exe is None:
+            raise HTTPException(status_code=409,
+                                detail=f"{name} is not installed here")
+        import subprocess
+        try:
+            r = subprocess.run([exe, *cap.readiness_argv],
+                               capture_output=True, text=True, timeout=90)
+        except (OSError, subprocess.SubprocessError) as e:
+            return {"ok": False, "detail": f"could not run it: {e}"}
+        lines = [ln.strip() for ln in (r.stdout or "").splitlines()
+                 if ln.strip()]
+        if r.returncode == 0:
+            return {"ok": True,
+                    "detail": f"reached the service, {len(lines)} line(s) back",
+                    "lines": lines[:20]}
+        return {"ok": False,
+                "detail": (r.stderr or r.stdout or "").strip()[:300]}
 
     @app.post("/api/claude/logout")
     def claude_logout() -> dict:
@@ -1141,10 +1337,29 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             raise HTTPException(status_code=500,
                                 detail=f"create failed: {e}")
 
+    @app.post("/api/models/refresh")
+    def models_refresh() -> dict:
+        """Ask every backend that can be asked what it currently runs.
+
+        An action, not a poll — it spawns (agy's listing is ~2.5s) and
+        the settings page reads it once on mount. Worth doing: agy's
+        live list was 14 models on gemini-3.7 while the list kept here
+        still said gemini-3.6, so a picker without this offers names
+        that have moved on.
+        """
+        return {"groups": _model_groups(workspace, probe=True)}
+
     @app.get("/api/config")
     def config_get() -> dict:
         from ..core import config as _cfg
-        return {"settings": _cfg.ui_settings(workspace)}
+        rows = _cfg.ui_settings(workspace)
+        # the model picker's options, grouped by the backend that runs
+        # them — one control decides both, so they cannot disagree
+        groups = _model_groups(workspace)
+        for r in rows:
+            if str(r["key"]).endswith(".model"):
+                r["groups"] = groups
+        return {"settings": rows}
 
     @app.post("/api/config")
     def config_set(body: ConfigSetBody) -> dict:

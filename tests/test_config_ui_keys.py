@@ -19,7 +19,15 @@ from Tooling.core.config import MODEL_CHOICES, UI_EDITABLE_KEYS
 #: every control the settings page is allowed to render. Changing this
 #: set means changing what the page promises — say why in the commit.
 _PINNED = {
-    # models — one per pipeline the engine actually spawns today
+    # models — one per pipeline the engine actually spawns today, and
+    # the backend that runs each: three are live (claude / antigravity /
+    # codex) and `<kind>.provider` was yaml-only until 2026-08-14
+    "formalizer.provider",
+    "strategist.provider",
+    "presearch.provider",
+    "librarian.provider",
+    "scholar.provider",
+    "adversary.provider",
     "formalizer.model",
     "strategist.model",
     "presearch.model",
@@ -56,3 +64,28 @@ def test_model_choices_are_not_empty_and_have_no_blank() -> None:
     a key has no value."""
     assert MODEL_CHOICES
     assert all(c.strip() for c in MODEL_CHOICES)
+
+
+def test_every_seat_can_choose_both_its_model_and_its_backend() -> None:
+    """The two key families are generated from one seat list, so a seat
+    can never end up with a model picker and no way to say which
+    backend runs it."""
+    from Tooling.core.config import UI_EDITABLE_KEYS, UI_SEATS
+    for seat in UI_SEATS:
+        assert f"{seat}.model" in UI_EDITABLE_KEYS, seat
+        assert f"{seat}.provider" in UI_EDITABLE_KEYS, seat
+
+
+def test_a_model_picker_never_offers_another_backends_names() -> None:
+    """The select exists to kill "a typo'd model only explodes at the
+    NEXT run". A flat claude-only list did exactly that one level up,
+    offering `claude-fable-5` for a codex seat."""
+    from Tooling.core.config import MODEL_CHOICES_BY_PROVIDER, models_for
+    for prov, names in MODEL_CHOICES_BY_PROVIDER.items():
+        assert names, prov
+        for other, theirs in MODEL_CHOICES_BY_PROVIDER.items():
+            if other != prov:
+                assert not (set(names) & set(theirs)), (prov, other)
+    # an undeclared backend yields NO list — the UI must then take free
+    # text, never another backend's names
+    assert models_for("no-such-backend") == []

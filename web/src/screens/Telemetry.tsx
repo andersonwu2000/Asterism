@@ -1,10 +1,11 @@
-﻿import { Fragment, useState } from 'react'
+﻿import { Fragment, useEffect, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { weightedBurn } from '../lib/burn'
+import { draftForPick } from '../lib/models'
 import { compactNumber, duration } from '../lib/format'
 import { Link } from '../lib/router'
 import { Button, SectionLabel, Select } from '../components/ui'
-import type { ConfigSetting, RunStatus, UsageProblem } from '../lib/types'
+import type { ConfigSetting, ModelGroup, RunStatus, UsageProblem } from '../lib/types'
 
 /** The Engine page's two quiet faces: the machine's knobs, and the
  * all-time usage ledger. Accounts and appearance are the console's
@@ -14,6 +15,24 @@ import type { ConfigSetting, RunStatus, UsageProblem } from '../lib/types'
 
 function ConfigPanel() {
   const { data, refresh } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
+  // The polled read carries the DECLARED lists and never spawns —
+  // a subprocess on a once-a-minute path is what the side-effect fence
+  // exists to catch. Asking the backends what they actually run is an
+  // action, taken once when this page opens: agy's live list was 14
+  // models on gemini-3.7 while the kept list still said 3.6, so a
+  // picker without this offers names that have moved on.
+  const [live, setLive] = useState<ModelGroup[] | null>(null)
+  useEffect(() => {
+    let gone = false
+    apiPost<{ groups: ModelGroup[] }>('/api/models/refresh', {})
+      .then((r) => !gone && setLive(r.groups))
+      .catch(() => {
+        /* keep the declared lists — never blank the picker */
+      })
+    return () => {
+      gone = true
+    }
+  }, [])
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [msg, setMsg] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -48,8 +67,74 @@ function ConfigPanel() {
       setSaving(false)
     }
   }
+  // ONE control per seat. A seat's backend is not an independent
+  // choice — it is implied by the model — so a separate provider
+  // field would draw the same fact twice and let the two disagree
+  // (`provider: codex` with `claude-sonnet-5` is a run that dies at
+  // its first spawn). The vendors become optgroups; picking a model
+  // writes both keys (owner, 2026-08-14).
   const models = data.settings.filter((s) => s.key.endsWith('.model'))
-  const knobs = data.settings.filter((s) => !s.key.endsWith('.model'))
+  const providerOf = new Map(
+    data.settings
+      .filter((s) => s.key.endsWith('.provider'))
+      .map((s) => [s.key.split('.')[0], s]),
+  )
+  const knobs = data.settings.filter(
+    (s) => !s.key.endsWith('.model') && !s.key.endsWith('.provider'),
+  )
+  /** the model row's own control: vendors as groups, and choosing sets
+   * the backend too */
+  const modelPicker = (s: ConfigSetting) => {
+    const seat = s.key.split('.')[0]
+    const prov = providerOf.get(seat)
+    const draft = drafts[s.key]
+    const current = String(draft ?? s.resolved ?? '')
+    const groups = live ?? s.groups ?? []
+    const known = groups.some((g) => g.models.includes(current))
+    return (
+      <Select
+        className="w-56 shrink-0"
+        value={current}
+        onChange={(e) =>
+          setDrafts((d) => ({
+            ...d,
+            // the backend follows the model, always — that is the whole
+            // reason there is one control (lib/models.ts owns the rule)
+            ...draftForPick(groups, s.key, prov?.key ?? null, e.target.value),
+          }))
+        }
+      >
+        {current === '' && (
+          <option value="" disabled>
+            not set — the provider's default
+          </option>
+        )}
+        {!known && current !== '' && (
+          /* an env/yaml override may name anything; never render a
+             picker that cannot show the current truth */
+          <optgroup label="set outside this page">
+            <option value={current}>{current}</option>
+          </optgroup>
+        )}
+        {groups.map((g) => (
+          <optgroup
+            key={g.provider}
+            label={
+              g.provider +
+              (g.installed ? '' : ' (not installed)') +
+              (g.source === 'declared' ? ' — list not live' : '')
+            }
+          >
+            {g.models.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </Select>
+    )
+  }
   const row = (s: ConfigSetting) => {
     const draft = drafts[s.key]
     const current = String(s.resolved ?? '')
@@ -115,7 +200,25 @@ function ConfigPanel() {
         gracefully hands off to a fresh engine); an .env override, if you have one,
         still wins
       </div>
-      {models.map(row)}
+      {models.map((s) => {
+        const seat = s.key.split('.')[0]
+        const prov = providerOf.get(seat)
+        const provDirty = prov !== undefined && drafts[prov.key] !== undefined
+        return (
+          <div key={s.key} className="flex items-center gap-3 py-1">
+            <span className="w-56 shrink-0 font-mono text-xs text-ink-dim">{s.key}</span>
+            {modelPicker(s)}
+            <span className="min-w-0 truncate text-[11px] text-ink-faint">
+              {(drafts[s.key] !== undefined || provDirty) && (
+                <span className="mr-1.5 text-star" title="unsaved change">
+                  ·
+                </span>
+              )}
+              {s.description}
+            </span>
+          </div>
+        )
+      })}
       <div className="mt-3 mb-1 text-[11px] text-ink-faint">engine knobs</div>
       {knobs.map(row)}
       {/* the ONE Save: always present (no layout shift), disabled until

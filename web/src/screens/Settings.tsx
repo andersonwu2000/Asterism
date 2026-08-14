@@ -6,7 +6,7 @@ import type { Theme } from '../lib/theme'
 import { Button } from '../components/ui'
 import { QuotaMeter } from './Run'
 import { scopedRows } from '../lib/quota'
-import type { Meta, RunStatus } from '../lib/types'
+import type { Meta, ProviderRow, RunStatus } from '../lib/types'
 import type { ShutdownPreview } from '../lib/types'
 import { markStopped } from '../lib/shutdown'
 
@@ -33,14 +33,37 @@ function Label({ children }: { children: React.ReactNode }) {
   )
 }
 
-/** Claude Code — the account the framework spends by default.
- * Switching mid-run is supported: running agents keep the session
- * they hold, new spawns use the next login, and the meters below flip
- * by themselves. */
-function ClaudeAccount({ meta, onChanged }: { meta: Meta; onChanged: () => void }) {
+/** VENDOR NAMES, for the one thing a declaration cannot carry: what a
+ * person calls this thing. Everything else on the card is measured or
+ * declared. */
+const PROVIDER_LABEL: Record<string, string> = {
+  claude: 'Claude Code',
+  antigravity: 'Antigravity CLI',
+  codex: 'Codex CLI',
+  gemini: 'Gemini CLI',
+  openai: 'OpenAI-compatible API',
+}
+
+/** One account, drawn from what the backend DECLARES about itself plus
+ * what this machine has of it (`/api/meta` -> providers).
+ *
+ * There used to be a hand-written component per vendor. Codex made it
+ * three (2026-08-14) and the fourth would have wanted a fourth — which
+ * is the branch-per-backend `llm/capabilities.py` exists to stop,
+ * wearing copy instead of code. What stays vendor-specific is only
+ * what genuinely is: claude keeps switch/sign-out because it is the
+ * one whose session is a file we can retire.
+ *
+ * The status word follows `auth_state`, and the tri-state matters:
+ * `readable` can say signed in or not; `opaque` cannot say either, so
+ * it reports what it CAN see and offers a check; `undeclared` says
+ * nothing rather than inventing a verdict.
+ */
+function Account({ p, onChanged }: { p: ProviderRow; onChanged: () => void }) {
   const [msg, setMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const c = meta.claude
+  const seated = p.seats.length > 0
+  const label = PROVIDER_LABEL[p.name] ?? p.name
   const run = async (fn: () => Promise<string>) => {
     setBusy(true)
     try {
@@ -52,95 +75,110 @@ function ClaudeAccount({ meta, onChanged }: { meta: Meta; onChanged: () => void 
       onChanged()
     }
   }
+  // This panel is about accounts that get SPENT. A backend with no seat
+  // spends nothing, so it earns a row only if the reader put it there —
+  // installed, by something they ran. That hides the HTTP-only backend
+  // (nothing to install, so "installed" is a sentinel rather than a
+  // fact about this machine) and any CLI that happens to be on PATH
+  // without a seat pointing at it. Choosing one is the Engine page's
+  // picker, which offers every declared backend.
+  if (!seated && !(p.installed && p.install_method === 'by_command'))
+    return null
+
+  // Tri-state, and the third one matters: `readable` says a file
+  // COULD state the answer, not that anyone read it. serve reads
+  // claude's; for another readable backend the honest value is unknown,
+  // and rendering unknown as "not signed in" is a nag that never
+  // clears (codex read that way the moment it landed, 2026-08-14).
+  const signedIn = p.logged_in === undefined ? null : p.logged_in
+  const dot = !p.installed
+    ? seated
+      ? 'bg-warn'
+      : 'bg-ink-faint'
+    : signedIn === false
+      ? 'bg-warn'
+      : 'bg-ok'
+  const line = !p.installed
+    ? seated
+      ? `${label} missing — a seat is pointed at it`
+      : `${label} not installed`
+    : signedIn === true
+      ? `${label} signed in${p.subscription ? ` · ${p.subscription} plan` : ''}`
+      : signedIn === false
+        ? `${label} is not signed in`
+        : `${label} installed`
+
   return (
     <Row>
-      <div className="flex flex-wrap items-center gap-3">
-        <span
-          className={`h-2 w-2 rounded-full ${c.logged_in ? 'bg-ok' : 'bg-warn'}`}
-          aria-hidden
-        />
-        <span className="text-xs text-ink">
-          {c.logged_in
-            ? `Claude Code signed in${c.subscription ? ` · ${c.subscription} plan` : ''}`
-            : c.installed
-              ? 'Claude Code is not signed in'
-              : 'Claude Code is not installed'}
-        </span>
-        {c.installed && (
+      <div className="flex flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className={`h-2 w-2 rounded-full ${dot}`} aria-hidden />
+          <span className="text-xs text-ink">{line}</span>
           <span className="ml-auto flex items-center gap-2">
-            <button
-              className="cursor-pointer rounded-lg border border-edge bg-surface-2 px-2.5 py-1 text-xs text-ink transition-colors hover:bg-surface-3 disabled:opacity-50"
-              disabled={busy}
-              onClick={() => void run(switchAccount)}
-              title="open the login window for another account — running agents keep their session; new work uses the account you pick"
-            >
-              Switch account
-            </button>
-            {c.logged_in && (
-              <button
-                className="cursor-pointer rounded-lg border border-edge px-2.5 py-1 text-xs text-ink-dim transition-colors hover:text-ink disabled:opacity-50"
+            {p.name === 'claude' && p.installed && (
+              <>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={busy}
+                  onClick={() => void run(switchAccount)}
+                >
+                  Switch account
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={busy}
+                  onClick={() => void run(logout)}
+                >
+                  Sign out
+                </Button>
+              </>
+            )}
+            {p.can_probe && p.installed && (
+              /* the honest check where no file states the answer: make
+                 the CLI do something the account is needed for. An
+                 action, not a poll — agy's costs ~2.5s. */
+              <Button
+                variant="outline"
+                size="xs"
                 disabled={busy}
-                onClick={() => void run(logout)}
+                title="ask this backend whether the account behind it works"
+                onClick={() =>
+                  void run(async () => {
+                    const r = await apiPost<{ ok: boolean; detail: string }>(
+                      `/api/providers/${p.name}/check`,
+                      {},
+                    )
+                    return r.detail
+                  })
+                }
               >
-                Sign out
-              </button>
+                {busy ? 'Checking…' : 'Check'}
+              </Button>
             )}
           </span>
-        )}
-      </div>
-      {msg && <div className="mt-2 text-[11px] text-ink-faint">{msg}</div>}
-    </Row>
-  )
-}
-
-/** Antigravity (`agy`) — the subscription path to Gemini models.
- * Deliberately quieter than the Claude row: its credentials do not
- * live in a file this console can read, so there is no "signed in"
- * to claim. What it CAN say is whether the CLI exists and which roles
- * are pointed at it — a role on this provider with no CLI installed
- * is a run that dies at its first spawn. */
-function AntigravityAccount({ meta }: { meta: Meta }) {
-  const a = meta.antigravity
-  if (!a) return null
-  const used = a.roles.length > 0
-  return (
-    <Row>
-      <div className="flex flex-wrap items-center gap-3">
-        <span
-          className={`h-2 w-2 rounded-full ${
-            a.installed ? 'bg-ok' : used ? 'bg-warn' : 'bg-ink-faint'
-          }`}
-          aria-hidden
-        />
-        <span className="text-xs text-ink">
-          {a.installed
-            ? 'Antigravity CLI installed'
-            : used
-              ? 'Antigravity CLI missing — a role is pointed at it'
-              : 'Antigravity CLI not installed'}
-        </span>
-        <span
-          className="ml-auto text-[11px] text-ink-faint"
-          title="its sign-in lives in the Antigravity IDE, not in a file this console can read — so this row reports what it can see, never a guess"
-        >
-          sign-in lives in the IDE
-        </span>
-      </div>
-      <div className="mt-2 text-[11px] text-ink-faint">
-        {used ? (
-          <>
-            spending it:{' '}
-            {a.roles.map((r, i) => (
-              <span key={r.role}>
-                {i > 0 && ', '}
-                <span className="text-ink-dim">{r.role}</span>
-                {r.model && <span className="font-mono"> · {r.model}</span>}
-              </span>
-            ))}
-          </>
-        ) : (
-          'no role is pointed at it — nothing here is being spent'
-        )}
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-[11px] text-ink-faint">
+          {seated ? (
+            <span>{p.seats.map((x) => x.seat).join(' · ')}</span>
+          ) : (
+            <span>no seat is pointed at it — nothing here is being spent</span>
+          )}
+          {p.auth_flow === 'borrowed_session' && (
+            <span title="its sign-in lives in another application, not in a file this console can read — so this row reports what it can see, never a guess">
+              sign-in lives in its own app
+            </span>
+          )}
+          {p.identity === 'legacy_file' && (
+            /* presence is the only detectable signal, and nothing errors
+               when the wrong account wins — the run just spends it */
+            <span className="text-warn" title={p.identity_path ?? undefined}>
+              another credential file is overriding it
+            </span>
+          )}
+          {msg && <span className="text-ink-dim">{msg}</span>}
+        </div>
       </div>
     </Row>
   )
@@ -330,8 +368,9 @@ export default function Settings() {
         looks — the knobs that steer the machine itself live on the Engine page.
       </p>
       <div className="flex flex-col gap-3">
-        {meta && <ClaudeAccount meta={meta} onChanged={refresh} />}
-        {meta && <AntigravityAccount meta={meta} />}
+        {(meta?.providers ?? []).map((p) => (
+          <Account key={p.name} p={p} onChanged={refresh} />
+        ))}
         <Allowance />
         <Appearance />
         <ShutDown />
