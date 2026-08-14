@@ -198,6 +198,15 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     if timeout_sec_override is not None:
         timeout_sec = timeout_sec_override
     import time as _time
+    # The tool line every prompt opens with depends on the BACKEND, and
+    # it is added here rather than by each caller: a pipeline that
+    # forgot would hand its worker a tool list written for a different
+    # provider, which is the defect this exists to close (a codex worker
+    # told it had `Read / Grep / Write / Edit` and had none of them).
+    # Caller-supplied flags win — a test pins one on purpose.
+    from ..llm import capabilities as _caps
+    prompt_flags = {**_caps.prompt_tool_flags(_caps.provider_for_kind(kind)),
+                    **(prompt_flags or {})}
     _t0 = _time.monotonic()
     _before = _repo_status(usage_workspace)
     rc = llm.get_provider(kind=kind).spawn(llm.LLMRequest(

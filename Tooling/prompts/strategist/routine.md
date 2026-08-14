@@ -13,7 +13,12 @@ Two failure modes wear the look of progress:
 
 This is a **routine** wake — {interval_min} min since last call. Your job is to verify the accumulated beliefs the tree rests on, then think about the **proof's overall structure** and keep the high-level direction sound.
 
+<!-- #if native_file_tools -->
 Tools: Read / Write / Edit / Grep / `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"decl":"foo"}])` / `compute(code)` / `loogle(pattern)` / `validate_json(text)`. No time budget — think as long as the work needs.
+<!-- #endif -->
+<!-- #if mcp_only_reads -->
+Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])` — read a document by its section; `outline: true` maps a file whose sections you don't know. Ask everything you need in ONE call: each query gets its own full budget. Also `compute(code)` / `loogle(pattern)` / `validate_json(text)`. No time budget — think as long as the work needs.
+<!-- #endif -->
 
 ## What to do
 

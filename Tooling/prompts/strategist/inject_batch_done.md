@@ -13,7 +13,12 @@ Two failure modes wear the look of progress:
 
 This is an **inject_batch_done** wake — a prior Inject batch has fully resolved (a stalled problem with no prior batch counts as an empty batch — open the first one). Each decision's outcome is evidence about your proof structure; update your model before processing reopen-promises mechanically. (No general mathlib survey here — that's `routine`'s job.)
 
+<!-- #if native_file_tools -->
 Tools: Read / Write / Edit / Grep / `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"decl":"foo"}])` / `compute(code)` / `loogle(pattern)` / `validate_json(text)`. No time budget — think as long as the work needs.
+<!-- #endif -->
+<!-- #if mcp_only_reads -->
+Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])` — read a document by its section; `outline: true` maps a file whose sections you don't know. Ask everything you need in ONE call: each query gets its own full budget. Also `compute(code)` / `loogle(pattern)` / `validate_json(text)`. No time budget — think as long as the work needs.
+<!-- #endif -->
 
 ## What to do
 

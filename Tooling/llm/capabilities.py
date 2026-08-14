@@ -307,6 +307,18 @@ class ProviderCapabilities:
     rc_contract: str = RC_UNDECLARED
     #: Is the tool-permission surface a hard boundary or advisory?
     enforcement_strength: str = ENFORCEMENT_UNDECLARED
+    #: Does a worker on this backend have file tools of its OWN — a
+    #: Read, a Grep — or does every byte of the workspace arrive through
+    #: our MCP (`inspect`)? The prompts state a tool list in their first
+    #: line, and that line was written for claude: a codex worker was
+    #: told it had `Read / Grep / Write / Edit` and had none of them, so
+    #: it spent two turns enumerating `ALL_TOOLS` to find out what it
+    #: really had (2026-08-12 rollout). This is what the tool line is
+    #: rendered from, so the fact has one home instead of a copy per
+    #: prompt file. Default FALSE is the pessimistic answer for the same
+    #: reason as every other field here: promising a tool that is not
+    #: there is the failure that was measured; the reverse is not.
+    native_file_tools: bool = False
     #: The ACTIONS whose `allow` rules this provider actually honours —
     #: `{"*"}` for all, `frozenset()` for none. `enforcement_strength`
     #: above is the headline; this is the fact a gate can act on, because
@@ -405,6 +417,10 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         # sonnet-5 and opus-5). This is what makes the stream clock
         # possible at all, and claude is the only backend that has it.
         stream_text_deltas=True,
+        # Read / Grep / Glob / Write / Edit, and it prefers them:
+        # measured on the 08-14 Test.provider_probe leg, 31 Read + 12
+        # Grep against 9 `inspect` calls.
+        native_file_tools=True,
         session_resume=RESUME_CALLER_SESSION_ID,
         rc_contract=RC_STRUCTURED,
         enforcement_strength=ENFORCEMENT_HARD,
@@ -484,6 +500,9 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         # `deny` absolute, `allow` partly ignored (read_url) — 15 probes
         # on 2026-07-30; see ENFORCEMENT_DENY_ONLY.
         enforcement_strength=ENFORCEMENT_DENY_ONLY,
+        # It has `read_file` — that is the whole reason the action below
+        # is in `allow_honoured_actions` and has a scoping contract.
+        native_file_tools=True,
         # Measured per action, NOT inferred from the headline word.
         # `read_url` is absent on purpose: its allow is ignored, so the
         # only control there is deny, and any attempt to narrow it with
@@ -638,6 +657,13 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         # honoured — the same asymmetry agy has, reached by a different
         # road.
         enforcement_strength=ENFORCEMENT_DENY_ONLY,
+        # NO file tool of its own (DELTA 1): with `shell_tool` and
+        # `apps` off, a worker asked to read a file answers
+        # "NO-READ-TOOL" (measured 2026-08-12). Everything it learns
+        # about the workspace comes through `inspect` — the 08-15 probe
+        # leg used it 30 times and Read zero times, because there is no
+        # Read to use.
+        native_file_tools=False,
         # MCP is the one action measured to honour its grant: with
         # `default_tools_approval_mode = "approve"` the call executes
         # (proved out-of-band by the probe server's own log), and
@@ -728,6 +754,20 @@ def provider_for_kind(kind: "str | None",
 def for_kind(kind: "str | None") -> ProviderCapabilities:
     """The declaration of the provider currently seated for `kind`."""
     return capabilities_for(provider_for_kind(kind))
+
+
+def prompt_tool_flags(provider: "str | None") -> "dict[str, bool]":
+    """The prompt-template flags that depend on the BACKEND, not on the
+    problem: which tool line a spawn should be told about.
+
+    Both names are returned, always, and that is deliberate — the
+    template renderer is fail-OPEN (an absent flag keeps its block), so
+    a caller that passed only one of them would render BOTH tool lines
+    and the worker would read two contradictory sentences about what it
+    can do. Handing back the complete pair makes that unrepresentable.
+    """
+    native = capabilities_for(provider).native_file_tools
+    return {"native_file_tools": native, "mcp_only_reads": not native}
 
 
 def liveness_clock(provider: "str | None", kind: str) -> str:
