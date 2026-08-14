@@ -73,7 +73,8 @@ import threading
 import time
 from pathlib import Path
 
-from .base import LLMRequest, SpawnRC, which_launchable
+from .base import (LLMRequest, SpawnRC, transcript_dest,
+                   which_launchable)
 from ..core.process_group import no_window_creationflags
 
 PROVIDER_NAME = "codex"
@@ -435,9 +436,6 @@ def _note_quota(limits: "dict | None") -> bool:
 _TRANSCRIPT_DIRNAME = "codex_sessions"
 
 
-def transcript_dir(workspace: Path, pipeline_id: str) -> Path:
-    return workspace / ".asterism" / _TRANSCRIPT_DIRNAME / pipeline_id
-
 
 def _preserve_transcript(req: LLMRequest, home: Path) -> None:
     """Move this spawn's rollout out of the doomed home, keep the
@@ -472,10 +470,15 @@ def _preserve_transcript(req: LLMRequest, home: Path) -> None:
     bug above. Retention is a decision for all three at once."""
     try:
         attempts = Path(req.attempts_dir)
-        dest = transcript_dir(attempts.resolve().parent.parent, attempts.name)
+        dest = transcript_dest(req.attempts_dir, _TRANSCRIPT_DIRNAME)
         rollouts = sorted((home / "sessions").rglob("rollout-*.jsonl"))
         err = attempts / "_spawn.stderr"
         if not rollouts and not err.is_file():
+            return
+        if dest is None:
+            print(f"[llm:codex] no .attempts ancestor for "
+                  f"{req.attempts_dir} — transcript not preserved",
+                  flush=True)
             return
         dest.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

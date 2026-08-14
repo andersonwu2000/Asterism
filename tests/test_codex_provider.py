@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from Tooling.llm import codex_cli
+from Tooling.llm.base import transcript_dest
 from Tooling.llm.base import LLMRequest
 
 
@@ -558,7 +559,8 @@ def test_the_reasoning_outlives_the_sandbox(tmp_path: Path) -> None:
                                                     encoding="utf-8")
     codex_cli._preserve_transcript(req, home)
 
-    dest = codex_cli.transcript_dir(tmp_path, "pid1")
+    dest = transcript_dest(tmp_path / ".attempts" / "pid1",
+                            codex_cli._TRANSCRIPT_DIRNAME)
     assert (dest / "rollout-2026-08-12T14-00-00-abc.jsonl").is_file()
     assert (dest / "_spawn.0.stderr").read_text(
         encoding="utf-8").startswith("rc=1")
@@ -583,7 +585,8 @@ def test_the_copy_is_refreshed_so_it_is_not_a_partial_snapshot(
     roll.write_text(roll.read_text(encoding="utf-8") + '{"type":"more"}\n',
                     encoding="utf-8")
     codex_cli._preserve_transcript(req, home)
-    dest = codex_cli.transcript_dir(tmp_path, "pid1") / roll.name
+    dest = transcript_dest(tmp_path / ".attempts" / "pid1",
+                            codex_cli._TRANSCRIPT_DIRNAME) / roll.name
     assert '{"type":"more"}' in dest.read_text(encoding="utf-8")
 
 
@@ -594,7 +597,8 @@ def test_the_credential_is_not_preserved_with_it(tmp_path: Path) -> None:
     req, home = _pipeline(tmp_path)
     (home / "auth.json").write_text('{"tokens":{}}', encoding="utf-8")
     codex_cli._preserve_transcript(req, home)
-    dest = codex_cli.transcript_dir(tmp_path, "pid1")
+    dest = transcript_dest(tmp_path / ".attempts" / "pid1",
+                            codex_cli._TRANSCRIPT_DIRNAME)
     assert not (dest / "auth.json").exists()
     assert list(dest.iterdir())
 
@@ -610,7 +614,8 @@ def test_several_spawns_share_a_dir_without_erasing_each_other(
     codex_cli._preserve_transcript(req, home)
     (req.attempts_dir / "_spawn.stderr").write_text("second", encoding="utf-8")
     codex_cli._preserve_transcript(req, home)
-    dest = codex_cli.transcript_dir(tmp_path, "pid1")
+    dest = transcript_dest(tmp_path / ".attempts" / "pid1",
+                            codex_cli._TRANSCRIPT_DIRNAME)
     assert (dest / "_spawn.0.stderr").read_text(encoding="utf-8") == "first"
     assert (dest / "_spawn.1.stderr").read_text(encoding="utf-8") == "second"
 
@@ -622,7 +627,8 @@ def test_a_spawn_that_left_nothing_creates_no_empty_directory(
     for roll in (home / "sessions").rglob("rollout-*.jsonl"):
         roll.unlink()
     codex_cli._preserve_transcript(req, home)
-    assert not codex_cli.transcript_dir(tmp_path, "pid1").exists()
+    assert not transcript_dest(tmp_path / ".attempts" / "pid1",
+                            codex_cli._TRANSCRIPT_DIRNAME).exists()
 
 
 def test_the_cold_line_asks_for_a_writable_sandbox_explicitly(
@@ -728,7 +734,8 @@ def test_one_unpreservable_artifact_does_not_drop_the_others(
 
     monkeypatch.setattr(codex_cli.shutil, "copyfile", _copy)
     codex_cli._preserve_transcript(req, home)
-    dest = codex_cli.transcript_dir(tmp_path, "pid1")
+    dest = transcript_dest(tmp_path / ".attempts" / "pid1",
+                            codex_cli._TRANSCRIPT_DIRNAME)
     assert (dest / "_spawn.0.stderr").read_text(encoding="utf-8") == "the answer"
 
 

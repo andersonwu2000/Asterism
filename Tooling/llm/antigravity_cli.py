@@ -205,7 +205,7 @@ from pathlib import Path
 
 from ..core.process_group import no_window_creationflags
 from . import capabilities
-from .base import LLMRequest
+from .base import LLMRequest, transcript_dest
 
 #: This provider's canonical name in `llm/capabilities.py`, where its
 #: gaps (no usage endpoint, no stream events, uninformative rc,
@@ -703,8 +703,6 @@ def _workspace_of(problem_dir: Path) -> "Path | None":
 _TRANSCRIPT_DIRNAME = "agy_sessions"
 
 
-def transcript_dir(workspace: Path, pipeline_id: str) -> Path:
-    return workspace / ".asterism" / _TRANSCRIPT_DIRNAME / pipeline_id
 
 
 def _preserve_transcript(req: LLMRequest, home: Path) -> None:
@@ -724,13 +722,40 @@ def _preserve_transcript(req: LLMRequest, home: Path) -> None:
     The home still dies. It carries the spawn's permission surface and
     its gateway session token, and neither should outlive the attempt.
     Transcript survives, envelope does not."""
-    src = home / ".gemini" / "antigravity-cli" / "conversations"
+    cli_home = home / ".gemini" / "antigravity-cli"
+    src = cli_home / "conversations"
     try:
         dbs = sorted(src.glob("*.db"))
-        if not dbs:
+        # agy's OWN per-turn log, and the one a human can actually read:
+        # `brain/<id>/.system_generated/logs/transcript_full.jsonl` is one
+        # JSON object per step with `source`, `type`, `content`,
+        # `thinking` and `tool_calls`. The `.db` beside it holds the same
+        # turns as protobuf blobs. Both travel: the db is what agy
+        # resumes from, the jsonl is what the investigation reads —
+        # 2026-08-15, the tool-discovery finding came out of the jsonl in
+        # minutes after an hour of decoding the db got nowhere.
+        logs = sorted((cli_home / "brain").rglob(
+            ".system_generated/logs/*.jsonl"))
+        # agy's OWN runtime log, and the only place a permission DECISION
+        # is written down. The surface it dumps at startup —
+        #   Allow:[write_file(<attempts>) mcp(*) read_file(<workspace>)]
+        #   Deny:[command(*) read_url(*) …]  Permission=request-review
+        # — is why a spawn can end mid-thought with no error and no
+        # artifact: the default for an unmatched action is REVIEW, and
+        # `-p` has nobody to review it. Measured 2026-08-15, an Adversary
+        # died on its first call outside the projection and the framework
+        # could only say `agent_no_output`. Carries no secret: the one
+        # credential line is `keyringAuth: loaded token, expiry=…`, the
+        # fact and the expiry, never the value.
+        logs += sorted((cli_home / "log").glob("*.log"))
+        if not dbs and not logs:
             return
-        attempts = Path(req.attempts_dir)
-        dest = transcript_dir(attempts.resolve().parent.parent, attempts.name)
+        dest = transcript_dest(req.attempts_dir, _TRANSCRIPT_DIRNAME)
+        if dest is None:
+            print(f"[llm:agy] no .attempts ancestor for "
+                  f"{req.attempts_dir} — transcript not preserved",
+                  flush=True)
+            return
         dest.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         print(f"[llm:agy] could not preserve the transcript: {exc}",
@@ -748,9 +773,22 @@ def _preserve_transcript(req: LLMRequest, home: Path) -> None:
                 print(f"[llm:agy] {part.name} not preserved: {exc}",
                       flush=True)
         saved.append(db.stem[:8])
-    if saved:
-        print(f"[llm:agy] transcript preserved → {dest} ({', '.join(saved)})",
-              flush=True)
+    # Name the brain logs by conversation, not by their shared
+    # basename: every brain dir calls its log `transcript_full.jsonl`,
+    # so a flat copy would keep exactly one of however many turns the
+    # spawn had. The runtime log already carries a timestamp and needs
+    # no prefix.
+    for log in logs:
+        brain = log.suffix == ".jsonl"
+        conv = log.parent.parent.parent.name[:8] if brain else ""
+        try:
+            shutil.copyfile(log, dest / (f"{conv}_{log.name}" if conv
+                                         else log.name))
+        except OSError as exc:
+            print(f"[llm:agy] {log.name} not preserved: {exc}", flush=True)
+    if saved or logs:
+        print(f"[llm:agy] transcript preserved → {dest} "
+              f"({', '.join(saved) or 'logs only'})", flush=True)
 
 
 class AntigravityCliProvider:

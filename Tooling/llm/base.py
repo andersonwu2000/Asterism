@@ -70,6 +70,35 @@ def which_launchable(name: "str") -> "str | None":
     return None
 
 
+#: The directory name every provider's rescued transcripts live under,
+#: one level below `.asterism/`. Providers pick their own leaf name.
+ATTEMPTS_DIRNAME = ".attempts"
+
+
+def transcript_dest(attempts_dir: "Path | str", leaf: str) -> "Path | None":
+    """`<ws>/.asterism/<leaf>/<path under .attempts>`, or None.
+
+    ANCHORED, NOT COUNTED. Two providers shipped
+    `attempts_dir.parent.parent` as "the workspace", which is right only
+    for `<ws>/.attempts/<pid>`. The Adversary runs one level deeper
+    (`<pid>/adversary/r1`), so on 2026-08-15 a rescued transcript was
+    written to `<ws>/.attempts/<pid>/.asterism/...` — inside the tree
+    the rescue exists to escape — and every pipeline's first round
+    claimed the same folder name `r1`.
+
+    Carrying the whole path below `.attempts` fixes both at once: the
+    workspace is the parent of the `.attempts` ancestor, and the id is
+    the rest, so rounds nest instead of colliding.
+
+    None when there is no `.attempts` ancestor. A caller that cannot
+    locate the workspace must say so, not guess a level."""
+    p = Path(attempts_dir).resolve()
+    for parent in p.parents:
+        if parent.name == ATTEMPTS_DIRNAME:
+            return parent.parent / ".asterism" / leaf / p.relative_to(parent)
+    return None
+
+
 class SpawnRC(IntEnum):
     """Typed names for the rc convention. Pipeline branches on
     `rc == SpawnRC.TIMEOUT` etc. instead of magic numbers, while

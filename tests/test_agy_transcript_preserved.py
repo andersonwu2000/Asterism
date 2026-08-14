@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from Tooling.llm import antigravity_cli as agy
+from Tooling.llm.base import transcript_dest
 
 
 def _home_with_conversation(home: Path, name: str = "abc123",
@@ -61,7 +62,7 @@ def test_the_conversation_is_copied_out_of_the_home(tmp_path: Path):
 
     agy._preserve_transcript(_Req(attempts), home)
 
-    dest = agy.transcript_dir(workspace, "pipe-7")
+    dest = transcript_dest(workspace / '.attempts' / "pipe-7", agy._TRANSCRIPT_DIRNAME)
     assert (dest / "abc123.db").is_file(), "the conversation was not saved"
 
 
@@ -80,7 +81,7 @@ def test_the_wal_travels_with_the_database(tmp_path: Path):
     agy._preserve_transcript(_Req(attempts), home)
     con.close()
 
-    dest = agy.transcript_dir(workspace, "pipe-8")
+    dest = transcript_dest(workspace / '.attempts' / "pipe-8", agy._TRANSCRIPT_DIRNAME)
     assert (dest / "abc123.db-wal").is_file(), "the WAL was left behind"
     con = sqlite3.connect(dest / "abc123.db")
     assert con.execute("SELECT COUNT(*) FROM steps").fetchone()[0] == 1
@@ -108,7 +109,7 @@ def test_one_unreadable_conversation_does_not_take_the_others(
     monkeypatch.setattr(agy.shutil, "copyfile", _flaky)
     agy._preserve_transcript(_Req(attempts), home)
 
-    dest = agy.transcript_dir(workspace, "pipe-9")
+    dest = transcript_dest(workspace / '.attempts' / "pipe-9", agy._TRANSCRIPT_DIRNAME)
     assert (dest / "zzz.db").is_file(), "one bad copy took a good one down"
     assert "not preserved" in capsys.readouterr().out
 
@@ -122,7 +123,7 @@ def test_nothing_to_save_is_silent(tmp_path: Path, capsys):
 
     agy._preserve_transcript(_Req(attempts), attempts / "_agy_home")
 
-    assert not agy.transcript_dir(workspace, "pipe-10").exists()
+    assert not (workspace / ".asterism").exists()
     assert capsys.readouterr().out == ""
 
 
@@ -144,10 +145,98 @@ def test_the_capability_envelope_is_not_copied_out(tmp_path: Path):
 
     agy._preserve_transcript(_Req(attempts), home)
 
-    dest = agy.transcript_dir(workspace, "pipe-11")
+    dest = transcript_dest(workspace / '.attempts' / "pipe-11", agy._TRANSCRIPT_DIRNAME)
     landed = {p.name for p in dest.rglob("*")}
     assert "settings.json" not in landed
     assert "mcp_config.json" not in landed
+
+
+def test_a_nested_projection_lands_outside_the_doomed_tree(tmp_path: Path):
+    """The Adversary runs in `<pid>/adversary/r1`, so the workspace is
+    two levels further up than `.parent.parent` assumes. Measured in
+    production 2026-08-15: the rescued transcript was written to
+    `<ws>/.attempts/<pid>/.asterism/agy_sessions/r1` — INSIDE the tree
+    the rescue exists to escape — and presearch, one level shallower,
+    landed in `<ws>/.attempts/.asterism/agy_sessions/_presearch`, where
+    the id `_presearch` is shared by every pipeline at once."""
+    workspace = tmp_path / "ws"
+    for rel in ("pid-1/adversary/r1", "pid-1/_presearch", "pid-2/adversary/r1"):
+        attempts = workspace / ".attempts" / rel
+        attempts.mkdir(parents=True)
+        home = attempts / "_agy_home"
+        _home_with_conversation(home, name=rel.replace("/", "-"))
+        agy._preserve_transcript(_Req(attempts), home)
+
+    root = workspace / ".asterism" / "agy_sessions"
+    landed = {p.relative_to(root).as_posix()
+              for p in root.rglob("*.db")}
+    assert landed == {
+        "pid-1/adversary/r1/pid-1-adversary-r1.db",
+        "pid-1/_presearch/pid-1-_presearch.db",
+        "pid-2/adversary/r1/pid-2-adversary-r1.db",
+    }, landed
+    inside = list((workspace / ".attempts").rglob(".asterism"))
+    assert not inside, f"wrote back into the doomed tree: {inside}"
+
+
+def test_agys_own_jsonl_log_travels_too(tmp_path: Path):
+    """The `.db` holds the turns as protobuf; the jsonl beside it holds
+    the same turns as one readable object per step (source / type /
+    content / thinking / tool_calls). The investigation that needed this
+    data on 2026-08-15 got nowhere decoding the db and had its answer
+    minutes after opening the jsonl. Every brain dir names its log the
+    same, so the copy is keyed by conversation or all but one is lost."""
+    workspace = tmp_path / "ws"
+    attempts = workspace / ".attempts" / "pid-9"
+    attempts.mkdir(parents=True)
+    home = attempts / "_agy_home"
+    _home_with_conversation(home)
+    for conv in ("aaaaaaaa-1111", "bbbbbbbb-2222"):
+        logs = (home / ".gemini" / "antigravity-cli" / "brain" / conv
+                / ".system_generated" / "logs")
+        logs.mkdir(parents=True)
+        (logs / "transcript_full.jsonl").write_text(
+            '{"step_index":0,"type":"USER_INPUT"}\n', encoding="utf-8")
+
+    agy._preserve_transcript(_Req(attempts), home)
+
+    dest = transcript_dest(attempts, agy._TRANSCRIPT_DIRNAME)
+    names = {p.name for p in dest.glob("*.jsonl")}
+    assert names == {"aaaaaaaa_transcript_full.jsonl",
+                     "bbbbbbbb_transcript_full.jsonl"}, names
+
+
+def test_the_runtime_log_travels_because_it_holds_the_verdict(
+        tmp_path: Path):
+    """`<home>/.gemini/antigravity-cli/log/cli-*.log` is the ONLY place
+    a permission decision is written down, and the surface it dumps at
+    startup is why a spawn can end mid-thought with no error and no
+    artifact:
+
+        Allow:[write_file(<attempts>) mcp(*) read_file(<workspace>)]
+        Deny:[command(*) read_url(*) …]  Permission=request-review
+
+    The default for an unmatched action is REVIEW, and `agy -p` has
+    nobody to review it. On 2026-08-15 an Adversary died on its first
+    call outside its projection and the framework could only report
+    `agent_no_output`; this file is what turns that into a sentence."""
+    workspace = tmp_path / "ws"
+    attempts = workspace / ".attempts" / "pid-12"
+    attempts.mkdir(parents=True)
+    home = attempts / "_agy_home"
+    _home_with_conversation(home)
+    logdir = home / ".gemini" / "antigravity-cli" / "log"
+    logdir.mkdir(parents=True)
+    (logdir / "cli-20260815_010737.log").write_text(
+        "permissions=&{Allow:[read_file(D:\\ws)] Deny:[command(*)] "
+        "Permission=request-review}\n", encoding="utf-8")
+
+    agy._preserve_transcript(_Req(attempts), home)
+
+    dest = transcript_dest(attempts, agy._TRANSCRIPT_DIRNAME)
+    kept = dest / "cli-20260815_010737.log"
+    assert kept.is_file(), "the permission log was left to be deleted"
+    assert "request-review" in kept.read_text(encoding="utf-8")
 
 
 def test_spawn_preserves_on_every_exit_path(monkeypatch, tmp_path: Path):
