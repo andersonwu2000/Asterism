@@ -507,6 +507,14 @@ function Install-Provider($provider) {
         Human ('It is installed but could not reach the service: ' + $probe.detail)
         if ($probe.auth_flow -eq 'borrowed_session') {
             Human 'This account signs in through its own desktop app - sign in there, then press again.'
+        } elseif ($probe.auth_flow -eq 'own_oauth') {
+            # A message that stops the reader must name the way out. This
+            # backend HAS its own sign-in and we cannot drive it, because
+            # nothing declares its argv (claude's lives in
+            # Spawn-ClaudeLogin, which is claude-specific by name). So
+            # point at the executable rather than inventing a flag for it.
+            Human ("Sign in with it yourself - run it from a terminal (" +
+                   $probe.exe + "), then press again.")
         }
     } else {
         Note 'installed; this provider offers no way to check the account from here'

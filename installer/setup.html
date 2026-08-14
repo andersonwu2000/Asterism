@@ -149,6 +149,7 @@
       pc.innerHTML =
         '<label><input type="radio" name="prov" value="claude" checked> I have a Claude subscription</label>'+
         '<label><input type="radio" name="prov" value="antigravity"> I have Google AI Pro / Ultra</label>'+
+        '<label><input type="radio" name="prov" value="codex"> I have a ChatGPT plan</label>'+
         '<label><input type="radio" name="prov" value="none"> I&rsquo;ll set the agent up myself</label>'
       card.appendChild(pc)
       var pnote = el('div',null,''); pnote.id='provNote'
@@ -185,6 +186,7 @@
       var PROV_NOTE = {
         claude: 'A browser tab will open — click Authorize and you are done.',
         antigravity: 'Antigravity signs in through its own desktop app. Install it and sign in there; the CLI then rides that session — there is no separate login here.',
+        codex: 'Installs through npm, so Node has to be on this machine already. A browser tab then opens for the sign-in.',
         none: 'Nothing will be installed for the agent. Point Asterism at a provider yourself afterwards, in Settings.'
       }
       function syncProv(){
