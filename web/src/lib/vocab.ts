@@ -108,7 +108,9 @@ export function decisionKindTitle(kind: string): string {
  * markdown; owner, 2026-08-07.)
  * --------------------------------------------------------------- */
 const EVENT_LABEL: Record<string, string> = {
-  asked: 'asked',
+  // 'asked' left the reader asking what was asked. The row is a
+  // REQUEST for the thing named beside it (owner, 2026-08-14).
+  asked: 'asked for',
   opened: 'opened',
   reopened: 'reopened',
   failed: 'failed',
@@ -129,8 +131,11 @@ const EVENT_LABEL: Record<string, string> = {
   ingested: 'closed',
   rev: 'rev',
   proposal: 'proposal',
-  handed_off: 'handed off',
-  handed_back: 'handed back',
+  // the object column shows the CLAIM, so 'handed off' never said to
+  // whom. 'delegated' carries the direction in the word, and it is
+  // the engine's own verb.
+  handed_off: 'delegated',
+  handed_back: 'returned',
   closed_group: 'retired',
   asked_you: 'asked you',
   directive: 'note',
@@ -144,7 +149,10 @@ export function eventLabel(kind: string): string {
 }
 
 const EVENT_TITLE: Record<string, string> = {
-  asked: 'the strategist dispatched this brick',
+  asked:
+    'engine term: Inject \u2014 the strategist asked a worker for this brick:'
+    + ' state it, prove it, land it as a file. The name beside the verb is'
+    + ' what it asked for',
   opened: 'cut out of a larger goal by a decomposition — nobody dispatched it',
   reopened: 'put back in play after having been settled',
   failed:
@@ -167,8 +175,13 @@ const EVENT_TITLE: Record<string, string> = {
   ingested: "the finished work was accepted as the problem's final state",
   rev: 'a Programme revision was adopted — the standing argument changed',
   proposal: 'a revision the adversarial reviewer rejected — editing, not a change of record',
-  handed_off: 'a claim was handed to a discussion group, which argues it in parallel',
-  handed_back: 'a group handed its charter back: refuted, needing an amendment, or exhausted',
+  handed_off:
+    'engine term: Delegate \u2014 this claim went to a NEW discussion group,'
+    + ' which argues its own programme in parallel until it can deliver the'
+    + ' claim back. The name beside the verb is that group',
+  handed_back:
+    'engine term: ReturnToParent \u2014 a group gave its claim back to the group'
+    + ' above it: refuted, needing an amendment, or exhausted',
   closed_group: 'a group was retired — the route no longer needs its claim',
   asked_you: 'the run paused to ask you to amend the Manifest',
   directive: 'a standing note steering its own agents',
