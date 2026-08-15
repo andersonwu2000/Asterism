@@ -317,24 +317,47 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
     want = q.get("sections")
     if want is not None:
         names = [str(w) for w in (want if isinstance(want, list) else [want])]
-        by_name = {text.lower(): (text, a, b) for text, _l, a, b in secs}
+        # Lists, not single tuples: stacked documents carry the same
+        # heading more than once (the adversary's charter.md stacks a
+        # chain of charters, two of which said "## The claim to settle"
+        # — measured 2026-08-15), and a dict comprehension silently
+        # kept one of them. Duplicates are answered with the first AND
+        # disclosed, so the reader knows there is another.
+        by_name: "dict[str, list[tuple[str, int, int]]]" = {}
+        for text, _l, a, b in secs:
+            by_name.setdefault(text.lower(), []).append((text, a, b))
         chosen: "list[str]" = []
         missing: "list[str]" = []
         for name in names:
-            hit = by_name.get(name.strip().lower())
-            if hit is None:
+            hits = by_name.get(name.strip().lower())
+            if hits is None:
                 missing.append(name)
                 continue
-            text, a, b = hit
+            text, a, b = hits[0]
             chosen.append(f"── {text}  (lines {a}-{b})")
             chosen += _numbered(lines, a, b)
+            if len(hits) > 1:
+                where = ", ".join(f"lines {a2}-{b2}"
+                                  for _t, a2, b2 in hits[1:])
+                chosen.append(
+                    f"note: {len(hits)} sections share this heading — "
+                    f"this is the first; the other"
+                    f"{'s are' if len(hits) > 2 else ' is'} at {where} "
+                    f"(read one with `lines`).")
         if missing:
             # No fuzzy matching: a near-miss that silently answers with
-            # the wrong section is worse than a refusal that names the
-            # real ones.
-            have = ", ".join(f"{t!r}" for t, _l, _a, _b in secs) or "(none)"
-            chosen.append(f"no section named {', '.join(map(repr, missing))} "
-                          f"in this file. It has: {have}")
+            # the wrong section is worse than a refusal. And NO roster
+            # (owner ruling 2026-08-15): `outline` already IS the
+            # roster, with line ranges and sizes — on the 383-section
+            # CATALOG.md the inlined listing was itself a 12KB cap-hit,
+            # a refusal whose length scaled with the file. The count
+            # stays: one number, and it tells the reader whether to
+            # think before calling `outline` at all.
+            chosen.append(
+                f"no section named {', '.join(map(repr, missing))} in "
+                f"this file — it has {len(secs)} section"
+                f"{'' if len(secs) == 1 else 's'}; `outline: true` "
+                f"lists them.")
         return chosen or [f"{len(lines)} lines, no sections matched"]
 
     rng = str(q.get("lines") or "").strip()
@@ -503,9 +526,21 @@ def _resume_hint(text: str, kept: str, q: dict) -> str:
     return f"Continue from line {last + 1} with `lines`."
 
 
+def _deferral_note(deferred: "list[tuple[int, object]]", reason: str) -> str:
+    """The way back for whole queries this reply could not carry:
+    every one named, in the vocabulary the count limit already uses."""
+    listed = "; ".join(
+        f"[{i}] {sorted(d) if isinstance(d, dict) else d}"
+        for i, d in deferred)
+    return (f"— {len(deferred)} quer"
+            f"{'y' if len(deferred) == 1 else 'ies'} not answered: "
+            f"{reason} Send these in a second call: {listed}")
+
+
 def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                 per_query_chars: int = PER_QUERY_CHARS,
-                max_queries: int = MAX_QUERIES) -> str:
+                max_queries: int = MAX_QUERIES,
+                delivery_chars: "int | None" = None) -> str:
     """Answer each query, labelled, in one string.
 
     EVERY QUERY GETS THE WHOLE BUDGET. It used to get `8000 //
@@ -520,6 +555,18 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
     whole questions by name and answers the rest in full; a shared
     budget has to cut into answers that were already computed. Every
     answer here is complete, or explicitly named as deferred.
+
+    `delivery_chars` is the TRANSPORT's ceiling, not another pool. The
+    codex exec channel hands the model ~10K tokens of tool output and
+    amputates the middle of anything larger (measured 2026-08-15: a
+    90,417-char reply delivered as 39,700, mid-batch answers gone). So
+    the reply must fit the pipe HERE, where whole queries can still be
+    deferred by name — once the next answer would overflow it, that
+    query and every later one wait for a second call. Answers already
+    delivered keep their full per-query budget; the FIRST query is
+    always answered even alone over the ceiling. None = a backend
+    nobody has measured; no ceiling is applied (`llm/capabilities.
+    mcp_result_delivery_chars` owns the numbers).
     """
     here = Path(cwd or Path.cwd())
     deny = _deny_roots(here)
@@ -527,38 +574,67 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
         return ("inspect: pass a list of queries, e.g. "
                 '[{"decl": "uc_four_set_deficit"}, '
                 '{"read": "Context.md", "sections": ["Programme"]}]')
-    deferred = queries[max_queries:]
+    count_deferred: "list[tuple[int, object]]" = [
+        (max_queries + i, d)
+        for i, d in enumerate(queries[max_queries:], 1)]
+    budget_deferred: "list[tuple[int, object]]" = []
     blocks: "list[str]" = []
+    srcs: "list[tuple[int, object]]" = []  # blocks[i] answers srcs[i]
+    joined = 0  # len("\n\n".join(blocks))
     for n, q in enumerate(queries[:max_queries], 1):
-        if not isinstance(q, dict):
-            blocks.append(f"[{n}] not a query object: {q!r}")
+        if budget_deferred:  # ceiling hit — everything later waits too
+            budget_deferred.append((n, q))
             continue
-        for key, fn in _KINDS:
-            if key in q:
-                where = f" in {q['in']}" if q.get("in") else ""
-                head = f"[{n}] {key} {q[key]!r}{where}"
-                try:
-                    body = fn(q, here, deny)
-                except Exception as exc:  # noqa: BLE001 — one bad query
-                    body = [f"failed: {type(exc).__name__}: {exc}"]
-                text = "\n".join(body)
-                if len(text) > per_query_chars:
-                    kept = text[:per_query_chars]
-                    text = (kept + f"\n… [{n}] truncated at "
-                                   f"{per_query_chars:,} chars. "
-                            + _resume_hint(text, kept, q))
-                blocks.append(head + "\n" + text)
-                break
+        if not isinstance(q, dict):
+            block = f"[{n}] not a query object: {q!r}"
         else:
-            blocks.append(
-                f"[{n}] no known query key in {sorted(q)}. Use one of: "
-                f"decl, grep, read, find, size.")
-    if deferred:
-        listed = "; ".join(
-            f"[{max_queries + i}] {sorted(d) if isinstance(d, dict) else d}"
-            for i, d in enumerate(deferred, 1))
-        blocks.append(f"— {len(deferred)} quer"
-                      f"{'y' if len(deferred) == 1 else 'ies'} not answered: "
-                      f"this call carried {len(queries)} and the limit is "
-                      f"{max_queries}. Send these in a second call: {listed}")
-    return "\n\n".join(blocks)
+            for key, fn in _KINDS:
+                if key in q:
+                    where = f" in {q['in']}" if q.get("in") else ""
+                    head = f"[{n}] {key} {q[key]!r}{where}"
+                    try:
+                        body = fn(q, here, deny)
+                    except Exception as exc:  # noqa: BLE001 — one bad query
+                        body = [f"failed: {type(exc).__name__}: {exc}"]
+                    text = "\n".join(body)
+                    if len(text) > per_query_chars:
+                        kept = text[:per_query_chars]
+                        text = (kept + f"\n… [{n}] truncated at "
+                                       f"{per_query_chars:,} chars. "
+                                + _resume_hint(text, kept, q))
+                    block = head + "\n" + text
+                    break
+            else:
+                block = (f"[{n}] no known query key in {sorted(q)}. Use one "
+                         f"of: decl, grep, read, find, size.")
+        sep = 2 if blocks else 0
+        if (delivery_chars is not None and blocks
+                and joined + sep + len(block) > delivery_chars):
+            budget_deferred.append((n, q))
+            continue
+        blocks.append(block)
+        srcs.append((n, q))
+        joined += sep + len(block)
+    while True:
+        deferred = budget_deferred + count_deferred
+        if budget_deferred:
+            note = _deferral_note(
+                deferred, f"delivering more would overflow this reply's "
+                          f"{delivery_chars:,}-char budget.")
+        elif count_deferred:
+            note = _deferral_note(
+                deferred, f"this call carried {len(queries)} and the limit "
+                          f"is {max_queries}.")
+        else:
+            note = ""
+        total = joined + (2 + len(note) if note else 0)
+        if (delivery_chars is None or total <= delivery_chars
+                or len(blocks) <= 1):
+            # ≤ 1: the first query is answered whatever it costs — a
+            # reply that deferred everything would answer nothing.
+            break
+        # The deferral note itself needs room: hand back the last
+        # delivered answer, whole, rather than cutting anything.
+        budget_deferred.insert(0, srcs.pop())
+        joined -= len(blocks.pop()) + 2
+    return "\n\n".join(blocks + ([note] if note else []))

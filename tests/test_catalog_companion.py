@@ -45,7 +45,12 @@ def test_companion_carries_full_statements(conn, tmp_path):
     rows = ctx.write_catalog_companion(conn, "P", tmp_path)
     assert [r["slug"] for r in rows] == ["brick_a", "brick_b"]
     body = (tmp_path / ctx.CATALOG_COMPANION).read_text(encoding="utf-8")
-    assert "## brick_a  (theorem)" in body
+    # Bare-slug heading: the heading is the section ADDRESS an agent
+    # asks `inspect` for by slug; `## brick_a  (theorem)` made that
+    # natural ask a miss (2026-08-15). The kind rides the cite line.
+    assert "## brick_a\n" in body
+    assert "## brick_a  (" not in body
+    assert "theorem — cite `brick_a`" in body
     assert "theorem brick_a : 1 + 1 = 2" in body
     # alive goals surface up top: not mintable, but citable since task
     # #123 (wait edge) — the old "Never cite" fence must stay gone

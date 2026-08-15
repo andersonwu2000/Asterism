@@ -29,6 +29,8 @@ Nothing may be written to stdout — that is the protocol channel.
 """
 from __future__ import annotations
 
+import os
+
 from mcp.server.fastmcp import FastMCP
 
 from . import loogle as _loogle
@@ -139,9 +141,9 @@ def inspect(queries: list = None) -> str:
          {"find":  "*deficit*.lean"},
          {"size":  "proofs/*.lean"}]
 
-    ASK EVERYTHING YOU NEED IN ONE CALL. Each query gets its own full
-    budget — a second question never shrinks the answer to the first —
-    and a round trip costs far more than an extra query does.
+    Batch freely: each query gets its own full budget, and a second
+    question never shrinks the answer to the first. Queries that would
+    overflow one reply are deferred by name — resend just those.
 
     READ BY THE SECTION. `sections` takes heading text (`## Programme`
     → "Programme") and returns that heading with everything under it.
@@ -168,8 +170,13 @@ def inspect(queries: list = None) -> str:
                  '{"grep": "Bar", "in": "proofs/*.lean"}])')
     # No `max_chars`: `inspect` budgets PER QUERY (workspace_query
     # owns the number), unlike the single-answer tools above which this
-    # module's `MAX_CHARS` still governs.
-    return workspace_query.run_queries(queries)
+    # module's `MAX_CHARS` still governs. The env var is the backend's
+    # DELIVERY ceiling — set into this server's env by the provider
+    # adapter from `llm/capabilities.mcp_result_delivery_chars`; unset
+    # (an unmeasured backend) means no ceiling, never a guessed one.
+    raw = os.environ.get("ASTERISM_INSPECT_DELIVERY_CHARS", "").strip()
+    delivery = int(raw) if raw.isdigit() and int(raw) > 0 else None
+    return workspace_query.run_queries(queries, delivery_chars=delivery)
 
 
 @mcp.tool()

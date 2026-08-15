@@ -64,7 +64,12 @@ def test_a_backend_without_them_is_taught_the_section_read(path) -> None:
     assert "Read" not in line and "Grep" not in line
     assert '"sections"' in line
     assert "outline" in line
-    assert "ONE call" in line
+    # "ask everything in ONE call" is GONE (owner ruling 2026-08-15): a
+    # rule that taxes the follow-up teaches an agent not to dare one it
+    # needs. What the line teaches instead is that batching is free and
+    # a deferred query is resent, not lost.
+    assert "ONE call" not in line
+    assert "Batch" in line and "deferred" in line
 
 
 def test_an_undeclared_backend_gets_the_pessimistic_line() -> None:

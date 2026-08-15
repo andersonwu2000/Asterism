@@ -33,6 +33,7 @@ Consequences worth stating up front:
 from __future__ import annotations
 
 import json as _json
+import re
 import sqlite3
 from typing import Optional
 
@@ -422,6 +423,26 @@ def touch_strategist(conn: sqlite3.Connection, group_id: int, *,
             " WHERE id = ?", (ts, ts, int(group_id)))
 
 
+def _qualify_headings(charter: str, gid: int) -> str:
+    """Stamp `[group N]` into every markdown heading of a STACKED
+    charter, so identical headings from different charters stay
+    addressable. Charters are agent prose sharing a template — two
+    charters in one `charter.md` both said `## The claim to settle`
+    (measured 2026-08-15), and a section ask can only name one of
+    them. This group's OWN charter keeps its headings verbatim; only
+    the stacked context is stamped. Fence-aware: a `#` inside a code
+    block is code, not structure."""
+    out: "list[str]" = []
+    fenced = False
+    for line in charter.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        m = None if fenced else re.match(r"^(#{1,4})\s+(\S.*)$", line)
+        out.append(f"{m.group(1)} [group {gid}] {m.group(2)}" if m
+                   else line)
+    return "\n".join(out)
+
+
 def charter_digest(conn: sqlite3.Connection, problem: str,
                     group_id: "int | None") -> str:
     """`charter.md` — what a SUB-group is judged against (v35).
@@ -461,7 +482,8 @@ def charter_digest(conn: sqlite3.Connection, problem: str,
                 "apart.", ""]
         for i, a in enumerate(above, 1):
             out += [f"{i}. (group {a['id']}) "
-                    f"{str(a['charter']).strip()}", ""]
+                    f"{_qualify_headings(str(a['charter']).strip(), int(a['id']))}",
+                    ""]
     # Scope: groups returned to ME or to one of MY ancestors — the
     # failed attempts on this chain, which is what "my parent already
     # tried this line" looks like. NOT problem-wide: a cousin branch's
@@ -495,7 +517,8 @@ def charter_digest(conn: sqlite3.Connection, problem: str,
                 pass
             out += [f"- (group {r['id']}"
                     + (f", {flavour}" if flavour else "") + ") "
-                    + str(r["charter"]).strip(),
+                    + _qualify_headings(str(r["charter"]).strip(),
+                                        int(r["id"])),
                     f"  - post-mortem: {str(r['reason'] or '(none)')}"]
         out.append("")
     return "\n".join(out)

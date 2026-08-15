@@ -80,15 +80,19 @@ def test_several_sections_come_back_in_one_answer(tmp_path: Path) -> None:
     assert "decision body" not in out
 
 
-def test_a_wrong_section_name_lists_the_real_ones(tmp_path: Path) -> None:
+def test_a_wrong_section_name_points_at_outline(tmp_path: Path) -> None:
     """No fuzzy matching. A near-miss answered with the wrong section is
-    worse than a refusal, and a refusal that does not name the choices
-    costs the round trip it was trying to save."""
+    worse than a refusal. And no roster (owner ruling 2026-08-15):
+    `outline` already IS the roster with line ranges and sizes, while
+    an inlined listing scaled with the file — a 12KB refusal on the
+    383-section CATALOG.md. The refusal carries the count and the
+    action, nothing that grows."""
     cwd = _workspace(tmp_path)
     out = wq.run_queries(
         [{"read": "Context.md", "sections": ["Programm"]}], cwd=cwd)
-    assert "no section named" in out
-    assert "'Programme'" in out and "'Recent decisions'" in out
+    assert "no section named 'Programm'" in out
+    assert "sections" in out and "outline" in out
+    assert "'Recent decisions'" not in out, "the roster is outline's job"
 
 
 def test_outline_is_a_map_not_the_content(tmp_path: Path) -> None:

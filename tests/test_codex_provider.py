@@ -859,3 +859,22 @@ def test_the_writable_roots_travel_in_the_config_not_only_the_flag(
     cfg = codex_cli._render_config(req, "m", "xhigh")
     assert "[sandbox_workspace_write]" in cfg
     assert str(req.attempts_dir) in cfg
+
+
+def test_tools_server_env_carries_the_delivery_ceiling(
+    tmp_path: Path,
+) -> None:
+    """The number rides `[mcp_servers.asterism_tools.env]` because that
+    table is the one route PROVEN to reach the server process (the
+    server cannot even import `Tooling` without the PYTHONPATH it
+    already carries). The JSON config writers run before the provider
+    is known, so the codex adapter injects it at render time — and only
+    for the tools server; the gateway does not read it."""
+    from Tooling.llm import capabilities as caps
+
+    toml = codex_cli._mcp_servers_toml(_mcp_config(tmp_path))
+    want = caps.inspect_delivery_chars("codex")
+    assert f"ASTERISM_INSPECT_DELIVERY_CHARS = '{want}'" in toml
+    assert toml.count("ASTERISM_INSPECT_DELIVERY_CHARS") == 1
+    # the entry's own env survives the merge
+    assert "PYTHONPATH" in toml

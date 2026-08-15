@@ -203,9 +203,22 @@ def _mcp_servers_toml(mcp_config_path: "Path | None") -> str:
                        + ", ".join(_toml_str(str(a)) for a in args) + "]")
         out.append('default_tools_approval_mode = "approve"')
         out.append("required = true")
-        if entry.get("env"):
+        env = dict(entry.get("env") or {})
+        if name == "asterism_tools":
+            # codex's exec channel caps model-visible tool output at
+            # ~10K tokens and amputates the middle of anything larger,
+            # so `inspect` must defer whole queries at the source. The
+            # number is the capability declaration's, not this file's;
+            # the config env is the one route VERIFIED to reach the
+            # server process (the JSON writers run before the provider
+            # is known, so the adapter injects it at render time).
+            from .capabilities import inspect_delivery_chars
+            cap = inspect_delivery_chars("codex")
+            if cap is not None:
+                env["ASTERISM_INSPECT_DELIVERY_CHARS"] = str(cap)
+        if env:
             out.append(f"\n[mcp_servers.{name}.env]")
-            for k, v in entry["env"].items():
+            for k, v in env.items():
                 out.append(f"{k} = {_toml_str(str(v))}")
         if entry.get("headers"):
             out.append(f"\n[mcp_servers.{name}.http_headers]")

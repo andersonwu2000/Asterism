@@ -223,6 +223,9 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     # which is the same defect wearing framework colours, and a section
     # allowlist rots the first time someone adds a section. Lazily
     # available — it rides the projection, nothing is inlined.
+    # Hoisted above the Context.md snapshot: the elision below compares
+    # the snapshot's embedded Programme against this same revision text.
+    current = programme.current_rev(conn, problem, group_id)
     ctx = attempts_dir / "Context.md"
     if ctx.exists():
         # Label it, same move as the PROGRAMME weld below and for the
@@ -248,6 +251,24 @@ def build_projection(*, round_no: int, attempts_dir: Path,
             ).strftime("%Y-%m-%d %H:%M UTC")
         except OSError:
             _taken = "unknown"
+        ctx_text = ctx.read_text(encoding="utf-8")
+        # Identity-gated elision (owner condition, 2026-08-15): the
+        # snapshot embeds the Programme revision the author saw, and
+        # PROGRAMME.md in this same projection opens with that text —
+        # the adversary's grounding sweep paid the same 20-26KB twice
+        # per round on union_closed. Elide ONLY on byte-identity, so
+        # every elided byte is recoverable verbatim from the named
+        # file; any difference at all and the snapshot ships whole,
+        # because "what the author saw" must survive verbatim wherever
+        # it is not byte-recoverable. The length guard keeps a
+        # degenerate short body from matching unrelated text.
+        body = str(current["body"] or "") if current is not None else ""
+        if len(body) >= 100 and body in ctx_text:
+            ctx_text = ctx_text.replace(
+                body,
+                "_(Programme revision text elided — byte-identical to"
+                " the revision at the top of PROGRAMME.md in this"
+                " projection.)_", 1)
         (proj / "Context.md").write_text(
             "_(Framework label — not part of the file. This is the"
             f" author's context SNAPSHOT, taken {_taken} when the wake"
@@ -261,7 +282,7 @@ def build_projection(*, round_no: int, attempts_dir: Path,
             " packet's timing, not a defect in the proposal. When a"
             " status decides your verdict, ask the record:"
             " `inspect({\"decl\": \"<slug>\"})` reads it live.)_\n\n"
-            + ctx.read_text(encoding="utf-8"), encoding="utf-8")
+            + ctx_text, encoding="utf-8")
     # CATALOG.md is lazily machine-generated per assembly and never
     # lives in problem_dir — generate it into the projection directly
     # (the old problem_dir copy was dead code: the judge could never
@@ -277,12 +298,11 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     write_catalog_companion(conn, problem, proj,
                             workspace=attempts_dir.parent.parent)
 
-    # Current rev + the terminal outcomes since it, welded into one
-    # file: the outcomes ARE this rev's execution record, and the
-    # judge's first duty is checking the candidate's Argument against
-    # them (判官必見源). Outcome lines reuse the exact section the
-    # strategist context renders.
-    current = programme.current_rev(conn, problem, group_id)
+    # Current rev (hoisted above) + the terminal outcomes since it,
+    # welded into one file: the outcomes ARE this rev's execution
+    # record, and the judge's first duty is checking the candidate's
+    # Argument against them (判官必見源). Outcome lines reuse the exact
+    # section the strategist context renders.
     # `attempts_dir=proj` so the judge gets the same lazy companion the
     # strategist does — the briefs it is checking the Argument against are
     # the ones under judgement, and a 1200-byte cut through them is how

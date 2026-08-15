@@ -1201,3 +1201,73 @@ def test_projection_without_a_context_file_is_not_an_error(
         dialogue=[], proof_warn=None)
     assert not (proj / "Context.md").exists()
     assert (proj / "proposal.md").exists()
+
+
+# ── the snapshot's embedded Programme: identity-gated elision ───────
+# (owner condition 2026-08-15: elide ONLY what is byte-recoverable)
+
+
+_LONG_REV = _PROPOSAL + ("The census argument, spelled out.\n" * 10).strip()
+
+
+def _ctx_projection(workspace, conn, attempts_name, ctx_body):
+    attempts = workspace / ".attempts" / attempts_name
+    attempts.mkdir(parents=True)
+    (attempts / "Context.md").write_text(ctx_body, encoding="utf-8")
+    return adversary.build_projection(
+        round_no=1, attempts_dir=attempts,
+        problem_dir=workspace / "Problems" / "p",
+        conn=conn, problem="p", proposal_body=_PROPOSAL,
+        decisions=[_d("Inject", pipeline="Forward", brief="## Need\nx")],
+        dialogue=[], proof_warn=None)
+
+
+def test_snapshot_programme_identical_to_shipped_rev_is_elided(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """The adversary's grounding sweep paid the same 20-26KB twice per
+    round: the snapshot embeds the Programme revision and PROGRAMME.md
+    in the same projection opens with it. Byte-identical ⇒ a pointer
+    that names where the identical text is; every elided byte stays
+    recoverable verbatim."""
+    programme.record_pass(conn, "p", _LONG_REV, {"verdict": "pass"},
+                          [], 1, "b1")
+    proj = _ctx_projection(
+        workspace, conn, "adv-elide",
+        "# Strategist context\n## Programme (rev 1)\n"
+        + _LONG_REV + "\n## Alive goals\nmain\n")
+    ctx = (proj / "Context.md").read_text(encoding="utf-8")
+    assert "Programme revision text elided" in ctx
+    assert "PROGRAMME.md" in ctx, "the pointer names where the text is"
+    assert "spelled out" not in ctx
+    assert "## Alive goals" in ctx, "only the identical span is elided"
+    # …and the named file really carries the elided bytes
+    assert _LONG_REV in (proj / "PROGRAMME.md").read_text(
+        encoding="utf-8")
+
+
+def test_snapshot_that_differs_at_all_ships_whole(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Any difference — a drifted snapshot, an older rev — and "what
+    the author saw" must survive verbatim: it is not byte-recoverable
+    from PROGRAMME.md, so nothing may be elided."""
+    programme.record_pass(conn, "p", _LONG_REV, {"verdict": "pass"},
+                          [], 1, "b1")
+    drifted = _LONG_REV.replace("The route holds.", "The route held.")
+    proj = _ctx_projection(
+        workspace, conn, "adv-noelide",
+        "# Strategist context\n## Programme (rev 1)\n" + drifted)
+    ctx = (proj / "Context.md").read_text(encoding="utf-8")
+    assert "Programme revision text elided" not in ctx
+    assert "The route held." in ctx
+
+
+def test_no_current_rev_leaves_the_snapshot_untouched(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    proj = _ctx_projection(workspace, conn, "adv-norev",
+                           "# Strategist context\nno programme yet\n")
+    ctx = (proj / "Context.md").read_text(encoding="utf-8")
+    assert "no programme yet" in ctx
+    assert "Programme revision text elided" not in ctx

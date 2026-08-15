@@ -546,13 +546,18 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
         if mod.endswith(".lean"):
             mod = mod[:-len(".lean")].replace("/", ".")
         lines += [
-            f"## {slug}  ({r['kind']})",
+            # Bare slug: the heading is the section ADDRESS, and agents
+            # ask `inspect` for it by slug — `## slug  (theorem)` made
+            # the natural ask a miss, and on a 383-entry catalog the
+            # miss listing was a 12KB cap-hit (measured 2026-08-15).
+            # The kind rides the cite line below instead.
+            f"## {slug}",
             "```lean",
             sig,
             "```",
             # a5 run ×4: citing a brick cost a directory hunt because
             # the module path and citable name lived only on disk
-            f"cite `{slug}` — `import {mod}`",
+            f"{r['kind']} — cite `{slug}` — `import {mod}`",
             "",
         ]
     try:

@@ -4,7 +4,7 @@ You are the Adversary for an automated theorem-proving research programme. A Str
 Tools: Read / Grep / Write / `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"decl":"foo"}])` / `compute(code)` / `loogle(pattern)` / `validate_json(text)`. No time budget — take the time the judgment needs.
 <!-- #endif -->
 <!-- #if mcp_only_reads -->
-Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])` — read a document by its section; `outline: true` maps a file whose sections you don't know. Ask everything you need in ONE call: each query gets its own full budget. Also `compute(code)` / `loogle(pattern)` / `validate_json(text)`. No time budget — take the time the judgment needs.
+Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])` — read a document by its section; `outline: true` maps a file whose sections you don't know. Batch queries freely — each gets its own full budget; queries deferred by name in the reply need only be resent. Also `compute(code)` / `loogle(pattern)` / `validate_json(text)`. No time budget — take the time the judgment needs.
 <!-- #endif -->
 
 ## What you see 

@@ -203,3 +203,139 @@ def test_a_single_query_still_gets_the_whole_budget(tmp_path):
                          per_query_chars=4000)
     assert len(out) > 3500, (
         "dividing the budget must not penalise the un-batched case")
+
+
+# ── the DELIVERY budget: fit the transport by deferring, never by
+#    cutting (2026-08-15) ────────────────────────────────────────────
+#
+# The codex exec channel hands the model ~10K tokens of tool output and
+# amputates the middle of anything larger — a 90,417-char reply arrived
+# as 39,700 chars with the mid-batch answers gone, and six Adversary
+# spawns filed the same report in 50 minutes. The reply must fit the
+# pipe HERE, where whole queries can still be deferred by name; the
+# budget is per backend (`llm/capabilities.mcp_result_delivery_chars`)
+# and None — an unmeasured backend — applies no ceiling.
+
+
+def _three_reads(tmp_path):
+    for name in ("a.md", "b.md", "c.md"):
+        (tmp_path / name).write_text(name[0] * 3000 + "\n",
+                                     encoding="utf-8")
+    return [{"read": "a.md"}, {"read": "b.md"}, {"read": "c.md"}]
+
+
+def test_overflow_defers_whole_queries_by_name(tmp_path):
+    out = wq.run_queries(_three_reads(tmp_path), cwd=tmp_path,
+                         delivery_chars=4000)
+    assert len(out) <= 4000, "the reply itself must fit the transport"
+    assert "aaa" in out, "the first answer is delivered"
+    # the losers are whole, named queries — not amputated answers
+    assert "bbb" not in out and "ccc" not in out
+    assert "not answered" in out and "budget" in out
+    assert "[2]" in out and "[3]" in out and "'read'" in out
+    assert "Send these in a second call" in out
+
+
+def test_delivered_answers_keep_their_full_per_query_budget(tmp_path):
+    """The pooled-budget regression, pinned from the other side: a
+    delivery ceiling must never shrink an answer it delivers."""
+    out = wq.run_queries(_three_reads(tmp_path), cwd=tmp_path,
+                         delivery_chars=4000)
+    assert out.count("aaa") >= 1
+    first = out.split("\n\n")[0]
+    assert "truncated" not in first
+    assert first.count("a") >= 3000, "the delivered answer arrives whole"
+
+
+def test_every_block_is_complete_or_carries_its_own_notice(tmp_path):
+    """The invariant the codex cut violated: a delivered block either
+    ends because its answer ended, or says so itself."""
+    (tmp_path / "huge.md").write_text("h" * 20000 + "\n", encoding="utf-8")
+    (tmp_path / "tiny.md").write_text("needle\n", encoding="utf-8")
+    out = wq.run_queries(
+        [{"read": "huge.md"}, {"read": "tiny.md"}], cwd=tmp_path,
+        per_query_chars=2000, delivery_chars=6000)
+    assert len(out) <= 6000
+    assert "[1] truncated at" in out, (
+        "the per-query cut still names itself under a delivery budget")
+    assert "needle" in out or "[2]" in out
+
+
+def test_the_first_query_is_answered_even_alone_over_the_ceiling(tmp_path):
+    (tmp_path / "big.md").write_text("q" * 5000 + "\n", encoding="utf-8")
+    out = wq.run_queries([{"read": "big.md"}], cwd=tmp_path,
+                         delivery_chars=1000)
+    assert "qqq" in out, (
+        "a reply that deferred everything would answer nothing — the "
+        "first query rides whatever it costs")
+
+
+def test_no_ceiling_means_no_deferral(tmp_path):
+    """An UNMEASURED backend gets no cap — rationing a channel that
+    delivers whole is the regression the owner ruled out."""
+    out = wq.run_queries(_three_reads(tmp_path), cwd=tmp_path)
+    assert "aaa" in out and "bbb" in out and "ccc" in out
+    assert "not answered" not in out
+
+
+def test_budget_and_count_deferrals_merge_into_one_resend_list(tmp_path):
+    queries = _three_reads(tmp_path) + [{"size": "a.md"}]
+    out = wq.run_queries(queries, cwd=tmp_path, max_queries=3,
+                         delivery_chars=4000)
+    assert len(out) <= 4000
+    # one list, every missing query on it — [2] [3] by budget, [4] by
+    # count; the agent resends one batch, not two reasons' worth
+    assert out.count("Send these in a second call") == 1
+    for tag in ("[2]", "[3]", "[4]"):
+        assert tag in out
+
+
+def test_the_deferral_note_itself_fits_the_budget(tmp_path):
+    """The note is part of the reply; a budget met before the note and
+    broken after it would re-open the exact hole being closed."""
+    for i in range(6):
+        (tmp_path / f"f{i}.md").write_text(("%d" % i) * 2500 + "\n",
+                                           encoding="utf-8")
+    queries = [{"read": f"f{i}.md"} for i in range(6)]
+    # sized so two answers fit BEFORE the note and not after it — the
+    # last delivered answer must be handed back whole, not trimmed
+    out = wq.run_queries(queries, cwd=tmp_path, delivery_chars=5200)
+    assert len(out) <= 5200
+    assert "000" in out, "the first answer survives the hand-back"
+
+
+# ── section misses and duplicate headings (2026-08-15) ──────────────
+
+
+def test_a_sections_miss_carries_no_roster_only_the_count(tmp_path):
+    """A miss on the 383-section CATALOG.md answered with an inlined
+    roster that was itself a 12KB cap-hit — a refusal whose length
+    scaled with the file. No roster at all (owner ruling 2026-08-15):
+    `outline` already IS the roster, with line ranges and sizes; the
+    refusal names the miss, the COUNT, and that action."""
+    doc = "\n".join(f"## entry_{i:03d}\nbody {i}" for i in range(40))
+    (tmp_path / "CATALOG.md").write_text(doc + "\n", encoding="utf-8")
+    out = wq.run_queries(
+        [{"read": "CATALOG.md", "sections": ["no_such_entry"]}],
+        cwd=tmp_path)
+    assert "no section named 'no_such_entry'" in out
+    assert "40 sections" in out
+    assert "outline" in out, "the refusal names the reachable action"
+    assert "entry_000" not in out, "no roster — its length scaled"
+    assert len(out) < 400
+
+
+def test_duplicate_headings_are_disclosed_not_swallowed(tmp_path):
+    """Stacked charters carry the same heading twice; a dict that keeps
+    one of them silently answers with SOME section while the reader
+    believes the name was unambiguous."""
+    (tmp_path / "charter.md").write_text(
+        "# Charter\n## The claim to settle\nfirst body\n"
+        "## Above\n## The claim to settle\nsecond body\n",
+        encoding="utf-8")
+    out = wq.run_queries(
+        [{"read": "charter.md", "sections": ["The claim to settle"]}],
+        cwd=tmp_path)
+    assert "first body" in out
+    assert "2 sections share this heading" in out
+    assert "lines 5-6" in out, "the other occurrence is named by lines"

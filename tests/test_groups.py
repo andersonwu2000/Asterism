@@ -1978,3 +1978,29 @@ def test_group_status_write_stays_on_the_one_door(tmp_path):
         if f.name != "groups.py" and pat.search(f.read_text(encoding="utf-8"))
     ]
     assert not offenders, f"groups.status written outside the store: {offenders}"
+
+
+def test_stacked_charter_headings_are_stamped_with_their_group(tmp_path):
+    """Charters are agent prose sharing a template: two charters in one
+    charter.md both said `## The claim to settle` (measured 2026-08-15),
+    and a section ask can only ever name one of them. The stacked
+    context — ancestors and returned charters — gets `[group N]`
+    stamped into its headings; this group's OWN charter keeps its
+    headings verbatim, because those are the natural addresses. A `#`
+    inside a code fence is code and stays untouched."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.charterstamp")
+    top = groups.ensure_top_group(conn, p)
+    a = groups.open_group(
+        conn, problem=p, parent_group_id=top,
+        charter="## The claim to settle\nA's claim\n"
+                "```\n# not a heading\n```")
+    b = groups.open_group(
+        conn, problem=p, parent_group_id=a,
+        charter="## The claim to settle\nB's claim")
+    conn.commit()
+    txt = groups.charter_digest(conn, p, b)
+    assert "## The claim to settle\nB's claim" in txt, "own charter verbatim"
+    assert f"## [group {a}] The claim to settle" in txt
+    assert "# not a heading" in txt
+    assert f"# [group {a}] not a heading" not in txt

@@ -573,3 +573,23 @@ def test_headline_and_per_action_do_not_contradict() -> None:
             # The whole point: some actions honoured, not all.
             assert cap.allow_honoured_actions, cap.name
             assert cap.allow_honoured_actions != caps.ALLOW_HONOURED_ALL, cap.name
+
+
+# ── the `inspect` delivery ceiling (2026-08-15) ─────────────────────
+
+
+def test_only_measured_backends_declare_a_delivery_ceiling() -> None:
+    """codex's exec channel was MEASURED to amputate tool output past
+    ~10K tokens (cap-hits at 36,289-39,869 chars across 1,501 outputs);
+    30,000 leaves margin for labels. Every other backend is unmeasured,
+    and unmeasured means UNCAPPED — a guessed ceiling would re-ration a
+    channel that delivers whole. A new backend that wants a number
+    must bring a measurement, set it in its declaration, render it into
+    the tools server's env in its adapter, and extend this test."""
+    from Tooling.llm import capabilities as caps
+
+    assert caps.inspect_delivery_chars("codex") == 30_000
+    for name in ("claude", "antigravity", "gemini", "openai"):
+        assert caps.inspect_delivery_chars(name) is None, name
+    assert caps.inspect_delivery_chars("agy") is None  # alias resolves
+    assert caps.inspect_delivery_chars("no-such-backend") is None

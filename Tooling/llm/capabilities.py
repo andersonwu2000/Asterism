@@ -319,6 +319,16 @@ class ProviderCapabilities:
     #: reason as every other field here: promising a tool that is not
     #: there is the failure that was measured; the reverse is not.
     native_file_tools: bool = False
+    #: The largest MCP tool result this backend DELIVERS to the model
+    #: uncut, in chars — the transport's ceiling, which the framework's
+    #: reply must respect because whole queries can be deferred by name
+    #: at the source (`knowledge/workspace_query.run_queries`) while the
+    #: transport can only amputate. None = nobody has measured this
+    #: backend; NO ceiling is applied — a guessed number would re-ration
+    #: a channel that delivers whole. A backend that declares one must
+    #: also render it into the tools server's env
+    #: (`ASTERISM_INSPECT_DELIVERY_CHARS`) in its own adapter.
+    mcp_result_delivery_chars: "int | None" = None
     #: The ACTIONS whose `allow` rules this provider actually honours —
     #: `{"*"}` for all, `frozenset()` for none. `enforcement_strength`
     #: above is the headline; this is the fact a gate can act on, because
@@ -671,6 +681,16 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         # call`. Nothing else has been measured, and the default empty
         # set is the right answer for the rest.
         allow_honoured_actions=frozenset({"mcp"}),
+        # The exec channel that carries every tool result caps the
+        # model-visible output at 10,000 tokens ("Output token budget.
+        # Defaults to 10000 tokens" — the binary's own tool spec) and
+        # keeps head+tail of anything larger. Measured 2026-08-15
+        # across 1,501 outputs: cap-hits land between 36,289 and
+        # 39,869 chars (unicode density moves the char count), so
+        # 30,000 leaves margin for labels. The per-call
+        # `max_output_tokens` pragma can raise it, but compliance is
+        # the model's choice — the framework budgets for the default.
+        mcp_result_delivery_chars=30_000,
         tested_version="0.147.0",
         marker_tables=("Tooling.llm.codex_cli._QUOTA_MARKERS",
                        "Tooling.llm.codex_cli._MISCONFIG_MARKERS"),
@@ -768,6 +788,18 @@ def prompt_tool_flags(provider: "str | None") -> "dict[str, bool]":
     """
     native = capabilities_for(provider).native_file_tools
     return {"native_file_tools": native, "mcp_only_reads": not native}
+
+
+def inspect_delivery_chars(provider: "str | None") -> "int | None":
+    """The `inspect` reply ceiling for this backend, or None.
+
+    None means UNMEASURED, and unmeasured means uncapped: the ceiling
+    exists to keep a reply inside a transport that would amputate it,
+    and applying a guessed one to a backend that delivers whole would
+    re-ration what nothing rations. Same declaration-consumer shape as
+    `prompt_tool_flags`; the adapter that spawns the tools server
+    renders the value into `ASTERISM_INSPECT_DELIVERY_CHARS`."""
+    return capabilities_for(provider).mcp_result_delivery_chars
 
 
 def liveness_clock(provider: "str | None", kind: str) -> str:

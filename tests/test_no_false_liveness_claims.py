@@ -43,7 +43,9 @@ def test_the_judges_file_list_does_not_call_the_copy_live():
 def test_the_projection_label_does_not_claim_liveness():
     src = _inspect.getsource(adversary)
     label = src[src.index('"_(Framework label'):]
-    label = label[:label.index("+ ctx.read_text")]
+    # the snapshot body follows the label (post-elision text since
+    # 2026-08-15 — `ctx_text`, no longer a raw `ctx.read_text(...)`)
+    label = label[:label.index("+ ctx_text")]
     assert "are LIVE" not in label, label
     assert "live files are authoritative" not in label, label
     assert "COPY" in label, "the label must say what TREE.md actually is"

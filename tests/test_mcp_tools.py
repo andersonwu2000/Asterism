@@ -297,3 +297,29 @@ def test_no_mcp_tool_has_a_required_parameter() -> None:
     assert not offenders, (
         "these MCP tools raise instead of teaching when a model guesses a "
         f"parameter name wrong: {offenders}")
+
+
+def test_inspect_reads_the_delivery_ceiling_from_its_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The backend's transport ceiling reaches the server as
+    `ASTERISM_INSPECT_DELIVERY_CHARS` (set by the provider adapter from
+    the capability declaration). Unset — an unmeasured backend — must
+    arrive as None, never a guessed number; garbage must not raise
+    across the MCP boundary."""
+    from Tooling.knowledge import mcp_tools, workspace_query
+
+    seen: list = []
+
+    def fake(queries, *, delivery_chars=None, **_kw):
+        seen.append(delivery_chars)
+        return "ok"
+
+    monkeypatch.setattr(workspace_query, "run_queries", fake)
+    monkeypatch.setenv("ASTERISM_INSPECT_DELIVERY_CHARS", "30000")
+    assert mcp_tools.inspect([{"size": "."}]) == "ok"
+    monkeypatch.delenv("ASTERISM_INSPECT_DELIVERY_CHARS")
+    mcp_tools.inspect([{"size": "."}])
+    monkeypatch.setenv("ASTERISM_INSPECT_DELIVERY_CHARS", "junk")
+    mcp_tools.inspect([{"size": "."}])
+    assert seen == [30000, None, None]
