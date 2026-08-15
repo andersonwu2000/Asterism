@@ -94,10 +94,15 @@ dispatch:
 # EVERY worker spawn. sonnet-5 (user ruling 2026-07-29): the opus tier
 # stays on strategist/adversary where one decision shapes the tree.
 formalizer:
-  provider: claude
-  model: claude-sonnet-5
+  # 2026-08-15: union_closed goes back on codex (user), now on a 20x
+  # subscription of its own. luna at `xhigh` does the throughput work;
+  # the NL layer takes `sol`. Baseline: provider: claude / model:
+  # claude-sonnet-5
+  provider: codex
+  model: gpt-5.6-luna
+  reasoning_effort: xhigh
   # 2026-08-13: back off codex after the smoke run. The seat is proven
-  # on codex (Test.codex_probe: brick proved, seven-tool roll-call
+  # on codex (Test.provider_probe: brick proved, seven-tool roll-call
   # recorded, intake sentinel written) — restore with
   #   provider: codex / model: gpt-5.6-luna / reasoning_effort: xhigh
   # `reasoning_effort` is codex-only; claude derives its thinking budget
@@ -128,8 +133,20 @@ formalizer:
                                # closed in 91m32s with zero dead attempts.
 
 strategist:
-  provider: claude             # Back on the opus tier 2026-08-06 after the
-  model: claude-opus-5         # Gemini author hit its ceiling on the open
+  # 2026-08-15: codex for the cache-hit probe (user). FIRST TIME ON THE
+  # NL LAYER for this backend — the seat has only ever been a formalizer
+  # here. Two things are known to be different up here and neither is a
+  # blocker: `capabilities.liveness_clock` hands an NL kind on codex
+  # TIMEOUT_ONLY (codex emits no text deltas, so the stream-idle clock
+  # cannot be built), and this worker has no Read/Grep at all — it
+  # reaches every file through the `inspect` MCP tool.
+  # Baseline: claude / claude-opus-5.
+  provider: codex
+  model: gpt-5.6-sol
+  reasoning_effort: high   # user 2026-08-15: sol does not need xhigh to
+                           # hold the NL layer; luna keeps xhigh below.
+  # Back on the opus tier 2026-08-06 after the
+  # Gemini author hit its ceiling on the open
                                # segment: g382 rev 3 burned all 10 rounds and
                                # the whole wake on a FALSE briefed theorem
                                # (`5|K| <= 2*sum|K_x|`, refuted by the path
@@ -174,8 +191,15 @@ strategist:
 # light "search + propose names" task, so a cheaper model is usually enough.
 presearch:
   enabled: true                # off → skip pre-search (provers grep on their own)
+  # Moves with the formalizer: `quota.BOUND` ties {presearch,
+  # formalizer}, so a split pair stops on one seat's window.
   provider: claude
-  model: claude-sonnet-5      # A/B 2026-06-29: sonnet TIMED OUT at the 150s presearch
+  model: claude-sonnet-5
+  # 2026-08-15: back to sonnet. haiku landed the probe brick but
+  # dropped the brief's secondary written requirements, and on a
+  # real board that shows up as commit-gate rework, not as a
+  # failure to prove — too expensive to discover on union_closed
+  # (user call). agy A/B baseline: antigravity / gemini-3.7-flash-medium — A/B 2026-06-29: sonnet TIMED OUT at the 150s presearch
                                # budget (27 searches, still missed the Library lemma at the
                                # root) → strictly worse than haiku here. Reverted. The
                                # root-level Library miss is a coverage problem a bigger model
@@ -217,10 +241,20 @@ scholar:
   model: claude-sonnet-5
 
 adversary:
+  # 2026-08-15: codex for the cache-hit probe (user) — the judge follows
+  # its author, as the A/B rule below requires, so the NL layer stays one
+  # variable. Also first time on this seat for this backend.
+  # Baseline: claude / claude-opus-5.
+  provider: codex
+  model: gpt-5.6-sol
+  reasoning_effort: high   # matches the author, as the A/B rule below
+                           # requires — one variable on the NL layer.
   # 2026-08-13: back on fable (user). The 08-12 detour to opus-5 was
   # only because fable's weekly window was spent and the ledger BINDs
   # {strategist, adversary} — a blocked judge stops the pair.
-  model: claude-fable-5        # 2026-08-10 (user): the strongest model goes to
+  # A/B arm: the judge matches the author here so the NL layer is
+  # one variable, not two. BOUND to the strategist.
+  # 2026-08-10 (user): the strongest model goes to
                                # the judge, not the planner. The rule below
                                # still holds — a judge ABOVE its author
                                # satisfies it — and the reason to prefer this
