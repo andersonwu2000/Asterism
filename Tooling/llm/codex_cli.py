@@ -87,7 +87,8 @@ from pathlib import Path
 
 from .base import (LLMRequest, SpawnRC, transcript_dest,
                    which_launchable)
-from ..core.process_group import no_window_creationflags
+from ..core.process_group import (assign_to_job, create_capped_job,
+                                  no_window_creationflags)
 
 PROVIDER_NAME = "codex"
 
@@ -641,8 +642,8 @@ class _Events:
 class CodexCliProvider:
     def spawn(self, req: LLMRequest) -> int:
         from .claude_cli import (_build_cold_prompt, _load_prompt,
-                                 is_shutdown_requested, _live_procs,
-                                 _live_procs_lock)
+                                 is_shutdown_requested, track_proc,
+                                 untrack_proc)
         if is_shutdown_requested():
             return SpawnRC.SHUTDOWN
         exe = resolve_codex_executable()
@@ -726,6 +727,11 @@ class CodexCliProvider:
             _repo_root + os.pathsep + env["PYTHONPATH"]
             if env.get("PYTHONPATH") else _repo_root)
 
+        # THE SPAWN IS A TREE. `codex` resolves to `codex.cmd`, so the
+        # direct child is `cmd.exe` and the agent itself is two levels
+        # down; `Popen.kill()` would leave it running (measured
+        # 2026-08-15 — see `claude_cli._proc_jobs`).
+        job = create_capped_job(None)
         try:
             proc = subprocess.Popen(
                 cmd, env=env, cwd=str(req.problem_dir),
@@ -734,6 +740,7 @@ class CodexCliProvider:
                 text=True, encoding="utf-8", errors="replace",
                 creationflags=no_window_creationflags(),
             )
+            assign_to_job(job, proc)
         except OSError as exc:
             # The CLI could not be STARTED — a different thing from an
             # agent that ran and failed, and the distinction is worth
@@ -751,8 +758,7 @@ class CodexCliProvider:
                                 f"(could not launch {cmd[0]!r}: {exc})",
                                 SpawnRC.MISSING_DEP)
             return SpawnRC.MISSING_DEP
-        with _live_procs_lock:
-            _live_procs.add(proc)
+        track_proc(proc, job)
         try:
             # `prior` is the thread this call resumes, or "" when cold —
             # which is exactly the key its running totals are filed
@@ -761,13 +767,13 @@ class CodexCliProvider:
             return self._run_proc(req, proc, prompt, home,
                                   resume_thread=prior if resuming else None)
         finally:
-            with _live_procs_lock:
-                _live_procs.discard(proc)
+            untrack_proc(proc)
 
     def _run_proc(self, req: LLMRequest, proc: subprocess.Popen,
                   prompt: str, home: Path,
                   resume_thread: "str | None" = None) -> int:
-        from .claude_cli import _watchdog, _persist_parser_state
+        from .claude_cli import (_watchdog, _persist_parser_state,
+                                 kill_proc_tree)
         from .stream_parser import StreamParser
 
         events = _Events()
@@ -823,7 +829,7 @@ class CodexCliProvider:
         try:
             proc.wait(timeout=req.timeout_sec)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            kill_proc_tree(proc)
             timed_out = True
         for t in readers:
             t.join(timeout=2)

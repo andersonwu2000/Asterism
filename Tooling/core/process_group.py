@@ -142,7 +142,8 @@ _JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x00000100
 _JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
 
 
-def create_capped_job(per_process_mb: int, *, max_processes: int = 0):
+def create_capped_job(per_process_mb: "int | None", *,
+                      max_processes: int = 0):
     """A kill-on-close Job Object with a PER-PROCESS commit cap, for the
     gateway's `lake serve → lean --server → lean --worker` tree.
 
@@ -165,6 +166,15 @@ def create_capped_job(per_process_mb: int, *, max_processes: int = 0):
     sandbox needs exactly one, and a hard OS-level 1 there means a
     `subprocess` that somehow got past the audit hook still cannot start.
 
+    `per_process_mb=None` means NO memory ceiling — the job is then only
+    a reaper. That is what an agent spawn wants: the reason to put a CLI
+    in a job is that `Popen.kill()` reaps the direct child alone, and a
+    vendor CLI installed by npm is a `.cmd` shim whose direct child is
+    `cmd.exe` (measured 2026-08-15: a killed codex spawn kept working
+    for five more minutes and called a gateway tool at 02:34:35, two
+    minutes after the framework recorded it dead). Capping such a tree's
+    memory would add a failure mode to fix a lifetime bug.
+
     Returns the job handle (keep it referenced!), or None off-Windows /
     on any OS refusal — callers keep the taskkill path as fallback."""
     if sys.platform != "win32":
@@ -183,13 +193,14 @@ def create_capped_job(per_process_mb: int, *, max_processes: int = 0):
             return None
         ext_cls = _build_structs(ctypes, wintypes)
         info = ext_cls()
-        flags = (_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                 | _JOB_OBJECT_LIMIT_PROCESS_MEMORY)
+        flags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if per_process_mb is not None:
+            flags |= _JOB_OBJECT_LIMIT_PROCESS_MEMORY
+            info.ProcessMemoryLimit = int(per_process_mb) * 1024 * 1024
         if max_processes > 0:
             flags |= _JOB_OBJECT_LIMIT_ACTIVE_PROCESS
             info.BasicLimitInformation.ActiveProcessLimit = int(max_processes)
         info.BasicLimitInformation.LimitFlags = flags
-        info.ProcessMemoryLimit = int(per_process_mb) * 1024 * 1024
         if not k32.SetInformationJobObject(
                 job, _JobObjectExtendedLimitInformation,
                 ctypes.byref(info), ctypes.sizeof(info)):

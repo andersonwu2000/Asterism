@@ -2185,8 +2185,20 @@ def _backward_parse_and_commit(
         # file the `proof_store.inventory` / recovery sweep reconciles.
         if not inserts_began:
             _discard_placed()
+        # AN OSError HERE IS OURS, NOT THE AGENT'S. This handler covers
+        # ~450 lines of placement / verify / insert, and it labelled
+        # every escape `lake_build_error` — origin `agent`,
+        # attempt-burning, agent-visible. Measured 2026-08-15: a spawn
+        # the framework believed it had killed was still alive and
+        # called `withdraw_stub`, deleting a stub file between this
+        # path's glob and its read; the `FileNotFoundError` came back to
+        # the agent as "your Lean failed to build". `worker_exception`
+        # is the registry's framework-origin, non-agent-visible entry
+        # for exactly this (`state/failures.py:203`); `lake_build_error`
+        # keeps only the verdicts that carry Lean diagnostics.
         return _abort(
-            "lake_build_error",
+            "worker_exception" if isinstance(exc, OSError)
+            else "lake_build_error",
             diagnostics.annotate_failure_detail(str(exc)),
             leading,
         )

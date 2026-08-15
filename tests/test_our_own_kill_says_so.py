@@ -91,7 +91,11 @@ def test_the_live_process_registry_is_shared_by_every_provider() -> None:
     not say "claude": codex registers into the same set."""
     assert codex_cli.CodexCliProvider is not None
     src = (ROOT / "Tooling" / "llm" / "codex_cli.py").read_text("utf-8")
-    assert "_live_procs" in src and "from .claude_cli import" in src
+    # 2026-08-15: codex stopped touching `_live_procs` by hand and now
+    # goes through the registry's own helpers, which is what "shared"
+    # was always supposed to mean — the set AND the way it is killed.
+    assert "track_proc(proc, job)" in src
+    assert "from .claude_cli import" in src
     assert hasattr(claude_cli, "_live_procs")
 
 

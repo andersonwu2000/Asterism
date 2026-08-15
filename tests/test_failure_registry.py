@@ -238,15 +238,40 @@ def test_verify_infra_never_burns_an_attempt_and_teaches_nothing():
     assert failures.REGISTRY["framework_verify_error"].agent_visible is False
 
 
-def test_neither_arm_hard_codes_a_reason_for_a_verify_error():
-    """Both arms must ASK, because answering separately is how they came
-    to disagree. Pins the call sites, not just the predicate."""
+def test_no_arm_hard_codes_a_reason_for_a_verify_error():
+    """Every arm must ASK, because answering separately is how they came
+    to disagree. Pins the call sites, not just the predicate.
+
+    THE THIRD ARM was missed when the first two were fixed on 08-12, and
+    went on charging gateway outages to the mathematics for two more
+    days: dead_attempts 3086 (08-14) reads `lake_build_error` with the
+    detail "verify infra error … gateway unreachable: timed out". The
+    axiom gate asks the same question as the other two and now uses the
+    same answer."""
     fwd = (ROOT / "Tooling" / "pipeline" / "forward.py").read_text(
         encoding="utf-8")
     bwd = (ROOT / "Tooling" / "pipeline" / "backward.py").read_text(
         encoding="utf-8")
+    axiom = (ROOT / "Tooling" / "pipeline" / "_axiom.py").read_text(
+        encoding="utf-8")
     assert "verify_error_reason(v)" in fwd
     assert "verify_error_reason(v)" in bwd
+    assert "verify_error_reason(v)" in axiom
     # The exact regression: an error dict answered with the Lean reason.
     assert 'failure_reason="forward_no_new_goal",\n                failure_detail=f"lake elaborate failed: {v.get(\'error\'' \
         not in fwd
+
+
+def test_a_filesystem_error_is_not_the_agents_lean_failing():
+    """`backward`'s outer handler covers ~450 lines of placement /
+    verify / insert and labelled every escape `lake_build_error` —
+    origin 'agent', attempts++, agent-visible. Measured 2026-08-15: a
+    spawn the framework believed it had killed was still alive and
+    called `withdraw_stub`, deleting a stub between this path's glob and
+    its read; the FileNotFoundError reached the agent as "your Lean
+    failed to build"."""
+    bwd = (ROOT / "Tooling" / "pipeline" / "backward.py").read_text(
+        encoding="utf-8")
+    assert '"worker_exception" if isinstance(exc, OSError)' in bwd
+    assert failures.REGISTRY["worker_exception"].origin == "framework"
+    assert failures.REGISTRY["worker_exception"].agent_visible is False

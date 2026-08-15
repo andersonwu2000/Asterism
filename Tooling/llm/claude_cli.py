@@ -46,7 +46,8 @@ import threading
 import time
 from pathlib import Path
 
-from ..core.process_group import no_window_creationflags
+from ..core.process_group import (assign_to_job, create_capped_job,
+                                  no_window_creationflags)
 from . import capabilities
 from .base import LLMRequest, SpawnRC
 from .stream_parser import StreamParser
@@ -68,23 +69,69 @@ from .stream_parser import StreamParser
 _live_procs: set[subprocess.Popen] = set()
 _live_procs_lock = threading.Lock()
 _shutdown_event = threading.Event()
+#: proc -> its Job Object. THE REASON THIS EXISTS: `Popen.kill()` on
+#: Windows is `TerminateProcess` on the DIRECT CHILD, and for a CLI
+#: installed by npm that child is `cmd.exe` — the shim — with the real
+#: agent two levels below it (`cmd.exe → node.exe → <vendor>.exe`).
+#: Killing the shim leaves the agent RUNNING. Measured 2026-08-15: a
+#: codex spawn killed at 02:32:35 went on reasoning and calling tools
+#: until 02:37:33, and at 02:34:35 called the gateway's `withdraw_stub`
+#: — deleting a file the framework was, at that moment, parsing as the
+#: dead spawn's salvage. A "killed" spawn that keeps writing is not a
+#: tidiness problem: it mutates the workspace after the framework has
+#: recorded its outcome. Job membership survives re-parenting, so
+#: `terminate_job` reaps the whole tree.
+_proc_jobs: "dict[int, object]" = {}
+
+
+def track_proc(proc: subprocess.Popen, job=None) -> None:
+    """Register a live spawn (and its Job Object, when one was made) so
+    every kill path can reap the TREE. Providers call this instead of
+    touching `_live_procs` directly."""
+    with _live_procs_lock:
+        _live_procs.add(proc)
+        if job is not None:
+            _proc_jobs[id(proc)] = job
+
+
+def untrack_proc(proc: subprocess.Popen) -> None:
+    with _live_procs_lock:
+        _live_procs.discard(proc)
+        _proc_jobs.pop(id(proc), None)
+
+
+def kill_proc_tree(proc: subprocess.Popen) -> bool:
+    """Kill a spawn AND its descendants. Falls back to `proc.kill()`
+    when no job could be created (non-Windows, or the OS refused) —
+    there the direct child is usually the agent itself.
+
+    Returns whether anything was killed: a process that had already
+    exited raises `OSError` on some platforms and must not be counted,
+    which is what the shutdown line reports."""
+    from ..core.process_group import terminate_job
+    with _live_procs_lock:
+        job = _proc_jobs.pop(id(proc), None)
+    if job is not None and terminate_job(job):
+        return True
+    try:
+        proc.kill()
+        return True
+    except OSError:
+        return False
 
 
 def request_shutdown() -> int:
     """Signal in-flight and future `spawn_llm` calls to bail and kill
-    every currently-running claude subprocess. Returns the count killed
-    for log visibility. Idempotent — safe for multiple dispatcher exit
-    paths to call without coordination."""
+    every currently-running agent subprocess TREE. Returns the count
+    killed for log visibility. Idempotent — safe for multiple dispatcher
+    exit paths to call without coordination."""
     _shutdown_event.set()
     with _live_procs_lock:
         procs = list(_live_procs)
     killed = 0
     for proc in procs:
-        try:
-            proc.kill()
+        if kill_proc_tree(proc):
             killed += 1
-        except OSError:
-            pass
     return killed
 
 
@@ -558,7 +605,7 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
                         proc.terminate()
                         proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
-                        proc.kill()
+                        kill_proc_tree(proc)
                 return
         else:
             # A new turn started (parser cleared last_stop_reason) or the
@@ -610,7 +657,7 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
             proc.terminate()
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            kill_proc_tree(proc)
     else:
         # AND failed: log which signal was missing. The TIMEOUT
         # path's parser-only check will catch trap-without-silence
@@ -1399,6 +1446,11 @@ class ClaudeCliProvider:
         # is the root-cause layer — no memory section in the spawn
         # system prompt, so the spawn never learns the shared dir.
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+        # A JOB FOR THE TREE, not a handle on the shim. See `_proc_jobs`:
+        # an npm-installed CLI is `cmd.exe -> node.exe -> <vendor>.exe`
+        # and `Popen.kill()` reaps only the first. `per_process_mb=None`
+        # asks for a reaper, not a memory ceiling.
+        job = create_capped_job(None)
         try:
             proc = subprocess.Popen(
                 cmd, env=env, cwd=str(req.problem_dir),
@@ -1406,6 +1458,7 @@ class ClaudeCliProvider:
                 text=True, encoding="utf-8", errors="replace",
                 creationflags=no_window_creationflags(),
             )
+            assign_to_job(job, proc)
         except OSError as exc:
             # "the CLI could not be STARTED" is knowable only here. One
             # level up, the dispatcher sees a bare OSError and cannot
@@ -1426,11 +1479,13 @@ class ClaudeCliProvider:
         # daemon shutdown out 16min × pool_size.
         with _live_procs_lock:
             _live_procs.add(proc)
+            _proc_jobs[id(proc)] = job
         try:
             return self._run_proc(req, proc, watchdog_eligible)
         finally:
             with _live_procs_lock:
                 _live_procs.discard(proc)
+                _proc_jobs.pop(id(proc), None)
 
     def _run_proc(self, req: LLMRequest, proc: subprocess.Popen,
                   watchdog_eligible: bool) -> int:
@@ -1506,7 +1561,7 @@ class ClaudeCliProvider:
                     timeout=req.timeout_sec)
                 rc = proc.returncode
         except subprocess.TimeoutExpired:
-            proc.kill()
+            kill_proc_tree(proc)
             if watchdog_eligible:
                 # Reader threads see EOF on the killed pipes and exit.
                 if reader_thread is not None:

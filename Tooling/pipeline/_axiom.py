@@ -117,7 +117,17 @@ def axiom_gate(
         path, workspace=workspace, attempts_dir=attempts_dir,
         write_olean=write_olean, axioms_for=fq_name)
     if "error" in v:
-        return AxiomGateResult(False, "lake_build_error",
+        # THE THIRD ARM. `verify_error_reason` was written on 08-12 when
+        # Backward and Forward were both found charging a gateway outage
+        # to the mathematics; this arm asks the same question and was
+        # missed, so it went on doing it. Measured recurrence:
+        # dead_attempts 3086 (08-14) reads `lake_build_error` with the
+        # detail "verify infra error … gateway unreachable: timed out" —
+        # a goal attempt burned, and the agent told its Lean was broken,
+        # for a gateway that was down.
+        from ..state.failures import verify_error_reason
+        return AxiomGateResult(False,
+                               verify_error_reason(v) or "lake_build_error",
                                f"verify infra error: {v['error']}", v)
     if not v.get("ok"):
         err = "\n".join(
