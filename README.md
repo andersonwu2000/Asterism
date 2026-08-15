@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-14
+- Revised the instructions given to the AI agents in several places, resolving contradictory definitions, removing examples of an obsolete workflow, and adding explicit descriptions of failure patterns that superficially resemble progress.
+- Made the system that farms work out to language-model backends more robust, so it now restarts bloated idle workers, recovers automatically when a backend dies, trusts the provider's own quota reports over local estimates, and checks capacity before launching new jobs.
+- Added interface and installer options for choosing which AI model and account each worker uses, including support for a fourth account provider.
+- Fixed several bugs in the tests and maintenance tooling, including tests that depended on the local machine, a cleanup audit that missed some leftover files, and a health check that misreported a probe that had never run as a failure.
+
 ### 2026-08-13
 - Integrated a second language-model provider into the proving pipeline and fixed several faults uncovered during its first full run.
 - Sharpened the adversarial verification rules so that a claimed record is only overturned by an actual proof, with separate checks for necessity and sufficiency.
@@ -212,10 +218,6 @@ Programme revisions and worker declines now appear on the project's timeline and
 
 ### 2026-07-16
 - Capped the framework's library of general lessons at 25 entries, requiring an old one to be dropped whenever a new one is added.
-
-### 2026-07-15
-- Added an automated audit that flags when a prompt's stated routing no longer matches the project's central specification.
-- Worked through two batches of user-reported issues, fixing problems in how the system spawns provers, assembles context, and drafts proof skeletons.
 
 <!-- ASTERISM-PROGRESS:END -->
 
