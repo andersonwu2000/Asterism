@@ -208,9 +208,33 @@ def attempt_feedback(*, kind: str, seat: str, sid: str,
         ppath.write_text(prompt, encoding="utf-8")
         # is_postmortem=True → provider uses `--resume <sid>` and loads the
         # prompt verbatim (same path reflection uses for its resume turn).
+        #
+        # THE SAME TOOL CONFIG THE WORK TURNS HAD, and it is not about
+        # tools: a resumed turn re-sends the whole conversation, and the
+        # tool definitions sit at the FRONT of that request. Drop them
+        # and the cached prefix cannot match, so a one-sentence question
+        # is billed for the entire session at full price. Measured
+        # 2026-08-15 on Test.provider_probe: every feedback turn came
+        # back `cached_input_tokens = 0` — 184,184 tokens, 41% of the
+        # run's fresh input — while every other resume in the same
+        # sessions cached normally. A two-arm probe isolated it: same
+        # cold prompt, same session, resume WITH the config cached 11,008
+        # of 12,056; resume WITHOUT it cached 0 of 11,291.
+        #
+        # Whichever file the work spawn wrote is the one that matches:
+        # `_mcp_config.json` (gateway + tools) for a formalizer,
+        # `_mcp_tools.json` (tools alone) for the Strategist and the
+        # judge. A gateway token already released makes the http server
+        # unstartable and, with codex's `required = true`, fails this
+        # spawn — which degrades to exactly today's outcome for a lost
+        # session: no record, and the rc line below says so.
+        mcp = next((p for p in (attempts_dir / "_mcp_config.json",
+                                attempts_dir / "_mcp_tools.json")
+                    if p.is_file()), None)
         rc = agent.spawn_llm(
             kind=seat, prompt_path=ppath, problem_dir=problem_dir,
             attempts_dir=attempts_dir, session_id=sid,
+            mcp_config_path=mcp,
             is_postmortem=True, timeout_sec=_FEEDBACK_TIMEOUT_SEC)
         wrote = scratch_path(attempts_dir).exists()
         # Diagnostic: the feedback spawn resumes the agent's session via

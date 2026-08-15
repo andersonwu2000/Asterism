@@ -141,6 +141,79 @@ def test_attempt_feedback_resumes_session_and_records(ws_on, monkeypatch):
     assert "deprecated lemma" in fb
 
 
+def test_feedback_resumes_with_the_tool_config_the_work_turns_had(
+    ws_on, monkeypatch,
+) -> None:
+    """A resumed turn re-sends the whole conversation, and the tool
+    definitions sit at the FRONT of that request — so dropping them
+    invalidates the cached prefix and a one-sentence question is billed
+    for the entire session at full price.
+
+    Measured 2026-08-15 on Test.provider_probe: every feedback turn came
+    back `cached_input_tokens = 0` (184,184 tokens, 41% of the run's
+    fresh input) while every other resume in the same sessions cached
+    normally. Two-arm probe, same cold prompt and session: resume WITH
+    the config cached 11,008 of 12,056; WITHOUT it, 0 of 11,291.
+    """
+    from Tooling import agent
+    seen: dict = {}
+    monkeypatch.setattr(agent, "spawn_llm",
+                        lambda **k: (seen.update(k), 0)[1])
+    att = _attempts(ws_on)
+    pdir = ws_on / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    (att / "_mcp_tools.json").write_text("{}", encoding="utf-8")
+
+    _feedback.attempt_feedback(kind="strategist", seat="strategist",
+                               sid="sid-1", slug="inject_done",
+                               outcome="success", problem_dir=pdir,
+                               attempts_dir=att, workspace=ws_on)
+
+    assert seen["mcp_config_path"] == att / "_mcp_tools.json"
+
+
+def test_feedback_prefers_the_gateway_config_when_the_spawn_had_one(
+    ws_on, monkeypatch,
+) -> None:
+    """A formalizer's work turns carry gateway + tools; matching the
+    prefix means matching THAT set, not a subset of it."""
+    from Tooling import agent
+    seen: dict = {}
+    monkeypatch.setattr(agent, "spawn_llm",
+                        lambda **k: (seen.update(k), 0)[1])
+    att = _attempts(ws_on)
+    pdir = ws_on / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    (att / "_mcp_tools.json").write_text("{}", encoding="utf-8")
+    (att / "_mcp_config.json").write_text("{}", encoding="utf-8")
+
+    _feedback.attempt_feedback(kind="forward", seat="formalizer",
+                               sid="sid-2", slug="f", outcome="proved",
+                               problem_dir=pdir, attempts_dir=att,
+                               workspace=ws_on)
+
+    assert seen["mcp_config_path"] == att / "_mcp_config.json"
+
+
+def test_feedback_without_any_config_still_runs(ws_on, monkeypatch) -> None:
+    """A pipeline that never wrote one gets None — the pre-2026-08-15
+    behaviour, which is correct there: nothing to match."""
+    from Tooling import agent
+    seen: dict = {}
+    monkeypatch.setattr(agent, "spawn_llm",
+                        lambda **k: (seen.update(k), 0)[1])
+    att = _attempts(ws_on)
+    pdir = ws_on / "Problems" / "p"
+    pdir.mkdir(parents=True)
+
+    _feedback.attempt_feedback(kind="strategist", seat="strategist",
+                               sid="sid-3", slug="s", outcome="success",
+                               problem_dir=pdir, attempts_dir=att,
+                               workspace=ws_on)
+
+    assert seen["mcp_config_path"] is None
+
+
 def test_attempt_feedback_no_sid_is_noop(ws_on, monkeypatch):
     from Tooling import agent
     calls = []
