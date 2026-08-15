@@ -28,10 +28,10 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 1. **Value**: `proposal.md`'s ## Argument must explain why achieving the Manifest's requirement needs this plan. Work the requirement does not need is not allowed.
 2. **Reachability**: `proposal.md`'s ## Roadmap must explain how this route settles the MAIN claim. A route that stops short of it, re-walks a failed route unchanged, or contradicts a verified Programme record, is not allowed.
 3. **Rigor**: `proposal.md`'s ## Proof must be logically complete. Logical errors, vaguely-papered holes, and gaps are not allowed.
-4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof, and its support must already exist. A goal the ## Proof does not prove — or one that reaches a brick this same batch is minting, directly or through parked goals — must not enter formalization.
+4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof. A goal not proven by the ## Proof must not enter formalization.
 5. **Honesty**: dead or shelved assertions must carry node pointers; a shelved item must state its restart condition. An external variable is not a restart condition.
 
-`Delegate` is exempt from 4 — it hands over a burden rather than skipping a step. Judge it against its `contract.md` clause, plus: the charter is precise enough to be settled.
+A decision that carries no proof is judged against its `contract.md` clause. A `Delegate`'s charter must be precise enough to be settled.
 
 Two substitutions fire criterion 1, however clean the batches:
 
