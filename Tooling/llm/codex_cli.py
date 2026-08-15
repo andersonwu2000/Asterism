@@ -866,6 +866,7 @@ class CodexCliProvider:
         first and the rc second — see DELTA 6: a hard API refusal exits
         zero, so rc alone would report the vendor's rejection as the
         agent's fair chance."""
+        from .claude_cli import is_shutdown_requested
 
         if stuck_flag[0]:
             _write_spawn_stderr(req.attempts_dir,
@@ -888,6 +889,21 @@ class CodexCliProvider:
                                 f"(subprocess.TimeoutExpired after "
                                 f"{req.timeout_sec}s)", SpawnRC.TIMEOUT)
             return SpawnRC.TIMEOUT
+        # WE killed it — same branch as `claude_cli`, same reason. On
+        # this backend the corpse is a SILENT rc=1 with an empty stderr,
+        # which reads exactly like a CLI that failed on its own; the
+        # 08-15 probe legs lost the last pipeline's feedback turn to
+        # teardown three times and reported it as rc=129 once and rc=1
+        # twice, differing only in whether the kill landed before or
+        # after the start. Guarded on `rc != 0` so a spawn that finished
+        # as shutdown fired keeps its success, and placed BEFORE the
+        # quota/misconfig marker tables so our own kill cannot be read
+        # as an exhausted window.
+        if rc != 0 and is_shutdown_requested():
+            _write_spawn_stderr(req.attempts_dir,
+                                "(killed by daemon shutdown)",
+                                SpawnRC.SHUTDOWN)
+            return SpawnRC.SHUTDOWN
         if rc != 0 or events.failed:
             _write_spawn_stderr(
                 req.attempts_dir,

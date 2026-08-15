@@ -52,7 +52,9 @@ from .base import LLMRequest, SpawnRC
 from .stream_parser import StreamParser
 
 
-# Dispatcher abort signal: tracks every in-flight claude CLI subprocess
+# Dispatcher abort signal: tracks every in-flight agent CLI subprocess
+# — EVERY provider registers here (codex and agy import this same set),
+# which is why the kill reaches them and why the word is not `claude` —
 # so the dispatcher's exit paths (budget exceeded, gateway permanently
 # unreachable, ...) can kill them all in one shot. Without this, when
 # the main loop returns, Python's concurrent.futures._python_exit atexit
@@ -1524,6 +1526,24 @@ class ClaudeCliProvider:
         # errors don't fail the spawn.
         if parser is not None:
             _persist_parser_state(req.attempts_dir, parser)
+        # WE killed it. `request_shutdown` kills every live subprocess to
+        # unblock the pool, and until this branch existed the corpse came
+        # back wearing the vendor's exit code — on codex a silent rc=1
+        # with an empty stderr, indistinguishable from a CLI that failed
+        # on its own. The pre-spawn gate above already answers SHUTDOWN
+        # for a spawn that never started; this is the same event caught
+        # one moment later, and the same answer. Measured 2026-08-15:
+        # the tail feedback step of the LAST pipeline of a `--once` run
+        # is killed by teardown every time, and reported itself as
+        # rc=129 or rc=1 depending only on which side of the start it
+        # landed on.
+        #
+        # Guarded on `rc != 0`: a spawn that FINISHED as shutdown fired
+        # keeps its success. Placed before the marker tables, so a
+        # half-written buffer that happens to contain the word "quota"
+        # cannot make our own kill look like an exhausted window.
+        if rc != 0 and is_shutdown_requested():
+            return SpawnRC.SHUTDOWN
         # Watchdog stuck-kill takes precedence over the OS-level rc
         # (TerminateProcess returns a platform-dependent code that
         # collides with our normal failure semantics). Reclassify so

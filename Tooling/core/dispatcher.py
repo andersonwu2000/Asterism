@@ -102,9 +102,9 @@ def _exit_pool_fast(pool: ThreadPoolExecutor) -> None:
     exit and the harness fired its task-notification (2026-05-27
     Banach-Tarski run: observed ~30min shutdown).
 
-    Fix: kill every in-flight claude subprocess via
-    `claude_cli.request_shutdown`. Workers unblock from `proc.wait`,
-    return through their normal dead_attempt cleanup paths (per-thread
+    Fix: kill every in-flight agent subprocess (the registry spans every
+    provider) via `claude_cli.request_shutdown`. Workers unblock from
+    `proc.wait`, return through their dead_attempt cleanup paths (per-thread
     DB conns make this concurrent-safe), and on next retry-loop entry
     see the shutdown event and bail with `daemon_shutdown`. Pool joins
     in seconds; atexit cleanup (gateway terminate, pid_lock unlink)
@@ -113,7 +113,7 @@ def _exit_pool_fast(pool: ThreadPoolExecutor) -> None:
     from ..llm import claude_cli
     killed = claude_cli.request_shutdown()
     if killed:
-        print(f"[dispatcher] killed {killed} in-flight claude "
+        print(f"[dispatcher] killed {killed} in-flight agent "
               f"subprocess(es) to unblock worker shutdown",
               flush=True)
     pool.shutdown(wait=True, cancel_futures=True)

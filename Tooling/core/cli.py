@@ -533,7 +533,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             from ..llm import claude_cli as _ccli
             n = _ccli.request_shutdown()
             if n:
-                print(f"[dispatcher] killed {n} in-flight claude "
+                print(f"[dispatcher] killed {n} in-flight agent "
                       f"subprocess(es) before FATAL exit", flush=True)
         except Exception:  # noqa: BLE001 — never mask the original crash
             pass
