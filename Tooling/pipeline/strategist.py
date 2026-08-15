@@ -1186,8 +1186,23 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
         # the fresh-problem case the design leans on (first batch
         # delegates a burden instead of working the frozen root) is
         # EXACTLY this branch. Reading only 'Inject' here rejected it.
-        has_action = any(d.kind in db.BATCH_DECISION_KINDS
-                         for d in decisions)
+        #
+        # `Ingest` counts too (owner ruling 2026-08-15). One that
+        # reaches this cross-decision stage already passed its own
+        # per-decision gate — and the top group's requires a PROVED
+        # root, impossible here — so an Ingest under a parked root is
+        # always a sub-group delivery, whose terminal write wakes the
+        # parent (groups.set_status): the daemon does not idle. Before
+        # this, no group ever exited marks+Ingest-only: 13 of 14
+        # delivered groups' exit batches carried a companion Inject —
+        # claude-era groups paid the tax in spare real bricks, codex's
+        # settled micro-groups had to invent compliance experiments
+        # (one mis-aimed root attack among them). Keep the check LOCAL:
+        # Ingest must NOT join BATCH_DECISION_KINDS, which also feeds
+        # the >=1-experiment rule and batch_id dispatch.
+        has_action = any(
+            d.kind in db.BATCH_DECISION_KINDS or d.kind == "Ingest"
+            for d in decisions)
         if not has_action:
             # A NULL-outcome Inject counts as in-flight ONLY if it is LIVE
             # — its produced goal is NOT parked. A `shelved`-produced inject
@@ -1219,24 +1234,24 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                     f"Root (goal_id={rid}) is {rstat!r} and nothing in "
                     f"the framework will progress without your action: "
                     f"no live in-flight Inject (any prior inject's brick is "
-                    f"parked/shelved, not producing), no Inject "
-                    f"in this batch. BFS cannot dispatch from a "
-                    f"{rstat!r} root, so a Noop/EmitDirective-only batch "
-                    f"leaves the daemon idle.{hint_for_pending}\n"
-                    f"In most cases the right call is "
-                    f"`Inject(target_goal_id={rid}, proof=...)` "
-                    f"— re-engage BFS on the root subtree with whatever "
-                    f"toolkit is now available. Alternatives:\n"
-                    f"  - Inject(proof=..., no target) to mint a missing "
-                    f"tool (root stays {rstat!r}; inject_batch_done "
-                    f"will re-fire you), OR\n"
-                    f"  - Inject(target_goal_id=..., "
-                    f"proof=...) to redispatch a non-root goal, OR\n"
-                    f"  - RequestUserAmend(...) to escalate Defs.lean / "
-                    f"Manifest.md.\n"
-                    f"Once the root is proved this gate lifts — a "
-                    f"marks/Ingest-only batch is then legal. Engage the "
-                    f"root first, bookkeeping after."
+                    f"parked/shelved, not producing), and this batch "
+                    f"neither dispatches work nor delivers. BFS cannot "
+                    f"dispatch from a {rstat!r} root, so a "
+                    f"Noop/EmitDirective-only batch leaves the daemon "
+                    f"idle.{hint_for_pending}\n"
+                    f"Ways forward:\n"
+                    f"  - your charter is settled → `MarkDeliverable` + "
+                    f"`Ingest`: a delivering exit is progress (it wakes "
+                    f"the level above), OR\n"
+                    f"  - `Inject(proof=...)` / `Delegate(...)` to "
+                    f"dispatch the work still missing (root stays "
+                    f"{rstat!r}; inject_batch_done will re-fire you), "
+                    f"OR\n"
+                    f"  - the root subtree is yours and the toolkit is "
+                    f"ready → `Inject(target_goal_id={rid}, proof=...)` "
+                    f"re-engages BFS on it, OR\n"
+                    f"  - `RequestUserAmend(...)` ONLY if a user file is "
+                    f"factually wrong."
                 )
     return ""
 

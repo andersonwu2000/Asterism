@@ -1158,6 +1158,59 @@ def test_a_sub_group_ingest_delivers_without_touching_the_terminal(
     assert (str(top), "Group") in _seats(conn)
 
 
+def test_a_delivering_sub_group_exits_a_parked_root_without_an_inject_tax(
+        tmp_path):
+    """For three months no group ever exited marks+Ingest-only: the
+    stalled-root gate counted only dispatch kinds as action, so all 13
+    delivered groups (measured 2026-08-15) carried a companion Inject
+    out the door — claude-era groups paid in spare real bricks, codex's
+    settled micro-groups had to invent compliance experiments, one of
+    them a mis-aimed attack on the parked root itself. The owner never
+    intended the tax (ruling 2026-08-15): a sub-group's Ingest wakes
+    the parent, the daemon does not idle."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.taxfree")
+    _goal(conn, p, "main", origin="root", status="shelved")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path, [S.Decision(kind="Delegate", brief="claim A")],
+            p, top)
+    sub = int(groups.children(conn, top)[0]["id"])
+    brick = _goal(conn, p, "brick", status="proved")
+    _mark(conn, p, brick, sub)
+    conn.commit()
+    err = S.verify_decisions([S.Decision(kind="Ingest")], conn,
+                             problem=p, group_id=sub, workspace=tmp_path)
+    assert err == "", err
+
+
+def test_a_top_group_ingest_under_a_parked_root_bounces_off_the_root_gate(
+        tmp_path):
+    """The exemption is for DELIVERIES only. The top group's Ingest
+    still requires the proved root — and because that per-decision gate
+    runs before the cross-decision one, the message it gets is the
+    accurate one (prove the root), not the stalled-root lecture."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.topbounce")
+    _goal(conn, p, "main", origin="root", status="shelved")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    err = S.verify_decisions([S.Decision(kind="Ingest")], conn,
+                             problem=p, group_id=top, workspace=tmp_path)
+    assert "must be proved" in err
+    assert "leaves the daemon idle" not in err
+
+
+def test_ingest_is_not_a_dispatch_kind():
+    """The malignant position for the 2026-08-15 fix: adding Ingest to
+    BATCH_DECISION_KINDS instead of the gate-local check would let a
+    delivery satisfy the >=1-experiment rule and claim a batch_id. The
+    exemption must stay local to the stalled-root gate."""
+    assert "Ingest" not in db.BATCH_DECISION_KINDS
+
+
 def test_a_sub_group_cannot_deliver_a_charter_it_did_not_settle(tmp_path):
     """The same gate the top group gets, one level down: charter is its
     Manifest and its anchor is its root goal."""
