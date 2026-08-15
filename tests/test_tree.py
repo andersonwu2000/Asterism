@@ -70,7 +70,7 @@ def test_childless_succeeded_strategy_hidden(conn) -> None:
     leaf_sid = _seed_strategy(conn, root_id, status="succeeded")
     out = tree.render(conn, "p")
     assert f"via s{leaf_sid}" not in out
-    assert "main  (proved)" in out
+    assert f"main [g{root_id}]  (proved)" in out
     # decomposition shape: succeeded strategy with sub-goals stays
     deco_sid = _seed_strategy(conn, root_id, status="succeeded")
     _seed_subgoal(conn, deco_sid, "s_sub_1", status="proved", position=0)
@@ -86,25 +86,42 @@ def test_render_no_problem_returns_init_hint(conn) -> None:
 
 
 def test_render_root_only(conn) -> None:
-    _seed_root(conn)
+    root_id = _seed_root(conn)
     out = tree.render(conn, "p")
-    assert "main  (open)" in out
+    assert f"main [g{root_id}]  (open)" in out
     assert "**Counters:** 1 open" in out
+
+
+def test_counters_precede_the_trees_and_count_every_status(conn) -> None:
+    """Live-first file order (2026-08-15): the census line arrives
+    before any tree body — a budgeted default read that dies mid-file
+    has still seen the full count. And the count covers EVERY status:
+    the old footer skipped dead/disproved, so a tree with only those
+    read '(empty)'."""
+    root_id = _seed_root(conn)
+    s = _seed_strategy(conn, root_id)
+    _seed_subgoal(conn, s, "d1", status="dead", position=0)
+    _seed_subgoal(conn, s, "x1", status="disproved", position=1)
+    out = tree.render(conn, "p")
+    assert out.index("**Counters:**") < out.index("## Root")
+    assert "1 open" in out and "1 dead" in out and "1 disproved" in out
 
 
 def test_render_root_with_single_strategy_and_subgoals(conn) -> None:
     root_id = _seed_root(conn)
     sid = _seed_strategy(conn, root_id, status="proposed")
-    _seed_subgoal(conn, sid, "s1_sub_1", status="proved", position=0)
-    _seed_subgoal(conn, sid, "s1_sub_2", status="open",
-                  attempts=2, position=1)
+    g1 = _seed_subgoal(conn, sid, "s1_sub_1", status="proved", position=0)
+    g2 = _seed_subgoal(conn, sid, "s1_sub_2", status="open",
+                       attempts=2, position=1)
     out = tree.render(conn, "p")
     # Strategy line uses `via sNN`
     assert f"via s{sid}" in out
     assert "(proposed)" in out
-    # Sub-goal labels
-    assert "s1_sub_1  (proved)" in out
-    assert "s1_sub_2  (open, attempts=2)" in out
+    # Sub-goal labels carry both keys: slug (what proposals grep) and
+    # [gNNNN] (what decision annotations grep) — readers arrive with
+    # either, and the numeric greps used to miss silently.
+    assert f"s1_sub_1 [g{g1}]  (proved)" in out
+    assert f"s1_sub_2 [g{g2}]  (open, attempts=2)" in out
     # Tree connectors present (2-char indent style, see _BRANCH_* in
     # tree.py — keeps deep trees readable for descriptive slugs).
     assert "├─" in out
@@ -182,11 +199,11 @@ def test_render_recursive_two_levels(conn) -> None:
     _seed_subgoal(conn, s_mid, "s2_sub_1", depth=2, status="proved",
                   position=0)
     out = tree.render(conn, "p")
-    assert "main  " in out
+    assert "main [g" in out
     assert f"via s{s_root}" in out
-    assert "s1_sub_1  " in out
+    assert "s1_sub_1 [g" in out
     assert f"via s{s_mid}" in out
-    assert "s2_sub_1  (proved)" in out
+    assert "s2_sub_1 [g" in out and "(proved)" in out
 
 
 def test_render_cycle_defense_via_visited_set(conn) -> None:
@@ -225,9 +242,10 @@ def test_render_keeps_full_slug_even_when_long(conn) -> None:
 
 def test_render_forward_goals_get_their_own_section(conn) -> None:
     """Forward-origin goals are independent lemmas — they render as
-    sub-trees under a separate `## Forward` header (not connected to
-    main's strategy tree). Backward sub-goals attached below a Forward
-    goal walk through the same `_walk_goal`."""
+    sub-trees under a separate `## Lemmas` header (not connected to
+    main's strategy tree; named for what a reader sees, not for the
+    pipeline that made them — 2026-08-15 user call). Backward sub-goals
+    attached below a Forward goal walk through the same `_walk_goal`."""
     _seed_root(conn)
     # Forward-produced lemma at top level (no parent strategy edge).
     fwd_id = db.insert_goal(
@@ -239,20 +257,22 @@ def test_render_forward_goals_get_their_own_section(conn) -> None:
     _seed_subgoal(conn, s_fwd, "contour_sub_1", status="proved", position=0)
     out = tree.render(conn, "p")
     # Main tree present (root)
-    assert "main  " in out
-    # Forward section header + lemma + its sub-tree
-    assert "## Forward" in out
+    assert "## Root" in out and "main [g" in out
+    # Lemma forest header + lemma + its sub-tree
+    assert "## Lemmas" in out
     assert "contour_lemma" in out
     assert f"via s{s_fwd}" in out
-    assert "contour_sub_1  (proved)" in out
+    assert "contour_sub_1 [g" in out
+    # The forest is the LAST section: everything above it is live-first.
+    assert out.index("## Lemmas") > out.index("## Root")
 
 
 def test_render_no_forward_section_when_no_forward_goals(conn) -> None:
-    """If a problem has no `origin='forward'` goals, the `## Forward`
+    """If a problem has no `origin='forward'` goals, the `## Lemmas`
     header doesn't appear (keeps the tree clean for the common case)."""
     _seed_root(conn)
     out = tree.render(conn, "p")
-    assert "## Forward" not in out
+    assert "## Lemmas" not in out
 
 
 def test_render_counters_aggregate_all_statuses(conn) -> None:
@@ -267,6 +287,86 @@ def test_render_counters_aggregate_all_statuses(conn) -> None:
     assert "2 proved" in out
     assert "1 shelved" in out
     assert "1 open" in out
+
+
+# ---------------------------------------------------------------------
+# By-status sections (2026-08-15). Grounded in a three-corpus transcript
+# survey of every TREE.md read on union_closed: the dominant reads are
+# point status checks and non-proved censuses (a codex judge literally
+# invented `sections:["Non-proved goals"]`), while the ancestry
+# questions — rare but each one high-consequence — were answered by
+# scrolling the ASCII indentation. One line per non-proved goal, status
+# in the heading, ancestor path on the line, placed BEFORE the lemma
+# forest so a budgeted default read (codex cuts at ~12KB, which on the
+# 29KB union_closed tree meant lines 1-309) sees the live material
+# instead of only the oldest proved bricks.
+# ---------------------------------------------------------------------
+
+def test_every_non_proved_goal_lands_in_its_status_section(conn) -> None:
+    root_id = _seed_root(conn)
+    sid = _seed_strategy(conn, root_id)
+    shelved_id = _seed_subgoal(conn, sid, "hard_case", status="shelved",
+                               attempts=3, position=0)
+    _seed_subgoal(conn, sid, "done_case", status="proved", position=1)
+    out = tree.render(conn, "p")
+    assert "## Shelved" in out
+    line = next(ln for ln in out.splitlines() if ln.startswith("- hard_case"))
+    assert f"[g{shelved_id}]" in line
+    assert "(attempts=3)" in line
+    assert f"— main › s{sid}" in line
+    # proved is the heading-less majority: no section, no roster line.
+    assert "## Proved" not in out
+    assert not any(ln.startswith("- done_case") for ln in out.splitlines())
+
+
+def test_status_section_path_walks_the_whole_chain(conn) -> None:
+    """The path answers the two questions readers historically dug out
+    of the indentation: group ownership and cascade reach. It must walk
+    to the root, not stop at the direct parent."""
+    root_id = _seed_root(conn)
+    s1 = _seed_strategy(conn, root_id)
+    mid = _seed_subgoal(conn, s1, "mid_goal", position=0)
+    s2 = _seed_strategy(conn, mid)
+    _seed_subgoal(conn, s2, "leaf_goal", status="shelved", position=0)
+    out = tree.render(conn, "p")
+    line = next(ln for ln in out.splitlines() if ln.startswith("- leaf_goal"))
+    assert f"— main › s{s1} › mid_goal › s{s2}" in line
+
+
+def test_top_level_nodes_state_their_origin_in_place_of_a_path(conn) -> None:
+    root_id = _seed_root(conn)
+    conn.execute("UPDATE goals SET status='shelved' WHERE id=?", (root_id,))
+    fwd = db.insert_goal(
+        conn, problem="p", slug="loose_lemma", lean_path="P/L.lean",
+        statement="True", origin="forward", depth=0)
+    conn.execute("UPDATE goals SET status='open' WHERE id=?", (fwd,))
+    conn.commit()
+    out = tree.render(conn, "p")
+    root_line = next(ln for ln in out.splitlines() if ln.startswith("- main"))
+    assert "— root goal" in root_line
+    fwd_line = next(
+        ln for ln in out.splitlines() if ln.startswith("- loose_lemma"))
+    assert "— standalone lemma" in fwd_line
+
+
+def test_pending_review_heading_maps_the_long_status_name(conn) -> None:
+    root_id = _seed_root(conn)
+    conn.execute(
+        "UPDATE goals SET status='pending_strategist_review' WHERE id=?",
+        (root_id,))
+    conn.commit()
+    out = tree.render(conn, "p")
+    assert "## Pending review" in out
+
+
+def test_status_sections_cover_the_whole_goal_enum(conn) -> None:
+    """Drift chain: test_transitions binds _LIVE ∪ _SETTLED to the DB
+    CHECK enum; this binds the section order to the same partition. A
+    new goal status must pick a live/settled side AND a census slot —
+    otherwise it exists in the DB and vanishes from the file every
+    reader treats as the live census."""
+    assert {k for k, _ in tree._STATUS_SECTION_ORDER} == (
+        tree._LIVE_GOAL_STATUSES | tree._SETTLED_GOAL_STATUSES) - {"proved"}
 
 
 # ---------------------------------------------------------------------
@@ -286,8 +386,8 @@ def test_full_render_keeps_dead_and_deep_subtrees(conn) -> None:
     s_mid = _seed_strategy(conn, proved_mid, status="proposed")
     _seed_subgoal(conn, s_mid, "deep_child", status="open", position=0)
     out = tree.render(conn, "p")
-    for token in ("dead_sub_1", "mid_proved  (proved)", "deep_child",
-                  f"via s{s_dead}", f"via s{s_mid}"):
+    for token in ("dead_sub_1", f"mid_proved [g{proved_mid}]  (proved)",
+                  "deep_child", f"via s{s_dead}", f"via s{s_mid}"):
         assert token in out, token
 
 
@@ -312,7 +412,7 @@ def test_write_creates_tree_md_in_problem_dir(
     out = tree.write(conn, tmp_path, "p")
     assert out == pdir / "TREE.md"
     content = out.read_text(encoding="utf-8")
-    assert "main  (open)" in content
+    assert "main [g" in content and "(open)" in content
     assert "**Counters:**" in content
 
 
@@ -326,7 +426,7 @@ def test_write_overwrites_existing(conn, tmp_path: Path) -> None:
     tree.write(conn, tmp_path, "p")
     content = (pdir / "TREE.md").read_text(encoding="utf-8")
     assert "OLD CONTENT" not in content
-    assert "main  (open)" in content
+    assert "main [g" in content and "(open)" in content
 
 
 def test_write_atomic_no_partial_file_on_inner_error(

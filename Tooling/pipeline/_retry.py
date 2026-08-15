@@ -798,7 +798,7 @@ def run_with_session_retries(
         # counter and no goal-rooted tree edge to redraw — the forensic
         # row above (target_id=0 + target_kind='Problem', migration
         # plan §C option 1) is their only side effect. The Forward
-        # dispatch path also writes its own `## Forward` subtree on
+        # dispatch path also writes its own `## Lemmas` subtree on
         # cascade (tree.py:render).
         if goal_id is not None:
             db.increment_goal_attempts(conn, goal_id)

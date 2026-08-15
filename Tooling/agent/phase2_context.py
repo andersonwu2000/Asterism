@@ -1443,12 +1443,19 @@ def _section_tree_inline(conn: sqlite3.Connection,
                    if r["attempts"] else "")
             out.append(f"- `{r['slug']}`  ({r['status']}{att})")
         out.append("")
+    # Pointer wording 2026-08-15: the old promise ("dead-branch
+    # forensics, OR-alternative history") was measured against every
+    # TREE.md read on union_closed and found unused — a dead `via sNN`
+    # carries no cause to read. What readers actually do there is check
+    # statuses the snapshot above can't be trusted for; say that, and
+    # name the sections that now answer it.
     out += [
-        f"_Full decomposition tree: `{rel}` (dispatcher-maintained, "
-        f"current every cascade) — read it for structure, dead-branch "
-        f"forensics, and OR-alternative history. That file is LIVE and "
-        f"the counters above are not: re-read it before asserting any "
-        f"goal's status._",
+        f"_Full tree: `{rel}` (dispatcher-rewritten every cascade). "
+        f"That file is LIVE and this section is not: re-read it before "
+        f"asserting any goal's status. Its by-status sections "
+        f"(`## Shelved`, `## Open`, …) list every non-proved goal with "
+        f"its ancestor path; `## Root` and `## Lemmas` hold the full "
+        f"trees._",
         "",
     ]
     return out

@@ -5,26 +5,46 @@ proof progress. Auto-updated by the dispatcher on every cascade so the
 file always reflects the latest state — readers can leave it open in
 an editor / file watcher.
 
-Tree shape mirrors the AND/OR graph:
+File order is live-first (2026-08-15, from a three-corpus transcript
+survey of what readers actually ask this file): counters, then `## Root`,
+then one section per non-empty non-proved status listing each goal with
+its ancestor path, then `## Lemmas` (the full relationship record). The
+dominant reads are point status checks and non-proved censuses; a
+default read that budgets out mid-file must therefore meet the live
+material first, not the proved history.
 
-    main  (attempting, attempts=1)
-    ├── via s15  (dead — sub-goal shelved)
-    │   ├── s15_sub_1  (shelved, attempts=8)
-    │   ├── s15_sub_2  (attempting)
-    │   │   └── via s18  (proposed)
-    │   │       ├── s18_sub_1  (proved)
-    │   │       └── s18_sub_2  (open, attempts=5)
-    │   └── ...
-    └── via s36  (proposed — OR retry)
-        └── ...
+    **Counters:** 12 proved / 2 shelved / 1 open
+
+    ## Root
+
+    ```
+    main [g1]  (attempting, attempts=1)
+    ├─ via s15  (dead — sub-goal shelved)
+    │  ├─ s15_sub_1 [g4]  (shelved, attempts=8)
+    │  └─ s15_sub_2 [g5]  (attempting)
+    └─ via s36  (proposed — OR retry)
+    ```
+
+    ## Shelved
+
+    - s15_sub_1 [g4]  (attempts=8)  — main › s15
+
+    ## Lemmas
+
+    ```
+    contour_lemma [g9]  (proved)
+    └─ via s18  (succeeded)
+       └─ contour_sub [g10]  (proved)
+    ```
 
 `via sNN` lines are Strategy nodes (the AND layer); their children
 are sub-Goals. A Goal can have multiple Strategies (OR alternatives),
 all rendered as siblings under the Goal.
 
-Identifiers are slug-only (the DB id is internal, not meaningful to
-readers). `s<NN>_sub_<k>` already encodes the parent strategy ancestry,
-so cross-references are visually self-evident.
+Goals carry BOTH identifiers: the slug (the semantic name every other
+surface greps by) and `[gNNNN]` (the DB id that decision annotations
+use) — readers arrive with either key, and before 2026-08-15 the
+numeric-key greps silently missed.
 """
 from __future__ import annotations
 
@@ -86,11 +106,86 @@ def _strategy_dead_cause(conn: sqlite3.Connection, strategy_id: int
     return None
 
 
+# One section per non-proved status, live states first. Statuses the
+# tuple does not know still render (under their raw enum name) — a new
+# status must never silently vanish from the census.
+_STATUS_SECTION_ORDER = (
+    ("attempting", "Attempting"),
+    ("open", "Open"),
+    ("pending_strategist_review", "Pending review"),
+    ("shelved", "Shelved"),
+    ("frozen", "Frozen"),
+    ("disproved", "Disproved"),
+    ("dead", "Dead"),
+)
+
+
 def _goal_label(goal: sqlite3.Row) -> str:
     bits = [goal["status"]]
     if goal["attempts"]:
         bits.append(f"attempts={goal['attempts']}")
-    return f"{goal['slug']}  ({', '.join(bits)})"
+    return f"{goal['slug']} [g{goal['id']}]  ({', '.join(bits)})"
+
+
+def _ancestor_path(conn: sqlite3.Connection, goal_id: int) -> str:
+    """`main › s24216 › frankl_core` — the chain ABOVE a goal, root
+    first, self excluded. This is the line that answers the two
+    high-consequence questions readers historically dug out of the
+    ASCII indentation: whose subtree is this node in (group ownership)
+    and would shelving X cascade onto it. Multi-parent is not emitted
+    by Backward; take the first edge, guard against cycles anyway."""
+    parts: list[str] = []
+    cur = goal_id
+    seen: set[int] = set()
+    while cur not in seen:
+        seen.add(cur)
+        row = conn.execute(
+            "SELECT ss.strategy_id AS sid, s.goal_id AS pid, g.slug AS pslug"
+            " FROM strategy_subgoals ss"
+            " JOIN strategies s ON s.id = ss.strategy_id"
+            " JOIN goals g ON g.id = s.goal_id"
+            " WHERE ss.subgoal_id = ? ORDER BY ss.strategy_id LIMIT 1",
+            (cur,),
+        ).fetchone()
+        if row is None:
+            break
+        parts.append(f"s{row['sid']}")
+        parts.append(str(row["pslug"]))
+        cur = int(row["pid"])
+    parts.reverse()
+    return " › ".join(parts)
+
+
+def _status_sections(conn: sqlite3.Connection, problem: str) -> list[str]:
+    """The by-status census: every non-proved goal, one line, with its
+    ancestor path. Status itself lives in the heading (not repeated per
+    line); an absent section means that status is empty."""
+    rows = conn.execute(
+        "SELECT id, slug, status, attempts, origin FROM goals"
+        " WHERE problem = ? AND status != 'proved' ORDER BY id",
+        (problem,),
+    ).fetchall()
+    by_status: dict[str, list[sqlite3.Row]] = {}
+    for r in rows:
+        by_status.setdefault(str(r["status"]), []).append(r)
+
+    def _line(r: sqlite3.Row) -> str:
+        path = _ancestor_path(conn, int(r["id"]))
+        if not path:
+            path = ("root goal" if r["origin"] == "root"
+                    else "standalone lemma" if r["origin"] == "forward"
+                    else "(unlinked)")
+        att = f"  (attempts={r['attempts']})" if r["attempts"] else ""
+        return f"- {r['slug']} [g{r['id']}]{att}  — {path}"
+
+    out: list[str] = []
+    titled = {k: t for k, t in _STATUS_SECTION_ORDER}
+    ordered = [k for k, _ in _STATUS_SECTION_ORDER if k in by_status]
+    ordered += sorted(k for k in by_status if k not in titled)
+    for key in ordered:
+        out += ["", f"## {titled.get(key, key)}", ""]
+        out += [_line(r) for r in by_status[key]]
+    return out
 
 
 def _strategy_label(conn: sqlite3.Connection, strategy: sqlite3.Row) -> str:
@@ -181,10 +276,10 @@ def render(conn: sqlite3.Connection, problem: str) -> str:
         (problem,),
     ):
         counts[r["status"]] = int(r["c"])
-    summary_parts = []
-    for s in ("proved", "shelved", "attempting", "open"):
-        if counts.get(s):
-            summary_parts.append(f"{counts[s]} {s}")
+    counter_order = ["proved"] + [k for k, _ in _STATUS_SECTION_ORDER]
+    counter_order += sorted(k for k in counts if k not in counter_order)
+    summary_parts = [
+        f"{counts[s]} {s}" for s in counter_order if counts.get(s)]
     summary = " / ".join(summary_parts) if summary_parts else "(empty)"
 
     lines = [
@@ -199,32 +294,40 @@ def render(conn: sqlite3.Connection, problem: str) -> str:
         f" on every cascade. The record is the DB —"
         ' `inspect({"decl": "<slug>"})` reads it live._',
         "",
+        # Full census up front — the by-status sections below list only
+        # the non-empty statuses, so this line is where "nothing
+        # shelved" is stated rather than implied.
+        f"**Counters:** {summary}",
     ]
     visited: set[int] = set()
     if root is not None:
-        lines += ["```", _goal_label(root)]
+        lines += ["", "## Root", "", "```", _goal_label(root)]
         _walk_goal(conn, int(root["id"]), visited, lines, "")
         lines.append("```")
     else:
         # Phase 6 pure-NL: no root goal — the problem is a forest of
         # Forward-origin trees (rendered below). A brand-new problem has
         # no goals at all yet; say so instead of implying a broken init.
-        lines.append("_(pure-NL problem — no root goal; deliverable "
-                     "forest below)_")
+        lines += ["", "_(pure-NL problem — no root goal; standalone "
+                  "lemmas below)_"]
+
+    lines += _status_sections(conn, problem)
 
     # Forward-origin goals are independent lemmas (no parent strategy
     # edge to root). Render each as its own sub-tree under a separate
-    # `## Forward` header so they're visible alongside the main
+    # `## Lemmas` header so they're visible alongside the main
     # decomposition. Backward sub-trees attached below a Forward goal
     # are walked through the same `_walk_goal` (each Forward goal is a
     # local root). See docs/archive/design/phase2/design.md §3 — Forward lemmas are
     # standalone tools the rest of the proof can reach for via dedupe.
+    # Last in the file: by this point the roster is >90% proved history,
+    # and the live material above must survive a budgeted default read.
     forward_roots = conn.execute(
         "SELECT * FROM goals WHERE problem = ? AND origin = 'forward' "
         "ORDER BY id", (problem,),
     ).fetchall()
     if forward_roots:
-        lines += ["", "## Forward", "", "```"]
+        lines += ["", "## Lemmas", "", "```"]
         for fg in forward_roots:
             lines.append(_goal_label(fg))
             _walk_goal(conn, int(fg["id"]), visited, lines, "")
@@ -234,8 +337,6 @@ def render(conn: sqlite3.Connection, problem: str) -> str:
             lines.pop()
         lines.append("```")
 
-    lines.append("")
-    lines.append(f"**Counters:** {summary}")
     lines.append("")
     return "\n".join(lines)
 
