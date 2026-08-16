@@ -239,13 +239,23 @@ def _section_stall_warning(conn: sqlite3.Connection,
                else db.is_problem_stalled(conn, problem))
     if not stalled:
         return []
+    # WHOSE deadlock. `is_group_stalled` answers for this group, and the
+    # flat "no worker is in flight" then contradicted `## Dispatched,
+    # still running` — problem-wide — in the same compile of the same
+    # file. Seventeen agents spent rounds reconciling two true
+    # sentences (2026-08-15/16); one asked for exactly this: "label
+    # execution-state sections explicitly as group-local or
+    # problem-global".
+    whose = ("no worker of this group's is in flight"
+             if group_id is not None else "no worker is in flight")
+    scope = "this group" if group_id is not None else "this problem"
     return [
         "## Framework stalled",
         "",
         "Structural deadlock detected: this problem has not been"
         " `Ingest`ed, no `open` goal is reachable for BFS dispatch, and"
-        " no worker is in flight. The framework"
-        " cannot dispatch any worker on this problem until you intervene.",
+        f" {whose}. The framework"
+        f" cannot dispatch any worker on {scope} until you intervene.",
         "",
         "Typical causes:",
         "",
@@ -691,16 +701,18 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                  for r in live]
     if not batch_ids:
         if in_flight:
-            return (["## Dispatched, still running", "",
+            return (["## Dispatched, still running (problem-wide)", "",
                      "Not finished, and therefore not below: "
                      + ", ".join(in_flight)
-                     + ". Their outcomes reach you on the batch-done "
+                     + ". Some may belong to another group. Their "
+                       "outcomes reach you on the batch-done "
                        "wake — do not re-dispatch them.", ""]
                     + decline_lines)
         return decline_lines
     out = ["## Completed Inject batches (newest first)", ""]
     if in_flight:
-        out += ["_Still running, so not listed below: "
+        out += ["_Still running, so not listed below (problem-wide, so "
+                "some may be another group's): "
                 + ", ".join(in_flight) + "._", ""]
     placeholders = ",".join("?" * len(batch_ids))
     # Inject rows only: every wake's decisions share the batch_id, so
