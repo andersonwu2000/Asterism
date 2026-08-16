@@ -339,3 +339,83 @@ def test_duplicate_headings_are_disclosed_not_swallowed(tmp_path):
     assert "first body" in out
     assert "2 sections share this heading" in out
     assert "lines 5-6" in out, "the other occurrence is named by lines"
+
+
+# ---------------------------------------------------------------------
+# Whose file is it? (2026-08-16)
+#
+# A spawn's cwd is its PROBLEM dir, but its briefing — Context.md,
+# CATALOG.md, the seeded `new_*.lean` — is written into its ATTEMPTS
+# dir. A bare `read: "Context.md"` therefore missed, and the fallback
+# scanned the whole `.attempts/` tree and returned whatever sorted
+# first: another live spawn's file, complete and plausible and not this
+# agent's. 43 self-reports on 2026-08-15 alone; a formalizer read one
+# attempt's `new_forward.lean` while the LSP edited its own, which is
+# how an edit lands on the wrong theorem.
+# ---------------------------------------------------------------------
+
+@pytest.fixture
+def spawn(tmp_path: Path, monkeypatch) -> "tuple[Path, Path, Path]":
+    """cwd = problem dir; mine + theirs = two sibling attempt dirs."""
+    (tmp_path / "Tooling").mkdir()
+    cwd = tmp_path / "Problems" / "Combinatorics" / "union_closed"
+    cwd.mkdir(parents=True)
+    attempts = tmp_path / ".attempts"
+    # `aaaa…` sorts FIRST — the old scan would always have picked it.
+    theirs = attempts / "aaaa1111-0000-0000-0000-000000000000"
+    mine = attempts / "zzzz9999-0000-0000-0000-000000000000"
+    for d in (theirs, mine):
+        d.mkdir(parents=True)
+    (theirs / "Context.md").write_text(
+        "## TREE\n\nsomeone else's programme\n", encoding="utf-8")
+    (mine / "Context.md").write_text(
+        "## TREE\n\nmy own programme\n", encoding="utf-8")
+    (theirs / "new_forward.lean").write_text(
+        "theorem theirs : True := trivial\n", encoding="utf-8")
+    (mine / "new_forward.lean").write_text(
+        "theorem mine : True := trivial\n", encoding="utf-8")
+    monkeypatch.setenv("ASTERISM_SPAWN_WRITE_ROOTS", str(mine))
+    return cwd, mine, theirs
+
+
+def test_a_bare_framework_filename_resolves_to_my_own_attempt(spawn):
+    cwd, mine, theirs = spawn
+    out = wq.run_queries([{"read": "Context.md"}], cwd=cwd)
+    assert "my own programme" in out
+    assert "someone else's programme" not in out
+
+
+def test_a_seeded_lean_file_is_mine_not_the_sibling_that_sorts_first(spawn):
+    """The severe shape: `inspect` reads one attempt's seed while the LSP
+    edits this spawn's own sandbox."""
+    cwd, mine, theirs = spawn
+    out = wq.run_queries([{"read": "new_forward.lean"}], cwd=cwd)
+    assert "theorem mine" in out and "theorem theirs" not in out
+    out = wq.run_queries(
+        [{"grep": "theorem", "in": "new_forward.lean"}], cwd=cwd)
+    assert "theorem mine" in out and "theorem theirs" not in out
+
+
+def test_a_miss_never_points_at_another_spawns_file(spawn):
+    """The hint searched every attempt, so a typo was answered with a
+    stranger's file and the words `use that path`. Better silent."""
+    cwd, mine, theirs = spawn
+    (theirs / "only_theirs.md").write_text("not yours\n", encoding="utf-8")
+    out = wq.run_queries([{"read": "only_theirs.md"}], cwd=cwd)
+    assert "no file at" in out
+    assert str(theirs) not in out
+    assert "use that path" not in out
+
+
+def test_outside_a_spawn_nothing_reaches_into_attempts(tmp_path, monkeypatch):
+    """No write-roots env (operator shell, tests) → cwd only. The old
+    code walked up to `.attempts/` regardless of who was asking."""
+    monkeypatch.delenv("ASTERISM_SPAWN_WRITE_ROOTS", raising=False)
+    (tmp_path / "Tooling").mkdir()
+    cwd = tmp_path / "Problems" / "P" / "p"
+    cwd.mkdir(parents=True)
+    stray = tmp_path / ".attempts" / "abcd"
+    stray.mkdir(parents=True)
+    (stray / "Context.md").write_text("stray\n", encoding="utf-8")
+    out = wq.run_queries([{"read": "Context.md"}], cwd=cwd)
+    assert "stray" not in out and "no file at" in out

@@ -16,30 +16,40 @@ from pathlib import Path
 from Tooling.knowledge import workspace_query as wq
 
 
-def _workspace(tmp_path: Path) -> "tuple[Path, Path]":
+def _workspace(tmp_path: Path, monkeypatch=None) -> "tuple[Path, Path]":
     """The real shape: the spawn is launched in its problem dir, and its
-    briefing files live in the attempts dir on the other branch."""
+    briefing files live in the attempts dir on the other branch. With
+    `monkeypatch`, that attempts dir is declared as THIS spawn's own —
+    the way production does, through `ASTERISM_SPAWN_WRITE_ROOTS`."""
     (tmp_path / "Problems" / "P").mkdir(parents=True)
     attempts = tmp_path / ".attempts" / "pid1"
     attempts.mkdir(parents=True)
+    if monkeypatch is not None:
+        monkeypatch.setenv("ASTERISM_SPAWN_WRITE_ROOTS", str(attempts))
     return tmp_path / "Problems" / "P", attempts
 
 
-def test_a_relative_path_miss_names_where_the_file_is(tmp_path: Path):
-    """A spawn works in TWO directories and a relative path resolves
+def test_a_relative_path_reaches_my_own_attempt_dir(tmp_path: Path,
+                                                    monkeypatch):
+    """A spawn works in TWO directories and a relative path resolved
     against one. The Adversary's `inspect(in="CATALOG.md")` failed and
     the hint walked up to the workspace root and listed the repo — true,
-    useless, and a round trip. Name the file where it actually is."""
-    cwd, attempts = _workspace(tmp_path)
+    useless, and a round trip.
+
+    The first fix (2026-08-13) answered with a hint naming the file, but
+    found it by scanning EVERY attempt dir, so under concurrency it
+    named a sibling spawn's copy (2026-08-16). Resolving against this
+    spawn's own attempt dir removes the round trip entirely: the query
+    just works, and it works on the right file."""
+    cwd, attempts = _workspace(tmp_path, monkeypatch)
     (attempts / "CATALOG.md").write_text("uc_634 is here\n",
                                          encoding="utf-8")
 
     out = wq.run_queries([{"grep": "uc_634", "in": "CATALOG.md"}],
                          cwd=cwd, per_query_chars=400)
 
-    assert "CATALOG.md" in out
-    assert str(attempts / "CATALOG.md") in out, out
-    assert "use that path" in out
+    assert "uc_634 is here" in out, out
+    assert "no file" not in out and "nothing to search" not in out
 
 
 def test_an_absolute_find_pattern_is_answered_not_refused(tmp_path: Path):

@@ -123,12 +123,54 @@ def _denied(path: Path, deny: "tuple[Path, ...]") -> "Path | None":
 
 # ------------------------------------------------------------ helpers
 
+def _own_attempt_dir() -> "Path | None":
+    """This spawn's own attempts directory, or None outside a spawn.
+
+    `envelope.Envelope.write_roots[0]` IS the attempts sandbox and the
+    spawn already carries it as `ASTERISM_SPAWN_WRITE_ROOTS` — the tool
+    simply never read it."""
+    raw = (os.environ.get("ASTERISM_SPAWN_WRITE_ROOTS") or "").strip()
+    for part in raw.split(os.pathsep):
+        part = part.strip()
+        if part:
+            p = Path(part)
+            return p if p.is_dir() else None
+    return None
+
+
+def _resolve(spec: str, cwd: Path) -> Path:
+    """A relative path against the TWO directories a spawn works in.
+
+    A spawn's cwd is its problem dir, but its briefing — `Context.md`,
+    `CATALOG.md`, its seeded `new_*.lean` — lives in its attempts dir.
+    Bare framework filenames must find that, and must find THIS spawn's
+    copy: before 2026-08-16 a miss fell through to a basename scan of
+    the whole `.attempts/` tree, which returned whatever sorted first
+    and handed the agent another spawn's state (43 self-reports in one
+    day; a formalizer read one attempt's `new_forward.lean` while the
+    LSP edited its own)."""
+    if Path(spec).is_absolute():
+        return Path(spec)
+    here = cwd / spec
+    if here.exists():
+        return here
+    own = _own_attempt_dir()
+    if own is not None and (own / spec).exists():
+        return own / spec
+    return here
+
+
 def _expand(spec: str, cwd: Path) -> "list[Path]":
-    """A path or a glob, relative to the agent's own directory."""
-    p = (cwd / spec) if not Path(spec).is_absolute() else Path(spec)
+    """A path or a glob, relative to the agent's own directories."""
+    p = _resolve(spec, cwd)
     if any(ch in spec for ch in "*?["):
         base = p.parent
-        return sorted(x for x in base.glob(p.name) if x.is_file())
+        hits = sorted(x for x in base.glob(p.name) if x.is_file())
+        own = _own_attempt_dir()
+        if not hits and own is not None and not Path(spec).is_absolute():
+            ob = (own / spec).parent
+            hits = sorted(x for x in ob.glob(Path(spec).name) if x.is_file())
+        return hits
     if p.is_dir():
         return sorted(x for x in p.rglob("*")
                       if x.is_file() and not _skipped(x))
@@ -140,23 +182,24 @@ def _skipped(p: Path) -> bool:
 
 
 def _find_by_basename(name: str, cwd: Path) -> "Path | None":
-    """Where a file of this name actually is, among the agent's roots.
+    """Where a file of this name is, among the agent's OWN roots.
 
     A spawn works in TWO directories — the problem dir it is launched in
     and the attempts dir its briefing, `Context.md` and `CATALOG.md` live
     in — and a relative path resolves against only the first. So
     `inspect({"grep": "…", "in": "CATALOG.md"})` failed, and the hint
     walked up to the workspace root and listed the repo. Naming the file
-    where it IS costs one glob and saves the round trip."""
+    where it IS costs one glob and saves the round trip.
+
+    It searched the whole `.attempts/` tree until 2026-08-16 and
+    returned whatever sorted first — a SIBLING spawn's file, complete
+    and plausible and not this agent's. A hint that points at another
+    spawn's state is worse than no hint, so the search stops at this
+    spawn's own two directories."""
     roots = [cwd]
-    # The workspace is found by walking UP from cwd, not from the
-    # environment: `workspace_of` reads env vars a caller may not have
-    # set, and a hint that only works in production is a hint that no
-    # test can hold.
-    for anc in cwd.resolve().parents:
-        if (anc / ".attempts").is_dir() or (anc / "Problems").is_dir():
-            roots.append(anc / ".attempts")
-            break
+    own = _own_attempt_dir()
+    if own is not None:
+        roots.append(own)
     for root in roots:
         try:
             for cand in sorted(root.rglob(name)):
@@ -291,7 +334,7 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
     carried a truncation notice.
     """
     spec = str(q.get("read") or "")
-    p = (cwd / spec) if not Path(spec).is_absolute() else Path(spec)
+    p = _resolve(spec, cwd)
     root = _denied(p.resolve(), deny)
     if root is not None:
         return [f"{p} is operator-private (under {root}) — Context.md, "
@@ -381,7 +424,7 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
 
 def _q_find(q: dict, cwd: Path, deny) -> "list[str]":
     pattern = str(q.get("find") or "*")
-    base = (cwd / str(q.get("in") or ".")).resolve()
+    base = _resolve(str(q.get("in") or "."), cwd).resolve()
     # An absolute pattern is the natural phrasing when the only path you
     # were given is absolute (the Adversary's projection is), and
     # `rglob` answers it with `NotImplementedError: Non-relative
