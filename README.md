@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-15
+- Fixed several cost-accounting bugs so compute spending is now attributed to the right agent and the right call, including cases where a cancelled subprocess kept running or was wrongly charged.
+- Made the shared progress report live-first, leading with current counts and a status breakdown of all lemmas before the full proof tree.
+- Improved how agents read documents and receive feedback: large files can be read section by section, mistyped paths come back with a working correction, and all edit rejections are reported at once.
+- Fixed reliability bugs in process handling and editor synchronization that could lose logs, stall proof checking, or make running work look lost.
+
 ### 2026-08-14
 - Revised the instructions given to the AI agents in several places, resolving contradictory definitions, removing examples of an obsolete workflow, and adding explicit descriptions of failure patterns that superficially resemble progress.
 - Made the system that farms work out to language-model backends more robust, so it now restarts bloated idle workers, recovers automatically when a backend dies, trusts the provider's own quota reports over local estimates, and checks capacity before launching new jobs.
@@ -215,9 +221,6 @@ Programme revisions and worker declines now appear on the project's timeline and
 - Built out a new automated research pipeline that stores a working programme, gates each package, and runs multiple rounds of adversarial review with a path to discard weak candidates.
 - Consolidated the web interface into a single engine view with unified tabbed pages, styling, and one Save button.
 - Revised the guiding prompts through a self-review pass for consistency.
-
-### 2026-07-16
-- Capped the framework's library of general lessons at 25 entries, requiring an old one to be dropped whenever a new one is added.
 
 <!-- ASTERISM-PROGRESS:END -->
 
