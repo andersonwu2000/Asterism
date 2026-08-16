@@ -1000,11 +1000,15 @@ def test_plan_note_rewrite_step_synced_and_names_attempts_dir() -> None:
     for f in ("routine.md", "inject_batch_done.md", "pending_review.md"):
         text = (root / "strategist" / f).read_text(encoding="utf-8")
         hits = [ln.lstrip("-0123456789. ") for ln in text.splitlines()
-                if "**Rewrite `_plan.md`**" in ln]
+                if "**Rewrite `{attempts_dir}/_plan.md`**" in ln]
         assert len(hits) == 1, (f, hits)
         steps.append(hits[0])
     assert len(set(steps)) == 1, steps
-    assert "bare filename, in your attempts dir" in steps[0]
+    # The location is now GIVEN, not described: `{attempts_dir}` is
+    # substituted with the absolute path at render time. Deriving it was
+    # the agent's job until 2026-08-16, and on codex a bare name cost
+    # 40-86s per write and created nothing.
+    assert "{attempts_dir}/_plan.md" in steps[0]
 
 
 def test_proposal_section_shared_lines_synced() -> None:

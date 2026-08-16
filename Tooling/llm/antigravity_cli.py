@@ -1068,7 +1068,8 @@ class AntigravityCliProvider:
         else:
             body = render_prompt_template(
                 body, is_postmortem=req.is_postmortem,
-                flags=req.prompt_flags)
+                flags=req.prompt_flags,
+                attempts_dir=req.attempts_dir)
         ctx = req.attempts_dir / "Context.md"
         context_clause = (f"read context at {ctx} and "
                           if ctx.exists() else "")

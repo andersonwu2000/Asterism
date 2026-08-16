@@ -23,14 +23,14 @@ Also check `## Recent decisions` for your prior decisions and their outcomes.
    - Missing prereq — needed vocabulary / theorem / abstraction is absent; needs a minted brick to build
    - Sent back — the worker found the argument does not settle the goal (`return_to_nl`): uncovered, mis-aimed, or false as stated
 
-- **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions. Validate `decision.json` with `validate_json` before finishing.
+- **Decide.** Multiple decisions in one batch are fine. Output as `{attempts_dir}/decision.json` — JSON array of one or more decisions. Validate `decision.json` with `validate_json` before finishing.
    - Tactical → `Inject(target_goal_id, proof=...)` back to the original goal pointing at the missed API or correct sub-path
    - Structural → `ConfirmShelve` this goal + `Inject` on ancestor with reframed angle
    - Ontological → `ConfirmShelve` + escalate upward (or `RequestUserAmend` if user file is wrong)
    - Missing prereq → a no-target `Inject` to mint the brick + `ConfirmShelve` to park
    - Unbacked → argue the claim to closure in this batch's Proof then re-dispatch, or retire it (`ConfirmShelve`)
 
-- **Rewrite `_plan.md`** (your private note; bare filename, in your attempts dir): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
+- **Rewrite `{attempts_dir}/_plan.md`** (your private note): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
 
 Before committing, `Grep` mathlib briefly for any concept the agent claims is missing.
 
@@ -38,7 +38,7 @@ Before committing, `Grep` mathlib briefly for any concept the agent claims is mi
 
 ## Programme proposal
 
-Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships a Programme revision: Write `proposal.md` (bare filename, in your attempts dir) —
+Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships a Programme revision: Write `{attempts_dir}/proposal.md` —
 
     # <Title>       one line: this batch's goal
     ## Argument     why achieving the Manifest's requirement needs this plan — grounded in the latest outcomes
@@ -60,7 +60,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 - Before submitting, re-check your ## Proof.
 
 ## Decision kinds
-- `Inject` — `proof` or `proof_file` (bare filename in your attempts dir — Write it there, no JSON escaping). The part of this batch's `## Proof` that settles this brick, copied across with the vocabulary it uses. It is what the worker formalizes against; the worker does not read the rest. Two shapes:
+- `Inject` — `proof` or `proof_file` (a filename under `{attempts_dir}/` — Write it there, no JSON escaping). The part of this batch's `## Proof` that settles this brick, copied across with the vocabulary it uses. It is what the worker formalizes against; the worker does not read the rest. Two shapes:
   - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself.
   - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.

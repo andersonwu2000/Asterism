@@ -99,3 +99,24 @@ def test_nothing_started_inside_the_tools_server_inherits_its_pipe() -> None:
         "started from inside the MCP tools server with an inherited "
         "stdin — that handle is the server's JSON-RPC pipe:\n  "
         + "\n  ".join(missing))
+
+
+def test_every_provider_tells_the_prompt_where_its_outputs_go() -> None:
+    """`{attempts_dir}` is substituted from the value the spawn already
+    carries. A backend that renders the template without passing it
+    shows the agent the fallback wording instead of the path — the
+    silent-per-backend class `test_envelope_rendered_by_every_backend`
+    exists for, one layer up."""
+    import re
+    missing = []
+    for rel in ("Tooling/llm/claude_cli.py", "Tooling/llm/gemini_cli.py",
+                "Tooling/llm/antigravity_cli.py",
+                "Tooling/llm/openai_api.py"):
+        src = (ROOT / rel).read_text(encoding="utf-8")
+        for call in re.finditer(r"render_prompt_template\((.{0,300}?)\)",
+                                src, re.S):
+            if "attempts_dir=" not in call.group(1):
+                missing.append(rel)
+    assert not missing, (
+        "these render the prompt without telling it where outputs go: "
+        + ", ".join(sorted(set(missing))))

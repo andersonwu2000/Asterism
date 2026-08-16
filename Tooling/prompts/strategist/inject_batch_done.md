@@ -26,15 +26,15 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 
 - **Exit check**: mark the deliverables your last batch landed; when every claim the Manifest asks for is marked (a proved root counts), emit `Ingest`.
 
-- **Rewrite `_plan.md`** (your private note; bare filename, in your attempts dir): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
+- **Rewrite `{attempts_dir}/_plan.md`** (your private note): REWRITE to the current state. `_plan.md` is private scratch + `## Facts` ONLY (the route lives in the Programme). `## Facts`: verified statements only, each citing its source (lemma / s<id> / gate message). A dead/circular/NEVER verdict cites the attempts that died and their exact instantiation — a differently-anchored variant is not covered. `SUSPECT:` marks a line you rely on but cannot quickly re-verify.
 
-Output as `decision.json` — JSON array of one or more decisions. Validate `decision.json` with `validate_json` before finishing.
+Output as `{attempts_dir}/decision.json` — JSON array of one or more decisions. Validate `decision.json` with `validate_json` before finishing.
 
 **Difficulty alone is not a reason to give up.** Don't shelve just because the brick was harder than expected. With `## Framework stalled` present (nothing dispatchable, no in-flight worker) the batch must dispatch something new — vary the dead attempts' shared assumption, or build the missing tool as a minted brick (no-target Inject).
 
 ## Programme proposal
 
-Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships a Programme revision: Write `proposal.md` (bare filename, in your attempts dir) —
+Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships a Programme revision: Write `{attempts_dir}/proposal.md` —
 
     # <Title>       one line: this batch's goal
     ## Argument     why achieving the Manifest's requirement needs this plan — grounded in the latest outcomes
@@ -56,7 +56,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 - Before submitting, re-check your ## Proof.
 
 ## Decision kinds
-- `Inject` — `proof` or `proof_file` (bare filename in your attempts dir — Write it there, no JSON escaping). The part of this batch's `## Proof` that settles this brick, copied across with the vocabulary it uses. It is what the worker formalizes against; the worker does not read the rest. Two shapes:
+- `Inject` — `proof` or `proof_file` (a filename under `{attempts_dir}/` — Write it there, no JSON escaping). The part of this batch's `## Proof` that settles this brick, copied across with the vocabulary it uses. It is what the worker formalizes against; the worker does not read the rest. Two shapes:
   - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself.
   - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.

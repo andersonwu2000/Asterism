@@ -38,10 +38,21 @@ _PROMPT_COND_RE = re.compile(
 
 
 def render_prompt_template(text: str, *, is_postmortem: bool = False,
-                           flags: "dict[str, bool] | None" = None) -> str:
+                           flags: "dict[str, bool] | None" = None,
+                           attempts_dir: "Path | None" = None) -> str:
     """Substitute prompt template placeholders against live config.
 
     Replacements:
+      - `{attempts_dir}` — where this spawn's outputs belong, absolute.
+        The prompts said "bare filename, in your attempts dir" and the
+        agent had to derive it: cwd is the PROBLEM dir, so a bare name
+        resolves outside the one place the spawn may write. On codex
+        that cost 40-86 seconds per attempt and created nothing, while
+        the same write with an absolute path took 0.3s — six adversary
+        rounds in a row reported it (2026-08-16), and the strategist
+        side left `decision.json` and `proposal.md` in the problem dir
+        where the next spawn's bare read then found them. The framework
+        knows this path; it should not be a thing to infer.
       - `{timeout_min}` — per-spawn wall-clock (WORKER_TIMEOUT_SEC for
         body prompts, POSTMORTEM_TIMEOUT_SEC for postmortems).
       - `{interval_min}` — Strategist T1 routine cadence (minutes;
@@ -66,7 +77,12 @@ def render_prompt_template(text: str, *, is_postmortem: bool = False,
         "strategist.interval_min", default=120.0,
         env_var="ASTERISM_STRATEGIST_INTERVAL_MIN", cast=float,
     )
+    # A caller that forgets to pass it degrades to the old wording
+    # rather than showing the agent a raw placeholder.
+    where = (Path(attempts_dir).as_posix() if attempts_dir is not None
+             else "your attempts dir")
     return (text
+            .replace("{attempts_dir}", where)
             .replace("{timeout_min}", str(timeout_sec // 60))
             .replace("{interval_min}", _format_minutes(interval_min)))
 

@@ -42,7 +42,7 @@ Criticize the argumentation and the direction rigorously; raise structural, deep
 
 ## Output
 
-Write `verdict.json` in your working directory — adjudicate EVERY criterion, one line each:
+Write `{attempts_dir}/verdict.json` — adjudicate EVERY criterion, one line each:
 
 ```json
 {"criteria": {
@@ -67,4 +67,4 @@ Rules:
   entry that is ready but untouched, or the recorded wall that needs new
   mathematics to cross. Point, don't author.
 - Do not rewrite the proposal or the directive yourself; you judge, the author writes.
-- Validate `verdict.json` with `validate_json` before finishing.
+- Validate `{attempts_dir}/verdict.json` with `validate_json` before finishing.

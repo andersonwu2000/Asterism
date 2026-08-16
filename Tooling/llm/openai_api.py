@@ -177,7 +177,8 @@ class OpenAIProvider:
             return 99
         from Tooling.agent import render_prompt_template
         prompt_template = render_prompt_template(
-            prompt_template, is_postmortem=req.is_postmortem)
+            prompt_template, is_postmortem=req.is_postmortem,
+            attempts_dir=req.attempts_dir)
 
         context_path = req.attempts_dir / "Context.md"
         try:
