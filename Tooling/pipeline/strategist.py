@@ -387,7 +387,8 @@ def _authoring_group(conn: sqlite3.Connection, problem: str,
 def verify_decision(decision: Decision, conn: sqlite3.Connection,
                     *, problem: str,
                     workspace: "Path | None" = None,
-                    group_id: "int | None" = None) -> str:
+                    group_id: "int | None" = None,
+                    prior_decisions: "list[Decision] | None" = None) -> str:
     """Validate decision shape + cross-row constraints. Returns '' if
     OK, an error message string otherwise.
 
@@ -743,10 +744,24 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                             f"settled is what `ReturnToParent` is for")
             elif not db.deliverables(conn, problem=problem,
                                      group_id=int(me["id"])):
-                return ("Ingest requires at least one deliverable THIS "
-                        "group marked (`MarkDeliverable`) — the bricks "
-                        "the group above you will cite. Nothing marked "
-                        "means nothing was delivered")
+                # Same-batch marks count — but only those LISTED BEFORE
+                # this Ingest (commit processes in declared order, so
+                # earlier marks are persisted by the time the Ingest
+                # commits). Without this, an anchorless group whose
+                # charter is already settled was in a catch-22 measured
+                # 2026-08-16 (grp 422 rev 438, ten rounds): mark-only
+                # bounced off the parked-root gate, mark+Ingest bounced
+                # here because the mark was not yet a row. A claude-era
+                # strategist stated this exact mechanism and its judge
+                # prosecuted the claim as an unsourced guess — it was
+                # true (rev 346).
+                if not any(d.kind == "MarkDeliverable"
+                           for d in (prior_decisions or [])):
+                    return ("Ingest requires at least one deliverable "
+                            "THIS group marked (`MarkDeliverable`) — the "
+                            "bricks the group above you will cite. A "
+                            "same-batch mark counts when it is listed "
+                            "BEFORE the Ingest in decision.json")
             return ""
         root = conn.execute(
             "SELECT status FROM goals WHERE problem = ? AND"
@@ -758,10 +773,16 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                     "before the terminal judgment is valid")
         # A proved root counts toward the >=1-deliverable requirement:
         # a pure-root problem (no Forward deliverables, e.g. a classic
-        # single-theorem Manifest) must still be able to exit.
-        if not db.deliverables(conn, problem=problem) and not root_proved:
+        # single-theorem Manifest) must still be able to exit. Same-batch
+        # marks listed before the Ingest count too — the same catch-22
+        # fixed for anchorless sub-groups above applies to a pure-NL
+        # problem's top group.
+        if not db.deliverables(conn, problem=problem) and not root_proved \
+                and not any(d.kind == "MarkDeliverable"
+                            for d in (prior_decisions or [])):
             return ("Ingest requires at least one marked deliverable "
-                    "(MarkDeliverable) or a proved root goal")
+                    "(MarkDeliverable) or a proved root goal; a same-batch "
+                    "mark counts when listed BEFORE the Ingest")
         # The tree must be ACCOUNTABLE before it becomes terminal.
         # `proof_store.inventory` is the framework's DB↔file oracle and
         # it had exactly one caller — the operator typing `asterism
@@ -913,7 +934,8 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     failures: "list[str]" = []
     for i, d in enumerate(decisions):
         err = verify_decision(d, conn, problem=problem,
-                              group_id=group_id, workspace=workspace)
+                              group_id=group_id, workspace=workspace,
+                              prior_decisions=decisions[:i])
         if err:
             failures.append(
                 f"decision #{i}: {err}" if len(decisions) > 1 else err)

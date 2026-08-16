@@ -1217,6 +1217,40 @@ def test_a_delivering_sub_group_exits_a_parked_root_without_an_inject_tax(
     assert err == "", err
 
 
+def test_mark_and_ingest_in_one_batch_is_a_legal_exit(tmp_path):
+    """THE CATCH-22 (grp 422 rev 438, ten rounds, 2026-08-16): an
+    anchorless group whose charter was already settled could neither
+    mark-only (parked-root gate: the batch delivers nothing) nor
+    mark+Ingest (this gate: the same-batch mark was not yet a row). A
+    claude-era strategist stated the mechanism verbatim and its judge
+    prosecuted it as an unsourced guess — it was true (rev 346). Marks
+    listed BEFORE the Ingest now count: commit processes in declared
+    order, so they are persisted by the time the Ingest commits."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.markingest")
+    _goal(conn, p, "main", origin="root", status="shelved")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief=_proposal_brief())], p, top)
+    sub = int(groups.children(conn, top)[0]["id"])
+    brick = _goal(conn, p, "brick", status="proved")
+    conn.execute("UPDATE goals SET is_deliverable = 0 WHERE id = ?", (brick,))
+    conn.commit()
+    mark = S.Decision(kind="MarkDeliverable", target_id=brick,
+                      reason="the charter's claim")
+    ingest = S.Decision(kind="Ingest")
+    err = S.verify_decisions([mark, ingest], conn, problem=p,
+                             group_id=sub, workspace=tmp_path)
+    assert err == "", err
+    # Order carries the semantics: an Ingest listed before its mark
+    # would commit against a marked set that does not exist yet.
+    err = S.verify_decisions([ingest, mark], conn, problem=p,
+                             group_id=sub, workspace=tmp_path)
+    assert "BEFORE the Ingest" in err
+
+
 def test_a_top_group_ingest_under_a_parked_root_bounces_off_the_root_gate(
         tmp_path):
     """The exemption is for DELIVERIES only. The top group's Ingest
