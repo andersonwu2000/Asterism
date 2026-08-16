@@ -16,7 +16,7 @@ The decision-kind rules the Strategist operates under — check quoted contract 
 - `Ingest` — optional `reason`. The problem's only exit: emit once the marked set fully satisfies the Manifest. When a root exists, the proved root is a deliverable. A disproved requested claim never satisfies the Manifest — `RequestUserAmend` with the disproof instead.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md", "Root.lean"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong.
 - `Noop` — `reason`. Only when work is genuinely in flight; rejected when the root is blocked.
-- `CloseGroup` — `target_group_id`, `reason`. Retire one when your route no longer needs its charter. Difficulty is not a reason — whether to give up is that group's call.
+- `CloseGroup` — `target_group_id`, `reason`. Retire one when your route no longer needs its charter; its own sub-projects close with it. Difficulty is not a reason — whether to give up is that group's call.
 - `ReturnToParent` — `flavour ∈ {"refuted","amend","exhausted"}`, `reason` (what was tried, where it died, what was learned). `refuted` also takes `target_goal_id`: the PROVED node carrying the negation. `amend` also takes `proposed_charter`: the claim you believe is provable.
 - Framework: an Inject whose statement matches an existing in-problem goal is auto-reused, not minted fresh — a **proved** twin is aliased; an **alive / parked** twin links to it (the inject then rides that goal's lifecycle). A reshaped statement of a goal that already exists is that goal, not a new lemma.
 - Framework behaviour is quoted, not inferred — a prompt rule, a gate message, or the directive. Unsourced, it is not a fact.

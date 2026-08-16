@@ -2155,13 +2155,14 @@ def test_a_delivery_always_reaches_a_group_that_can_act_on_it(tmp_path):
                                         brief=_proposal_brief("kid"))], p, mid)
     kid = int(groups.children(conn, mid)[0]["id"])
 
-    # The parent leaves first, while its child is still working.
-    brick_m = _goal(conn, p, "mid_brick", status="proved")
-    _mark(conn, p, brick_m, mid)
+    # A parent that is ALREADY terminal with a live child. The cascade
+    # (below) stops this state being created from here on, but every
+    # tree built before it exists in it — union_closed had two such
+    # pairs live the day both were written — so the relay must still
+    # find a live addressee on its own.
+    conn.execute("UPDATE groups SET status = 'delivered' WHERE id = ?",
+                 (mid,))
     conn.commit()
-    _commit(conn, tmp_path, [S.Decision(kind="Ingest")], p, mid,
-            trigger="inject_batch_done")
-    assert groups.get(conn, mid)["status"] == "delivered"
 
     conn.execute("DELETE FROM queue")
     brick_k = _goal(conn, p, "kid_brick", status="proved")
@@ -2185,3 +2186,71 @@ def test_a_delivery_always_reaches_a_group_that_can_act_on_it(tmp_path):
         "SELECT group_id FROM strategist_decisions WHERE produced_group_id=?",
         (kid,)).fetchone()[0]) == mid
     assert (str(top), "Group") in live
+
+
+def test_retiring_a_charter_retires_the_work_it_delegated(tmp_path):
+    """Goals have cascaded downward since the beginning; groups never
+    did, and `_commit_close_group` retired exactly ONE level — so a
+    grandchild kept working a charter its grandparent had withdrawn,
+    with nothing anywhere to tell it.
+
+    Measured on union_closed 2026-08-16: group 420 closed 425 because
+    the certificate it wanted was "now kernel-proved by the independent
+    s24581 route"; 425's child 427 never heard, and three hours later
+    opened five sub-projects to binary-split a 2^21 mask space, which
+    opened their own. Twenty-two of the next thirty-eight bricks served
+    the withdrawn charter."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.cascade")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief=_proposal_brief("mid"))], p, top)
+    mid = int(groups.children(conn, top)[0]["id"])
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief=_proposal_brief("kid"))], p, mid)
+    kid = int(groups.children(conn, mid)[0]["id"])
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief=_proposal_brief("grandkid"))],
+            p, kid)
+    grand = int(groups.children(conn, kid)[0]["id"])
+
+    _commit(conn, tmp_path,
+            [S.Decision(kind="CloseGroup", reason="another route settled it",
+                        payload={"target_group_id": mid})], p, top)
+
+    for g in (mid, kid, grand):
+        assert groups.get(conn, g)["status"] == "closed", (
+            f"group {g} kept working a charter its ancestor withdrew")
+    # The opening `Delegate` of every retired group settles, or a
+    # NULL outcome would suppress the stall detector forever.
+    unsettled = conn.execute(
+        "SELECT COUNT(*) FROM strategist_decisions"
+        " WHERE decision_kind = 'Delegate' AND outcome IS NULL"
+        " AND produced_group_id IN (?, ?, ?)", (mid, kid, grand)).fetchone()[0]
+    assert unsettled == 0
+
+
+def test_a_delivering_group_takes_its_live_sub_projects_with_it(tmp_path):
+    """Same law, the other verb: a group that has delivered has no use
+    for bricks its children have not landed yet, and no consumer for
+    them either."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.cascade2")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief=_proposal_brief("mid"))], p, top)
+    mid = int(groups.children(conn, top)[0]["id"])
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief=_proposal_brief("kid"))], p, mid)
+    kid = int(groups.children(conn, mid)[0]["id"])
+    brick = _goal(conn, p, "mid_brick", status="proved")
+    _mark(conn, p, brick, mid)
+    conn.commit()
+    _commit(conn, tmp_path, [S.Decision(kind="Ingest")], p, mid,
+            trigger="inject_batch_done")
+    assert groups.get(conn, mid)["status"] == "delivered"
+    assert groups.get(conn, kid)["status"] == "closed"

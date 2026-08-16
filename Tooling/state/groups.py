@@ -384,6 +384,29 @@ def set_status(conn: sqlite3.Connection, group_id: int,
         "UPDATE groups SET status = ?, updated_at = ? WHERE id = ?",
         (status, now(), int(group_id)))
     if status in TERMINAL_STATUSES:
+        # A RETIRED CHARTER RETIRES THE WORK IT DELEGATED. Goals have
+        # cascaded downward since the beginning (`transitions.
+        # _cascade_shelve_descendants`); groups never did, and
+        # `_commit_close_group` retired exactly one level. So a
+        # grandchild kept working a charter its grandparent had already
+        # withdrawn, and nothing anywhere told it. Measured on
+        # union_closed 2026-08-16: group 420 closed 425 at 02:12Z
+        # because the certificate it wanted "is now kernel-proved by the
+        # independent s24581 route"; 425's child 427 never heard, and at
+        # 05:02Z opened five sub-projects to binary-split a 2^21 mask
+        # space, which opened their own. Twenty-two of the next
+        # thirty-eight bricks served the withdrawn charter.
+        #
+        # Descendants become `closed` whatever verb retired the
+        # ancestor: they did not deliver and they did not hand back —
+        # the parent's charter went away under them, which is what
+        # `closed` means. Same shape as the goal cascade: frontier walk,
+        # already-terminal skipped, idempotent, and each child goes
+        # through this same door so its `Delegate` row still settles.
+        for kid in children(conn, int(group_id)):
+            if str(kid["status"]) == ACTIVE:
+                set_status(conn, int(kid["id"]), "closed",
+                           event=f"ancestor_{status}")
         from . import db as _db
         filled = _db.propagate_inject_outcome_from_group(conn, int(group_id))
         if filled is not None:

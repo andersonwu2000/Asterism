@@ -1662,8 +1662,9 @@ def _section_groups_in_flight(conn: sqlite3.Connection, problem: str,
     out += [
         "",
         "- `CloseGroup` — `target_group_id`, `reason`. Retire one when "
-        "your route no longer needs its charter. Difficulty is not a "
-        "reason — whether to give up is that group's call.",
+        "your route no longer needs its charter; its own sub-projects "
+        "close with it. Difficulty is not a reason — whether to give up "
+        "is that group's call.",
         "",
     ]
     return out
