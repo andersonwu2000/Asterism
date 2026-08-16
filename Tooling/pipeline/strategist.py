@@ -107,16 +107,6 @@ _PACKAGE_EXEMPT_KINDS: frozenset[str] = frozenset(
     # non-exempt.
     {"FetchPaper", "RequestUserAmend", "Noop", "ReturnToParent",
      "MarkDeliverable"})
-_ENDGAME_KINDS: frozenset[str] = frozenset({"MarkDeliverable", "Ingest"})
-#: `Delegate` counts as this batch's experiment — handing a burden to a
-#: group IS dispatching work, and it is the one experiment whose result
-#: the Proof is NOT required to predict (see the closure-law carve-out
-#: in `verify_decision`). "Counts as an experiment" and "dispatches work
-#: into the batch cycle" are the same fact, so this derives from the
-#: single definition — a future work-dispatching kind joins the ≥1-
-#: experiment rule the moment it joins the batch, instead of being
-#: remembered here separately.
-_EXPERIMENT_KINDS: frozenset[str] = frozenset(db.BATCH_DECISION_KINDS)
 PROPOSAL_BASENAME = "proposal.md"
 
 
@@ -145,13 +135,13 @@ def verify_proposal_package(decisions, attempts_dir) -> tuple[
     sections, err = programme.parse_proposal(body)
     if err:
         return None, None, err
-    kinds = {d.kind for d in decisions}
-    if not (kinds & _ENDGAME_KINDS) and not (kinds & _EXPERIMENT_KINDS):
-        return None, None, (
-            "a proposal must carry at least one experiment (Inject or "
-            "Delegate) — thinking runs inside the wake; the "
-            "commit is how the argument touches the machine. (Endgame "
-            "batches carrying MarkDeliverable/Ingest are exempt.)")
+    # The ≥1-experiment quota lived here until 2026-08-16 (owner
+    # ruling). A per-batch quota gets satisfied with manufactured
+    # experiments — the same pathology as the stalled-root Inject tax —
+    # while the actual invariant ("a batch must not leave the group in
+    # dead air") is already enforced mechanically by the stalled-delta
+    # gate and the parked-root gate in `verify_decisions`, both of which
+    # fire on STATE, not on decision-kind counts.
     # The `Roadmap:` presence check is GONE (2026-08-11). Its history is
     # the argument: it began as a substring match of the cited phrase
     # against the free-prose Roadmap — a gate detecting free text, which
@@ -503,6 +493,23 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                     "claim this group exists to settle, stated precisely "
                     "enough that 'is it settled?' has an answer")
         charter = str(decision.brief).strip()
+        # The brief is a research proposal (owner ruling 2026-08-16):
+        # opening a group is opening a problem, and the writing cost is
+        # the filter that keeps small unknowns in-house. Heading
+        # PRESENCE is mechanical (structured signal); substance is the
+        # Adversary's.
+        missing = [h for h in ("# Charter", "## Why a project",
+                               "## Inheritance") if h not in charter]
+        if missing:
+            return ("Delegate's brief is a research proposal with three "
+                    f"sections; missing: {', '.join(missing)}. "
+                    "`# Charter` — the claim to settle, kernel-provable "
+                    "or -refutable; `## Why a project` — why this claim "
+                    "earns a project of its own and why your Roadmap "
+                    "cannot carry the work; `## Inheritance` — citable "
+                    "landed bricks, vocabulary, known walls. A burden "
+                    "that cannot fill `## Why a project` is your own "
+                    "work — Inject it or keep it in AHEAD")
         parent = _authoring_group(conn, problem, group_id)
         if parent is None:
             return ("Delegate has no authoring group; the problem's top "

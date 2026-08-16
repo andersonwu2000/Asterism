@@ -634,6 +634,36 @@ def test_delegate_with_a_target_anchors_it_as_attempting(tmp_path):
     assert db.has_active_inflight_inject(conn, p) is True
 
 
+def _proposal_brief(claim="claim A"):
+    """The minimal legal Delegate brief (research-proposal shape,
+    owner ruling 2026-08-16)."""
+    return (f"# Charter\n{claim}\n"
+            "## Why a project\nNeeds route exploration of its own.\n"
+            "## Inheritance\nBricks B1, B2; wall W.")
+
+
+def test_a_delegate_brief_must_be_a_research_proposal(tmp_path):
+    """Opening a group is opening a problem — the brief is its Manifest.
+    The writing cost is the filter that keeps small unknowns in-house
+    (the depth-9 outsource-the-outsource tail, 2026-08-15). Heading
+    presence is mechanical; substance stays the Adversary's."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.proposalbrief")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    err = _verify(conn, S.Decision(kind="Delegate", brief="settle claim A"),
+                  p, top)
+    assert "## Why a project" in err and "## Inheritance" in err
+    assert "AHEAD" in err, "the refusal names the in-house alternative"
+    # One section present, two missing — only the missing are named.
+    err = _verify(conn, S.Decision(
+        kind="Delegate", brief="# Charter\nSettle claim A."), p, top)
+    assert "# Charter" not in err.split("missing:")[1].split(".")[0]
+    assert _verify(conn, S.Decision(
+        kind="Delegate", brief=_proposal_brief()), p, top) == ""
+
+
 def test_delegate_verify_rejects_the_shapes_that_would_strand_work(
         tmp_path):
     conn = _conn(tmp_path)
@@ -645,28 +675,30 @@ def test_delegate_verify_rejects_the_shapes_that_would_strand_work(
     assert "charter" in _verify(
         conn, S.Decision(kind="Delegate", brief="   "), p, top)
     # byte-identical to a LIVE sibling = double dispatch
-    _commit(conn, tmp_path, [S.Decision(kind="Delegate", brief="claim A")],
-            p, top)
-    err = _verify(conn, S.Decision(kind="Delegate", brief="claim A"), p, top)
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief=_proposal_brief())], p, top)
+    err = _verify(conn, S.Decision(
+        kind="Delegate", brief=_proposal_brief()), p, top)
     assert "duplicate" in err.lower()
     # ...but the same charter after that group RETURNED is allowed: only
     # the Adversary can judge whether the retry differs.
     kid = groups.children(conn, top)[0]
     groups.set_status(conn, int(kid["id"]), "returned")
-    assert _verify(
-        conn, S.Decision(kind="Delegate", brief="claim A"), p, top) == ""
+    assert _verify(conn, S.Decision(
+        kind="Delegate", brief=_proposal_brief()), p, top) == ""
     # a settled goal has nothing for a group to work
     done = _goal(conn, p, "done", status="proved")
     assert "proved" in _verify(
-        conn, S.Decision(kind="Delegate", brief="c", target_id=done), p, top)
+        conn, S.Decision(kind="Delegate", brief=_proposal_brief("c"),
+                         target_id=done), p, top)
     # one anchor, one group
     g = _goal(conn, p, "g")
     _commit(conn, tmp_path,
-            [S.Decision(kind="Delegate", brief="own it", target_id=g)],
-            p, top)
+            [S.Decision(kind="Delegate", brief=_proposal_brief("own it"),
+                        target_id=g)], p, top)
     assert "already anchors" in _verify(
-        conn, S.Decision(kind="Delegate", brief="mine too", target_id=g),
-        p, top)
+        conn, S.Decision(kind="Delegate", brief=_proposal_brief("mine too"),
+                         target_id=g), p, top)
 
 
 def test_the_top_group_cannot_return_to_a_parent(tmp_path):
@@ -1250,7 +1282,7 @@ def test_a_delegate_only_batch_is_a_real_action(tmp_path):
     conn.commit()
     S = _S()
     err = S.verify_decisions(
-        [S.Decision(kind="Delegate", brief="settle claim A")], conn,
+        [S.Decision(kind="Delegate", brief=_proposal_brief())], conn,
         problem=p, group_id=top)
     assert err == "", err
 
@@ -1685,11 +1717,15 @@ def test_the_parent_can_see_what_it_is_waiting_on(tmp_path):
 
 
 def test_retiring_work_is_not_progress(tmp_path):
-    """`CloseGroup` is deliberately NOT an experiment: a batch that only
-    retires groups still fails the >=1-experiment rule, so a stuck
-    parent cannot close its child and call that an advance."""
+    """`CloseGroup` is deliberately NOT a dispatch kind: retiring a
+    child neither satisfies the parked-root gate nor rides the batch
+    cycle, so a stuck parent cannot close its child and call that an
+    advance. (The per-batch ≥1-experiment quota retired 2026-08-16 —
+    the state-based gates carry the dead-air invariant — but the
+    kind-classification it relied on stays pinned.)"""
+    from Tooling.state import db
     S = _S()
-    assert "CloseGroup" not in S._EXPERIMENT_KINDS
+    assert "CloseGroup" not in db.BATCH_DECISION_KINDS
     assert "CloseGroup" not in S._PACKAGE_EXEMPT_KINDS
 
 

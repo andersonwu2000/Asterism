@@ -96,21 +96,24 @@ def test_gate_shape():
         [_d("MarkDeliverable"), _d("Inject")], "routine")
 
 
-def test_package_requires_file_and_experiment(tmp_path: Path):
+def test_package_requires_file_but_no_experiment_quota(tmp_path: Path):
     body, sections, err = strategist.verify_proposal_package(
         [_d("Inject", pipeline="Forward", brief="b")], tmp_path)
     assert body is None and "proposal.md" in err
 
     (tmp_path / "proposal.md").write_text(_PROPOSAL, encoding="utf-8")
-    # EmitDirective-only (no experiment, not endgame) → rejected.
+    # The ≥1-experiment quota retired 2026-08-16 (owner ruling): a
+    # per-batch quota is satisfied with manufactured experiments —
+    # measured on union_closed, 13 of 14 delivered groups' exit batches
+    # carried a companion Inject to feed it — while the dead-air
+    # invariant is enforced by the STATE-based gates in
+    # verify_decisions. A no-experiment package now passes here.
     body, sections, err = strategist.verify_proposal_package(
-        [_d("EmitDirective", body="x")], tmp_path)
-    assert body is None and "experiment" in err
-    # Endgame batches are exempt from the experiment rule.
+        [_d("ConfirmShelve", target_id="g1")], tmp_path)
+    assert err is None and body == _PROPOSAL
     body, sections, err = strategist.verify_proposal_package(
         [_d("Ingest")], tmp_path)
     assert err is None and body == _PROPOSAL
-    # Delegate counts as the experiment.
     body, sections, err = strategist.verify_proposal_package(
         [_d("Delegate", brief="settle the sub-claim")], tmp_path)
     assert err is None
@@ -870,8 +873,8 @@ def test_the_two_antipatterns_are_one_text_in_four_files() -> None:
         ("routine.md", "inject_batch_done.md", "pending_review.md")]
     for phrase in ("an expensive substitution",
                    "a problem circled is never solved",
-                   "the record already caps below",
-                   "Plan the\n  bricks in AHEAD and lay them"):
+                   "do not help settle the final problem",
+                   "Plan the bricks in AHEAD and lay them"):
         for f in files:
             assert phrase in f.read_text(encoding="utf-8"), (
                 f"{f.name} lost: {phrase!r}")
@@ -1016,10 +1019,10 @@ def test_proposal_section_shared_lines_synced() -> None:
         for f in ("routine.md", "inject_batch_done.md",
                   "pending_review.md")}
     for needle in (
-        "Every route-moving batch carries ≥1 experiment — an Inject "
-        "or a `Delegate`",
-        "**Write for the record, not the reviewer** — fold accepted "
-        "criticisms into corrected text",
+        "A batch must not leave your group idle: after it commits, "
+        "something of yours is in flight, dispatched, or delivered.",
+        "Every Inject is proven in the Proof — inject only what is "
+        "fully argued",
     ):
         for f, t in texts.items():
             assert needle in t, (f, needle)

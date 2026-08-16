@@ -31,20 +31,14 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof. A goal not proven by the ## Proof must not enter formalization.
 5. **Honesty**: dead or shelved assertions must carry node pointers; a shelved item must state its restart condition. An external variable is not a restart condition.
 
-A decision that carries no proof is judged against its `contract.md` clause. A `Delegate`'s charter must be precise enough to be settled.
+A decision that carries no proof is judged against its `contract.md` clause. A `Delegate`'s brief is judged as a research proposal: its `# Charter` settleable, its `## Why a project` load-bearing.
 
 Two substitutions fire criterion 1, however clean the batches:
 
-- Working inside the known when the problem needs invention: formalizing —
-  rather than dissecting — arguments and papers the record already caps below
-  the requirement. A conjecture falls to a new idea; formalizing existing
-  knowledge in its place is an expensive substitution.
+- Working inside the known when the problem needs invention: formalizing arguments and papers that do not help settle the final problem. A conjecture falls to a new idea; formalizing existing knowledge in its place is an expensive substitution.
+- Dodging the long build when the target is large: circling nearby results because the direct route needs tools that take batches to build. Plan the bricks in AHEAD and lay them — a problem circled is never solved.
 
-- Dodging the long build when the target is large: circling nearby results
-  because the direct route needs tools that take batches to build. Plan the
-  bricks in AHEAD and lay them — a problem circled is never solved.
-
-Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. The ## Proof serves only THIS batch; anything unproven lives in AHEAD, never in the ## Proof. Reservations exist to help — never to command the workers. Flag dialogue residue in the Programme — round narration, concession notes, piling incident history — as reservations. A fired criterion = rebut; demoting it to a reservation is the rubber stamp. Every item sound and the whole advancing nothing still fires. An Argument that would justify any other plan equally well explains nothing. A verified record is overridden by proof, not conjecture. Framework behaviour is quoted, not inferred — a prompt rule, a gate message, or the directive; unsourced, it neither fires a criterion nor excuses one.
+Criticize the argumentation and the direction rigorously; raise structural, deep suggestions and questions. The ## Proof serves only THIS batch; anything unproven lives in AHEAD, never in the ## Proof. Reservations exist to help — never to command the workers. A fired criterion = rebut; demoting it to a reservation is the rubber stamp. Every item sound and the whole advancing nothing still fires. An Argument that would justify any other plan equally well explains nothing. A verified record is overridden by proof, not conjecture. Framework behaviour is quoted, not inferred — a prompt rule, a gate message, or the directive; unsourced, it neither fires a criterion nor excuses one.
 
 ## Output
 

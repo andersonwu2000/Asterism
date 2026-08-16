@@ -44,7 +44,8 @@ def test_attempt_disproof_is_retired(tmp_path: Path) -> None:
 
 
 def test_attempt_disproof_gone_from_experiment_and_math_kinds() -> None:
-    assert "AttemptDisproof" not in strategist._EXPERIMENT_KINDS
+    from Tooling.state import db
+    assert "AttemptDisproof" not in db.BATCH_DECISION_KINDS
     # Parseable-but-rejected, exactly the EmitDirective pattern:
     assert "AttemptDisproof" in strategist.DECISION_KINDS
     # The turn whitelists retired with the wake split (2026-08-11);
