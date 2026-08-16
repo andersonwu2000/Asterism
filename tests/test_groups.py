@@ -2127,3 +2127,61 @@ def test_stacked_charter_headings_are_stamped_with_their_group(tmp_path):
     assert f"## [group {a}] The claim to settle" in txt
     assert "# not a heading" in txt
     assert f"# [group {a}] not a heading" not in txt
+
+
+def test_a_delivery_always_reaches_a_group_that_can_act_on_it(tmp_path):
+    """The wake went to the group that AUTHORED the Delegate, and the
+    dispatcher DROPS a Strategist row whose group is terminal (correctly
+    — a delivered group must not run another batch). So a child
+    delivering into a parent that already left was not delayed, it was
+    deleted: the delivery reached nobody and its bricks were owned by
+    nobody. Two mechanisms each right, blinding each other.
+
+    Reachable today: nothing stops a parent from Closing/Ingesting while
+    a child is active, and union_closed had two such pairs live when an
+    independent verifier found this (2026-08-16). Pre-08-15 the child's
+    exit batch was forced to carry an Inject, so work stayed dispatched
+    and the loss was invisible."""
+    from Tooling.core import dispatcher as _disp
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.orphanwake")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path, [S.Decision(kind="Delegate",
+                                        brief=_proposal_brief("mid"))], p, top)
+    mid = int(groups.children(conn, top)[0]["id"])
+    _commit(conn, tmp_path, [S.Decision(kind="Delegate",
+                                        brief=_proposal_brief("kid"))], p, mid)
+    kid = int(groups.children(conn, mid)[0]["id"])
+
+    # The parent leaves first, while its child is still working.
+    brick_m = _goal(conn, p, "mid_brick", status="proved")
+    _mark(conn, p, brick_m, mid)
+    conn.commit()
+    _commit(conn, tmp_path, [S.Decision(kind="Ingest")], p, mid,
+            trigger="inject_batch_done")
+    assert groups.get(conn, mid)["status"] == "delivered"
+
+    conn.execute("DELETE FROM queue")
+    brick_k = _goal(conn, p, "kid_brick", status="proved")
+    _mark(conn, p, brick_k, kid)
+    conn.commit()
+    _commit(conn, tmp_path, [S.Decision(kind="Ingest")], p, kid,
+            trigger="inject_batch_done")
+
+    queued = [(str(r["target_id"]), str(r["target_kind"])) for r in
+              conn.execute("SELECT target_id, target_kind FROM queue"
+                           " WHERE kind = 'Strategist'")]
+    live = [q for q in queued
+            if not _disp._strategist_row_is_stale(conn, q[0], "Strategist",
+                                                  q[1])]
+    assert live, (
+        f"the delivery woke nobody: queued={queued}, all dropped as stale")
+    # …and specifically it was REDIRECTED: the Delegate row that opened
+    # `kid` names `mid`, which is terminal, so addressing it verbatim is
+    # what produced the dropped wake.
+    assert int(conn.execute(
+        "SELECT group_id FROM strategist_decisions WHERE produced_group_id=?",
+        (kid,)).fetchone()[0]) == mid
+    assert (str(top), "Group") in live

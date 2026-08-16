@@ -169,7 +169,8 @@ def _toml_str(value: str) -> str:
     return f"'{value}'"
 
 
-def _mcp_servers_toml(mcp_config_path: "Path | None") -> str:
+def _mcp_servers_toml(mcp_config_path: "Path | None",
+                      attempts_dir: "Path | None" = None) -> str:
     """Translate the framework's `mcpServers` JSON into codex's TOML.
 
     Two shapes exist on our side (`pipeline.tools_mcp_entry` and the
@@ -216,6 +217,15 @@ def _mcp_servers_toml(mcp_config_path: "Path | None") -> str:
             cap = inspect_delivery_chars("codex")
             if cap is not None:
                 env["ASTERISM_INSPECT_DELIVERY_CHARS"] = str(cap)
+            # Same route, same reason: which attempt `inspect` is
+            # serving. The spawn's own env carries it too, but codex
+            # gives its MCP children a fixed core set — measured
+            # 2026-08-16 as 19-21 variables, none of them ours — so a
+            # tool that read only the spawn env resolved bare
+            # `Context.md` against nothing on every codex seat.
+            if attempts_dir is not None:
+                from .spawn_guard import ATTEMPT_DIR_ENV
+                env[ATTEMPT_DIR_ENV] = str(attempts_dir)
         if env:
             out.append(f"\n[mcp_servers.{name}.env]")
             for k, v in env.items():
@@ -342,7 +352,9 @@ def _render_config(req: LLMRequest, model: str, effort: str) -> str:
     for root in spec.write_roots:
         lines += ["", f"[projects.{_toml_str(str(root))}]",
                   'trust_level = "trusted"']
-    return "\n".join(lines) + "\n" + _mcp_servers_toml(spec.mcp_config_path)
+    return "\n".join(lines) + "\n" + _mcp_servers_toml(
+        spec.mcp_config_path,
+        spec.write_roots[0] if spec.write_roots else None)
 
 
 def _spawn_home(req: LLMRequest, model: str, effort: str) -> "Path | None":

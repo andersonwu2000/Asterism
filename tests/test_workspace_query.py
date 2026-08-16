@@ -438,3 +438,85 @@ def test_a_deferred_query_comes_back_resendable(tmp_path):
     assert '"read": "charter.md"' in out, out[-300:]
     assert '"sections": ["Proof"]' in out, "the selector must survive too"
     assert "['read', 'sections']" not in out
+
+
+# ---------------------------------------------------------------------
+# The delivery budget is a CONTRACT, not an aspiration (2026-08-16).
+#
+# Nothing pinned "the reply fits `delivery_chars`", and that gap let a
+# regression ship the same day it was written: echoing the deferred
+# query made the note's size a function of the QUERY's size, so a batch
+# carrying long grep patterns produced a note bigger than the reply it
+# was appended to — 41,747 chars of note against a 30,000-char budget,
+# with the answers starved from 9 to 2. Found by an independent
+# verifier, not by this suite.
+# ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("pattern_len", [0, 500, 2_000, 40_000])
+def test_the_reply_never_exceeds_its_delivery_budget(tmp_path, pattern_len):
+    for i in range(12):
+        (tmp_path / f"f{i}.md").write_text("body\n" * 400, encoding="utf-8")
+    qs = [{"read": f"f{i}.md"} for i in range(9)]
+    qs += [{"grep": "z" * pattern_len, "in": f"f{i}.md"} for i in range(9, 12)]
+    out = wq.run_queries(qs, cwd=tmp_path, delivery_chars=30_000)
+    assert len(out) <= 30_000, (
+        f"{len(out):,} chars against a 30,000-char budget "
+        f"(pattern_len={pattern_len:,})")
+
+
+def test_a_long_query_does_not_starve_the_answers(tmp_path):
+    """The note is an ADDRESS, not the payload: bounding each echo keeps
+    the number of delivered answers independent of how long the deferred
+    queries happen to be."""
+    for i in range(12):
+        (tmp_path / f"f{i}.md").write_text("body\n" * 400, encoding="utf-8")
+    def delivered(pattern_len):
+        qs = [{"read": f"f{i}.md"} for i in range(9)]
+        qs += [{"grep": "z" * pattern_len, "in": f"f{i}.md"}
+               for i in range(9, 12)]
+        out = wq.run_queries(qs, cwd=tmp_path, delivery_chars=30_000)
+        return sum(1 for i in range(9) if f"[{i + 1}] read" in out)
+    assert delivered(40_000) == delivered(0)
+
+
+def test_every_deferred_query_is_echoed_as_valid_json(tmp_path):
+    """A bare string or a list is an accepted (if mistaken) query — the
+    tool answers it — so it can also be deferred, and it used to come
+    back as a Python repr: `['read', 'b.md']`, the exact shape this note
+    exists to stop producing."""
+    import json as _json
+    (tmp_path / "x.md").write_text("hello\n", encoding="utf-8")
+    qs = [{"read": "x.md"} for _ in range(20)]
+    qs += ["Context.md", ["read", "b.md"], None]
+    out = wq.run_queries(qs, cwd=tmp_path, max_queries=20)
+    tail = out.split("second call:")[-1]
+    assert "['read', 'b.md']" not in tail
+    for chunk in tail.split(";"):
+        payload = chunk.split("] ", 1)[1].strip() if "] " in chunk else ""
+        if payload:
+            _json.loads(payload)  # raises if not resendable
+
+
+def test_dot_dot_cannot_walk_from_my_attempt_into_a_siblings(spawn):
+    """Resolving against the attempt dir opened a second door, and
+    `../<other-pid>/new_forward.lean` walked through it into exactly the
+    file this resolution exists to keep out (found by an independent
+    verifier, 2026-08-16)."""
+    cwd, mine, theirs = spawn
+    out = wq.run_queries(
+        [{"read": f"../{theirs.name}/new_forward.lean"}], cwd=cwd)
+    assert "theorem theirs" not in out
+    assert "no file at" in out
+
+
+def test_a_stale_first_write_root_does_not_switch_resolution_off(
+        spawn, monkeypatch):
+    """The loop tried one entry and returned — a first path that no
+    longer exists took the whole mechanism down silently."""
+    cwd, mine, theirs = spawn
+    import os as _os
+    monkeypatch.setenv("ASTERISM_SPAWN_WRITE_ROOTS",
+                       str(cwd / "gone") + _os.pathsep + str(mine))
+    monkeypatch.delenv("ASTERISM_SPAWN_ATTEMPT_DIR", raising=False)
+    out = wq.run_queries([{"read": "Context.md"}], cwd=cwd)
+    assert "my own programme" in out

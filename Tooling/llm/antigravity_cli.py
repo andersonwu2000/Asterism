@@ -355,6 +355,16 @@ def _spawn_home(req: LLMRequest) -> "Path | None":
         elif workspace is not None:
             from ..pipeline import tools_mcp_entry
             servers = {"asterism_tools": tools_mcp_entry(workspace)}
+        # Which attempt the tools server is serving. agy's own env
+        # allowlist never carried it, and the server is a child agy
+        # starts — so it travels in the config, the way this backend
+        # already carries everything else per-spawn.
+        if env_spec.write_roots:
+            from .spawn_guard import ATTEMPT_DIR_ENV
+            for entry in servers.values():
+                if isinstance(entry, dict) and not entry.get("url"):
+                    entry.setdefault("env", {})[ATTEMPT_DIR_ENV] = str(
+                        env_spec.write_roots[0])
         (home / ".gemini" / "config" / "mcp_config.json").write_text(
             json.dumps({"mcpServers": servers}, indent=2), encoding="utf-8")
     except (OSError, ValueError) as e:

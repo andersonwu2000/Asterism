@@ -76,6 +76,19 @@ WRITE_ROOTS_ENV = "ASTERISM_SPAWN_WRITE_ROOTS"
 # denied, matching the write fence's fallback.
 READ_DENY_ROOTS_ENV = "ASTERISM_SPAWN_READ_DENY_ROOTS"
 
+# WHICH attempt this spawn owns — the one directory `inspect` may treat
+# as "mine" when a bare `Context.md` misses the problem dir. It is
+# `write_roots[0]`, but it needs its own name because it travels a
+# different ROUTE: the fence vars are read by the spawn's own process,
+# while this one is read by the MCP tools server, a child the provider
+# starts. claude passes its whole environment down, codex hands its MCP
+# children a fixed core set and only `[mcp_servers.<n>.env]` reaches
+# them, and agy needs it in the per-spawn mcp_config. So every adapter
+# renders it in its own dialect — the `read_deny_roots` lesson (#162),
+# re-learned 2026-08-16 when a fix that read only the claude route
+# shipped while all three NL seats were on codex.
+ATTEMPT_DIR_ENV = "ASTERISM_SPAWN_ATTEMPT_DIR"
+
 #: Tools whose path argument is a search ROOT, not a target: they
 #: traverse it, so a private subtree INSIDE the root leaks even though
 #: the root itself is allowed.

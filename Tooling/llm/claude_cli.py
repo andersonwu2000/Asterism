@@ -1406,9 +1406,15 @@ class ClaudeCliProvider:
         # same grants agy renders into its per-spawn settings.json, so a
         # third provider inherits one definition instead of a third copy.
         from .envelope import envelope_for
-        from .spawn_guard import READ_DENY_ROOTS_ENV, WRITE_ROOTS_ENV
+        from .spawn_guard import (ATTEMPT_DIR_ENV, READ_DENY_ROOTS_ENV,
+                                  WRITE_ROOTS_ENV)
         spec = envelope_for(req, library_dir=library_dir)
         env[WRITE_ROOTS_ENV] = spec.write_roots_env()
+        # Which attempt the MCP tools server is serving. claude passes
+        # its whole environment to that child, so setting it here is the
+        # whole of this backend's rendering.
+        if spec.write_roots:
+            env[ATTEMPT_DIR_ENV] = str(spec.write_roots[0])
         # Reads keep the broad repo whitelist MINUS the operator-private
         # subtrees (#162, 2026-08-10). Until that ruling the repo root was
         # readable whole, so a spawn could open `docs/internal/`, the live

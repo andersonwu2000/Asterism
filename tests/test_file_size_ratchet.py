@@ -419,7 +419,12 @@ _WATERMARKS = {
     # callers may scope. The old text read as an unconditional
     # instruction and following it everywhere would have cut 21 proved
     # bricks out of harvest. Conscious bump.
-    "Tooling/state/db.py": 3840,
+    # 3840→3855: a delivery's batch-done wake is redirected to the
+    # nearest ACTIVE ancestor. Addressed verbatim, it named a parent that
+    # had already left, and the dispatcher drops a Strategist row whose
+    # group is terminal — so the child's delivery reached nobody
+    # (2026-08-16). Conscious bump.
+    "Tooling/state/db.py": 3855,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,

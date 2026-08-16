@@ -58,6 +58,11 @@ PER_QUERY_CHARS = 12_000
 #: answers that were already computed. Every answer is complete or
 #: explicitly deferred.
 MAX_QUERIES = 20
+#: How much of a deferred query is echoed back so the reader can resend
+#: it. Bounded because the echo is an ADDRESS, not the payload: a batch
+#: carrying long grep patterns otherwise produced a deferral note larger
+#: than the reply it was appended to.
+_ECHO_CHARS = 200
 
 #: A markdown heading, which is how a framework document declares its
 #: sections. Level 1-4 only: deeper is prose formatting, not structure.
@@ -127,15 +132,22 @@ def _denied(path: Path, deny: "tuple[Path, ...]") -> "Path | None":
 def _own_attempt_dir() -> "Path | None":
     """This spawn's own attempts directory, or None outside a spawn.
 
-    `envelope.Envelope.write_roots[0]` IS the attempts sandbox and the
-    spawn already carries it as `ASTERISM_SPAWN_WRITE_ROOTS` — the tool
-    simply never read it."""
-    raw = (os.environ.get("ASTERISM_SPAWN_WRITE_ROOTS") or "").strip()
-    for part in raw.split(os.pathsep):
-        part = part.strip()
-        if part:
-            p = Path(part)
-            return p if p.is_dir() else None
+    Declared by `spawn_guard.ATTEMPT_DIR_ENV`, which every adapter
+    renders in the dialect that actually reaches THIS process — the MCP
+    tools server, a child the provider starts, not the spawn itself.
+    `ASTERISM_SPAWN_WRITE_ROOTS` is the fallback: it carries the same
+    path first, and claude's whole-environment inheritance delivers it,
+    but codex hands its MCP children a fixed core set that drops it.
+
+    Each candidate is tried in turn — a first entry that no longer
+    exists must not switch the whole mechanism off silently."""
+    from ..llm.spawn_guard import ATTEMPT_DIR_ENV, WRITE_ROOTS_ENV
+    for var in (ATTEMPT_DIR_ENV, WRITE_ROOTS_ENV):
+        raw = (os.environ.get(var) or "").strip()
+        for part in raw.split(os.pathsep):
+            part = part.strip()
+            if part and Path(part).is_dir():
+                return Path(part)
     return None
 
 
@@ -156,8 +168,18 @@ def _resolve(spec: str, cwd: Path) -> Path:
     if here.exists():
         return here
     own = _own_attempt_dir()
-    if own is not None and (own / spec).exists():
-        return own / spec
+    if own is not None:
+        # Inside `own`, and STILL inside it after `..` — the second
+        # branch is a new door, and `../<other-pid>/new_forward.lean`
+        # walked straight through it into a sibling attempt, which is
+        # the whole defect this resolution exists to close.
+        cand = own / spec
+        try:
+            cand.resolve().relative_to(own.resolve())
+        except (ValueError, OSError):
+            return here
+        if cand.exists():
+            return cand
     return here
 
 
@@ -580,11 +602,28 @@ def _deferral_note(deferred: "list[tuple[int, object]]", reason: str) -> str:
     call" was unfollowable: the reader had to reconstruct which file it
     had even asked about. Three agents reported it within an hour of
     the deferral shipping. Echo the query itself; it is what they
-    resend."""
-    listed = "; ".join(
-        f"[{i}] {json.dumps(d, ensure_ascii=False, sort_keys=True)}"
-        if isinstance(d, dict) else f"[{i}] {d}"
-        for i, d in deferred)
+    resend.
+
+    Echoing it made the note's length a function of the QUERY's length,
+    and a batch carrying long grep patterns then produced a note bigger
+    than the reply it was appended to — the very overflow it reports
+    (measured 2026-08-16: a 41,600-char pattern gave a 41,747-char note
+    against a 30,000-char budget, and starved the delivered answers from
+    9 to 2). So each echo is itself bounded: enough to identify the
+    query, never enough to become the payload. A truncated echo is
+    marked, because a silently shortened path is one the reader would
+    resend wrong."""
+    def _echo(d: object) -> str:
+        # Every query, not just the dict-shaped ones: a bare string or a
+        # list is an accepted (if mistaken) query, and `f"{d}"` printed
+        # it as a Python repr — `['read', 'b.md']`, byte-identical to
+        # the shape this note exists to stop producing.
+        s = json.dumps(d, ensure_ascii=False, sort_keys=True, default=str)
+        if len(s) <= _ECHO_CHARS:
+            return s
+        return s[:_ECHO_CHARS] + f"…(+{len(s) - _ECHO_CHARS} chars)"
+
+    listed = "; ".join(f"[{i}] {_echo(d)}" for i, d in deferred)
     return (f"— {len(deferred)} quer"
             f"{'y' if len(deferred) == 1 else 'ies'} not answered: "
             f"{reason} Send these in a second call: {listed}")

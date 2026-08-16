@@ -3018,6 +3018,19 @@ def maybe_enqueue_inject_batch_done(conn: sqlite3.Connection,
     gid = row["group_id"]
     if gid is None:
         gid = _groups.ensure_top_group(conn, problem)
+    else:
+        # …and to a group that can still ACT on it. The dispatcher drops
+        # a Strategist row whose group is terminal (correctly), so a wake
+        # addressed to a parent that already left is not delayed, it is
+        # DELETED — the child's delivery reaches nobody. Two mechanisms
+        # each right, blinding each other; reachable today, since a
+        # parent may Close/Ingest/Return while a child still works
+        # (2026-08-16, two such pairs live on union_closed).
+        me = _groups.get(conn, int(gid))
+        if me is not None:
+            live = _groups._nearest_active(conn, problem, me)
+            if live is not None:
+                gid = int(live["id"])
     # Dedup on BOTH keys while legacy problem-keyed rows can still be in
     # the queue — either one already covers this wake.
     if is_in_queue(conn, target_id=str(int(gid)), kind="Strategist"):

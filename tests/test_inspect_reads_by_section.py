@@ -194,3 +194,25 @@ def test_sections_survive_a_file_that_starts_mid_document(
     out2 = wq.run_queries(
         [{"read": "edge.md", "sections": ["First"]}], cwd=cwd)
     assert "a" in out2 and "z" not in out2.split("[1] read")[1]
+
+
+def test_no_tool_advertises_an_output_schema() -> None:
+    """A `-> str` tool with an output schema makes FastMCP emit the SAME
+    payload in both `content` and `structuredContent` — so `inspect`'s
+    delivery budget governed half the bytes actually sent, and the codex
+    exec channel amputated the middle of the rest with no notice. The
+    fix was one kwarg and had no test; an independent verifier reverted
+    all six decorators and the suite stayed green (2026-08-16)."""
+    import asyncio
+    from Tooling.knowledge import mcp_tools
+
+    async def _schemas():
+        return [(t.name, getattr(t, "outputSchema", None))
+                for t in await mcp_tools.mcp.list_tools()]
+
+    tools = asyncio.run(_schemas())
+    assert tools, "the server advertised no tools at all"
+    offenders = [n for n, s in tools if s]
+    assert not offenders, (
+        f"these tools still duplicate their payload into "
+        f"structuredContent: {offenders}")
