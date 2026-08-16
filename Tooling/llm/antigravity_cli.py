@@ -955,6 +955,10 @@ class AntigravityCliProvider:
         try:
             r = subprocess.run(
                 cmd, timeout=print_timeout + _SUBPROCESS_SLACK_SEC,
+                # Never inherit stdin — see `claude_cli`'s note: a spawn
+                # launched from inside the MCP tools server would block
+                # on that server's JSON-RPC pipe.
+                stdin=subprocess.DEVNULL,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
                 cwd=str(req.problem_dir), env=_spawn_env(home),

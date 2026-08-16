@@ -274,6 +274,10 @@ def _run(argv: "list[str]", cwd: "Path | None") -> "tuple[int, str]":
     r = subprocess.run(
         argv, capture_output=True, text=True, encoding="utf-8",
         errors="replace", timeout=_PROBE_TIMEOUT_SEC,
+        # Never inherit stdin — see `claude_cli`'s note. A version
+        # probe that blocks on somebody else's pipe reports a broken
+        # CLI, and this one's answers gate dispatch.
+        stdin=subprocess.DEVNULL,
         cwd=str(cwd) if cwd else None,
         # The SAME environment a spawn gets (Part C's allowlist). A
         # probe run under the operator's full environment would answer

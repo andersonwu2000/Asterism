@@ -187,6 +187,8 @@ class GeminiCliProvider:
         try:
             r = subprocess.run(
                 cmd, timeout=req.timeout_sec,
+                # Never inherit stdin — see `claude_cli`'s note.
+                stdin=subprocess.DEVNULL,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
                 # Anchor agent cwd at problem_dir (matches claude_cli;

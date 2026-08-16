@@ -1460,6 +1460,19 @@ class ClaudeCliProvider:
         try:
             proc = subprocess.Popen(
                 cmd, env=env, cwd=str(req.problem_dir),
+                # NEVER inherit stdin. A headless `-p` run reads none,
+                # and inheriting it is how a spawn hangs on a handle
+                # that belongs to somebody else: `paper_index` is
+                # launched from inside the MCP tools server, whose stdin
+                # IS the JSON-RPC pipe from its parent CLI. The nested
+                # claude blocked on that pipe for its full 1200s budget,
+                # every time, producing zero messages and zero tokens —
+                # and could have stolen protocol bytes from the server
+                # it was running inside. Every paper fetched since the
+                # shell closed (2026-08-10, when scholar's fetch moved
+                # into MCP) shelved its PDF and got no map.md: three for
+                # three, silent, until measured 2026-08-16.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace",
                 creationflags=no_window_creationflags(),

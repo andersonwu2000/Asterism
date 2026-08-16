@@ -281,6 +281,7 @@ def _repo_status(workspace: "Path | None") -> "set[str]":
         r = subprocess.run(
             ["git", "status", "--porcelain", "-uall"],
             cwd=str(workspace), capture_output=True, text=True,
+            stdin=subprocess.DEVNULL,  # never inherit; see claude_cli
             timeout=30, creationflags=no_window_creationflags())
     except Exception:  # noqa: BLE001 — not a repo / git missing / slow disk
         return set()

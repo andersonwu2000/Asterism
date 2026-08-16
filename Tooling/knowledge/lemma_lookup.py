@@ -165,6 +165,9 @@ def lookup_batch(
             r = subprocess.run(
                 ["lake", "env", "lean", str(query_path)],
                 cwd=str(workspace),
+                # Never inherit stdin: this runs inside the MCP tools
+                # server, whose stdin is a live JSON-RPC pipe.
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

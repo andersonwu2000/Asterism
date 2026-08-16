@@ -99,7 +99,7 @@ def _forensics(argv: "list[str]", cwd: str, elapsed: float,
             t = time.monotonic()
             r = subprocess.run([sys.executable, "-c", "print('control')"],
                                capture_output=True, text=True, timeout=15,
-                               cwd=cwd,
+                               cwd=cwd, stdin=subprocess.DEVNULL,
                                creationflags=no_window_creationflags())
             control = (f"rc={r.returncode} out={(r.stdout or '').strip()!r} "
                        f"in {time.monotonic() - t:.1f}s")
@@ -132,6 +132,7 @@ def _run(argv: "list[str]", timeout: int = _PROBE_TIMEOUT
         r = subprocess.run(argv, capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
                            timeout=timeout, cwd=cwd,
+                           stdin=subprocess.DEVNULL,
                            creationflags=no_window_creationflags())
         return r.returncode, (r.stdout or "") + (r.stderr or "")
     except Exception as exc:  # noqa: BLE001
