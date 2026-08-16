@@ -69,7 +69,7 @@ _ARG_HELP = "{tool}: {hint}"
 mcp = FastMCP("asterism_tools")
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def loogle(pattern: str = "", query: str = "",
            limit: int = _loogle.DEFAULT_LIMIT) -> str:
     """Search Mathlib (loogle.lean-lang.org).
@@ -102,7 +102,7 @@ def loogle(pattern: str = "", query: str = "",
     return text
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def validate_json(text: str = "") -> str:
     """Check that `text` parses as JSON before you emit it.
 
@@ -127,7 +127,7 @@ def validate_json(text: str = "") -> str:
     return f"OK: {type(obj).__name__}"
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def inspect(queries: list = None) -> str:
     """Ask several questions about the files here, in one call.
 
@@ -179,7 +179,7 @@ def inspect(queries: list = None) -> str:
     return workspace_query.run_queries(queries, delivery_chars=delivery)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def compute(code: str = "") -> str:
     """Run a short Python calculation and get back what it prints.
 
@@ -302,7 +302,7 @@ def _compute_via_gateway(code: str) -> str:
                          killed=str(data.get("killed") or "")).render()
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def paper_search(query: str = "", doi: str = "") -> str:
     """Find a paper by citation text, keywords, or DOI.
 
@@ -338,7 +338,7 @@ def paper_search(query: str = "", doi: str = "") -> str:
     return out
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def paper_fetch(target: str = "", problem: str = "", reason: str = "") -> str:
     """Download a paper, shelve it, and bind it to the problem.
 

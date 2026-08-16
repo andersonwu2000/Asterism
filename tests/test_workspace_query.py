@@ -232,7 +232,7 @@ def test_overflow_defers_whole_queries_by_name(tmp_path):
     # the losers are whole, named queries — not amputated answers
     assert "bbb" not in out and "ccc" not in out
     assert "not answered" in out and "budget" in out
-    assert "[2]" in out and "[3]" in out and "'read'" in out
+    assert '[2] {"read": "b.md"}' in out and '[3] {"read": "c.md"}' in out
     assert "Send these in a second call" in out
 
 
@@ -419,3 +419,22 @@ def test_outside_a_spawn_nothing_reaches_into_attempts(tmp_path, monkeypatch):
     (stray / "Context.md").write_text("stray\n", encoding="utf-8")
     out = wq.run_queries([{"read": "Context.md"}], cwd=cwd)
     assert "stray" not in out and "no file at" in out
+
+
+def test_a_deferred_query_comes_back_resendable(tmp_path):
+    """`sorted(d)` on a dict yields its KEYS, so the one continuation
+    cue read `[11] ['read', 'sections']` — the reader could not tell
+    which file it had asked about, and "send these in a second call"
+    was unfollowable. Three agents reported it within an hour of the
+    deferral shipping (2026-08-15)."""
+    (tmp_path / "a.md").write_text("x" * 9000, encoding="utf-8")
+    (tmp_path / "charter.md").write_text(
+        "## Proof\nbody\n", encoding="utf-8")
+    out = wq.run_queries(
+        [{"read": "a.md"},
+         {"read": "charter.md", "sections": ["Proof"]}],
+        cwd=tmp_path, delivery_chars=9_050)
+    assert "not answered" in out
+    assert '"read": "charter.md"' in out, out[-300:]
+    assert '"sections": ["Proof"]' in out, "the selector must survive too"
+    assert "['read', 'sections']" not in out

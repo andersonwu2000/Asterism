@@ -28,6 +28,7 @@ the database.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -571,9 +572,18 @@ def _resume_hint(text: str, kept: str, q: dict) -> str:
 
 def _deferral_note(deferred: "list[tuple[int, object]]", reason: str) -> str:
     """The way back for whole queries this reply could not carry:
-    every one named, in the vocabulary the count limit already uses."""
+    every one named, in the vocabulary the count limit already uses.
+
+    It named them with `sorted(d)` until 2026-08-16 — the dict's KEYS —
+    so a deferred `{"read": "charter.md", "sections": ["Proof"]}` came
+    back as `[11] ['read', 'sections']` and "send these in a second
+    call" was unfollowable: the reader had to reconstruct which file it
+    had even asked about. Three agents reported it within an hour of
+    the deferral shipping. Echo the query itself; it is what they
+    resend."""
     listed = "; ".join(
-        f"[{i}] {sorted(d) if isinstance(d, dict) else d}"
+        f"[{i}] {json.dumps(d, ensure_ascii=False, sort_keys=True)}"
+        if isinstance(d, dict) else f"[{i}] {d}"
         for i, d in deferred)
     return (f"— {len(deferred)} quer"
             f"{'y' if len(deferred) == 1 else 'ies'} not answered: "
