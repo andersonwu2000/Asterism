@@ -313,7 +313,10 @@ _WATERMARKS = {
     # notifies twice; `_check` had been waving every `frm == to` past the
     # table that says this is the one thing it exists to forbid.
     # Conscious bump.
-    "Tooling/state/transitions.py": 1776,
+    # 1776→1780: the descendant edge for the group cascade — a retired
+    # charter now retires the sub-projects it delegated, and a new edge
+    # needs its event label registered here. 2026-08-16. Conscious bump.
+    "Tooling/state/transitions.py": 1780,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.

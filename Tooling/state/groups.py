@@ -406,7 +406,7 @@ def set_status(conn: sqlite3.Connection, group_id: int,
         for kid in children(conn, int(group_id)):
             if str(kid["status"]) == ACTIVE:
                 set_status(conn, int(kid["id"]), "closed",
-                           event=f"ancestor_{status}")
+                           event="ancestor_retired")
         from . import db as _db
         filled = _db.propagate_inject_outcome_from_group(conn, int(group_id))
         if filled is not None:

@@ -222,8 +222,11 @@ EVENTS: frozenset[str] = frozenset({
     # goal to the new group's anchor and parks it `attempting`: alive
     # (so the parent's wait is legal) but not dispatchable by BFS.
     "delegate_anchor",
-    # ... and the three verbs that retire one (`groups.set_status`)
+    # ... the three verbs that retire one (`groups.set_status`), plus
+    # the descendant's edge when one of them takes its sub-projects
+    # with it — and the startup sweep for pre-cascade trees.
     "group_delivered", "group_returned", "group_closed",
+    "ancestor_retired", "ancestor_retired_before_cascade",
     # verify housekeeping + axiom-probe rollback
     "verify_proved", "verify_dead", "verify_reopen", "assembly_sorry_gate",
     "rollback_culprit", "rollback_upstream", "rollback_unsupersede",

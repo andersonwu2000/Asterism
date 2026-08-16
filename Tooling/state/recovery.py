@@ -48,6 +48,7 @@ from pathlib import Path
 
 from ..core.process_group import no_window_creationflags
 from . import db
+from . import groups as _groups
 from . import proof_store
 
 
@@ -229,6 +230,32 @@ def recover_at_startup(conn: sqlite3.Connection,
                    problem=str(r["problem"]))
         groups_relaunched += 1
 
+    # Orphaned sub-projects: active under an ancestor that already
+    # retired. `groups.set_status` cascades downward from 2026-08-16, so
+    # no NEW one can appear — but every tree built before that carries
+    # them, and they are not idle: union_closed had two such lines, one
+    # of which spent twenty-two bricks and three hours binary-splitting
+    # a mask space for a charter its grandparent had withdrawn. The
+    # cascade is the law; this is the sweep that brings the existing
+    # tree under it, at the one moment nothing is in flight.
+    groups_orphaned = 0
+    for r in list(conn.execute(
+            "SELECT id, problem FROM groups"
+            " WHERE status = 'active' AND parent_group_id IS NOT NULL"
+            + _scope_sql, _scope_args)):
+        # Re-read: closing one orphan cascades to its own descendants,
+        # so a later row in this list may already be settled, and the
+        # FSM rejects a repeated terminal arrival (correctly — the
+        # first one already notified upstream).
+        row = _groups.get(conn, int(r["id"]))
+        if row is None or str(row["status"]) != _groups.ACTIVE:
+            continue
+        if any(str(a["status"]) != _groups.ACTIVE
+               for a in _groups.ancestors(conn, int(r["id"]))):
+            _groups.set_status(conn, int(r["id"]), "closed",
+                               event="ancestor_retired_before_cascade")
+            groups_orphaned += 1
+
     # v38 — stale 'running' pipeline rows. The dispatcher INSERTs the
     # pipelines row at dispatch time (status='running') and finalizes it
     # at completion; a daemon that died mid-pipeline leaves the row
@@ -402,10 +429,12 @@ def recover_at_startup(conn: sqlite3.Connection,
             or sessions_released
             or backups_handled or tmps_removed
             or patches_salvaged or probes_removed
-            or orphans_swept or orphans_kept_cited):
+            or orphans_swept or orphans_kept_cited
+            or groups_orphaned):
         print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
               f"re-enqueued {inject_reenqueued} in-flight Inject pipelines, "
               f"relaunched {groups_relaunched} never-woken group(s), "
+              f"closed {groups_orphaned} orphaned sub-project(s), "
               f"finalized {pipelines_finalized} crashed 'running' "
               f"pipeline row(s), "
               f"killed {strategies_killed} half-baked strategies, "
