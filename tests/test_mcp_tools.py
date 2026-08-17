@@ -43,6 +43,13 @@ def test_server_exposes_exactly_the_intended_tools() -> None:
         # and the Scholar's two curated network commands, which had to
         # move here or closing Bash would decapitate that role.
         "inspect", "compute", "paper_search", "paper_fetch",
+        # The server-side write (2026-08-17): codex's Windows sandbox
+        # blocks a session's FIRST apply_patch for the whole sandbox
+        # warm-up (measured 142.6s, growing day over day), agents give
+        # up, and the wake dies as `agent_no_output`. This write runs
+        # in the tools server's process, outside that sandbox, and only
+        # into the spawn's own attempts dir.
+        "write_file",
     }
 
 

@@ -6,7 +6,7 @@ This is a **pending_review** wake — an agent shelved a goal and is waiting for
 Tools: Read / Write / Edit / Grep / `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"decl":"foo"}])` / `compute(code)` / `loogle(pattern)` / `validate_json(text)`. No time budget — think as long as the work needs.
 <!-- #endif -->
 <!-- #if mcp_only_reads -->
-Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])` — read a document by its section; `outline: true` maps a file whose sections you don't know. Batch queries freely — each gets its own full budget; queries deferred by name in the reply need only be resent. Also `compute(code)` / `loogle(pattern)` / `validate_json(text)`. No time budget — think as long as the work needs.
+Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])` — read a document by its section; `outline: true` maps a file whose sections you don't know. Batch queries freely — each gets its own full budget; queries deferred by name in the reply need only be resent. Write every file you produce with `write_file(path, content)` — full overwrite into your attempts dir, lands immediately; prefer it over `apply_patch`. Also `compute(code)` / `loogle(pattern)` / `validate_json(text)`. No time budget — think as long as the work needs.
 <!-- #endif -->
 
 ## What to do
@@ -46,13 +46,13 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
                     as a mathematician writes proofs — no logical gaps. Once complete,
                     copy each brick's part into its Inject's `proof`. (Nothing to
                     argue → the single line "No new mathematics this batch.")
-    ## Roadmap      how this route settles the MAIN claim, in three bullet bands:
-                    PAST — closed lines, collapsed to their conclusions (a shelved or
-                    dead goal carries its restart condition);
+    ## Roadmap      how this route settles the MAIN claim, in three bands:
+                    PAST — closed lines, one per bullet, collapsed to their conclusions
+                    (a shelved or dead goal carries its restart condition);
                     NOW — dispatched work and brief-ready next goals, flagging what is
                     argued but not yet kernel-checked;
-                    AHEAD — candidates, open questions, the exit: an ordered plan of
-                    the route ahead.
+                    AHEAD — a one-line brief, then a numbered ordered plan (one step per
+                    item): candidates, open questions, the exit.
     ## Conventions  standing notes every worker sees on every spawn — short and general
 
 - Every Inject is proven in the Proof — inject only what is fully argued; anything short of rigorous closure stays in AHEAD awaiting a later batch.
@@ -64,11 +64,11 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
   - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself.
   - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
-- `Delegate` — `brief` or `brief_file`, optional `target_goal_id`. Opens a load-bearing research project; the brief is its research proposal:
-    `# Charter` — the claim to settle; the kernel must be able to prove or refute it.
-    `## Why a project` — why this claim earns a project of its own, and why your Roadmap cannot carry the work.
+- `Delegate` — `brief` or `brief_file`, optional `target_goal_id`. Opens a separate discussion space for a research topic:
+    `# Charter` — the research topic and a concrete exit condition; every claimed result must be kernel-checkable.
+    `## Why a project` — why this topic benefits from a separate Programme rather than Injects in the current group.
     `## Inheritance` — citable landed bricks, vocabulary, known walls.
-  The Charter must be free of circularity. Independent projects may share a batch. With `target_goal_id`: that goal becomes the anchor.
+  It is for separating a sustained line of inquiry, not for outsourcing difficult work. The Charter must be free of circularity. Independent projects may share a batch. With `target_goal_id`: that goal becomes the anchor.
 - `FetchPaper` — `query` (citation or description), `reason`. Before investing in an unknown or uncertain plan, check whether the literature already settles it. Do not formalize literature except where necessary.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md", "Root.lean"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong.
 - `MarkDeliverable` — `target_goal_id`, `reason`. Marks a PROVED brick as one of the claims the Manifest asks for. Top-level claims only; vocabulary and internal lemmas are never deliverables. The marked set is what `Ingest` is checked against.

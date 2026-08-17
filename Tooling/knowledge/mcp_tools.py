@@ -180,6 +180,35 @@ def inspect(queries: list = None) -> str:
 
 
 @mcp.tool(structured_output=False)
+def write_file(path: str = "", content: str = "") -> str:
+    """Write a file into your attempts directory. Full-file overwrite.
+
+    This is how your outputs land — decision.json, proposal.md,
+    _plan.md, verdict.json, any `proof_file` / `brief_file` target.
+    The write happens in the framework's own process and completes
+    immediately; prefer it over `apply_patch` for every file you
+    produce. Pass the absolute path your prompt gave you, or a bare
+    filename — both land in YOUR attempts directory, which is the only
+    writable place. The whole file is replaced; there is no partial
+    edit, so send the complete text.
+    """
+    from . import workspace_query
+    if not (path or "").strip():
+        return _ARG_HELP.format(
+            tool="write_file",
+            hint='the parameters are `path` and `content`, e.g. '
+                 'write_file(path="decision.json", content="[…]")')
+    if not content:
+        # A mis-named argument arrives as an empty call (pydantic drops
+        # unknown fields), and an empty decision.json is never wanted.
+        return _ARG_HELP.format(
+            tool="write_file",
+            hint='`content` is empty — the whole file body goes in '
+                 '`content` (a mis-spelled parameter name lands here)')
+    return workspace_query.run_write(path, content)
+
+
+@mcp.tool(structured_output=False)
 def compute(code: str = "") -> str:
     """Run a short Python calculation and get back what it prints.
 

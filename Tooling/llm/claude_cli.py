@@ -725,7 +725,8 @@ _TOOLS_MCP_PATTERNS = ("mcp__asterism_tools__loogle",
                        "mcp__asterism_tools__inspect",
                        "mcp__asterism_tools__compute",
                        "mcp__asterism_tools__paper_search",
-                       "mcp__asterism_tools__paper_fetch")
+                       "mcp__asterism_tools__paper_fetch",
+                       "mcp__asterism_tools__write_file")
 
 
 def resolve_model(kind: str | None) -> str:

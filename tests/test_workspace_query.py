@@ -541,6 +541,45 @@ def test_the_deferral_note_is_bounded_by_count_too(tmp_path):
     assert "more — queries [" in out, "the way back must survive the cut"
 
 
+def test_write_file_lands_in_my_own_attempt(spawn):
+    """The server-side write that bypasses codex's Windows sandbox —
+    whose per-session first write blocked 142.6s (measured 2026-08-17,
+    growing day over day) so agents gave up and wakes died as
+    `agent_no_output`. Bare names and the absolute paths the prompts
+    hand out both land in THIS spawn's attempts dir."""
+    cwd, mine, theirs = spawn
+    out = wq.run_write("decision.json", '[{"kind": "Noop"}]')
+    assert out.startswith("wrote 18 chars to")
+    assert (mine / "decision.json").read_text(encoding="utf-8") == \
+        '[{"kind": "Noop"}]'
+    out2 = wq.run_write(str(mine / "proposal.md"), "# T\n")
+    assert out2.startswith("wrote")
+    assert (mine / "proposal.md").is_file()
+    out3 = wq.run_write("decision.json", "[]")
+    assert "replaced the previous version" in out3
+    assert (mine / "decision.json").read_text(encoding="utf-8") == "[]"
+
+
+def test_write_file_refuses_everywhere_else(spawn):
+    """Not the problem dir (the stale-stray class #218), not a sibling
+    attempt — and the refusal names the address that would work."""
+    cwd, mine, theirs = spawn
+    out = wq.run_write(str(cwd / "decision.json"), "[]")
+    assert "only your attempts directory is writable" in out
+    assert not (cwd / "decision.json").exists()
+    out2 = wq.run_write(f"../{theirs.name}/new_forward.lean", "theorem x")
+    assert "only your attempts directory is writable" in out2
+    assert (theirs / "new_forward.lean").read_text(
+        encoding="utf-8") == "theorem theirs : True := trivial\n"
+
+
+def test_write_file_outside_a_spawn_refuses(tmp_path, monkeypatch):
+    monkeypatch.delenv("ASTERISM_SPAWN_WRITE_ROOTS", raising=False)
+    monkeypatch.delenv("ASTERISM_SPAWN_ATTEMPT_DIR", raising=False)
+    out = wq.run_write("x.txt", "y")
+    assert "no attempts directory is declared" in out
+
+
 def test_a_stale_first_write_root_does_not_switch_resolution_off(
         spawn, monkeypatch):
     """The loop tried one entry and returned — a first path that no

@@ -299,6 +299,45 @@ def _cap(lines: "list[str]", want: int, how_to_get_more: str
                           f"max: {min(len(lines), MAX_MAX)}{how_to_get_more}")
 
 
+# ------------------------------------------------------------- writes
+
+def run_write(spec: str, content: str) -> str:
+    """Write `content` to `spec`, inside THIS spawn's attempts dir only.
+
+    Why a server-side write exists at all: codex's Windows sandbox makes
+    a session's FIRST `apply_patch` block for the whole sandbox warm-up
+    — measured 142.6s on 2026-08-17, growing day over day — and agents
+    give up long before that, so decision.json never lands and the wake
+    dies as `agent_no_output`. This write happens in the tools server's
+    own process, outside that sandbox: immediate, every time.
+
+    The write authority is the same one the envelope already exports —
+    `_own_attempt_dir()` — and the target must stay inside it: absolute
+    paths are accepted (the prompts hand agents absolute paths) but only
+    into that directory; everything else is refused with the address
+    that would work. The problem dir stays out deliberately: agent files
+    landing there is the stale-stray class (#218)."""
+    own = _own_attempt_dir()
+    if own is None:
+        return ("write_file: no attempts directory is declared here — "
+                "this tool only works inside a framework spawn.")
+    p = Path(spec)
+    target = p if p.is_absolute() else own / spec
+    try:
+        rel = target.resolve().relative_to(own.resolve())
+    except (ValueError, OSError):
+        return (f"write_file: only your attempts directory is writable — "
+                f"write this as {(own / p.name).as_posix()}")
+    replaced = target.is_file()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        return f"write_file: could not write {target.as_posix()}: {exc}"
+    return (f"wrote {len(content)} chars to {(own / rel).as_posix()}"
+            + (" (replaced the previous version)" if replaced else ""))
+
+
 # ------------------------------------------------------------ queries
 
 def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
