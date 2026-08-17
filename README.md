@@ -82,6 +82,17 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-16
+- fix(spawn): never inherit stdin — a nested spawn was blocking on the MCP server's own pipe
+- fix(recovery): bring pre-cascade trees under the law at startup
+- fix(groups): a retired charter retires the work it delegated
+- fix: four defects three independent verifiers found in today's fixes
+- fix(context): say WHOSE dispatch state each panel describes
+- fix(inspect): stop sending every reply twice, and name the deferred query in a form that can be resent
+- fix(inspect): a bare filename resolves to THIS spawn's attempt, not whichever sorted first
+- fix(strategist): a same-batch mark counts toward its Ingest — the exit catch-22 closes
+- feat(delegate): the brief is a research proposal — and the experiment quota retires
+
 ### 2026-08-15
 - Fixed several cost-accounting bugs so compute spending is now attributed to the right agent and the right call, including cases where a cancelled subprocess kept running or was wrongly charged.
 - Made the shared progress report live-first, leading with current counts and a status breakdown of all lemmas before the full proof tree.
@@ -216,11 +227,6 @@ Programme revisions and worker declines now appear on the project's timeline and
 - The web interface gained an explainer chat that cites its claims back to the visualization, a unified prose renderer, and a set of layout and navigation fixes.
 - Research mode gained a wider rebuttal budget, a longer hang guard, and a reworked external-review batch; the proof-search prompts were tightened around declined lemmas and goal-statement collisions.
 - Several correctness fixes landed in the proof pipeline and its bookkeeping: chapter probes now carry module context, unconverged diagnostics no longer look clean, and telemetry and database cleanup were corrected.
-
-### 2026-07-17
-- Built out a new automated research pipeline that stores a working programme, gates each package, and runs multiple rounds of adversarial review with a path to discard weak candidates.
-- Consolidated the web interface into a single engine view with unified tabbed pages, styling, and one Save button.
-- Revised the guiding prompts through a self-review pass for consistency.
 
 <!-- ASTERISM-PROGRESS:END -->
 
