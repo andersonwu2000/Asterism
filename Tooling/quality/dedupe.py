@@ -224,27 +224,32 @@ def _extract_full_signature(text: str) -> str | None:
     `(M : T) (h : U) : Sat M`. The result is suitable for converting
     into `∀`-form via `_to_forall_form`. Returns None for a non-theorem/
     lemma decl (a `def` candidate) — signature-aliasing is theorem-only.
+
+    The body `:=` is found by `assemble.body_assign_index` — the ONE
+    scanner that knows a `let x : T := v` inside the TYPE owns the next
+    top-level `:=`. This function used to stop at the first depth-0
+    `:=` unconditionally, so every statement opening with a `let`-chain
+    vocabulary preamble truncated to the same few-word fragment — and
+    tier-0, whose whole safety argument is "normalized-equal ⇒
+    literally the same statement", then judged DIFFERENT statements
+    identical. Measured 2026-08-17 on union_closed: a sub-goal proving
+    ONE conjunct of goal 7912's three-way `∧` was rejected `no_progress
+    ≡ goal 7912` because both signatures truncated to
+    `: let M : Nat → Finset (Fin 6)`; the same collapse burned 15+
+    attempts across four Fin-census bricks (g7784/7812/7894/7912),
+    each retry renamed and re-rejected. `assemble` had fixed this exact
+    parse for the seeded-skeleton splitter on 2026-07-19 (PutnamCmp
+    b6_1) — this was the second spelling of that knowledge, unfixed.
     """
     text = _strip_comments(text)
     m = _THM_HEAD_RE.search(text)
     if not m:
         return None
-    pos = m.end()
-    n = len(text)
-    start = pos
-    dp = db_ = dk = 0
-    while pos < n - 1:
-        c = text[pos]
-        if c == "(": dp += 1
-        elif c == ")": dp -= 1
-        elif c == "{": db_ += 1
-        elif c == "}": db_ -= 1
-        elif c == "[": dk += 1
-        elif c == "]": dk -= 1
-        elif c == ":" and text[pos + 1] == "=" and dp == 0 and db_ == 0 and dk == 0:
-            return text[start:pos].strip()
-        pos += 1
-    return None
+    from ..state.assemble import body_assign_index
+    end = body_assign_index(text, m.end())
+    if end < 0:
+        return None
+    return text[m.end():end].strip() or None
 
 
 def _type_colon_pos(signature: str) -> int:

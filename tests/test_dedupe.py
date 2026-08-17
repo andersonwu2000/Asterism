@@ -166,6 +166,40 @@ def test_extract_full_signature_no_theorem() -> None:
     assert dedupe._extract_full_signature("def foo := 1") is None
 
 
+def test_extract_full_signature_survives_a_let_chain_type() -> None:
+    """A `let x : T := v` inside the TYPE owns the next top-level `:=`.
+
+    The extractor used to stop at the first depth-0 `:=` unconditionally,
+    truncating every let-chain statement to its first few words — so two
+    DIFFERENT statements sharing a vocabulary preamble collapsed to the
+    same fragment, and tier-0 (whose safety argument is
+    "normalized-equal ⇒ literally the same statement") judged them
+    identical. Live cost (union_closed, 2026-08-15→17): a sub-goal
+    proving ONE conjunct of goal 7912's three-way `∧` was rejected
+    `no_progress ≡ goal 7912`; 15+ attempts burned across four
+    Fin-census bricks, every retry renamed and re-rejected.
+    `assemble.body_assign_index` had owned this parse since the
+    2026-07-19 b6_1 incident — one spelling now."""
+    parent = (
+        "theorem all_modes :\n"
+        "    let M : Nat → Finset (Fin 6) := fun m => Finset.univ\n"
+        "    let Seeds : Finset Nat := Finset.range 64\n"
+        "    Seeds.filter p = ∅ ∧ Seeds.filter q = ∅ := by sorry\n")
+    conjunct = (
+        "theorem mode0 :\n"
+        "    let M : Nat → Finset (Fin 6) := fun m => Finset.univ\n"
+        "    let Seeds : Finset Nat := Finset.range 64\n"
+        "    Seeds.filter p = ∅ := by sorry\n")
+    psig = dedupe._extract_full_signature(parent)
+    csig = dedupe._extract_full_signature(conjunct)
+    # The whole statement survives, through every let's `:=` …
+    assert psig is not None and psig.rstrip().endswith("= ∅ ∧ Seeds.filter q = ∅")
+    assert csig is not None and csig.rstrip().endswith("Seeds.filter p = ∅")
+    # … so a conjunct is no longer "identical" to the conjunction.
+    assert dedupe._normalized_signature(parent) != \
+        dedupe._normalized_signature(conjunct)
+
+
 # ---------------------------------------------------------------------
 # BUG1 regression (2026-07-03 mv_delta): the signature extractor must be
 # def-blind AND comment-unaware, so a `def` candidate never seeds a probe
