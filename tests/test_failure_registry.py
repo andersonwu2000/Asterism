@@ -275,3 +275,35 @@ def test_a_filesystem_error_is_not_the_agents_lean_failing():
     assert '"worker_exception" if isinstance(exc, OSError)' in bwd
     assert failures.REGISTRY["worker_exception"].origin == "framework"
     assert failures.REGISTRY["worker_exception"].agent_visible is False
+
+
+def test_no_verify_outcome_is_routed_through_the_catch_all():
+    """THE FOURTH ARM (2026-08-17, #213). The decomposition path's
+    verify loop RAISED on both `error` and `not ok`, and the outer
+    handler stamps every non-OSError escape `lake_build_error` — so a
+    gateway outage burned goal attempts as "your Lean failed" on the
+    arm the 08-12 fix did not reach. The guard above it only greps for
+    `verify_error_reason(v)` appearing SOMEWHERE in the file, which the
+    leaf-bypass arm satisfied — a string-presence test guarding a
+    per-arm property. This one pins the mechanism: no raise whose
+    message is a verify outcome."""
+    import re
+    bwd = (ROOT / "Tooling" / "pipeline" / "backward.py").read_text(
+        encoding="utf-8")
+    assert re.search(
+        r'raise RuntimeError\(\s*f?"(verify infra error|lake build failed)',
+        bwd) is None, (
+        "a verify outcome is raised into the generic catch-all again — "
+        "route it through verify_error_reason / an explicit _abort")
+
+
+def test_zero_diagnostics_is_a_worker_failure_not_a_lean_verdict():
+    """`ok=false` with NO error diagnostics carries no Lean verdict —
+    it is the shape of a crashed worker or an empty reply (g7894's
+    "lake build failed: no error" row, 2026-08-17) — and labelling it
+    `lake_build_error` charges an infra death to the mathematics. Both
+    backward verify arms split on it."""
+    bwd = (ROOT / "Tooling" / "pipeline" / "backward.py").read_text(
+        encoding="utf-8")
+    assert bwd.count("not a Lean verdict") >= 2
+    assert failures.REGISTRY["framework_verify_error"].origin == "framework"

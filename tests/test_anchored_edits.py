@@ -64,6 +64,27 @@ def test_replace_between_spans_a_block_without_quoting_it() -> None:
     assert out.count("norm_num") == 1
 
 
+def test_insert_after_a_full_line_starts_its_own_line() -> None:
+    """The two glue repairs agents paid on 2026-08-16: a comment after
+    `…false in` became `in-- note`, and an import after `import Mathlib`
+    became `import Mathlibimport X`. An anchor that ends its line gets
+    the new text on a new line; text carrying its own newline is
+    untouched (the batch test above passes "\\n-- note" and stays as
+    written)."""
+    out = _apply(FILE, [{"insert_after": "import Mathlib",
+                         "text": "import X"}])
+    assert "import Mathlib\nimport X\n" in out
+    assert "Mathlibimport" not in out
+
+
+def test_insert_after_mid_line_stays_verbatim() -> None:
+    """A mid-line anchor is the inline use — the caller's own spacing,
+    not the tool's to editorialize."""
+    out = _apply(FILE, [{"insert_after": "theorem a_bound",
+                         "text": "'"}])
+    assert "theorem a_bound' : 1 ≤ 2" in out
+
+
 def test_closing_anchor_need_only_be_unique_after_the_opening_one() -> None:
     """`norm_num` occurs twice in the file, and the span still resolves:
     only ONE of them follows `theorem b_bound`. The closing anchor is

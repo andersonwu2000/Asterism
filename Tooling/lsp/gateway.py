@@ -1842,9 +1842,17 @@ def apply_edit(edits: list = None) -> str:
     Anchors must match exactly and appear exactly once. For
     `replace_between` the closing anchor need only be unique AFTER the
     opening one — use it to swap a whole tactic block without quoting
-    it. Ambiguity there is refused rather than resolved to the first
-    match: guessing is what silently swallowed the lines between the
-    intended close and a later one (2026-08-11).
+    it. BOTH anchors are part of the replaced span: `with` is the
+    complete new text, and anything you want kept must be in it. So
+    anchor on your OWN block's first and last lines, never on the
+    neighbouring declaration — an anchor placed on the next `theorem`
+    line deletes that line with the span. Ambiguity is refused rather
+    than resolved to the first match: guessing is what silently
+    swallowed the lines between the intended close and a later one
+    (2026-08-11). `insert_after` splices immediately after the anchor;
+    when the anchor ends its line and `text` brings no newline of its
+    own, the text starts on a new line (so an inserted import or
+    comment never glues onto the anchor's last token).
 
     If any anchor fails to resolve, NOTHING is applied: the response says
     which edit and how to repair it, the file is unchanged, and your

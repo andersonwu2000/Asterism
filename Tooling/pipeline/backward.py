@@ -1309,10 +1309,19 @@ def _backward_parse_and_commit(
                     f"{d.get('col','?')}  {d.get('message','')}"
                     for d in (v.get("diagnostics") or [])
                     if d.get("severity") == "error")
+                if not err_lines:
+                    # Same split as the decomposition arm: ok=false with
+                    # zero error diagnostics is a worker-side failure
+                    # shape, not a Lean verdict.
+                    return _abort(
+                        "framework_verify_error",
+                        f"verify returned ok=false with no error "
+                        f"diagnostics on {scratch_dest.name} — a "
+                        f"worker-side failure, not a Lean verdict",
+                        leading)
                 return _abort(
                     "lake_build_error",
-                    diagnostics.annotate_failure_detail(
-                        err_lines or "no error diagnostics"),
+                    diagnostics.annotate_failure_detail(err_lines),
                     leading)
         else:
             from ._axiom import axiom_gate
@@ -2026,9 +2035,21 @@ def _backward_parse_and_commit(
             if want_info and isinstance(v, dict) and v.get("decl_info"):
                 decl_info_by_path[path] = v["decl_info"]
             if "error" in v:
-                raise RuntimeError(
-                    f"verify infra error on {path.name}: {v['error']}"
-                )
+                # THE FOURTH ARM. These used to `raise RuntimeError`,
+                # and the outer handler stamps every non-OSError escape
+                # `lake_build_error` — so this path re-grew the exact
+                # disease the 08-12 fix cured in the leaf-bypass arm
+                # (an unreachable gateway burned a goal attempt as
+                # "your Lean failed"; #213, live rows on 08-16/17). The
+                # guard that should have caught it only greps for the
+                # call appearing SOMEWHERE in this file.
+                _discard_placed()
+                from ..state.failures import verify_error_reason
+                return _abort(
+                    verify_error_reason(v) or "lake_build_error",
+                    diagnostics.annotate_failure_detail(
+                        f"verify infra error on {path.name}: {v['error']}"),
+                    leading)
             if not v.get("ok"):
                 err_lines = "\n".join(
                     f"{path.name}:{d.get('line','?')}:{d.get('col','?')}  "
@@ -2036,10 +2057,24 @@ def _backward_parse_and_commit(
                     for d in (v.get("diagnostics") or [])
                     if d.get("severity") == "error"
                 )
-                raise RuntimeError(
-                    f"lake build failed: "
-                    f"{err_lines or 'no error diagnostics'}"
-                )
+                _discard_placed()
+                if not err_lines:
+                    # ok=false with ZERO error diagnostics is a
+                    # worker-side failure shape (crashed worker, empty
+                    # reply) — there is no Lean verdict here and nothing
+                    # for the agent to fix (g7894's "lake build failed:
+                    # no error" row, 2026-08-17).
+                    return _abort(
+                        "framework_verify_error",
+                        f"verify returned ok=false with no error "
+                        f"diagnostics on {path.name} — a worker-side "
+                        f"failure, not a Lean verdict",
+                        leading)
+                return _abort(
+                    "lake_build_error",
+                    diagnostics.annotate_failure_detail(
+                        f"lake build failed: {err_lines}"),
+                    leading)
 
         # Race guard: between this Backward's dispatch and now (which
         # is up to several minutes due to claude CLI + lake build), an

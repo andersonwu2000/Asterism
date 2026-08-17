@@ -261,8 +261,22 @@ def resolve(content: str, edits: "list") -> "list[Span]":
             anchor = str(e.get("insert_after") or "")
             at = _find_unique(content, anchor, i, "`insert_after` anchor")
             end = at + len(anchor)
-            spans.append(Span(end, end, str(e.get("text") or ""),
-                              "insert_after", anchor))
+            text = str(e.get("text") or "")
+            # LINE-BOUNDARY GUARD. A verbatim splice after an anchor
+            # that ends its line glues two tokens across the boundary:
+            # `insert_after: "…false in", text: "-- note"` produced
+            # `in-- note`, and an import inserted after `import Mathlib`
+            # produced `import Mathlibimport …` — both real repairs paid
+            # by agents (2026-08-16). When the anchor ends at a line
+            # boundary (or at EOF) and the text does not bring its own
+            # newline, the new content starts on its own line. A
+            # MID-line anchor keeps the verbatim splice — that is the
+            # inline use, and it is the caller's own spacing.
+            if (text and not text.startswith(("\n", "\r"))
+                    and not anchor.endswith("\n")
+                    and (end >= len(content) or content[end] == "\n")):
+                text = "\n" + text
+            spans.append(Span(end, end, text, "insert_after", anchor))
         else:
             raise EditError(
                 i, f"no known edit key in {sorted(e)}. Use `replace` (+ "
