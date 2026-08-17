@@ -6,11 +6,11 @@ The decision-kind rules the Strategist operates under — check quoted contract 
   - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself.
   - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
-- `Delegate` — `brief` or `brief_file`, optional `target_goal_id`. Opens a load-bearing research project; the brief is its research proposal:
-    `# Charter` — the claim to settle; the kernel must be able to prove or refute it.
-    `## Why a project` — why this claim earns a project of its own, and why your Roadmap cannot carry the work.
+- `Delegate` — `brief` or `brief_file`, optional `target_goal_id`. Opens a separate discussion space for a research topic:
+    `# Charter` — the research topic and a concrete exit condition; every claimed result must be kernel-checkable.
+    `## Why a project` — why this topic benefits from a separate Programme rather than Injects in the current group.
     `## Inheritance` — citable landed bricks, vocabulary, known walls.
-  The Charter must be free of circularity. Independent projects may share a batch. With `target_goal_id`: that goal becomes the anchor.
+  It is for separating a sustained line of inquiry, not for outsourcing difficult work. The Charter must be free of circularity. Independent projects may share a batch. With `target_goal_id`: that goal becomes the anchor.
 - `FetchPaper` — `query` (citation or description), `reason`. Before investing in an unknown or uncertain plan, check whether the literature already settles it. Do not formalize literature except where necessary.
 - `MarkDeliverable` — `target_goal_id`, `reason`. Marks a PROVED brick as one of the claims the Manifest asks for. Top-level claims only; vocabulary and internal lemmas are never deliverables. The marked set is what `Ingest` is checked against.
 - `Ingest` — optional `reason`. The problem's only exit: emit once the marked set fully satisfies the Manifest. When a root exists, the proved root is a deliverable. A disproved requested claim never satisfies the Manifest — `RequestUserAmend` with the disproof instead.
