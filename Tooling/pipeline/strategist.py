@@ -682,9 +682,28 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
             return (f"MarkDeliverable target g{decision.target_id} is "
                     f"{g['status']!r} — only a PROVED node can be marked")
         if int(g["is_deliverable"] or 0):
-            return (f"goal g{decision.target_id} is already marked — "
-                    f"re-marking changes nothing (a rollback clears the "
-                    f"mark; re-marking after that is legal)")
+            # SHAREABLE, not first-come-first-served (owner ruling
+            # 2026-08-17). `is_deliverable` is problem-global, but the
+            # Ingest gate counts a GROUP's marks from its own
+            # `MarkDeliverable` rows — so a blanket rejection here let
+            # group A mark a brick and strand group B behind "already
+            # marked" with no way to record that the same proved result
+            # settles ITS charter too. Cross-crediting is the AND/OR
+            # design working (420 closed 425 precisely because an
+            # independent route proved its certificate); only a re-mark
+            # by the SAME group is the no-op FSM §3.2 forbids reading
+            # as progress.
+            me = _authoring_group(conn, problem, group_id)
+            mine = me is not None and conn.execute(
+                "SELECT 1 FROM strategist_decisions"
+                " WHERE decision_kind = 'MarkDeliverable'"
+                "   AND target_id = ? AND group_id = ? LIMIT 1",
+                (int(decision.target_id), int(me["id"]))).fetchone()
+            if mine:
+                return (f"goal g{decision.target_id} is already marked "
+                        f"by YOUR group — re-marking changes nothing (a "
+                        f"rollback clears the mark; re-marking after "
+                        f"that is legal)")
         return ""
 
     if k == "FetchPaper":

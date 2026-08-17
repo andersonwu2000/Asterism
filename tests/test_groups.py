@@ -1301,6 +1301,50 @@ def test_a_sub_group_cannot_deliver_a_charter_it_did_not_settle(tmp_path):
         conn, S.Decision(kind="Ingest"), p, bare)
 
 
+def test_a_mark_is_shareable_across_groups(tmp_path):
+    """A mark is not first-come-first-served (owner ruling 2026-08-17).
+
+    `is_deliverable` is problem-global but the Ingest gate counts a
+    group's OWN MarkDeliverable rows — so the old blanket "already
+    marked" rejection let group A mark a brick and strand group B: B
+    could never record that the same proved result settles ITS charter,
+    and its exit stayed blocked. Cross-crediting is the AND/OR design
+    working (420 closed 425 because an independent route proved its
+    certificate). Only a re-mark by the SAME group stays refused — that
+    is the FSM §3.2 no-op."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.sharedmark")
+    _goal(conn, p, "main", origin="root", status="shelved")
+    top = groups.ensure_top_group(conn, p)
+    conn.commit()
+    S = _S()
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief=_proposal_brief("a"))], p, top)
+    _commit(conn, tmp_path,
+            [S.Decision(kind="Delegate", brief=_proposal_brief("b"))], p, top)
+    ga, gb = [int(r["id"]) for r in groups.children(conn, top)][:2]
+    brick = _goal(conn, p, "shared_brick", status="proved")
+    conn.execute("UPDATE goals SET is_deliverable = 0 WHERE id = ?",
+                 (brick,))
+    conn.commit()
+    _mark(conn, p, brick, ga)          # group A claims it first
+    conn.commit()
+    mark = S.Decision(kind="MarkDeliverable", target_id=brick,
+                      reason="the same proved result settles my charter")
+    # B records its own mark — and exits on it in the same batch.
+    err = S.verify_decisions([mark, S.Decision(kind="Ingest")], conn,
+                             problem=p, group_id=gb, workspace=tmp_path)
+    assert err == "", err
+    # A re-marking its own mark is still the no-op.
+    err2 = S.verify_decisions([mark], conn, problem=p, group_id=ga,
+                              workspace=tmp_path)
+    assert "YOUR group" in err2
+    # Committed, the mark is attributed to B and B's gate sees it.
+    _commit(conn, tmp_path, [mark], p, gb)
+    assert any(int(r["id"]) == brick
+               for r in db.deliverables(conn, problem=p, group_id=gb))
+
+
 # ---------------------------------------------------------------------
 # Independent-review regressions (2026-08-02)
 # ---------------------------------------------------------------------
