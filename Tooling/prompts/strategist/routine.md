@@ -92,7 +92,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 
 Plans showing these traits are sent back:
 
-- Working inside the known when the problem needs invention: formalizing arguments and papers that do not help settle the final problem. A conjecture falls to a new idea; formalizing existing knowledge in its place is an expensive substitution.
+- Working inside the known when the problem needs invention: formalizing arguments and papers that do not help settle the requirement. Settling a conjecture takes a new idea; formalizing existing knowledge in its place is an expensive substitution.
 - Dodging the long build when the target is large: circling nearby results because the direct route needs tools that take batches to build. Plan the bricks in AHEAD and lay them — a problem circled is never solved.
 
 ## Rules

@@ -873,7 +873,8 @@ def test_the_two_antipatterns_are_one_text_in_four_files() -> None:
         ("routine.md", "inject_batch_done.md", "pending_review.md")]
     for phrase in ("an expensive substitution",
                    "a problem circled is never solved",
-                   "do not help settle the final problem",
+                   "do not help settle the requirement",
+                   "Settling a conjecture takes a new idea",
                    "Plan the bricks in AHEAD and lay them"):
         for f in files:
             assert phrase in f.read_text(encoding="utf-8"), (

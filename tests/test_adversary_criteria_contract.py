@@ -106,32 +106,47 @@ def test_the_fired_reservation_boundary_is_substantive() -> None:
     whole batch, so a misnumbered heading cost a round. Judges reported
     the collision twice on 2026-08-12.
 
-    The boundary is now about SUBJECT (mathematics and route vs
-    bookkeeping), with the leak sealed: a format defect whose underlying
-    fact will not check is not bookkeeping, it is honesty."""
-    assert "Fired is for the mathematics and the route" in TEXT
-    assert "bookkeeping or format defect is a reservation" in TEXT
-    assert "unless its underlying fact fails checking" in TEXT, (
-        "without this clause a wrong number could be filed as a "
-        "presentation nit — the check is what tells the two apart")
+    The boundary is SUBJECT (mathematics and route vs bookkeeping).
+    The owner's 2026-08-18 finalized wording restates it as one rule
+    and RETIRES the explicit "unless its underlying fact fails
+    checking" escape hatch: a wrong pointer or a false claim now fires
+    through criterion 5's own text (node pointers, complete argument),
+    not through a rider on the boundary rule. Reservations must also
+    never patch over a fired criterion."""
+    assert ("Bookkeeping or format defects, and redundant Programme "
+            "content, do not rebut") in TEXT
+    assert "a reservation must not be used to patch over one" in TEXT
     assert "A defect you can name belongs on its criterion's line" \
         not in TEXT, "the superseded sentence is still there, contradicting"
 
 
-def test_a_verified_record_can_be_contradicted_only_by_proof() -> None:
+def test_a_verified_record_still_refuses_a_contradicting_route() -> None:
     """Criterion 2 refuses a route that contradicts a verified Programme
-    record — the case the old wording missed, because such a route was
-    never WALKED and so never "failed". union_closed had kernel-verified
-    that reaching 1/2 must exploit exact closure; a proposal denying that
-    should die at the gate rather than after the machine time.
+    record — the case the pre-08-13 wording missed, because such a route
+    was never WALKED and so never "failed". union_closed had
+    kernel-verified that reaching 1/2 must exploit exact closure; a
+    proposal denying that should die at the gate rather than after the
+    machine time.
 
-    Pinned together with its escape hatch, deliberately: a criterion
-    that forbids without naming a way out teaches the author to hide the
-    contradiction instead of overturning the record."""
+    The explicit override-path sentence ("overridden by proof, not
+    conjecture") was retired in the owner's 2026-08-18 finalized
+    wording; criterion 5's "a mathematical claim must rest on a
+    complete argument, never on conjecture" carries the proof-not-
+    conjecture standard now."""
     crit2 = _CRITERION.sub(lambda m: m.group(0), TEXT)  # keep TEXT intact
     assert "contradicts a verified Programme record" in crit2
-    assert "A verified record is overridden by proof, not conjecture." \
-        in TEXT, "the override path must be stated, not implied"
+    assert "never on conjecture" in TEXT
+
+
+def test_the_finalized_wording_keeps_its_new_anchors() -> None:
+    """The owner's 2026-08-18 revision retired several prose clauses;
+    these three are the replacements that carry their load, pinned so a
+    later trim does not silently drop them too: the failure modes still
+    route through criterion 1, same-batch bricks stay independent, and
+    reservations cannot launder a fired criterion."""
+    assert "rejected through criterion 1" in TEXT
+    assert "must not cite each other" in TEXT
+    assert "patch over" in TEXT
 
 
 def test_the_route_clause_kept_its_two_original_refusals() -> None:
