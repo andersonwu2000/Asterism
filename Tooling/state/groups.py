@@ -377,12 +377,20 @@ def set_status(conn: sqlite3.Connection, group_id: int,
             f"unknown group status {status!r}; expected one of {STATUSES}")
     from . import transitions as _t
     row = conn.execute(
-        "SELECT status FROM groups WHERE id = ?", (int(group_id),)).fetchone()
+        "SELECT status, anchor_goal_id FROM groups WHERE id = ?",
+        (int(group_id),)).fetchone()
     frm = str(row["status"]) if row is not None else None
     _t._check("group", frm, status, _t.GROUP_EDGES, event)
     conn.execute(
         "UPDATE groups SET status = ?, updated_at = ? WHERE id = ?",
         (status, now(), int(group_id)))
+    if status == "closed" and row is not None:
+        # A closed rescue-shape group parks its anchor goal — HERE, so
+        # the direct `CloseGroup`, the ancestor cascade below and the
+        # startup orphan sweep all do it, not just the first. `closed`
+        # only: `delivered` / `returned` hand their anchor's fate to the
+        # parent's next batch, which is #217's open question.
+        _t.park_group_anchor(conn, row["anchor_goal_id"])
     if status in TERMINAL_STATUSES:
         # A RETIRED CHARTER RETIRES THE WORK IT DELEGATED. Goals have
         # cascaded downward since the beginning (`transitions.

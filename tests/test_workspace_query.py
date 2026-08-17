@@ -509,6 +509,38 @@ def test_dot_dot_cannot_walk_from_my_attempt_into_a_siblings(spawn):
     assert "no file at" in out
 
 
+def test_a_glob_cannot_walk_from_my_attempt_into_a_siblings(spawn):
+    """The GLOB spelling of the same escape: `_expand`'s attempt-dir
+    fallback skipped the containment check `_resolve` applies, so
+    `in: "../<other-pid>/*.lean"` still served a sibling's files after
+    the literal path was fixed (acceptance pass, 2026-08-17)."""
+    cwd, mine, theirs = spawn
+    out = wq.run_queries(
+        [{"grep": "theorem", "in": f"../{theirs.name}/*.lean"}], cwd=cwd)
+    assert "theorem theirs" not in out
+    assert str(theirs) not in out
+    # The legitimate fallback is untouched: a bare glob still answers
+    # from THIS spawn's attempt.
+    out2 = wq.run_queries([{"grep": "theorem", "in": "*.lean"}], cwd=cwd)
+    assert "theorem mine" in out2 and "theorem theirs" not in out2
+
+
+def test_the_deferral_note_is_bounded_by_count_too(tmp_path):
+    """Bounding each echo fixed the query-SIZE vector; the note's length
+    was still a function of the deferred COUNT — 1 read + 400 greps
+    produced an 88,043-char reply against a 30,000-char budget, ~200
+    chars of ticket per deferred query with no aggregate ceiling
+    (acceptance pass, 2026-08-17). Echoes past the note's own budget
+    collapse to an index range; the caller still holds the list it
+    sent."""
+    (tmp_path / "x.md").write_text("hello\n", encoding="utf-8")
+    qs = [{"read": "x.md"}]
+    qs += [{"grep": "z" * 150, "in": "x.md"} for _ in range(400)]
+    out = wq.run_queries(qs, cwd=tmp_path, delivery_chars=30_000)
+    assert len(out) <= 30_000, f"{len(out):,} chars against 30,000"
+    assert "more — queries [" in out, "the way back must survive the cut"
+
+
 def test_a_stale_first_write_root_does_not_switch_resolution_off(
         spawn, monkeypatch):
     """The loop tried one entry and returned — a first path that no

@@ -1203,6 +1203,31 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
     _maybe_stall_parent_strategies(conn, goal_id)
 
 
+def park_group_anchor(conn: sqlite3.Connection,
+                      anchor_goal_id: "int | None") -> None:
+    """Shelve a retiring group's anchor goal if it is still alive.
+
+    ONE spelling for every way a group leaves with a live anchor. It
+    was inlined in `_commit_close_group` only, so a rescue-shape group
+    retired by the ancestor CASCADE (or the startup orphan sweep) left
+    its anchor `attempting` — parked-alive under a closed group, never
+    dispatched again (BFS skips `attempting`) and with no shelve record
+    for citation-revival, where the direct `CloseGroup` path would have
+    shelved it (acceptance pass, 2026-08-17). Shelved, not dead: the
+    goal itself was not refuted, its group's charter went away —
+    exactly what shelve's revivability is for.
+    """
+    if anchor_goal_id is None:
+        return
+    from . import db as _db
+    g = _db.get_goal(conn, int(anchor_goal_id))
+    if g is not None and str(g["status"]) in (
+            "open", "attempting", "pending_strategist_review", "frozen"):
+        _set_goal_terminal_and_propagate(conn, int(anchor_goal_id),
+                                         "shelved")
+        _propagate_shelve(conn, int(anchor_goal_id))
+
+
 def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int,
                        *, parent_terminal_status: str) -> None:
     """Phase 6 — kill the strategies USING this goal as a sub-goal,

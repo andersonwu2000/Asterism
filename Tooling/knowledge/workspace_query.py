@@ -63,6 +63,14 @@ MAX_QUERIES = 20
 #: carrying long grep patterns otherwise produced a deferral note larger
 #: than the reply it was appended to.
 _ECHO_CHARS = 200
+#: And the note as a WHOLE is bounded too: per-echo bounding fixed the
+#: query-size vector, but the note's length was still a function of the
+#: query COUNT — 1 read + 400 greps produced an 88,043-char reply
+#: against a 30,000-char `delivery_chars` (acceptance pass, 2026-08-17),
+#: ~200 chars of ticket per deferred query with no aggregate ceiling.
+#: Echoes past this budget collapse to an index range; the caller still
+#: holds the full list it sent.
+_NOTE_CHARS = 2_000
 
 #: A markdown heading, which is how a framework document declares its
 #: sections. Level 1-4 only: deeper is prose formatting, not structure.
@@ -191,8 +199,23 @@ def _expand(spec: str, cwd: Path) -> "list[Path]":
         hits = sorted(x for x in base.glob(p.name) if x.is_file())
         own = _own_attempt_dir()
         if not hits and own is not None and not Path(spec).is_absolute():
-            ob = (own / spec).parent
-            hits = sorted(x for x in ob.glob(Path(spec).name) if x.is_file())
+            # Same containment as `_resolve`: this fallback is the same
+            # attempt-dir door, and a glob was the one spelling that
+            # skipped the check — `in: "../<other-pid>/*.lean"` served a
+            # sibling attempt's files after the literal path was fixed
+            # (acceptance pass, 2026-08-17).
+            cand = own / spec
+            try:
+                # The parent, not `cand`: only the LAST component is a
+                # glob pattern (`base.glob(p.name)` above, same shape),
+                # and `resolve()` on a name with glob characters is
+                # undefined ground on Windows. The directory is what
+                # containment is about.
+                cand.parent.resolve().relative_to(own.resolve())
+            except (ValueError, OSError):
+                return hits
+            hits = sorted(x for x in cand.parent.glob(cand.name)
+                          if x.is_file())
         return hits
     if p.is_dir():
         return sorted(x for x in p.rglob("*")
@@ -623,7 +646,28 @@ def _deferral_note(deferred: "list[tuple[int, object]]", reason: str) -> str:
             return s
         return s[:_ECHO_CHARS] + f"…(+{len(s) - _ECHO_CHARS} chars)"
 
-    listed = "; ".join(f"[{i}] {_echo(d)}" for i, d in deferred)
+    # Echoes up to the note's own budget; the tail collapses to an index
+    # range. Per-echo bounding alone left the note proportional to the
+    # deferred COUNT, and a 400-query call overflowed the very budget
+    # the note reports. Indices are enough for the tail: they are the
+    # positions in the list the caller itself sent.
+    parts: "list[str]" = []
+    used = 0
+    tail: "list[int]" = []
+    for i, d in deferred:
+        if tail:
+            tail.append(i)
+            continue
+        piece = f"[{i}] {_echo(d)}"
+        if parts and used + 2 + len(piece) > _NOTE_CHARS:
+            tail.append(i)
+            continue
+        parts.append(piece)
+        used += (2 if len(parts) > 1 else 0) + len(piece)
+    listed = "; ".join(parts)
+    if tail:
+        listed += (f"; … and {len(tail)} more — queries [{tail[0]}]–"
+                   f"[{tail[-1]}] in the order you sent them")
     return (f"— {len(deferred)} quer"
             f"{'y' if len(deferred) == 1 else 'ies'} not answered: "
             f"{reason} Send these in a second call: {listed}")

@@ -1706,14 +1706,8 @@ def _commit_close_group(decision: Decision, conn: sqlite3.Connection,
          json.dumps(payload, ensure_ascii=False), target, ts, ts),
     )
     row_id = int(cur.lastrowid)
-    anchor = kid["anchor_goal_id"]
-    if anchor is not None:
-        g = db.get_goal(conn, int(anchor))
-        if g is not None and str(g["status"]) in (
-                "open", "attempting", "pending_strategist_review", "frozen"):
-            transitions._set_goal_terminal_and_propagate(
-                conn, int(anchor), "shelved")
-            transitions._propagate_shelve(conn, int(anchor))
+    # The anchor-shelve lives inside `set_status` now (one spelling for
+    # the direct close, the ancestor cascade and the startup sweep).
     _groups.set_status(conn, target, "closed", event="group_closed")
     conn.commit()
     print(f"[close] group {target} retired by {me['id']} ({problem}): "

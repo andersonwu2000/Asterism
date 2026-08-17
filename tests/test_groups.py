@@ -2232,6 +2232,32 @@ def test_retiring_a_charter_retires_the_work_it_delegated(tmp_path):
     assert unsettled == 0
 
 
+def test_a_cascade_closed_rescue_group_parks_its_anchor(tmp_path):
+    """The direct `CloseGroup` shelved its target's anchor; the ancestor
+    cascade closed descendants WITHOUT touching theirs — an `attempting`
+    anchor stayed parked-alive under a closed group, never dispatched
+    again (BFS skips `attempting`) and with no shelve record for
+    citation-revival (acceptance pass, 2026-08-17). The parking lives in
+    `set_status` now, so every closing path — direct, cascade, startup
+    sweep — goes through the one door."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.cascade3")
+    top = groups.ensure_top_group(conn, p)
+    anchor = _goal(conn, p, "rescue_target", status="attempting")
+    mid = groups.open_group(conn, problem=p, parent_group_id=top,
+                            charter="mid line")
+    kid = groups.open_group(conn, problem=p, parent_group_id=mid,
+                            charter="rescue it", anchor_goal_id=anchor)
+    conn.commit()
+    groups.set_status(conn, mid, "closed", event="group_closed")
+    conn.commit()
+    assert groups.get(conn, kid)["status"] == "closed"
+    row = conn.execute("SELECT status FROM goals WHERE id = ?",
+                       (anchor,)).fetchone()
+    assert str(row["status"]) == "shelved", (
+        "the cascade left the anchor parked-alive under a closed group")
+
+
 def test_a_delivering_group_takes_its_live_sub_projects_with_it(tmp_path):
     """Same law, the other verb: a group that has delivered has no use
     for bricks its children have not landed yet, and no consumer for

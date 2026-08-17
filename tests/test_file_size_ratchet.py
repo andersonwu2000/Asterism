@@ -316,7 +316,11 @@ _WATERMARKS = {
     # 1776→1780: the descendant edge for the group cascade — a retired
     # charter now retires the sub-projects it delegated, and a new edge
     # needs its event label registered here. 2026-08-16. Conscious bump.
-    "Tooling/state/transitions.py": 1780,
+    # 1780→1810: `park_group_anchor` — the anchor-shelve of a closing
+    # group, moved out of `_commit_close_group` into one verb so the
+    # ancestor cascade and the startup sweep park anchors too (#223).
+    # 2026-08-17. Conscious bump.
+    "Tooling/state/transitions.py": 1810,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.

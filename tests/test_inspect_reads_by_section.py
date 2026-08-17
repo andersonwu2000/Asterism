@@ -202,17 +202,57 @@ def test_no_tool_advertises_an_output_schema() -> None:
     delivery budget governed half the bytes actually sent, and the codex
     exec channel amputated the middle of the rest with no notice. The
     fix was one kwarg and had no test; an independent verifier reverted
-    all six decorators and the suite stayed green (2026-08-16)."""
+    all six decorators and the suite stayed green (2026-08-16).
+
+    EVERY server, not the one the complaint named: the first fix covered
+    `knowledge/mcp_tools` and an acceptance pass (2026-08-17) found the
+    LSP gateway's five tools — `validate_file` and `errors_at` among
+    them, the largest payloads in the system — still doubling."""
     import asyncio
     from Tooling.knowledge import mcp_tools
+    from Tooling.lsp import gateway
 
-    async def _schemas():
-        return [(t.name, getattr(t, "outputSchema", None))
-                for t in await mcp_tools.mcp.list_tools()]
+    for server in (mcp_tools.mcp, gateway.mcp):
+        async def _schemas():
+            return [(t.name, getattr(t, "outputSchema", None))
+                    for t in await server.list_tools()]
 
-    tools = asyncio.run(_schemas())
-    assert tools, "the server advertised no tools at all"
-    offenders = [n for n, s in tools if s]
+        tools = asyncio.run(_schemas())
+        assert tools, f"server {server.name!r} advertised no tools at all"
+        offenders = [n for n, s in tools if s]
+        assert not offenders, (
+            f"these {server.name!r} tools still duplicate their payload "
+            f"into structuredContent: {offenders}")
+
+
+def test_every_tool_decorator_in_the_repo_opts_out_of_structured_output() -> None:
+    """The source-level twin of the schema check above, for the server
+    that does not exist yet: the runtime check names its servers, so a
+    THIRD FastMCP server would ship with the same doubling and no test.
+    Scans every module under Tooling/ for `@<x>.tool(...)` decorators
+    and requires the literal `structured_output=False` on each."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "Tooling"
+    offenders = []
+    for path in root.rglob("*.py"):
+        src = path.read_text(encoding="utf-8")
+        if ".tool(" not in src:
+            continue
+        for node in ast.walk(ast.parse(src)):
+            for dec in getattr(node, "decorator_list", ()):
+                if not (isinstance(dec, ast.Call)
+                        and isinstance(dec.func, ast.Attribute)
+                        and dec.func.attr == "tool"):
+                    continue
+                ok = any(kw.arg == "structured_output"
+                         and isinstance(kw.value, ast.Constant)
+                         and kw.value.value is False
+                         for kw in dec.keywords)
+                if not ok:
+                    offenders.append(f"{path.relative_to(root.parent)}:"
+                                     f"{dec.lineno}")
     assert not offenders, (
-        f"these tools still duplicate their payload into "
-        f"structuredContent: {offenders}")
+        "tool decorators without structured_output=False — each doubles "
+        "its payload into structuredContent:\n  " + "\n  ".join(offenders))

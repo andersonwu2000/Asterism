@@ -1828,7 +1828,7 @@ def _scope_balance(text: str) -> int:
     return opens - closes
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_offload_to_thread
 def apply_edit(edits: list = None) -> str:
     """Apply one or more anchored edits to the target Lean file.
@@ -2112,7 +2112,7 @@ def _arg_help(tool: str, hint: str) -> str:
     return json.dumps({"error": f"{tool}: {hint}"}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_offload_to_thread
 def goal_at(line: int = 0, col: int = 0) -> str:
     """Get the Lean proof goal state at a specific position.
@@ -2322,7 +2322,7 @@ _ELABORATING_WARNING = (
 )
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_offload_to_thread
 def errors_at(line: int | None = None) -> str:
     """Get current diagnostics for the file.
@@ -2703,7 +2703,7 @@ def _declhead_submission(content: str) -> "dict":
                     "a full lake build — rename now"}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_offload_to_thread
 def withdraw_stub(slug: str = "") -> str:
     """Withdraw a sub-goal you declared this session: deletes
@@ -2789,7 +2789,7 @@ def withdraw_stub(slug: str = "") -> str:
         ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_offload_to_thread
 def validate_file(content: str = "") -> str:
     """Validate a candidate Lean file (typically a `new_<slug>.lean`
