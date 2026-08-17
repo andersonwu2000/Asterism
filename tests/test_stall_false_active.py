@@ -617,15 +617,27 @@ def test_stall_advance_gate_rejects_zero_delta(tmp_path: Path) -> None:
 
 
 def test_markdeliverable_requires_proved_unmarked(tmp_path: Path) -> None:
-    """FSM §3.2: marking is a real edge only for a PROVED, unmarked
-    forward node — unproved marks and re-marks are per-item errors."""
+    """FSM §3.2: marking is a real edge only for a PROVED forward node
+    not already marked BY THIS GROUP — unproved marks and same-group
+    re-marks are per-item errors. (Since the 2026-08-17 owner ruling a
+    mark is shareable: another group's mark, or a bare flag with no
+    attributed decision row, does not block a first mark by this group
+    — see `test_a_mark_is_shareable_across_groups`.)"""
     import json
     from Tooling.pipeline import strategist
+    from Tooling.state import groups as _groups
     conn = _conn(tmp_path)
     g_open = _goal(conn, "m_open", status="open")
     g_marked = _goal(conn, "m_marked", status="proved")
     conn.execute("UPDATE goals SET is_deliverable = 1 WHERE id = ?",
                  (g_marked,))
+    top = _groups.ensure_top_group(conn, P)
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, target_id, payload,"
+        " created_at, updated_at)"
+        " VALUES (?, 0, 'routine', 'MarkDeliverable', ?, ?, '{}', 't', 't')",
+        (P, top, g_marked))
     conn.commit()
     ds, _ = strategist.parse_decisions(json.dumps(
         [{"kind": "MarkDeliverable", "target_goal_id": g_open}]))
