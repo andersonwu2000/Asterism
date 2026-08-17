@@ -37,7 +37,7 @@ Notes:
 - Framework behaviour is quoted, not inferred — a prompt rule, a gate message, or the directive. Unverified speculation about framework behaviour is rebutted and corrected.
 - Bricks of the same batch must not cite each other; plan the downstream of a dependency chain in the Roadmap's AHEAD.
 - A decision that carries no proof is judged against its `contract.md` clause.
-- A `Delegate`'s brief is judged as a research proposal: its `# Charter` has a concrete exit, its `## Why a project` establishes a separate sustained line of inquiry rather than outsourced difficult work.
+- A `Delegate` must carry a clearly themed series of research items the kernel can verify — outsourcing provides a discussion space, not a solution; prefer planning the problem into follow-up batches through the Roadmap's AHEAD.
 
 Failure modes — a plan showing these is rejected through criterion 1:
 - Working inside the known when the problem needs invention: formalizing arguments and papers that do not help settle the requirement. Settling a conjecture takes a new idea; formalizing existing knowledge in its place is an expensive substitution.

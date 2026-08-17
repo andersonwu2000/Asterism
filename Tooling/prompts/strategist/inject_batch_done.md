@@ -62,7 +62,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
 - `Delegate` — `brief` or `brief_file`, optional `target_goal_id`. Opens a separate discussion space for a research topic:
     `# Charter` — the research topic and a concrete exit condition; every claimed result must be kernel-checkable.
-    `## Why a project` — why this topic benefits from a separate Programme rather than Injects in the current group.
+    `## Why a project` — the clearly themed series of research items this project carries, and why it cannot be planned as follow-up batches through your Roadmap's AHEAD.
     `## Inheritance` — citable landed bricks, vocabulary, known walls.
   It is for separating a sustained line of inquiry, not for outsourcing difficult work. The Charter must be free of circularity. Independent projects may share a batch. With `target_goal_id`: that goal becomes the anchor.
 - `FetchPaper` — `query` (citation or description), `reason`. Before investing in an unknown or uncertain plan, check whether the literature already settles it. Do not formalize literature except where necessary.
