@@ -464,7 +464,7 @@ def alive_goal_rows(conn: sqlite3.Connection,
     Single home for the catalog's alive query: the companion renders
     them and callers gate their pointer surfaces on the same rows."""
     return list(conn.execute(
-        "SELECT slug, statement, kind, lean_path FROM goals"
+        "SELECT slug, statement, kind, lean_path, status FROM goals"
         " WHERE problem = ? AND status IN"
         " ('open','attempting','pending_strategist_review')"
         " ORDER BY id", (problem,)))
@@ -536,7 +536,14 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
                                       str(a["slug"]))
                    or str(a["statement"] or ""))
             stmt = " ".join(sig.split())
-            lines.append(f"- `{a['slug']}` ({a['kind']}): `{stmt}`")
+            # Status ON THE LINE (2026-08-18, 7 reports incl. the judge):
+            # grep returns lines, not sections — the "## Alive goals"
+            # heading's context is stripped, and a bare "(theorem)"
+            # bullet is byte-shaped like a landed brick, so "X already
+            # landed" checks silently matched unproved goals.
+            lines.append(f"- `{a['slug']}` ({a['kind']}, "
+                         f"{str(a['status']).upper()} — NOT landed): "
+                         f"`{stmt}`")
         lines.append("")
     for r in rows:
         slug = str(r["slug"])

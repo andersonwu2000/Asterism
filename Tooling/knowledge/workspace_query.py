@@ -417,6 +417,14 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
     delivered it truncated. Measured 2026-08-15: `Context.md` was read
     22 times across 6 codex sessions, and 24 of that run's 51 answers
     carried a truncation notice.
+
+    `raw: true` (2026-08-18) returns the content UNDECORATED — no line
+    numbers, no section banners — for round-tripping into `write_file`
+    / `validate_json` / `validate_file`. The decorated default was the
+    slice's largest feedback cluster (57 entries): every write-back
+    required hand-stripping the `NNNNN  ` prefixes, and one agent's
+    full-overwrite pasted the presentation header into `proposal.md`
+    and lost content.
     """
     spec = str(q.get("read") or "")
     p = _resolve(spec, cwd)
@@ -428,6 +436,12 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
         return [f"no file at {p}; {_nearest_existing(p, cwd)}"]
     lines = _read_text(p).splitlines()
     secs = _sections(lines)
+    raw = bool(q.get("raw"))
+
+    def _render(a: int, b: int) -> "list[str]":
+        if raw:
+            return lines[max(1, a) - 1:min(len(lines), b)]
+        return _numbered(lines, a, b)
 
     if q.get("outline"):
         if not secs:
@@ -462,9 +476,10 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
                 missing.append(name)
                 continue
             text, a, b = hits[0]
-            chosen.append(f"── {text}  (lines {a}-{b})")
-            chosen += _numbered(lines, a, b)
-            if len(hits) > 1:
+            if not raw:
+                chosen.append(f"── {text}  (lines {a}-{b})")
+            chosen += _render(a, b)
+            if len(hits) > 1 and not raw:
                 where = ", ".join(f"lines {a2}-{b2}"
                                   for _t, a2, b2 in hits[1:])
                 chosen.append(
@@ -496,15 +511,15 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
             b = int(hi) if hi else len(lines)
         except ValueError:
             return [f"bad `lines` {rng!r} — use \"380-420\", \"-40\" or \"40-\""]
-        return _numbered(lines, a, b)
+        return _render(a, b)
     # Whole file. The byte budget in `run_queries` bounds it and says
     # where to resume; an explicit `max` still caps by line for a caller
     # that wants a peek.
     if q.get("max") is not None:
-        kept, note = _cap(_numbered(lines, 1, len(lines)), q["max"],
+        kept, note = _cap(_render(1, len(lines)), q["max"],
                           ", or name a section with `sections`")
         return kept + ([note] if note else [])
-    return _numbered(lines, 1, len(lines))
+    return _render(1, len(lines))
 
 
 def _q_find(q: dict, cwd: Path, deny) -> "list[str]":

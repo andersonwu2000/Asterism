@@ -57,7 +57,11 @@ def test_companion_carries_full_statements(conn, tmp_path):
     assert "## Alive goals (1 — OPEN, in flight)" in body
     assert "Citing one is legal" in body
     assert "Never cite" not in body
-    assert "- `still_open` (theorem):" in body
+    # Status ON THE LINE (2026-08-18, 7 reports incl. the judge): grep
+    # returns lines, not sections — a bare "(theorem)" bullet under the
+    # Alive heading was byte-shaped like a landed brick, and "X already
+    # landed" checks silently matched unproved goals.
+    assert "- `still_open` (theorem, OPEN — NOT landed):" in body
     # per-entry cite line (a5 run ×4: citing a brick cost a directory
     # hunt — the import path and citable name lived only on disk)
     assert "cite `brick_a` — `import P.proofs.L_brick_a`" in body

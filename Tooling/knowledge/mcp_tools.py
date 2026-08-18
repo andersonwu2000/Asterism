@@ -153,7 +153,10 @@ def inspect(queries: list = None) -> str:
     beats paging. `outline: true` returns the map (headings, line
     ranges, sizes) when you do not know which section you want. `lines`
     is for files with no headings, such as `.lean`. With none of the
-    three, `read` returns the whole file.
+    three, `read` returns the whole file. Add `"raw": true` to get the
+    content UNDECORATED (no line numbers, no banners) — use it whenever
+    the text will be written back or validated (`write_file`,
+    `validate_json`, `validate_file`), so nothing needs hand-stripping.
 
     `decl` answers from the framework's own record — the statement, the
     file and whether it is proved — so use it instead of grepping for a

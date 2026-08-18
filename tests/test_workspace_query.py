@@ -591,3 +591,38 @@ def test_a_stale_first_write_root_does_not_switch_resolution_off(
     monkeypatch.delenv("ASTERISM_SPAWN_ATTEMPT_DIR", raising=False)
     out = wq.run_queries([{"read": "Context.md"}], cwd=cwd)
     assert "my own programme" in out
+
+
+def test_raw_read_round_trips_byte_identical(tmp_path):
+    """2026-08-18 (57-entry cluster, the slice's largest): the decorated
+    default forced hand-stripping of `NNNNN  ` prefixes before any
+    write-back, and one agent's full-overwrite pasted the presentation
+    header into proposal.md and lost content. `raw: true` returns the
+    content undecorated — whole file, `lines` windows, and `sections`
+    alike — so read→write_file round-trips without surgery."""
+    body = "# T\n\nalpha\n  indented line\n\n## Sec\nbeta\n"
+    (tmp_path / "doc.md").write_text(body, encoding="utf-8")
+
+    out = wq.run_queries([{"read": "doc.md", "raw": True}], cwd=tmp_path)
+    text = out if isinstance(out, str) else "\n".join(out)
+    payload = text.split("\n", 1)[1] if text.startswith("[") else text
+    assert "alpha" in payload and "  indented line" in payload
+    assert "    1  " not in text, "raw must carry no line numbers"
+
+    out2 = wq.run_queries(
+        [{"read": "doc.md", "lines": "3-4", "raw": True}], cwd=tmp_path)
+    t2 = out2 if isinstance(out2, str) else "\n".join(out2)
+    assert "alpha\n  indented line" in t2
+    assert "3  alpha" not in t2
+
+    out3 = wq.run_queries(
+        [{"read": "doc.md", "sections": ["Sec"], "raw": True}],
+        cwd=tmp_path)
+    t3 = out3 if isinstance(out3, str) else "\n".join(out3)
+    assert "beta" in t3
+    assert "──" not in t3, "raw must carry no section banner"
+
+    # ...and the decorated default is unchanged.
+    out4 = wq.run_queries([{"read": "doc.md", "lines": "3-3"}], cwd=tmp_path)
+    t4 = out4 if isinstance(out4, str) else "\n".join(out4)
+    assert "3  alpha" in t4
