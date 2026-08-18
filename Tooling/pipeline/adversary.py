@@ -185,16 +185,26 @@ def build_projection(*, round_no: int, attempts_dir: Path,
         shutil.rmtree(proj, ignore_errors=True)
     proj.mkdir(parents=True, exist_ok=True)
 
-    manifest = problem_dir / "Manifest.md"
-    if manifest.exists():
-        shutil.copyfile(manifest, proj / "Manifest.md")
+    # v40 — every group's judge, top included, gets `charter.md` from
+    # the one renderer (own charter + ancestor chain + returned
+    # charters); the retired Manifest.md copy is gone. `user_word.md`
+    # rides beside it: the user's standing directives, at every depth,
+    # never part of the claim under judgment.
     from ..state import groups as _groups
+    from ..state import intent as _intent
     charter_text = _groups.charter_digest(conn, problem, group_id)
     if charter_text:
         (proj / "charter.md").write_text(charter_text, encoding="utf-8")
+    _pi = _intent.read(conn, problem)
+    if _pi is not None and _pi.word:
+        (proj / "user_word.md").write_text(
+            "# The user's word\n\nStanding directives from the user — "
+            "they govern conduct for every group at every depth and are "
+            "not part of the claim under judgment.\n\n" + _pi.word + "\n",
+            encoding="utf-8")
     # Formal ground truth (user call 07-19): proposal claims cite the
     # actual Lean statement; without read-only copies the judge could
-    # only check them against the Manifest's prose (07-19 feedback ×7
+    # only check them against the goal's prose (07-19 feedback ×7
     # — permission-denied on every Root/Defs read attempt). Isolation
     # unchanged: copies into the projection, no sandbox widening.
     # TREE.md joined 07-29 (judge feedback ×2): tree-shape and status

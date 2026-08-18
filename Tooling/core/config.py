@@ -114,7 +114,7 @@ def load(workspace: Path | None = None) -> dict[str, Any]:
         if not path.exists():
             return {}
         try:
-            import yaml  # PyYAML already a dep (Manifest frontmatter)
+            import yaml  # PyYAML already a dep
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {}
         except Exception as exc:

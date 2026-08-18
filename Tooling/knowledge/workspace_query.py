@@ -431,7 +431,7 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
     root = _denied(p.resolve(), deny)
     if root is not None:
         return [f"{p} is operator-private (under {root}) — Context.md, "
-                f"BRIEF.md and the Manifest carry what you are meant to know"]
+                f"BRIEF.md carry what you are meant to know"]
     if not p.is_file():
         return [f"no file at {p}; {_nearest_existing(p, cwd)}"]
     lines = _read_text(p).splitlines()

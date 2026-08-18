@@ -1,7 +1,7 @@
 """state.programme — the Programme store (research mode).
 
 The Programme is the adversarially-reviewed argument layer between the
-Manifest and the bricks (research_mode_design.md §2). SoT is the
+charter and the bricks (research_mode_design.md §2). SoT is the
 `programme_revisions` table (v30): `passed` rows form the revision
 chain (the latest passed row IS the current Programme), `rejected`
 rows keep a discarded proposal plus its criticism dialogue for audit.

@@ -63,7 +63,7 @@ _DEAD_CAUSE_VERIFY = "verify failed"
 # the difference between a wrapping sl2 tree and a readable one at
 # typical editor widths. Slugs themselves stay full-length (the
 # Strategist agent reads TREE.md inline and needs unambiguous slug
-# names to cross-reference with active_goals_sidecar / Manifest).
+# names to cross-reference with active_goals_sidecar).
 _BRANCH_LAST = "└─ "
 _BRANCH_MID = "├─ "
 _PAD_LAST = "   "

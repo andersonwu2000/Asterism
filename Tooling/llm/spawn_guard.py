@@ -195,7 +195,7 @@ def _read_denied(tool_name: str, raw: str, path: Path,
                 "runs' databases, and other problems' proofs. Your "
                 "problem's own files, Library/ and Papers/ are the "
                 "surfaces meant for you — everything you are supposed to "
-                "know is in Context.md, BRIEF.md and the Manifest.")
+                "know is in Context.md and BRIEF.md.")
     if tool_name in SEARCH_TOOLS:
         # The root is allowed, but searching it walks the private
         # subtrees inside it. A prefix check alone would pass this and

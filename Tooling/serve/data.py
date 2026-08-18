@@ -1347,10 +1347,10 @@ def group_card(conn: sqlite3.Connection, group_id: int) -> "dict | None":
     """The display identity of one discussion group (v35).
 
     A group is one charter, one Programme, one strategist/adversary
-    loop. The TOP group is the problem itself facing a human — it has
-    no charter (its charter is the Manifest), and surfaces must not
-    dress it up as a delegated burden: with no sub-groups anywhere,
-    every display reads exactly as it did before groups existed.
+    loop. The TOP group is the problem itself facing a human — its
+    charter is the problem's goal (v40), and surfaces must not dress
+    it up as a delegated burden: with no sub-groups anywhere, every
+    display reads exactly as it did before groups existed.
     """
     try:
         r = conn.execute(
@@ -1730,11 +1730,22 @@ def inbox(conn: sqlite3.Connection, workspace: Path) -> dict:
     amends = []
     for a in _amend.pending_amends(conn):
         current = ""
-        fpath = db.problem_dir(workspace, a["problem"]) / a["file"]
-        try:
-            current = fpath.read_text(encoding="utf-8")
-        except OSError:
-            pass
+        if a["file"] == "charter":
+            # v40: the charter is DB-resident — reading a disk path here
+            # showed the operator an EMPTY current goal beside the
+            # proposal (the knows-but-flattens family).
+            try:
+                from ..state import intent as _intent
+                pi = _intent.read(conn, a["problem"])
+                current = pi.charter if pi is not None else ""
+            except Exception:  # noqa: BLE001 — display only
+                pass
+        else:
+            fpath = db.problem_dir(workspace, a["problem"]) / a["file"]
+            try:
+                current = fpath.read_text(encoding="utf-8")
+            except OSError:
+                pass
         amends.append({**a, "current_body": current})
 
     signoffs = []
@@ -2088,11 +2099,11 @@ def library_chapter(conn: sqlite3.Connection, workspace: Path,
     # soundness.
     axioms: "list[str]" = []
     try:
-        from ..state import manifest as _mfst
-        mpath = db.problem_dir(workspace, problem) / "Manifest.md"
-        axioms = (_mfst.effective_axioms(_mfst.parse(mpath), problem=problem)
-                  if mpath.exists()
-                  else list(_mfst.FRAMEWORK_DEFAULT_AXIOMS))
+        from ..state import intent as _intent
+        pintent = _intent.read(conn, problem)
+        axioms = (_intent.effective_axioms(pintent, problem=problem)
+                  if pintent is not None
+                  else list(_intent.FRAMEWORK_DEFAULT_AXIOMS))
     except Exception:  # noqa: BLE001 — a colophon must never 500 the page
         axioms = []
     # The theorem itself: the problem's root statement — Gate B

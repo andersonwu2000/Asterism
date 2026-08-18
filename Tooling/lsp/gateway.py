@@ -57,7 +57,8 @@ from . import edits as _edits
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from ..state import assemble, db, manifest, metaprog, transitions
+from ..state import assemble, db, metaprog, transitions
+from ..state import intent as intent_mod
 from .client import LspClient
 
 
@@ -1360,7 +1361,7 @@ def _harvest_open_lines(text: str) -> "list[str]":
 def _merge_opens(content: str, defs_opens: "list[str]",
                  extra_opens: "list[str]") -> "list[str]":
     """Prefix opens for the compilation unit: Defs.lean's file-scope opens
-    (raw args, per `manifest.defs_opens`) plus `extra_opens` (the session
+    (raw args, per `intent_mod.defs_opens`) plus `extra_opens` (the session
     patch's own `open ...` lines), each normalized to a full `open ...`
     line, de-duped, and dropping any already present verbatim in `content`
     (so probing the patch itself never doubles its opens)."""
@@ -1535,8 +1536,8 @@ def _build_compilation_unit(
         # the way the committed wrapped file does; redundant-but-harmless
         # for content that carries the wrapper (07-18 ×3 + 07-19 ×9).
         opens=_merge_opens(content,
-                           manifest.defs_opens(workspace, problem)
-                           + manifest.defs_namespaces(workspace, problem),
+                           intent_mod.defs_opens(workspace, problem)
+                           + intent_mod.defs_namespaces(workspace, problem),
                            list(extra_opens)),
     )
     return merged, line_map, [s for s, _ in siblings]
@@ -1577,7 +1578,7 @@ def _commit_header_for(
         + batch_imports
         + _proved_sibling_import_lines(
             [content], problem, workspace, set(all_stub_slugs)))
-    opens = _merge_opens(content, manifest.defs_opens(workspace, problem),
+    opens = _merge_opens(content, intent_mod.defs_opens(workspace, problem),
                          list(extra_opens))
     return {"imports": imports, "opens": opens}
 
@@ -2811,18 +2812,23 @@ def _axioms_submission(backend, slot, content: str,
     a `native_decide` proof validated green here, built for 51 minutes,
     and died at the commit gate — a verdict knowable at this probe for
     one warm RPC per decl. Returns a failing submission entry when a
-    decl's axioms exceed the Manifest whitelist, None when clean /
+    decl's axioms exceed the problem whitelist, None when clean /
     unknowable (the commit gate stays the authority; this only warns).
 
     `sorryAx` is deliberately NOT flagged here: `:= by sorry` stubs are
     the legal decomposition currency pre-commit, and the commit gate's
     own tripwire handles the illegal cases."""
     try:
-        mpath = (db.problem_dir(meta.workspace, meta.problem)
-                 / "Manifest.md")
-        wl = set(manifest.effective_axioms(
-            manifest.parse(mpath), problem=meta.problem))
-    except Exception:  # noqa: BLE001 — no Manifest, no verdict
+        from ..state import intent as _intent
+        conn = db.connect_readonly(Path(meta.workspace) / "asterism.db")
+        try:
+            pintent = _intent.read(conn, meta.problem)
+        finally:
+            conn.close()
+        if pintent is None:
+            return None
+        wl = set(_intent.effective_axioms(pintent, problem=meta.problem))
+    except Exception:  # noqa: BLE001 — no intent, no verdict
         return None
     wl.add("sorryAx")
     names: "list[str]" = []

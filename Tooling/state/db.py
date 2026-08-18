@@ -25,9 +25,9 @@ DB_PATH = Path("asterism.db")
 # Problem name ↔ filesystem path mapping
 # ---------------------------------------------------------------------
 #
-# A problem's "name" (= the `problem` column / Manifest frontmatter
-# `problem:` field) is a dot-separated slug whose components map 1:1
-# to filesystem directory components under `Problems/`.
+# A problem's "name" (= the `problem` column) is a dot-separated slug
+# whose components map 1:1 to filesystem directory components under
+# `Problems/`.
 #
 # Top-level problem (legacy / hand-authored):
 #   slug:        "sylvester_gallai"
@@ -127,8 +127,15 @@ def classify_cited_slug(
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS problems (
     name           TEXT PRIMARY KEY,
-    manifest_path  TEXT NOT NULL,
     created_at     TEXT NOT NULL,
+    -- v40 (Manifest retirement) — the user's WORD: standing directives,
+    -- verbatim NL. Rendered into every agent surface at every depth and
+    -- never replaced by any group's charter; the machine reads it and
+    -- never writes it (writer = state/intent.set_word, driven by the
+    -- serve UI / `asterism word` only; history rides user_file_history
+    -- under the pseudo-key 'word'). The problem's GOAL is the top
+    -- group's `groups.charter` row, not a problems column.
+    user_word      TEXT NOT NULL DEFAULT '',
     -- Phase 2 — Strategist first-launch tracking.
     -- `bootstrap_done=0` → T0 trigger fires on next dispatcher tick.
     -- Set to 1 by Strategist's first commit (EmitDirective / Inject / Noop)
@@ -183,9 +190,10 @@ CREATE TABLE IF NOT EXISTS problems (
 -- groups are a partition of a problem, never recursive problems.
 --
 -- The TOP group of each problem is a real row with `parent_group_id IS
--- NULL` — not a special case in the code. Its charter is `Manifest.md`
--- (hence the empty default: the Manifest is read from disk, not copied
--- here). Every pre-v35 row in the problem belongs to it.
+-- NULL` — not a special case in the code. Its charter is the problem's
+-- GOAL, written at init and amended only through state/intent.set_charter
+-- (v40, Manifest retirement). Every pre-v35 row in the problem belongs
+-- to it.
 CREATE TABLE IF NOT EXISTS groups (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     problem         TEXT NOT NULL REFERENCES problems(name),
@@ -195,10 +203,11 @@ CREATE TABLE IF NOT EXISTS groups (
     -- without it the self-FK trips mid-statement when a parent goes first.
     parent_group_id INTEGER NULL DEFAULT NULL
                         REFERENCES groups(id) ON DELETE CASCADE,
-    -- The charter: the mathematical claim this group was asked to settle,
-    -- verbatim from the parent's `Delegate` brief. Empty for the top group.
-    -- charter : sub-group :: Manifest : problem — that equation is what
-    -- lets a sub-group reuse every problem-level mechanism down to Ingest.
+    -- The charter: the claim/task this group was asked to settle —
+    -- verbatim from the parent's `Delegate` brief, or, for the top group,
+    -- the problem's goal as the user authored it. One column, one meaning
+    -- at every depth: that uniformity is what lets a sub-group reuse
+    -- every problem-level mechanism down to Ingest.
     charter         TEXT NOT NULL DEFAULT '',
     -- OPTIONAL anchor. The main shape (a proactively delegated burden) has
     -- none: the group starts from prose and mints its own bricks, exactly
@@ -485,11 +494,11 @@ CREATE TABLE IF NOT EXISTS queue (
 
 -- Paper pipeline v2 (D13): problem ↔ shelved-paper bindings — the
 -- backend of the frontend's checkbox model. origin: 'manifest' =
--- migrated from the legacy Manifest `paper:` pointer at init/parse;
--- 'scholar' = fetched by a Scholar pipeline (reason records why);
--- 'user' = bound via CLI/UI. Bindings are framework-owned — agents
--- never edit the hand-written Manifest. CREATE TABLE IF NOT EXISTS
--- suffices for fresh + existing DBs (no user_version bump needed).
+-- migrated from the retired Manifest.md's legacy `paper:` pointer
+-- (historical rows only); 'scholar' = fetched by a Scholar pipeline
+-- (reason records why); 'user' = bound via CLI/UI. CREATE TABLE IF
+-- NOT EXISTS suffices for fresh + existing DBs (no user_version bump
+-- needed).
 CREATE TABLE IF NOT EXISTS problem_papers (
     problem    TEXT NOT NULL REFERENCES problems(name),
     paper_id   TEXT NOT NULL,
@@ -499,11 +508,11 @@ CREATE TABLE IF NOT EXISTS problem_papers (
     PRIMARY KEY (problem, paper_id)
 );
 
--- Per-problem machine settings (frontmatter dissolve, 2026-07-07):
--- value is JSON. ALL access via state/settings.py (chokepoint owns
--- dual-read: DB key wins, absent key falls back to the Manifest;
--- effective_axioms semantics untouched). No version bump needed
--- (problem_papers precedent).
+-- Per-problem machine settings (frontmatter dissolve, 2026-07-07;
+-- sole source since the v40 Manifest retirement): value is JSON. ALL
+-- access via state/settings.py; an absent key means the framework
+-- default (effective_axioms semantics untouched — an empty whitelist
+-- never weakens a gate).
 CREATE TABLE IF NOT EXISTS problem_settings (
     problem    TEXT NOT NULL REFERENCES problems(name),
     key        TEXT NOT NULL,
@@ -512,17 +521,20 @@ CREATE TABLE IF NOT EXISTS problem_settings (
     PRIMARY KEY (problem, key)
 );
 
--- User-file content history (self-audit 2026-07-12 §3-1b + §3-3, v28):
--- first-load baseline + every content change ManifestCache observes on
--- the three user-intent files (Manifest.md / Root.lean / Defs.lean) —
--- any write channel, incl. a Bash bypass of the spawn write-deny. The
--- Ingest sign-off seal covers the Manifest text; root_integrity_gate
--- requires Root.lean/Defs.lean to still match their baseline before a
--- proved root verifies (benchmark comparability = adapter pins upstream
--- == init, this pins init == proved; Root.lean's pin is statement-level
--- — the framework's own proof-landing rewrites the proof body, task
--- #120). source='repin' rows are the sanctioned change acks: operator
--- re-baselines (`asterism repin`) and accepted amendments.
+-- User-intent content history (self-audit 2026-07-12 §3-1b + §3-3,
+-- v28; v40 re-scope): first-load baseline + every change on the two
+-- hand-authored files (Root.lean / Defs.lean — swept by IntentCache,
+-- catching any write channel incl. a Bash bypass of the spawn
+-- write-deny) and on the two DB-resident intent values (pseudo-keys
+-- 'charter' / 'word', recorded by their state/intent writers — audit
+-- trail only: mid-run charter/word edits are a legal, live channel).
+-- root_integrity_gate requires the two FILES to still match their
+-- baseline before a proved root verifies (benchmark comparability =
+-- adapter pins upstream == init, this pins init == proved; Root.lean's
+-- pin is statement-level — the framework's own proof-landing rewrites
+-- the proof body, task #120). source='repin' rows are the sanctioned
+-- change acks: operator re-baselines (`asterism repin`), accepted
+-- amendments, and charter/word writes.
 CREATE TABLE IF NOT EXISTS user_file_history (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     problem TEXT NOT NULL REFERENCES problems(name),
@@ -814,7 +826,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 39
+_CURRENT_USER_VERSION = 40
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -1617,7 +1629,7 @@ def all_problems_ingested(conn: sqlite3.Connection,
     terminal state (and there is at least one problem in scope). The
     daemon exit check's replacement for `root_proved`: root-proved is a
     HARD prerequisite of Ingest when a root exists, but the terminal
-    judgment itself (Manifest fully satisfied) is the Strategist's."""
+    judgment itself (charter fully satisfied) is the Strategist's."""
     sql = "SELECT count(*) AS c FROM problems WHERE ingested_at IS NULL"
     tot = "SELECT count(*) AS t FROM problems"
     args: tuple = ()

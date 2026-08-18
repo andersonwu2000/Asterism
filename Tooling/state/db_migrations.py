@@ -850,6 +850,156 @@ def apply(conn: sqlite3.Connection) -> None:
                 " ADD COLUMN conventions_seed TEXT NOT NULL DEFAULT ''")
         conn.execute("PRAGMA user_version = 39")
         conn.commit()
+    if v < 40:
+        # v40 — the Manifest.md retirement (owner surgery 2026-08-19).
+        # A problem's user intent moves fully into the DB: the GOAL is
+        # the top group's `groups.charter` (the old equation
+        # `charter : sub-group :: Manifest : problem` becomes literal),
+        # the user's WORD (standing directives) is `problems.user_word`,
+        # and machine settings live in `problem_settings` alone (the
+        # 2026-07-07 frontmatter dissolve loses its file fallback).
+        # Backfill for a pre-v40 DB, in order:
+        #   1. add `problems.user_word` (empty — the retired body was
+        #      never split; it lands whole in the charter);
+        #   2. for every problem, read the still-on-disk Manifest.md via
+        #      the doomed `manifest_path` column: copy its body into the
+        #      top group's charter (only where that charter is still
+        #      empty), seed absent `problem_settings` keys from the
+        #      frontmatter (else the axiom gates would silently weaken
+        #      to defaults when the file fallback disappears), and
+        #      record the charter baseline in `user_file_history`.
+        #      Best-effort: a missing/garbled file leaves the charter
+        #      empty for the doctor to flag.
+        #   3. DROP `problems.manifest_path`.
+        # The parsing here is a frozen copy of the retired parser —
+        # migration code is amber; the live module is gone.
+        _migrate_to_v40(conn)
+        conn.execute("PRAGMA user_version = 40")
+        conn.commit()
+
+
+def _v40_parse_legacy_manifest(text: str) -> "tuple[dict, str]":
+    """(frontmatter dict, body) — frozen minimal copy of the retired
+    Manifest.md parser (state/manifest.py, deleted at v40). Inline and
+    block YAML lists, plain scalars; body = everything after the
+    frontmatter block, stripped."""
+    import re as _re
+    fm_re = _re.compile(r"^---\n(.*?)\n---\n", _re.DOTALL)
+    m = fm_re.match(text)
+    fm: dict = {}
+    if m:
+        current_list_key = None
+        for line in m.group(1).splitlines():
+            if not line.strip():
+                current_list_key = None
+                continue
+            if line.startswith('  - ') or line.startswith('- '):
+                if current_list_key:
+                    fm.setdefault(current_list_key, []).append(
+                        line.lstrip(' -').strip().strip("'\""))
+                continue
+            if ':' in line and not line.startswith(' '):
+                key, _, val = line.partition(':')
+                key, val = key.strip(), val.strip()
+                if val == '':
+                    current_list_key = key
+                    fm[key] = []
+                elif val.startswith('['):
+                    inner = val.strip('[]').strip()
+                    fm[key] = [s.strip().strip("'\"")
+                               for s in inner.split(',') if s.strip()]
+                    current_list_key = None
+                else:
+                    fm[key] = val.strip("'\"")
+                    current_list_key = None
+    body = (text[m.end():] if m else text).strip()
+    return fm, body
+
+
+def _migrate_to_v40(conn: sqlite3.Connection) -> None:
+    from .db import now as _now
+    import hashlib as _hashlib
+    import json as _json
+
+    pcols = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
+    if "user_word" not in pcols:
+        conn.execute(
+            "ALTER TABLE problems ADD COLUMN user_word TEXT NOT NULL"
+            " DEFAULT ''")
+    if "manifest_path" not in pcols:
+        return  # fresh DB built from the v40 SCHEMA — nothing to migrate
+
+    # Workspace = the DB file's parent (v18 precedent); :memory: skips.
+    db_file = ""
+    for _seq, _name, _file in conn.execute("PRAGMA database_list"):
+        if _name == "main":
+            db_file = _file or ""
+    ws = Path(db_file).resolve().parent if db_file else None
+
+    for row in conn.execute(
+            "SELECT name, manifest_path FROM problems").fetchall():
+        problem, rel = str(row[0]), str(row[1] or "")
+        if ws is None or not rel:
+            continue
+        path = ws / rel
+        try:
+            fm, body = _v40_parse_legacy_manifest(
+                path.read_text(encoding="utf-8"))
+        except OSError:
+            # Manifest.md already gone — the corpus conversion may have
+            # replaced it with problem.json before this DB was next
+            # opened (the 2026-08-19 cut-over ran exactly that way).
+            # Seed from the converted file; only when BOTH are missing
+            # does the charter stay empty for the doctor to flag.
+            try:
+                seed = _json.loads((path.parent / "problem.json")
+                                   .read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            body = str(seed.get("charter", "")).strip()
+            fm = dict(seed.get("settings") or {})
+        if body:
+            top = conn.execute(
+                "SELECT id, charter FROM groups WHERE problem = ?"
+                " AND parent_group_id IS NULL", (problem,)).fetchone()
+            if top is not None and not str(top[1] or "").strip():
+                conn.execute(
+                    "UPDATE groups SET charter = ?, updated_at = ?"
+                    " WHERE id = ?", (body, _now(), int(top[0])))
+                conn.execute(
+                    "INSERT INTO user_file_history"
+                    " (problem, file, sha, body, seen_at, source)"
+                    " VALUES (?, 'charter', ?, ?, ?, 'observed')",
+                    (problem,
+                     _hashlib.sha256(
+                         body.encode("utf-8")).hexdigest()[:16],
+                     body, _now()))
+        # Settings: seed only ABSENT keys — a later UI edit is never
+        # clobbered by a stale file (same contract migrate_from_manifest
+        # kept during the dual-read window).
+        present = {str(r[0]) for r in conn.execute(
+            "SELECT key FROM problem_settings WHERE problem = ?",
+            (problem,))}
+        seed: dict = {}
+        for key in ("axioms_whitelist", "forbidden_lemmas"):
+            val = fm.get(key)
+            if isinstance(val, list):
+                seed[key] = [str(x) for x in val]
+        if "library" in fm:
+            seed["library"] = str(fm["library"]).strip().lower() in (
+                "true", "yes", "1")
+        if "signoff" in fm:
+            seed["signoff"] = str(fm["signoff"]).strip().lower() not in (
+                "false", "no", "0")
+        for key, val in seed.items():
+            if key in present:
+                continue
+            conn.execute(
+                "INSERT INTO problem_settings"
+                " (problem, key, value, updated_at) VALUES (?, ?, ?, ?)",
+                (problem, key, _json.dumps(val), _now()))
+
+    conn.execute("ALTER TABLE problems DROP COLUMN manifest_path")
 
 
 def _migrate_to_v35(conn: sqlite3.Connection) -> None:

@@ -157,7 +157,7 @@ def _problem_context(conn: sqlite3.Connection, name: str) -> str:
         ctx["awaiting_user"] = awaiting
     return (json.dumps(ctx, ensure_ascii=False)
             + f"\nDeeper detail: Problems/{name.replace('.', '/')}/ holds"
-              " Manifest.md (user intent), proofs/, .drafts/"
+              " problem.json (the durable intent seed), proofs/, .drafts/"
               "strategist_plan.md (the strategist's live plan note).")
 
 

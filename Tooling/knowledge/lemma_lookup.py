@@ -1,7 +1,7 @@
 """Mathlib lemma signature lookup — `#check @<name>` via lake env lean.
 
 When the agent's stderr surfaces an unknown / mistyped Mathlib name, or
-the Manifest hands the agent a curated lemma list, the agent has only
+the operator hands the agent a curated lemma list, the agent has only
 the **name** — no signature, no parameter order, no instance shape.
 Strong models recall this from training; weaker models hallucinate
 arg counts and instance class. This module closes the gap by fetching

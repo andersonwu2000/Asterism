@@ -301,7 +301,7 @@ def harvest_open_lines(text: str) -> list[str]:
 
 def inject_open_lines(content: str, opens: "list[str]") -> str:
     """Insert verbatim `open ...` lines missing from `content` — same
-    insertion point as `manifest.inject_defs_opens` (after the last import,
+    insertion point as `intent.inject_defs_opens` (after the last import,
     before the first `namespace`; file head as fallback). Idempotent by
     exact-line match."""
     missing = [o for o in opens
@@ -394,7 +394,7 @@ def assemble_for_commit(
 
     validate_file's compilation unit is derived from the same primitives,
     which is what keeps the two sides isomorphic (task #5)."""
-    from . import manifest
+    from . import intent as intent_mod
     text = ensure_framework_imports(content, problem=problem,
                                     workspace=workspace)
     injected_extra: list[str] = []
@@ -408,7 +408,7 @@ def assemble_for_commit(
             lines[last_imp + 1:last_imp + 1] = missing
             text = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
             injected_extra = missing
-    text = manifest.inject_defs_opens(text, problem=problem,
+    text = intent_mod.inject_defs_opens(text, problem=problem,
                                       workspace=workspace)
     injected_opens: list[str] = []
     if carry_opens:

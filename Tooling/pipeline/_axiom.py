@@ -1,7 +1,7 @@
 """Axiom probe — single source of truth for "is this proof clean".
 
 Verifies that `#print axioms <fq_name>` returns a subset of the
-manifest's `axioms_whitelist`. Returns (True, msg) iff clean.
+problem's `axioms_whitelist`. Returns (True, msg) iff clean.
 
 THE invariant for `goals.status='proved'`: the DB row's status flips
 to 'proved' iff `axiom_probe` returned ok on the goal's public name.
@@ -168,7 +168,7 @@ def axiom_probe(
     Returns:
       - (True, "axioms ok: [<sorted>]") on clean proof
       - (False, reason) otherwise. Reasons:
-        * "no axioms_whitelist": Manifest didn't authorize bypass
+        * "no axioms_whitelist": the problem did not authorize bypass
         * "axiom probe failed: <exc>": gateway unreachable / timeout
         * "verify failed: <error>": elaborate produced error diagnostics
         * "rogue axioms: [<sorted>]": axioms used not in whitelist —

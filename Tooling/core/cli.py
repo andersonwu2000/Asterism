@@ -16,7 +16,8 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..state import brief, db, kb, kb_ingest, manifest, satellites, tree
+from ..state import brief, db, kb, kb_ingest, satellites, tree
+from ..state import intent as intent_mod
 from . import dispatcher, fsutil
 from ..quality import prune
 
@@ -182,11 +183,11 @@ _WRAP_BODY_RE = re.compile(
     r"theorem\s+main\b.*?:=\s*s\d+\b", re.DOTALL)
 
 # Statement extraction (`theorem main : <stmt> := by sorry` → `<stmt>`)
-# moved to state/manifest.py (task #120: the root gate's statement pin
+# moved to state/intent.py (task #120: the root gate's statement pin
 # must read the exact same bytes cmd_init/amend extract). Re-exported
 # under the old names for the existing importers (amend, tests).
-_ROOT_STATEMENT_RE = manifest.ROOT_STMT_STUB_RE
-_extract_root_statement = manifest.extract_root_statement
+_ROOT_STATEMENT_RE = intent_mod.ROOT_STMT_STUB_RE
+_extract_root_statement = intent_mod.extract_root_statement
 
 
 def _classify_root_body(text: str) -> str:
@@ -267,20 +268,22 @@ def init_problem(workspace: Path, problem: str, *,
                  force: bool = False) -> tuple[int, str]:
     """Validate + register a problem (chokepoint shared by CLI + serve).
 
-    Expects `Problems/<problem>/Manifest.md` to exist (Defs.lean /
-    Root.lean optional — see the Phase 6 comment below). Returns
-    (0, ok-message) or (1, failure-message); never prints.
+    The problem's definition comes from `Problems/<problem>/problem.json`
+    (the durable seed: charter required; word / settings / papers
+    optional — v40, Manifest.md retired). A problem already registered
+    with a non-empty charter re-inits from the DB when no seed exists.
+    Defs.lean / Root.lean stay optional — see the Phase 6 comment
+    below. Returns (0, ok-message) or (1, failure-message); never
+    prints.
     """
     msgs: list[str] = []
     pdir = db.problem_dir(workspace, problem)
-    mfst_path = pdir / "Manifest.md"
-    if not mfst_path.exists():
-        return 1, f"FAIL: {mfst_path} not found"
-
+    if not pdir.is_dir():
+        return 1, f"FAIL: {pdir} not found"
     try:
-        mfst = manifest.parse(mfst_path)  # Statement section now optional
+        seed = intent_mod.read_seed(intent_mod.seed_path(workspace, problem))
     except Exception as e:  # noqa: BLE001 — malformed authoring input
-        return 1, f"FAIL: Manifest.md did not parse: {e}"
+        return 1, f"FAIL: problem.json did not parse: {e}"
 
     # Phase 6 — Root.lean and Defs.lean are OPTIONAL, user-pinned inputs:
     #   Root present  = must-prove-this-exact-statement-to-exit (a HARD,
@@ -292,7 +295,7 @@ def init_problem(workspace: Path, problem: str, *,
     #   Defs present  = author-vouched anchor vocabulary (pre-vouched in
     #                   review; the framework must cite, not re-derive).
     #   Neither       = pure-NL mode: the Strategist derives everything
-    #                   from the Manifest (Forward defs/claims +
+    #                   from the charter (Forward defs/claims +
     #                   MarkDeliverable), and the exit is its Ingest
     #                   judgment alone.
     defs_lean = pdir / "Defs.lean"
@@ -361,23 +364,52 @@ def init_problem(workspace: Path, problem: str, *,
     ).fetchone()
     if existing is None:
         conn.execute(
-            "INSERT INTO problems (name, manifest_path, created_at) VALUES (?, ?, ?)",
-            (problem, str(mfst_path.relative_to(workspace).as_posix()), db.now()),
+            "INSERT INTO problems (name, created_at) VALUES (?, ?)",
+            (problem, db.now()),
         )
     # v35 — every problem has a top discussion group, its human-facing
     # one. Unconditional (not gated on `existing`): a problem initialised
     # before v35 and re-inited afterwards must acquire one too, and a
     # problem without a group has no seat for its Strategist at all.
+    # v40 — the top group's charter IS the problem's goal: seeded from
+    # problem.json here; with no seed, a still-empty charter is a FAIL
+    # (a problem with no goal has nothing to judge anything against).
     from ..state import groups as _groups
-    _groups.ensure_top_group(conn, problem)
+    _groups.ensure_top_group(
+        conn, problem,
+        charter=str(seed.get("charter", "")).strip() if seed else "")
+    if seed is not None:
+        # Re-init with a seed refreshes charter/word from it (the seed
+        # is what the user authored; the writers record history +
+        # re-mirror). Unchanged values are skipped so a re-run of init
+        # stays history-idempotent — a 'repin' row is an ack of a
+        # CHANGE, not of a rerun.
+        cur = intent_mod.read(conn, problem)
+        seed_charter = str(seed.get("charter", "")).strip()
+        if cur is None or cur.charter != seed_charter:
+            intent_mod.set_charter(conn, problem, seed_charter,
+                                   source="observed" if existing is None
+                                   else "repin")
+        word = str(seed.get("word", "") or "").strip()
+        if cur is None or cur.word != word:
+            intent_mod.set_word(conn, problem, word,
+                                source="observed" if existing is None
+                                else "repin")
+    top = _groups.top_group(conn, problem)
+    if top is None or not str(top["charter"]).strip():
+        conn.commit()
+        return 1, (f"FAIL: {problem} has no charter — write "
+                   f"Problems/{problem}/problem.json with a 'charter' "
+                   f"field (the problem's goal), or author the problem "
+                   f"via the UI.")
 
     if statement is None:
         # Pure-NL: no root goal row. The problem starts with zero goals —
         # structurally stalled — so the T4 stall wake bootstraps the
-        # Strategist's first Inject from the Manifest alone.
+        # Strategist's first Inject from the charter alone.
         msgs.append(
             f"OK: init {problem} (pure-NL — no Root.lean; the Strategist "
-            f"bootstraps from the Manifest)")
+            f"bootstraps from the charter)")
     else:
         existing_goal = conn.execute(
             "SELECT id FROM goals WHERE problem = ? AND slug = 'main'",
@@ -400,24 +432,32 @@ def init_problem(workspace: Path, problem: str, *,
             msgs.append(f"OK: {problem} already initialized "
                         f"(goal id={existing_goal['id']})")
     conn.commit()
-    # Paper v2 (D13): migrate the legacy Manifest `paper:` pointer into
-    # the problem_papers binding table (idempotent; scholar/user
-    # bindings accrue alongside).
-    if getattr(mfst, "paper", ""):
-        db.bind_paper(conn, problem=problem, paper_id=mfst.paper,
-                      origin="manifest")
-    # Frontmatter dissolve: seed problem_settings from the authored
-    # Manifest (idempotent — keys already in the DB are never
-    # clobbered; from here on the DB is the settings SoT and the
-    # frontmatter lines are legacy fallback).
-    from ..state import settings as _settings
-    _settings.migrate_from_manifest(conn, problem, mfst)
+    # Seed papers + settings from problem.json (idempotent; keys/rows
+    # already in the DB are never clobbered — settings.write upserts,
+    # bind_paper dedups).
+    if seed is not None:
+        for pid in seed.get("papers", []) or []:
+            db.bind_paper(conn, problem=problem, paper_id=str(pid),
+                          origin="user")
+        from ..state import settings as _settings
+        stored = _settings.read(conn, problem)
+        for key, val in (seed.get("settings") or {}).items():
+            if key in _settings.SETTING_KEYS and key not in stored:
+                try:
+                    _settings.write(conn, problem, key, val)
+                except ValueError as e:
+                    msgs.append(f"WARN: settings.{key} skipped ({e})")
+    # Refresh the durable seed from the DB (creates problem.json for a
+    # DB-authored problem; a seeded init round-trips byte-stable).
+    intent_mod.write_seed(conn, workspace, problem)
     # Initial TREE.md so readers see structure right after init.
     tree.write(conn, workspace, problem)
     # Initial BRIEF.md — framework-rendered cross-spawn stable context
-    # (sandbox / forbidden lemmas / mathlib hints / library / strategic
-    # notes). Refreshed at daemon startup if Manifest changes.
-    brief.write(workspace, mfst, conn=conn)
+    # (sandbox / forbidden lemmas / goal / user word / library).
+    # Refreshed at daemon startup if the intent changed.
+    pintent = intent_mod.read(conn, problem)
+    if pintent is not None:
+        brief.write(workspace, pintent, conn=conn)
     # No LESSONS.md seed: Phase 12 Model B made the KB the lessons SoT —
     # reflection writes `kb_entries`, Context reads `kb.query`; the old flat
     # LESSONS.md mirror (and its Edit-anchor seed) is retired.
@@ -554,16 +594,16 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_init_batch(args: argparse.Namespace) -> int:
-    """Bulk-init every Problem dir under <root> that has a Manifest.md.
+    """Bulk-init every Problem dir under <root> that has a problem.json.
 
-    Walks `<root>` recursively to locate `Manifest.md` files. Each
-    Manifest's parent directory is treated as a Problem directory; the
+    Walks `<root>` recursively to locate `problem.json` seeds. Each
+    seed's parent directory is treated as a Problem directory; the
     problem slug is derived from its path relative to
     `<workspace>/Problems/` with `/` → `.`.
 
     Examples:
-      Problems/sylvester_gallai/Manifest.md      → slug 'sylvester_gallai'
-      Problems/Minif2f/algebra_1/Manifest.md     → slug 'Minif2f.algebra_1'
+      Problems/sylvester_gallai/problem.json     → slug 'sylvester_gallai'
+      Problems/Minif2f/algebra_1/problem.json    → slug 'Minif2f.algebra_1'
 
     `<root>` may be the workspace's `Problems/` itself (init everything
     not yet in DB) or any subtree (e.g. `Problems/Minif2f` to init only
@@ -571,7 +611,7 @@ def cmd_init_batch(args: argparse.Namespace) -> int:
 
     Idempotent: subdirs already in the DB stay put (cmd_init's own
     idempotency). Failures are reported per-problem; the batch keeps
-    going so one broken Manifest doesn't block the rest.
+    going so one broken seed doesn't block the rest.
     """
     workspace = Path.cwd()
     root = Path(args.root).resolve()
@@ -588,14 +628,15 @@ def cmd_init_batch(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 1
 
-    manifests = sorted(root.rglob("Manifest.md"))
-    if not manifests:
-        print(f"OK: init-batch {root}: no Manifest.md found", flush=True)
+    seeds = sorted(root.rglob(intent_mod.SEED_FILENAME))
+    if not seeds:
+        print(f"OK: init-batch {root}: no {intent_mod.SEED_FILENAME} "
+              f"found", flush=True)
         return 0
 
     initialized: list[str] = []
     failed: list[tuple[str, str]] = []
-    for mpath in manifests:
+    for mpath in seeds:
         pdir = mpath.parent.resolve()
         try:
             slug = db.slug_from_problem_dir(workspace, pdir)
@@ -637,7 +678,7 @@ def _soft_reset(problem: str) -> int:
       4. Revive goals shelved purely from the cascade (no real
          Backward / Builder failure left).
 
-    Doesn't touch proof files / Root.lean / Manifest. Operator runs
+    Doesn't touch proof files / Root.lean / problem.json. Operator runs
     after fixing the underlying provider issue (e.g. switching model
     after quota exhaust) to recover state without re-doing real work.
     """
@@ -748,7 +789,7 @@ PROOFS_SWEEP_PATTERNS = satellites.swept(satellites.SCOPE_PROOFS)
 
 def cmd_reset(args: argparse.Namespace) -> int:
     """Wipe one Problem's DB rows + on-disk `proofs/` files. User-owned
-    files (`Manifest.md`, `Defs.lean`, `Root.lean`) and anything outside
+    files (`problem.json`, `Defs.lean`, `Root.lean`) and anything outside
     `Problems/<p>/proofs/` are untouched — task #66 made Root.lean user-
     owned, so an operator who wants to re-init after reset must restore
     `theorem main : <stmt> := by sorry` manually. Idempotent — running
@@ -762,7 +803,9 @@ def cmd_reset(args: argparse.Namespace) -> int:
     (spawn_fast_fail bursts) + revive cascade victims. Use after a
     quota-exhaust incident.
 
-    Refuses to reset if no Manifest.md exists (signals user typo).
+    Refuses to reset if no problem.json exists (signals user typo, and
+    guards against a reset the subsequent re-init could not recover
+    from — the seed is what re-init runs on).
     """
     if getattr(args, "soft", False):
         return _soft_reset(args.problem)
@@ -773,9 +816,11 @@ def cmd_reset(args: argparse.Namespace) -> int:
     if not pdir.exists():
         print(f"FAIL: Problems/{problem}/ not found", file=sys.stderr)
         return 1
-    mfst_path = pdir / "Manifest.md"
-    if not mfst_path.exists():
-        print(f"FAIL: {mfst_path} not found", file=sys.stderr)
+    seed_file = intent_mod.seed_path(workspace, problem)
+    if not seed_file.exists():
+        print(f"FAIL: {seed_file} not found — reset would be "
+              f"unrecoverable (re-init seeds from problem.json)",
+              file=sys.stderr)
         return 1
 
     conn = db.connect()
@@ -1052,7 +1097,7 @@ def _reset_problem_files(workspace: Path, pdir: Path, problem: str,
                 failed_files.append(f.name)
 
     # Per-problem artifacts that aren't in proofs/ — the swept names,
-    # the kept names (Manifest/Defs/Root/BRIEF) and the reason for
+    # the kept names (problem.json/Defs/Root/BRIEF) and the reason for
     # each are the registry's to state, not this loop's.
     for name in satellites.swept(satellites.SCOPE_PROBLEM_ROOT):
         p = pdir / name
@@ -1086,7 +1131,7 @@ def _reset_problem_files(workspace: Path, pdir: Path, problem: str,
     # Root.lean is user-owned — `cmd_reset` no longer rewrites it. If
     # the file is in post-prove wrap form (`:= sNN`) the user must
     # restore the `:= by sorry` body before re-running `init`. (Old
-    # behavior: auto-rewrite from Manifest.statement, which is no
+    # behavior: auto-rewrite from the retired Manifest statement, which is no
     # longer the canonical source.)
     root_lean = pdir / "Root.lean"
 
@@ -1279,7 +1324,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Pre-flight diagnostic. Checks the toolchain (claude / gemini /
     lake), the Asterism.yaml config, every initialized Problem's
-    Manifest, and on-disk state (`.attempts/` zombies + log retention).
+    intent, and on-disk state (`.attempts/` zombies + log retention).
     Output is icon-prefixed lines (`OK / FAIL / WARN`) the operator —
     or a future Claude session — can scan top to bottom.
 
@@ -1471,21 +1516,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     conn = db.connect()
     db.init_schema(conn)
     rows = conn.execute(
-        "SELECT name, manifest_path FROM problems ORDER BY name"
+        "SELECT name FROM problems ORDER BY name"
     ).fetchall()
     if not rows:
         line("WARN", "no problems initialized — run `asterism init <p>`")
     for r in rows:
         name = r["name"]
-        mfst_path = workspace / r["manifest_path"]
-        if not mfst_path.exists():
-            line("FAIL", f"{name}: Manifest.md missing at {r['manifest_path']}")
+        pintent = intent_mod.read(conn, name)
+        if pintent is None or not pintent.charter.strip():
+            line("FAIL", f"{name}: no charter — the top group's goal is "
+                         f"empty (re-init from problem.json, or set it "
+                         f"via `asterism charter`)")
             continue
-        try:
-            manifest.parse(mfst_path)
-        except Exception as exc:
-            line("FAIL", f"{name}: Manifest parse error: {exc}")
-            continue
+        if not intent_mod.seed_path(workspace, name).exists():
+            line("WARN", f"{name}: problem.json missing — reset would "
+                         f"be unrecoverable (any charter/word/settings "
+                         f"write regenerates it)")
         # Root goal status
         root = conn.execute(
             "SELECT id, status, attempts FROM goals "
@@ -2344,23 +2390,12 @@ def _claude_login_email() -> "str | None":
 
 def _effective_library_flag(conn, problem: str) -> bool:
     """The harvest decision as the librarian scheduler will see it:
-    `problem_settings` row wins, Manifest.md value is the fallback,
-    unreadable-anything reads False (no harvest without an explicit
-    opt-in — mirrors the `library` default)."""
+    the `problem_settings` row; absent/unreadable reads False (no
+    harvest without an explicit opt-in — mirrors the `library`
+    default)."""
     from ..state import settings as _settings
     val = _settings.read(conn, problem).get("library")
-    if isinstance(val, bool):
-        return val
-    try:
-        from ..state import manifest as _manifest
-        row = conn.execute(
-            "SELECT manifest_path FROM problems WHERE name = ?",
-            (problem,)).fetchone()
-        if row is None:
-            return False
-        return bool(_manifest.parse(Path(row["manifest_path"])).library)
-    except Exception:  # noqa: BLE001 — conservative: no silent harvest
-        return False
+    return val if isinstance(val, bool) else False
 
 
 def _signoff_record(conn, problem: str,
@@ -2514,11 +2549,11 @@ def cmd_repin(args: argparse.Namespace) -> int:
     bytes again. NOTE: repin acknowledges BYTES only — if the root
     STATEMENT's meaning changed, `goals.statement` is stale and the
     honest path is re-init (or sync), not repin."""
-    from ..state import manifest as _mfst
     workspace = Path.cwd()
     problem = str(args.problem)
     files = ([args.file] if getattr(args, "file", None)
-             else list(_mfst.USER_INTENT_FILES))
+             else list(intent_mod.USER_INTENT_FILES)
+             + list(intent_mod.DB_INTENT_KEYS))
     conn = db.connect()
     try:
         if conn.execute("SELECT 1 FROM problems WHERE name = ?",
@@ -2526,13 +2561,20 @@ def cmd_repin(args: argparse.Namespace) -> int:
             print(f"[repin] unknown problem {problem!r}")
             return 1
         pdir = db.problem_dir(workspace, problem)
+        pintent = intent_mod.read(conn, problem)
         n = 0
         for name in files:
-            path = pdir / name
-            if not path.is_file():
-                continue
-            body = path.read_text(encoding="utf-8")
-            sha = _mfst._content_sha(body)
+            if name in intent_mod.DB_INTENT_KEYS:
+                # DB-resident intent value (v40): re-baseline whatever
+                # is currently in the DB (covers a hand-sqlite repair).
+                body = (pintent.charter if name == "charter"
+                        else pintent.word) if pintent else ""
+            else:
+                path = pdir / name
+                if not path.is_file():
+                    continue
+                body = path.read_text(encoding="utf-8")
+            sha = intent_mod._content_sha(body)
             conn.execute(
                 "INSERT INTO user_file_history"
                 " (problem, file, sha, body, seen_at, source)"
@@ -2545,6 +2587,44 @@ def cmd_repin(args: argparse.Namespace) -> int:
         conn.close()
     print(f"[repin] {problem}: {n} file(s) re-baselined")
     return 0
+
+
+def _cmd_intent_value(args: argparse.Namespace, key: str) -> int:
+    """Shared body of `asterism charter` / `asterism word` (v40): with
+    no flag, print the current value; `--file` sets it from a scratch
+    draft (the writers record history and refresh problem.json)."""
+    problem = str(args.problem)
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        pintent = intent_mod.read(conn, problem)
+        if pintent is None:
+            print(f"[{key}] unknown problem {problem!r}", file=sys.stderr)
+            return 1
+        src = getattr(args, "file", None)
+        clear = bool(getattr(args, "clear", False))
+        if src is None and not clear:
+            cur = pintent.charter if key == "charter" else pintent.word
+            print(cur if cur.strip() else f"({key} is empty)")
+            return 0
+        body = "" if clear else Path(src).read_text(encoding="utf-8")
+        if key == "charter":
+            intent_mod.set_charter(conn, problem, body)
+        else:
+            intent_mod.set_word(conn, problem, body)
+        print(f"[{key}] {problem}: updated ({len(body)} chars) — live "
+              f"on the next spawn; problem.json refreshed")
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_charter(args: argparse.Namespace) -> int:
+    return _cmd_intent_value(args, "charter")
+
+
+def cmd_word(args: argparse.Namespace) -> int:
+    return _cmd_intent_value(args, "word")
 
 
 def cmd_revive(args: argparse.Namespace) -> int:
@@ -2586,16 +2666,19 @@ def cmd_drift_check(args: argparse.Namespace) -> int:
          unproved goal, live strategy under a terminal goal, unreachable
          alive goals, pending revivals).
     Exit 0 if consistent, 1 on any finding. `--scope` limits (LIKE)."""
-    from ..state import consistency, proof_store, settings as _settings
+    from ..state import consistency, proof_store
     workspace = Path.cwd()
     conn = db.connect()
     scope = getattr(args, "scope", None)
     try:
         rep = proof_store.inventory(conn, workspace, scope=scope)
         sweep = consistency.consistency_sweep(conn, scope=scope)
-        fm_drift = _settings_drift(conn, workspace, scope)
     finally:
         conn.close()
+    # (The old layer-3 frontmatter-vs-DB drift check retired with
+    # Manifest.md at v40: problem.json is written only by the intent
+    # chokepoint that also writes the DB, so there is no second author
+    # to drift against.)
     for rel in rep.orphan_files:
         print(f"  [FAIL] orphan proof file (no DB row): {rel}")
     for rel in rep.missing_files:
@@ -2607,46 +2690,11 @@ def cmd_drift_check(args: argparse.Namespace) -> int:
         for r in rows:
             sweep_bad += 1
             print(f"  [FAIL] {cat}: {r}")
-    for problem, key, file_v, db_v in fm_drift:
-        print(f"  [FAIL] manifest frontmatter disagrees with the DB: "
-              f"{problem} {key}: file={file_v!r} db={db_v!r} — the DB "
-              f"wins at runtime; the file is the stale copy")
-    ok = rep.ok() and sweep_bad == 0 and not fm_drift
+    ok = rep.ok() and sweep_bad == 0
     print(f"  [{'  OK' if ok else 'FAIL'}] {rep.summary()}"
           + (f"; tree sweep: {sweep_bad} finding(s)" if sweep_bad
-             else "; tree sweep clean")
-          + (f"; frontmatter: {len(fm_drift)} drift" if fm_drift
-             else "; frontmatter clean"))
+             else "; tree sweep clean"))
     return 0 if ok else 1
-
-
-def _settings_drift(conn, workspace: Path,
-                    scope: "str | None") -> "list[tuple]":
-    """`(problem, key, file_value, db_value)` across the workspace.
-
-    Layer 3 of the consistency gate. The frontmatter is written once at
-    creation and never again — every later settings edit goes to the DB,
-    and the UI renders the DB — so the file's copy goes stale with
-    nobody watching it. Best-effort per problem: an unreadable or
-    unparseable Manifest is the other layers' business, not this one."""
-    from ..state import settings as _settings
-    out: "list[tuple]" = []
-    for row in conn.execute(
-            "SELECT name, manifest_path FROM problems ORDER BY name"):
-        name = str(row["name"])
-        if scope and scope not in name:
-            continue
-        path = workspace / str(row["manifest_path"])
-        if not path.is_file():
-            continue
-        try:
-            mfst = manifest.parse(path)
-        except Exception:  # noqa: BLE001 — parse failures are layer 1's
-            continue
-        for key, file_v, db_v in _settings.frontmatter_drift(
-                conn, name, mfst):
-            out.append((name, key, file_v, db_v))
-    return out
 
 
 def cmd_library_backfill_declinfo(args: argparse.Namespace) -> int:
@@ -2831,9 +2879,8 @@ def cmd_paper_add(args: argparse.Namespace) -> int:
     except (shelf.ScannedPdfError, ValueError) as e:
         print(f"ERROR: {e}")
         return 1
-    print(f"OK: paper {meta.id} — bind with `paper: {meta.id}` in the "
-          f"Manifest frontmatter; build the map with "
-          f"`asterism paper-index {meta.id}`")
+    print(f"OK: paper {meta.id} — bind it to a problem via the UI; "
+          f"build the map with `asterism paper-index {meta.id}`")
     return 0
 
 
@@ -2905,7 +2952,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_init_batch = sub.add_parser(
         "init-batch",
-        help="bulk-init every <root>/<subdir>/ that has a Manifest.md",
+        help="bulk-init every <root>/<subdir>/ that has a problem.json",
     )
     p_init_batch.add_argument(
         "root", help="directory whose immediate subdirs are problem dirs",
@@ -2937,7 +2984,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_doctor = sub.add_parser(
         "doctor",
-        help="pre-flight: tools / Asterism.yaml / Manifests / .attempts state",
+        help="pre-flight: tools / Asterism.yaml / problems / .attempts state",
     )
     p_doctor.set_defaults(func=cmd_doctor)
 
@@ -3045,16 +3092,42 @@ def main(argv: list[str] | None = None) -> int:
     p_repin = sub.add_parser(
         "repin",
         help="acknowledge a deliberate user-file edit: re-baseline "
-             "Manifest.md/Root.lean/Defs.lean so root_integrity_gate "
+             "Root.lean/Defs.lean/charter/word so root_integrity_gate "
              "accepts the current content (bytes only — a changed "
              "statement meaning needs re-init/sync)")
     p_repin.add_argument("problem", type=str,
                          help="problem name, e.g. Putnam.putnam_2025_b6")
     p_repin.add_argument(
         "--file", type=str, default=None,
-        choices=["Manifest.md", "Root.lean", "Defs.lean"],
+        choices=["Root.lean", "Defs.lean", "charter", "word"],
         help="re-baseline only this file (default: all present)")
     p_repin.set_defaults(func=cmd_repin)
+
+    p_charter = sub.add_parser(
+        "charter",
+        help="show or set the problem's goal (the top group's charter); "
+             "DB-resident since v40, live on the next spawn")
+    p_charter.add_argument("problem", type=str,
+                           help="problem name")
+    p_charter.add_argument(
+        "--file", type=str, default=None, metavar="PATH",
+        help="set the charter from this file's content (your scratch "
+             "draft — the durable copy is problem.json, refreshed "
+             "automatically)")
+    p_charter.set_defaults(func=cmd_charter)
+
+    p_word = sub.add_parser(
+        "word",
+        help="show or set the user's word (standing directives, every "
+             "group at every depth); DB-resident, live on the next spawn")
+    p_word.add_argument("problem", type=str, help="problem name")
+    p_word.add_argument(
+        "--file", type=str, default=None, metavar="PATH",
+        help="set the word from this file's content")
+    p_word.add_argument(
+        "--clear", action="store_true",
+        help="withdraw all standing directives (set the word empty)")
+    p_word.set_defaults(func=cmd_word)
 
     p_revive = sub.add_parser(
         "revive",

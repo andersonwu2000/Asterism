@@ -38,7 +38,8 @@ import sys
 from pathlib import Path
 from typing import Literal, TYPE_CHECKING
 
-from ..state import db, manifest, proof_store, thresholds, transitions, tree
+from ..state import db, proof_store, thresholds, transitions, tree
+from ..state import intent as intent_mod
 from ..pipeline._lake import lean_path_to_module
 
 if TYPE_CHECKING:
@@ -50,13 +51,13 @@ from ..pipeline._skeleton import (
 
 def verify_strategy(
     conn: sqlite3.Connection, *, workspace: Path, strategy_id: int,
-    manifests: dict[str, manifest.Manifest] | None = None,
+    intents: dict[str, intent_mod.ProblemIntent] | None = None,
 ) -> Literal["proved", "dead", "superseded", "retry"]:
     """Mechanical promote — rewrite parent goal file as alias to the
     winning strategy's scratch theorem. No Lean elaboration; no axiom
     probe. Integrity is gated at root via `library.maybe_promote`.
 
-    `manifests` is accepted for backward signature compatibility but
+    `intents` is accepted for backward signature compatibility but
     unused here (axiom check moved to root).
 
     Returns:
@@ -132,7 +133,7 @@ def verify_strategy(
 
 def verify_housekeeping(
     conn: sqlite3.Connection, *, workspace: Path, max_iters: int = 8,
-    manifests: dict[str, manifest.Manifest] | None = None,
+    intents: dict[str, intent_mod.ProblemIntent] | None = None,
     olean_warmer: "OleanWarmer | None" = None,
 ) -> dict[str, int]:
     """Run inline at the end of each dispatcher tick. Polls strategies
@@ -171,7 +172,7 @@ def verify_housekeeping(
             goal_id = int(s["goal_id"])
             outcome = verify_strategy(
                 conn, workspace=workspace, strategy_id=sid,
-                manifests=manifests,
+                intents=intents,
             )
             # 'retry' is no longer produced (verify_strategy doesn't
             # hit the gateway). Kept for forward-compat in case a
@@ -599,9 +600,9 @@ def cleanup_cascade_backups(
     return n
 
 
-# SoT moved to state/manifest.py (the Manifest owns whitelist semantics);
+# SoT moved to state/intent.py (the intent owns whitelist semantics);
 # re-exported here for the existing importers (dispatcher, tests).
-FRAMEWORK_DEFAULT_AXIOMS = manifest.FRAMEWORK_DEFAULT_AXIOMS
+FRAMEWORK_DEFAULT_AXIOMS = intent_mod.FRAMEWORK_DEFAULT_AXIOMS
 
 
 def _root_statement_pin_ok(
@@ -630,7 +631,7 @@ def _root_statement_pin_ok(
     strategy, a sketch baseline — stays a violation (fail-closed; the
     operator escape hatch remains `asterism repin`). Defs.lean has no
     sanctioned framework writer and keeps the whole-file pin."""
-    base_stmt = manifest.extract_root_statement(base_body)
+    base_stmt = intent_mod.extract_root_statement(base_body)
     if base_stmt is None:
         return False, ("baseline is not the `theorem main : <stmt> := "
                        "by sorry` shape, so only byte-identity can "
@@ -660,14 +661,14 @@ def _root_statement_pin_ok(
 
 def root_integrity_gate(
     conn: sqlite3.Connection, workspace: Path, problem: str,
-    mfst: manifest.Manifest,
+    intent: intent_mod.ProblemIntent,
 ) -> None:
     """Single integrity gate that runs after a problem's root flips to
     'proved'. Under verify-collapse, per-level `verify_strategy` is
     mechanical (no Lean elaboration); the actual proof validation lives
     here. The probe ALWAYS runs once a root reaches 'proved' — framework
-    behavior must not depend on whether the Manifest sets
-    `axioms_whitelist`. When the Manifest omits it, fall back to
+    behavior must not depend on whether the problem sets
+    `axioms_whitelist`. When the setting is absent, fall back to
     `FRAMEWORK_DEFAULT_AXIOMS` (the 3 standard Lean axioms) and log a
     warning so the implicit fallback is operator-visible.
 
@@ -709,7 +710,7 @@ def root_integrity_gate(
         fpath = pdir / fname
         if not fpath.is_file():
             continue
-        base = manifest.user_file_baseline_row(conn, problem, fname)
+        base = intent_mod.user_file_baseline_row(conn, problem, fname)
         if base is None:
             print(f"[integrity] {problem}: no baseline recorded for "
                   f"{fname} (pre-v28 run) — statement pin skipped",
@@ -722,7 +723,7 @@ def root_integrity_gate(
             print(f"[integrity] {problem}: {fname} unreadable ({e}) — "
                   f"root NOT verified", flush=True, file=sys.stderr)
             return
-        cur = manifest._content_sha(text)
+        cur = intent_mod._content_sha(text)
         if cur == pin:
             continue
         why = "the proved root does not certify the original statement"
@@ -737,7 +738,7 @@ def root_integrity_gate(
               f"or acknowledge with `asterism repin {problem}`.",
               flush=True, file=sys.stderr)
         return
-    whitelist = manifest.effective_axioms(mfst, problem=problem)
+    whitelist = intent_mod.effective_axioms(intent, problem=problem)
     try:
         # 900s (15min) budget. Root.lean's transitive import chain can
         # be deep (SG: 23 sub-proofs, cold `lake env lean Root.lean`
@@ -795,7 +796,7 @@ def root_integrity_gate(
         # is RETIRED: harvest is strictly Ingest-driven now (the Strategist
         # commits the terminal judgment; sign-off gates the enqueue). A
         # proved root merely makes the problem stall-when-idle, which wakes
-        # the Strategist to judge the Manifest and commit Ingest.
+        # the Strategist to judge the charter and commit Ingest.
     print(f"[integrity] {problem}: root axioms ok {axiom_msg}", flush=True)
     n = cleanup_cascade_backups(conn, workspace, problem)
     if n:

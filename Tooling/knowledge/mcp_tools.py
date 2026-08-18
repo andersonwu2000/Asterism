@@ -135,7 +135,7 @@ def inspect(queries: list = None) -> str:
 
         [{"decl":  "uc_four_set_deficit"},
          {"read":  "Context.md", "sections": ["Programme"]},
-         {"read":  "Manifest.md", "outline": true},
+         {"read":  "charter.md", "outline": true},
          {"grep":  "BoundedOrder", "in": "proofs/*.lean", "context": 3},
          {"read":  "patch.lean", "lines": "380-420"},
          {"find":  "*deficit*.lean"},
@@ -147,7 +147,7 @@ def inspect(queries: list = None) -> str:
 
     READ BY THE SECTION. `sections` takes heading text (`## Programme`
     → "Programme") and returns that heading with everything under it.
-    The framework's documents — Context.md, Manifest.md, PROGRAMME.md,
+    The framework's documents — Context.md, charter.md, PROGRAMME.md,
     CATALOG.md, decisions.md — are written with stable headings, so this
     is the cheap way to read them; naming a section you already know
     beats paging. `outline: true` returns the map (headings, line

@@ -17,7 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import context_files
-from ..state import db, manifest
+from ..state import db
+from ..state import intent as intent_mod
 from ..knowledge import lemma_lookup
 from ..pipeline import events
 
@@ -251,38 +252,51 @@ def _names_from_deads(deads: list) -> list[str]:
     return out
 
 
-def _section_manifest_forbidden(mfst: manifest.Manifest) -> list[str]:
+def _section_forbidden(intent: intent_mod.ProblemIntent) -> list[str]:
     # Empty list still renders — the prompts reference this section
     # unconditionally, and a silently absent heading left agents unsure
     # whether the list was empty or the Context truncated
     # (agent_feedback 2026-07-12..13).
-    if not mfst.forbidden_lemmas:
-        return ["## FORBIDDEN_LEMMAS (from Manifest.md)", "(none)", ""]
+    if not intent.forbidden_lemmas:
+        return ["## FORBIDDEN_LEMMAS (problem setting)", "(none)", ""]
     return [
-        "## FORBIDDEN_LEMMAS (from Manifest.md)",
+        "## FORBIDDEN_LEMMAS (problem setting)",
         "**Do NOT use any of the following in your proof or in any "
         "sub-goal docstring; the integrator will reject the proposal.**",
-        *(f"- {f}" for f in mfst.forbidden_lemmas),
+        *(f"- {f}" for f in intent.forbidden_lemmas),
         "",
     ]
 
 
-def _section_manifest_body(mfst: manifest.Manifest) -> list[str]:
-    """The operator's Manifest, whole (2026-08-11).
-
-    It used to be one extracted section, `## Strategic notes`. The
-    framework no longer reads headings in this file — an operator writes
-    what they like there and the machine cannot promise to find a name
-    it chose. Whole is also cheap: median body across 616 Manifests is
-    440 B, p90 1,066 B. And it makes the operator's steering channel
-    stronger rather than weaker — anything written in the file reaches
-    the agent, not only the paragraph under one blessed heading."""
-    if not mfst.body:
+def _section_goal(intent: intent_mod.ProblemIntent) -> list[str]:
+    """The problem's goal — the top group's charter, whole and verbatim
+    (v40). No heading inside it is parsed: the user writes what they
+    like and everything reaches the agent."""
+    if not intent.charter:
         return []
     return [
-        "## Manifest (from the operator)",
+        "## The problem's goal",
         "",
-        mfst.body,
+        intent.charter,
+        "",
+    ]
+
+
+def _section_user_word(intent: intent_mod.ProblemIntent) -> list[str]:
+    """The user's word — standing directives, verbatim (v40). Rendered
+    at every depth and never replaced by any group's charter: a group's
+    charter says what to settle, the word says how the user wants the
+    whole problem conducted right now."""
+    if not intent.word:
+        return []
+    return [
+        "## The user's word",
+        "",
+        "Standing directives from the user. They apply to every group "
+        "at every depth and override conflicting habits; only the user "
+        "edits them.",
+        "",
+        intent.word,
         "",
     ]
 
@@ -812,7 +826,7 @@ def _section_proved_goals(conn: sqlite3.Connection,
     return lines
 
 
-def _section_library_available(conn, mfst) -> list[str]:
+def _section_library_available(conn, intent) -> list[str]:
     """Surface the reusable Library — theorems Asterism already proved and
     harvested from prior Problems — to the PROVING agent, so it can cite
     them instead of re-deriving (Library-as-input).
@@ -833,7 +847,7 @@ def _section_library_available(conn, mfst) -> list[str]:
     if not sections:
         return []
 
-    problem = mfst.problem or ""
+    problem = intent.problem or ""
     domain = problem.split(".")[0] if "." in problem else problem
     relevant = [(p, d) for p, d in sections
                 if d and (p.split(".")[0] == domain)]
@@ -1408,17 +1422,18 @@ def _section_strategist_brief(conn: sqlite3.Connection,
 PAPER_INDEX_MAX_CHARS = 8_000
 
 
-def _paper_ids_for(mfst: manifest.Manifest, conn=None) -> list[str]:
-    """Bound paper ids for the manifest's problem, primary first.
-    Sources: DB `problem_papers` bindings (v2, D13) ∪ the legacy
-    Manifest `paper:` pointer (always primary when present). conn=None
-    (some test/offline callers) degrades to the Manifest pointer."""
-    primary = (getattr(mfst, "paper", "") or "").strip()
-    ids: list[str] = [primary] if primary else []
+def _paper_ids_for(intent: intent_mod.ProblemIntent,
+                   conn=None) -> list[str]:
+    """Bound paper ids for the problem, primary first — the DB
+    `problem_papers` bindings (v2, D13; `db.paper_bindings` orders
+    manifest-origin rows first, which preserves the retired frontmatter
+    pointer's primacy for migrated problems). conn=None (some
+    test/offline callers) reads as no bindings."""
+    ids: list[str] = []
     if conn is not None:
         try:
             from ..state import db as _db
-            for r in _db.paper_bindings(conn, str(mfst.problem)):
+            for r in _db.paper_bindings(conn, str(intent.problem)):
                 if r["paper_id"] not in ids:
                     ids.append(str(r["paper_id"]))
         except Exception:  # noqa: BLE001 — bindings are additive, never break Context
@@ -1426,11 +1441,11 @@ def _paper_ids_for(mfst: manifest.Manifest, conn=None) -> list[str]:
     return ids
 
 
-def _section_paper_index(mfst: manifest.Manifest,
+def _section_paper_index(intent: intent_mod.ProblemIntent,
                          workspace: Path, conn=None,
                          attempts_dir: "Path | None" = None) -> list[str]:
     """Paper navigation section — rendered when the problem binds ≥1
-    shelved paper (Manifest `paper:` pointer ∪ DB bindings). The
+    shelved paper (`problem_papers` DB bindings). The
     PRIMARY paper's map goes to the `PAPER_MAP.md` companion with a
     pointer inline (2026-07-14, user call: the static map repeated
     ~4KB into every context for 140+ wakes); auxiliary papers
@@ -1438,7 +1453,7 @@ def _section_paper_index(mfst: manifest.Manifest,
     disk, Read on demand (D14 budget bar). Original text is the
     content authority; this section only navigates (D1). No
     attempts_dir (legacy/odd caller) → full map inline as before."""
-    pids = _paper_ids_for(mfst, conn)
+    pids = _paper_ids_for(intent, conn)
     if not pids:
         return []
     from ..papers import shelf
@@ -1516,11 +1531,11 @@ def _section_presearch_candidates(problem_dir: Path, goal_id: int) -> list[str]:
 
 
 def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
-                    mfst: manifest.Manifest, attempts_dir: Path,
+                    intent: intent_mod.ProblemIntent, attempts_dir: Path,
                     strategy_id: int | None = None,
                     kind: str | None = None,
                     decision_id: int | None = None) -> Path:
-    """Write Context.md into attempts_dir. Pulls from DB + Manifest.
+    """Write Context.md into attempts_dir. Pulls from DB + intent.
 
     `strategy_id`: when set (Backward worker), write a 'Strategy
     naming' section pinning sub-goal slug prefixes to `s<sid>_`.
@@ -1587,7 +1602,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
 
     # Section ordering — cross-spawn-stable content (BRIEF + KB lessons)
     # leads so prompt-cache prefix-matching gets maximal hit: within one
-    # Manifest version + KB state, the BRIEF + inline-lessons block is
+    # intent version + KB state, the BRIEF + inline-lessons block is
     # byte-identical across all spawns of this problem. Putting them first
     # means the cache-able prefix length is the BRIEF + lessons size
     # (~2-10 KB) rather than zero. Per-goal / per-spawn surfaces follow.
@@ -1605,7 +1620,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                                 attempts_dir),
         # Paper navigation — cross-spawn-stable (map.md changes only on
         # regeneration), so it sits in the cacheable prefix with BRIEF.
-        _section_paper_index(mfst, workspace, conn,
+        _section_paper_index(intent, workspace, conn,
                              attempts_dir=attempts_dir),
         # Phase 2 — Strategist injections sit between cross-spawn-stable
         # content (BRIEF / LESSONS) and per-goal sections. Directive is
@@ -1618,7 +1633,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                                       goal_id=int(goal["id"])),
         _section_strategist_brief(conn, decision_id, int(goal["id"])),
         _section_header(goal, workspace),
-        _section_library_available(conn, mfst),
+        _section_library_available(conn, intent),
         _section_strategy_naming(strategy_id, goal),
         _section_parent_strategy(conn, goal, workspace),
         _section_mathlib_lemmas_from_deads(direct_events, workspace),

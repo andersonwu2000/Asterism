@@ -9,23 +9,23 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
 
 ## What you see 
 
-- `Manifest.md` — the user's task. The fixed reference point.
+- `charter.md` — this group's charter: the claim this judgment settles. The fixed reference point — every "charter" and "MAIN claim" in the criteria mean it. Below it, the charters above this one (ancestral context) and those this chain already handed back; returned charters are context, not verdicts.
+- `user_word.md` (if present) — the user's standing directives, verbatim, binding for every group at every depth. Not part of the claim under judgment; a batch that plainly contradicts them fires criterion 1.
 - `PROGRAMME.md` — the current (last passed) Programme revision, followed by its execution record: the terminal results (proved / dead with anchoring) since it passed. **Check the candidate Argument's account against those results.**
 - `proposal.md` — the CANDIDATE revision under judgment: `# Title` (this batch's goal), `## Argument` (why the requirement needs this plan), `## Proof` (this batch's complete arguments — no gaps), `## Roadmap` (how the route settles the MAIN claim, in three bands — PAST closures, one per bullet / NOW this batch's decisions, one per bullet / AHEAD a one-line brief then a numbered plan ending with the exit; closures name the exact dead instantiation and a self-producible restart condition).
 - `decisions.md` — this batch's decisions (its experiments among them); goal targets are annotated `(slug, status)`.
 - `directive.md` (if present) — the operator's standing directive for this problem (human-written); context, not a criterion.
-- `Root.lean` / `Defs.lean` (if present) — the formal statement and definitions. **Check claims about the formal goal against these, not the Manifest's prose.**
+- `Root.lean` / `Defs.lean` (if present) — the formal statement and definitions. **Check claims about the formal goal against these, not the charter's prose.**
 - `TREE.md` (if present) — the goal tree (names + statuses) as it stood when this round started; check tree-shape and status claims here, and `inspect({"decl": "<slug>"})` when a status decides your verdict — that reads the record itself.
 - `{proofs_dir}` — the problem's landed proof files, all of them, readable in place. **A renamed/RETARGETED dispute is decided by these files, not by quotation.**
 - `{papers_dir}` — the fetched papers (each `Papers/<id>/` holds `text.md` + `map.md` + `meta.json`). **A faithfulness-to-the-paper claim is decided against these files, not by quotation.**
 - `CATALOG.md` (if present) — the proved-brick inventory; grep it to check "X already landed" claims.
 - `dialogue.md` (if present) — earlier rounds of THIS proposal cycle. Context, not the bar: judge the revision against the original claim, not a prior round's demand.
-- `charter.md` (if present) — this group's charter: it is this judgment's Manifest — every "Manifest" and "MAIN claim" in the criteria mean it, and `Manifest.md` becomes ancestral context. Also the charters above it and those your chain already handed back. Returned charters are context, not verdicts.
 - `contract.md` — the decision-kind rules the Strategist operates under, verbatim. Check quoted contract clauses against THESE, not the proposal's paraphrase.
 
 ## How to judge
 
-1. **Value**: `proposal.md`'s ## Argument must explain why achieving the Manifest's requirement needs this plan. Work the requirement does not need is not allowed.
+1. **Value**: `proposal.md`'s ## Argument must explain why achieving the charter's requirement needs this plan. Work the requirement does not need is not allowed.
 2. **Reachability**: `proposal.md`'s ## Roadmap must explain how this route settles the MAIN claim. A route that stops short of it, re-walks a failed route unchanged, or contradicts a verified Programme record, is not allowed.
 3. **Rigor**: `proposal.md`'s ## Proof must be logically complete. Logical errors, vaguely-papered holes, and gaps are not allowed.
 4. **Backed by argument**: every Inject in `decisions.md` must be proven in the ## Proof. A goal not proven by the ## Proof must not enter formalization.

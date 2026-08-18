@@ -96,7 +96,7 @@ later session can find them instead of re-deriving:
    deny-by-default. Every pipeline's write root is
    `.attempts/<pipeline_id>/` (WorkArea; the Adversary projection is
    `.attempts/<pid>/adversary/rN`), so one allow rule covers all spawns
-   while `proofs/`, `Root.lean`, `Defs.lean` and `Manifest.md` stay
+   while `proofs/`, `Root.lean`, `Defs.lean` and `problem.json` stay
    unwritable through the write_file tool. Verified: a write into
    `.attempts/` landed; a write into `Problems/` came back
    `Permission denied ... Matches user-configured deny rule`.

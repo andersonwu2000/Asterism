@@ -29,7 +29,11 @@ from pathlib import Path
 
 from . import db
 
-_ALLOWED_FILES = ("Defs.lean", "Manifest.md", "Root.lean")
+# v40: 'charter' targets the DB-resident goal (the top group's
+# charter) — accept writes through state/intent.set_charter, which
+# records the sanctioned-change history row itself. The user's word is
+# never machine-amendable, so it has no entry here.
+_ALLOWED_FILES = ("Defs.lean", "Root.lean", "charter")
 
 
 def pending_amends(conn: sqlite3.Connection,
@@ -131,19 +135,28 @@ def resolve_amend(conn: sqlite3.Connection, workspace: Path,
             payload.get("proposed_body", ""))
         if not final_body.strip():
             raise ValueError("accept with empty body")
-        _atomic_write(pdir / file, final_body)
-        # An accepted amendment IS the sanctioned user-file change — move
-        # the baseline pin with it (task #120 class sweep: without this
-        # row, `root_integrity_gate` would flag the amended file as
-        # tampered after the re-prove). Recorded as source='repin' (the
-        # schema's sanctioned-ack source; CHECK admits observed/repin).
-        from . import manifest as _mfst
-        conn.execute(
-            "INSERT INTO user_file_history"
-            " (problem, file, sha, body, seen_at, source)"
-            " VALUES (?, ?, ?, ?, ?, 'repin')",
-            (problem, file, _mfst._content_sha(final_body), final_body,
-             db.now()))
+        if file == "charter":
+            # DB-resident goal (v40): the intent writer updates the top
+            # group's charter AND records the source='repin' history row
+            # in one place — nothing on disk to write.
+            from . import intent as _intent
+            _intent.set_charter(conn, problem, final_body,
+                                source="repin")
+        else:
+            _atomic_write(pdir / file, final_body)
+            # An accepted amendment IS the sanctioned user-file change —
+            # move the baseline pin with it (task #120 class sweep:
+            # without this row, `root_integrity_gate` would flag the
+            # amended file as tampered after the re-prove). Recorded as
+            # source='repin' (the schema's sanctioned-ack source; CHECK
+            # admits observed/repin).
+            from . import intent as _intent
+            conn.execute(
+                "INSERT INTO user_file_history"
+                " (problem, file, sha, body, seen_at, source)"
+                " VALUES (?, ?, ?, ?, ?, 'repin')",
+                (problem, file, _intent._content_sha(final_body),
+                 final_body, db.now()))
         # Root.lean amendment changes the problem's canonical statement:
         # sync goals.statement (the CLAUDE.md file-table rule — "改 Root
         # statement 後重 init 或 sync goals.statement"). The root also

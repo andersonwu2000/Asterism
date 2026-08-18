@@ -96,9 +96,10 @@ class RejectDeclBody(BaseModel):
 
 class ProblemCreateBody(BaseModel):
     name: str
-    # either a raw manifest, or the structured halves the UI works in
-    manifest: str | None = None
-    body: str | None = None
+    # the problem's goal (required) + the user's standing directives
+    # (optional) — DB-resident intent (v40, Manifest.md retired)
+    charter: str | None = None
+    word: str | None = None
     settings: dict | None = None
     defs: str | None = None
     root: str | None = None
@@ -114,8 +115,9 @@ class PaperBindBody(BaseModel):
     paper_id: str
 
 
-class ManifestUpdateBody(BaseModel):
-    body: str | None = None
+class IntentUpdateBody(BaseModel):
+    charter: str | None = None
+    word: str | None = None
     settings: dict | None = None
 
 
@@ -726,67 +728,70 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                                     detail="unknown problem")
             return _data.problem_events(conn, problem)
 
-    @app.get("/api/problems/{problem}/manifest")
-    def manifest_get(problem: str) -> dict:
-        """The Manifest as the UI works with it: structured settings +
-        the natural-language body, plus whether a strategist amend is
-        pending (manual edits are locked then — the two writes would
-        race on the same file)."""
-        from ..state import manifest as _mfst
+    @app.get("/api/problems/{problem}/intent")
+    def intent_get(problem: str) -> dict:
+        """The problem's intent as the UI works with it (v40): the
+        charter (goal), the user's word (standing directives), the
+        machine settings, plus whether a strategist amend is pending
+        (charter edits are locked then — the two writes would race)."""
+        from ..state import intent as _intent
         from ..state import settings as _settings
-        path = db.problem_dir(workspace, problem) / "Manifest.md"
-        if not path.exists():
-            raise HTTPException(status_code=404, detail="no Manifest.md")
-        _, body = _mfst.split_raw(path.read_text(encoding="utf-8"))
-        # Dual-read (frontmatter dissolve): file parse gives the legacy
-        # fallback (frontmatter + `## Lemma hints` body section), DB
-        # rows win where present. Read-only — GET never migrates.
-        mfst = _mfst.parse(path)
-        merged = {
-            "axioms_whitelist": list(mfst.axioms_whitelist),
-            "forbidden_lemmas": list(mfst.forbidden_lemmas),
-            "library": bool(mfst.library),
-        }
-        pending = False
-        if (workspace / "asterism.db").exists():
-            with _ro(workspace) as conn:
-                merged.update(_settings.read(conn, problem))
-                row = conn.execute(
-                    "SELECT 1 FROM strategist_decisions WHERE problem = ?"
-                    "   AND decision_kind = 'RequestUserAmend'"
-                    "   AND outcome = 'awaiting_human' LIMIT 1",
-                    (problem,)).fetchone()
-                pending = row is not None
+        if not (workspace / "asterism.db").exists():
+            raise HTTPException(status_code=404, detail="no DB yet")
+        with _ro(workspace) as conn:
+            pintent = _intent.read(conn, problem)
+            if pintent is None:
+                raise HTTPException(status_code=404,
+                                    detail=f"unknown problem {problem!r}")
+            merged = {
+                "axioms_whitelist": list(pintent.axioms_whitelist),
+                "forbidden_lemmas": list(pintent.forbidden_lemmas),
+                "library": bool(pintent.library),
+            }
+            merged.update(_settings.read(conn, problem))
+            row = conn.execute(
+                "SELECT 1 FROM strategist_decisions WHERE problem = ?"
+                "   AND decision_kind = 'RequestUserAmend'"
+                "   AND outcome = 'awaiting_human' LIMIT 1",
+                (problem,)).fetchone()
+            pending = row is not None
         return {
             "problem": problem,
-            "body": body,
+            "charter": pintent.charter,
+            "word": pintent.word,
             "settings": merged,
             "pending_amend": pending,
         }
 
-    @app.post("/api/problems/{problem}/manifest")
-    def manifest_update(problem: str, body: ManifestUpdateBody) -> dict:
-        from ..state import manifest as _mfst
-        if (workspace / "asterism.db").exists():
-            with _ro(workspace) as conn:
-                row = conn.execute(
+    @app.post("/api/problems/{problem}/intent")
+    def intent_update(problem: str, body: IntentUpdateBody) -> dict:
+        from ..state import intent as _intent
+        conn0 = db.connect(workspace / "asterism.db")
+        try:
+            if body.charter is not None:
+                row = conn0.execute(
                     "SELECT 1 FROM strategist_decisions WHERE problem = ?"
                     "   AND decision_kind = 'RequestUserAmend'"
                     "   AND outcome = 'awaiting_human' LIMIT 1",
                     (problem,)).fetchone()
-            if row is not None:
-                raise HTTPException(
-                    status_code=409,
-                    detail="a strategist amend is pending on this Manifest"
-                           " — resolve it in the Inbox first")
-        # Body (human prose) still lives in Manifest.md; settings go to
-        # the DB chokepoint (frontmatter dissolve) — the yaml lines stop
-        # changing and stay as legacy fallback for unmigrated problems.
-        if body.body is not None:
-            rc, msg = _mfst.update_manifest(
-                workspace, problem, body=body.body, settings=None)
-            if rc != 0:
-                raise HTTPException(status_code=422, detail=msg)
+                if row is not None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="a strategist amend is pending on this"
+                               " problem — resolve it in the Inbox first")
+                try:
+                    _intent.set_charter(conn0, problem, body.charter)
+                except ValueError as e:
+                    raise HTTPException(status_code=422,
+                                        detail=str(e)) from e
+            if body.word is not None:
+                try:
+                    _intent.set_word(conn0, problem, body.word)
+                except ValueError as e:
+                    raise HTTPException(status_code=422,
+                                        detail=str(e)) from e
+        finally:
+            conn0.close()
         if body.settings:
             from ..state import settings as _settings
             conn = db.connect(workspace / "asterism.db")
@@ -798,18 +803,13 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                     raise HTTPException(status_code=404,
                                         detail=f"unknown problem {problem!r}")
                 # Mutability classes (owner's inventory, 2026-07-08).
-                # The axiom gate is FIXED AT CREATION: ManifestCache
-                # hot-reloads and the gate re-reads it per validation,
-                # so a mid-life edit would re-tune soundness under
-                # live (and past) proofs — the one genuinely dangerous
-                # knob. Enforced here, not just hidden in the UI.
+                # The axiom gate is FIXED AT CREATION: the gate re-reads
+                # it per validation, so a mid-life edit would re-tune
+                # soundness under live (and past) proofs — the one
+                # genuinely dangerous knob. Enforced here, not just
+                # hidden in the UI.
                 current = {
                     "axioms_whitelist": [], "library": False}
-                mpath = db.problem_dir(workspace, problem) / "Manifest.md"
-                if mpath.exists():
-                    parsed = _mfst.parse(mpath)
-                    current["axioms_whitelist"] = list(parsed.axioms_whitelist)
-                    current["library"] = bool(parsed.library)
                 current.update(_settings.read(conn, problem))
                 if "axioms_whitelist" in body.settings:
                     asked = sorted(str(a) for a in
@@ -1255,15 +1255,17 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
 
     @app.post("/api/problems/create")
     def create_problem_ep(body: ProblemCreateBody) -> dict:
-        """Author a new problem from the UI: write Manifest.md
-        (+ optional Defs.lean / Root.lean), then run the same init
+        """Author a new problem from the UI: write the problem.json
+        seed (+ optional Defs.lean / Root.lean), then run the same init
         chokepoint the CLI uses. Pure-NL creation is instant; a
         Defs/Root submission type-checks first (lake build — minutes).
         On init failure the created directory is rolled back so the
         form can be corrected and resubmitted."""
+        import json as _json
         import re as _re
         import shutil as _shutil
         from ..core.cli import init_problem
+        from ..state import intent as _intent
         name = body.name.strip()
         if not _re.fullmatch(
                 r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*", name)                 or len(name) > 120:
@@ -1271,23 +1273,11 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                 status_code=422,
                 detail="problem name must be dot-separated identifiers, "
                        "e.g. Topology.my_theorem")
-        from ..state import manifest as _mfst
-        raw = body.manifest
-        if raw is None and body.body is not None:
-            # Identity only. The settings dissolved into
-            # `problem_settings` on 2026-07-07 — the DB wins at every
-            # gate, the UI edits the DB, and the UI never shows this
-            # block again. Writing them here produced a copy that went
-            # stale the first time anyone changed anything, with nobody
-            # positioned to notice (measured 2026-08-11: two problems
-            # already disagreed). The explicit creation-time values are
-            # written to the DB below, which is where they are read.
-            fm: dict[str, object] = {"problem": name}
-            nl = body.body if body.body.startswith("\n") else "\n" + body.body
-            raw = _mfst.compose(fm, nl)
-        if raw is None or not raw.strip():
+        charter = str(body.charter or "").strip()
+        if not charter:
             raise HTTPException(status_code=422,
-                                detail="Manifest must not be empty")
+                                detail="the charter (the problem's goal) "
+                                       "must not be empty")
         pdir = db.problem_dir(workspace, name)
         if pdir.exists():
             raise HTTPException(
@@ -1297,8 +1287,12 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         try:
             pdir.mkdir(parents=True)
             created = True
-            (pdir / "Manifest.md").write_text(
-                raw, encoding="utf-8", newline="\n")
+            seed: dict = {"problem": name, "charter": charter}
+            if body.word and body.word.strip():
+                seed["word"] = body.word.strip()
+            (pdir / _intent.SEED_FILENAME).write_text(
+                _json.dumps(seed, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8", newline="\n")
             if body.defs and body.defs.strip():
                 (pdir / "Defs.lean").write_text(
                     body.defs, encoding="utf-8", newline="\n")

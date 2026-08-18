@@ -1065,7 +1065,7 @@ def _operator_state_deny_rules() -> list[str]:
     strips the memory section from the spawn system prompt (root
     cause); these deny rules block re-entry via absolute paths learned
     from month-old notes. Bash cat/echo stays physically possible —
-    same accepted porosity as the Manifest deny in the spawn cmd.
+    same accepted porosity as the user-file deny in the spawn cmd.
     Sanctioned cross-wake stores remain the plan note, LESSONS.md,
     directives and Library.
 
@@ -1349,12 +1349,12 @@ class ClaudeCliProvider:
             "-p", prompt,
             "--permission-mode", "acceptEdits",
             # User-file write-deny (self-audit 2026-07-12 §3-1a):
-            # Manifest.md / Defs.lean / Root.lean are the user-intent
+            # problem.json / Defs.lean / Root.lean are the user-intent
             # SoT — no spawn has a legitimate write path to them (the
             # sanctioned change channel is RequestUserAmend → operator;
             # framework-side amend/promote writers are Python, not
             # spawn tools). Bash writes remain physically possible —
-            # the Ingest snapshot's Manifest history (§3-1b) is the
+            # the user-file history sweep (§3-1b) is the
             # any-channel detection backstop.
             "--disallowedTools",
             # The shell closes here (2026-08-10). `--allowedTools` never
@@ -1371,7 +1371,7 @@ class ClaudeCliProvider:
             # arithmetic, `paper_search`/`paper_fetch` for the Scholar's
             # two curated commands. spawn_guard's refusal names them.
             "Bash",
-            "Write(**/Manifest.md)", "Edit(**/Manifest.md)",
+            "Write(**/problem.json)", "Edit(**/problem.json)",
             "Write(**/Defs.lean)", "Edit(**/Defs.lean)",
             "Write(**/Root.lean)", "Edit(**/Root.lean)",
             # PROGRAMME.md is a read-only render of the adversarially

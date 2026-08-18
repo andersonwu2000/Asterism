@@ -13,7 +13,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from ..state import db, manifest
+from ..state import db
 
 LIBRARIAN_MAX_CHAIN_RETRIES = 2
 
@@ -175,10 +175,10 @@ def _advance_librarian_chain(
 
 def _librarian_selfstart_problems(
     conn: sqlite3.Connection, workspace: Path,
-    manifests, *, scope: str | None,
+    intents, *, scope: str | None,
 ) -> "list[str]":
     """In-scope problems whose Librarian chain should START this run but has
-    no durable trigger left (#92 Bug B): opted-in (`Manifest.library`),
+    no durable trigger left (#92 Bug B): opted-in (the `library` setting),
     Ingest committed, no INDEX yet, and no `library_decls` rows (chain never
     began, or the library was reset). The one-shot enqueue (approve-ingest,
     or `_commit_ingest` under direct-ingest config) is wiped by
@@ -207,9 +207,9 @@ def _librarian_selfstart_problems(
             " WHERE ingested_at IS NOT NULL").fetchall()
     out: list[str] = []
     for (problem,) in ingested:
-        if problem not in manifests:
+        if problem not in intents:
             continue
-        if not manifests[problem].library:
+        if not intents[problem].library:
             continue
         # anchor+claim sign-off pause (2026-07-03): a Strategist `Ingest`
         # under `library.require_signoff` set `ingest_signoff_pending` and is
@@ -229,7 +229,7 @@ def _librarian_selfstart_problems(
 
 def _librarian_refill(
     conn: sqlite3.Connection, workspace: Path,
-    running: "set[tuple]", manifests, *, scope: str | None = None,
+    running: "set[tuple]", intents, *, scope: str | None = None,
     fail_counts: dict,
 ) -> bool:
     """Tick-level DAG scheduler for the Librarian chain (#92) — the analogue of
@@ -264,7 +264,7 @@ def _librarian_refill(
     problems = [p for (p,) in prob_rows]
     seen = set(problems)
     for p in _librarian_selfstart_problems(
-            conn, workspace, manifests, scope=scope):
+            conn, workspace, intents, scope=scope):
         if p not in seen:
             problems.append(p)
             seen.add(p)
@@ -347,7 +347,7 @@ def _librarian_refill(
 
 
 def _harvest_outstanding(
-    conn: sqlite3.Connection, workspace: Path, manifests, *,
+    conn: sqlite3.Connection, workspace: Path, intents, *,
     scope: str | None, fail_counts: dict,
 ) -> bool:
     """Durable-state 'Library-ization still owed' guard for the workspace-exit
@@ -365,7 +365,7 @@ def _harvest_outstanding(
     `library_decls` lifecycle, and the persisted fail-count — so it stays True
     across that window regardless of in-flight timing.
 
-    Returns True iff some in-scope problem is opted-in (`Manifest.library`),
+    Returns True iff some in-scope problem is opted-in (the `library` setting),
     Ingest-committed (Phase 6 — same eligibility as
     `_librarian_selfstart_problems`; harvest is strictly Ingest-driven), has
     no Library INDEX yet, and its next Librarian step is NOT stalled (fail
@@ -383,7 +383,7 @@ def _harvest_outstanding(
             "SELECT name AS problem FROM problems"
             " WHERE ingested_at IS NOT NULL").fetchall()
     for (problem,) in rows:
-        if problem not in manifests or not manifests[problem].library:
+        if problem not in intents or not intents[problem].library:
             continue
         # Paused awaiting human ingest sign-off — this is HUMAN-outstanding, not
         # daemon-outstanding, so it must NOT hold the daemon alive. The human's

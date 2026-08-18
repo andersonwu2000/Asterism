@@ -8,20 +8,20 @@ must cite its child's bricks and cross-problem citation is forbidden
 (`pipeline/_cite_gate.py`), so a group is a partition of a problem, never a
 recursive problem.
 
-The equation the whole design rests on:
-
-    charter : sub-group  ::  Manifest : problem
-
-A sub-group does not know it is a sub-group. It knows it was handed a
-claim and has to settle it. That is what lets it reuse every
-problem-level mechanism unchanged, all the way to Ingest.
+The invariant the whole design rests on (v40 made it literal): every
+group — the top one included — is one charter, judged against that
+charter and nothing else. A sub-group does not know it is a sub-group.
+It knows it was handed a claim and has to settle it. That is what lets
+it reuse every problem-level mechanism unchanged, all the way to
+Ingest.
 
 Consequences worth stating up front:
 
   * The **top group** of each problem is a real row (`parent_group_id IS
-    NULL`), not a special case in the code. Its charter is `Manifest.md`,
-    read from disk — the column stays empty. A partial unique index pins
-    "one top group per problem".
+    NULL`), not a special case in the code. Its charter is the problem's
+    GOAL as the user authored it (written at init; amended only through
+    `state/intent.set_charter`). A partial unique index pins "one top
+    group per problem".
   * A group's anchor goal is **optional**. The main shape — a burden the
     Strategist delegates while writing its `## Proof` — has none: the group
     starts from prose and mints its own bricks, exactly like a pure-NL
@@ -296,12 +296,17 @@ def _nearest_active(conn: sqlite3.Connection, problem: str,
 # Writes
 # ---------------------------------------------------------------------
 
-def ensure_top_group(conn: sqlite3.Connection, problem: str) -> int:
+def ensure_top_group(conn: sqlite3.Connection, problem: str, *,
+                     charter: str = "") -> int:
     """Create the problem's top group if it has none. Returns its id.
 
     Idempotent, and cheap enough to call on any path that might be the
     first to touch a problem — a problem without a top group has no seat
     for its Strategist at all, so failing closed here would be silent.
+
+    `charter` is the problem's goal, passed by init on first creation;
+    an existing top group's charter is never touched here (that write
+    belongs to `state/intent.set_charter`, which records history).
     """
     row = top_group(conn, problem)
     if row is not None:
@@ -313,8 +318,8 @@ def ensure_top_group(conn: sqlite3.Connection, problem: str) -> int:
     cur = conn.execute(
         "INSERT INTO groups (problem, parent_group_id, charter, status,"
         " last_routine_at, last_strategist_at, created_at, updated_at)"
-        " VALUES (?, NULL, '', 'active', ?, ?, ?, ?)",
-        (problem,
+        " VALUES (?, NULL, ?, 'active', ?, ?, ?, ?)",
+        (problem, str(charter).strip(),
          clocks["last_routine_at"] if clocks else None,
          clocks["last_strategist_at"] if clocks else None, ts, ts))
     return int(cur.lastrowid)
@@ -505,17 +510,19 @@ def _charter_claim(charter: str) -> str:
 
 def charter_digest(conn: sqlite3.Connection, problem: str,
                     group_id: "int | None") -> str:
-    """`charter.md` — what a SUB-group is judged against (v35).
+    """`charter.md` — what a group is judged against (v35; every depth
+    including the top since the v40 Manifest retirement).
 
     Three parts, all structured data rather than free text:
 
-      1. **this group's charter** — its Manifest. The fixed reference
-         point: does the proposal settle THIS claim?
-      2. **the ancestor chain** — every charter above it. Criterion 3
-         (non-circular) otherwise only catches a claim that leans on the
-         PARENT's conclusion, and on a deep tree circularity arrives a
-         generation later: C's charter being, in substance, grandparent
-         A's.
+      1. **this group's charter** — the fixed reference point: does the
+         proposal settle THIS claim? For the top group that is the
+         problem's goal as the user authored it.
+      2. **the ancestor chain** — every charter above it (top group:
+         none). Criterion 3 (non-circular) otherwise only catches a
+         claim that leans on the PARENT's conclusion, and on a deep
+         tree circularity arrives a generation later: C's charter
+         being, in substance, grandparent A's.
       3. **charters this subtree already handed back** — with flavour and
          post-mortem. Deliberately NOT a gate: re-attacking a failed line
          is legitimate, and whether this attempt differs is a judgement
@@ -523,18 +530,22 @@ def charter_digest(conn: sqlite3.Connection, problem: str,
          same reason the dead-twin gate misfires, task #112). The judge
          gets the material and decides on the `value` criterion.
 
-    Empty for the top group: its charter IS `Manifest.md`, already
-    staged, and it has no ancestors.
+    `group_id=None` resolves to the top group (problem-level callers).
     """
     if group_id is None:
-        return ""
+        top = top_group(conn, problem)
+        if top is None:
+            return ""
+        group_id = int(top["id"])
     me = get(conn, int(group_id))
-    if me is None or is_top(me):
+    if me is None:
         return ""
     out = ["# Charter — what this group was asked to settle", "",
            str(me["charter"]).strip(), ""]
-    chain = ancestors(conn, int(group_id))
-    above = [a for a in chain if not is_top(a)]
+    # Every ancestor, the top group included: its charter is the
+    # problem's goal, and a deep chain restating the root claim is the
+    # circularity criterion 3 exists to catch (v40).
+    above = ancestors(conn, int(group_id))
     if above:
         out += ["## Charters above this one", "",
                 "Your charter must not depend on any of these being "

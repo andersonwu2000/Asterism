@@ -195,8 +195,8 @@ def _bridge_probe_text(conn, *, problem, statement, migrated,
     if workspace is not None:
         # Same replay every proof-file author gets (backward/builder/forward);
         # inserts after the last import, before the opens/theorem.
-        from ...state import manifest as _mfst
-        text = _mfst.inject_defs_opens(text, problem=problem,
+        from ...state import intent as _intent_m
+        text = _intent_m.inject_defs_opens(text, problem=problem,
                                        workspace=workspace)
     return text
 

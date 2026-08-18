@@ -194,10 +194,10 @@ REGISTRY: "dict[str, FailureTraits]" = {
 
     # --- framework shape errors (no agent involvement) ------------------
     "goal_not_found": _T("framework", agent_visible=False),
-    # #125 (07-29): a queue row whose problem has no loadable Manifest.
+    # #125 (07-29): a queue row whose problems row is missing.
     # Previously UNREGISTERED — the failure was invisible in the log and
     # had no cooldown, so T4 stall-wakes pumped a 1ms crashloop against
-    # a post-startup `asterism init` the manifest cache hadn't seen.
+    # a post-startup `asterism init` the intent cache had not seen.
     # cooldown_scope='target' rides the existing cooldown branch.
     "problem_not_found": _T("framework", agent_visible=False,
                             cooldown_scope="target"),
@@ -346,14 +346,14 @@ def rogue_axioms_message(rogue) -> str:
     submission block) both render it, and a bare "rogue axioms: [...]"
     taught nothing — four native_decide proofs bounced off it in one day
     (g7913/g7937/g7930/g7961), 40-54 minutes each, with the fifth
-    arriving after the Manifest note said not to."""
+    arriving after the problem note said not to."""
     rogue = sorted(rogue)
     msg = f"rogue axioms: {rogue}"
     if any("ofReduceBool" in a or "ofReduceNat" in a or "_native" in a
            for a in rogue):
         msg += (" — `Lean.ofReduceBool` means a `native_decide` "
                 "slipped in.")
-    msg += (" The Manifest's axiom whitelist is fixed and not "
+    msg += (" The problem's axiom whitelist is fixed and not "
             "negotiable. Way out: plain `decide` with a heartbeat "
             "budget on a smaller check — or decline with the cut you "
             "would make, so the claim is re-planned as smaller bricks.")

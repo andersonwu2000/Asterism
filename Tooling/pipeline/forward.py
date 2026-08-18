@@ -38,12 +38,12 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any  # noqa: F401 — used in string annotations (mfst/return)
+from typing import Any  # noqa: F401 — used in string annotations (intent/return)
 
 from . import _presearch
 from ..state import assemble, db, metaprog, proof_store, transitions
 from ..state import failures as _failures
-from ..state import manifest as _manifest_mod
+from ..state import intent as _intent_mod
 
 
 def _auto_prepend_candidate_imports(
@@ -95,7 +95,7 @@ def _forward_seed_scaffold(*, problem: str, workspace: Path) -> str:
     added then).
     """
     from .backward import _ensure_imports_subgoal
-    from ..state import manifest as _mfst
+    from ..state import intent as _intent_m
     base = (
         # longLine pre-waived: math statements routinely exceed 100
         # chars and the lint round-trip cost every Forward an extra
@@ -111,7 +111,7 @@ def _forward_seed_scaffold(*, problem: str, workspace: Path) -> str:
         f"end Problems.{problem}\n"
     )
     seeded = _ensure_imports_subgoal(base, problem=problem, workspace=workspace)
-    seeded = _mfst.inject_defs_opens(seeded, problem=problem, workspace=workspace)
+    seeded = _intent_m.inject_defs_opens(seeded, problem=problem, workspace=workspace)
     return seeded
 
 
@@ -593,7 +593,7 @@ def _extract_statement_string(body: str, slug: str,
 # ---------------------------------------------------------------------
 
 def run_forward(conn: sqlite3.Connection, *, problem: str,
-                workspace: Path, mfst: "Any", pipeline_id: str,
+                workspace: Path, intent: "Any", pipeline_id: str,
                 decision_id: int | None = None) -> "Any":
     """Full Forward pipeline (Phase 2 §3.4) with in-pipeline retry.
 
@@ -656,7 +656,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         # by run_lsp_edit_loop (target=new_forward.lean).
         compile_forward_context(
             conn, problem=problem, decision_id=decision_id,
-            attempts_dir=ctx.attempts_dir, workspace=workspace, mfst=mfst,
+            attempts_dir=ctx.attempts_dir, workspace=workspace, intent=intent,
         )
         for f in ctx.attempts_dir.glob("new_*.lean"):
             try:
@@ -735,36 +735,34 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
             )
 
         # Soundness guard: Forward must not redefine a symbol that appears
-        # in the user's Manifest statement. Such symbols are statement-
-        # vocabulary — owned by Defs.lean (user-blessed). If Forward could
-        # write them, an agent could pick a definition that trivially
-        # satisfies the theorem (e.g. `windingNumber := 0` makes a sum
-        # vanish). Statement-vocabulary gaps must route through
-        # Strategist's `RequestUserAmend(file="Defs.lean")` instead.
-        # Word-boundary match catches both bare slugs and qualified forms
-        # (e.g. slug=`windingNumber` matches `Complex.windingNumber`
-        # because `.` is a word boundary).
+        # in the user's charter. Such symbols are statement-vocabulary —
+        # owned by Defs.lean (user-blessed). If Forward could write them,
+        # an agent could pick a definition that trivially satisfies the
+        # theorem (e.g. `windingNumber := 0` makes a sum vanish).
+        # Statement-vocabulary gaps must route through Strategist's
+        # `RequestUserAmend(file="Defs.lean")` instead. Word-boundary
+        # match catches both bare slugs and qualified forms (e.g.
+        # slug=`windingNumber` matches `Complex.windingNumber` because
+        # `.` is a word boundary).
         # Phase 6 — the guard is conditional on Defs.lean existing: a
-        # pure-NL Manifest NAMES the very defs it asks the framework to
+        # pure-NL charter NAMES the very defs it asks the framework to
         # produce (they are the deliverables), and the trivial-definition
         # risk is carried by the anchor+claim human review instead.
         defs_exists = (db.problem_dir(workspace, problem)
                        / "Defs.lean").exists()
         if metadata.kind in NON_THEOREM_KINDS and defs_exists:
-            # Referent widened from the `## Statement` section to the
-            # whole Manifest body (2026-08-11), because the framework
-            # stopped extracting named sections from a file whose
-            # headings the operator chooses. The body is a strict
-            # SUPERSET of what this read before, so the guard can only
-            # fire more often, never less — the safe direction for a
-            # soundness gate.
-            stmt = getattr(mfst, "body", "") or ""
+            # Referent: the whole charter (v40 — was the whole Manifest
+            # body since 2026-08-11; the charter is that body's
+            # successor, so coverage is unchanged). The user's word is
+            # deliberately excluded: directives are conduct, not
+            # statement vocabulary.
+            stmt = getattr(intent, "charter", "") or ""
             if re.search(rf"\b{re.escape(metadata.slug)}\b", stmt):
                 return PipelineResult(
                     outcome="failed", failure_reason="forward_no_new_goal",
                     failure_detail=(
-                        f"def name '{metadata.slug}' appears in user "
-                        f"Manifest statement; statement-vocabulary must "
+                        f"def name '{metadata.slug}' appears in the "
+                        f"problem's charter; statement-vocabulary must "
                         f"live in Defs.lean — use "
                         f"`RequestUserAmend(file=\"Defs.lean\")` instead"
                     ),
@@ -947,8 +945,8 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 outcome = commit_forward_lemma(
                     conn, problem=problem, workspace=workspace,
                     attempts_dir=attempts_dir, metadata=metadata,
-                    whitelist=_manifest_mod.effective_axioms(
-                        mfst, problem=problem),
+                    whitelist=_intent_mod.effective_axioms(
+                        intent, problem=problem),
                     source_filename=src.name,
                     decl_info=fwd_decl_info,
                 )
@@ -1051,7 +1049,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
     def _compile_ctx() -> None:
         compile_forward_context(
             conn, problem=problem, decision_id=decision_id,
-            attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+            attempts_dir=attempts_dir, workspace=workspace, intent=intent,
         )
 
     def _mint_presearch() -> None:

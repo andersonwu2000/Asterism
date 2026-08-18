@@ -184,8 +184,12 @@ def _format_rebuttal(verdict: dict, round_no: int,
 # claim is amendable — before this, the hand-back verb could not
 # point at the file that was wrong and the Strategist looped on
 # schema_invalid forever.
+# v40 (Manifest retirement): 'charter' is the DB-resident goal (the
+# top group's charter) — an accepted amend on it writes through
+# state/intent.set_charter, not a file. The user's WORD is deliberately
+# absent: standing directives are never machine-amendable.
 USER_AMEND_FILES: frozenset[str] = frozenset(
-    {"Defs.lean", "Manifest.md", "Root.lean"})
+    {"Defs.lean", "Root.lean", "charter"})
 
 # ---------------------------------------------------------------------
 # Decision dataclass
@@ -398,7 +402,7 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
       - Inject mode is shape-derived (target present = goal job,
         absent = mint); legacy `pipeline` payload is ignored
       - Reopen ancestor safety walk (no `disproved` ancestor)
-      - RequestUserAmend file ∈ {Defs.lean, Manifest.md}
+      - RequestUserAmend file ∈ USER_AMEND_FILES
       - RequestUserAmend dedup: no other awaiting_human row for this problem
 
     Side effect: when `decision.target_id` is a slug string (e.g. agent
@@ -495,7 +499,7 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         return ""
 
     if k == "Delegate":
-        # The charter IS the sub-group's Manifest — the fixed reference
+        # The charter IS what the sub-group is judged against — the fixed reference
         # point its own Adversary judges against — so an empty or
         # gestural one leaves the group with nothing to be judged on.
         if not decision.brief or not str(decision.brief).strip():
@@ -750,13 +754,13 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         # Phase 6 — Ingest is the ONLY terminal (Done fused into it).
         # HARD gate: a present root is a user-pinned must-prove-exactly-
         # this requirement, machine-checkable; the framework rejects the
-        # terminal judgment outright while it is unproved. (Manifest's
+        # terminal judgment outright while it is unproved. (The charter's
         # other requirements are SOFT — NL, only the Strategist can judge
         # them — so they are prompt-governed, not gated here.)
         #
         # v35 — a SUB-group's Ingest is a delivery upward, and the same
         # gate applies one level down, because the same equation holds:
-        # charter is its Manifest and its ANCHOR is its root goal. So a
+        # charter is its judgment subject and its ANCHOR is its root goal. So a
         # rescue-shape group must prove its anchor; an anchorless one
         # must have marked at least one deliverable of its own.
         me = _authoring_group(conn, problem, group_id)
@@ -801,7 +805,7 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                     "before the terminal judgment is valid")
         # A proved root counts toward the >=1-deliverable requirement:
         # a pure-root problem (no Forward deliverables, e.g. a classic
-        # single-theorem Manifest) must still be able to exit. Same-batch
+        # single-theorem charter) must still be able to exit. Same-batch
         # marks listed before the Ingest count too — the same catch-22
         # fixed for anchorless sub-groups above applies to a pure-NL
         # problem's top group.
@@ -834,7 +838,7 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         # (The AttemptDisproof-linked disproof gate retired with the
         # kind, 2026-08-04 — no mechanically-linked negation pairs can
         # be minted anymore. The invariant "a disproved requested claim
-        # never satisfies the Manifest" survives in the contract line
+        # never satisfies the charter" survives in the contract line
         # plus the judge's reachability criterion: a refuted main claim
         # leaves no Roadmap entry that could close it.)
         return ""
@@ -920,7 +924,7 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
 #: -bearing for a defect the split introduced.
 #:
 #: The isolation argument did not survive reading its own prompt either:
-#: admin.md said "Mark only top-level claims the Manifest asks for" and
+#: admin.md said "Mark only top-level claims the charter asks for" and
 #: "Do not reason about the mathematics" — which claims are the
 #: deliverable IS a mathematical judgement.
 #:
@@ -1063,7 +1067,7 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # Cross-decision: ConfirmShelve must be paired with at least one
     # ACTION decision in the same batch — Inject. EmitDirective is notes
     # only (not action); RequestUserAmend is the user-escalation channel
-    # reserved for Defs.lean / Manifest.md errors. Forces Strategist to
+    # reserved for user-file/charter errors. Forces Strategist to
     # keep trying — articulating defeat without dispatching a fresh
     # attempt or redirecting focus is the lazy pattern this rule catches.
     #
@@ -1924,7 +1928,7 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     Librarian trigger in `verify.root_integrity_gate` is retired —
     harvest is strictly Ingest-driven now."""
     from ..core import config as _config
-    from ..state import manifest as _manifest
+    from ..state import intent as _intent
     # v35 — a SUB-group's Ingest is a DELIVERY UPWARD, not a terminal.
     # Everything below this branch is problem-terminal semantics: the
     # human sign-off pause, the Library harvest, the regression
@@ -1976,31 +1980,25 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     harvest = True
     signoff_optout = False
     harvest_skip_msg = ""
-    mfst_path = db.problem_dir(workspace, problem) / "Manifest.md"
-    try:
-        mfst = _manifest.parse(mfst_path)
-        # Dual-read (frontmatter dissolve): this direct parse bypasses
-        # the ManifestCache overlay — stamp DB settings here too, or a
-        # UI library-toggle would be invisible to the harvest decision.
-        from ..state import settings as _settings
-        _settings.overlay(mfst, _settings.read(conn, problem))
-        signoff_optout = not mfst.signoff
-    except Exception as e:
-        # Unreadable Manifest: no harvest, but DO pause — failing into
+    pintent = _intent.read(conn, problem)
+    if pintent is None:
+        # Unreadable intent: no harvest, but DO pause — failing into
         # the human gate is the safe direction.
         harvest = False
-        harvest_skip_msg = (f"[strategist] Ingest({problem}): Manifest "
-                            f"unreadable ({e}); no harvest")
-    if harvest and not mfst.library:
+        harvest_skip_msg = (f"[strategist] Ingest({problem}): intent "
+                            f"unreadable (no problems row); no harvest")
+    else:
+        signoff_optout = not pintent.signoff
+    if harvest and not pintent.library:
         harvest = False
-        harvest_skip_msg = (f"[strategist] Ingest({problem}): Manifest "
+        harvest_skip_msg = (f"[strategist] Ingest({problem}): "
                             f"library:false — opted out of Library; "
                             f"no harvest")
     require_signoff = (not signoff_optout) and _as_bool(_config.get(
         "library.require_signoff", default=True, workspace=workspace))
 
     # Terminal stamp + gate flag: one atomic publication. Even when the
-    # Manifest opts out of harvest the Strategist's terminal judgment
+    # problem opts out of harvest the Strategist's terminal judgment
     # stands; only the harvest side-effects vary.
     db.set_problem_ingested(conn, problem)
     from ..state import transitions as _transitions
@@ -2022,16 +2020,14 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     # stays reconstructible from git even though the yaml stopped
     # changing. Best-effort like the rest of the record.
     settings_snapshot = None
-    try:
+    if pintent is not None:
         settings_snapshot = {
-            "axioms_whitelist": _manifest.effective_axioms(
-                mfst, problem=problem),
-            "forbidden_lemmas": list(mfst.forbidden_lemmas),
-            "library": bool(mfst.library),
-            "signoff": bool(mfst.signoff),
+            "axioms_whitelist": _intent.effective_axioms(
+                pintent, problem=problem),
+            "forbidden_lemmas": list(pintent.forbidden_lemmas),
+            "library": bool(pintent.library),
+            "signoff": bool(pintent.signoff),
         }
-    except Exception:  # noqa: BLE001 — unreadable Manifest path above
-        pass
     _regress.record_terminal(
         workspace, problem=problem, terminal="ingested",
         deliverables=len(db.deliverables(conn, problem)),
@@ -2316,7 +2312,7 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
 def run_strategist(conn: sqlite3.Connection, *, problem: str,
                    trigger_kind: str, tick: int,
                    workspace: Path,
-                   mfst: "Any",
+                   intent: "Any",
                    pipeline_id: str,
                    pending_review_id: int | None = None,
                    group_id: "int | None" = None) -> "Any":
@@ -2372,7 +2368,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # Stage 1 — Context.md
     compile_strategist_context(
         conn, problem=problem, trigger_kind=trigger_kind,
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=intent,
         pending_review_id=pending_review_id, group_id=group_id,
     )
 

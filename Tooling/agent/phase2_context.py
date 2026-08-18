@@ -9,7 +9,7 @@ Strategist sees:
   - Active goal list with statements + status
   - Recent strategist_decisions + their outcomes (self-feedback)
   - Proof tree, FRONTIER view (settled subtrees collapsed; #2)
-  - Manifest + Defs.lean (for T0 / T3)
+  - Charter + user word + Defs.lean
   - Pending review target (for T2)
 
 Forward sees:
@@ -17,7 +17,7 @@ Forward sees:
   - Library state (cross-problem proved lemmas)
   - TREE.md inline
   - Past Forward output history
-  - Mathlib hints from Manifest (loogle is agent-driven via Bash tool)
+  - Mathlib hints (loogle is agent-driven via Bash tool)
 """
 from __future__ import annotations
 
@@ -26,7 +26,8 @@ import re
 import sqlite3
 from pathlib import Path
 
-from ..state import db, manifest, tree
+from ..state import db, tree
+from ..state import intent as intent_mod
 from . import context
 
 # Inline tail of the proved catalog (strategist index + Forward
@@ -64,12 +65,12 @@ def _section_trigger(trigger_kind: str, pending_review_id: int | None,
 
 
 def _axiom_certification_note(conn: sqlite3.Connection,
-                              mfst: "manifest.Manifest | None",
+                              intent: "intent_mod.ProblemIntent | None",
                               problem: str) -> list[str]:
     """What the machine already checked about axioms, rendered exactly
     when `Ingest` becomes reachable (2026-08-02 feedback).
 
-    The Manifest states the axiom obligation explicitly, but `.lake/build`
+    The problem's axiom whitelist states the obligation explicitly, but `.lake/build`
     is outside the Strategist's readable roots, so the one wake that has
     to certify it could only argue it by grepping sources for `sorry` and
     left a `SUSPECT:` line on its own exit gate. The probe it wanted to
@@ -84,8 +85,8 @@ def _axiom_certification_note(conn: sqlite3.Connection,
         (problem,)).fetchone()[0]
     if not n:
         return []
-    wl = (manifest.effective_axioms(mfst, problem=problem)
-          if mfst is not None else [])
+    wl = (intent_mod.effective_axioms(intent, problem=problem)
+          if intent is not None else [])
     wl_txt = ", ".join(f"`{a}`" for a in wl) if wl else "(none listed)"
     return [
         "## Axiom certification (already machine-checked)",
@@ -104,7 +105,7 @@ def _axiom_certification_note(conn: sqlite3.Connection,
 def _section_ingest_gate(conn: sqlite3.Connection,
                          problem: str,
                          group_id: "int | None" = None,
-                         mfst: "manifest.Manifest | None" = None,
+                         intent: "intent_mod.ProblemIntent | None" = None,
                          ) -> list[str]:
     """Phase 6 — context-conditional Ingest availability note (design ④):
 
@@ -116,7 +117,7 @@ def _section_ingest_gate(conn: sqlite3.Connection,
         statements from CATALOG.md (ungated 2026-07-30; the old
         `frozen`-only gate meant it never rendered).
       - root proved, or no root (pure-NL) → say nothing; the prompt's
-        standing instruction ("commit Ingest once the Manifest's
+        standing instruction ("commit Ingest once the charter's
         requirements are met") is the only voice — these notes would be
         pure noise once they stop being true.
     """
@@ -146,7 +147,7 @@ def _section_ingest_gate(conn: sqlite3.Connection,
         "SELECT status FROM goals WHERE problem = ? AND origin = 'root'"
         " LIMIT 1", (problem,)).fetchone()
     if root is None or str(root["status"]) == "proved":
-        return _axiom_certification_note(conn, mfst, problem)
+        return _axiom_certification_note(conn, intent, problem)
     lines = [
         "## Ingest availability",
         "",
@@ -260,8 +261,8 @@ def _section_stall_warning(conn: sqlite3.Connection,
         "Typical causes:",
         "",
         "- The problem is FRESH — nothing has been injected yet; your"
-        " job is to commit the first Inject batch from the Manifest.",
-        "- Everything you planned is proved and the Manifest's"
+        " job is to commit the first Inject batch from your charter.",
+        "- Everything you planned is proved and the charter's"
         " requirements are met — commit `Ingest` to close the problem.",
         "- A parent strategy has a `shelved` sub-goal — the strategy"
         " stays `proposed` waiting for the sub-goal to be re-dispatched"
@@ -276,10 +277,10 @@ def _section_stall_warning(conn: sqlite3.Connection,
         " (work a `shelved` / `pending_strategist_review` / `frozen`"
         " goal — `frozen` is the root before its first launch, and it"
         " is the only dispatch path to it), a"
-        " no-target `Inject` (mint the missing prerequisite), `Ingest` (every Manifest requirement is"
+        " no-target `Inject` (mint the missing prerequisite), `Ingest` (every charter requirement is"
         " satisfied — the terminal judgment), `ConfirmShelve` (truly"
         " cannot proceed — followed by an Inject that pivots), or"
-        " `RequestUserAmend` (Manifest scope decision needed).",
+        " `RequestUserAmend` (a user file needs fixing).",
         "",
     ]
 
@@ -1492,31 +1493,66 @@ def _section_tree_inline(conn: sqlite3.Connection,
     return out
 
 
-def _section_manifest_meta(mfst: manifest.Manifest,
-                           workspace: Path, problem: str) -> list[str]:
-    """For T0 / T3 — surface Manifest statement + Defs.lean preview so
-    Strategist can decide whether RequestUserAmend on Defs.lean is needed
-    (statement-vocabulary missing). An ABSENT Defs.lean renders nothing:
-    pure-NL problems have none by design (Phase 6), and the old
-    placeholder ("does not exist — RequestUserAmend candidate") was a
-    standing lure that mislabelled the legal state as a defect with a
+def _section_charter(conn: sqlite3.Connection, workspace: Path,
+                     problem: str,
+                     group_id: "int | None") -> list[str]:
+    """The group's OWN charter, inline, at every depth (v40) — the top
+    group's is the problem's goal, a sub-group's is its Delegate brief.
+    One section, one meaning; the retired `## Manifest` section's
+    charter::Manifest override becomes structural.
+
+    The top group also gets a Defs.lean preview so the Strategist can
+    decide whether RequestUserAmend on Defs.lean is needed
+    (statement-vocabulary missing). An ABSENT Defs.lean renders
+    nothing: pure-NL problems have none by design (Phase 6), and the
+    old placeholder ("does not exist — RequestUserAmend candidate") was
+    a standing lure that mislabelled the legal state as a defect with a
     human-escalation hint attached (user call 2026-07-13)."""
-    out = ["## Manifest", ""]
-    if mfst.body:
-        out.append(mfst.body)
-    defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
-    if defs_path.exists():
-        out += ["", "### Defs.lean", ""]
-        try:
-            defs_text = defs_path.read_text(encoding="utf-8")
-            out.append(f"```lean\n{defs_text}\n```")
-        except OSError:
-            out.append("(Defs.lean unreadable)")
+    from ..state import groups as _groups
+    row = (_groups.get(conn, int(group_id)) if group_id is not None
+           else _groups.top_group(conn, problem))
+    charter = str(row["charter"]).strip() if row is not None else ""
+    top = _groups.is_top(row)
+    out = ["## Your charter", ""]
+    if charter:
+        out.append(charter)
+    if not top:
+        out += ["", "The chain above yours, and what it already handed "
+                "back: `charter.md`."]
+    if top:
+        defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
+        if defs_path.exists():
+            out += ["", "### Defs.lean", ""]
+            try:
+                defs_text = defs_path.read_text(encoding="utf-8")
+                out.append(f"```lean\n{defs_text}\n```")
+            except OSError:
+                out.append("(Defs.lean unreadable)")
     out.append("")
     return out
 
 
-def _section_paper_index_strategist(mfst: manifest.Manifest,
+def _section_user_word_strategist(intent: "intent_mod.ProblemIntent") -> list[str]:
+    """The user's word — standing directives, verbatim, at EVERY depth
+    (v40). This is the channel the retired Manifest could not keep open:
+    a sub-group judged only against its charter never heard the user
+    again. The word is never part of the claim under judgment — it
+    governs conduct, and only the user edits it."""
+    if not intent.word:
+        return []
+    return [
+        "## The user's word",
+        "",
+        "Standing directives from the user, for every group at every "
+        "depth. Act on them this wake where applicable; they override "
+        "conflicting habits and are never yours to edit.",
+        "",
+        intent.word,
+        "",
+    ]
+
+
+def _section_paper_index_strategist(intent: intent_mod.ProblemIntent,
                                     workspace: Path,
                                     conn=None,
                                     attempts_dir: "Path | None" = None,
@@ -1525,7 +1561,7 @@ def _section_paper_index_strategist(mfst: manifest.Manifest,
     block + the provenance-recording instruction + the FetchPaper
     channel (conditional — only a paper-bound problem renders them;
     prompt stays static per the prompt-editing principle)."""
-    lines = context._section_paper_index(mfst, workspace, conn,
+    lines = context._section_paper_index(intent, workspace, conn,
                                          attempts_dir=attempts_dir)
     if not lines:
         return lines
@@ -1547,7 +1583,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
                                problem: str, trigger_kind: str,
                                attempts_dir: Path,
                                workspace: Path,
-                               mfst: manifest.Manifest,
+                               intent: intent_mod.ProblemIntent,
                                pending_review_id: int | None = None,
                                group_id: "int | None" = None,
                                ) -> Path:
@@ -1558,12 +1594,13 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
       - Active goals
       - Recent decisions (failure_replay)
       - TREE
-      - Manifest (T0 / T3 — when bootstrap_done=false or amend-relevant)
+      - Charter (own group, inline) + user word
     """
-    section_names = ["trigger"]
+    section_names = ["trigger", "user_word"]
     sections: list[list[str]] = [
         _section_trigger(trigger_kind, pending_review_id, conn,
                  workspace),
+        _section_user_word_strategist(intent),
     ]
     # T2 review_context (Phase 2 §2.2) — failure brief + existing
     # strategies + ancestor chain. Only emitted for pending_review trigger
@@ -1591,10 +1628,10 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
                       "directive",
                       "plan_note", "inject_batches", "pending_reopens",
                       "active_goals", "failure_replay", "tree", "catalog",
-                      "manifest_meta", "paper_index"]
+                      "charter", "paper_index"]
     sections += [
         _section_stall_warning(conn, problem, group_id),
-        _section_ingest_gate(conn, problem, group_id, mfst=mfst),
+        _section_ingest_gate(conn, problem, group_id, intent=intent),
         _section_disproof_guidance(conn, problem),
         _section_your_group(conn, problem, group_id),
         _section_groups_in_flight(conn, problem, group_id),
@@ -1611,8 +1648,8 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_failure_replay(conn, problem),
         _section_tree_inline(conn, workspace, problem),
         _section_catalog_index_strategist(conn, problem, attempts_dir),
-        _section_manifest_meta(mfst, workspace, problem),
-        _section_paper_index_strategist(mfst, workspace, conn,
+        _section_charter(conn, workspace, problem, group_id),
+        _section_paper_index_strategist(intent, workspace, conn,
                                         attempts_dir=attempts_dir),
     ]
     if trigger_kind == "routine":
@@ -1628,7 +1665,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     # v35 — the `## Your group` section points a sub-group at
     # `charter.md`; the file has to be there. It existed only inside the
     # JUDGE's projection, so the judge reviewed against the charter while
-    # the author worked from the whole problem's Manifest — two sides of
+    # the author worked from the whole problem's goal — two sides of
     # one review reading different tasks.
     _write_charter_file(conn, problem, attempts_dir, group_id)
     out = attempts_dir / "Context.md"
@@ -1729,16 +1766,10 @@ def _section_your_group(conn: sqlite3.Connection, problem: str,
     return [
         "## Your group", "",
         "Your charter and the chain above it: `charter.md`.", "",
-        # The charter::Manifest equation, stated on the ONE surface that
-        # knows which level this spawn is (2026-08-13). The static
-        # prompt says "Manifest" because it is written for the top
-        # group; a sub-group that reads it literally plans against the
-        # problem's Manifest instead of its own charter, and its judge —
-        # whose criteria say the same word — grades it against the root.
-        # Overriding here rather than branching the criteria text is why
-        # the judge's rules stay level-independent.
-        "- Your mission is your charter — every \"Manifest\" in your "
-        "instructions means it; `Manifest.md` is ancestral context.",
+        # (v40 — the old charter::Manifest override bullet is gone: the
+        # prompts now say "charter" natively at every depth, so there is
+        # nothing to override. Only the level-dependent verb semantics
+        # remain.)
         "- `Ingest` here delivers your bricks upward and ends this "
         "group, not the problem.",
         "- `ReturnToParent` — `flavour ∈ "
@@ -2020,6 +2051,20 @@ def _section_programme_proof(conn: sqlite3.Connection, problem: str,
     return [f"{header} (rev {row['rev']})", "", proof, ""]
 
 
+def _group_of_decision(conn: sqlite3.Connection,
+                       decision_id: "int | None") -> "int | None":
+    """The authoring group of a strategist decision, or None (top)."""
+    if decision_id is None:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT group_id FROM strategist_decisions WHERE id = ?",
+            (int(decision_id),)).fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    return int(row["group_id"]) if row and row["group_id"] else None
+
+
 def _section_conventions_for_decision(conn: sqlite3.Connection,
                                       problem: str,
                                       decision_id: "int | None"
@@ -2066,7 +2111,7 @@ def compile_forward_context(conn: sqlite3.Connection, *,
                             problem: str, decision_id: int | None,
                             attempts_dir: Path,
                             workspace: Path,
-                            mfst: manifest.Manifest,
+                            intent: intent_mod.ProblemIntent,
                             ) -> Path:
     """Write Context.md for the Forward agent into attempts_dir.
 
@@ -2076,7 +2121,7 @@ def compile_forward_context(conn: sqlite3.Connection, *,
       - Past Forward proposals
       - Active goals (alive open/attempting/pending — so Forward does not
         restate one and get dedup-rejected)
-      - Manifest hints (Mathlib pointers — agent uses loogle Bash for
+      - Lemma hints (Mathlib pointers — agent uses loogle Bash for
         type-pattern search)
 
     NOT the full decomposition tree. Forward writes ONE generic lemma from
@@ -2092,8 +2137,8 @@ def compile_forward_context(conn: sqlite3.Connection, *,
     """
     section_names = ["forward_brief", "conventions", "programme_proof",
                      "library_inventory", "presearch",
-                     "forward_history", "active_goals", "manifest_meta",
-                     "manifest_forbidden", "paper_index"]
+                     "forward_history", "active_goals", "charter",
+                     "user_word", "forbidden", "paper_index"]
     sections: list[list[str]] = [
         _section_forward_brief(conn, decision_id),
         # Standing conventions (research_mission_design.md §3.1). Mint
@@ -2120,16 +2165,21 @@ def compile_forward_context(conn: sqlite3.Connection, *,
                                 decision_id),
         _section_forward_history(conn, problem),
         _section_active_goals(conn, workspace, problem),
-        _section_manifest_meta(mfst, workspace, problem),
+        # The authoring group's charter (v40) — the claim this mint
+        # serves; the group comes off the Inject decision row, same as
+        # conventions above.
+        _section_charter(conn, workspace, problem,
+                         _group_of_decision(conn, decision_id)),
+        context._section_user_word(intent),
         # Dropped in the v33 merge: mint.md says "Never use any name in
         # FORBIDDEN_LEMMAS" but no section carried the list — a 07-29 SG
         # worker burned two blocked Bash calls hunting the file, and on
         # benchmark problems the ban is load-bearing. Renders "(none)"
         # when empty by design.
-        context._section_manifest_forbidden(mfst),
+        context._section_forbidden(intent),
         # Paper navigation — Forward mints the vocabulary; exact
         # hypotheses/definitions come from the paper (design D1).
-        context._section_paper_index(mfst, workspace, conn,
+        context._section_paper_index(intent, workspace, conn,
                                      attempts_dir=attempts_dir),
     ]
     parts: list[str] = [f"# Forward context — {problem}", ""]

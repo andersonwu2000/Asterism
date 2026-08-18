@@ -20,7 +20,7 @@ def run_librarian(conn, *, problem: str, work_kind: str,
     `work_kind` selects the prompt (prompts/librarian/<kind>.md) and the
     commit path. `target` is required for migrate — the Library FILE to
     write (per-file is the parallel unit, plan §5 Step 3). `whitelist` is
-    the problem's authorized axiom set (Manifest `axioms_whitelist`, or the
+    the problem's authorized axiom set (the `axioms_whitelist` setting, or the
     framework default) — threaded to the migrate commit gate's per-file
     axiom check; only the migrate kind uses it."""
     from .. import PipelineResult, PROMPT_DIR
@@ -354,7 +354,7 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None, pipeline_id=None
         # renames and any audit-ADDED declaration are covered. One extra warm
         # elaboration per file. `whitelist=None` (unit tests / legacy callers)
         # skips, matching the migrate gate's contract; the dispatcher always
-        # passes the Manifest whitelist (or the framework default).
+        # passes the problem whitelist (or the framework default).
         if _final is not None and whitelist is not None:
             from . import gate as _gate
             gres = _gate.migrate_commit_gate(

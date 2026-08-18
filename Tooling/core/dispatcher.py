@@ -21,7 +21,8 @@ from .. import agent, pipeline
 from . import config, fsutil, gateway_health, network_wait, quota, quota_wait
 from .admission import (ADMIT, DENY_KIND_BACKOFF, DENY_QUOTA,
                         DENY_TARGET_COOLED, admission)
-from ..state import db, manifest, thresholds, transitions, tree
+from ..state import db, thresholds, transitions, tree
+from ..state import intent as intent_mod
 from ..state import failures as _failures
 from ..state import groups as _groups
 from ..quality import prune, verify
@@ -977,7 +978,7 @@ def _strategist_row_is_stale(conn: sqlite3.Connection,
 
     Phase 6 — the old drop condition (root goal `proved`) is exactly
     wrong now: a root-proved problem is where the Strategist must wake to
-    judge the Manifest and commit `Ingest` (the only exit trigger), so
+    judge the charter and commit `Ingest` (the only exit trigger), so
     the drop keys off the problem terminal state instead. If a rollback
     later revokes the Ingest (post-Ingest un-prove), the problem re-enters
     the live path and the normal triggers re-fire.
@@ -1164,26 +1165,25 @@ class SchedulerState:
     verified_problems: "dict[str, bool]" = field(default_factory=dict)
 
 
-def _ensure_manifest(conn, manifests, problem: str) -> bool:
+def _ensure_intent(conn, intents, problem: str) -> bool:
     """Late-registration guard (#125): the problems table can gain rows
     after daemon start (`asterism init` against a live daemon), which
-    the startup manifest load never saw — every dispatch of the new
+    the startup intent load never saw — every dispatch of the new
     problem then fast-failed `problem_not_found` in a T4-pumped loop,
     silently (the reason never reached the log). Register on first
-    miss; a genuine ghost (row without a loadable Manifest) logs loudly
-    and cools via TARGET_COOLDOWN_REASONS."""
-    if problem in manifests:
+    miss; a genuine ghost (queue row whose problems row is gone) logs
+    loudly and cools via TARGET_COOLDOWN_REASONS."""
+    if problem in intents:
         return True
     row = conn.execute(
-        "SELECT manifest_path FROM problems WHERE name = ?",
-        (problem,)).fetchone()
-    if row is not None and hasattr(manifests, "load"):
-        if manifests.load(problem, row["manifest_path"]) is not None:
-            print(f"[manifest] late-registered {problem} "
+        "SELECT 1 FROM problems WHERE name = ?", (problem,)).fetchone()
+    if row is not None and hasattr(intents, "load"):
+        if intents.load(problem) is not None:
+            print(f"[intent] late-registered {problem} "
                   f"(init after daemon start)", flush=True)
             return True
-    print(f"[dispatch] {problem}: problem_not_found — no loadable "
-          f"Manifest for this queue row (cooling target)", flush=True)
+    print(f"[dispatch] {problem}: problem_not_found — no problems row "
+          f"for this queue row (cooling target)", flush=True)
     return False
 
 
@@ -1210,7 +1210,7 @@ def _gateway_unreachable_backoff(st: "SchedulerState", pool, *,
 
 
 def _run_pipeline(workspace: Path,
-                  manifests: "manifest.ManifestCache | dict[str, manifest.Manifest]",
+                  intents: "intent_mod.IntentCache | dict[str, intent_mod.ProblemIntent]",
                   task_kind: str, target_id: str, target_kind: str,
                   pipeline_id: str,
                   decision_id: int | None = None,
@@ -1252,13 +1252,13 @@ def _run_pipeline(workspace: Path,
                 # id. Legacy 'Problem' rows resolve to the top group.
                 group_id, problem = _strategist_target(
                     conn, target_id, target_kind)
-                if problem is None or not _ensure_manifest(
-                        conn, manifests, problem):
+                if problem is None or not _ensure_intent(
+                        conn, intents, problem):
                     db.finish_pipeline(conn, pipeline_id=pipeline_id,
                                        status="failed", outcome="failed")
                     return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                             "failed", "problem_not_found")
-                mfst = manifests[problem]
+                intent = intents[problem]
                 trigger, pending_id = _derive_strategist_trigger(
                     conn, problem, group_id=group_id,
                     routine_interval_min=config.get(
@@ -1272,7 +1272,7 @@ def _run_pipeline(workspace: Path,
                 r = strategist.run_strategist(
                     conn, problem=problem, trigger_kind=trigger,
                     tick=0,  # tick concept TBD; 0 as placeholder for now
-                    workspace=workspace, mfst=mfst,
+                    workspace=workspace, intent=intent,
                     pipeline_id=pipeline_id,
                     pending_review_id=pending_id,
                     group_id=group_id,
@@ -1306,16 +1306,16 @@ def _run_pipeline(workspace: Path,
                 # Mint job: target = problem name (TEXT); no goal lookup.
                 # 'Forward' = legacy queue rows (pre-merge recovery).
                 problem = target_id
-                if not _ensure_manifest(conn, manifests, problem):
+                if not _ensure_intent(conn, intents, problem):
                     db.finish_pipeline(conn, pipeline_id=pipeline_id,
                                        status="failed", outcome="failed")
                     return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                             "failed", "problem_not_found")
-                mfst = manifests[problem]
+                intent = intents[problem]
                 from ..pipeline import forward
                 r = forward.run_forward(
                     conn, problem=problem, workspace=workspace,
-                    mfst=mfst, pipeline_id=pipeline_id,
+                    intent=intent, pipeline_id=pipeline_id,
                     decision_id=decision_id,
                 )
                 status = ("succeeded" if r.outcome in ("proved", "success")
@@ -1352,7 +1352,7 @@ def _run_pipeline(workspace: Path,
                 # targeted like Forward; query/reason ride the FetchPaper
                 # decision row (decision_id threaded from the queue).
                 problem = target_id
-                if not _ensure_manifest(conn, manifests, problem):
+                if not _ensure_intent(conn, intents, problem):
                     db.finish_pipeline(conn, pipeline_id=pipeline_id,
                                        status="failed", outcome="failed")
                     return WorkerDone(pipeline_id, task_kind, target_id,
@@ -1390,7 +1390,7 @@ def _run_pipeline(workspace: Path,
                 # migrate/cleanup unit, or a plain `problem` for a serial phase
                 # step (dedup/classify/bridge).
                 problem, target_file = _lib_decode(target_id)
-                if not _ensure_manifest(conn, manifests, problem):
+                if not _ensure_intent(conn, intents, problem):
                     db.finish_pipeline(conn, pipeline_id=pipeline_id,
                                        status="failed", outcome="failed")
                     return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
@@ -1437,12 +1437,12 @@ def _run_pipeline(workspace: Path,
                             "success", "")
                 # Per-file axiom check uses the operator's authorized
                 # axioms via the ONE whitelist derivation
-                # (`manifest.effective_axioms` — empty field falls back to
+                # (`intent_mod.effective_axioms` — empty field falls back to
                 # the framework default, never skips). Only migrate
                 # consumes it.
-                mfst = manifests[problem]
-                whitelist = manifest.effective_axioms(
-                    mfst, problem=problem)
+                intent = intents[problem]
+                whitelist = intent_mod.effective_axioms(
+                    intent, problem=problem)
                 r = librarian.run_librarian(
                     conn, problem=problem, work_kind=work_kind,
                     workspace=workspace, pipeline_id=pipeline_id,
@@ -1484,13 +1484,13 @@ def _run_pipeline(workspace: Path,
             # without it a late-init problem's goal job died here on a
             # raw KeyError (worker-exception path) instead of a clean
             # problem_not_found.
-            if not _ensure_manifest(conn, manifests, goal["problem"]):
+            if not _ensure_intent(conn, intents, goal["problem"]):
                 db.finish_pipeline(conn, pipeline_id=pipeline_id,
                                    status="failed", outcome="failed")
                 return WorkerDone(pipeline_id, task_kind, target_id,
                                   target_kind, "failed",
                                   "problem_not_found")
-            mfst = manifests[goal["problem"]]
+            intent = intents[goal["problem"]]
 
             if task_kind in ("Formalizer", "Backward", "Builder"):
                 # Merged worker (update_plan_2026_07 #1): every goal job
@@ -1499,7 +1499,7 @@ def _run_pipeline(workspace: Path,
                 # 'Builder' = legacy queue rows from pre-merge recovery.
                 r = pipeline.run_backward(
                     conn, goal_id=goal_id, workspace=workspace,
-                    mfst=mfst, pipeline_id=pipeline_id,
+                    intent=intent, pipeline_id=pipeline_id,
                     decision_id=decision_id,
                 )
             else:
@@ -1970,28 +1970,13 @@ def run(workspace: Path, *, once: bool = False,
     # Restore the Librarian chain fail cap across restarts (#92 B#3): a stuck
     # unit's tally persists so it STALLs instead of looping forever.
     st.librarian_fail_counts.update(db.librarian_fail_counts_all(conn))
-    # ManifestCache hot-reloads on Manifest.md mtime change at each
-    # spawn-time access — daemon previously locked in the startup-time
-    # parse, so user edits mid-run were invisible until restart. Cache
-    # quacks like dict[str, Manifest] for downstream callers.
-    manifests = manifest.ManifestCache(workspace)
-    from ..state import settings as _settings
-    _prob_rows = conn.execute(
-        "SELECT name, manifest_path FROM problems").fetchall()
+    # IntentCache reads the DB fresh at each spawn-time access — a UI
+    # or CLI charter/word edit is live on the very next access. Cache
+    # quacks like dict[str, ProblemIntent] for downstream callers.
+    intents = intent_mod.IntentCache(workspace)
+    _prob_rows = conn.execute("SELECT name FROM problems").fetchall()
     for row in _prob_rows:
-        mfst = manifests.load(row["name"], row["manifest_path"])
-        if mfst is None:
-            continue
-        # Lazy settings migration (frontmatter dissolve): copy the
-        # file's machine settings into problem_settings for keys with
-        # no DB row yet. Idempotent — a UI edit is never clobbered by
-        # a stale file; the daemon is the write side, so one run
-        # migrates every problem it can load.
-        try:
-            _settings.migrate_from_manifest(conn, row["name"], mfst)
-        except Exception as e:  # noqa: BLE001 — never blocks startup
-            print(f"[settings-migrate] {row['name']}: "
-                  f"{type(e).__name__}: {e}", flush=True)
+        intents.load(row["name"])
 
     _recover_at_startup(conn, workspace, scope=scope)
 
@@ -2008,16 +1993,16 @@ def run(workspace: Path, *, once: bool = False,
         print(f"[sandbox-sweep] startup: {_sb_counters}", flush=True)
 
     # Refresh BRIEF.md for every registered problem at startup. Covers
-    # Manifest edits + Library promotes since the last daemon run
+    # charter/word edits + Library promotes since the last daemon run
     # (daemon has no hot-reload; startup is the canonical refresh point).
-    # Lemma resolution can take ~30s when Manifest hints are dense; only
+    # Lemma resolution can take ~30s when lemma hints are dense; only
     # paid once per startup, off the dispatch path.
     from ..state import brief
-    brief.write_for_all_problems(conn, workspace, manifests)
+    brief.write_for_all_problems(conn, workspace, intents)
 
     scope_label = f", scope={scope!r}" if scope else ""
     print(f"[dispatcher] start, pool={pool_size}, "
-          f"problems={list(manifests)}{scope_label}",
+          f"problems={list(intents)}{scope_label}",
           flush=True)
     start_time = time.time()
     # Daemon start as an ISO timestamp — the T1 routine clock baseline, so
@@ -2033,7 +2018,7 @@ def run(workspace: Path, *, once: bool = False,
     # indistinguishable from a hang — 2026-06-12 a paused P12
     # (stokes_induced_orient) read as a multi-hour gateway/tree-render
     # hang across two sessions. Operator must resolve the amend (apply
-    # the proposed Defs.lean/Manifest.md body, clear the decision) then
+    # the proposed body, clear the decision) then
     # re-run. Cheap: idx_sd_outcome backs the filter.
     _paused_q = ("SELECT DISTINCT problem FROM strategist_decisions "
                  "WHERE outcome = 'awaiting_human'")
@@ -2065,7 +2050,7 @@ def run(workspace: Path, *, once: bool = False,
     if scope is not None:
         tree_problems = db.scoped_problem_names(conn, scope)
     else:
-        tree_problems = list(manifests)
+        tree_problems = list(intents)
 
     stop_announced = False
     # Code-drift handoff: the daemon no longer dies with the serve
@@ -2513,14 +2498,14 @@ def run(workspace: Path, *, once: bool = False,
         # `ready_for_verify` poll. Inline + recursive (chain follow-up
         # for multi-layer strategies in one tick).
         verify.verify_housekeeping(conn, workspace=workspace,
-                                   manifests=manifests,
+                                   intents=intents,
                                    olean_warmer=olean_warmer)
 
         # Per-problem post-proved gate. Only problems whose root just
         # flipped to 'proved' AND haven't yet passed integrity_gate
         # under this DB are visited — `db.unverified_proved_roots`
         # returns at most that subset, dropping to [] once every root
-        # is verified. The earlier formulation iterated `manifests`
+        # is verified. The earlier formulation iterated `intents`
         # every tick and paid one gateway-driven axiom_probe per
         # proved root every loop iteration (244 miniF2F roots stalled
         # dispatch for ~115min on every restart); the marker in
@@ -2530,12 +2515,12 @@ def run(workspace: Path, *, once: bool = False,
         # leaves 'proved', so a once-failed root re-enters this gate
         # on the next tick after cascade rollback.
         for problem_name in db.unverified_proved_roots(conn):
-            if problem_name not in manifests:
-                # Root proved for a problem we don't have a Manifest
+            if problem_name not in intents:
+                # Root proved for a problem we do not have an intent
                 # for in-process (CLI invoked with a scope filter that
-                # excluded it, or DB row outlived its Manifest dir).
+                # excluded it, or the row was never registered).
                 # Skip without flipping the marker — it'll get picked
-                # up the next run that loads this Manifest.
+                # up the next run that loads this problem.
                 continue
             # Reconcile FILE/DB drift from OR races. Auto-prune was
             # removed 2026-05-26 after Jordan 2026-05-25 incident exposed
@@ -2558,7 +2543,7 @@ def run(workspace: Path, *, once: bool = False,
             # clears integrity_verified on the root so the gate fires
             # again once a fresh proof cascades back up.
             verify.root_integrity_gate(
-                conn, workspace, problem_name, manifests[problem_name])
+                conn, workspace, problem_name, intents[problem_name])
             # Final TREE.md refresh — the per-cascade write_for_target
             # ran before the verify_housekeeping that cascade-proved
             # the root, leaving TREE.md frozen at root=attempting.
@@ -2572,11 +2557,11 @@ def run(workspace: Path, *, once: bool = False,
         # Library-ization is outstanding (Bug A — proof work alone no longer
         # keeps the daemon up once every root is proved).
         librarian_pending = _librarian_refill(
-            conn, workspace, running, manifests, scope=scope,
+            conn, workspace, running, intents, scope=scope,
             fail_counts=st.librarian_fail_counts)
 
         # Workspace-wide exit (Phase 6): every problem has committed its
-        # `Ingest` terminal (the Strategist's Manifest-satisfied judgment —
+        # `Ingest` terminal (the Strategist's charter-satisfied judgment —
         # root_proved is its HARD prerequisite when a root exists, enforced
         # at the Ingest verify gate) AND no Librarian work remains. A
         # rollback (`verify.root_integrity_gate` → sorryAx cascade) revokes
@@ -2598,7 +2583,7 @@ def run(workspace: Path, *, once: bool = False,
         if (db.all_problems_ingested(conn, scope=scope)
                 and not librarian_pending
                 and not _harvest_outstanding(
-                    conn, workspace, manifests, scope=scope,
+                    conn, workspace, intents, scope=scope,
                     fail_counts=st.librarian_fail_counts)):
             print("[dispatcher] all problems ingested", flush=True)
             _exit_pool_fast(pool)
@@ -2807,7 +2792,7 @@ def run(workspace: Path, *, once: bool = False,
                 conn, pipeline_id=pipeline_id, kind=kind,
                 target_id=target_id, target_kind=target_kind)
             running.add((target_id, kind, decision_id))
-            fut = pool.submit(_run_pipeline, workspace, manifests,
+            fut = pool.submit(_run_pipeline, workspace, intents,
                               kind, target_id, target_kind, pipeline_id,
                               decision_id)
             futures[fut] = FutureMeta(

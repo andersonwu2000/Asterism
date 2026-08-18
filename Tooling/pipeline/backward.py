@@ -41,8 +41,9 @@ from pathlib import Path
 
 from .. import agent
 from ..agent import context
-from ..state import (assemble, db, manifest, metaprog, proof_store, thresholds,
+from ..state import (assemble, db, metaprog, proof_store, thresholds,
                      transitions)
+from ..state import intent as intent_mod
 from ..quality import dedupe, diagnostics
 from . import _axiom
 from . import _presearch
@@ -521,7 +522,7 @@ def _strip_entry_kind(lean_text: str) -> str:
 # ---------------------------------------------------------------------
 
 def run_backward(conn: sqlite3.Connection, *, goal_id: int,
-                 workspace: Path, mfst: manifest.Manifest,
+                 workspace: Path, intent: intent_mod.ProblemIntent,
                  pipeline_id: str,
                  decision_id: int | None = None,
                  ) -> "PipelineResult":  # noqa: F821
@@ -551,7 +552,7 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         return PipelineResult(outcome="failed", failure_reason="goal_not_found")
     problem_dir = db.problem_dir(workspace, goal_row["problem"])
     result = _run_backward_inner(conn, goal_id=goal_id, workspace=workspace,
-                                 mfst=mfst, pipeline_id=pipeline_id,
+                                 intent=intent, pipeline_id=pipeline_id,
                                  decision_id=decision_id)
     if (result.outcome in ("success", "moot")
             or result.failure_reason == "goal_no_longer_open"):
@@ -576,7 +577,7 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
 
 
 def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
-                        workspace: Path, mfst: manifest.Manifest,
+                        workspace: Path, intent: intent_mod.ProblemIntent,
                         pipeline_id: str,
                         decision_id: int | None = None,
                         ) -> "PipelineResult":  # noqa: F821
@@ -753,7 +754,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             goal=goal, workspace=workspace, problem_dir=problem_dir,
             attempts_dir=ctx.attempts_dir, prompt_dir=PROMPT_DIR,
             conn=conn)
-        context.compile_context(conn, goal=goal, mfst=mfst,
+        context.compile_context(conn, goal=goal, intent=intent,
                               attempts_dir=ctx.attempts_dir,
                               strategy_id=strategy_id,
                               kind="backward",
@@ -768,7 +769,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         # new_*.lean from attempts_dir; the only writer of goal_lean
         # is verify_housekeeping's promote_to_alias (main thread).
         return _backward_parse_and_commit(
-            conn=conn, goal=goal, goal_id=goal_id, mfst=mfst,
+            conn=conn, goal=goal, goal_id=goal_id, intent=intent,
             workspace=workspace, attempts_dir=attempts_dir,
             strategy_id=strategy_id, sid_token=sid_token,
             skeleton_signature=skeleton_signature,
@@ -834,7 +835,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                     + _replace_proof_body(skeleton, winner),
                     encoding="utf-8")
                 hint_result = _backward_parse_and_commit(
-                    conn=conn, goal=goal, goal_id=goal_id, mfst=mfst,
+                    conn=conn, goal=goal, goal_id=goal_id, intent=intent,
                     workspace=workspace, attempts_dir=attempts_dir,
                     strategy_id=strategy_id, sid_token=sid_token,
                     skeleton_signature=skeleton_signature,
@@ -871,7 +872,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     from . import _stages
 
     def _compile_ctx() -> None:
-        context.compile_context(conn, goal=goal, mfst=mfst,
+        context.compile_context(conn, goal=goal, intent=intent,
                                 attempts_dir=attempts_dir,
                                 strategy_id=strategy_id,
                                 kind="backward",
@@ -1001,7 +1002,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
 
 
 def _backward_parse_and_commit(
-    *, conn, goal, goal_id, mfst, workspace, attempts_dir,
+    *, conn, goal, goal_id, intent, workspace, attempts_dir,
     strategy_id, sid_token, skeleton_signature,
 ) -> "PipelineResult":  # noqa: F821
     """Parse + dedupe + place + build + commit pass for one Backward
@@ -1172,7 +1173,7 @@ def _backward_parse_and_commit(
                 "a `-- decline:` directive.",
                 leading,
             )
-        forbidden = _grep_forbidden(main_patch_text, mfst.forbidden_lemmas)
+        forbidden = _grep_forbidden(main_patch_text, intent.forbidden_lemmas)
         if forbidden:
             return _abort("forbidden_lemma", forbidden, leading)
         # Citation gate. Shape-derived since task #123: a stub-less patch
@@ -1223,7 +1224,7 @@ def _backward_parse_and_commit(
         # Normalize through the SAME `assemble_for_commit` every other
         # commit path runs (#179, 2026-08-10).
         #
-        # This line used to call `manifest.inject_defs_opens` — step 3 of
+        # This line used to call `intent_mod.inject_defs_opens` — step 3 of
         # five, hand-picked. The comment it replaces recorded the previous
         # instance of exactly this bug: Defs opens were missing here while
         # "the decomposition path below already does this", so a bare
@@ -1327,8 +1328,8 @@ def _backward_parse_and_commit(
             from ._axiom import axiom_gate
             gate = axiom_gate(
                 scratch_dest, fq_name=fq_name,
-                whitelist=manifest.effective_axioms(
-                    mfst, problem=goal["problem"]),
+                whitelist=intent_mod.effective_axioms(
+                    intent, problem=goal["problem"]),
                 workspace=workspace, attempts_dir=attempts_dir,
                 write_olean=True)
             if not gate.ok:
@@ -1377,7 +1378,7 @@ def _backward_parse_and_commit(
     # Forbidden-lemma grep covers patch + every sub-goal stub.
     all_text = "\n".join([main_patch_text] +
                           [p.read_text(encoding="utf-8") for p in new_subs])
-    forbidden = _grep_forbidden(all_text, mfst.forbidden_lemmas)
+    forbidden = _grep_forbidden(all_text, intent.forbidden_lemmas)
     if forbidden:
         return _abort("forbidden_lemma", forbidden, leading)
 
@@ -2151,7 +2152,7 @@ def _backward_parse_and_commit(
                     # strategy) for as long as this alias is alive.
                     db.set_alias_target(conn, new_gid, match.goal_id)
             else:
-                # effective_axioms: an unset Manifest field used to hit
+                # effective_axioms: an unset whitelist used to hit
                 # axiom_probe's fail-closed branch (promotion refused
                 # outright); the goal then re-proved through the normal
                 # path against the SAME default whitelist. Deriving it
@@ -2160,8 +2161,8 @@ def _backward_parse_and_commit(
                 ok, msg = _try_promote_sorry_free(
                     dest=dest, problem=goal["problem"], slug=slug,
                     workspace=workspace,
-                    axioms_whitelist=manifest.effective_axioms(
-                        mfst, problem=goal["problem"]),
+                    axioms_whitelist=intent_mod.effective_axioms(
+                        intent, problem=goal["problem"]),
                     attempts_dir=attempts_dir,
                 )
                 if ok:

@@ -43,22 +43,27 @@ def review_data(conn, workspace: Path, *,
                            if problem else None)
     out: "list[dict]" = []
     union: set[str] = set()
-    # Manifest intent text + change history (self-audit 2026-07-12
-    # §3-1b): the sign-off seal (snapshot_sha) must cover WHAT WAS
-    # ASKED, not just what was delivered — a mid-run rewrite of the
-    # Statement would otherwise let the reviewer sign against a
-    # doctored promise with zero diff surfaced. Body = current text;
-    # history = (sha, seen_at) per observed content change since the
-    # first-load baseline (full bodies live in `manifest_history`).
+    # Intent text + change history (self-audit 2026-07-12 §3-1b; v40
+    # DB-resident): the sign-off seal (snapshot_sha) must cover WHAT
+    # WAS ASKED, not just what was delivered — a mid-run rewrite of
+    # the charter would otherwise let the reviewer sign against a
+    # doctored promise with zero diff surfaced. Body = current charter
+    # (+ word); history = (sha, seen_at) per recorded change since the
+    # init baseline (full bodies live in `user_file_history`; the key
+    # stays "manifest" so older snapshots keep reading).
     manifest_section: "dict" = {"body": "", "history": []}
     try:
-        mpath = db.problem_dir(workspace, problem) / "Manifest.md"
-        manifest_section["body"] = mpath.read_text(encoding="utf-8")
+        from ..state import intent as _intent
+        pintent = _intent.read(conn, problem)
+        if pintent is not None:
+            manifest_section["body"] = pintent.charter + (
+                "\n\n# The user's word\n\n" + pintent.word
+                if pintent.word else "")
         manifest_section["history"] = [
             {"sha": str(r["sha"]), "seen_at": str(r["seen_at"])}
             for r in conn.execute(
                 "SELECT sha, seen_at FROM user_file_history"
-                " WHERE problem = ? AND file = 'Manifest.md'"
+                " WHERE problem = ? AND file IN ('charter', 'word')"
                 " ORDER BY id", (problem,))
         ]
     except Exception as e:  # noqa: BLE001 — visibility, never a blocker
@@ -139,16 +144,15 @@ def _deliverable_paper_line(conn, workspace: Path, g,
     """Paper-provenance line for one deliverable (paper pipeline Phase
     2): the `paper_ref` the Strategist recorded in the MarkDeliverable
     payload, so the human signs 'claim = paper theorem' against a pinned
-    location instead of hunting. '' for problems with no `paper:`
+    location instead of hunting. '' for problems with no paper
     binding; a LOUD placeholder when the binding exists but no ref was
     recorded (visibility, not a gate)."""
-    from ..state import manifest as _mfst_mod
     prob = str(g["problem"])
     if prob not in papers_cache:
-        mpath = db.problem_dir(workspace, prob) / "Manifest.md"
         try:
-            papers_cache[prob] = _mfst_mod.parse(mpath).paper
-        except OSError:
+            rows = db.paper_bindings(conn, prob)
+            papers_cache[prob] = str(rows[0]["paper_id"]) if rows else ""
+        except Exception:  # noqa: BLE001 — display only
             papers_cache[prob] = ""
     pid = papers_cache[prob]
     if not pid:

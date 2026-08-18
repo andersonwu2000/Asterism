@@ -125,8 +125,9 @@ FILE_SATELLITES: "tuple[FileSatellite, ...]" = (
                   "(#167: a rerun's revision 2 cited .groups/369 from "
                   "the run before it)"),
     # — problem root: deliberately preserved —
-    FileSatellite(SCOPE_PROBLEM_ROOT, "Manifest.md", KEPT, False,
-                  "user-owned problem statement"),
+    FileSatellite(SCOPE_PROBLEM_ROOT, "problem.json", KEPT, False,
+                  "the durable seed (charter/word/settings) re-init "
+                  "runs on — sweeping it makes reset unrecoverable"),
     FileSatellite(SCOPE_PROBLEM_ROOT, "Defs.lean", KEPT, False,
                   "user-owned vocabulary"),
     FileSatellite(SCOPE_PROBLEM_ROOT, "Root.lean", KEPT, False,
@@ -134,7 +135,7 @@ FILE_SATELLITES: "tuple[FileSatellite, ...]" = (
                   "sorry-stub manually before re-init"),
     FileSatellite(SCOPE_PROBLEM_ROOT, "BRIEF.md", KEPT, False,
                   "auto-regenerated at daemon startup from "
-                  "Manifest+Library — sweeping it buys nothing"),
+                  "intent+Library — sweeping it buys nothing"),
     FileSatellite(SCOPE_PROBLEM_ROOT, "proofs", KEPT, True,
                   "the directory itself; its RUN-owned contents are the "
                   "proofs-scope swept entries above"),
