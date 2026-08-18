@@ -669,6 +669,43 @@ def _resume_hint(text: str, kept: str, q: dict) -> str:
     return f"Continue from line {last + 1} with `lines`."
 
 
+#: A refusal may inline the outline only when the outline itself is
+#: small — the 2026-08-15 roster ruling stands (on the 654-section
+#: catalog the inlined listing was itself a 12KB cap-hit).
+_REFUSAL_OUTLINE_CHARS = 2_000
+
+
+def _whole_read_refusal(q: dict, here: Path, deny, size: int,
+                        budget: int) -> str:
+    """A whole-file read that cannot fit one reply is REFUSED with the
+    way in — never silently clipped (owner call 2026-08-18).
+
+    The clipped prefix was the trap: this slice's 1,011 truncations
+    were 84% whole reads of the four big framework documents, and a
+    12KB prefix reads exactly like the whole file to an agent that
+    does not scroll to the truncation line. A refusal that names the
+    precise asks (sections / lines / grep) turns the same round trip
+    into a map instead of a misleading half-answer."""
+    head = (f"whole file is {size:,} chars — more than one reply's "
+            f"{budget:,}-char budget, so a whole read could only ever "
+            f"deliver a silent prefix. Ask precisely instead:")
+    try:
+        outline = _q_read({"read": q.get("read"), "outline": True},
+                          here, deny)
+    except Exception:  # noqa: BLE001 — the refusal must never raise
+        outline = []
+    o_text = "\n".join(outline)
+    if o_text and "no markdown headings" in o_text:
+        first = o_text.splitlines()[0].split("—")[0].strip()
+        return (head + f"\n{first} and no headings — take windows with "
+                f'`lines: "1-200"`, or `grep` it by keyword.')
+    if o_text and len(o_text) <= _REFUSAL_OUTLINE_CHARS:
+        return head + "\n" + o_text
+    first = o_text.splitlines()[0] if o_text else "many sections"
+    return (head + f"\n{first} `outline: true` maps them; then "
+            f"`sections: [...]`, or `grep` it by slug/keyword.")
+
+
 def _deferral_note(deferred: "list[tuple[int, object]]", reason: str) -> str:
     """The way back for whole queries this reply could not carry:
     every one named, in the vocabulary the count limit already uses.
@@ -788,10 +825,18 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                         body = [f"failed: {type(exc).__name__}: {exc}"]
                     text = "\n".join(body)
                     if len(text) > per_query_chars:
-                        kept = text[:per_query_chars]
-                        text = (kept + f"\n… [{n}] truncated at "
-                                       f"{per_query_chars:,} chars. "
-                                + _resume_hint(text, kept, q))
+                        if (key == "read" and not any(
+                                k in q for k in ("sections", "lines",
+                                                 "outline", "max"))):
+                            # Whole-file read that cannot fit: refuse
+                            # with the map, never clip (2026-08-18).
+                            text = _whole_read_refusal(
+                                q, here, deny, len(text), per_query_chars)
+                        else:
+                            kept = text[:per_query_chars]
+                            text = (kept + f"\n… [{n}] truncated at "
+                                           f"{per_query_chars:,} chars. "
+                                    + _resume_hint(text, kept, q))
                     block = head + "\n" + text
                     break
             else:

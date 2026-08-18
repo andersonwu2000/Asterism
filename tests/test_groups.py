@@ -2173,6 +2173,40 @@ def test_stacked_charter_headings_are_stamped_with_their_group(tmp_path):
     assert f"# [group {a}] not a heading" not in txt
 
 
+def test_stacked_ancestors_carry_claims_not_delegation_prose(tmp_path):
+    """2026-08-18 (context diet #3): a depth-10 chain stacked every
+    ancestor's full `## Why a project` + `## Inheritance` into
+    charter.md — 37.4KB against a 1.5KB own charter, the slice's
+    second-largest inspect-truncation source. Ancestors keep their
+    CLAIM (wherever its heading is — dropping is by section NAME, not
+    position); the delegation prose is the delegation's business. The
+    group's OWN charter stays verbatim."""
+    conn = _conn(tmp_path)
+    p = _problem(conn, "Test.charterdiet")
+    top = groups.ensure_top_group(conn, p)
+    a = groups.open_group(
+        conn, problem=p, parent_group_id=top,
+        charter="# Charter\n\nA's claim to settle\n\n"
+                "## Why a project\nbecause the AHEAD cannot carry it\n\n"
+                "## Inheritance\ncite brick_x\n\n"
+                "## The exit\nkernel-check the bound")
+    b = groups.open_group(
+        conn, problem=p, parent_group_id=a,
+        charter="B's claim\n\n## Why a project\nB's own reasons\n\n"
+                "## Inheritance\ncite brick_y")
+    conn.commit()
+    txt = groups.charter_digest(conn, p, b)
+    # own charter verbatim — Why/Inheritance included
+    assert "B's own reasons" in txt and "cite brick_y" in txt
+    # ancestor keeps its claim and its non-delegation sections...
+    assert "A's claim to settle" in txt
+    assert "kernel-check the bound" in txt
+    # ...but not the delegation prose
+    assert "because the AHEAD cannot carry it" not in txt
+    assert "cite brick_x" not in txt
+    assert "CLAIM only" in txt
+
+
 def test_a_delivery_always_reaches_a_group_that_can_act_on_it(tmp_path):
     """The wake went to the group that AUTHORED the Delegate, and the
     dispatcher DROPS a Strategist row whose group is terminal (correctly

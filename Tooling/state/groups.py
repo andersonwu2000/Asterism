@@ -474,6 +474,35 @@ def _qualify_headings(charter: str, gid: int) -> str:
     return "\n".join(out)
 
 
+_DELEGATION_PROSE_RE = re.compile(
+    r"^##\s+(why a project|inheritance)\b", re.IGNORECASE)
+
+
+def _charter_claim(charter: str) -> str:
+    """The charter minus its delegation prose (`## Why a project` /
+    `## Inheritance`) — what a STACKED entry carries.
+
+    Criterion 3 judges whether MY claim leans on an ancestor's CLAIM;
+    the two dropped sections justify a delegation, not a judgement.
+    Sections are dropped by NAME, not position — a charter's claim may
+    itself sit under a `## The claim to settle` heading, so "cut at the
+    first ##" would cut the claim. Measured 2026-08-18 on a depth-10
+    chain: full stacking made charter.md 37.4KB against a 1.5KB own
+    charter, the second-largest inspect-truncation source of the slice
+    (130 clipped reads). Fence-aware, like `_qualify_headings`."""
+    out: "list[str]" = []
+    fenced = False
+    dropping = False
+    for line in charter.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        if not fenced and re.match(r"^#{1,2}\s", line):
+            dropping = bool(_DELEGATION_PROSE_RE.match(line))
+        if not dropping:
+            out.append(line)
+    return "\n".join(out).strip()
+
+
 def charter_digest(conn: sqlite3.Connection, problem: str,
                     group_id: "int | None") -> str:
     """`charter.md` — what a SUB-group is judged against (v35).
@@ -510,10 +539,11 @@ def charter_digest(conn: sqlite3.Connection, problem: str,
         out += ["## Charters above this one", "",
                 "Your charter must not depend on any of these being "
                 "true — that is circular, however many generations "
-                "apart.", ""]
+                "apart. Each shows its CLAIM only; the delegation "
+                "prose is not this judgement's business.", ""]
         for i, a in enumerate(above, 1):
             out += [f"{i}. (group {a['id']}) "
-                    f"{_qualify_headings(str(a['charter']).strip(), int(a['id']))}",
+                    f"{_qualify_headings(_charter_claim(str(a['charter'])), int(a['id']))}",
                     ""]
     # Scope: groups returned to ME or to one of MY ancestors — the
     # failed attempts on this chain, which is what "my parent already
@@ -548,7 +578,7 @@ def charter_digest(conn: sqlite3.Connection, problem: str,
                 pass
             out += [f"- (group {r['id']}"
                     + (f", {flavour}" if flavour else "") + ") "
-                    + _qualify_headings(str(r["charter"]).strip(),
+                    + _qualify_headings(_charter_claim(str(r["charter"])),
                                         int(r["id"])),
                     f"  - post-mortem: {str(r['reason'] or '(none)')}"]
         out.append("")

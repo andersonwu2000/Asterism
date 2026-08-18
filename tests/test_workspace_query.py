@@ -185,7 +185,11 @@ def test_one_greedy_query_cannot_eat_a_later_answer(tmp_path):
 def test_a_truncated_query_names_itself_and_the_way_back(tmp_path):
     here = tmp_path
     (here / "big.lean").write_text("y" * 9000 + "\n", encoding="utf-8")
-    out = wq.run_queries([{"read": "big.lean"}, {"decl": "nope"}],
+    # `lines` is a deliberate window, so the clip path still applies
+    # there; a bare whole read of an oversize file is refused instead
+    # (2026-08-18, tested separately).
+    out = wq.run_queries([{"read": "big.lean", "lines": "1-"},
+                          {"decl": "nope"}],
                          cwd=here, per_query_chars=2000)
     assert "[1] truncated at" in out, "the cut must name which query it cut"
     # "Re-run THIS query alone" was the old way back, and it was not a
@@ -199,7 +203,7 @@ def test_a_truncated_query_names_itself_and_the_way_back(tmp_path):
 def test_a_single_query_still_gets_the_whole_budget(tmp_path):
     here = tmp_path
     (here / "big.lean").write_text("z" * 5000 + "\n", encoding="utf-8")
-    out = wq.run_queries([{"read": "big.lean"}], cwd=here,
+    out = wq.run_queries([{"read": "big.lean", "lines": "1-"}], cwd=here,
                          per_query_chars=4000)
     assert len(out) > 3500, (
         "dividing the budget must not penalise the un-batched case")
@@ -253,7 +257,8 @@ def test_every_block_is_complete_or_carries_its_own_notice(tmp_path):
     (tmp_path / "huge.md").write_text("h" * 20000 + "\n", encoding="utf-8")
     (tmp_path / "tiny.md").write_text("needle\n", encoding="utf-8")
     out = wq.run_queries(
-        [{"read": "huge.md"}, {"read": "tiny.md"}], cwd=tmp_path,
+        [{"read": "huge.md", "lines": "1-"}, {"read": "tiny.md"}],
+        cwd=tmp_path,
         per_query_chars=2000, delivery_chars=6000)
     assert len(out) <= 6000
     assert "[1] truncated at" in out, (
@@ -626,3 +631,43 @@ def test_raw_read_round_trips_byte_identical(tmp_path):
     out4 = wq.run_queries([{"read": "doc.md", "lines": "3-3"}], cwd=tmp_path)
     t4 = out4 if isinstance(out4, str) else "\n".join(out4)
     assert "3  alpha" in t4
+
+
+def test_an_oversize_whole_read_is_refused_with_the_map(tmp_path):
+    """2026-08-18 owner call: a whole-file read that cannot fit one
+    reply is refused with the way in, never silently clipped — 84% of
+    the slice's 1,011 truncations were whole reads of the four big
+    framework documents, and a 12KB prefix reads exactly like the
+    whole file to an agent that does not scroll to the last line."""
+    body = "# Big\n" + "\n".join(
+        f"## Sec{i}\n" + ("x" * 80 + "\n") * 5 for i in range(6))
+    (tmp_path / "big.md").write_text(body, encoding="utf-8")
+
+    out = wq.run_queries([{"read": "big.md"}], cwd=tmp_path,
+                         per_query_chars=800)
+    assert "could only ever deliver a silent prefix" in out
+    assert "truncated at" not in out, "refusal replaces the clip"
+    assert "Sec" in out or "outline" in out, "the map rides the refusal"
+
+    # Precise asks still work, clipping semantics intact.
+    out2 = wq.run_queries([{"read": "big.md", "sections": ["Sec1"]}],
+                          cwd=tmp_path, per_query_chars=800)
+    assert "could only ever deliver" not in out2
+    out3 = wq.run_queries([{"read": "big.md", "lines": "1-3"}],
+                          cwd=tmp_path, per_query_chars=800)
+    assert "# Big" in out3
+
+    # Small whole reads are untouched.
+    (tmp_path / "small.md").write_text("# S\nhello\n", encoding="utf-8")
+    out4 = wq.run_queries([{"read": "small.md"}], cwd=tmp_path,
+                          per_query_chars=800)
+    assert "hello" in out4
+
+
+def test_an_oversize_headingless_read_teaches_lines_and_grep(tmp_path):
+    (tmp_path / "big.lean").write_text(
+        ("-- x\n" + "x" * 60 + "\n") * 40, encoding="utf-8")
+    out = wq.run_queries([{"read": "big.lean"}], cwd=tmp_path,
+                         per_query_chars=500)
+    assert "could only ever deliver a silent prefix" in out
+    assert "lines" in out and "grep" in out

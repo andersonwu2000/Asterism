@@ -171,7 +171,11 @@ def test_a_truncated_read_says_where_to_resume_with_no_overlap(
     (cwd / "big.md").write_text(
         "\n".join(f"line {i}" for i in range(1, 2000)) + "\n",
         encoding="utf-8")
-    out = wq.run_queries([{"read": "big.md"}], cwd=cwd, per_query_chars=2000)
+    # `lines` is a deliberate window, so the clip path still applies
+    # there; a bare whole read of an oversize file is refused with the
+    # map instead (2026-08-18, tested in test_workspace_query).
+    out = wq.run_queries([{"read": "big.md", "lines": "1-"}], cwd=cwd,
+                         per_query_chars=2000)
     assert "truncated" in out
     assert '"lines": "' in out, out[-400:]
     # The resume point is the line after the last one delivered.
