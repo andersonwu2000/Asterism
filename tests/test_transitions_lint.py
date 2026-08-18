@@ -50,12 +50,13 @@ _ALLOWED: dict[str, int] = {
     # at vocabulary-change points — the state machine's edges don't apply
     # to them). Split out of db.py 2026-07-07 (v24 schema rework).
     "state/db_migrations.py": 2,
-    # Startup bulk repairs (half-baked strategies → dead, open↔attempting
-    # resync). Deliberately raw: a bulk UPDATE skips update_strategy_status's
-    # inject-outcome hook, compensated by null_inject_redispatch_specs — see
-    # the comments at the call sites. New repairs should prefer the checked
-    # mutators (per-row) unless bulk semantics are the point.
-    "state/recovery.py": 3,
+    # Startup bulk repair (half-baked strategies → dead). Deliberately raw:
+    # a bulk UPDATE skips update_strategy_status's inject-outcome hook,
+    # compensated by null_inject_redispatch_specs — see the comment at the
+    # call site. The two goal resync passes moved to the checked mutator
+    # per-row 2026-08-18 (frankl_core anchor un-park: the bulk form wrote
+    # no goal_events and knew nothing about delegate anchors).
+    "state/recovery.py": 1,
     # Operator soft-reset CLI (attempts + status in one statement).
     "core/cli.py": 1,
 }

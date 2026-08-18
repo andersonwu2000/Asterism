@@ -20,7 +20,10 @@ Six classes of stale state, each restored:
   3. stuck-attempting goals — Backward succeeded last run but no
                           'proposed' strategy survives now (all dead/
                           superseded). Reset to 'open' so bfs_refill
-                          can dispatch a fresh Backward.
+                          can dispatch a fresh Backward. A live group's
+                          anchor is exempt (parked 'attempting' with no
+                          strategy by design), and one found drifted to
+                          'open' is reparked.
   4. orphan .attempts/<pid>/ dirs — daemon SIGKILL bypasses
                           WorkArea.__exit__; child claude subprocesses
                           can keep writing to a dead parent's sandbox.
@@ -50,6 +53,7 @@ from ..core.process_group import no_window_creationflags
 from . import db
 from . import groups as _groups
 from . import proof_store
+from . import transitions as _transitions
 
 
 def _attempt_owner_alive(attempt_dir: Path) -> bool:
@@ -295,15 +299,28 @@ def recover_at_startup(conn: sqlite3.Connection,
         " WHERE status = 'proposed' AND scratch_path = ''"
     ).rowcount
 
-    goals_reopened = conn.execute(
-        "UPDATE goals SET status = 'open', updated_at = ?"
+    # Per-row through the checked mutator, not bulk SQL, so every flip
+    # lands in goal_events — the 08-18 frankl_core forensics had to
+    # guess WHICH restart un-parked the anchor because this pass wrote
+    # no trail. A live group's anchor is EXEMPT: `delegate_anchor`
+    # parks it as `attempting` with no strategy BY DESIGN (alive so
+    # the parent's wait is legal, not dispatchable by BFS) — exactly
+    # this pass's stuck-goal shape, so every restart un-parked every
+    # anchor its group was still working under.
+    goals_reopened = 0
+    for r in conn.execute(
+        "SELECT id FROM goals"
         " WHERE status = 'attempting'"
         "   AND NOT EXISTS ("
         "     SELECT 1 FROM strategies"
-        "     WHERE goal_id = goals.id AND status = 'proposed'"
-        "   )",
-        (db.now(),),
-    ).rowcount
+        "     WHERE goal_id = goals.id AND status = 'proposed')"
+        "   AND NOT EXISTS ("
+        "     SELECT 1 FROM groups"
+        "     WHERE anchor_goal_id = goals.id AND status = 'active')"
+    ).fetchall():
+        _transitions.apply_goal_transition(
+            conn, int(r["id"]), "open", event="recovery_reopen")
+        goals_reopened += 1
 
     # Inverse reconciliation — goals stuck at 'open' despite having a
     # live 'proposed' strategy. Daemon shutdown races leave this
@@ -318,15 +335,35 @@ def recover_at_startup(conn: sqlite3.Connection,
     # strategies on the same goal with overlapping intent.
     # Symptom from residue_thm 2026-05-21: g2458 had s10596 and
     # s10609 both 'proposed' after daemon 023003 quota-died mid-pipe.
-    goals_attempting_fixup = conn.execute(
-        "UPDATE goals SET status = 'attempting', updated_at = ?"
+    goals_attempting_fixup = 0
+    for r in conn.execute(
+        "SELECT id FROM goals"
         " WHERE status = 'open'"
         "   AND EXISTS ("
         "     SELECT 1 FROM strategies"
-        "     WHERE goal_id = goals.id AND status = 'proposed'"
-        "   )",
-        (db.now(),),
-    ).rowcount
+        "     WHERE goal_id = goals.id AND status = 'proposed')"
+    ).fetchall():
+        _transitions.apply_goal_transition(
+            conn, int(r["id"]), "attempting",
+            event="recovery_attempting_fixup")
+        goals_attempting_fixup += 1
+
+    # Anchor repark — the healing half of the exemption above: a live
+    # group's anchor found at 'open' is drift (the pre-exemption reopen
+    # pass, or any future silent flip), never a legal state — the only
+    # writer of an anchored goal is `delegate_anchor`, which parks it
+    # `attempting`. Put it back so BFS stays symmetric: open ⇔
+    # dispatchable.
+    anchors_reparked = 0
+    for r in conn.execute(
+        "SELECT g.id FROM goals g"
+        "  JOIN groups gr ON gr.anchor_goal_id = g.id"
+        " WHERE g.status = 'open' AND gr.status = 'active'"
+    ).fetchall():
+        _transitions.apply_goal_transition(
+            conn, int(r["id"]), "attempting",
+            event="recovery_anchor_repark")
+        anchors_reparked += 1
 
     conn.commit()
 
@@ -425,6 +462,7 @@ def recover_at_startup(conn: sqlite3.Connection,
     if (queue_cleared or inject_reenqueued or groups_relaunched
             or pipelines_finalized or strategies_killed
             or goals_reopened or goals_attempting_fixup
+            or anchors_reparked
             or attempts_cleared or attempts_live_skipped
             or sessions_released
             or backups_handled or tmps_removed
@@ -441,6 +479,7 @@ def recover_at_startup(conn: sqlite3.Connection,
               f"reopened {goals_reopened} stuck goals, "
               f"flipped {goals_attempting_fixup} open->attempting "
               f"(orphan-success fixup), "
+              f"reparked {anchors_reparked} drifted group anchor(s), "
               f"salvaged {patches_salvaged} orphan patches, "
               f"removed {attempts_cleared} orphan attempts dirs "
               f"(spared {attempts_live_skipped} live, "

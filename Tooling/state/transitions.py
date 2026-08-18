@@ -234,6 +234,12 @@ EVENTS: frozenset[str] = frozenset({
     # consistency.repair_unambiguous finishes the sibling sweep a crashed
     # cascade owed its live `proposed` strategies)
     "startup_terminal_parent_reconcile",
+    # startup recovery — the open↔attempting resync passes, routed
+    # through the chokepoint since 2026-08-18 (frankl_core: the bulk
+    # reopen silently un-parked a live group's anchor on every restart,
+    # and left no goal_events row to say which restart did it).
+    "recovery_reopen", "recovery_attempting_fixup",
+    "recovery_anchor_repark",
     # problem FSM (v29) — apply_problem_transition call sites
     "amend_requested", "amend_resolved",
     "ingest_committed", "ingest_direct",

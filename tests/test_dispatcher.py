@@ -887,6 +887,67 @@ def test_recover_at_startup_relaunch_respects_scope(
                           kind="Strategist") == 0
 
 
+def test_recovery_reopen_spares_a_live_groups_anchor(
+    conn: sqlite3.Connection,
+) -> None:
+    """frankl_core (union_closed, 2026-08-18): a delegate anchor is
+    `attempting` with no strategy BY DESIGN — exactly the stuck-goal
+    shape the startup reopen pass hunts — so every restart un-parked
+    every live anchor to 'open', breaking the open ⇔ dispatchable
+    symmetry `delegate_anchor` exists to preserve. The anchor of an
+    ACTIVE group must survive recovery untouched; a plain stuck goal
+    next to it is still reopened, and the flip now leaves a
+    goal_events row (the bulk form wrote none, so the forensics could
+    not say which restart did it)."""
+    from Tooling.core.dispatcher import _recover_at_startup
+    from Tooling.state import groups as groups_store
+    anchor_gid = _seed_goal(conn)
+    stuck_gid = db.insert_goal(
+        conn, problem="p", slug="stuck", lean_path="Problems/p/s.lean",
+        statement="S", origin="backward")
+    conn.execute("UPDATE goals SET status = 'attempting'"
+                 " WHERE id IN (?, ?)", (anchor_gid, stuck_gid))
+    top = groups_store.ensure_top_group(conn, "p")
+    groups_store.open_group(conn, problem="p", parent_group_id=top,
+                            charter="rescue the anchor",
+                            anchor_goal_id=anchor_gid)
+    _recover_at_startup(conn)
+    assert db.get_goal(conn, anchor_gid)["status"] == "attempting"
+    assert db.get_goal(conn, stuck_gid)["status"] == "open"
+    ev = conn.execute(
+        "SELECT event FROM goal_events WHERE goal_id = ?"
+        " ORDER BY id DESC LIMIT 1", (stuck_gid,)).fetchone()
+    assert ev is not None and ev["event"] == "recovery_reopen"
+
+
+def test_recovery_reparks_a_drifted_anchor(
+    conn: sqlite3.Connection,
+) -> None:
+    """The healing half: an ACTIVE group's anchor found at 'open' (the
+    drift the pre-exemption reopen pass left behind — frankl_core sat
+    dispatchable for two days) goes back to its designed parked state,
+    with the flip on the record. A retired group's anchor is not
+    reparked — its fate belongs to the parent (park_group_anchor /
+    #217)."""
+    from Tooling.core.dispatcher import _recover_at_startup
+    from Tooling.state import groups as groups_store
+    drifted = _seed_goal(conn)
+    top = groups_store.ensure_top_group(conn, "p")
+    groups_store.open_group(conn, problem="p", parent_group_id=top,
+                            charter="rescue", anchor_goal_id=drifted)
+    # open_group's delegate path parks the anchor via the strategist
+    # commit, not open_group itself — force the drifted shape directly.
+    conn.execute("UPDATE goals SET status = 'open' WHERE id = ?",
+                 (drifted,))
+    _recover_at_startup(conn)
+    g = db.get_goal(conn, drifted)
+    assert g["status"] == "attempting"
+    ev = conn.execute(
+        "SELECT event FROM goal_events WHERE goal_id = ?"
+        " ORDER BY id DESC LIMIT 1", (drifted,)).fetchone()
+    assert ev is not None and ev["event"] == "recovery_anchor_repark"
+
+
 def test_recover_at_startup_sweeps_stale_migrate_probes(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
