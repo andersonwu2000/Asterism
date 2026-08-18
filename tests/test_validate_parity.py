@@ -35,8 +35,8 @@ def _seed(ws: Path, rows: "list[tuple[str, str]]") -> None:
     from Tooling.state import db
     c = db.connect(ws / "asterism.db")
     db.init_schema(c)
-    c.execute("INSERT INTO problems (name, manifest_path, created_at)"
-              " VALUES ('T.p', 'Manifest.md', '2026-08-10')")
+    c.execute("INSERT INTO problems (name, created_at)"
+              " VALUES ('T.p', '2026-08-10')")
     for slug, status in rows:
         c.execute(
             "INSERT INTO goals (problem, slug, lean_path, statement, status,"

@@ -170,7 +170,7 @@ def test_normalize_depth_aware_ignores_inner_colons():
 
 def test_normalize_real_minif2f_double_colon_regression(tmp_path: Path):
     """Regression: the 2026-05-12 pilot v2 deadlock root cause. miniF2F
-    `theorem foo (a b c d : ℂ) : P := by sorry` produced a Manifest
+    `theorem foo (a b c d : ℂ) : P := by sorry` produced a charter
     statement that, when wrapped as `theorem main : {statement}`,
     yielded double-colon syntax error. After fix: cmd_init's
     `theorem main : {statement}` produces `theorem main : ∀ ..., P`."""
@@ -233,7 +233,8 @@ def test_emit_defs_replays_set_options(tmp_path: Path):
 # emit_problem_dir
 # ---------------------------------------------------------------------
 
-def test_emit_problem_dir_writes_manifest_and_defs(tmp_path: Path):
+def test_emit_problem_dir_writes_seed_and_defs(tmp_path: Path):
+    import json as _json
     src = tmp_path / "src.lean"
     src.write_text(_ALGEBRA_PROBLEM, encoding="utf-8")
     spec = minif2f.parse_problem_file(src)[0]
@@ -245,15 +246,14 @@ def test_emit_problem_dir_writes_manifest_and_defs(tmp_path: Path):
     assert pdir.parent.name == "Minif2f"
     assert pdir.name == spec.name
 
-    manifest_text = (pdir / "Manifest.md").read_text(encoding="utf-8")
-    assert "## Statement" in manifest_text
-    assert "Real.sqrt 2" in manifest_text
-    # Backward: framework design is decomposition-first. Builder
-    # one-shot defeats the architectural thesis.
-    assert "## Entry kind\nBackward" in manifest_text
-    assert "axioms_whitelist:" in manifest_text
+    seed = _json.loads(
+        (pdir / "problem.json").read_text(encoding="utf-8"))
+    assert "Real.sqrt 2" in seed["charter"]
+    assert seed["settings"]["axioms_whitelist"] == [
+        "propext", "Quot.sound", "Classical.choice"]
+    assert seed["settings"]["signoff"] is False
     # Dotted slug matches the nested filesystem layout
-    assert f"problem: Minif2f.{spec.name}" in manifest_text
+    assert seed["problem"] == f"Minif2f.{spec.name}"
 
     defs_text = (pdir / "Defs.lean").read_text(encoding="utf-8")
     assert "import Mathlib" in defs_text

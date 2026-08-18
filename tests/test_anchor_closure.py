@@ -125,8 +125,8 @@ from Tooling.state import db as _db
 
 
 def _seed_goal(conn, problem: str, slug: str) -> int:
-    conn.execute("INSERT OR IGNORE INTO problems(name, manifest_path, created_at)"
-                 " VALUES (?,?,?)", (problem, f"{problem}/Manifest.md", _db.now()))
+    conn.execute("INSERT OR IGNORE INTO problems(name, created_at)"
+                 " VALUES (?,?)", (problem, _db.now()))
     return _db.insert_goal(
         conn, problem=problem, slug=slug,
         lean_path=f"Problems/{problem}/proofs/L_{slug}.lean",
@@ -351,17 +351,19 @@ def test_ingest_verify_requires_deliverable(conn):
 def test_ingest_commit_library_gate_and_signoff(conn, tmp_path):
     from Tooling.pipeline.strategist import _commit_ingest
     from Tooling.core import config
-    conn.execute("INSERT INTO problems(name,manifest_path,created_at)"
-                 " VALUES ('P.a','P.a/Manifest.md',?)", (_db.now(),))
+    from Tooling.state import settings as _settings
+    conn.execute("INSERT INTO problems(name,created_at)"
+                 " VALUES ('P.a',?)", (_db.now(),))
     conn.commit()
     pdir = _db.problem_dir(tmp_path, "P.a")
     pdir.mkdir(parents=True)
 
-    def write_manifest(lib: str, signoff: "str | None" = None):
-        extra = f"signoff: {signoff}\n" if signoff is not None else ""
-        (pdir / "Manifest.md").write_text(
-            f"---\nproblem: P.a\nlibrary: {lib}\n{extra}---\n# P.a\n",
-            encoding="utf-8")
+    def set_settings(lib: bool, signoff: bool = True):
+        # v40: library/signoff are problem_settings rows, not frontmatter.
+        # signoff is written explicitly to mirror the old whole-file
+        # rewrite semantics (an omitted key meant the default True).
+        _settings.write(conn, "P.a", "library", lib)
+        _settings.write(conn, "P.a", "signoff", signoff)
 
     def n_librarian():
         return conn.execute(
@@ -378,7 +380,7 @@ def test_ingest_commit_library_gate_and_signoff(conn, tmp_path):
         # library:false alone → still PAUSES (2026-07-18 gate
         # retirement: the Library opt-out must not skip the human gate;
         # the decision is re-made at the signature), no enqueue
-        write_manifest("false")
+        set_settings(False)
         config._reset_cache()
         _commit_ingest(conn, problem="P.a", workspace=tmp_path)
         assert _db.problem_ingest_signoff_pending(conn, "P.a")
@@ -386,7 +388,7 @@ def test_ingest_commit_library_gate_and_signoff(conn, tmp_path):
 
         # benchmark shape: signoff:false + library:false → direct, no
         # pause, no enqueue
-        write_manifest("false", signoff="false")
+        set_settings(False, signoff=False)
         reset_rig()
         _commit_ingest(conn, problem="P.a", workspace=tmp_path)
         assert not _db.problem_ingest_signoff_pending(conn, "P.a")
@@ -394,7 +396,7 @@ def test_ingest_commit_library_gate_and_signoff(conn, tmp_path):
 
         # unattended harvest shape: signoff:false + library:true →
         # direct, enqueue
-        write_manifest("true", signoff="false")
+        set_settings(True, signoff=False)
         reset_rig()
         _commit_ingest(conn, problem="P.a", workspace=tmp_path)
         assert not _db.problem_ingest_signoff_pending(conn, "P.a")
@@ -403,7 +405,7 @@ def test_ingest_commit_library_gate_and_signoff(conn, tmp_path):
         conn.commit()
 
         # library:true + default require_signoff (True) → PAUSE, no enqueue
-        write_manifest("true")
+        set_settings(True)
         reset_rig()
         config._reset_cache()
         _commit_ingest(conn, problem="P.a", workspace=tmp_path)
@@ -433,13 +435,13 @@ def test_ingest_gate_closes_before_slow_snapshot(conn, tmp_path, monkeypatch):
     from Tooling.pipeline.strategist import _commit_ingest
     from Tooling.core import config
     from Tooling.quality import review as _review
-    conn.execute("INSERT INTO problems(name,manifest_path,created_at)"
-                 " VALUES ('P.a','P.a/Manifest.md',?)", (_db.now(),))
+    from Tooling.state import settings as _settings
+    conn.execute("INSERT INTO problems(name,created_at)"
+                 " VALUES ('P.a',?)", (_db.now(),))
     conn.commit()
     pdir = _db.problem_dir(tmp_path, "P.a")
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: P.a\nlibrary: true\n---\n# P.a\n", encoding="utf-8")
+    _settings.write(conn, "P.a", "library", True)
 
     seen: dict = {}
 
@@ -555,14 +557,14 @@ def test_top_ingest_names_the_sub_groups_it_orphans(conn, tmp_path, capsys):
     line is the evidence that decision gets made from."""
     from Tooling.pipeline.strategist import _commit_ingest
     from Tooling.state import groups as _groups
-    conn.execute("INSERT INTO problems(name,manifest_path,created_at)"
-                 " VALUES ('P.orph','P.orph/Manifest.md',?)", (_db.now(),))
+    from Tooling.state import settings as _settings
+    conn.execute("INSERT INTO problems(name,created_at)"
+                 " VALUES ('P.orph',?)", (_db.now(),))
     conn.commit()
     pdir = _db.problem_dir(tmp_path, "P.orph")
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: P.orph\nlibrary: false\nsignoff: false\n---\n# P\n",
-        encoding="utf-8")
+    _settings.write(conn, "P.orph", "library", False)
+    _settings.write(conn, "P.orph", "signoff", False)
     top = _groups.ensure_top_group(conn, "P.orph")
     kid = _groups.open_group(conn, problem="P.orph", parent_group_id=top,
                              charter="settle the lemma")

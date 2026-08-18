@@ -457,8 +457,8 @@ def _index_conn():
     ]
     for prob, slug, name, rel in rows:
         conn.execute(
-            "INSERT INTO problems (name, manifest_path, created_at,"
-            " bootstrap_done) VALUES (?, 'm', 't', 1)", (prob,))
+            "INSERT INTO problems (name, created_at,"
+            " bootstrap_done) VALUES (?, 't', 1)", (prob,))
         conn.execute(
             "INSERT INTO library_decls (problem, slug, target_name,"
             " target_file, lifecycle, created_at, updated_at)"
@@ -593,8 +593,8 @@ def test_load_decls_scope_index_overrides_index(tmp_path) -> None:
     conn = _dbm.connect(":memory:")
     _dbm.init_schema(conn)
     conn.execute("PRAGMA foreign_keys = OFF")
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at,"
-                 " bootstrap_done) VALUES ('LinearAlgebra.other','m','t',1)")
+    conn.execute("INSERT INTO problems (name, created_at,"
+                 " bootstrap_done) VALUES ('LinearAlgebra.other','t',1)")
     conn.execute("INSERT INTO library_decls (problem, slug, target_name,"
                  " target_file, lifecycle, created_at, updated_at)"
                  " VALUES ('LinearAlgebra.other','bar',"
@@ -646,8 +646,8 @@ def test_find_thin_wrappers(tmp_path) -> None:
     conn = _dbm.connect(":memory:")
     _dbm.init_schema(conn)
     conn.execute("PRAGMA foreign_keys = OFF")
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at,"
-                 " bootstrap_done) VALUES ('LinearAlgebra.p1','m','t',1)")
+    conn.execute("INSERT INTO problems (name, created_at,"
+                 " bootstrap_done) VALUES ('LinearAlgebra.p1','t',1)")
     for slug in ("thin_deleg", "thin_auto", "fat"):
         conn.execute(
             "INSERT INTO library_decls (problem, slug, target_name,"

@@ -116,8 +116,8 @@ def test_assemble_for_commit_injects_proved_sibling_import(tmp_path) -> None:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     db.init_schema(conn)
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at) "
-                 "VALUES ('p','',datetime('now'))")
+    conn.execute("INSERT INTO problems (name, created_at) "
+                 "VALUES ('p',datetime('now'))")
     g = db.insert_goal(conn, problem="p", slug="helper_lemma",
                        lean_path="Problems/p/proofs/L_helper_lemma.lean",
                        statement="True", origin="backward", kind="theorem")

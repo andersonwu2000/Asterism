@@ -37,8 +37,8 @@ def _seed(conn: sqlite3.Connection, *, batch: str, outcome) -> None:
 
 def test_a_running_batch_is_named_as_running(conn: sqlite3.Connection):
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES ('p', '', ?, 1)",
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES ('p', ?, 1)",
         (__import__("Tooling.state.db", fromlist=["db"]).now(),))
     conn.commit()
     _seed(conn, batch="live-batch-1", outcome=None)
@@ -53,8 +53,8 @@ def test_a_running_batch_is_named_as_running(conn: sqlite3.Connection):
 
 def test_a_finished_batch_is_not_called_running(conn: sqlite3.Connection):
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES ('p', '', ?, 1)",
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES ('p', ?, 1)",
         (__import__("Tooling.state.db", fromlist=["db"]).now(),))
     conn.commit()
     _seed(conn, batch="done-batch-1", outcome="success")
@@ -74,8 +74,8 @@ def test_only_your_groups_running_batches_are_rostered(
     from Tooling.state import groups as groups_store
     ts = db.now()
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES ('p', '', ?, 1)", (ts,))
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES ('p', ?, 1)", (ts,))
     top = groups_store.ensure_top_group(conn, "p")
     kid = groups_store.open_group(conn, problem="p", parent_group_id=top,
                                   charter="theirs")

@@ -1,6 +1,6 @@
 """Paper pipeline Phase 1 (docs/internal/archive/paper_pipeline_design.md):
 shelf identity/extraction, index staleness binding, small-doc
-exemption, Manifest `paper:` field, Context paper-index section."""
+exemption, DB paper bindings, Context paper-index section."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,7 +10,7 @@ import pytest
 from Tooling import agent as agent_pkg
 from Tooling.papers import index as paper_index
 from Tooling.papers import shelf
-from Tooling.state import manifest
+from Tooling.state import intent
 
 # Absolute, cwd-independent — `Path("Tooling/prompts").resolve()` broke the
 # suite when pytest ran from any cwd other than the repo root (production
@@ -190,31 +190,42 @@ def test_index_missing_map_is_loud(tmp_path: Path, monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------
-# Manifest `paper:` + Context section
+# DB paper bindings + Context section
 # ---------------------------------------------------------------------
 
-def _mfst(paper: str = "") -> manifest.Manifest:
-    return manifest.Manifest(problem="p", body="s", paper=paper)
+def _pi(problem: str = "p") -> intent.ProblemIntent:
+    return intent.ProblemIntent(problem=problem, charter="s")
 
 
-def test_manifest_parses_paper_pointer(tmp_path: Path) -> None:
-    p = tmp_path / "Manifest.md"
-    p.write_text("---\nproblem: p\npaper: abc123def456\n---\n\n"
-                 "# t\n\n## Statement\nS\n", encoding="utf-8")
-    m = manifest.parse(p)
-    assert m.paper == "abc123def456"
+def _bound_conn(problem: str = "p"):
+    """In-memory DB with `problem` registered — bindings live in
+    `problem_papers` (v40: the Manifest `paper:` frontmatter is gone)."""
+    from Tooling.state import db as _db
+    conn = _db.connect(":memory:")
+    _db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, created_at) VALUES (?, ?)",
+                 (problem, _db.now()))
+    conn.commit()
+    return conn
 
 
 def test_section_paper_index_gating_and_shapes(tmp_path: Path) -> None:
     from Tooling.agent import context as ctx
-    # No pointer → no section.
-    assert ctx._section_paper_index(_mfst(""), tmp_path) == []
-    # Pointer to a missing shelf slot → loud placeholder, not a crash.
-    lines = ctx._section_paper_index(_mfst("deadbeef0000"), tmp_path)
+    from Tooling.state import db as _db
+    conn = _bound_conn()
+    # No binding (and no conn at all) → no section.
+    assert ctx._section_paper_index(_pi(), tmp_path) == []
+    assert ctx._section_paper_index(_pi(), tmp_path, conn) == []
+    # Binding to a missing shelf slot → loud placeholder, not a crash.
+    _db.bind_paper(conn, problem="p", paper_id="deadbeef0000",
+                   origin="manifest")
+    lines = ctx._section_paper_index(_pi(), tmp_path, conn)
     assert any("missing" in ln for ln in lines)
+    _db.unbind_paper(conn, problem="p", paper_id="deadbeef0000")
     # Small doc, no map → pointer to text.md.
     meta = _add_text_paper(tmp_path, "short paper\n")
-    lines = ctx._section_paper_index(_mfst(meta.id), tmp_path)
+    _db.bind_paper(conn, problem="p", paper_id=meta.id, origin="manifest")
+    lines = ctx._section_paper_index(_pi(), tmp_path, conn)
     joined = "\n".join(lines)
     assert "No navigation map" in joined and "text.md" in joined
     # With a map → inlined; over-cap → loud truncation marker.
@@ -222,7 +233,7 @@ def test_section_paper_index_gating_and_shapes(tmp_path: Path) -> None:
         f"---\npaper: {meta.id}\ntext_sha: {meta.text_sha}\n---\n\n"
         + "## Structure\n" + ("- [p.1] lemma\n" * 2000),
         encoding="utf-8")
-    joined = "\n".join(ctx._section_paper_index(_mfst(meta.id), tmp_path))
+    joined = "\n".join(ctx._section_paper_index(_pi(), tmp_path, conn))
     assert "TRUNCATED at Context cap" in joined
     assert len(joined) < ctx.PAPER_INDEX_MAX_CHARS + 600
 
@@ -234,14 +245,17 @@ def test_section_paper_index_map_goes_to_companion(tmp_path: Path) -> None:
     No attempts_dir (legacy caller) → old inline behavior (pinned by
     test_section_paper_index_gating_and_shapes)."""
     from Tooling.agent import context as ctx
+    from Tooling.state import db as _db
+    conn = _bound_conn()
     meta = _add_text_paper(tmp_path, "short paper\n")
+    _db.bind_paper(conn, problem="p", paper_id=meta.id, origin="manifest")
     map_body = (f"---\npaper: {meta.id}\ntext_sha: {meta.text_sha}\n---\n\n"
                 "## Structure\n- [p.1] lemma X\n")
     shelf.map_path(tmp_path, meta.id).write_text(map_body, encoding="utf-8")
     attempts = tmp_path / ".attempts" / "x"
     attempts.mkdir(parents=True)
     joined = "\n".join(ctx._section_paper_index(
-        _mfst(meta.id), tmp_path, attempts_dir=attempts))
+        _pi(), tmp_path, conn, attempts_dir=attempts))
     assert ctx.PAPER_MAP_COMPANION in joined
     assert "- [p.1] lemma X" not in joined  # body not inline
     companion = (attempts / ctx.PAPER_MAP_COMPANION).read_text(
@@ -255,10 +269,13 @@ def test_strategist_paper_section_carries_paper_ref_instruction(
     CONDITIONAL Context line (paper-bound only), never a static-prompt
     edit (prompt-editing principle)."""
     from Tooling.agent import phase2_context as p2
-    assert p2._section_paper_index_strategist(_mfst(""), tmp_path) == []
+    from Tooling.state import db as _db
+    conn = _bound_conn()
+    assert p2._section_paper_index_strategist(_pi(), tmp_path, conn) == []
     meta = _add_text_paper(tmp_path, "short paper\n")
+    _db.bind_paper(conn, problem="p", paper_id=meta.id, origin="manifest")
     joined = "\n".join(
-        p2._section_paper_index_strategist(_mfst(meta.id), tmp_path))
+        p2._section_paper_index_strategist(_pi(), tmp_path, conn))
     assert "paper_ref" in joined and "MarkDeliverable" in joined
 
 
@@ -273,14 +290,10 @@ def test_review_paper_line_ref_and_missing(tmp_path: Path) -> None:
     conn.row_factory = sqlite3.Row
     _db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) VALUES "
-        "('Test.px', 'Problems/Test/px/Manifest.md',"
-        " '2026-07-06T00:00:00+00:00')")
-    pdir = _db.problem_dir(tmp_path, "Test.px")
-    pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: Test.px\npaper: abc123\n---\n\n# t\n",
-        encoding="utf-8")
+        "INSERT INTO problems (name, created_at) VALUES "
+        "('Test.px', '2026-07-06T00:00:00+00:00')")
+    _db.bind_paper(conn, problem="Test.px", paper_id="abc123",
+                   origin="manifest")
     gid = _db.insert_goal(
         conn, problem="Test.px", slug="claim_a",
         lean_path="Problems/Test/px/proofs/L_claim_a.lean",
@@ -299,8 +312,7 @@ def test_review_paper_line_ref_and_missing(tmp_path: Path) -> None:
     line = _deliverable_paper_line(conn, tmp_path, g, papers_cache={})
     assert "p.19 trace trichotomy" in line and "abc123" in line
     # Unbound problem → ''.
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: Test.px\n---\n\n# t\n", encoding="utf-8")
+    _db.unbind_paper(conn, problem="Test.px", paper_id="abc123")
     line = _deliverable_paper_line(conn, tmp_path, g, papers_cache={})
     assert line == ""
 
@@ -379,8 +391,8 @@ def test_fetch_shelves_and_binds(tmp_path: Path, monkeypatch) -> None:
     conn.row_factory = sqlite3.Row
     _db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) VALUES"
-        " ('Test.px', 'Problems/Test/px/Manifest.md', 'ts')")
+        "INSERT INTO problems (name, created_at) VALUES"
+        " ('Test.px', 'ts')")
     conn.commit()
     conn.close()
 
@@ -405,8 +417,8 @@ def test_fetch_cap_enforced(tmp_path: Path, monkeypatch) -> None:
     conn.row_factory = sqlite3.Row
     _db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) VALUES"
-        " ('Test.px', 'Problems/Test/px/Manifest.md', 'ts')")
+        "INSERT INTO problems (name, created_at) VALUES"
+        " ('Test.px', 'ts')")
     for i in range(fetch.MAX_SCHOLAR_FETCHES_PER_PROBLEM):
         _db.bind_paper(conn, problem="Test.px", paper_id=f"p{i}",
                        origin="scholar")
@@ -448,8 +460,8 @@ def _v2_conn(tmp_path: Path):
     conn.row_factory = sqlite3.Row
     _db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) VALUES"
-        " ('Test.px', 'Problems/Test/px/Manifest.md', 'ts')")
+        "INSERT INTO problems (name, created_at) VALUES"
+        " ('Test.px', 'ts')")
     conn.commit()
     return conn
 
@@ -580,8 +592,8 @@ def test_release_own_leases_frees_claimed_rows(tmp_path: Path) -> None:
 
 
 def test_section_paper_index_multi_paper(tmp_path: Path) -> None:
-    """D14: primary (Manifest pointer) full; scholar-fetched papers as
-    one-line auxiliary entries."""
+    """D14: primary (manifest-origin binding) full; scholar-fetched
+    papers as one-line auxiliary entries."""
     from Tooling.agent import context as ctx
     from Tooling.state import db as _db
     conn = _v2_conn(tmp_path)
@@ -589,9 +601,10 @@ def test_section_paper_index_multi_paper(tmp_path: Path) -> None:
     meta2 = _add_text_paper(tmp_path, "aux paper\n", name="aux.md")
     _db.bind_paper(conn, problem="Test.px", paper_id=meta2.id,
                    origin="scholar", reason="cited")
-    m = manifest.Manifest(problem="Test.px", body="s",
-                          paper=meta1.id)
-    joined = "\n".join(ctx._section_paper_index(m, tmp_path, conn))
+    _db.bind_paper(conn, problem="Test.px", paper_id=meta1.id,
+                   origin="manifest")
+    joined = "\n".join(ctx._section_paper_index(
+        _pi("Test.px"), tmp_path, conn))
     assert "prim.md" in joined
     assert "### Auxiliary papers" in joined
     assert f"Papers/{meta2.id}" in joined and "aux.md" in joined
@@ -600,9 +613,12 @@ def test_section_paper_index_multi_paper(tmp_path: Path) -> None:
 
 def test_section_paper_index_stale_map_warns(tmp_path: Path) -> None:
     from Tooling.agent import context as ctx
+    from Tooling.state import db as _db
+    conn = _bound_conn()
     meta = _add_text_paper(tmp_path, "short paper\n")
+    _db.bind_paper(conn, problem="p", paper_id=meta.id, origin="manifest")
     shelf.map_path(tmp_path, meta.id).write_text(
         "---\npaper: x\ntext_sha: 000000000000\n---\n\n## Structure\n",
         encoding="utf-8")
-    joined = "\n".join(ctx._section_paper_index(_mfst(meta.id), tmp_path))
+    joined = "\n".join(ctx._section_paper_index(_pi(), tmp_path, conn))
     assert "older extraction" in joined

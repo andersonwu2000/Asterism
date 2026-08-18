@@ -1,5 +1,5 @@
-"""asterism doctor: pre-flight check for tools / config / Manifests
-/ filesystem. Subprocess invocations are mocked via monkeypatching
+"""asterism doctor: pre-flight check for tools / config / problem
+intent / filesystem. Subprocess invocations are mocked via monkeypatching
 shutil.which + subprocess.run so tests are fast and don't depend on
 a real toolchain on the runner."""
 from __future__ import annotations
@@ -15,8 +15,8 @@ from Tooling.core import config
 from Tooling.core.cli import cmd_doctor, cmd_init
 
 
-_MIN_MANIFEST = (
-    "# wilson\n\n## Statement\n\nTrue\n\n## Difficulty\n\n1\n"
+_MIN_SEED = (
+    '{"problem": "wilson", "charter": "Statement: True"}\n'
 )
 
 
@@ -98,7 +98,7 @@ def _reset_cfg_cache() -> None:
 def _setup_problem(tmp_path: Path, name: str = "wilson") -> Path:
     pdir = tmp_path / "Problems" / name
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(_MIN_MANIFEST, encoding="utf-8")
+    (pdir / "problem.json").write_text(_MIN_SEED, encoding="utf-8")
     (pdir / "Defs.lean").write_text(
         f"import Mathlib\n\nnamespace Problems.{name}\n\nend Problems.{name}\n",
         encoding="utf-8",
@@ -257,24 +257,41 @@ def test_doctor_unparseable_yaml_is_fail(
     assert (rc == 1) or ("WARNING" in out)
 
 
-def test_doctor_initialized_problem_with_missing_manifest_fails(
+def test_doctor_problem_without_charter_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Problem registered in DB but Manifest.md vanished → FAIL line."""
+    """v40 successor of the vanished-Manifest FAIL: the user-intent
+    surface is the DB charter now. A registered problem whose top-group
+    charter is empty → FAIL line; a missing problem.json (charter still
+    in DB) only WARNs — the runtime SoT is intact, the durable seed is
+    what's gone."""
     _setup_tools(monkeypatch)
     _setup_problem(tmp_path)
     monkeypatch.chdir(tmp_path)
     cmd_init(argparse.Namespace(problem="wilson", force=True))
-    # Delete Manifest.md after init
-    (tmp_path / "Problems" / "wilson" / "Manifest.md").unlink()
+    # Missing seed → WARN only (rc stays 0)
+    (tmp_path / "Problems" / "wilson" / "problem.json").unlink()
     capsys.readouterr()
+    rc = cmd_doctor(argparse.Namespace())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "problem.json missing" in out
 
+    # Empty charter → FAIL (bypass intent.set_charter, which refuses "")
+    from Tooling.state import db as _db
+    conn = _db.connect()
+    conn.execute(
+        "UPDATE groups SET charter = '' WHERE problem = 'wilson'"
+        " AND parent_group_id IS NULL")
+    conn.commit()
+    conn.close()
     rc = cmd_doctor(argparse.Namespace())
     out = capsys.readouterr().out
     assert rc == 1
     assert "FAIL" in out
     assert "wilson" in out
+    assert "no charter" in out
 
 
 def test_doctor_warns_on_many_attempts_dirs(

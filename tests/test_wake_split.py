@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from Tooling.pipeline import strategist
-from Tooling.state import db, manifest
+from Tooling.state import db
 
 
 @pytest.fixture
@@ -40,8 +40,6 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
     pdir = tmp_path / "Problems" / "p"
     (pdir / "proofs").mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n\n## Statement\nT\n", encoding="utf-8")
     return tmp_path
 
 
@@ -50,16 +48,11 @@ def conn(workspace: Path) -> sqlite3.Connection:
     c = db.connect()
     db.init_schema(c)
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES ('p', 'Problems/p/Manifest.md', ?, 1)",
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES ('p', ?, 1)",
         (db.now(),))
     c.commit()
     return c
-
-
-@pytest.fixture
-def mfst() -> manifest.Manifest:
-    return manifest.Manifest(problem="p", body="T")
 
 
 def _proved_forward(conn, slug="brick") -> int:

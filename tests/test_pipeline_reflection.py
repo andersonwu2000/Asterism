@@ -85,8 +85,8 @@ def _seed_problem_goal(tmp_path: Path) -> int:
     conn = db.connect()
     db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+        "INSERT INTO problems (name, created_at) "
+        "VALUES ('p', ?)", (db.now(),))
     gid = db.insert_goal(
         conn, problem="p", slug="g", lean_path="Problems/p/Root.lean",
         statement="True", origin="root")
@@ -188,9 +188,9 @@ def conn():
 
 def _seed_min_goal(conn: sqlite3.Connection) -> int:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        ("p", "Problems/p/Manifest.md", db.now()))
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES (?, ?, 1)",
+        ("p", db.now()))
     conn.commit()
     return db.insert_goal(
         conn, problem="p", slug="g", lean_path="Problems/p/Root.lean",
@@ -253,9 +253,9 @@ def _setup_reflection_ws(tmp_path: Path, directive: str):
     conn = db.connect()
     db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, "
-        "bootstrap_done, strategist_directive) VALUES (?, ?, ?, 1, ?)",
-        ("p", "Problems/p/Manifest.md", db.now(), directive))
+        "INSERT INTO problems (name, created_at, "
+        "bootstrap_done, strategist_directive) VALUES (?, ?, 1, ?)",
+        ("p", db.now(), directive))
     conn.commit()
     conn.close()
     problem_dir = tmp_path / "Problems" / "p"
@@ -365,8 +365,8 @@ def test_attempt_reflection_uses_full_problem_name_for_kb(
     conn = db.connect()
     db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES ('Geometry.foo', 'Problems/Geometry/foo/Manifest.md', ?, 1)",
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES ('Geometry.foo', ?, 1)",
         (db.now(),))
     gid = db.insert_goal(
         conn, problem="Geometry.foo", slug="g",

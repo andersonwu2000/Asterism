@@ -20,19 +20,20 @@ from pathlib import Path
 import pytest
 
 from Tooling import agent, pipeline
-from Tooling.state import db, manifest
+from Tooling.state import db, intent
 
 
 def _seed_root_goal(tmp_path: Path, conn: sqlite3.Connection) -> int:
     problem = "p"
     pdir = tmp_path / "Problems" / problem
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n## Statement\nTrue\n", encoding="utf-8")
+    (pdir / "problem.json").write_text(
+        json.dumps({"problem": "p", "charter": "Statement: True"}),
+        encoding="utf-8")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        (problem, str(pdir / "Manifest.md"), db.now()))
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES (?, ?, 1)",
+        (problem, db.now()))
     conn.commit()
     root = pdir / "Root.lean"
     root.write_text(
@@ -47,8 +48,8 @@ def _seed_root_goal(tmp_path: Path, conn: sqlite3.Connection) -> int:
     )
 
 
-def _mfst() -> manifest.Manifest:
-    return manifest.Manifest(problem="p", body="True")
+def _intent() -> intent.ProblemIntent:
+    return intent.ProblemIntent(problem="p", charter="True")
 
 
 def test_spawn_passes_mcp_config_path(
@@ -71,7 +72,7 @@ def test_spawn_passes_mcp_config_path(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=_mfst(), pipeline_id="pid-bw-mcp")
+        intent=_intent(), pipeline_id="pid-bw-mcp")
 
     cfg = captured.get("mcp_config_path")
     assert cfg is not None, "mcp_config_path should be set"
@@ -129,7 +130,7 @@ def test_mcp_target_is_patch_lean_not_goal_lean(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=_mfst(), pipeline_id="pid-bw-target-check")
+        intent=_intent(), pipeline_id="pid-bw-target-check")
 
     target = captured.get("target_path")
     assert target is not None, "/register should have been called"
@@ -174,7 +175,7 @@ def test_goal_lean_untouched_by_backward(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=_mfst(), pipeline_id="pid-bw-untouched")
+        intent=_intent(), pipeline_id="pid-bw-untouched")
 
     after = goal_lean.read_text(encoding="utf-8")
     assert after == original, (

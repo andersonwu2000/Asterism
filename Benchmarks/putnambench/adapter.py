@@ -2,7 +2,7 @@
 
 Converts trishullab/PutnamBench Lean 4 problem files into Asterism
 `Problems/Putnam/<name>/` dirs. Unlike the early miniF2F adapter era,
-`asterism init` no longer generates Root.lean from the Manifest — Root
+`asterism init` no longer generates Root.lean from the charter — Root
 and Defs are user-pinned inputs — so this adapter emits all three
 files itself:
 
@@ -16,7 +16,7 @@ files itself:
   Root.lean     canonical `theorem main : <∀-form> := by sorry`,
                 statement byte-derived from the upstream theorem
                 signature (binders → `∀` closure; NEVER hand-edited).
-  Manifest.md   informal problem text (the upstream docstring) as the
+  problem.json  informal problem text (the upstream docstring) as the
                 human-readable Statement + provenance; `library: false`
                 (benchmark problems are not Library material).
 
@@ -43,6 +43,7 @@ driver, not fixed. No per-problem hints in Strategic notes.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from dataclasses import dataclass, field
@@ -293,7 +294,10 @@ def _root_lean(spec: ProblemSpec) -> str:
     return body
 
 
-def _manifest_md(spec: ProblemSpec, *, upstream_commit: str = "") -> str:
+def _problem_seed(spec: ProblemSpec, *, upstream_commit: str = "") -> str:
+    """problem.json seed content (v40 — Manifest.md retired: the
+    charter is the informal statement, machine settings ride the
+    `settings` block; `signoff: false` = unattended batch protocol)."""
     year, slot = "", ""
     if m := re.fullmatch(r'putnam_(\d{4})_([ab]\d)', spec.name):
         year, slot = m.group(1), m.group(2).upper()
@@ -308,50 +312,46 @@ def _manifest_md(spec: ProblemSpec, *, upstream_commit: str = "") -> str:
     provenance = "trishullab/PutnamBench"
     if upstream_commit:
         provenance += f" @ {upstream_commit}"
-    return (
-        f"---\n"
-        f"problem: {spec.slug}\n"
-        f"axioms_whitelist:\n"
-        f"  - propext\n"
-        f"  - Quot.sound\n"
-        f"  - Classical.choice\n"
-        f"forbidden_lemmas: []\n"
-        f"library: false\n"
-        f"signoff: false\n"
-        f"---\n"
-        f"\n"
+    charter = (
         f"# {spec.slug} — imported from PutnamBench\n"
         f"\n"
         f"Original theorem: `{spec.name}` (Putnam {year} {slot}).\n"
-        f"\n"
-        f"## Statement\n"
         f"\n"
         f"{spec.informal}\n"
         f"\n"
         f"The formal statement is pinned in `Root.lean` (`theorem main`).\n"
         f"{defs_note}"
         f"\n"
-        f"## Strategic notes\n"
-        f"\n"
         f"Imported via `Benchmarks/putnambench/adapter.py` from\n"
         f"{provenance}. No per-problem hints —\n"
         f"benchmark integrity. The pinned statement is never edited;\n"
-        f"if you believe it is FALSE, that is what `AttemptDisproof` /\n"
-        f"`RequestUserAmend` are for.\n"
+        f"if you believe it is FALSE, that is what "
+        f"`RequestUserAmend` is for.\n"
     )
+    return json.dumps({
+        "problem": spec.slug,
+        "charter": charter,
+        "settings": {
+            "axioms_whitelist": ["propext", "Quot.sound",
+                                 "Classical.choice"],
+            "forbidden_lemmas": [],
+            "library": False,
+            "signoff": False,
+        },
+    }, indent=2, ensure_ascii=False) + "\n"
 
 
 def emit_problem_dir(spec: ProblemSpec, output_root: Path, *,
                      upstream_commit: str = "") -> Path:
-    """Materialize Problems/Putnam/<name>/{Manifest.md, Defs.lean,
+    """Materialize Problems/Putnam/<name>/{problem.json, Defs.lean,
     Root.lean}. Idempotent overwrite of these three files; never
     touches proofs/ (owned by the framework after init)."""
     pdir = output_root / spec.rel_dir
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / "Defs.lean").write_text(_defs_lean(spec), encoding="utf-8")
     (pdir / "Root.lean").write_text(_root_lean(spec), encoding="utf-8")
-    (pdir / "Manifest.md").write_text(
-        _manifest_md(spec, upstream_commit=upstream_commit),
+    (pdir / "problem.json").write_text(
+        _problem_seed(spec, upstream_commit=upstream_commit),
         encoding="utf-8")
     return pdir
 

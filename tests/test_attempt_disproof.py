@@ -23,8 +23,8 @@ def _conn(tmp_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     _db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) VALUES"
-        " ('Test.px', 'Problems/Test/px/Manifest.md', 'ts')")
+        "INSERT INTO problems (name, created_at) VALUES"
+        " ('Test.px', 'ts')")
     conn.commit()
     return conn
 

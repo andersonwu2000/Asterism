@@ -579,8 +579,8 @@ def test_slug_collision_submission_flags_existing_goal(
     conn.row_factory = sqlite3.Row
     db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'm', ?)", (db.now(),))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('p', ?)", (db.now(),))
     db.insert_goal(conn, problem="p", slug="taken",
                    lean_path="Problems/p/proofs/L_taken.lean",
                    statement="T", origin="backward")
@@ -611,8 +611,8 @@ def test_slug_collision_info_fork_for_identical_shelved_twin(
     conn.row_factory = sqlite3.Row
     db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'm', ?)", (db.now(),))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('p', ?)", (db.now(),))
     gid = db.insert_goal(conn, problem="p", slug="crux",
                          lean_path="Problems/p/proofs/L_crux.lean",
                          statement="T", origin="backward")
@@ -1023,9 +1023,15 @@ def test_axioms_submission_mirrors_the_commit_gate(tmp_path) -> None:
     silent (sorryAx is the legal pre-commit decomposition currency)."""
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\naxioms_whitelist:\n  - propext\n---\n# p\n",
-        encoding="utf-8")
+    # v40: the whitelist lives in the DB (problem_settings), not a file.
+    from Tooling.state import settings as _settings
+    conn = db.connect(tmp_path / "asterism.db")
+    db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, created_at)"
+                 " VALUES ('p', ?)", (db.now(),))
+    conn.commit()
+    _settings.write(conn, "p", "axioms_whitelist", ["propext"])
+    conn.close()
     meta = lsp_gateway.SessionMetadata(
         pipeline_id="pipe-ax", target_path=tmp_path / "x.lean",
         problem="p", workspace=tmp_path, log_path=None, file_content="")
@@ -1964,8 +1970,8 @@ def test_build_compilation_unit_hoists_proved_sibling_imports(
     conn = sqlite3.connect(tmp_path / "asterism.db")
     conn.row_factory = sqlite3.Row
     db.init_schema(conn)
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at) "
-                 "VALUES ('p','',datetime('now'))")
+    conn.execute("INSERT INTO problems (name, created_at) "
+                 "VALUES ('p',datetime('now'))")
     g = db.insert_goal(conn, problem=prob, slug="helper_lemma",
                        lean_path="Problems/p/proofs/L_helper_lemma.lean",
                        statement="True", origin="backward", kind="theorem")
@@ -2237,8 +2243,8 @@ def test_apply_edit_carries_citation_mirror(
     conn = _db.connect(tmp_path / "asterism.db")
     _db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (_db.now(),))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('p', ?)", (_db.now(),))
     conn.commit()
     _db.insert_goal(conn, problem="p", slug="inflight_dep",
                     lean_path="Problems/p/proofs/L_inflight_dep.lean",

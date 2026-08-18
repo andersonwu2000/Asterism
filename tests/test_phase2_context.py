@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from Tooling.agent import phase2_context
-from Tooling.state import db, manifest
+from Tooling.state import db, intent as intent_mod
 
 
 @pytest.fixture
@@ -21,20 +21,18 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n\n## Statement\nT\n", encoding="utf-8")
     return tmp_path
 
 
 @pytest.fixture
-def mfst() -> manifest.Manifest:
-    return manifest.Manifest(problem="p", body="T")
+def mfst() -> intent_mod.ProblemIntent:
+    return intent_mod.ProblemIntent(problem="p", charter="T")
 
 
 def _insert_problem(conn: sqlite3.Connection, name: str = "p") -> None:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
-        " VALUES (?, '', ?, 1)", (name, db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES (?, ?, 1)", (name, db.now()),
     )
     conn.commit()
 
@@ -97,7 +95,7 @@ def _insert_dead_attempt(conn: sqlite3.Connection, *, target_id: int,
 
 def test_pending_review_surfaces_backward_shelve_proposal(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """Regression — SG take 5: Backward agent declined with a detailed
     shelve brief (5 missing Forward lemmas listed in dead_attempts.
@@ -125,7 +123,7 @@ def test_pending_review_surfaces_backward_shelve_proposal(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="pending_review",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=root,
     )
     text = out.read_text(encoding="utf-8")
@@ -145,7 +143,7 @@ def test_pending_review_surfaces_backward_shelve_proposal(
 
 def test_pending_review_surfaces_existing_strategy_content(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """Spec §2.2 review_context: '既有 strategy 內容'. Strategist needs
     to know what decomposition was tried before deciding Reopen with
@@ -161,7 +159,7 @@ def test_pending_review_surfaces_existing_strategy_content(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="pending_review",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=root,
     )
     text = out.read_text(encoding="utf-8")
@@ -173,7 +171,7 @@ def test_pending_review_surfaces_existing_strategy_content(
 
 def test_pending_review_walks_ancestor_chain_to_root(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """Spec §2.2 review_context: 'ancestor 鏈'. Walk subgoal → parent
     strategy → strategy.goal_id upward until origin='root'."""
@@ -196,7 +194,7 @@ def test_pending_review_walks_ancestor_chain_to_root(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="pending_review",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=leaf,
     )
     text = out.read_text(encoding="utf-8")
@@ -208,7 +206,7 @@ def test_pending_review_walks_ancestor_chain_to_root(
 
 def test_root_pending_review_marks_self_root_chain(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """A root goal pending-reviewed has no upward chain. Section emits a
     'self is root' note so Strategist sees the placeholder rather than
@@ -219,7 +217,7 @@ def test_root_pending_review_marks_self_root_chain(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="pending_review",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=root,
     )
     text = out.read_text(encoding="utf-8")
@@ -233,7 +231,7 @@ def test_root_pending_review_marks_self_root_chain(
 
 def test_routine_trigger_omits_review_sections(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """T1 routine trigger: review-specific sections (failure brief,
     existing strategies, ancestor chain) must not appear — they target
@@ -248,7 +246,7 @@ def test_routine_trigger_omits_review_sections(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="routine",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=None,
     )
     text = out.read_text(encoding="utf-8")
@@ -260,7 +258,7 @@ def test_routine_trigger_omits_review_sections(
 
 def test_fresh_problem_routine_context_omits_review_sections(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """A fresh problem's non-review wake: bootstrap context, no review
     target. (Phase 6: first_launch retired; routine stands in.)"""
@@ -270,7 +268,7 @@ def test_fresh_problem_routine_context_omits_review_sections(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="routine",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=None,
     )
     text = out.read_text(encoding="utf-8")
@@ -463,7 +461,7 @@ def test_batch_outcomes_filter_non_inject_and_flag_unattributed(
 
 def test_inject_batch_done_surfaces_briefs_and_outcomes(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """trigger_kind='inject_batch_done' Context surfaces each completed
     batch's brief + outcome per step. Strategist needs the per-step
@@ -480,7 +478,7 @@ def test_inject_batch_done_surfaces_briefs_and_outcomes(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="inject_batch_done",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=None,
     )
     text = out.read_text(encoding="utf-8")
@@ -495,7 +493,7 @@ def test_inject_batch_done_surfaces_briefs_and_outcomes(
 
 def test_inject_batch_done_surfaces_outcome_detail_why(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """#4 — the completed-batch section shows a decline's `## Why`
     (`outcome_detail`) so the Strategist sees WHY its brief was declined,
@@ -514,7 +512,7 @@ def test_inject_batch_done_surfaces_outcome_detail_why(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="inject_batch_done",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=None,
     )
     text = out.read_text(encoding="utf-8")
@@ -525,7 +523,7 @@ def test_inject_batch_done_surfaces_outcome_detail_why(
 
 def test_inject_batch_done_surfaces_landed_decl(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """Each completed step with a `produced_goal_id` shows the decl that
     actually landed (slug + status + statement) — kernel truth, so the
@@ -549,7 +547,7 @@ def test_inject_batch_done_surfaces_landed_decl(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="inject_batch_done",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=None,
     )
     text = out.read_text(encoding="utf-8")
@@ -559,7 +557,7 @@ def test_inject_batch_done_surfaces_landed_decl(
 
 def test_inject_batch_section_omitted_when_no_unack_batch(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """Without any unack batch, the section doesn't appear (defensive —
     rendering must not show stale data)."""
@@ -569,7 +567,7 @@ def test_inject_batch_section_omitted_when_no_unack_batch(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="inject_batch_done",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
     )
     text = out.read_text(encoding="utf-8")
     assert "## Completed Inject batches" not in text
@@ -577,7 +575,7 @@ def test_inject_batch_section_omitted_when_no_unack_batch(
 
 def test_routine_trigger_shows_unack_batch_section(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """Routine trigger (or any other non-inject_batch_done trigger)
     MUST surface unack batch outcomes — otherwise a Strategist invoked
@@ -595,7 +593,7 @@ def test_routine_trigger_shows_unack_batch_section(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="routine",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
     )
     text = out.read_text(encoding="utf-8")
     assert "## Completed Inject batches" in text
@@ -605,7 +603,7 @@ def test_routine_trigger_shows_unack_batch_section(
 
 def test_pending_review_trigger_shows_unack_batch_section(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """Same race-avoidance for pending_review: a T2 Strategist
     invocation must see batches that completed since the last commit."""
@@ -619,7 +617,7 @@ def test_pending_review_trigger_shows_unack_batch_section(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="pending_review",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=root,
     )
     text = out.read_text(encoding="utf-8")
@@ -629,7 +627,7 @@ def test_pending_review_trigger_shows_unack_batch_section(
 
 def test_inject_batch_section_omits_produced_lemma(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """Batch section deliberately does NOT attribute Forward lemmas to
     specific batch steps. Goals don't carry decision_id; attribution
@@ -656,7 +654,7 @@ def test_inject_batch_section_omits_produced_lemma(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="inject_batch_done",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
     )
     text = out.read_text(encoding="utf-8")
     assert "produced:" not in text
@@ -1127,7 +1125,7 @@ def test_plan_note_section_absent_when_no_note(
 
 def test_plan_note_section_renders_and_warns_over_cap(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """Present note → private section in the STRATEGIST context; a note
     past the soft cap gets exactly one warning line (nothing harder —
@@ -1157,7 +1155,7 @@ def test_plan_note_section_renders_and_warns_over_cap(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="routine",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=None,
     )
     assert "## Your plan note (private, cross-wake)" in out.read_text(
@@ -1280,7 +1278,7 @@ def test_tree_inline_lists_only_live_goals(
 
 def test_delivered_vs_briefed_is_not_decided_by_a_regex(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """User ruling 2026-08-07: no mechanical checking of natural
     language. "Did the worker deliver what I briefed" was decided by
@@ -1312,7 +1310,7 @@ def test_delivered_vs_briefed_is_not_decided_by_a_regex(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="inject_batch_done",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=None,
     )
     text = out.read_text(encoding="utf-8")
@@ -1329,7 +1327,7 @@ def test_delivered_vs_briefed_is_not_decided_by_a_regex(
 
 def test_batch_scoreboard_surfaces_recent_declines(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """2026-07-19 (b6_1 growth_exponent re-mint): a decline's math
     reasoning lived only in per-goal surfaces and a cousin branch
@@ -1360,7 +1358,7 @@ def test_batch_scoreboard_surfaces_recent_declines(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="routine",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=None,
     )
     text = out.read_text(encoding="utf-8")
@@ -1371,7 +1369,7 @@ def test_batch_scoreboard_surfaces_recent_declines(
 
 def test_a_decline_reaches_the_strategist_with_its_ask_intact(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """The head-truncated version cut at 250 characters against a
     measured median of 1,250, so 79% of declines arrived clipped — and
@@ -1403,7 +1401,7 @@ def test_a_decline_reaches_the_strategist_with_its_ask_intact(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="routine",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=None)
     text = out.read_text(encoding="utf-8")
     assert ask in text                       # the ask, verbatim
@@ -1432,7 +1430,7 @@ def test_the_decline_budget_covers_the_measured_distribution() -> None:
 
 def test_a_normalized_slug_rename_is_narrated_by_nobody(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """The RENAMED marker went out with RETARGETED (user ruling
     2026-08-07: no mechanical checking of natural language). It was the
@@ -1458,7 +1456,7 @@ def test_a_normalized_slug_rename_is_narrated_by_nobody(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="inject_batch_done",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=None)
     text = out.read_text(encoding="utf-8")
     assert "RENAMED" not in text
@@ -1468,7 +1466,7 @@ def test_a_normalized_slug_rename_is_narrated_by_nobody(
 
 def test_outcome_line_reads_full_signature_for_def(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, tmp_path: Path,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
 ) -> None:
     """07-29 (C): the DB statement for a def is its RESULT TYPE (`Prop`)
     — arity is invisible and fueled the verdict war. The outcome line
@@ -1496,7 +1494,7 @@ def test_outcome_line_reads_full_signature_for_def(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="inject_batch_done",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=None)
     text = out.read_text(encoding="utf-8")
     assert full in text
@@ -1512,8 +1510,8 @@ def test_section_programme_proof_renders_current_rev(
     pre-bootstrap, mirroring the FORBIDDEN_LEMMAS precedent."""
     from Tooling.state import programme
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES ('p', 'Problems/p/Manifest.md', ?, 1)",
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES ('p', ?, 1)",
         (db.now(),))
     conn.commit()
     out = phase2_context._section_programme_proof(conn, "p")
@@ -1549,7 +1547,7 @@ def test_ingest_gate_states_the_ordering_cost_ungated(
 
 
 def test_ingest_gate_states_the_axiom_gate_once_reachable(
-    workspace: Path, conn: sqlite3.Connection, mfst: manifest.Manifest,
+    workspace: Path, conn: sqlite3.Connection, mfst: intent_mod.ProblemIntent,
 ) -> None:
     """The exit gate must not ask for a certification it also hides.
 
@@ -1564,20 +1562,20 @@ def test_ingest_gate_states_the_axiom_gate_once_reachable(
     mfst.axioms_whitelist = ["propext", "Classical.choice"]
     # Root unproved: this is the "unavailable" note, not the certification.
     blocked = "\n".join(
-        phase2_context._section_ingest_gate(conn, "p", mfst=mfst))
+        phase2_context._section_ingest_gate(conn, "p", intent=mfst))
     assert "Axiom certification" not in blocked
 
     db.update_goal_status(conn, root, "proved")
     conn.commit()
     text = "\n".join(
-        phase2_context._section_ingest_gate(conn, "p", mfst=mfst))
+        phase2_context._section_ingest_gate(conn, "p", intent=mfst))
     assert "## Axiom certification (already machine-checked)" in text
     assert "`propext`" in text and "`Classical.choice`" in text
     assert "not expected to re-run the probe" in text
 
 
 def test_strategist_surfaces_carry_no_retired_pipeline_names(
-    workspace: Path, conn: sqlite3.Connection, mfst: manifest.Manifest,
+    workspace: Path, conn: sqlite3.Connection, mfst: intent_mod.ProblemIntent,
     tmp_path: Path,
 ) -> None:
     """v33 hard-wired every Inject to the Formalizer, but the
@@ -1592,7 +1590,7 @@ def test_strategist_surfaces_carry_no_retired_pipeline_names(
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
         conn, problem="p", trigger_kind="routine",
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
         pending_review_id=None,
     ).read_text(encoding="utf-8")
     for dead in ("Inject(Backward", "Inject(Builder", "Inject(Forward)",

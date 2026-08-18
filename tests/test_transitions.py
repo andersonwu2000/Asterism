@@ -26,8 +26,8 @@ def conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
     c = db.connect()
     db.init_schema(c)
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?, 1)",
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES ('p', ?, 1)",
         (db.now(),),
     )
     c.commit()
@@ -134,9 +134,9 @@ def test_revive_cli_reenters_revoked(tmp_path: Path,
     c = db.connect()
     db.init_schema(c)
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
+        "INSERT INTO problems (name, created_at,"
         " ingested_at, state)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?, ?, 'revoked')",
+        " VALUES ('p', ?, ?, 'revoked')",
         (db.now(), db.now()))
     c.commit()
     assert db.is_problem_stalled(c, "p") is False   # quarantine is quiet
@@ -170,8 +170,8 @@ def test_a_terminal_group_arrival_does_not_repeat(
     it."""
     from Tooling.state import groups as _groups, transitions as _t
     conn.execute(
-        "INSERT OR IGNORE INTO problems (name, manifest_path, created_at)"
-        " VALUES ('gterm', 'Manifest.md', ?)", (db.now(),))
+        "INSERT OR IGNORE INTO problems (name, created_at)"
+        " VALUES ('gterm', ?)", (db.now(),))
     top = _groups.ensure_top_group(conn, "gterm")
     sub = _groups.open_group(conn, problem="gterm", parent_group_id=top,
                              charter="c")
@@ -225,8 +225,8 @@ def test_seat_sources_respect_state_over_carriers(
     # Stalled-looking problem (frozen root, ancient routine clock) BUT
     # state=revoked and NO legacy carrier backing it up.
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, state)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?, 'revoked')",
+        "INSERT INTO problems (name, created_at, state)"
+        " VALUES ('p', ?, 'revoked')",
         (db.now(),))
     c.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement, kind,"

@@ -21,8 +21,8 @@ def conn(tmp_path):
     # goals.problem has a FK to problems(name); register the test
     # problem first so insert_goal doesn't trip the constraint.
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, "
-        "bootstrap_done) VALUES ('p', '', ?, 1)", (db.now(),))
+        "INSERT INTO problems (name, created_at, "
+        "bootstrap_done) VALUES ('p', ?, 1)", (db.now(),))
     c.commit()
     return c
 

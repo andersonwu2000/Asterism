@@ -22,8 +22,8 @@ def conn(tmp_path, monkeypatch):
     c = db.connect()
     db.init_schema(c)
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'p/Manifest.md', ?)", (db.now(),))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('p', ?)", (db.now(),))
     c.commit()
     return c
 

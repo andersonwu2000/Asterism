@@ -43,8 +43,8 @@ def test_verify_library_against_db_index(tmp_path):
     conn = _dbm.connect(":memory:")
     _dbm.init_schema(conn)
     conn.execute("PRAGMA foreign_keys = OFF")
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at,"
-                 " bootstrap_done) VALUES ('p','m','t',1)")
+    conn.execute("INSERT INTO problems (name, created_at,"
+                 " bootstrap_done) VALUES ('p','t',1)")
     conn.execute("INSERT INTO library_decls (problem, slug, target_name,"
                  " target_file, lifecycle, created_at, updated_at)"
                  " VALUES ('p','real_thing','Library.X.real_thing',"
@@ -185,8 +185,8 @@ def test_verify_attaches_sibling_status_and_statement(tmp_path):
     from Tooling.state import db as _dbm
     conn = _dbm.connect(":memory:")
     _dbm.init_schema(conn)
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                 " VALUES ('p','m','t')")
+    conn.execute("INSERT INTO problems (name, created_at)"
+                 " VALUES ('p','t')")
     for slug, status in (("sib_proved", "proved"),
                          ("sib_false", "disproved")):
         gid = _dbm.insert_goal(

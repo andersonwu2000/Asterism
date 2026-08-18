@@ -38,8 +38,8 @@ def _conn(tmp_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     _db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, 'Problems/Test/wedge/Manifest.md', ?)",
+        "INSERT INTO problems (name, created_at)"
+        " VALUES (?, ?)",
         (P, _db.now()))
     conn.commit()
     return conn
@@ -661,11 +661,11 @@ def test_amend_identical_rerequest_rejected(tmp_path: Path) -> None:
         " trigger_kind, decision_kind, payload, outcome, created_at,"
         " updated_at) VALUES (?, 0, 'routine', 'RequestUserAmend', ?,"
         " 'rejected', ?, ?)",
-        (P, json.dumps({"file": "Manifest.md", "proposed_body": "OLD ASK",
+        (P, json.dumps({"file": "charter", "proposed_body": "OLD ASK",
                         "question": "q?"}), _db.now(), _db.now()))
     conn.commit()
     req = {"kind": "RequestUserAmend", "reason": "statement wrong",
-           "file": "Manifest.md", "question": "q?",
+           "file": "charter", "question": "q?",
            "proposed_body": "OLD ASK"}
     ds, _ = strategist.parse_decisions(json.dumps([req]))
     assert "already adjudicated" in strategist.verify_decisions(
@@ -732,8 +732,8 @@ def test_alignment_invariant_stalled_implies_gate_rejects(
     conn2.row_factory = sqlite3.Row
     _db.init_schema(conn2)
     conn2.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, 'Problems/Test/wedge/Manifest.md', ?)",
+        "INSERT INTO problems (name, created_at)"
+        " VALUES (?, ?)",
         (P, _db.now()))
     root = _db.insert_goal(
         conn2, problem=P, slug="main",

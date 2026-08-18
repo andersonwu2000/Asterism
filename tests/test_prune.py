@@ -12,8 +12,8 @@ from Tooling.quality import prune
 
 def _seed_problem(conn: sqlite3.Connection, name: str = "p") -> None:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) VALUES (?, ?, ?, 1)",
-        (name, f"Problems/{name}/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done) VALUES (?, ?, 1)",
+        (name, db.now()),
     )
 
 
@@ -305,9 +305,9 @@ def test_prune_problem_import_walk_handles_dotted_problem_name(
     pdir_rel = "Problems/LinearAlgebra/jordan_normal_form"
 
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
-        " VALUES (?, ?, ?, 1)",
-        (name, f"{pdir_rel}/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES (?, ?, 1)",
+        (name, db.now()),
     )
     root = db.insert_goal(
         conn, problem=name, slug="main",

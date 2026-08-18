@@ -50,9 +50,9 @@ def _client(workspace: Path) -> TestClient:
 
 def _add_problem(conn: sqlite3.Connection, name: str) -> None:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, ?, ?)",
-        (name, f"Problems/{name}/Manifest.md", db.now()))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES (?, ?)",
+        (name, db.now()))
     conn.commit()
 
 
@@ -571,8 +571,8 @@ def test_pattern_scope_resolves_to_real_problems(
 
 def _problem(conn: sqlite3.Connection, name: str) -> None:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, ?, ?)", (name, f"Problems/{name}/Manifest.md", db.now()))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES (?, ?)", (name, db.now()))
     conn.commit()
 
 

@@ -24,9 +24,9 @@ def _seed_problem(conn, name):
     if conn.execute("SELECT 1 FROM problems WHERE name = ?",
                     (name,)).fetchone() is None:
         conn.execute(
-            "INSERT INTO problems (name, manifest_path, created_at,"
-            " bootstrap_done) VALUES (?, ?, ?, 1)",
-            (name, f"Problems/{name}/Manifest.md", db.now()))
+            "INSERT INTO problems (name, created_at,"
+            " bootstrap_done) VALUES (?, ?, 1)",
+            (name, db.now()))
         conn.commit()
 
 
@@ -73,7 +73,7 @@ def _qfile(row):
 
 
 def _manifests(**opt_in):
-    """ManifestCache stand-in: `problem -> obj with .library`. `dict` supports
+    """IntentCache stand-in: `problem -> obj with .library`. `dict` supports
     the `in` / `[]` access `_librarian_selfstart_problems` uses. Pass
     `_manifests(p=True)` to mark problem `p` library-opted-in."""
     from types import SimpleNamespace

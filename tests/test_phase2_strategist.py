@@ -21,8 +21,6 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n\n## Statement\nT\n", encoding="utf-8")
     return tmp_path
 
 
@@ -31,8 +29,8 @@ def conn(workspace: Path) -> sqlite3.Connection:
     c = db.connect()
     db.init_schema(c)
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?, 1)",
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES ('p', ?, 1)",
         (db.now(),),
     )
     c.commit()
@@ -347,7 +345,7 @@ def test_verify_request_user_amend_file_check(
         "reason": "x",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
-    assert "Defs.lean" in err and "Manifest.md" in err
+    assert "Defs.lean" in err and "charter" in err
     # Root.lean is amendable since the feature-D livelock fix
     # (a false root claim must be hand-back-able).
     d2, _ = strategist.parse_decision(json.dumps({
@@ -972,17 +970,17 @@ def test_commit_request_user_amend_writes_proposed_file_atomically(
     _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "RequestUserAmend", "problem": "p",
-        "file": "Manifest.md",
-        "proposed_body": "## New Manifest body",
+        "file": "charter",
+        "proposed_body": "## New charter body",
         "question": "Accept?", "reason": "x",
     }))
     outcome = strategist.commit_decision(
         d, conn, problem="p", tick=1, trigger_kind="routine",
         workspace=workspace,
     )
-    proposed = workspace / "Problems" / "p" / ".proposed_Manifest.md"
+    proposed = workspace / "Problems" / "p" / ".proposed_charter"
     assert proposed.exists()
-    assert "New Manifest body" in proposed.read_text(encoding="utf-8")
+    assert "New charter body" in proposed.read_text(encoding="utf-8")
     # Outcome marks awaiting_human
     row = conn.execute(
         "SELECT outcome FROM strategist_decisions WHERE id = ?",
@@ -1962,9 +1960,9 @@ def test_verify_decisions_rejects_noop_alone_when_root_frozen(
 def test_verify_decisions_allows_two_request_user_amend_in_batch(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    """Multi-decision allows co-amending Defs.lean + Manifest.md in one
+    """Multi-decision allows co-amending Defs.lean + the charter in one
     batch so the operator can review the coupled drafts side by side
-    (e.g. new def + Manifest hint pointing at it). The per-item
+    (e.g. new def + charter wording pointing at it). The per-item
     `problem_has_awaiting_human` gate naturally serialises across
     batches — once the batch commits, both rows are
     `outcome='awaiting_human'` and any subsequent Strategist amend
@@ -1974,7 +1972,7 @@ def test_verify_decisions_allows_two_request_user_amend_in_batch(
         {"kind": "RequestUserAmend", "problem": "p", "file": "Defs.lean",
          "proposed_body": "-- new def body\n",
          "question": "OK?", "reason": "need vocab"},
-        {"kind": "RequestUserAmend", "problem": "p", "file": "Manifest.md",
+        {"kind": "RequestUserAmend", "problem": "p", "file": "charter",
          "proposed_body": "## Hints\n- prefer new def\n",
          "question": "OK?", "reason": "point hints at new vocab"},
     ]))
@@ -1993,7 +1991,7 @@ def test_verify_decisions_allows_two_request_user_amend_in_batch(
     assert [r["outcome"] for r in rows] == ["awaiting_human",
                                             "awaiting_human"]
     assert (workspace / "Problems" / "p" / ".proposed_Defs.lean").exists()
-    assert (workspace / "Problems" / "p" / ".proposed_Manifest.md").exists()
+    assert (workspace / "Problems" / "p" / ".proposed_charter").exists()
 
 
 def test_verify_decisions_rejects_lone_confirmshelve(
@@ -2115,13 +2113,13 @@ def test_verify_decisions_rejects_confirmshelve_paired_only_with_request_user_am
     conn: sqlite3.Connection,
 ) -> None:
     """RequestUserAmend is NOT a constructive sibling for ConfirmShelve.
-    It's the user-escalation channel for Defs.lean / Manifest.md errors,
+    It's the user-escalation channel for Defs.lean / charter errors,
     not a way to dodge the 'articulate the next step' rule. If both
     apply, send as separate Strategist calls (the user-amend pauses
     dispatch anyway via the awaiting_human gate)."""
     root = _insert_root(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "RequestUserAmend", "problem": "p", "file": "Manifest.md",
+        {"kind": "RequestUserAmend", "problem": "p", "file": "charter",
          "proposed_body": "## Hints\n- new hint\n",
          "question": "OK?", "reason": "hints look misleading"},
         {"kind": "ConfirmShelve", "target_goal_id": root,

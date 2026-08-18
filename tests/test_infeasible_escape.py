@@ -32,9 +32,9 @@ from Tooling.core.dispatcher import cascade_one
 
 def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p") -> int:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        (problem, "Problems/p/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES (?, ?, 1)",
+        (problem, db.now()),
     )
     return db.insert_goal(
         conn, problem=problem, slug="main",

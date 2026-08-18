@@ -82,8 +82,8 @@ def _mem() -> sqlite3.Connection:
 
 def _seed(conn, name, *, ingested=False, bridged=False):
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES (?, 'm', ?, 1)", (name, db.now()))
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES (?, ?, 1)", (name, db.now()))
     if ingested:
         db.set_problem_ingested(conn, name)
     if bridged:

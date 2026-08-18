@@ -43,10 +43,10 @@ def _insert_problem(conn: sqlite3.Connection, *, name: str,
                     last_strategist_at: str | None = None,
                     last_routine_at: str | None = None) -> None:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
+        "INSERT INTO problems (name, created_at,"
         " bootstrap_done, last_strategist_at, last_routine_at)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (name, f"Problems/{name}/Manifest.md", db.now(),
+        " VALUES (?, ?, ?, ?, ?)",
+        (name, db.now(),
          bootstrap_done, last_strategist_at, last_routine_at),
     )
     # v35 — every problem has a top discussion group; `cli init` creates

@@ -16,16 +16,12 @@ from Tooling.core.cli import cmd_init, cmd_reset, cmd_status, _status_payload
 # Shared setup helpers
 # ---------------------------------------------------------------------
 
-_MIN_MANIFEST = (
-    "# wilson\n\n## Statement\n\nTrue\n\n## Difficulty\n\n1\n"
-)
-
-
-def _setup_problem(tmp_path: Path, name: str = "wilson",
-                   manifest_body: str = _MIN_MANIFEST) -> Path:
+def _setup_problem(tmp_path: Path, name: str = "wilson") -> Path:
     pdir = tmp_path / "Problems" / name
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(manifest_body, encoding="utf-8")
+    (pdir / "problem.json").write_text(
+        _json.dumps({"problem": name, "charter": "Statement: True"}),
+        encoding="utf-8")
     # Defs.lean + Root.lean are now required by cmd_init.
     (pdir / "Defs.lean").write_text(
         f"import Mathlib\n\nnamespace Problems.{name}\n\nend Problems.{name}\n",
@@ -179,7 +175,7 @@ def test_reset_clears_problem_settings_and_paper_bindings(
     conn.execute(
         "INSERT INTO user_file_history"
         " (problem, file, sha, body, seen_at, source)"
-        " VALUES ('wilson', 'Manifest.md', 'x', 'b', ?, 'observed')",
+        " VALUES ('wilson', 'charter', 'x', 'b', ?, 'observed')",
         (db.now(),))
     conn.execute(
         "INSERT INTO kb_entries (type, title, problem, created_at)"
@@ -255,8 +251,7 @@ def test_reset_clears_pipelines_for_problem_only(
 ) -> None:
     """Resetting wilson must wipe wilson's pipelines but preserve cantor's."""
     _setup_problem(tmp_path, "wilson")
-    _setup_problem(tmp_path, "cantor",
-                   manifest_body="# cantor\n\n## Statement\n\nTrue\n")
+    _setup_problem(tmp_path, "cantor")
     monkeypatch.chdir(tmp_path)
     cmd_init(argparse.Namespace(problem="wilson", force=True))
     cmd_init(argparse.Namespace(problem="cantor", force=True))
@@ -424,8 +419,7 @@ def test_reset_isolates_other_problems(
 ) -> None:
     """Resetting wilson must leave cantor's rows alone."""
     _setup_problem(tmp_path, "wilson")
-    _setup_problem(tmp_path, "cantor",
-                   manifest_body="# cantor\n\n## Statement\n\nTrue\n")
+    _setup_problem(tmp_path, "cantor")
     monkeypatch.chdir(tmp_path)
     cmd_init(argparse.Namespace(problem="wilson", force=True))
     cmd_init(argparse.Namespace(problem="cantor", force=True))
@@ -675,8 +669,7 @@ def test_status_recent_pipelines_filtered_to_problem(
     """A pipeline targeting a goal from a different problem must not
     appear in `wilson`'s status."""
     _setup_problem(tmp_path, "wilson")
-    _setup_problem(tmp_path, "cantor",
-                   manifest_body="# cantor\n\n## Statement\n\nTrue\n")
+    _setup_problem(tmp_path, "cantor")
     monkeypatch.chdir(tmp_path)
     cmd_init(argparse.Namespace(problem="wilson", force=True))
     cmd_init(argparse.Namespace(problem="cantor", force=True))
@@ -720,8 +713,8 @@ def _register_problem(workspace, name="Logic.p"):
     from Tooling.state import db as _db
     c = _db.connect(workspace / "asterism.db")
     _db.init_schema(c)
-    c.execute("INSERT INTO problems (name, manifest_path, created_at,"
-              " bootstrap_done) VALUES (?, '', ?, 1)", (name, _db.now()))
+    c.execute("INSERT INTO problems (name, created_at,"
+              " bootstrap_done) VALUES (?, ?, 1)", (name, _db.now()))
     c.commit()
     c.close()
 
@@ -911,8 +904,8 @@ def test_daemon_force_stop_cleans_residue(tmp_path, monkeypatch, capsys):
     conn = _db.connect(tmp_path / "asterism.db")
     _db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (_db.now(),))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('p', ?)", (_db.now(),))
     _db.enqueue(conn, kind="Strategist", target_id="p",
                 target_kind="Problem", problem="p")
     conn.execute("UPDATE queue SET owner_pid = ?, leased_at = ?",

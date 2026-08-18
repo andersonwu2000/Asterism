@@ -33,8 +33,8 @@ def _register_problem(workspace: Path, name: str = "p") -> None:
     from Tooling.state import db as _db
     c = _db.connect(workspace / "asterism.db")
     _db.init_schema(c)
-    c.execute("INSERT INTO problems (name, manifest_path, created_at,"
-              " bootstrap_done) VALUES (?, '', ?, 1)", (name, _db.now()))
+    c.execute("INSERT INTO problems (name, created_at,"
+              " bootstrap_done) VALUES (?, ?, 1)", (name, _db.now()))
     c.commit()
     c.close()
 

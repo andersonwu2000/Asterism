@@ -75,8 +75,8 @@ def test_assemble_injects_the_sibling_import_a_leaf_bypass_needs(
     (pdir / "proofs").mkdir(parents=True)
     (pdir / "Defs.lean").write_text("import Mathlib\n", encoding="utf-8")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, ?, '2026-08-10')", (problem, "Manifest.md"))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES (?, '2026-08-10')", (problem,))
     conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement, status,"
         " origin, created_at, updated_at) VALUES (?, 'helper_lemma', ?,"

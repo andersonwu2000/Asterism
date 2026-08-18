@@ -20,13 +20,13 @@ def _fresh(tmp_path):
 
 def test_fresh_db_is_latest(tmp_path):
     c = _fresh(tmp_path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 39
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 40
 
 
 def test_queue_accepts_librarian(tmp_path):
     c = _fresh(tmp_path)
-    c.execute("INSERT INTO problems (name, manifest_path, created_at,"
-              " bootstrap_done) VALUES ('p','',?,1)", (db.now(),))
+    c.execute("INSERT INTO problems (name, created_at,"
+              " bootstrap_done) VALUES ('p',?,1)", (db.now(),))
     c.execute("INSERT INTO queue (kind, target_id, target_kind, priority,"
               " created_at) VALUES ('Librarian','p','Problem',5,?)",
               (db.now(),))
@@ -58,8 +58,8 @@ def test_v6_upgrades_preserving_rows(tmp_path):
     """An old v6 DB with Builder/Backward rows upgrades to v7 in place,
     keeps every row, and then accepts 'Librarian'."""
     c = _fresh(tmp_path)
-    c.execute("INSERT INTO problems (name, manifest_path, created_at,"
-              " bootstrap_done) VALUES ('p','',?,1)", (db.now(),))
+    c.execute("INSERT INTO problems (name, created_at,"
+              " bootstrap_done) VALUES ('p',?,1)", (db.now(),))
     c.execute("INSERT INTO queue (kind, target_id, target_kind, priority,"
               " created_at) VALUES ('Builder','5','Goal',5,?)", (db.now(),))
     c.execute("INSERT INTO pipelines (id, kind, target_id, target_kind,"
@@ -71,7 +71,7 @@ def test_v6_upgrades_preserving_rows(tmp_path):
 
     db.init_schema(c)  # re-run migrations → phase7 + phase8 fire
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 39
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 40
     assert c.execute("SELECT count(*) FROM queue").fetchone()[0] == 1
     assert c.execute("SELECT count(*) FROM pipelines").fetchone()[0] == 1
     c.execute("INSERT INTO queue (kind, target_id, target_kind, priority,"
@@ -84,14 +84,14 @@ def test_reinit_is_idempotent(tmp_path):
     c = _fresh(tmp_path)
     db.init_schema(c)
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 39
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 40
 
 
 # --- Phase 8: library_decls.lifecycle accepts 'cleaned' ---
 
 def _seed_lib_decl(c, slug, lifecycle):
-    c.execute("INSERT INTO problems (name, manifest_path, created_at,"
-              " bootstrap_done) VALUES ('p','',?,1)", (db.now(),))
+    c.execute("INSERT INTO problems (name, created_at,"
+              " bootstrap_done) VALUES ('p',?,1)", (db.now(),))
     c.execute("INSERT INTO library_decls (problem, slug, lifecycle,"
               " created_at, updated_at) VALUES ('p',?,?,?,?)",
               (slug, lifecycle, db.now(), db.now()))
@@ -121,7 +121,7 @@ def test_v7_library_decls_upgrades_to_cleaned(tmp_path):
 
     db.init_schema(c)  # phase8 fires → rebuild library_decls
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 39
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 40
     assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
                      ).fetchone()[0] == "migrated"     # row preserved
     db.mark_library_cleaned(c, problem="p", slug="keep")
@@ -150,7 +150,7 @@ def test_v9_db_gains_renamed_from(tmp_path):
 
     db.init_schema(c)  # phase10 fires → ADD COLUMN
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 39
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 40
     assert "renamed_from" in {
         r[1] for r in c.execute("PRAGMA table_info(library_decls)")}
     assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
@@ -194,10 +194,10 @@ def test_v15_db_gains_ingested_at_with_legacy_backfill(tmp_path):
     old completed runs must not re-trigger as stalled), live ones stay
     NULL."""
     c = _fresh(tmp_path)
-    c.execute("INSERT INTO problems (name, manifest_path, created_at)"
-              " VALUES ('done','',?)", (db.now(),))
-    c.execute("INSERT INTO problems (name, manifest_path, created_at)"
-              " VALUES ('live','',?)", (db.now(),))
+    c.execute("INSERT INTO problems (name, created_at)"
+              " VALUES ('done',?)", (db.now(),))
+    c.execute("INSERT INTO problems (name, created_at)"
+              " VALUES ('live',?)", (db.now(),))
     c.execute("INSERT INTO goals (problem, slug, lean_path, statement,"
               " origin, status, integrity_verified, created_at, updated_at)"
               " VALUES ('done','main','a.lean','True','root','proved',1,?,?)",
@@ -220,14 +220,14 @@ def test_v15_db_gains_ingested_at_with_legacy_backfill(tmp_path):
               " last_routine_at TEXT,"
               " ingest_signoff_pending INTEGER NOT NULL DEFAULT 0)")
     c.execute("INSERT INTO problems (name, manifest_path, created_at)"
-              " SELECT name, manifest_path, created_at FROM problems_v15")
+              " SELECT name, '', created_at FROM problems_v15")
     c.execute("DROP TABLE problems_v15")
     c.execute("PRAGMA user_version = 15")
     c.commit()
 
     db.init_schema(c)  # v16 fires → ADD COLUMN + backfill
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 39
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 40
     assert c.execute("SELECT ingested_at FROM problems WHERE name='done'"
                      ).fetchone()[0] is not None
     assert c.execute("SELECT ingested_at FROM problems WHERE name='live'"
@@ -236,8 +236,8 @@ def test_v15_db_gains_ingested_at_with_legacy_backfill(tmp_path):
 
 def test_set_problem_ingested_roundtrip(tmp_path):
     c = _fresh(tmp_path)
-    c.execute("INSERT INTO problems (name, manifest_path, created_at)"
-              " VALUES ('p','',?)", (db.now(),))
+    c.execute("INSERT INTO problems (name, created_at)"
+              " VALUES ('p',?)", (db.now(),))
     c.commit()
     assert not db.problem_ingested(c, "p")
     db.set_problem_ingested(c, "p")
@@ -249,8 +249,8 @@ def test_set_problem_ingested_roundtrip(tmp_path):
 def test_all_problems_ingested_scope(tmp_path):
     c = _fresh(tmp_path)
     for name in ("a.x", "a.y", "b.z"):
-        c.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                  " VALUES (?,'',?)", (name, db.now()))
+        c.execute("INSERT INTO problems (name, created_at)"
+                  " VALUES (?,?)", (name, db.now()))
     c.commit()
     assert not db.all_problems_ingested(c, scope="a.%")
     db.set_problem_ingested(c, "a.x")
@@ -291,8 +291,8 @@ def test_additive_alter_block_is_frozen():
 def test_insert_goal_forward_origin_is_detached() -> None:
     conn = db.connect(":memory:")
     db.init_schema(conn)
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at,"
-                 " bootstrap_done) VALUES ('p', 'm', '', 1)")
+    conn.execute("INSERT INTO problems (name, created_at,"
+                 " bootstrap_done) VALUES ('p', '', 1)")
     fwd = db.insert_goal(conn, problem="p", slug="f", lean_path="a.lean",
                          statement="s", origin="forward")
     bwd = db.insert_goal(conn, problem="p", slug="b", lean_path="b.lean",

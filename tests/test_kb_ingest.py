@@ -26,8 +26,8 @@ def conn():
     c.execute("PRAGMA foreign_keys = ON")
     db.init_schema(c)
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('P', 'P/Manifest.md', ?)", (db.now(),))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('P', ?)", (db.now(),))
     c.commit()
     return c
 

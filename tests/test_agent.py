@@ -1,4 +1,4 @@
-"""context.compile_context — Context.md assembly from DB + Manifest."""
+"""context.compile_context — Context.md assembly from DB + intent."""
 from __future__ import annotations
 
 import sqlite3
@@ -8,17 +8,17 @@ import pytest
 
 from Tooling.state import db
 from Tooling.agent.context import compile_context
-from Tooling.state.manifest import Manifest
+from Tooling.state.intent import ProblemIntent
 
 
-def _empty_manifest(name: str = "p") -> Manifest:
-    return Manifest(problem=name, body="T")
+def _empty_intent(name: str = "p") -> ProblemIntent:
+    return ProblemIntent(problem=name, charter="T")
 
 
 def _seed_problem_and_goal(conn: sqlite3.Connection, **goal_kw: object) -> int:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) VALUES (?, ?, ?, 1)",
-        ("p", "Problems/p/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done) VALUES (?, ?, 1)",
+        ("p", db.now()),
     )
     return db.insert_goal(
         conn, problem="p", slug="main", lean_path="Problems/p/Root.lean",
@@ -60,7 +60,7 @@ def test_context_includes_strategy_dead_attempts(
     )
 
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=goal, intent=_empty_intent(),
                           attempts_dir=tmp_path)
     text = out.read_text(encoding="utf-8")
 
@@ -81,7 +81,7 @@ def test_context_no_strategy_section_when_clean(
 ) -> None:
     gid = _seed_problem_and_goal(conn)
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=goal, intent=_empty_intent(),
                           attempts_dir=tmp_path)
     text = out.read_text(encoding="utf-8")
     assert "Sibling decompositions that failed Verify" not in text
@@ -122,7 +122,7 @@ def test_context_includes_dead_strategies_with_subgoal_decomposition(
     db.update_strategy_status(conn, sid, "dead")
 
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=goal, intent=_empty_intent(),
                           attempts_dir=tmp_path)
     text = out.read_text(encoding="utf-8")
     assert "Strategies whose decomposition died" in text
@@ -138,7 +138,7 @@ def test_context_omits_dead_strategies_when_none(
     """F37 — clean state: no dead strategies → section is absent."""
     gid = _seed_problem_and_goal(conn)
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=goal, intent=_empty_intent(),
                           attempts_dir=tmp_path)
     text = out.read_text(encoding="utf-8")
     assert "Strategies whose decomposition died" not in text
@@ -158,7 +158,7 @@ def test_context_skips_half_baked_dead_strategies(
     db.update_strategy_status(conn, sid, "dead")
 
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=goal, intent=_empty_intent(),
                           attempts_dir=tmp_path)
     text = out.read_text(encoding="utf-8")
     assert "Strategies whose decomposition died" not in text
@@ -177,7 +177,7 @@ def test_context_omits_proved_goals_section_when_none_proved(
     attempts_dir = tmp_path / ".attempts" / "pid-q"
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=goal, intent=_empty_intent(),
                           attempts_dir=attempts_dir)
     text = out.read_text(encoding="utf-8")
     assert "Proved goals on this problem" not in text
@@ -214,7 +214,7 @@ def test_context_proved_goals_section_when_some_proved(
     attempts_dir = tmp_path / ".attempts" / "pid-q"
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=goal, intent=_empty_intent(),
                           attempts_dir=attempts_dir)
     text = out.read_text(encoding="utf-8")
     # New section title with count
@@ -243,9 +243,9 @@ def test_context_proved_goals_curates_top3_by_keyword_overlap(
     """
     # Seed problem row first (FK constraint)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, "
-        "bootstrap_done) VALUES (?, ?, ?, 1)",
-        ("p", "Problems/p/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, "
+        "bootstrap_done) VALUES (?, ?, 1)",
+        ("p", db.now()),
     )
     # Parent statement mentions LinearMap, kernel, finrank, Module
     gid = db.insert_goal(
@@ -291,7 +291,7 @@ def test_context_proved_goals_curates_top3_by_keyword_overlap(
     attempts_dir = tmp_path / ".attempts" / "pid-q"
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=goal, intent=_empty_intent(),
                           attempts_dir=attempts_dir)
     text = out.read_text(encoding="utf-8")
 
@@ -313,7 +313,7 @@ def test_context_proved_goals_curates_top3_by_keyword_overlap(
 # ---------------------------------------------------------------------
 # F20 — Context.md surfaces resolved Mathlib signatures for names the
 # agent has been confused about (errored on before, or were curated by
-# Manifest as relevant)
+# the operator as relevant)
 # ---------------------------------------------------------------------
 
 def test_context_sandbox_section_always_rendered_for_builder(
@@ -327,11 +327,11 @@ def test_context_sandbox_section_always_rendered_for_builder(
     gid = _seed_problem_and_goal(conn)
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True, exist_ok=True)
-    brief.write(tmp_path, _empty_manifest())
+    brief.write(tmp_path, _empty_intent())
     attempts_dir = tmp_path / ".attempts" / "pid-bld"
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=goal, intent=_empty_intent(),
                           attempts_dir=attempts_dir, kind="builder")
     text = out.read_text(encoding="utf-8")
     assert "## Sandbox" in text
@@ -351,11 +351,11 @@ def test_context_strategy_naming_only_for_backward_with_sid(
     gid = _seed_problem_and_goal(conn)
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True, exist_ok=True)
-    brief.write(tmp_path, _empty_manifest())
+    brief.write(tmp_path, _empty_intent())
     attempts_dir = tmp_path / ".attempts" / "pid-bw"
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=goal, intent=_empty_intent(),
                           attempts_dir=attempts_dir,
                           strategy_id=42, kind="backward")
     text = out.read_text(encoding="utf-8")
@@ -407,7 +407,7 @@ def test_context_dead_strategies_visible_to_builder(
     attempts_bw = tmp_path / ".attempts" / "pid-bw"
     attempts_bw.mkdir(parents=True)
     out_bw = compile_context(
-        conn, goal=db.get_goal(conn, gid), mfst=_empty_manifest(),
+        conn, goal=db.get_goal(conn, gid), intent=_empty_intent(),
         attempts_dir=attempts_bw, strategy_id=99, kind="backward")
     text_bw = out_bw.read_text(encoding="utf-8")
     assert "Sibling decompositions that failed Verify" in text_bw
@@ -418,7 +418,7 @@ def test_context_dead_strategies_visible_to_builder(
     attempts_bld = tmp_path / ".attempts" / "pid-bld"
     attempts_bld.mkdir(parents=True)
     out_bld = compile_context(
-        conn, goal=db.get_goal(conn, gid), mfst=_empty_manifest(),
+        conn, goal=db.get_goal(conn, gid), intent=_empty_intent(),
         attempts_dir=attempts_bld, kind="builder")
     text_bld = out_bld.read_text(encoding="utf-8")
     assert "Sibling decompositions that failed Verify" not in text_bld
@@ -458,7 +458,7 @@ def test_context_emits_lemma_references_when_lookup_finds(
     attempts_dir = tmp_path / ".attempts" / "pid-q"
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=goal, intent=_empty_intent(),
                           attempts_dir=attempts_dir)
     text = out.read_text(encoding="utf-8")
 
@@ -493,10 +493,10 @@ def test_context_skips_lemma_references_when_lookup_finds_nothing(
     attempts_dir = tmp_path / ".attempts" / "pid-q"
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=goal, intent=_empty_intent(),
                           attempts_dir=attempts_dir)
     text = out.read_text(encoding="utf-8")
-    # No manifest hints + no resolved names → merged section absent.
+    # No operator hints + no resolved names → merged section absent.
     assert "## Mathlib lemmas" not in text
 
 
@@ -523,7 +523,7 @@ def test_context_lemma_lookup_failure_is_swallowed(
     attempts_dir = tmp_path / ".attempts" / "pid-q"
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=goal, intent=_empty_intent(),
                           attempts_dir=attempts_dir)
     text = out.read_text(encoding="utf-8")
     # Other sections still present
@@ -532,12 +532,12 @@ def test_context_lemma_lookup_failure_is_swallowed(
 
 def test_brief_omits_retired_mathlib_hints(tmp_path: Path) -> None:
     """`## Lemma hints` / `## Mathlib lemmas` retired (target-1 pre-search
-    replaces Manifest hints): BRIEF no longer renders mathlib hint names."""
+    replaces operator hints): BRIEF no longer renders mathlib hint names."""
     from Tooling.state import brief
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True, exist_ok=True)
-    mfst = Manifest(problem="p", body="T")
-    out = brief.write(tmp_path, mfst)
+    pi = ProblemIntent(problem="p", charter="T")
+    out = brief.write(tmp_path, pi)
     body = out.read_text(encoding="utf-8")
     assert "## Mathlib lemmas" not in body
     assert "Nat.factorial" not in body
@@ -562,7 +562,7 @@ def test_context_subgoal_includes_parent_strategy(
     db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub_gid, position=0)
 
     sub_goal = db.get_goal(conn, sub_gid)
-    out = compile_context(conn, goal=sub_goal, mfst=_empty_manifest(),
+    out = compile_context(conn, goal=sub_goal, intent=_empty_intent(),
                           attempts_dir=tmp_path)
     text = out.read_text(encoding="utf-8")
     assert "Parent goal & strategy" in text

@@ -13,17 +13,15 @@ from pathlib import Path
 import pytest
 
 from Tooling.agent.context import compile_context
-from Tooling.state import db, manifest as manifest_mod
+from Tooling.state import db, intent as intent_mod
 
 
 @pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Set up a tmp workspace with Problems/p/{Manifest.md,proofs/}."""
+    """Set up a tmp workspace with Problems/p/proofs/."""
     monkeypatch.chdir(tmp_path)
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n\n## Statement\nT\n", encoding="utf-8")
     (pdir / "proofs").mkdir()
     (pdir / "Root.lean").write_text(
         "theorem main : T := by sorry\n", encoding="utf-8")
@@ -35,8 +33,8 @@ def conn(workspace: Path) -> sqlite3.Connection:
     c = db.connect()
     db.init_schema(c)
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?, 1)",
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES ('p', ?, 1)",
         (db.now(),),
     )
     c.commit()
@@ -64,8 +62,8 @@ def _read_context(attempts_dir: Path) -> str:
     return (attempts_dir / "Context.md").read_text(encoding="utf-8")
 
 
-def _fake_manifest() -> manifest_mod.Manifest:
-    return manifest_mod.Manifest(problem="p", body="T")
+def _fake_intent() -> intent_mod.ProblemIntent:
+    return intent_mod.ProblemIntent(problem="p", charter="T")
 
 
 # ---------------------------------------------------------------------
@@ -80,7 +78,7 @@ def test_no_directive_no_section(workspace: Path,
     attempts_dir = _make_attempts_dir(workspace)
 
     compile_context(
-        conn, goal=goal, mfst=_fake_manifest(),
+        conn, goal=goal, intent=_fake_intent(),
         attempts_dir=attempts_dir, kind="backward",
     )
     text = _read_context(attempts_dir)
@@ -100,7 +98,7 @@ def test_directive_rendered_when_set(workspace: Path,
     attempts_dir = _make_attempts_dir(workspace)
 
     compile_context(
-        conn, goal=goal, mfst=_fake_manifest(),
+        conn, goal=goal, intent=_fake_intent(),
         attempts_dir=attempts_dir, kind="backward",
     )
     text = _read_context(attempts_dir)
@@ -122,7 +120,7 @@ def test_empty_directive_not_rendered(workspace: Path,
     attempts_dir = _make_attempts_dir(workspace)
 
     compile_context(
-        conn, goal=goal, mfst=_fake_manifest(),
+        conn, goal=goal, intent=_fake_intent(),
         attempts_dir=attempts_dir, kind="backward",
     )
     text = _read_context(attempts_dir)
@@ -155,7 +153,7 @@ def test_no_decision_id_no_brief_section(workspace: Path,
     attempts_dir = _make_attempts_dir(workspace)
 
     compile_context(
-        conn, goal=goal, mfst=_fake_manifest(),
+        conn, goal=goal, intent=_fake_intent(),
         attempts_dir=attempts_dir, kind="backward",
         decision_id=None,
     )
@@ -175,7 +173,7 @@ def test_brief_rendered_when_decision_id_set(
     attempts_dir = _make_attempts_dir(workspace)
 
     compile_context(
-        conn, goal=goal, mfst=_fake_manifest(),
+        conn, goal=goal, intent=_fake_intent(),
         attempts_dir=attempts_dir, kind="backward",
         decision_id=did,
     )
@@ -196,7 +194,7 @@ def test_brief_skipped_when_brief_column_null(
     attempts_dir = _make_attempts_dir(workspace)
 
     compile_context(
-        conn, goal=goal, mfst=_fake_manifest(),
+        conn, goal=goal, intent=_fake_intent(),
         attempts_dir=attempts_dir, kind="backward",
         decision_id=did,
     )
@@ -223,7 +221,7 @@ def test_both_directive_and_brief_render(
     attempts_dir = _make_attempts_dir(workspace)
 
     compile_context(
-        conn, goal=goal, mfst=_fake_manifest(),
+        conn, goal=goal, intent=_fake_intent(),
         attempts_dir=attempts_dir, kind="backward",
         decision_id=did,
     )
@@ -243,7 +241,7 @@ def test_brief_decision_id_nonexistent(
     attempts_dir = _make_attempts_dir(workspace)
 
     compile_context(
-        conn, goal=goal, mfst=_fake_manifest(),
+        conn, goal=goal, intent=_fake_intent(),
         attempts_dir=attempts_dir, kind="backward",
         decision_id=99999,
     )
@@ -297,7 +295,7 @@ def test_an_invented_subgoal_inherits_its_ancestors_argument(
 
     attempts_dir = _make_attempts_dir(workspace)
     compile_context(conn, goal=db.get_goal(conn, grandkid),
-                    mfst=_fake_manifest(), attempts_dir=attempts_dir,
+                    intent=_fake_intent(), attempts_dir=attempts_dir,
                     kind="backward", decision_id=None)
     text = _read_context(attempts_dir)
     assert "## The argument for this brick" in text
@@ -320,7 +318,7 @@ def test_sibling_strategies_never_see_each_others_argument(
 
     attempts_dir = _make_attempts_dir(workspace)
     compile_context(conn, goal=db.get_goal(conn, kid_a),
-                    mfst=_fake_manifest(), attempts_dir=attempts_dir,
+                    intent=_fake_intent(), attempts_dir=attempts_dir,
                     kind="backward", decision_id=None)
     text = _read_context(attempts_dir)
     assert "ROUTE A" in text
@@ -349,7 +347,7 @@ def test_the_whole_proof_rides_only_when_nothing_answered(
     attempts_dir = _make_attempts_dir(workspace)
 
     compile_context(conn, goal=db.get_goal(conn, gid),
-                    mfst=_fake_manifest(), attempts_dir=attempts_dir,
+                    intent=_fake_intent(), attempts_dir=attempts_dir,
                     kind="backward", decision_id=None)
     text = _read_context(attempts_dir)
     assert "SECTION TWO" in text                       # no passage → all of it
@@ -357,7 +355,7 @@ def test_the_whole_proof_rides_only_when_nothing_answered(
     did = _decision_for_goal(conn, gid, "just my part")
     attempts_dir = _make_attempts_dir(workspace)
     compile_context(conn, goal=db.get_goal(conn, gid),
-                    mfst=_fake_manifest(), attempts_dir=attempts_dir,
+                    intent=_fake_intent(), attempts_dir=attempts_dir,
                     kind="backward", decision_id=did)
     text = _read_context(attempts_dir)
     assert "just my part" in text

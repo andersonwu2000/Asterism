@@ -285,8 +285,8 @@ def test_toposort_defs_priority_among_independent_defs_stable():
 def conn():
     c = db.connect(":memory:")
     db.init_schema(c)
-    c.execute("INSERT INTO problems (name, manifest_path, created_at, "
-              "bootstrap_done) VALUES ('p','',?,1)", (db.now(),))
+    c.execute("INSERT INTO problems (name, created_at, "
+              "bootstrap_done) VALUES ('p',?,1)", (db.now(),))
     c.commit()
     return c
 

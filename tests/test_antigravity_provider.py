@@ -147,7 +147,7 @@ def test_a_prepopulated_workdir_does_not_count_as_the_agents_output(
     d = tmp_path / "adversary" / "r1"
     d.mkdir(parents=True)
     for name in ("proposal.md", "decisions.md", "contract.md",
-                 "Manifest.md", "CATALOG.md"):
+                 "charter.md", "CATALOG.md"):
         (d / name).write_text("planted by the framework", encoding="utf-8")
     planted = agy._dir_snapshot(d)
 

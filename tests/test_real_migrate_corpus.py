@@ -151,8 +151,8 @@ def _seed(conn, tmp_path: Path, case: _Case, target_file: str) -> list:
 def test_migrate_corpus_shape_builds(case: _Case, tmp_path: Path):
     conn = db.connect(":memory:")
     db.init_schema(conn)
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at,"
-                 " bootstrap_done) VALUES ('p','',?,1)", (db.now(),))
+    conn.execute("INSERT INTO problems (name, created_at,"
+                 " bootstrap_done) VALUES ('p',?,1)", (db.now(),))
     conn.commit()
     target_file = "Library/Corpus/Shape.lean"
     rows = _seed(conn, tmp_path, case, target_file)

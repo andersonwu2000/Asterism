@@ -19,8 +19,8 @@ PNS = "Problems.p"  # problem name "p" → namespace Problems.p
 def conn():
     c = db.connect(":memory:")
     db.init_schema(c)
-    c.execute("INSERT INTO problems (name, manifest_path, created_at, "
-              "bootstrap_done) VALUES ('p','',?,1)", (db.now(),))
+    c.execute("INSERT INTO problems (name, created_at, "
+              "bootstrap_done) VALUES ('p',?,1)", (db.now(),))
     c.commit()
     return c
 
@@ -1072,8 +1072,8 @@ def test_run_migrate_refuses_file_owned_by_other_problem(conn, tmp_path):
     tf = "Library/P/Shared.lean"
     _seed_classified(conn, "lem_a", "True", tf, 0)
     # the OTHER problem already migrated into tf
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at, "
-                 "bootstrap_done) VALUES ('q','',?,1)", (db.now(),))
+    conn.execute("INSERT INTO problems (name, created_at, "
+                 "bootstrap_done) VALUES ('q',?,1)", (db.now(),))
     conn.commit()
     g = db.insert_goal(conn, problem="q", slug="other",
                        lean_path="Problems/q/proofs/L_other.lean",
@@ -1156,8 +1156,8 @@ _SHARED_DEF = ("import Mathlib\n\nnamespace {ns}\n\n"
 
 
 def _setup_two_problem_shared(conn, tmp_path, other_def_text=None):
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at, "
-                 "bootstrap_done) VALUES ('q','',?,1)", (db.now(),))
+    conn.execute("INSERT INTO problems (name, created_at, "
+                 "bootstrap_done) VALUES ('q',?,1)", (db.now(),))
     conn.commit()
     # q owns the Library copy
     g = db.insert_goal(conn, problem="q", slug="q_lemma",

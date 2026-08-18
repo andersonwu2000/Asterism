@@ -1,11 +1,14 @@
-"""problem_settings chokepoint (frontmatter dissolve, 2026-07-07).
+"""problem_settings chokepoint (frontmatter dissolve, 2026-07-07;
+sole source since the v40 Manifest retirement).
 
 Load-bearing contracts:
-  * dual-read: DB row wins; absent key falls back to the Manifest.
+  * a key PRESENT in the DB is the value; an ABSENT key means the
+    framework default (no file fallback exists anymore).
   * `effective_axioms` empty-never-weakens survives the DB path — an
     empty whitelist row still yields the framework defaults.
-  * migration is idempotent and never clobbers a UI edit.
-  * malformed DB rows are dropped (fallback), never honored.
+  * malformed DB rows are dropped (default), never honored.
+  * IntentCache re-reads the DB per access — a DB edit is live on the
+    next access with no file-mtime signal.
 """
 from __future__ import annotations
 
@@ -14,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from Tooling.state import db, manifest, settings
+from Tooling.state import db, intent, settings
 
 
 @pytest.fixture
@@ -22,26 +25,16 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
     c = db.connect(tmp_path / "asterism.db")
     db.init_schema(c)
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('p', ?)", (db.now(),))
     c.commit()
     return c
 
 
-def _mfst(**kw) -> manifest.Manifest:
-    base = dict(problem="p", body="True")
+def _intent(**kw) -> intent.ProblemIntent:
+    base = dict(problem="p", charter="True")
     base.update(kw)
-    return manifest.Manifest(**base)
-
-
-def test_keys_lockstep_with_ui_setting_keys() -> None:
-    """Both stay literals (import would close a module cycle) — this
-    pin is what keeps them from drifting apart. `signoff` is the one
-    machine-owned key (benchmark adapters' unattended opt-out): stored
-    and validated like the trio, deliberately NOT UI-owned."""
-    assert set(manifest.UI_SETTING_KEYS) < set(settings.SETTING_KEYS)
-    assert set(settings.SETTING_KEYS) - set(manifest.UI_SETTING_KEYS) == {
-        "signoff"}
+    return intent.ProblemIntent(**base)
 
 
 def test_write_read_round_trip(conn) -> None:
@@ -52,7 +45,7 @@ def test_write_read_round_trip(conn) -> None:
     assert got["axioms_whitelist"] == ["propext", "Custom.ax"]
     assert got["library"] is True
     assert got["signoff"] is False
-    assert "forbidden_lemmas" not in got  # absent = fall back to file
+    assert "forbidden_lemmas" not in got  # absent = framework default
 
 
 def test_write_validates_key_and_type(conn) -> None:
@@ -66,14 +59,14 @@ def test_write_validates_key_and_type(conn) -> None:
 
 def test_read_missing_table_is_empty(tmp_path: Path) -> None:
     """A pre-settings DB opened read-only has no table — reads fall
-    back to the file, never raise."""
+    back to the framework defaults, never raise."""
     raw = sqlite3.connect(tmp_path / "bare.db")
     raw.row_factory = sqlite3.Row
     assert settings.read(raw, "p") == {}
 
 
 def test_malformed_rows_are_dropped_not_honored(conn) -> None:
-    """A corrupt row must fall back to the Manifest value — it can
+    """A corrupt row must fall back to the framework default — it can
     never hand a gate different settings than validation would allow."""
     conn.execute(
         "INSERT INTO problem_settings (problem, key, value, updated_at)"
@@ -86,66 +79,53 @@ def test_malformed_rows_are_dropped_not_honored(conn) -> None:
 
 
 def test_overlay_stamps_dataclass_fields(conn) -> None:
-    m = _mfst(axioms_whitelist=["file.ax"], library=False)
-    settings.overlay(m, {"axioms_whitelist": ["db.ax"], "library": True})
-    assert m.axioms_whitelist == ["db.ax"]
-    assert m.library is True
-    # untouched keys keep file values
-    assert m.forbidden_lemmas == []
+    pi = _intent(axioms_whitelist=["seed.ax"], library=False)
+    settings.overlay(pi, {"axioms_whitelist": ["db.ax"], "library": True})
+    assert pi.axioms_whitelist == ["db.ax"]
+    assert pi.library is True
+    # untouched keys keep their prior values
+    assert pi.forbidden_lemmas == []
 
 
 def test_empty_db_whitelist_never_weakens_the_gate(conn) -> None:
     """The soundness contract: an explicitly-empty DB whitelist still
     falls back to the framework defaults in effective_axioms — storing
-    [] can never weaken a gate below the file semantics."""
+    [] can never weaken a gate below the default semantics."""
     settings.write(conn, "p", "axioms_whitelist", [])
-    m = _mfst(axioms_whitelist=["file.ax"])
-    settings.overlay(m, settings.read(conn, "p"))
-    assert m.axioms_whitelist == []
-    manifest._default_axioms_warned.clear()
-    wl = manifest.effective_axioms(m, problem="p")
-    assert wl == list(manifest.FRAMEWORK_DEFAULT_AXIOMS)
+    pi = _intent(axioms_whitelist=["seed.ax"])
+    settings.overlay(pi, settings.read(conn, "p"))
+    assert pi.axioms_whitelist == []
+    intent._default_axioms_warned.clear()
+    wl = intent.effective_axioms(pi, problem="p")
+    assert wl == list(intent.FRAMEWORK_DEFAULT_AXIOMS)
     assert "sorryAx" not in wl
 
 
-def test_migrate_is_idempotent_and_never_clobbers_db(conn) -> None:
-    m = _mfst(axioms_whitelist=["file.ax"], forbidden_lemmas=["bad*"],
-              library=True)
-    assert settings.migrate_from_manifest(conn, "p", m) == 4  # + signoff
-    # second run: nothing to do
-    assert settings.migrate_from_manifest(conn, "p", m) == 0
-    # a UI edit survives a re-migration against the stale file
-    settings.write(conn, "p", "axioms_whitelist", ["ui.ax"])
-    assert settings.migrate_from_manifest(conn, "p", m) == 0
-    assert settings.read(conn, "p")["axioms_whitelist"] == ["ui.ax"]
-
-
 def test_user_file_history_baseline_and_change(tmp_path: Path) -> None:
-    """Self-audit 2026-07-12 §3-1b + §3-3: ManifestCache records a
-    first-load baseline row per user-intent file (Manifest.md +
-    Root.lean here) and one row per observed content change — via ANY
-    write channel, no mtime signal on the Manifest needed; unchanged
-    re-access records nothing."""
+    """Self-audit 2026-07-12 §3-1b + §3-3, v40 edition: IntentCache
+    records a first-load baseline row per user-intent FILE (Root.lean +
+    Defs.lean) and one row per observed content change — via ANY write
+    channel, no mtime signal needed; unchanged re-access records
+    nothing."""
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    mpath = pdir / "Manifest.md"
-    mpath.write_text("---\nproblem: p\n---\n\n# p\noriginal ask\n",
-                     encoding="utf-8")
+    (pdir / "Defs.lean").write_text(
+        "def answer : Nat := 42\n", encoding="utf-8")
     (pdir / "Root.lean").write_text(
         "theorem main : True := by sorry\n", encoding="utf-8")
     conn = db.connect(tmp_path / "asterism.db")
     db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('p', ?)", (db.now(),))
     conn.commit()
 
-    cache = manifest.ManifestCache(tmp_path)
-    assert cache.load("p", "Problems/p/Manifest.md") is not None
+    cache = intent.IntentCache(tmp_path)
+    assert cache.load("p") is not None
     rows = conn.execute(
         "SELECT file, sha, body FROM user_file_history WHERE problem='p'"
         " ORDER BY id").fetchall()
-    assert {str(r["file"]) for r in rows} == {"Manifest.md", "Root.lean"}
+    assert {str(r["file"]) for r in rows} == {"Defs.lean", "Root.lean"}
     assert len(rows) == 2
 
     # Unchanged re-access: no new rows.
@@ -153,8 +133,8 @@ def test_user_file_history_baseline_and_change(tmp_path: Path) -> None:
     assert conn.execute("SELECT COUNT(*) AS n FROM user_file_history"
                         " WHERE problem='p'").fetchone()["n"] == 2
 
-    # Root.lean tampered — Manifest mtime UNTOUCHED (the Bash-channel
-    # shape): per-access sweep still records it.
+    # Root.lean tampered — no other signal (the Bash-channel shape):
+    # per-access sweep still records it.
     (pdir / "Root.lean").write_text(
         "theorem main : False := by sorry\n", encoding="utf-8")
     _ = cache["p"]
@@ -164,7 +144,7 @@ def test_user_file_history_baseline_and_change(tmp_path: Path) -> None:
     assert len(root_rows) == 2
     assert root_rows[0]["sha"] != root_rows[1]["sha"]
     # Baseline helper: first row wins until an operator repin exists.
-    assert manifest.user_file_baseline(conn, "p", "Root.lean") == str(
+    assert intent.user_file_baseline(conn, "p", "Root.lean") == str(
         root_rows[0]["sha"])
     conn.execute(
         "INSERT INTO user_file_history"
@@ -172,27 +152,26 @@ def test_user_file_history_baseline_and_change(tmp_path: Path) -> None:
         " VALUES ('p', 'Root.lean', 'repinsha', 'x', ?, 'repin')",
         (db.now(),))
     conn.commit()
-    assert manifest.user_file_baseline(conn, "p", "Root.lean") == "repinsha"
+    assert intent.user_file_baseline(conn, "p", "Root.lean") == "repinsha"
     conn.close()
 
 
-def test_review_data_carries_manifest_section(tmp_path: Path) -> None:
+def test_review_data_carries_intent_section(tmp_path: Path) -> None:
     """The Ingest review snapshot covers the intent text: review_data
-    returns the current Manifest body + the change-history metadata
-    even for a problem with no deliverables."""
+    returns the current charter body + the change-history metadata even
+    for a problem with no deliverables."""
     from Tooling.quality import review
+    from Tooling.state import groups
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n\n# p\nthe ask\n", encoding="utf-8")
     conn = db.connect(tmp_path / "asterism.db")
     db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('p', ?)", (db.now(),))
     conn.commit()
-    cache = manifest.ManifestCache(tmp_path)
-    cache.load("p", "Problems/p/Manifest.md")   # baseline history row
+    groups.ensure_top_group(conn, "p")
+    intent.set_charter(conn, "p", "the ask", source="observed")  # baseline
 
     data = review.review_data(conn, tmp_path, problem="p")
     assert "the ask" in data["manifest"]["body"]
@@ -201,25 +180,22 @@ def test_review_data_carries_manifest_section(tmp_path: Path) -> None:
     conn.close()
 
 
-def test_manifest_cache_dual_read(tmp_path: Path) -> None:
-    """The cache is THE overlay point: DB values win over the file,
-    and a DB edit hot-reloads without any file-mtime signal."""
+def test_intent_cache_db_edit_hot_reloads(tmp_path: Path) -> None:
+    """The cache re-reads the DB per access: a settings edit reaches
+    the next access with no file-mtime signal involved."""
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\naxioms_whitelist:\n  - file.ax\n---\n\n# p\n",
-        encoding="utf-8")
     conn = db.connect(tmp_path / "asterism.db")
     db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('p', ?)", (db.now(),))
     conn.commit()
 
-    cache = manifest.ManifestCache(tmp_path)
-    m = cache.load("p", "Problems/p/Manifest.md")
-    assert m is not None
-    assert m.axioms_whitelist == ["file.ax"]  # no DB rows yet: file stands
+    cache = intent.IntentCache(tmp_path)
+    pi = cache.load("p")
+    assert pi is not None
+    assert pi.axioms_whitelist == []  # no DB rows yet: framework default
 
     settings.write(conn, "p", "axioms_whitelist", ["db.ax"])
     # no file touch — the DB edit must still reach the next access
@@ -228,74 +204,3 @@ def test_manifest_cache_dual_read(tmp_path: Path) -> None:
     settings.write(conn, "p", "library", True)
     assert cache["p"].library is True
     conn.close()
-
-
-def test_frontmatter_drift_is_detected_not_remembered(conn):
-    """The yaml block is written once at creation and never again —
-    every later edit goes to the DB and the UI renders the DB, so the
-    file's copy goes stale with nobody positioned to notice. Runtime is
-    safe (the overlay makes the DB win at every gate); what rots is the
-    file's honesty to the next reader. A divergence nobody would notice
-    belongs in a check, not in someone's memory (2026-08-11)."""
-    mfst = _mfst(library=True, forbidden_lemmas=["a", "b"])
-
-    # Unmigrated: the file IS the value, so there is nothing to disagree.
-    assert settings.frontmatter_drift(conn, "p", mfst) == []
-
-    settings.write(conn, "p", "library", True)
-    settings.write(conn, "p", "forbidden_lemmas", ["b", "a"])
-    assert settings.frontmatter_drift(conn, "p", mfst) == []   # order-free
-
-    settings.write(conn, "p", "library", False)
-    drift = settings.frontmatter_drift(conn, "p", mfst)
-    assert drift == [("library", True, False)]
-
-
-def test_a_key_the_file_never_mentions_is_not_a_disagreement(conn, tmp_path):
-    """Creation writes `problem:` alone as of 2026-08-11, so migrating an
-    older Manifest to that shape means DELETING keys. Read as `[]`, every
-    deletion disagreed with the DB that had been seeded from it — the
-    check became a one-way ratchet pushing the operator to keep the very
-    copy it exists to retire."""
-    (tmp_path / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n\nbody\n", encoding="utf-8")
-    mfst = manifest.parse(tmp_path / "Manifest.md")
-    settings.write(conn, "p", "axioms_whitelist",
-                   ["propext", "Quot.sound", "Classical.choice"])
-    settings.write(conn, "p", "library", True)
-    assert settings.frontmatter_drift(conn, "p", mfst) == []
-
-
-def test_a_key_the_file_does_mention_still_disagrees(conn, tmp_path):
-    """Silence is skipped; a statement is still checked. Losing that
-    distinction would disable the check rather than narrow it."""
-    (tmp_path / "Manifest.md").write_text(
-        "---\nproblem: p\nlibrary: true\n---\n\nbody\n", encoding="utf-8")
-    mfst = manifest.parse(tmp_path / "Manifest.md")
-    settings.write(conn, "p", "library", False)
-    assert settings.frontmatter_drift(conn, "p", mfst) == [
-        ("library", True, False)]
-
-
-def test_an_unparsed_manifest_keeps_the_old_behaviour(conn):
-    """`present_keys is None` means nobody recorded what the file said —
-    a Manifest built in code, not read from disk. Treating that as "the
-    file mentions nothing" would skip every key and silently disable the
-    check for every programmatic caller: the same absent-vs-empty
-    collapse this field exists to undo, one level up."""
-    mfst = _mfst(library=True)
-    assert mfst.present_keys is None
-    settings.write(conn, "p", "library", False)
-    assert settings.frontmatter_drift(conn, "p", mfst) == [
-        ("library", True, False)]
-
-
-def test_a_parsed_file_that_carries_nothing_is_not_the_same_as_unparsed(
-        tmp_path):
-    """Empty frozenset vs None: one is a file that said nothing, the
-    other is no file at all."""
-    (tmp_path / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n\nbody\n", encoding="utf-8")
-    parsed = manifest.parse(tmp_path / "Manifest.md")
-    assert parsed.present_keys == frozenset({"problem"})
-    assert _mfst().present_keys is None

@@ -33,8 +33,8 @@ def _open_db(workspace: Path) -> sqlite3.Connection:
     conn = db.connect(workspace / "asterism.db")
     db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, ?, ?)", ("p", "Problems/p/Manifest.md", db.now()))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES (?, ?)", ("p", db.now()))
     conn.commit()
     return conn
 

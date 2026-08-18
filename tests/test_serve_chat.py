@@ -102,9 +102,9 @@ def test_page_context_fresh_workspace(workspace: Path) -> None:
 def test_page_context_problem(workspace: Path) -> None:
     conn = _open_db(workspace)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, ?, ?)",
-        ("Topology.toy", "Problems/Topology/toy/Manifest.md", db.now()))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES (?, ?)",
+        ("Topology.toy", db.now()))
     conn.execute(
         "INSERT INTO goals (problem, slug, statement, status, kind,"
         " origin, depth, lean_path, created_at, updated_at)"
@@ -132,9 +132,9 @@ def test_page_context_unknown_problem(workspace: Path) -> None:
 def test_page_context_bounded(workspace: Path) -> None:
     conn = _open_db(workspace)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, ?, ?)",
-        ("Topology.big", "Problems/Topology/big/Manifest.md", db.now()))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES (?, ?)",
+        ("Topology.big", db.now()))
     for i in range(40):
         conn.execute(
             "INSERT INTO goals (problem, slug, statement, status, kind,"

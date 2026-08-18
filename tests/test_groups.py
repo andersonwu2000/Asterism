@@ -25,8 +25,8 @@ def _conn(tmp_path, name="asterism.db"):
 
 def _problem(conn, name="Test.p"):
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, 'Manifest.md', '2026-08-02T00:00:00Z')", (name,))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES (?, '2026-08-02T00:00:00Z')", (name,))
     return name
 
 
@@ -78,8 +78,8 @@ def test_ensure_top_group_is_idempotent_and_carries_the_clocks(tmp_path):
     row = groups.top_group(conn, p)
     assert row["last_routine_at"] == "R"
     assert row["last_strategist_at"] == "S"
-    assert row["charter"] == ""          # the Manifest is read from disk
-    assert groups.is_top(row)
+    assert row["charter"] == ""          # no charter kwarg → empty; init
+    assert groups.is_top(row)            # passes the problem's goal
 
 
 def test_second_top_group_for_one_problem_is_rejected(tmp_path):
@@ -643,7 +643,7 @@ def _proposal_brief(claim="claim A"):
 
 
 def test_a_delegate_brief_must_be_a_research_proposal(tmp_path):
-    """Opening a group is opening a problem — the brief is its Manifest.
+    """Opening a group is opening a problem — the brief is its charter.
     The writing cost is the filter that keeps small unknowns in-house
     (the depth-9 outsource-the-outsource tail, 2026-08-15). Heading
     presence is mechanical; substance stays the Adversary's."""
@@ -671,7 +671,7 @@ def test_delegate_verify_rejects_the_shapes_that_would_strand_work(
     top = groups.ensure_top_group(conn, p)
     conn.commit()
     S = _S()
-    # empty charter — the sub-group's Manifest cannot be blank
+    # empty charter — a sub-group's charter cannot be blank
     assert "charter" in _verify(
         conn, S.Decision(kind="Delegate", brief="   "), p, top)
     # byte-identical to a LIVE sibling = double dispatch
@@ -992,22 +992,28 @@ def test_plan_notes_do_not_clobber_each_other(tmp_path):
     assert _drafts.read_plan_note(pdir) is None
 
 
-def test_the_judge_sees_the_charter_chain_but_not_for_the_top_group(
-        tmp_path):
+def test_the_judge_sees_the_charter_chain_at_every_depth(tmp_path):
     """Criterion 3 otherwise only catches a claim leaning on the PARENT's
-    conclusion; on a deep tree circularity arrives a generation later."""
+    conclusion; on a deep tree circularity arrives a generation later.
+    v40 (Manifest retirement): the top group renders too — its charter
+    IS the problem's goal — and the ancestor chain includes it."""
     conn = _conn(tmp_path)
     p = _problem(conn, "Test.charterdigest")
-    top = groups.ensure_top_group(conn, p)
+    top = groups.ensure_top_group(conn, p, charter="TOP: the root claim")
     a = groups.open_group(conn, problem=p, parent_group_id=top,
                           charter="A: the growth bound")
     b = groups.open_group(conn, problem=p, parent_group_id=a,
                           charter="B: the recurrence step")
     conn.commit()
-    assert groups.charter_digest(conn, p, top) == ""
+    top_txt = groups.charter_digest(conn, p, top)
+    assert "TOP: the root claim" in top_txt
+    assert "Charters above this one" not in top_txt  # top has no ancestors
+    # group_id=None resolves to the top group (problem-level callers).
+    assert groups.charter_digest(conn, p, None) == top_txt
     txt = groups.charter_digest(conn, p, b)
     assert "B: the recurrence step" in txt
     assert "A: the growth bound" in txt        # the ancestor chain
+    assert "TOP: the root claim" in txt        # ...top group included (v40)
     assert "circular" in txt
 
 
@@ -1278,8 +1284,8 @@ def test_ingest_is_not_a_dispatch_kind():
 
 
 def test_a_sub_group_cannot_deliver_a_charter_it_did_not_settle(tmp_path):
-    """The same gate the top group gets, one level down: charter is its
-    Manifest and its anchor is its root goal."""
+    """The same gate the top group gets, one level down: its charter is
+    the claim it owes and its anchor is its root goal."""
     conn = _conn(tmp_path)
     p = _problem(conn, "Test.subgate")
     top = groups.ensure_top_group(conn, p)
@@ -1368,9 +1374,9 @@ def test_a_delegate_only_batch_is_a_real_action(tmp_path):
 def test_the_sub_group_actually_receives_its_charter(tmp_path):
     """The Context tells a sub-group its charter is in `charter.md`. It
     has to be there — otherwise the judge reviews against the charter
-    while the author works from the problem's Manifest."""
+    while the author works from the problem's goal."""
     from Tooling.agent import phase2_context as ctx
-    from Tooling.state import manifest as _manifest
+    from Tooling.state import intent as _intent
     conn = _conn(tmp_path)
     p = _problem(conn, "Test.charterfile")
     top = groups.ensure_top_group(conn, p)
@@ -1383,7 +1389,7 @@ def test_the_sub_group_actually_receives_its_charter(tmp_path):
     ctx.compile_strategist_context(
         conn, problem=p, trigger_kind="routine", attempts_dir=attempts,
         workspace=tmp_path,
-        mfst=_manifest.Manifest(problem=p, body=""),
+        intent=_intent.ProblemIntent(problem=p),
         group_id=sub)
     assert (attempts / "charter.md").exists()
     assert "settle the growth bound" in (
@@ -1935,7 +1941,7 @@ def test_v35_migrates_a_v34_db_without_losing_rows(tmp_path):
               for t in ("strategist_decisions", "queue", "pipelines",
                         "programme_revisions")}
     db_migrations.apply(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 40
     after = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
              for t in before}
     assert before == after
@@ -1959,7 +1965,7 @@ def test_init_schema_upgrades_a_v34_db_in_place(tmp_path):
     """
     conn = _v34_db(tmp_path)
     db.init_schema(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 40
     cols = {r[1] for r in conn.execute(
         "PRAGMA table_info(strategist_decisions)")}
     assert {"group_id", "produced_group_id"} <= cols

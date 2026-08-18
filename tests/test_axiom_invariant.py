@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from Tooling import agent, pipeline
-from Tooling.state import db, manifest
+from Tooling.state import db, intent
 from Tooling.quality import verify
 from Tooling.pipeline import _axiom
 
@@ -136,9 +136,9 @@ def _reject_probe(monkeypatch: pytest.MonkeyPatch):
 
 def _seed_goal_with_strategy(conn, tmp_path):
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        ("p", "Problems/p/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES (?, ?, 1)",
+        ("p", db.now()),
     )
     gid = db.insert_goal(
         conn, problem="p", slug="main",
@@ -232,9 +232,9 @@ def test_rollback_cascade_chain_reverts_culprit_and_upstream(
     grand_gid = _seed_goal_with_strategy.__wrapped__ if False else None  # noqa
     # Seed manually for clarity
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        ("p", "Problems/p/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES (?, ?, 1)",
+        ("p", db.now()),
     )
     grand_gid = db.insert_goal(
         conn, problem="p", slug="grand",
@@ -310,29 +310,29 @@ def test_cleanup_cascade_backups_unlinks_backup_files(
     assert not backup.exists()
 
 
-def test_verify_housekeeping_does_not_skip_probe_with_no_manifests(
+def test_verify_housekeeping_does_not_skip_probe_with_no_intents(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`verify_strategy(manifests=None)` MUST be a test-only escape
+    """`verify_strategy(intents=None)` MUST be a test-only escape
     hatch — production callers (verify_housekeeping called from
-    dispatcher) always pass the dispatcher's manifests dict. This test
-    enforces that contract: when housekeeping receives a manifests dict,
+    dispatcher) always pass the dispatcher's intents dict. This test
+    enforces that contract: when housekeeping receives an intents dict,
     verify_strategy receives it too (probe is exercised)."""
     _, sid = _seed_goal_with_strategy(conn, tmp_path)
-    received_manifests = {}
+    received_intents = {}
 
-    def spy_verify(conn, *, workspace, strategy_id, manifests=None):
-        received_manifests["v"] = manifests
+    def spy_verify(conn, *, workspace, strategy_id, intents=None):
+        received_intents["v"] = intents
         return "superseded"
     monkeypatch.setattr(verify, "verify_strategy", spy_verify)
 
-    mfst = manifest.Manifest(problem="p", body="True",
+    pi = intent.ProblemIntent(problem="p", charter="True",
                               axioms_whitelist=["propext"])
     verify.verify_housekeeping(
-        conn, workspace=tmp_path, manifests={"p": mfst},
+        conn, workspace=tmp_path, intents={"p": pi},
     )
-    assert received_manifests["v"] == {"p": mfst}
+    assert received_intents["v"] == {"p": pi}
 
 
 # ---------------------------------------------------------------------
@@ -341,9 +341,9 @@ def test_verify_housekeeping_does_not_skip_probe_with_no_manifests(
 
 def _seed_proved_root(conn, problem="p"):
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        (problem, f"Problems/{problem}/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES (?, ?, 1)",
+        (problem, db.now()),
     )
     gid = db.insert_goal(
         conn, problem=problem, slug="main",
@@ -369,8 +369,8 @@ def test_gate_does_not_enqueue_librarian_even_when_library_optin(
     set) but enqueues NOTHING. The autouse conftest stub returns an
     axiom-clean probe → happy path."""
     gid = _seed_proved_root(conn)
-    mfst = manifest.Manifest(problem="p", body="True", library=True)
-    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    pi = intent.ProblemIntent(problem="p", charter="True", library=True)
+    verify.root_integrity_gate(conn, tmp_path, "p", pi)
     assert _queue_rows(conn) == []
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
@@ -383,8 +383,8 @@ def test_gate_no_librarian_when_library_optout(
 ) -> None:
     """Default (`library` unset) must NOT harvest — opt-in only."""
     _seed_proved_root(conn)
-    mfst = manifest.Manifest(problem="p", body="True")
-    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    pi = intent.ProblemIntent(problem="p", charter="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", pi)
     assert _queue_rows(conn) == []
 
 
@@ -403,8 +403,8 @@ def test_gate_no_librarian_on_rogue_axiom_even_if_optin(
     # the gate logs and returns without enqueueing.
     monkeypatch.setattr(verify, "bisect_sorryax_source",
                         lambda *a, **k: None)
-    mfst = manifest.Manifest(problem="p", body="True", library=True)
-    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    pi = intent.ProblemIntent(problem="p", charter="True", library=True)
+    verify.root_integrity_gate(conn, tmp_path, "p", pi)
     assert _queue_rows(conn) == []
 
 
@@ -422,7 +422,7 @@ def test_gate_root_file_baseline_pin(
     pdir.mkdir(parents=True)
     root = pdir / "Root.lean"
     root.write_text("theorem main : True := by sorry\n", encoding="utf-8")
-    baseline_sha = manifest._content_sha(
+    baseline_sha = intent._content_sha(
         root.read_text(encoding="utf-8"))
     conn.execute(
         "INSERT INTO user_file_history"
@@ -438,8 +438,8 @@ def test_gate_root_file_baseline_pin(
         raise AssertionError("axiom_probe ran on a tampered root")
     monkeypatch.setattr("Tooling.pipeline._axiom.axiom_probe",
                         _probe_must_not_run)
-    mfst = manifest.Manifest(problem="p", body="True")
-    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    pi = intent.ProblemIntent(problem="p", charter="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", pi)
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
     ).fetchone()
@@ -448,14 +448,14 @@ def test_gate_root_file_baseline_pin(
     # Operator acknowledges the change (repin) → gate passes again.
     monkeypatch.setattr("Tooling.pipeline._axiom.axiom_probe",
                         lambda *a, **k: (True, "(3 axioms ok)"))
-    cur_sha = manifest._content_sha(root.read_text(encoding="utf-8"))
+    cur_sha = intent._content_sha(root.read_text(encoding="utf-8"))
     conn.execute(
         "INSERT INTO user_file_history"
         " (problem, file, sha, body, seen_at, source)"
         " VALUES ('p', 'Root.lean', ?, ?, ?, 'repin')",
         (cur_sha, root.read_text(encoding="utf-8"), db.now()))
     conn.commit()
-    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    verify.root_integrity_gate(conn, tmp_path, "p", pi)
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
     ).fetchone()
@@ -478,7 +478,7 @@ def _seed_pinned_root_stub(conn, tmp_path, stmt="True"):
         "INSERT INTO user_file_history"
         " (problem, file, sha, body, seen_at, source)"
         " VALUES ('p', 'Root.lean', ?, ?, ?, 'observed')",
-        (manifest._content_sha(body), body, db.now()))
+        (intent._content_sha(body), body, db.now()))
     conn.commit()
     return gid, root
 
@@ -499,8 +499,8 @@ def test_gate_statement_pin_accepts_root_proof_body_rewrite(
         "-- assembled by Builder\n"
         "theorem main : True := by\n  trivial\n",
         encoding="utf-8")
-    mfst = manifest.Manifest(problem="p", body="True")
-    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    pi = intent.ProblemIntent(problem="p", charter="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", pi)
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
     ).fetchone()
@@ -520,8 +520,8 @@ def test_gate_statement_pin_rejects_edited_statement_in_proof_body(
         "Tooling.pipeline._axiom.axiom_probe",
         lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("axiom_probe ran on a statement-drifted root")))
-    mfst = manifest.Manifest(problem="p", body="True")
-    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    pi = intent.ProblemIntent(problem="p", charter="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", pi)
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
     ).fetchone()
@@ -549,8 +549,8 @@ def test_gate_statement_pin_def_alias_own_strategy_passes(
         f"def main := @Problems.p.s{sid}\n\n"
         "end Problems.p\n",
         encoding="utf-8")
-    mfst = manifest.Manifest(problem="p", body="True")
-    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    pi = intent.ProblemIntent(problem="p", charter="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", pi)
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
     ).fetchone()
@@ -583,8 +583,8 @@ def test_gate_statement_pin_def_alias_foreign_strategy_blocked(
         "Tooling.pipeline._axiom.axiom_probe",
         lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("axiom_probe ran on a foreign-alias root")))
-    mfst = manifest.Manifest(problem="p", body="True")
-    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    pi = intent.ProblemIntent(problem="p", charter="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", pi)
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
     ).fetchone()
@@ -607,15 +607,15 @@ def test_gate_statement_pin_defs_lean_still_whole_file(
         "INSERT INTO user_file_history"
         " (problem, file, sha, body, seen_at, source)"
         " VALUES ('p', 'Defs.lean', ?, ?, ?, 'observed')",
-        (manifest._content_sha(body), body, db.now()))
+        (intent._content_sha(body), body, db.now()))
     conn.commit()
     defs.write_text("def f := 2\n", encoding="utf-8")
     monkeypatch.setattr(
         "Tooling.pipeline._axiom.axiom_probe",
         lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("axiom_probe ran on vocabulary drift")))
-    mfst = manifest.Manifest(problem="p", body="True")
-    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    pi = intent.ProblemIntent(problem="p", charter="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", pi)
     row = conn.execute(
         "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
     ).fetchone()

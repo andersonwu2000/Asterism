@@ -11,8 +11,8 @@ from Tooling.state import db
 def _seed(tmp_path, problem="Topology.demo"):
     conn = db.connect(tmp_path / "t.db")
     db.init_schema(conn)
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                 " VALUES (?,'',?)", (problem, db.now()))
+    conn.execute("INSERT INTO problems (name, created_at)"
+                 " VALUES (?,?)", (problem, db.now()))
     lib = tmp_path / "Library" / "Topology" / "Demo"
     lib.mkdir(parents=True)
     f1 = lib / "Main.lean"
@@ -28,8 +28,8 @@ def _seed(tmp_path, problem="Topology.demo"):
     conn.execute("INSERT INTO librarian_fail_counts (target_id, n,"
                  " updated_at) VALUES (?, 1, ?)",
                  (f"{problem}\x1fMain.lean", db.now()))
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                 " VALUES ('Other.problem','',?)", (db.now(),))
+    conn.execute("INSERT INTO problems (name, created_at)"
+                 " VALUES ('Other.problem',?)", (db.now(),))
     db.mark_library_bridged(conn, problem)
     db.mark_library_bridged(conn, "Other.problem")
     return conn, f1
@@ -53,8 +53,8 @@ def test_un_harvest_removes_files_marker_and_rows(tmp_path, capsys):
 def test_un_harvest_noop_when_never_harvested(tmp_path):
     conn = db.connect(tmp_path / "t.db")
     db.init_schema(conn)
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                 " VALUES ('p','',?)", (db.now(),))
+    conn.execute("INSERT INTO problems (name, created_at)"
+                 " VALUES ('p',?)", (db.now(),))
     conn.commit()
     assert un_harvest(conn, tmp_path, "p") == 0
 

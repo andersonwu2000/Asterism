@@ -21,8 +21,8 @@ def conn():
     c.execute("PRAGMA foreign_keys = ON")
     db.init_schema(c)
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) VALUES (?,?,?)",
-        ("P", "P/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at) VALUES (?,?)",
+        ("P", db.now()),
     )
     c.commit()
     return c
@@ -83,8 +83,8 @@ def test_companion_extracts_full_signature_and_resolves_alias(tmp_path):
     conn.row_factory = _s.Row
     db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) VALUES (?,?,?)",
-        ("P", "P/Manifest.md", db.now()))
+        "INSERT INTO problems (name, created_at) VALUES (?,?)",
+        ("P", db.now()))
     # forward brick: full theorem in its own L_ file
     conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement, kind,"
@@ -266,8 +266,8 @@ def test_alive_entries_carry_full_signature(tmp_path):
     conn.row_factory = _s.Row
     db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('P','P/Manifest.md',?)", (db.now(),))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('P',?)", (db.now(),))
     conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement, kind,"
         " origin, status, depth, created_at, updated_at) VALUES "

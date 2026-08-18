@@ -5,7 +5,7 @@ and pipeline._lake_build separately, so any handoff between
 `dispatcher.run` → `bfs_refill` → `_run_pipeline` → cascade can drift
 silently. This file exercises the full chain by:
 
-  1. Building a real Problem on disk in a tmp workspace (Manifest +
+  1. Building a real Problem on disk in a tmp workspace (problem.json +
      Defs + Root.lean + minimal lakefile/Asterism config).
   2. Initialising the DB via `cli.cmd_init`.
   3. Monkeypatching `agent.spawn_llm` to drop canned patches and
@@ -38,13 +38,13 @@ def _seed_workspace(tmp_path: Path) -> Path:
     """Build the minimum workspace shape `cmd_init` requires."""
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n\n"
-        "# p\n\n## Statement\nTrue\n",
+    import json as _json
+    (pdir / "problem.json").write_text(
+        _json.dumps({"problem": "p", "charter": "Prove True."}) + "\n",
         encoding="utf-8")
     (pdir / "Defs.lean").write_text("import Mathlib\n", encoding="utf-8")
     # cmd_init requires a hand-written Root.lean (the framework no longer
-    # auto-generates it from the Manifest). Author the canonical-shape
+    # auto-generates it from the seed). Author the canonical-shape
     # stub so init can extract `goals.statement` from the signature.
     (pdir / "Root.lean").write_text(
         "import Mathlib\n"

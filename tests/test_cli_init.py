@@ -1,11 +1,12 @@
 """cli.cmd_init — hand-written Root.lean + type-check gate.
 
-Statement source-of-truth moved from Manifest's `## Statement` section to
-the user-authored Root.lean theorem signature. Phase 6 made Root.lean and
-Defs.lean OPTIONAL, user-pinned inputs (pure-NL mode when both absent);
-every file that IS present must `lake build` cleanly, and a present
-Root.lean's statement is extracted for the DB. Manifest's `## Statement`
-section is optional (description only) and not consumed by init.
+Statement source-of-truth is the user-authored Root.lean theorem
+signature. Phase 6 made Root.lean and Defs.lean OPTIONAL, user-pinned
+inputs (pure-NL mode when both absent); every file that IS present must
+`lake build` cleanly, and a present Root.lean's statement is extracted
+for the DB. v40: the problem's definition (charter/word/settings) comes
+from `problem.json` — init requires it (or an already-registered
+non-empty charter) and never parses a Manifest.md.
 """
 from __future__ import annotations
 
@@ -110,12 +111,8 @@ def test_extract_returns_none_on_missing_main() -> None:
 # cmd_init — fixture + mocks
 # ---------------------------------------------------------------------
 
-_MIN_MANIFEST = (
-    "# wilson\n\n"
-    "## Setting\n\n"
-    "Some description.\n\n"
-    "## Difficulty\n\n"
-    "1\n"
+_MIN_SEED = (
+    '{"problem": "wilson", "charter": "Some description."}\n'
 )
 _MIN_DEFS = (
     "import Mathlib\n\n"
@@ -131,13 +128,13 @@ _MIN_ROOT = (
 
 
 def _setup_problem(tmp_path: Path, *,
-                    manifest_body: str = _MIN_MANIFEST,
+                    seed_body: str = _MIN_SEED,
                     defs_body: str | None = _MIN_DEFS,
                     root_body: str | None = _MIN_ROOT,
                     name: str = "wilson") -> Path:
     pdir = tmp_path / "Problems" / name
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(manifest_body, encoding="utf-8")
+    (pdir / "problem.json").write_text(seed_body, encoding="utf-8")
     if defs_body is not None:
         (pdir / "Defs.lean").write_text(defs_body, encoding="utf-8")
     if root_body is not None:
@@ -168,7 +165,7 @@ def test_init_pure_nl_when_root_missing(
     """Phase 6 — Root.lean is OPTIONAL: missing Root means pure-NL mode.
     init succeeds, inserts the problem row but NO root goal (the fresh
     problem is structurally stalled; the T4 wake bootstraps the
-    Strategist's first Inject from the Manifest alone)."""
+    Strategist's first Inject from the charter alone)."""
     _setup_problem(tmp_path, root_body=None)
     monkeypatch.chdir(tmp_path)
     rc = cmd_init(_init_args())
@@ -256,15 +253,19 @@ def test_init_fails_when_root_lacks_theorem_main(
     assert "theorem main" in capsys.readouterr().err
 
 
-def test_init_missing_manifest_returns_error(
+def test_init_missing_seed_returns_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """No problem.json and no already-registered charter → FAIL naming
+    the missing seed (v40: init's only definition source)."""
     (tmp_path / "Problems" / "wilson").mkdir(parents=True)
     monkeypatch.chdir(tmp_path)
     rc = cmd_init(_init_args())
     assert rc == 1
-    assert "Manifest.md" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "no charter" in err
+    assert "problem.json" in err
 
 
 # ---------------------------------------------------------------------
@@ -274,7 +275,7 @@ def test_init_missing_manifest_returns_error(
 def test_init_succeeds_with_valid_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _mock_lake_pass,
 ) -> None:
-    """Happy path: valid Defs.lean + Root.lean + Manifest → init OK."""
+    """Happy path: valid Defs.lean + Root.lean + problem.json → init OK."""
     pdir = _setup_problem(tmp_path)
     monkeypatch.chdir(tmp_path)
     rc = cmd_init(_init_args())
@@ -283,20 +284,17 @@ def test_init_succeeds_with_valid_files(
     assert (pdir / "Root.lean").read_text(encoding="utf-8") == _MIN_ROOT
 
 
-def test_init_extracts_statement_from_root_not_manifest(
+def test_init_extracts_statement_from_root_not_charter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _mock_lake_pass,
 ) -> None:
     """The DB's goals.statement comes from Root.lean's theorem signature,
-    NOT from the Manifest's `## Statement` section (which is now optional
-    description only)."""
-    # Manifest's Statement section says "False" (wrong on purpose);
-    # Root.lean's signature says "True" — DB should contain "True".
-    misleading_manifest = (
-        "# wilson\n\n"
-        "## Statement\n\nFalse\n\n"
-        "## Difficulty\n\n1\n"
+    NOT from the charter (NL prose, never a statement source)."""
+    # Charter claims "False" (wrong on purpose); Root.lean's signature
+    # says "True" — DB should contain "True".
+    misleading_seed = (
+        '{"problem": "wilson", "charter": "Statement: False"}\n'
     )
-    _setup_problem(tmp_path, manifest_body=misleading_manifest,
+    _setup_problem(tmp_path, seed_body=misleading_seed,
                     root_body=_MIN_ROOT)
     monkeypatch.chdir(tmp_path)
     rc = cmd_init(_init_args())
@@ -346,7 +344,9 @@ def test_init_idempotent(
 def _setup_problem_named(tmp_path: Path, name: str) -> Path:
     pdir = tmp_path / "Problems" / name
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(_MIN_MANIFEST, encoding="utf-8")
+    (pdir / "problem.json").write_text(
+        '{"problem": "%s", "charter": "Some description."}' % name,
+        encoding="utf-8")
     (pdir / "Defs.lean").write_text(
         f"import Mathlib\n\nnamespace Problems.{name}\n\nend Problems.{name}\n",
         encoding="utf-8",
@@ -364,11 +364,11 @@ def _setup_problem_named(tmp_path: Path, name: str) -> Path:
 def test_init_batch_inits_subdirs_with_required_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _mock_lake_pass,
 ) -> None:
-    """Walks <root>'s subdirs and inits each one whose Manifest + Defs
-    + Root files are present."""
+    """Walks <root> for problem.json seeds and inits each parent dir
+    (Defs/Root optional but present here)."""
     _setup_problem_named(tmp_path, "alpha")
     _setup_problem_named(tmp_path, "beta")
-    (tmp_path / "Problems" / "no_manifest").mkdir()
+    (tmp_path / "Problems" / "no_seed").mkdir()
     monkeypatch.chdir(tmp_path)
     rc = cmd_init_batch(argparse.Namespace(root="Problems"))
     assert rc == 0

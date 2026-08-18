@@ -155,8 +155,8 @@ def ws(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     c = db.connect()
     db.init_schema(c)
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('p', ?)", (db.now(),))
     c.commit()
     c.close()
     return tmp_path

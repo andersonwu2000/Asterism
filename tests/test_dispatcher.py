@@ -49,8 +49,9 @@ def test_threshold_defaults_are_strong_tier() -> None:
 
 def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p") -> int:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) VALUES (?, ?, ?, 1)",
-        (problem, "Problems/p/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES (?, ?, 1)",
+        (problem, db.now()),
     )
     return db.insert_goal(
         conn, problem=problem, slug="main", lean_path="Problems/p/Root.lean",
@@ -844,8 +845,8 @@ def test_recover_at_startup_relaunches_never_woken_group(
     across a code-drift handoff)."""
     from Tooling.core.dispatcher import _recover_at_startup
     from Tooling.state import groups as groups_store
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at,"
-                 " bootstrap_done) VALUES ('p','',?,1)", (db.now(),))
+    conn.execute("INSERT INTO problems (name, created_at,"
+                 " bootstrap_done) VALUES ('p',?,1)", (db.now(),))
     top = groups_store.ensure_top_group(conn, "p")
     kid = groups_store.open_group(conn, problem="p", parent_group_id=top,
                                   charter="settle X")
@@ -870,8 +871,8 @@ def test_recover_at_startup_relaunch_respects_scope(
     from Tooling.state import groups as groups_store
     for name in ("p", "q"):
         conn.execute(
-            "INSERT INTO problems (name, manifest_path, created_at,"
-            " bootstrap_done) VALUES (?,'',?,1)", (name, db.now()))
+            "INSERT INTO problems (name, created_at,"
+            " bootstrap_done) VALUES (?,?,1)", (name, db.now()))
     top_in = groups_store.ensure_top_group(conn, "p")
     kid_in = groups_store.open_group(conn, problem="p",
                                      parent_group_id=top_in,
@@ -984,8 +985,8 @@ def test_recover_at_startup_sweeps_orphan_proof_files(
     already-propagated fake-proof case that needs explicit repair."""
     from Tooling.core.dispatcher import _recover_at_startup
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES ('p', 'Problems/p/Manifest.md', ?, 1)",
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES ('p', ?, 1)",
         (db.now(),))
     db.insert_goal(
         conn, problem="p", slug="real_lemma",
@@ -1035,9 +1036,9 @@ def test_sweep_orphan_only_untracked_and_respects_scope(
 
     for name in ("p1", "p2"):
         conn.execute(
-            "INSERT INTO problems (name, manifest_path, created_at,"
-            " bootstrap_done) VALUES (?, ?, ?, 1)",
-            (name, f"Problems/{name}/Manifest.md", db.now()))
+            "INSERT INTO problems (name, created_at,"
+            " bootstrap_done) VALUES (?, ?, 1)",
+            (name, db.now()))
     db.insert_goal(conn, problem="p1", slug="real",
                    lean_path="Problems/p1/proofs/L_real.lean",
                    statement="T", origin="backward", status="proved")
@@ -1086,9 +1087,9 @@ def test_strategist_row_is_stale(conn: sqlite3.Connection) -> None:
     problem → not stale."""
     from Tooling.core.dispatcher import _strategist_row_is_stale
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, "
-        "bootstrap_done) VALUES (?, ?, ?, 1)",
-        ("p", "Problems/p/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, "
+        "bootstrap_done) VALUES (?, ?, 1)",
+        ("p", db.now()),
     )
     gid = db.insert_goal(
         conn, problem="p", slug="main", lean_path="Problems/p/Root.lean",
@@ -1096,7 +1097,7 @@ def test_strategist_row_is_stale(conn: sqlite3.Connection) -> None:
     )
     assert _strategist_row_is_stale(conn, "p", "Strategist") is False
     # Proved root alone does NOT make the row stale (the Strategist must
-    # still wake to judge the Manifest and commit Ingest).
+    # still wake to judge the charter and commit Ingest).
     db.update_goal_status(conn, gid, "proved")
     assert _strategist_row_is_stale(conn, "p", "Strategist") is False
     # Committed Ingest → terminal → stale.
@@ -1124,8 +1125,8 @@ def test_a_terminal_group_holds_no_seat(conn: sqlite3.Connection) -> None:
     from Tooling.core.dispatcher import _strategist_row_is_stale
     from Tooling.state import groups as _groups
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES ('q', 'Problems/q/Manifest.md', ?, 1)",
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES ('q', ?, 1)",
         (db.now(),))
     top = _groups.ensure_top_group(conn, "q")
     sub = _groups.open_group(conn, problem="q", parent_group_id=top,
@@ -1208,8 +1209,8 @@ def test_recover_at_startup_reenqueues_incomplete_inject_forwards(
     from Tooling.core.dispatcher import _recover_at_startup
     import json as _json
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?, 1)", (db.now(),))
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES ('p', ?, 1)", (db.now(),))
     ts = db.now()
     payload = _json.dumps({"pipeline": "Forward"})
     rids = []
@@ -1603,8 +1604,9 @@ def test_recover_at_startup_removes_tmp_files(
 def _seed_problem_with_root(conn: sqlite3.Connection) -> int:
     """Helper: insert a problem + open root goal at Problems/p/Root.lean."""
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) VALUES (?, ?, ?, 1)",
-        ("p", "Problems/p/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES (?, ?, 1)",
+        ("p", db.now()),
     )
     return db.insert_goal(
         conn, problem="p", slug="main",
@@ -1771,9 +1773,9 @@ def test_bfs_refill_scope_filters_by_problem(
     # Second problem via direct insert (avoid _seed_goal's duplicate-problem
     # behavior).
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        ("minif2f_x", "Problems/minif2f_x/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES (?, ?, 1)",
+        ("minif2f_x", db.now()),
     )
     gid_bench = db.insert_goal(
         conn, problem="minif2f_x", slug="main",
@@ -1796,9 +1798,9 @@ def test_bfs_refill_no_scope_dispatches_all(
     from Tooling.core.dispatcher import bfs_refill
     gid1 = _seed_goal(conn, problem="sg")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        ("pn", "Problems/pn/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES (?, ?, 1)",
+        ("pn", db.now()),
     )
     gid2 = db.insert_goal(
         conn, problem="pn", slug="main",
@@ -1856,9 +1858,9 @@ def test_flush_queue_kind_drops_only_matching(
     to drop the pre-cooldown backlog."""
     _seed_goal(conn, problem="sg")  # → Builder enqueue via bfs_refill
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        ("pn", "Problems/pn/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES (?, ?, 1)",
+        ("pn", db.now()),
     )
     gid_bw = db.insert_goal(
         conn, problem="pn", slug="main",
@@ -1888,9 +1890,9 @@ def test_open_goals_excludes_frozen_root(
     race protection.
     """
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
-        ("p", "Problems/p/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at) "
+        "VALUES (?, ?)",
+        ("p", db.now()),
     )
     root = db.insert_goal(
         conn, problem="p", slug="main",
@@ -1914,9 +1916,9 @@ def test_open_goals_scope_filter(conn: sqlite3.Connection) -> None:
     so the scope plumbing is covered even if bfs_refill restructures."""
     _seed_goal(conn, problem="sg")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        ("minif2f_a", "Problems/minif2f_a/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES (?, ?, 1)",
+        ("minif2f_a", db.now()),
     )
     db.insert_goal(
         conn, problem="minif2f_a", slug="main",
@@ -2040,10 +2042,9 @@ def test_root_proved_with_scope_filter_isolates_scoped_problem(
     sg_root = _seed_goal(conn, problem="sylvester_gallai")
     db.update_goal_status(conn, sg_root, "proved")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
-        " VALUES (?, ?, ?, 1)",
-        ("Minif2f.imo_1965_p1", "Problems/Minif2f/imo_1965_p1/Manifest.md",
-         db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES (?, ?, 1)",
+        ("Minif2f.imo_1965_p1", db.now()),
     )
     db.insert_goal(
         conn, problem="Minif2f.imo_1965_p1", slug="main",
@@ -2136,8 +2137,8 @@ def test_init_schema_backfills_existing_proved_roots(tmp_path: Path) -> None:
     # Seed: one proved root (backfill target), one open root (no-op),
     # one proved sub-goal (no-op — column meaningful only for roots).
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
-        " VALUES (?, ?, ?, 1)", ("p", "Problems/p/Manifest.md", db.now()))
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES (?, ?, 1)", ("p", db.now()))
     proved_root = db.insert_goal(
         c, problem="p", slug="main", lean_path="Problems/p/Root.lean",
         statement="T", origin="root",
@@ -2376,7 +2377,7 @@ def test_singleton_lock_legacy_conservative_when_cmdline_unreadable(
 
 
 # ---------------------------------------------------------------------
-# _ensure_manifest — late-init discovery (#125)
+# _ensure_intent — late-init discovery (#125)
 # ---------------------------------------------------------------------
 
 def test_problem_not_found_is_registered_target_cooldown() -> None:
@@ -2387,36 +2388,29 @@ def test_problem_not_found_is_registered_target_cooldown() -> None:
     assert "problem_not_found" in failures.TARGET_COOLDOWN_REASONS
 
 
-def test_ensure_manifest_late_registers_and_ghosts(tmp_path, monkeypatch):
+def test_ensure_intent_late_registers_and_ghosts(tmp_path, monkeypatch):
     """`asterism init` against a live daemon adds a problems row the
-    startup manifest load never saw — first dispatch must register it
-    instead of failing; a ghost row (no loadable Manifest) stays a
-    clean False."""
+    startup intent load never saw — first dispatch must register it
+    instead of failing; a ghost (queue row whose problems row is gone)
+    stays a clean False."""
     monkeypatch.chdir(tmp_path)
     from Tooling.state import db as _sdb
-    from Tooling.state import manifest as _mf
+    from Tooling.state import groups as _groups
+    from Tooling.state import intent as _intent
     conn = _sdb.connect(tmp_path / "asterism.db")
     _sdb.init_schema(conn)
-    pdir = tmp_path / "Problems" / "Dom" / "np"
-    pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: Dom.np\n---\n\n## Statement\nT\n",
-        encoding="utf-8")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES ('Dom.np',"
-        " 'Problems/Dom/np/Manifest.md', ?, 0)", (_sdb.now(),))
-    conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES ('ghost',"
-        " 'Problems/ghost/Manifest.md', ?, 0)", (_sdb.now(),))
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES ('Dom.np', ?, 0)", (_sdb.now(),))
+    _groups.ensure_top_group(conn, "Dom.np", charter="settle T")
     conn.commit()
 
-    cache = _mf.ManifestCache(tmp_path)  # startup load saw nothing
+    cache = _intent.IntentCache(tmp_path)  # startup load saw nothing
     assert "Dom.np" not in cache
-    assert _dispatcher._ensure_manifest(conn, cache, "Dom.np") is True
+    assert _dispatcher._ensure_intent(conn, cache, "Dom.np") is True
     assert "Dom.np" in cache
-    # ghost: problems row exists but no Manifest on disk
-    assert _dispatcher._ensure_manifest(conn, cache, "ghost") is False
-    # plain-dict manifests (test fixtures) degrade to a clean miss
-    assert _dispatcher._ensure_manifest(conn, {}, "unknown") is False
+    assert cache["Dom.np"].charter == "settle T"
+    # ghost: queue row with no problems row behind it
+    assert _dispatcher._ensure_intent(conn, cache, "ghost") is False
+    # plain-dict intents (test fixtures) degrade to a clean miss
+    assert _dispatcher._ensure_intent(conn, {}, "unknown") is False

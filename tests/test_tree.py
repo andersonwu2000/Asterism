@@ -16,8 +16,8 @@ from Tooling.state import db, tree
 def _seed_root(conn: sqlite3.Connection, problem: str = "p",
                slug: str = "main") -> int:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, '', ?, 1)", (problem, db.now()))
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES (?, ?, 1)", (problem, db.now()))
     return db.insert_goal(
         conn, problem=problem, slug=slug, lean_path=f"P/{slug}.lean",
         statement="True", origin="root", depth=0,

@@ -41,9 +41,9 @@ def _client(workspace: Path) -> TestClient:
 
 def _add_problem(conn: sqlite3.Connection, name: str, **cols) -> None:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, ?, ?)",
-        (name, f"Problems/{name}/Manifest.md", db.now()))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES (?, ?)",
+        (name, db.now()))
     for k, v in cols.items():
         conn.execute(f"UPDATE problems SET {k} = ? WHERE name = ?", (v, name))
     conn.commit()
@@ -177,7 +177,7 @@ def test_board_status_chips(workspace: Path) -> None:
     _add_problem(conn, "amend_p")
     _add_decision(conn, "amend_p", kind="RequestUserAmend",
                   outcome="awaiting_human",
-                  payload={"file": "Manifest.md", "proposed_body": "x",
+                  payload={"file": "charter", "proposed_body": "x",
                            "question": "q"})
     # sign-off pending (ingested + paused)
     _add_problem(conn, "signoff_p", ingest_signoff_pending=1,
@@ -428,20 +428,32 @@ def test_problem_file_read_sandboxed(workspace: Path) -> None:
 # inbox + amend resolution (write chokepoint)
 # ---------------------------------------------------------------------
 
+def _charter_of(workspace: Path, problem: str = "p") -> str:
+    conn = db.connect(workspace / "asterism.db")
+    try:
+        row = conn.execute(
+            "SELECT charter FROM groups WHERE problem = ?"
+            " AND parent_group_id IS NULL", (problem,)).fetchone()
+        return "" if row is None else str(row["charter"])
+    finally:
+        conn.close()
+
+
 def _amend_fixture(workspace: Path) -> tuple[int, Path]:
+    from Tooling.state import groups as _groups
     conn = _open_db(workspace)
     _add_problem(conn, "p")
+    _groups.ensure_top_group(conn, "p", charter="# old")
     did = _add_decision(
         conn, "p", kind="RequestUserAmend", outcome="awaiting_human",
-        payload={"file": "Manifest.md",
+        payload={"file": "charter",
                  "proposed_body": "# proposed\nnew content\n",
                  "question": "apply this?"},
         reason="needs a stronger hypothesis")
     conn.close()
     pdir = workspace / "Problems" / "p"
     pdir.mkdir(parents=True, exist_ok=True)
-    (pdir / "Manifest.md").write_text("# old\n", encoding="utf-8")
-    (pdir / ".proposed_Manifest.md").write_text(
+    (pdir / ".proposed_charter").write_text(
         "# proposed\nnew content\n", encoding="utf-8")
     return did, pdir
 
@@ -452,27 +464,34 @@ def test_inbox_lists_amend_with_both_bodies(workspace: Path) -> None:
     assert len(box["amends"]) == 1
     a = box["amends"][0]
     assert a["problem"] == "p"
-    assert a["file"] == "Manifest.md"
+    assert a["file"] == "charter"
     assert a["proposed_body"].startswith("# proposed")
-    assert a["current_body"] == "# old\n"
+    # the side-by-side diff needs the CURRENT goal text — for the
+    # DB-resident charter that is the top group's charter row
+    assert a["current_body"] == "# old"
     assert a["question"] == "apply this?"
     meta = _client(workspace).get("/api/meta").json()
     assert meta["inbox_count"] == 1
 
 
-def test_amend_accept_writes_file_and_resumes(workspace: Path) -> None:
+def test_amend_accept_writes_charter_and_resumes(workspace: Path) -> None:
     did, pdir = _amend_fixture(workspace)
     c = _client(workspace)
     r = c.post(f"/api/inbox/amend/{did}/resolve",
                json={"action": "accept"})
     assert r.status_code == 200
-    assert (pdir / "Manifest.md").read_text(
-        encoding="utf-8") == "# proposed\nnew content\n"
-    assert not (pdir / ".proposed_Manifest.md").exists()
+    # accept lands in the DB (top group charter), not in any file
+    assert _charter_of(workspace) == "# proposed\nnew content"
+    assert not (pdir / ".proposed_charter").exists()
     conn = db.connect(workspace / "asterism.db")
     row = conn.execute("SELECT outcome FROM strategist_decisions"
                        " WHERE id = ?", (did,)).fetchone()
     assert row["outcome"] == "accepted"
+    # the sanctioned change moved the baseline pin
+    hist = conn.execute(
+        "SELECT source FROM user_file_history WHERE problem = 'p'"
+        " AND file = 'charter' ORDER BY id DESC LIMIT 1").fetchone()
+    assert hist is not None and hist["source"] == "repin"
     # Strategist wake enqueued so the problem resumes promptly
     assert db.is_in_queue(conn, target_id="p", kind="Strategist")
     conn.close()
@@ -486,18 +505,17 @@ def test_amend_accept_with_edited_body(workspace: Path) -> None:
     _client(workspace).post(
         f"/api/inbox/amend/{did}/resolve",
         json={"action": "accept", "body": "# operator-edited\n"})
-    assert (pdir / "Manifest.md").read_text(
-        encoding="utf-8") == "# operator-edited\n"
+    assert _charter_of(workspace) == "# operator-edited"
 
 
-def test_amend_reject_leaves_file_untouched(workspace: Path) -> None:
+def test_amend_reject_leaves_charter_untouched(workspace: Path) -> None:
     did, pdir = _amend_fixture(workspace)
     r = _client(workspace).post(
         f"/api/inbox/amend/{did}/resolve",
         json={"action": "reject", "reason": "wrong direction"})
     assert r.status_code == 200
-    assert (pdir / "Manifest.md").read_text(encoding="utf-8") == "# old\n"
-    assert not (pdir / ".proposed_Manifest.md").exists()
+    assert _charter_of(workspace) == "# old"
+    assert not (pdir / ".proposed_charter").exists()
     conn = db.connect(workspace / "asterism.db")
     row = conn.execute(
         "SELECT outcome, outcome_detail FROM strategist_decisions"
@@ -580,7 +598,8 @@ def test_delete_problem_guards_and_deletes(workspace: Path,
     conn.close()
     pdir = workspace / "Problems" / "p"
     (pdir / "proofs").mkdir(parents=True)
-    (pdir / "Manifest.md").write_text("x", encoding="utf-8")
+    (pdir / "problem.json").write_text(
+        '{"problem": "p", "charter": "x"}', encoding="utf-8")
     monkeypatch.chdir(workspace)
     c = _client(workspace)
     # bridged refuses
@@ -1208,11 +1227,11 @@ def test_create_settings_and_papers_are_authoritative(
     pid = c.post("/api/papers/upload", params={"filename": "ref.md"},
                  content=b"# Ref\n\nbody").json()["id"]
     r = c.post("/api/problems/create", json={
-        "name": "Test.cite", "body": "prove the thing",
+        "name": "Test.cite", "charter": "prove the thing",
         "settings": {"forbidden_lemmas": ["bad*"], "library": False},
         "papers": [pid]})
     assert r.status_code == 200, r.json()
-    got = c.get("/api/problems/Test.cite/manifest").json()["settings"]
+    got = c.get("/api/problems/Test.cite/intent").json()["settings"]
     assert got["forbidden_lemmas"] == ["bad*"]
     assert got["library"] is False
     bound = c.get("/api/problems/Test.cite/papers").json()["papers"]
@@ -1258,39 +1277,32 @@ def test_daemon_start_requires_exact_known_scope(
 # problem authoring (POST /api/problems/create)
 # ---------------------------------------------------------------------
 
-_MANIFEST = """---
-problem: Test.ui_created
-axioms_whitelist:
-  - propext
-forbidden_lemmas: []
-library: true
----
-
-# Test.ui_created — a UI-authored problem
-
-## Statement
-
-Prove something small.
-"""
+_CHARTER = ("# Test.ui_created — a UI-authored problem\n\n"
+            "## Statement\n\nProve something small.\n")
 
 
 def test_create_problem_pure_nl(workspace: Path) -> None:
     c = _client(workspace)
     r = c.post("/api/problems/create",
-               json={"name": "Test.ui_created", "manifest": _MANIFEST})
+               json={"name": "Test.ui_created", "charter": _CHARTER})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["problem"] == "Test.ui_created"
     assert "pure-NL" in body["message"]
     pdir = workspace / "Problems" / "Test" / "ui_created"
-    assert (pdir / "Manifest.md").read_text(encoding="utf-8") == _MANIFEST
+    seed = json.loads((pdir / "problem.json").read_text(encoding="utf-8"))
+    assert seed["problem"] == "Test.ui_created"
+    assert seed["charter"] == _CHARTER.strip()
     assert (pdir / "proofs").is_dir()
     conn = db.connect(workspace / "asterism.db")
-    row = conn.execute("SELECT manifest_path FROM problems WHERE name = ?",
+    row = conn.execute("SELECT 1 FROM problems WHERE name = ?",
                        ("Test.ui_created",)).fetchone()
+    charter = conn.execute(
+        "SELECT charter FROM groups WHERE problem = ?"
+        " AND parent_group_id IS NULL", ("Test.ui_created",)).fetchone()
     conn.close()
     assert row is not None
-    assert row["manifest_path"] == "Problems/Test/ui_created/Manifest.md"
+    assert charter is not None and charter["charter"] == _CHARTER.strip()
     # visible on the board immediately
     names = [p["name"] for p in c.get("/api/problems").json()["problems"]]
     assert "Test.ui_created" in names
@@ -1299,10 +1311,10 @@ def test_create_problem_pure_nl(workspace: Path) -> None:
 def test_create_problem_duplicate_409(workspace: Path) -> None:
     c = _client(workspace)
     assert c.post("/api/problems/create",
-                  json={"name": "Test.dup", "manifest": _MANIFEST
+                  json={"name": "Test.dup", "charter": _CHARTER
                         }).status_code == 200
     r = c.post("/api/problems/create",
-               json={"name": "Test.dup", "manifest": _MANIFEST})
+               json={"name": "Test.dup", "charter": _CHARTER})
     assert r.status_code == 409
     assert "already exists" in r.json()["detail"]
 
@@ -1312,15 +1324,15 @@ def test_create_problem_bad_name_422(workspace: Path) -> None:
     for bad in ("", "1starts_with_digit", "has space", "trailing.", "a..b",
                 "semi;colon"):
         r = c.post("/api/problems/create",
-                   json={"name": bad, "manifest": _MANIFEST})
+                   json={"name": bad, "charter": _CHARTER})
         assert r.status_code == 422, bad
     assert not (workspace / "Problems" / "has space").exists()
 
 
-def test_create_problem_empty_manifest_422(workspace: Path) -> None:
+def test_create_problem_empty_charter_422(workspace: Path) -> None:
     r = _client(workspace).post(
         "/api/problems/create",
-        json={"name": "Test.empty", "manifest": "   \n"})
+        json={"name": "Test.empty", "charter": "   \n"})
     assert r.status_code == 422
     assert not (workspace / "Problems" / "Test" / "empty").exists()
 
@@ -1332,7 +1344,7 @@ def test_create_problem_init_failure_rolls_back(
                         lambda ws, name, **kw: (1, "FAIL: stubbed"))
     r = _client(workspace).post(
         "/api/problems/create",
-        json={"name": "Test.rollback", "manifest": _MANIFEST})
+        json={"name": "Test.rollback", "charter": _CHARTER})
     assert r.status_code == 422
     assert "stubbed" in r.json()["detail"]
     # the created directory is rolled back so a retry can succeed
@@ -1340,36 +1352,23 @@ def test_create_problem_init_failure_rolls_back(
 
 
 # ---------------------------------------------------------------------
-# manifest read/update + structured create + config
+# intent read/update + settings create + config
 # ---------------------------------------------------------------------
 
-def test_create_problem_structured(workspace: Path) -> None:
+def test_create_settings_land_in_db_and_seed_mirror(workspace: Path) -> None:
+    """Explicit creation-time settings go straight to the DB (where
+    every gate reads them) AND the settings chokepoint mirrors them
+    into the durable problem.json seed, so reset/re-init restores
+    exactly what the user authored."""
+    from Tooling.state import intent as _intent
+    from Tooling.state import settings as _settings
     c = _client(workspace)
     r = c.post("/api/problems/create", json={
         "name": "Test.structured",
-        "body": "# Test.structured\n\n## Statement\n\nProve it.\n",
+        "charter": "# Test.structured\n\n## Statement\n\nProve it.\n",
         "settings": {"forbidden_lemmas": ["sperner*"], "library": True},
     })
     assert r.status_code == 200, r.text
-    text = (workspace / "Problems" / "Test" / "structured" /
-            "Manifest.md").read_text(encoding="utf-8")
-    assert text.startswith("---\n")
-    assert "problem: Test.structured" in text
-    # Creation writes IDENTITY only (2026-08-11, frontmatter dissolve
-    # completed): the settings live in `problem_settings`, the UI edits
-    # the DB and never re-renders this block, so a copy written here
-    # went stale the first time anyone changed anything — measured, two
-    # problems already disagreed. The explicit creation-time values go
-    # straight to the DB, which is where every gate reads them, and
-    # `asterism drift-check` now fails on any file/DB divergence.
-    assert "axioms_whitelist" not in text
-    assert "sperner*" not in text
-    assert "library:" not in text
-    # the BODY still goes through verbatim — this test posts its own
-    # `## Statement`, and what the writer stopped emitting is the
-    # settings block, not the caller's prose
-    assert "## Statement" in text
-    from Tooling.state import settings as _settings
     conn = db.connect(workspace / "asterism.db")
     try:
         stored = _settings.read(conn, "Test.structured")
@@ -1377,32 +1376,43 @@ def test_create_problem_structured(workspace: Path) -> None:
         conn.close()
     assert stored["forbidden_lemmas"] == ["sperner*"]
     assert stored["library"] is True
+    seed = _intent.read_seed(
+        workspace / "Problems" / "Test" / "structured" / "problem.json")
+    assert seed is not None
+    assert "## Statement" in seed["charter"]
+    assert seed["settings"]["forbidden_lemmas"] == ["sperner*"]
+    assert seed["settings"]["library"] is True
 
 
-def test_manifest_get_and_update(workspace: Path) -> None:
+def test_intent_get_and_update(workspace: Path) -> None:
     c = _client(workspace)
     c.post("/api/problems/create", json={
         "name": "Test.editme",
-        "body": "# Test.editme\n\nOld body.\n",
+        "charter": "# Test.editme\n\nOld body.\n",
         "settings": {"library": False},
     })
-    got = c.get("/api/problems/Test.editme/manifest").json()
+    got = c.get("/api/problems/Test.editme/intent").json()
     assert got["settings"]["library"] is False
-    assert "Old body." in got["body"]
+    assert "Old body." in got["charter"]
+    assert got["word"] == ""
     assert got["pending_amend"] is False
-    r = c.post("/api/problems/Test.editme/manifest", json={
-        "body": "\n# Test.editme\n\nNew body.\n",
+    r = c.post("/api/problems/Test.editme/intent", json={
+        "charter": "\n# Test.editme\n\nNew body.\n",
+        "word": "stay on the analytic route",
         "settings": {"library": True, "forbidden_lemmas": ["kuhn*"]},
     })
     assert r.status_code == 200, r.text
-    got2 = c.get("/api/problems/Test.editme/manifest").json()
+    got2 = c.get("/api/problems/Test.editme/intent").json()
     assert got2["settings"]["library"] is True
     assert got2["settings"]["forbidden_lemmas"] == ["kuhn*"]
-    assert "New body." in got2["body"]
-    # unknown frontmatter keys survive: problem: still present
-    text = (workspace / "Problems" / "Test" / "editme" /
-            "Manifest.md").read_text(encoding="utf-8")
-    assert "problem: Test.editme" in text
+    assert "New body." in got2["charter"]
+    assert got2["word"] == "stay on the analytic route"
+    # the durable seed follows the DB write (the chokepoint mirrors it)
+    seed = json.loads(
+        (workspace / "Problems" / "Test" / "editme" /
+         "problem.json").read_text(encoding="utf-8"))
+    assert "New body." in seed["charter"]
+    assert seed["word"] == "stay on the analytic route"
 
 
 def test_review_get_enriches_vouch_signatures(workspace: Path) -> None:
@@ -1456,65 +1466,66 @@ def test_review_get_enriches_vouch_signatures(workspace: Path) -> None:
         "signature": "def is_widget (w : Nat) : Prop := w = w"}
 
 
-def test_manifest_axiom_gate_locked_after_creation(workspace: Path) -> None:
+def test_intent_axiom_gate_locked_after_creation(workspace: Path) -> None:
     """Mutability inventory (owner, 2026-07-08): the axiom gate is
     creation-fixed — the gate re-reads it per validation, so a mid-life
     edit would re-tune soundness under live proofs. Same-value writes
     (the UI round-trips the whole settings object) still pass."""
     c = _client(workspace)
     c.post("/api/problems/create", json={
-        "name": "Test.gate", "body": "# Test.gate\n",
+        "name": "Test.gate", "charter": "# Test.gate\n",
         "settings": {"axioms_whitelist": ["propext", "Quot.sound"]}})
     # widening → refused
-    r = c.post("/api/problems/Test.gate/manifest", json={
+    r = c.post("/api/problems/Test.gate/intent", json={
         "settings": {"axioms_whitelist":
                      ["propext", "Quot.sound", "Classical.choice"]}})
     assert r.status_code == 409
     assert "AXIOMS_LOCKED" in r.json()["detail"]
     # narrowing → refused too (the gate never changes, either way)
-    r = c.post("/api/problems/Test.gate/manifest", json={
+    r = c.post("/api/problems/Test.gate/intent", json={
         "settings": {"axioms_whitelist": ["propext"]}})
     assert r.status_code == 409
     # identical round-trip (order-insensitive) → fine
-    r = c.post("/api/problems/Test.gate/manifest", json={
+    r = c.post("/api/problems/Test.gate/intent", json={
         "settings": {"axioms_whitelist": ["Quot.sound", "propext"],
                      "forbidden_lemmas": ["kuhn*"]}})
     assert r.status_code == 200, r.text
-    got = c.get("/api/problems/Test.gate/manifest").json()["settings"]
+    got = c.get("/api/problems/Test.gate/intent").json()["settings"]
     assert got["forbidden_lemmas"] == ["kuhn*"]
 
 
-def test_manifest_library_settles_after_bridge(workspace: Path) -> None:
+def test_intent_library_settles_after_bridge(workspace: Path) -> None:
     c = _client(workspace)
     c.post("/api/problems/create", json={
-        "name": "Test.settled", "body": "# Test.settled\n",
+        "name": "Test.settled", "charter": "# Test.settled\n",
         "settings": {"library": True}})
     conn = _open_db(workspace)
     conn.execute("UPDATE problems SET library_bridged_at = ? WHERE name = ?",
                  (db.now(), "Test.settled"))
     conn.commit()
     conn.close()
-    r = c.post("/api/problems/Test.settled/manifest", json={
+    r = c.post("/api/problems/Test.settled/intent", json={
         "settings": {"library": False}})
     assert r.status_code == 409
     assert "LIBRARY_SETTLED" in r.json()["detail"]
     # same-value round-trip stays fine
-    r = c.post("/api/problems/Test.settled/manifest", json={
+    r = c.post("/api/problems/Test.settled/intent", json={
         "settings": {"library": True}})
     assert r.status_code == 200, r.text
 
 
-def test_manifest_update_blocked_by_pending_amend(workspace: Path) -> None:
+def test_intent_charter_update_blocked_by_pending_amend(
+        workspace: Path) -> None:
     c = _client(workspace)
     c.post("/api/problems/create", json={
-        "name": "Test.locked", "body": "# Test.locked\n"})
+        "name": "Test.locked", "charter": "# Test.locked\n"})
     conn = _open_db(workspace)
     _add_decision(conn, "Test.locked", kind="RequestUserAmend",
                   outcome="awaiting_human",
-                  payload={"file": "Manifest.md"})
+                  payload={"file": "charter"})
     conn.close()
-    r = c.post("/api/problems/Test.locked/manifest",
-               json={"body": "\n# clobber\n"})
+    r = c.post("/api/problems/Test.locked/intent",
+               json={"charter": "\n# clobber\n"})
     assert r.status_code == 409
     assert "Inbox" in r.json()["detail"]
 

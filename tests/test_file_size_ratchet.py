@@ -435,7 +435,10 @@ _WATERMARKS = {
     # had already left, and the dispatcher drops a Strategist row whose
     # group is terminal — so the child's delivery reached nobody
     # (2026-08-16). Conscious bump.
-    "Tooling/state/db.py": 3855,
+    # 3855→3870 (2026-08-19): v40 Manifest retirement — `problems` DDL
+    # loses manifest_path / gains user_word, and the SCHEMA comments
+    # explaining the DB-resident intent pair. Conscious bump.
+    "Tooling/state/db.py": 3870,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,
@@ -461,7 +464,12 @@ _WATERMARKS = {
     # 'running', outcome/finished_at go NULLable (rebuild-and-copy; the
     # chain grows by one block per schema version by design). Conscious
     # bump.
-    "Tooling/state/db_migrations.py": 2340,
+    # 2340→2490 (2026-08-19): v39+v40 blocks — v40 is the Manifest
+    # retirement rebuild (top-group charter backfill from a still-on-disk
+    # legacy Manifest.md, problem_settings seeding, manifest_path DROP).
+    # The chain grows by one block per schema version by design.
+    # Conscious bump.
+    "Tooling/state/db_migrations.py": 2490,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

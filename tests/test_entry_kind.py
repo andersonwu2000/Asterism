@@ -68,8 +68,8 @@ def test_goals_table_has_no_entry_kind_column(conn: sqlite3.Connection) -> None:
 
 def test_insert_goal_rejects_entry_kind_kwarg(conn: sqlite3.Connection) -> None:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES ('p', 'Problems/p/Manifest.md', ?, 1)",
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES ('p', ?, 1)",
         (db.now(),),
     )
     with pytest.raises(TypeError):

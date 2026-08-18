@@ -19,7 +19,7 @@ from Tooling.agent.context import (
     _section_goal_history,
     compile_context,
 )
-from Tooling.state.manifest import Manifest
+from Tooling.state.intent import ProblemIntent
 
 
 # ---------------------------------------------------------------------
@@ -318,7 +318,7 @@ def test_compile_context_inlines_prior_progress_note_for_backward(
     )
     goal = db.get_goal(conn, gid)
     out = compile_context(conn, goal=goal,
-                          mfst=Manifest(problem="p", body="T"),
+                          intent=ProblemIntent(problem="p", charter="T"),
                           attempts_dir=attempts_dir, kind="backward")
     text = out.read_text(encoding="utf-8")
     assert "Your previous progress note" in text
@@ -354,7 +354,7 @@ def test_compile_context_inlines_prior_progress_note_for_builder(
     )
     goal = db.get_goal(conn, gid)
     out = compile_context(conn, goal=goal,
-                          mfst=Manifest(problem="p", body="T"),
+                          intent=ProblemIntent(problem="p", charter="T"),
                           attempts_dir=attempts_dir, kind="builder")
     text = out.read_text(encoding="utf-8")
     assert "Your previous progress note" in text
@@ -372,7 +372,7 @@ def test_compile_context_no_partial_section_when_no_draft(
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
     out = compile_context(conn, goal=goal,
-                          mfst=Manifest(problem="p", body="T"),
+                          intent=ProblemIntent(problem="p", charter="T"),
                           attempts_dir=attempts_dir, kind="backward")
     text = out.read_text(encoding="utf-8")
     assert "Your previous progress note" not in text
@@ -385,8 +385,8 @@ def test_compile_context_no_partial_section_when_no_draft(
 
 def _seed_goal(conn: sqlite3.Connection) -> int:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) VALUES (?, ?, ?, 1)",
-        ("p", "Problems/p/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done) VALUES (?, ?, 1)",
+        ("p", db.now()),
     )
     return db.insert_goal(
         conn, problem="p", slug="main", lean_path="Problems/p/Root.lean",
@@ -427,7 +427,7 @@ def test_compile_context_writes_companion_past_attempts(
     attempts_dir = tmp_path / ".attempts" / "pid-q1"
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=Manifest(problem="p", body="T"),
+    out = compile_context(conn, goal=goal, intent=ProblemIntent(problem="p", charter="T"),
                           attempts_dir=attempts_dir)
     text = out.read_text(encoding="utf-8")
 
@@ -477,7 +477,7 @@ def test_compile_context_size_with_many_attempts_under_smart_truncate(
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
     out = compile_context(conn, goal=goal,
-                          mfst=Manifest(problem="p", body="T"),
+                          intent=ProblemIntent(problem="p", charter="T"),
                           attempts_dir=attempts_dir)
     ctx_text = out.read_text(encoding="utf-8")
     past_text = (attempts_dir / "PAST_DIRECT_ATTEMPTS.md").read_text(
@@ -520,7 +520,7 @@ def test_only_the_newest_attempts_note_rides_inline(
     attempts_dir = tmp_path / ".attempts" / "pid-current"
     attempts_dir.mkdir(parents=True)
     out = compile_context(conn, goal=db.get_goal(conn, gid),
-                          mfst=Manifest(problem="p", body="T"),
+                          intent=ProblemIntent(problem="p", charter="T"),
                           attempts_dir=attempts_dir)
     text = out.read_text(encoding="utf-8")
 
@@ -558,7 +558,7 @@ def test_compile_context_no_companion_when_no_history(
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
     compile_context(conn, goal=goal,
-                    mfst=Manifest(problem="p", body="T"),
+                    intent=ProblemIntent(problem="p", charter="T"),
                     attempts_dir=attempts_dir)
     assert not (attempts_dir / "PAST_DIRECT_ATTEMPTS.md").exists()
     assert not (attempts_dir / "PAST_VERIFY_FAILURES.md").exists()
@@ -617,7 +617,7 @@ def test_compile_context_builder_kind_includes_attempts_excludes_verifies(
     gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
     goal = db.get_goal(conn, gid)
     out = compile_context(conn, goal=goal,
-                          mfst=Manifest(problem="p", body="T"),
+                          intent=ProblemIntent(problem="p", charter="T"),
                           attempts_dir=attempts_dir, kind="builder")
     text = out.read_text(encoding="utf-8")
     assert "Direct attempts on this goal" in text
@@ -638,7 +638,7 @@ def test_compile_context_backward_kind_sees_both_attempts_and_verifies(
     gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
     goal = db.get_goal(conn, gid)
     out = compile_context(conn, goal=goal,
-                          mfst=Manifest(problem="p", body="T"),
+                          intent=ProblemIntent(problem="p", charter="T"),
                           attempts_dir=attempts_dir, kind="backward")
     text = out.read_text(encoding="utf-8")
     assert "Sibling decompositions that failed Verify" in text
@@ -657,7 +657,7 @@ def test_compile_context_no_kind_renders_both_sections(
     gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
     goal = db.get_goal(conn, gid)
     out = compile_context(conn, goal=goal,
-                          mfst=Manifest(problem="p", body="T"),
+                          intent=ProblemIntent(problem="p", charter="T"),
                           attempts_dir=attempts_dir)
     text = out.read_text(encoding="utf-8")
     assert "BUILDER-LEVEL" in text
@@ -674,7 +674,7 @@ def test_compile_context_companion_files_always_written(
     gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
     goal = db.get_goal(conn, gid)
     compile_context(conn, goal=goal,
-                    mfst=Manifest(problem="p", body="T"),
+                    intent=ProblemIntent(problem="p", charter="T"),
                     attempts_dir=attempts_dir, kind="backward")
     # Backward inline path skipped the direct_attempts sub-section in Context.md,
     # but the companion file must still exist (forensics + agent can

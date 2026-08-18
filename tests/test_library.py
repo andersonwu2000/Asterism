@@ -4,45 +4,18 @@ The old whole-root promotion (`library.promote` / `maybe_promote`) is retired
 — Library-ization now goes through the Librarian pipeline — so those tests are
 gone. What remains:
 
-1. Manifest parser leaves hint sections as body prose (retired field).
-2. `context._section_library_available` renders the right DB-index
+1. `context._section_library_available` renders the right DB-index
    entries (v18: `db.bridged_library_index`, was INDEX.md).
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from Tooling.state import manifest
+from Tooling.state import intent
 
 
 # ---------------------------------------------------------------------
-# 1. Manifest parser — hint sections stay prose
-# ---------------------------------------------------------------------
-
-def _write_manifest(tmp_path: Path, body: str) -> Path:
-    p = tmp_path / "Manifest.md"
-    p.write_text(body, encoding="utf-8")
-    return p
-
-
-def test_manifest_hints_sections_are_plain_prose(tmp_path: Path) -> None:
-    """`## Lemma hints` retired (2026-07-08, owner): presearch covers
-    discovery, the strategist directive carries curated steering. The
-    parser no longer lifts the section into a field; the text stays in
-    the body as plain prose (the Strategist reads it as NL)."""
-    p = _write_manifest(tmp_path,
-        "---\nproblem: foo\n---\n"
-        "## Statement\nT\n## Difficulty\n3\n"
-        "## Lemma hints\n- Mathlib.NumberTheory.ZMod.Basic\n"
-        "## Mathlib hints\n- Mathlib.Data.Nat.Basic\n")
-    m = manifest.parse(p)
-    assert not hasattr(m, "lemma_hints")
-    assert not hasattr(m, "mathlib_hints")
-    assert not hasattr(m, "all_hints")
-
-
-# ---------------------------------------------------------------------
-# 2. Context section — Library available
+# Context section — Library available
 # ---------------------------------------------------------------------
 
 def _seed_index(conn) -> None:
@@ -60,9 +33,9 @@ def _seed_index(conn) -> None:
     }
     for prob, fqns in entries.items():
         conn.execute(
-            "INSERT INTO problems (name, manifest_path, created_at,"
-            " bootstrap_done) VALUES (?, ?, ?, 1)",
-            (prob, f"Problems/{prob}/Manifest.md", db.now()))
+            "INSERT INTO problems (name, created_at,"
+            " bootstrap_done) VALUES (?, ?, 1)",
+            (prob, db.now()))
         for i, fqn in enumerate(fqns):
             slug = fqn.rsplit(".", 1)[-1]
             db.upsert_library_decl(conn, problem=prob, slug=slug,
@@ -86,14 +59,13 @@ def _mem():
 
 def test_library_section_domain_menu(tmp_path: Path) -> None:
     """Same-domain bridged problems appear as a compact menu (with keystone
-    tag); other domains are excluded. (Manifest `## Lemma hints`
-    highlighting was retired in favour of target-1 pre-search.)"""
+    tag); other domains are excluded."""
     from Tooling.agent import context
     conn = _mem()
     _seed_index(conn)
-    mfst = manifest.Manifest(
-        problem="LinearAlgebra.normal_diagonalization", body="T")
-    body = "\n".join(context._section_library_available(conn, mfst))
+    pi = intent.ProblemIntent(
+        problem="LinearAlgebra.normal_diagonalization", charter="T")
+    body = "\n".join(context._section_library_available(conn, pi))
     assert "## Library available" in body
     # same-domain (LinearAlgebra) listed with keystone
     assert "LinearAlgebra.schur_triangularization" in body
@@ -107,11 +79,9 @@ def test_library_section_empty_when_nothing_bridged(tmp_path: Path) -> None:
     render) likewise."""
     from Tooling.agent import context
     conn = _mem()
-    mfst = manifest.Manifest(
-        problem="x", body="T",
-    )
-    assert context._section_library_available(conn, mfst) == []
-    assert context._section_library_available(None, mfst) == []
+    pi = intent.ProblemIntent(problem="x", charter="T")
+    assert context._section_library_available(conn, pi) == []
+    assert context._section_library_available(None, pi) == []
 
 
 def test_library_section_skips_other_domains_only(tmp_path: Path) -> None:
@@ -120,5 +90,5 @@ def test_library_section_skips_other_domains_only(tmp_path: Path) -> None:
     from Tooling.agent import context
     conn = _mem()
     _seed_index(conn)
-    mfst = manifest.Manifest(problem="NumberTheory.x", body="T")
-    assert context._section_library_available(conn, mfst) == []
+    pi = intent.ProblemIntent(problem="NumberTheory.x", charter="T")
+    assert context._section_library_available(conn, pi) == []

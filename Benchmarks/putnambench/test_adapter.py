@@ -195,22 +195,26 @@ def test_emit_three_files(tmp_path: Path) -> None:
     assert "noncomputable abbrev putnam_1999_a1_solution" in defs
     assert "import Problems" not in defs
 
-    mfst = (pdir / "Manifest.md").read_text(encoding="utf-8")
-    assert "problem: Putnam.putnam_1999_a1" in mfst
-    assert "library: false" in mfst
-    assert "signoff: false" in mfst   # unattended: skip the human gate
-    assert "Find all $x$" in mfst
-    assert "Putnam 1999 A1" in mfst
-    assert "abc1234" in mfst
-    assert "OFFICIAL" in mfst          # solutions-replaced note
-    assert "AttemptDisproof" in mfst   # falsity routing note
+    import json as _json
+    seed = _json.loads(
+        (pdir / "problem.json").read_text(encoding="utf-8"))
+    assert seed["problem"] == "Putnam.putnam_1999_a1"
+    assert seed["settings"]["library"] is False
+    assert seed["settings"]["signoff"] is False  # unattended batch
+    assert "Find all $x$" in seed["charter"]
+    assert "Putnam 1999 A1" in seed["charter"]
+    assert "abc1234" in seed["charter"]
+    assert "OFFICIAL" in seed["charter"]   # solutions-replaced note
+    assert "RequestUserAmend" in seed["charter"]  # falsity routing note
 
 
-def test_emit_proof_only_manifest_note(tmp_path: Path) -> None:
+def test_emit_proof_only_seed_note(tmp_path: Path) -> None:
+    import json as _json
     spec = _parse(tmp_path, PROOF_ONLY_FILE, "putnam_2000_b2")
     pdir = adapter.emit_problem_dir(spec, tmp_path / "Problems")
-    mfst = (pdir / "Manifest.md").read_text(encoding="utf-8")
-    assert "pure proof task" in mfst
+    seed = _json.loads(
+        (pdir / "problem.json").read_text(encoding="utf-8"))
+    assert "pure proof task" in seed["charter"]
 
 
 def test_set_option_replayed(tmp_path: Path) -> None:

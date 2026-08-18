@@ -26,8 +26,9 @@ from Tooling.state import db
 def _seed(tmp_path: Path, statement: str) -> Path:
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n\n# p\n\n## Statement\nTrue\n",
+    import json
+    (pdir / "problem.json").write_text(
+        json.dumps({"problem": "p", "charter": "Statement: True"}),
         encoding="utf-8")
     (pdir / "Defs.lean").write_text("import Mathlib\n", encoding="utf-8")
     (pdir / "Root.lean").write_text(

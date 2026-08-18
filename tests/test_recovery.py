@@ -12,8 +12,8 @@ def test_startup_closes_sub_projects_orphaned_before_the_cascade(tmp_path):
     conn = _db.connect(tmp_path / "a.db")
     _db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('P', 'M.md', 't')")
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('P', 't')")
     top = _groups.ensure_top_group(conn, "P")
     mid = _groups.open_group(conn, problem="P", parent_group_id=top,
                              charter="mid")

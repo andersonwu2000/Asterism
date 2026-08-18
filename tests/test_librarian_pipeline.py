@@ -171,8 +171,8 @@ def test_decl_line_counts_reads_proof_files(tmp_path):
 def conn():
     c = db.connect(":memory:")
     db.init_schema(c)
-    c.execute("INSERT INTO problems (name, manifest_path, created_at, "
-              "bootstrap_done) VALUES ('p','',?,1)", (db.now(),))
+    c.execute("INSERT INTO problems (name, created_at, "
+              "bootstrap_done) VALUES ('p',?,1)", (db.now(),))
     c.commit()
     return c
 

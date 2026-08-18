@@ -32,9 +32,9 @@ _PROMPTS = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
 
 def _seed(conn: sqlite3.Connection, slug: str, status: str) -> int:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
+        "INSERT INTO problems (name, created_at,"
         " bootstrap_done)"
-        " SELECT 'P', '', ?, 1 WHERE NOT EXISTS"
+        " SELECT 'P', ?, 1 WHERE NOT EXISTS"
         " (SELECT 1 FROM problems WHERE name = 'P')", (_db.now(),))
     gid = _db.insert_goal(
         conn, problem="P", slug=slug, lean_path=f"P/L_{slug}.lean",

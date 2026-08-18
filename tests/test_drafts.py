@@ -210,8 +210,8 @@ def conn(tmp_path: Path,
     monkeypatch.chdir(tmp_path)
     c = db.connect()
     db.init_schema(c)
-    c.execute("INSERT INTO problems (name, manifest_path, created_at) "
-              "VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+    c.execute("INSERT INTO problems (name, created_at) "
+              "VALUES ('p', ?)", (db.now(),))
     c.commit()
     return c
 

@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from Tooling import agent, pipeline
-from Tooling.state import db, manifest
+from Tooling.state import db, intent as intent_mod
 from Tooling.llm.base import SpawnRC
 
 
@@ -59,12 +59,10 @@ def _seed_root_goal(tmp_path: Path, conn: sqlite3.Connection) -> int:
     problem = "p"
     pdir = tmp_path / "Problems" / problem
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n## Statement\nTrue\n", encoding="utf-8")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        (problem, str(pdir / "Manifest.md"), db.now()))
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES (?, ?, 1)",
+        (problem, db.now()))
     conn.commit()
     root = pdir / "Root.lean"
     root.write_text(
@@ -104,7 +102,7 @@ def test_first_dispatch_mints_session_id_and_passes_to_spawn(
 
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-bw1",
     )
     assert captured["session_id"] is not None
@@ -126,7 +124,7 @@ def test_backward_quota_exhausted_deletes_strategy_row(
 
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-bw-quota")
     assert r.outcome == "failed"
     assert r.failure_reason == "quota_exhausted"
@@ -161,7 +159,7 @@ def test_backward_escaped_exception_deletes_orphan_strategy(
     with pytest.raises(RuntimeError, match="simulated worker crash"):
         pipeline.run_backward(
             conn, goal_id=gid, workspace=tmp_path,
-            mfst=manifest.Manifest(problem="p", body="True"),
+            intent=intent_mod.ProblemIntent(problem="p", charter="True"),
             pipeline_id="pid-bw-crash")
 
     rows = conn.execute(
@@ -213,7 +211,7 @@ def test_backward_escaped_exception_keeps_committed_strategy(
     with pytest.raises(RuntimeError, match="crash after commit"):
         pipeline.run_backward(
             conn, goal_id=gid, workspace=tmp_path,
-            mfst=manifest.Manifest(problem="p", body="True"),
+            intent=intent_mod.ProblemIntent(problem="p", charter="True"),
             pipeline_id="pid-bw-commit-then-crash")
 
     # Committed row survives — outer dispatcher will record the
@@ -244,7 +242,7 @@ def test_backward_agent_failure_keeps_strategy_dead(
                         lambda **kw: SpawnRC.STUCK_THINKING)
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-bw-agent-fail")
     assert r.outcome != "success"
     rows = conn.execute(
@@ -286,7 +284,7 @@ def test_backward_moot_deletes_empty_strategy_row(
 
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-bw-moot")
     assert r.outcome == "moot"
     assert spawned["n"] == 0, "pre-loop moot must not spawn an agent"
@@ -321,7 +319,7 @@ def test_each_dispatch_mints_fresh_strategy_id(
 
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-bw-cold",
     )
     rows = conn.execute(
@@ -365,7 +363,7 @@ def test_backward_wrapper_persists_progress_note_after_timeout(
 
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-bw-timeout")
     draft = _bw_drafts_path(tmp_path, gid)
     assert draft.exists()
@@ -395,7 +393,7 @@ def test_backward_timeout_dispatches_postmortem_with_correct_args(
 
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-bw-pm-args")
     assert len(calls) == 2  # main + postmortem
     main_call, pm_call = calls
@@ -431,7 +429,7 @@ def test_backward_wrapper_no_persist_when_no_postmortem_note(
 
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-bw-nodump")
     draft = _bw_drafts_path(tmp_path, gid)
     assert not draft.exists()
@@ -469,7 +467,7 @@ def test_backward_fresh_rescue_stage2_bail_via_progress_md_persists_draft(
 
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-bw-bail")
     assert r.failure_reason == "agent_bailed"
     # Outer wrapper persists _progress.md to .drafts/ (non-success path).
@@ -534,7 +532,7 @@ def test_backward_progress_md_with_real_split_does_not_trigger_bail(
 
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-bw-no-false-bail")
     # Discriminator passed — parse continues and treats this as a real
     # decomposition commit (or whatever downstream parse decides).
@@ -597,7 +595,7 @@ def test_backward_wrapper_clears_draft_on_goal_no_longer_open(
 
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-bw-race")
     assert r.outcome == "failed"
     assert r.failure_reason == "goal_no_longer_open"
@@ -636,7 +634,7 @@ def test_backward_leaf_bypass_promotes_zero_subgoal_strategy(
 
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-leaf-bypass")
     assert r.outcome == "success"
     assert r.proposal_md.startswith("-- main: trivial leaf proof")
@@ -703,11 +701,11 @@ def test_backward_leaf_bypass_axiom_violation_rejects_at_acceptance(
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
-    mfst = manifest.Manifest(problem="p", body="True",
-                              axioms_whitelist=["propext"])
+    mfst = intent_mod.ProblemIntent(problem="p", charter="True",
+                                    axioms_whitelist=["propext"])
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=mfst, pipeline_id="pid-leaf-bypass-axiom-violation")
+        intent=mfst, pipeline_id="pid-leaf-bypass-axiom-violation")
 
     # axiom_violation is RETRYABLE (unlike agent_infeasible / agent_
     # declined which are terminal): helper records (eagerly, v38) +
@@ -765,7 +763,7 @@ def test_backward_no_subs_with_sorry_body_still_parse_proposal_fail(
     _start_pipeline(conn, "pid-empty", gid)
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-empty")
     # Phase 7 — parse_proposal_fail is retryable; helper exhausts budget.
     assert r.outcome == "exhausted"

@@ -12,7 +12,7 @@ import pytest
 
 from Tooling import agent  # noqa - establishes import order, see brief.py
 from Tooling.state import brief
-from Tooling.state.manifest import Manifest
+from Tooling.state.intent import ProblemIntent
 
 
 def _mk_problem_dir(tmp_path: Path, name: str = "p") -> Path:
@@ -21,17 +21,17 @@ def _mk_problem_dir(tmp_path: Path, name: str = "p") -> Path:
     return pdir
 
 
-def test_render_minimal_manifest_includes_sandbox_header(
+def test_render_minimal_intent_includes_sandbox_header(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An almost-empty Manifest still renders the always-on Sandbox
+    """An almost-empty intent still renders the always-on Sandbox
     section + the BRIEF auto-render header."""
     # Stub lemma_lookup so the test doesn't shell out to lake.
     from Tooling.knowledge import lemma_lookup
     monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
 
-    mfst = Manifest(problem="p", body="True")
-    out = brief.render(tmp_path, mfst)
+    pi = ProblemIntent(problem="p", charter="True")
+    out = brief.render(tmp_path, pi)
     assert "# p — BRIEF" in out
     assert "## Sandbox" in out
     assert "Reads allowed" in out
@@ -43,17 +43,17 @@ def test_render_includes_forbidden_and_strategic_notes(
     from Tooling.knowledge import lemma_lookup
     monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
 
-    mfst = Manifest(
+    pi = ProblemIntent(
         problem="p",
         forbidden_lemmas=["Some.banned_lemma"],
-        body="T\n\nAvoid path X. Prefer path Y.",
+        charter="T\n\nAvoid path X. Prefer path Y.",
     )
-    out = brief.render(tmp_path, mfst)
-    assert "## FORBIDDEN_LEMMAS" in out
+    out = brief.render(tmp_path, pi)
+    assert "## FORBIDDEN_LEMMAS (problem setting)" in out
     assert "Some.banned_lemma" in out
-    # The operator's prose arrives whole, under one heading — no named
-    # section is extracted from a file whose headings they choose.
-    assert "## Manifest (from the operator)" in out
+    # The user's charter arrives whole, under one heading — no named
+    # section is extracted from prose whose shape they choose.
+    assert "## The problem's goal" in out
     assert "Avoid path X" in out
 
 
@@ -76,7 +76,7 @@ def test_worker_surface_carries_no_retired_pipeline_names(
     from Tooling.knowledge import lemma_lookup
     monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
 
-    out = brief.render(tmp_path, Manifest(problem="p", body="True"))
+    out = brief.render(tmp_path, ProblemIntent(problem="p", charter="True"))
     for dead in ("Builder", "Backward", "Forward", "single output"):
         assert dead not in out, dead
     # The replacement has to still say what the output contract is.
@@ -135,11 +135,10 @@ def test_no_retired_kind_name_survives_in_any_rendered_string() -> None:
 
 
 def test_render_no_mathlib_hints_section(tmp_path: Path) -> None:
-    """`## Lemma hints` was retired (target-1 pre-search replaces it): a
-    Manifest with mathlib hints no longer renders a `## Mathlib lemmas`
-    section in BRIEF."""
-    mfst = Manifest(problem="p", body="T")
-    out = brief.render(tmp_path, mfst)
+    """`## Lemma hints` was retired (target-1 pre-search replaces it):
+    BRIEF never renders a `## Mathlib lemmas` section."""
+    pi = ProblemIntent(problem="p", charter="T")
+    out = brief.render(tmp_path, pi)
     assert "## Mathlib lemmas" not in out
     assert "Nat.factorial" not in out
 
@@ -149,8 +148,8 @@ def test_write_returns_none_when_problem_dir_missing(
 ) -> None:
     """No `Problems/<p>/` on disk → no write, returns None. Defends
     against test fixtures + mid-reset races without crashing."""
-    mfst = Manifest(problem="ghost_problem", body="T")
-    assert brief.write(tmp_path, mfst) is None
+    pi = ProblemIntent(problem="ghost_problem", charter="T")
+    assert brief.write(tmp_path, pi) is None
 
 
 def test_write_produces_atomic_brief_file(
@@ -162,13 +161,13 @@ def test_write_produces_atomic_brief_file(
     monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
 
     pdir = _mk_problem_dir(tmp_path)
-    mfst = Manifest(problem="p", body="T\n\nhello world")
+    pi = ProblemIntent(problem="p", charter="T\n\nhello world")
 
-    target = brief.write(tmp_path, mfst)
+    target = brief.write(tmp_path, pi)
     assert target is not None
     assert target == pdir / "BRIEF.md"
     assert target.exists()
-    assert target.read_text(encoding="utf-8") == brief.render(tmp_path, mfst)
+    assert target.read_text(encoding="utf-8") == brief.render(tmp_path, pi)
     # No tmp leftovers in the problem dir.
     leftovers = [p for p in pdir.iterdir() if p.name.startswith("BRIEF.")]
     assert leftovers == [target], f"unexpected files: {leftovers}"
@@ -184,22 +183,22 @@ def test_write_for_all_problems_swallows_per_problem_errors(
 
     _mk_problem_dir(tmp_path, "good")
     _mk_problem_dir(tmp_path, "bad")
-    good_mfst = Manifest(problem="good", body="T")
-    bad_mfst = Manifest(problem="bad", body="T")
+    good_pi = ProblemIntent(problem="good", charter="T")
+    bad_pi = ProblemIntent(problem="bad", charter="T")
 
     # Force `bad` to raise inside write.
     real_write = brief.write
-    def faulty_write(workspace, mfst):
-        if mfst.problem == "bad":
+    def faulty_write(workspace, pi):
+        if pi.problem == "bad":
             raise RuntimeError("simulated render failure")
-        return real_write(workspace, mfst)
+        return real_write(workspace, pi)
     monkeypatch.setattr(brief, "write", faulty_write)
 
     # No exception should escape.
     brief.write_for_all_problems(
         conn=None,  # write_for_all_problems doesn't use conn currently
         workspace=tmp_path,
-        manifests={"good": good_mfst, "bad": bad_mfst},
+        intents={"good": good_pi, "bad": bad_pi},
     )
 
     # `good` still got its BRIEF.md.

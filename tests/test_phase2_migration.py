@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 40
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -236,6 +236,9 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     assert "bootstrap_done" in problems_cols
     assert "strategist_directive" in problems_cols
     assert "last_strategist_at" in problems_cols
+    # v40 — Manifest retirement: manifest_path dropped, user_word added.
+    assert "manifest_path" not in problems_cols
+    assert "user_word" in problems_cols
     queue_cols = {r[1] for r in conn.execute("PRAGMA table_info(queue)")}
     assert "target_kind" in queue_cols
     assert "decision_id" in queue_cols
@@ -366,7 +369,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 40
     conn.close()
 
 
@@ -506,7 +509,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 40
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -525,8 +528,8 @@ def test_v28_manifest_history_carryover(tmp_path: Path) -> None:
     conn.row_factory = sqlite3.Row
     db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES ('p', ?)", (db.now(),))
     # Rewind to the v27 shape: old table with a row, new table absent.
     conn.execute("DROP TABLE user_file_history")
     conn.execute("""
@@ -546,7 +549,7 @@ def test_v28_manifest_history_carryover(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 40
     rows = conn.execute(
         "SELECT problem, file, sha, body, source FROM user_file_history"
     ).fetchall()
@@ -574,8 +577,8 @@ def test_v29_problem_state_backfill(tmp_path: Path) -> None:
     ts = db.now()
     for name in ("p_active", "p_await", "p_signoff", "p_ingested"):
         conn.execute(
-            "INSERT INTO problems (name, manifest_path, created_at)"
-            " VALUES (?, ?, ?)", (name, f"Problems/{name}/Manifest.md", ts))
+            "INSERT INTO problems (name, created_at)"
+            " VALUES (?, ?)", (name, ts))
     conn.execute(
         "UPDATE problems SET ingested_at = ?, ingest_signoff_pending = 1"
         " WHERE name = 'p_signoff'", (ts,))
@@ -593,7 +596,7 @@ def test_v29_problem_state_backfill(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 39
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 40
     states = {str(r["name"]): str(r["state"]) for r in conn.execute(
         "SELECT name, state FROM problems")}
     assert states == {"p_active": "active", "p_await": "awaiting_human",
@@ -791,15 +794,15 @@ def test_connect_readonly_reads_but_cannot_write(tmp_path):
     p = tmp_path / "asterism.db"
     conn = db.connect(p)
     db.init_schema(conn)
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                 " VALUES ('p', 'm', ?)", (db.now(),))
+    conn.execute("INSERT INTO problems (name, created_at)"
+                 " VALUES ('p', ?)", (db.now(),))
     conn.commit()
     conn.close()
     ro = db.connect_readonly(p)
     assert ro.execute("SELECT count(*) FROM problems").fetchone()[0] == 1
     with pytest.raises(Exception):          # sqlite3.OperationalError
-        ro.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                   " VALUES ('q', 'm', 'now')")
+        ro.execute("INSERT INTO problems (name, created_at)"
+                   " VALUES ('q', 'now')")
     ro.close()
 
 
@@ -829,8 +832,8 @@ def test_v22_review_snapshot_roundtrip(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     conn = db.connect()
     db.init_schema(conn)
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                 " VALUES ('p', 'm', ?)", (db.now(),))
+    conn.execute("INSERT INTO problems (name, created_at)"
+                 " VALUES ('p', ?)", (db.now(),))
     conn.commit()
     assert review_mod.load_review_snapshot(conn, "p") is None
     payload = {"deliverables": [{"fq": "Problems.p.x", "ok": True}],
@@ -857,8 +860,8 @@ def test_cmd_review_snapshot_path_never_touches_gateway(tmp_path,
     monkeypatch.chdir(tmp_path)
     conn = db.connect()
     db.init_schema(conn)
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                 " VALUES ('p', 'm', ?)", (db.now(),))
+    conn.execute("INSERT INTO problems (name, created_at)"
+                 " VALUES ('p', ?)", (db.now(),))
     payload = {"deliverables": [
         {"fq": "Problems.p.x", "problem": "p", "slug": "x", "ok": True,
          "error": None, "kind": "claim", "module": None, "paper": "",
@@ -882,8 +885,8 @@ def test_v26_trigger_kind_accepts_audit(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     conn = db.connect()
     db.init_schema(conn)
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                 " VALUES ('p', 'm', ?)", (db.now(),))
+    conn.execute("INSERT INTO problems (name, created_at)"
+                 " VALUES ('p', ?)", (db.now(),))
     conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, payload, created_at, updated_at)"

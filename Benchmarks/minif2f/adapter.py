@@ -1,7 +1,7 @@
 """miniF2F → Asterism Problem dir adapter.
 
 Converts yangky11/miniF2F-lean4-style problem files into Asterism
-`Problems/Minif2f/<name>/` dirs (Manifest.md + Defs.lean). The Asterism
+`Problems/Minif2f/<name>/` dirs (problem.json + Defs.lean). The Asterism
 CLI's `init` command writes Root.lean afterwards.
 
 miniF2F-lean4 ships one theorem per file under `MiniF2F/Valid/` and
@@ -24,11 +24,12 @@ naturally (dots are Lean's native namespace separator).
 Lemma hints / strategic notes: left empty by default. miniF2F is a
 black-box benchmark — we don't want to bias agents with per-problem
 hints. Operators who want to compare with-hints vs without-hints can
-edit the generated Manifest after import.
+edit the generated seed after import.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from dataclasses import dataclass, field
@@ -82,7 +83,7 @@ def _normalize_signature(sig: str) -> str:
     miniF2F files have `theorem <name> (a b : ℝ) (h : ...) : <type> := by sorry`.
     The raw signature captured between `theorem <name>` and `:=` is
     `(a b : ℝ) (h : ...) : <type>`. Asterism's `cmd_init` then wraps the
-    Manifest's statement as `theorem main : {statement} := by sorry` —
+    charter's statement as `theorem main : {statement} := by sorry` —
     producing `theorem main : (a b : ℝ) (h : ...) : <type> := by sorry`,
     which has DOUBLE COLON (invalid Lean syntax). Backward agents reading
     that broken Root.lean copy the same broken pattern into their patch
@@ -168,65 +169,49 @@ def _defs_lean(spec: ProblemSpec) -> str:
     return body
 
 
-def _manifest_md(spec: ProblemSpec) -> str:
-    """Generate Manifest.md content.
+def _problem_seed(spec: ProblemSpec) -> str:
+    """Generate problem.json seed content (v40 — Manifest.md retired).
 
     Defaults:
-      - Entry kind: Backward. Asterism's design value is decomposition
-        of hard problems — entry=Builder treats the framework as a
-        single-shot LLM wrapper, defeating the architectural thesis.
-        For trivial high-school problems Backward will produce a
-        shallow decomposition (often depth 0 — direct proof via
-        leaf-bypass) at small extra cost; for genuinely hard
-        miniF2F problems (amc12a / aime / imo) Backward is the
-        only path that has a chance. Empirical 2026-05-12 pilot:
-        entry=Builder shelved hard amc12a problems after 3 attempts
-        before escalating to Backward — wasted attempts on cases
-        where decomposition was always going to be the right move.
       - axioms_whitelist: standard Mathlib trio. Matches what
         `library.promote` would have accepted historically.
-      - lemma_hints / strategic_notes: empty. Benchmark integrity —
-        per-problem hints would bias the agent toward expected
-        strategies. Operators who want a with-hints variant should
-        run a separate experiment with manually-edited manifests.
+      - No hints in the charter beyond the statement. Benchmark
+        integrity — per-problem hints would bias the agent toward
+        expected strategies. Operators who want a with-hints variant
+        should run a separate experiment with edited seeds.
     """
-    return (
-        f"---\n"
-        f"problem: {spec.slug}\n"
-        f"axioms_whitelist:\n"
-        f"  - propext\n"
-        f"  - Quot.sound\n"
-        f"  - Classical.choice\n"
-        f"forbidden_lemmas: []\n"
-        f"library: false\n"
-        f"signoff: false\n"
-        f"---\n"
-        f"\n"
+    charter = (
         f"# {spec.slug} — imported from miniF2F\n"
         f"\n"
         f"Original miniF2F theorem name: `{spec.name}`.\n"
         f"\n"
-        f"## Statement\n"
         f"{spec.signature}\n"
         f"\n"
-        f"## Entry kind\n"
-        f"Backward\n"
-        f"\n"
-        f"## Strategic notes\n"
-        f"Imported via `python -m Tooling.adapters.minif2f`. No\n"
-        f"per-problem hints — benchmark integrity (compare against\n"
-        f"LeanDojo / DeepSeek-Prover head-to-head on the same\n"
-        f"problem distribution).\n"
+        f"Imported via `Benchmarks/minif2f/adapter.py`. No per-problem\n"
+        f"hints — benchmark integrity (compare against LeanDojo /\n"
+        f"DeepSeek-Prover head-to-head on the same problem\n"
+        f"distribution).\n"
     )
+    return json.dumps({
+        "problem": spec.slug,
+        "charter": charter,
+        "settings": {
+            "axioms_whitelist": ["propext", "Quot.sound",
+                                 "Classical.choice"],
+            "forbidden_lemmas": [],
+            "library": False,
+            "signoff": False,
+        },
+    }, indent=2, ensure_ascii=False) + "\n"
 
 
 def emit_problem_dir(spec: ProblemSpec, output_root: Path) -> Path:
-    """Materialize Problems/Minif2f/<name>/{Manifest.md, Defs.lean}.
+    """Materialize Problems/Minif2f/<name>/{problem.json, Defs.lean}.
 
     `output_root` should point at the workspace's `Problems/` directory;
     the adapter creates the `Minif2f/` subdir for benchmark isolation.
 
-    Idempotent: re-running on an existing slug overwrites Manifest.md
+    Idempotent: re-running on an existing slug overwrites problem.json
     + Defs.lean. Does NOT touch proofs/ or Root.lean — those are owned
     by `asterism init` and the dispatcher cascade. Operators who want
     a clean re-import should `asterism reset <slug>` first.
@@ -234,7 +219,8 @@ def emit_problem_dir(spec: ProblemSpec, output_root: Path) -> Path:
     pdir = output_root / spec.rel_dir
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / "Defs.lean").write_text(_defs_lean(spec), encoding="utf-8")
-    (pdir / "Manifest.md").write_text(_manifest_md(spec), encoding="utf-8")
+    (pdir / "problem.json").write_text(_problem_seed(spec),
+                                       encoding="utf-8")
     return pdir
 
 

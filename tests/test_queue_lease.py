@@ -23,8 +23,8 @@ def _mem() -> sqlite3.Connection:
 def _seed(conn, *problems):
     for p in problems:
         conn.execute(
-            "INSERT INTO problems (name, manifest_path, created_at,"
-            " bootstrap_done) VALUES (?, 'm', ?, 1)", (p, db.now()))
+            "INSERT INTO problems (name, created_at,"
+            " bootstrap_done) VALUES (?, ?, 1)", (p, db.now()))
     conn.commit()
 
 

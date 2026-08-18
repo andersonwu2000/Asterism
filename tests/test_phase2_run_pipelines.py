@@ -16,7 +16,7 @@ import pytest
 from Tooling import agent
 from Tooling.pipeline import adversary as _adv
 from Tooling.pipeline import strategist, forward
-from Tooling.state import db, manifest
+from Tooling.state import db, intent as intent_mod
 
 
 @pytest.fixture(autouse=True)
@@ -36,8 +36,6 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n\n## Statement\nT\n", encoding="utf-8")
     (pdir / "proofs").mkdir()
     return tmp_path
 
@@ -47,8 +45,8 @@ def conn(workspace: Path) -> sqlite3.Connection:
     c = db.connect()
     db.init_schema(c)
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?, 1)",
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES ('p', ?, 1)",
         (db.now(),),
     )
     c.commit()
@@ -56,8 +54,8 @@ def conn(workspace: Path) -> sqlite3.Connection:
 
 
 @pytest.fixture
-def mfst() -> manifest.Manifest:
-    return manifest.Manifest(problem="p", body="T")
+def mfst() -> intent_mod.ProblemIntent:
+    return intent_mod.ProblemIntent(problem="p", charter="T")
 
 
 def _insert_root(conn: sqlite3.Connection) -> int:
@@ -74,7 +72,7 @@ def _insert_root(conn: sqlite3.Connection) -> int:
 
 def test_run_strategist_commits_noop(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Strategist Noop: agent ships decision.json with kind=Noop;
     commit records audit row + bumps last_strategist_at; run returns
@@ -91,7 +89,7 @@ def test_run_strategist_commits_noop(
 
     r = strategist.run_strategist(
         conn, problem="p", trigger_kind="routine", tick=1,
-        workspace=workspace, mfst=mfst, pipeline_id=pipeline_id,
+        workspace=workspace, intent=mfst, pipeline_id=pipeline_id,
     )
     assert r.outcome == "failed"
     assert r.failure_reason == "strategist_noop"
@@ -109,7 +107,7 @@ def test_run_strategist_commits_noop(
 
 def test_run_strategist_inject_enqueues_forward(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Strategist Inject(Forward, brief=...): commit enqueues Forward
     on the problem with decision_id FK. Phase 6 schema: single brief
@@ -146,7 +144,7 @@ def test_run_strategist_inject_enqueues_forward(
 
     r = strategist.run_strategist(
         conn, problem="p", trigger_kind="routine", tick=2,
-        workspace=workspace, mfst=mfst, pipeline_id="test-strat-2",
+        workspace=workspace, intent=mfst, pipeline_id="test-strat-2",
     )
     assert r.outcome == "success"
     # Forward enqueued
@@ -162,7 +160,7 @@ def test_run_strategist_inject_enqueues_forward(
 
 def test_run_strategist_schema_invalid_returns_infra_reason(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Agent drops malformed decision.json → strategist_schema_invalid."""
     _insert_root(conn)
@@ -176,7 +174,7 @@ def test_run_strategist_schema_invalid_returns_infra_reason(
 
     r = strategist.run_strategist(
         conn, problem="p", trigger_kind="routine", tick=3,
-        workspace=workspace, mfst=mfst, pipeline_id="test-strat-3",
+        workspace=workspace, intent=mfst, pipeline_id="test-strat-3",
     )
     assert r.outcome == "failed"
     assert r.failure_reason == "strategist_schema_invalid"
@@ -184,7 +182,7 @@ def test_run_strategist_schema_invalid_returns_infra_reason(
 
 def test_run_strategist_no_output(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Agent rc=0 but no decision.json → agent_no_output."""
     _insert_root(conn)
@@ -195,7 +193,7 @@ def test_run_strategist_no_output(
 
     r = strategist.run_strategist(
         conn, problem="p", trigger_kind="routine", tick=4,
-        workspace=workspace, mfst=mfst, pipeline_id="test-strat-4",
+        workspace=workspace, intent=mfst, pipeline_id="test-strat-4",
     )
     assert r.outcome == "failed"
     assert r.failure_reason == "agent_no_output"
@@ -203,7 +201,7 @@ def test_run_strategist_no_output(
 
 def test_run_strategist_quota_exhausted_rc(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """rc=126 → quota_exhausted (infra-reason; dispatcher cools the
     kind, root.attempts unchanged)."""
@@ -215,7 +213,7 @@ def test_run_strategist_quota_exhausted_rc(
 
     r = strategist.run_strategist(
         conn, problem="p", trigger_kind="routine", tick=5,
-        workspace=workspace, mfst=mfst, pipeline_id="test-strat-5",
+        workspace=workspace, intent=mfst, pipeline_id="test-strat-5",
     )
     assert r.failure_reason == "quota_exhausted"
 
@@ -229,7 +227,7 @@ def test_run_strategist_quota_exhausted_rc(
 
 def test_run_strategist_verify_retry_recovers(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """First attempt produces an Inject against a non-existent target
     (verify fails); retry produces a valid Noop. Run reports success."""
@@ -255,7 +253,7 @@ def test_run_strategist_verify_retry_recovers(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     r = strategist.run_strategist(
         conn, problem="p", trigger_kind="routine", tick=6,
-        workspace=workspace, mfst=mfst, pipeline_id="test-strat-retry-1",
+        workspace=workspace, intent=mfst, pipeline_id="test-strat-retry-1",
     )
     # Noop maps to strategist_noop (infra-reason) but the retry IS the
     # success path: it produced a parsable + verifiable decision.
@@ -271,7 +269,7 @@ def test_run_strategist_verify_retry_recovers(
 
 def test_run_strategist_verify_retry_both_fail(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Both attempts produce verify-failing output → schema_invalid
     with both errors surfaced in failure_detail."""
@@ -289,7 +287,7 @@ def test_run_strategist_verify_retry_both_fail(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     r = strategist.run_strategist(
         conn, problem="p", trigger_kind="routine", tick=7,
-        workspace=workspace, mfst=mfst, pipeline_id="test-strat-retry-2",
+        workspace=workspace, intent=mfst, pipeline_id="test-strat-retry-2",
     )
     assert r.failure_reason == "strategist_schema_invalid"
     # N-round revision loop (research mode): main spawn + verify_retry
@@ -301,7 +299,7 @@ def test_run_strategist_verify_retry_both_fail(
 
 def test_run_strategist_parse_fail_is_not_retried(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Parse failure (malformed JSON) skips the retry path — session
     breakage usually doesn't recover from one more shot at the same
@@ -318,7 +316,7 @@ def test_run_strategist_parse_fail_is_not_retried(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     r = strategist.run_strategist(
         conn, problem="p", trigger_kind="routine", tick=8,
-        workspace=workspace, mfst=mfst, pipeline_id="test-strat-retry-3",
+        workspace=workspace, intent=mfst, pipeline_id="test-strat-retry-3",
     )
     assert r.failure_reason == "strategist_schema_invalid"
     assert len(calls) == 1  # no retry on parse fail
@@ -326,7 +324,7 @@ def test_run_strategist_parse_fail_is_not_retried(
 
 def test_run_strategist_verify_retry_disabled_via_env(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ASTERISM_STRATEGIST_VERIFY_RETRY=0 disables the retry — first
     verify failure returns immediately."""
@@ -345,7 +343,7 @@ def test_run_strategist_verify_retry_disabled_via_env(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     r = strategist.run_strategist(
         conn, problem="p", trigger_kind="routine", tick=9,
-        workspace=workspace, mfst=mfst, pipeline_id="test-strat-retry-4",
+        workspace=workspace, intent=mfst, pipeline_id="test-strat-retry-4",
     )
     assert r.failure_reason == "strategist_schema_invalid"
     assert len(calls) == 1  # no retry when env disables
@@ -372,7 +370,7 @@ def mock_lsp_verify(monkeypatch: pytest.MonkeyPatch):
 
 def test_run_forward_commits_new_lemma(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """Forward agent produces new_<slug>.lean with sorry body; commit
@@ -392,7 +390,7 @@ def test_run_forward_commits_new_lemma(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id=pipeline_id,
     )
     assert r.outcome == "success"
@@ -409,7 +407,7 @@ def test_run_forward_commits_new_lemma(
 
 def test_run_forward_wires_lsp_session(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """Asymmetry fix (Tier 1+2): Forward now spawns through run_lsp_edit_loop
@@ -438,7 +436,7 @@ def test_run_forward_wires_lsp_session(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-lsp",
     )
     assert r.outcome == "success"
@@ -452,7 +450,7 @@ def test_run_forward_wires_lsp_session(
 
 def test_run_forward_decline_path(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """Agent ships a decline file (Library sufficient) →
@@ -472,7 +470,7 @@ def test_run_forward_decline_path(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-2",
     )
     # Phase 2 + retry helper: explicit decline is mapped to
@@ -493,7 +491,7 @@ def test_run_forward_decline_path(
 
 def test_run_forward_falls_back_to_stray_new_file(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """Robustness: if the agent writes a differently-named new_*.lean (e.g. a
@@ -516,7 +514,7 @@ def test_run_forward_falls_back_to_stray_new_file(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-stray",
     )
     assert r.outcome == "success"
@@ -528,31 +526,31 @@ def test_run_forward_falls_back_to_stray_new_file(
 
 def test_run_forward_vocab_guard_is_defs_conditional(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
-    """Phase 6 — the Manifest-vocabulary guard on non-theorem kinds only
+    """Phase 6 — the charter-vocabulary guard on non-theorem kinds only
     applies when the problem ships Defs.lean (statement-vocabulary is
-    user-owned there). A pure-NL Manifest NAMES the very defs it asks
+    user-owned there). A pure-NL charter NAMES the very defs it asks
     Forward to produce; rejecting them made pure-NL dead-on-arrival."""
     _insert_root(conn)
-    mfst_nl = manifest.Manifest(
-        problem="p", body="define cube_boundary and prove its shape")
+    mfst_nl = intent_mod.ProblemIntent(
+        problem="p", charter="define cube_boundary and prove its shape")
 
     def fake_spawn(**kw):
         (kw["attempts_dir"] / "new_forward.lean").write_text(
             "namespace Problems.p\n"
-            "-- Forward rationale: deliverable def named by the Manifest.\n"
+            "-- Forward rationale: deliverable def named by the charter.\n"
             "def cube_boundary : Nat := 0\n"
             "end Problems.p\n",
             encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
-    # No Defs.lean → guard skipped; the Manifest-named def commits
+    # No Defs.lean → guard skipped; the charter-named def commits
     # (sorry-free def → immediate 'proved').
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst_nl,
+        conn, problem="p", workspace=workspace, intent=mfst_nl,
         pipeline_id="test-fwd-vocab-1",
     )
     assert r.outcome == "proved"
@@ -561,17 +559,17 @@ def test_run_forward_vocab_guard_is_defs_conditional(
     (workspace / "Problems" / "p" / "Defs.lean").write_text(
         "namespace Problems.p\nend Problems.p\n", encoding="utf-8")
     r2 = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst_nl,
+        conn, problem="p", workspace=workspace, intent=mfst_nl,
         pipeline_id="test-fwd-vocab-2",
     )
     assert r2.outcome in ("failed", "exhausted")
     assert r2.failure_reason == "forward_no_new_goal"
-    assert "Manifest statement" in (r2.failure_detail or "")
+    assert "charter" in (r2.failure_detail or "")
 
 
 def test_run_forward_rejects_sorry_bearing_inferred_type_def(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """Bug-B mirror (sphere_homology 2026-07-04): a sorry-bearing def with
@@ -594,7 +592,7 @@ def test_run_forward_rejects_sorry_bearing_inferred_type_def(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-inferred",
     )
     assert r.outcome in ("failed", "exhausted")
@@ -608,7 +606,7 @@ def test_run_forward_rejects_sorry_bearing_inferred_type_def(
 
 def test_run_forward_inferred_type_def_passes_with_oracle_signature(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """decl-#2 dissolution: the same inferred-type sorry-bearing def is
@@ -657,7 +655,7 @@ def test_run_forward_inferred_type_def_passes_with_oracle_signature(
     monkeypatch.setattr(gateway_lifecycle, "verify_file", fake_verify)
 
     res = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-inferred-ok",
     )
     assert res.outcome == "success", res.failure_detail
@@ -670,7 +668,7 @@ def test_run_forward_inferred_type_def_passes_with_oracle_signature(
 
 def test_run_forward_no_output(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """Agent rc=0 but no new_*.lean every retry → `exhausted` after
@@ -687,7 +685,7 @@ def test_run_forward_no_output(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-3",
     )
     assert r.outcome == "exhausted"
@@ -699,7 +697,7 @@ def test_run_forward_no_output(
 
 def test_run_forward_consumes_strategist_brief(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """Forward with decision_id reads brief and injects it into
@@ -731,7 +729,7 @@ def test_run_forward_consumes_strategist_brief(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-4", decision_id=did,
     )
     assert captured_context
@@ -780,7 +778,7 @@ def _insert_proved_canonical(conn: sqlite3.Connection, workspace: Path, *,
 
 def test_run_forward_dedupe_alias_registers_proved_alias(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """Point 3: a Forward dedupe hit on a PROVED in-DB canonical no longer
@@ -808,7 +806,7 @@ def test_run_forward_dedupe_alias_registers_proved_alias(
     )
 
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-alias",
     )
     assert r.outcome == "proved"
@@ -829,7 +827,7 @@ def test_run_forward_dedupe_alias_registers_proved_alias(
 
 def test_run_forward_dedupe_library_alias_no_alias_target(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """Point 3 (library tier): a hit on a proved `Library/` decl registers
@@ -857,7 +855,7 @@ def test_run_forward_dedupe_library_alias_no_alias_target(
     )
 
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-libalias",
     )
     assert r.outcome == "proved"
@@ -876,7 +874,7 @@ def test_run_forward_dedupe_library_alias_no_alias_target(
 
 def test_run_forward_dedupe_alias_build_fails_falls_back_to_novel(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Point 3 fallback: when the alias body fails to build (the
     bare-namespace dedupe probe was a false positive, or there is a real
@@ -930,7 +928,7 @@ def test_run_forward_dedupe_alias_build_fails_falls_back_to_novel(
         gateway_lifecycle, "verify_in_session", fake_verify_session)
 
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-fallback",
     )
     assert r.outcome == "success"
@@ -982,7 +980,7 @@ def _forward_dup_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_run_forward_decline_stashes_why_on_decision(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """#4 — a Forward decline's `## Why` reasoning is stashed on the
@@ -1006,7 +1004,7 @@ def test_run_forward_decline_stashes_why_on_decision(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-decline-why", decision_id=did)
     assert r.failure_reason == "agent_declined"
     assert "extDerivWithin_apply" in r.failure_detail
@@ -1018,7 +1016,7 @@ def test_run_forward_decline_stashes_why_on_decision(
 
 def test_run_forward_reuse_repoints_inject_to_open_goal(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """#2 — Forward lemma matches an alive OPEN in-problem goal X: don't
@@ -1037,7 +1035,7 @@ def test_run_forward_reuse_repoints_inject_to_open_goal(
         lambda *a, **k: [dedupe.CanonicalMatch(goal_id=x, kind="reuse")])
 
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-reuse-open", decision_id=did)
     assert r.outcome == "success"
     assert r.produced_goal_id == x
@@ -1056,7 +1054,7 @@ def test_run_forward_reuse_repoints_inject_to_open_goal(
 
 def test_run_forward_reuse_revives_and_detaches_shelved_goal(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """#2 — Forward lemma matches a SHELVED in-problem twin: repoint the
@@ -1077,7 +1075,7 @@ def test_run_forward_reuse_revives_and_detaches_shelved_goal(
         lambda *a, **k: [dedupe.CanonicalMatch(goal_id=x, kind="reuse")])
 
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-reuse-shelved", decision_id=did)
     assert r.outcome == "success"
     assert r.produced_goal_id == x
@@ -1092,7 +1090,7 @@ def test_run_forward_reuse_revives_and_detaches_shelved_goal(
 
 def test_run_forward_reuse_parks_alongside_confirmshelve_goal(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
     """#2 — Forward lemma matches a ConfirmShelve-PARKED twin: repoint the
@@ -1121,7 +1119,7 @@ def test_run_forward_reuse_parks_alongside_confirmshelve_goal(
         lambda *a, **k: [dedupe.CanonicalMatch(goal_id=x, kind="reuse")])
 
     r = forward.run_forward(
-        conn, problem="p", workspace=workspace, mfst=mfst,
+        conn, problem="p", workspace=workspace, intent=mfst,
         pipeline_id="test-fwd-reuse-parked", decision_id=did)
     assert r.outcome == "success"
     assert r.produced_goal_id == x

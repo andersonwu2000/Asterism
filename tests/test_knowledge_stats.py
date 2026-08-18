@@ -14,8 +14,8 @@ def _setup(tmp_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(tmp_path / "asterism.db"))
     conn.row_factory = sqlite3.Row
     _db.init_schema(conn)
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                 " VALUES (?, 'Problems/Test/kstats/Manifest.md', ?)",
+    conn.execute("INSERT INTO problems (name, created_at)"
+                 " VALUES (?, ?)",
                  (P, _db.now()))
     conn.commit()
     return conn

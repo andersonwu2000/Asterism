@@ -21,8 +21,8 @@ def _open(tmp_path: Path):
 
 def _add_problem(conn, name: str = "p") -> None:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, ?, ?)", (name, f"Problems/{name}/Manifest.md", db.now()))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES (?, ?)", (name, db.now()))
     conn.commit()
 
 

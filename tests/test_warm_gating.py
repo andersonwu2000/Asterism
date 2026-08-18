@@ -20,8 +20,8 @@ def conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.chdir(tmp_path)
     c = db.connect(tmp_path / "t.db")
     db.init_schema(c)
-    c.execute("INSERT INTO problems (name, manifest_path, created_at,"
-              " bootstrap_done) VALUES ('p','',?,1)", (db.now(),))
+    c.execute("INSERT INTO problems (name, created_at,"
+              " bootstrap_done) VALUES ('p',?,1)", (db.now(),))
     c.commit()
     return c
 
@@ -73,8 +73,8 @@ def test_pop_queue_exclude_kinds_skips_but_keeps_rows(conn):
 
 
 def test_pop_queue_exclude_kinds_respects_scope(conn):
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at,"
-                 " bootstrap_done) VALUES ('q','',?,1)", (db.now(),))
+    conn.execute("INSERT INTO problems (name, created_at,"
+                 " bootstrap_done) VALUES ('q',?,1)", (db.now(),))
     conn.commit()
     _enqueue(conn, "Strategist", 5, "p")
     conn.execute(

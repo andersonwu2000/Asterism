@@ -29,9 +29,9 @@ def _open_db(workspace: Path) -> sqlite3.Connection:
 
 def _add_problem(conn: sqlite3.Connection, name: str = "Test.rm") -> None:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, ?, ?)",
-        (name, f"Problems/{name}/Manifest.md", db.now()))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES (?, ?)",
+        (name, db.now()))
     conn.commit()
 
 

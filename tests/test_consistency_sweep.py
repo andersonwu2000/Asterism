@@ -19,8 +19,8 @@ def conn() -> sqlite3.Connection:
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys = ON")
     db.init_schema(c)
-    c.execute("INSERT INTO problems (name, manifest_path, created_at) "
-              "VALUES ('p','',datetime('now'))")
+    c.execute("INSERT INTO problems (name, created_at) "
+              "VALUES ('p',datetime('now'))")
     yield c
     c.close()
 

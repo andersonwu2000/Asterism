@@ -57,8 +57,8 @@ def tree(conn):
     p = "P"
     now = "2026-08-13T00:00:00Z"
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, 'M.md', ?)", (p, now))
+        "INSERT INTO problems (name, created_at)"
+        " VALUES (?, ?)", (p, now))
     for gid, parent in ((1, None), (2, 1)):
         conn.execute(
             "INSERT INTO groups (id, problem, parent_group_id, status,"

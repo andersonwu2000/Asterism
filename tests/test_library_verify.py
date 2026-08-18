@@ -54,8 +54,8 @@ def _bridge(conn, *problems: str):
         if conn.execute("SELECT 1 FROM problems WHERE name=?",
                         (prob,)).fetchone() is None:
             conn.execute(
-                "INSERT INTO problems (name, manifest_path, created_at,"
-                " bootstrap_done) VALUES (?, 'm', 't', 1)", (prob,))
+                "INSERT INTO problems (name, created_at,"
+                " bootstrap_done) VALUES (?, 't', 1)", (prob,))
         db.mark_library_bridged(conn, prob)
 
 

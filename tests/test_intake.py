@@ -15,7 +15,7 @@ import pytest
 from Tooling.pipeline import _intake
 from Tooling.pipeline._intake import IntakeOutcome, run_intake
 from Tooling.llm.base import SpawnRC
-from Tooling.state import db, manifest
+from Tooling.state import db, intent as intent_mod
 from Tooling import pipeline
 from Tooling import agent
 
@@ -137,12 +137,10 @@ def test_intake_generic_error_degrades_to_cold(tmp_path, monkeypatch) -> None:
 def _seed_root_goal(tmp_path: Path, conn: sqlite3.Connection) -> int:
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n## Statement\nTrue\n", encoding="utf-8")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES ('p', ?, ?, 1)",
-        (str(pdir / "Manifest.md"), db.now()))
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES ('p', ?, 1)",
+        (db.now(),))
     conn.commit()
     root = pdir / "Root.lean"
     root.write_text(
@@ -185,7 +183,7 @@ def test_backward_intake_decline_exits_before_work(
 
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-intake-decline")
     assert r.failure_reason == "return_to_nl"
     assert "unbacked λ-coupling" in (r.failure_detail or "")
@@ -212,7 +210,7 @@ def test_backward_intake_unprovable_maps_to_agent_infeasible(
 
     r = pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-intake-unprovable")
     assert r.failure_reason == "agent_infeasible"
     assert "n=0 breaks the inequality" in (r.failure_detail or "")
@@ -239,6 +237,6 @@ def test_backward_intake_sid_threads_to_work_loop(
 
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=manifest.Manifest(problem="p", body="True"),
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-intake-sid")
     assert seen.get("initial_sid") == "intake-sid-42"

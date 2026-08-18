@@ -11,8 +11,8 @@ from Tooling.state import db, proof_store as ps
 
 def _problem(conn: sqlite3.Connection, name: str = "p") -> None:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
-        " VALUES (?, ?, ?, 1)", (name, "m", "t"))
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES (?, ?, 1)", (name, "t"))
     conn.commit()
 
 

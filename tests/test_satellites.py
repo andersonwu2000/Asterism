@@ -79,8 +79,8 @@ def _seed_full_problem(mem, problem: str = "wilson") -> None:
     """One row in every problem-keyed surface the wipe must clear."""
     now = db.now()
     mem.execute("PRAGMA foreign_keys = ON")
-    mem.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                " VALUES (?, 'Manifest.md', ?)", (problem, now))
+    mem.execute("INSERT INTO problems (name, created_at)"
+                " VALUES (?, ?)", (problem, now))
     mem.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement, origin,"
         " status, created_at, updated_at)"
@@ -219,8 +219,8 @@ def test_another_problems_group_rows_are_untouched(mem) -> None:
     shaped rows must survive intact."""
     _seed_full_problem(mem, "wilson")
     now = db.now()
-    mem.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                " VALUES ('bystander', 'Manifest.md', ?)", (now,))
+    mem.execute("INSERT INTO problems (name, created_at)"
+                " VALUES ('bystander', ?)", (now,))
     mem.execute(
         "INSERT INTO groups (problem, charter, status, created_at,"
         " updated_at) VALUES ('bystander', 'other charter', 'active', ?, ?)",
@@ -255,8 +255,8 @@ def test_the_librarian_unit_key_is_decoded_not_compared_raw(mem) -> None:
     thousand times is one nobody reads. Both directions pinned: a unit
     of a LIVE problem is not an orphan, a unit of a DELETED one is."""
     now = db.now()
-    mem.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                " VALUES ('wilson', 'Manifest.md', ?)", (now,))
+    mem.execute("INSERT INTO problems (name, created_at)"
+                " VALUES ('wilson', ?)", (now,))
     mem.execute(
         "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
         " outcome, started_at) VALUES ('pid-l', 'Librarian',"
@@ -300,7 +300,7 @@ def test_orphan_rows_sees_the_group_target_class(mem) -> None:
 def test_swept_entries_never_claim_user_owned_files() -> None:
     """The one edit that must be impossible: a registry change that
     would let reset delete the user's own files."""
-    user_owned = ("Manifest.md", "Defs.lean", "Root.lean", "BRIEF.md")
+    user_owned = ("problem.json", "Defs.lean", "Root.lean", "BRIEF.md")
     for e in satellites.FILE_SATELLITES:
         if e.disposition != satellites.SWEPT:
             continue
@@ -324,8 +324,8 @@ def test_reset_sweeps_exactly_the_registry_and_reports_the_rest(
     monkeypatch.chdir(tmp_path)
     pdir = tmp_path / "Problems" / "wilson"
     (pdir / "proofs").mkdir(parents=True)
-    (pdir / "Manifest.md").write_text("# w\n\n## Statement\n\nTrue\n",
-                                      encoding="utf-8")
+    (pdir / "problem.json").write_text(
+        '{"problem": "wilson", "charter": "True"}\n', encoding="utf-8")
     (pdir / "Defs.lean").write_text("-- defs\n", encoding="utf-8")
     (pdir / "Root.lean").write_text("-- root\n", encoding="utf-8")
     (pdir / "BRIEF.md").write_text("brief\n", encoding="utf-8")
@@ -370,7 +370,7 @@ def test_reset_sweeps_exactly_the_registry_and_reports_the_rest(
     assert rc == 0, out
     for p in planted:
         assert not p.exists(), f"swept entry survived: {p}"
-    for name in ("Manifest.md", "Defs.lean", "Root.lean", "BRIEF.md"):
+    for name in ("problem.json", "Defs.lean", "Root.lean", "BRIEF.md"):
         assert (pdir / name).exists(), f"kept entry deleted: {name}"
     assert stray.exists(), "complement audit must REPORT, never delete"
     assert "mystery_artifact.txt" in out

@@ -88,8 +88,8 @@ def test_log_filename_uses_single_problem(
     conn = db.connect()
     db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
-        " VALUES ('wilson', 'Problems/wilson/Manifest.md', ?, 1)",
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES ('wilson', ?, 1)",
         (db.now(),),
     )
     conn.commit()
@@ -108,9 +108,9 @@ def test_log_filename_multi_when_many(
     db.init_schema(conn)
     for p in ("wilson", "compactness"):
         conn.execute(
-            "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
-            " VALUES (?, ?, ?, 1)",
-            (p, f"Problems/{p}/Manifest.md", db.now()),
+            "INSERT INTO problems (name, created_at, bootstrap_done)"
+            " VALUES (?, ?, 1)",
+            (p, db.now()),
         )
     conn.commit()
     conn.close()

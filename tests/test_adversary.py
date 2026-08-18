@@ -20,7 +20,7 @@ import pytest
 
 from Tooling import agent
 from Tooling.pipeline import adversary, strategist
-from Tooling.state import db, manifest, programme
+from Tooling.state import db, groups as groups_mod, intent, programme
 
 
 @pytest.fixture
@@ -28,8 +28,9 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
-    (pdir / "Manifest.md").write_text(
-        "---\nproblem: p\n---\n\n## Statement\nT\n", encoding="utf-8")
+    (pdir / "problem.json").write_text(
+        json.dumps({"problem": "p", "charter": "Statement: T"}),
+        encoding="utf-8")
     (pdir / "proofs").mkdir()
     return tmp_path
 
@@ -39,17 +40,19 @@ def conn(workspace: Path) -> sqlite3.Connection:
     c = db.connect()
     db.init_schema(c)
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES ('p', 'Problems/p/Manifest.md', ?, 1)",
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES ('p', ?, 1)",
         (db.now(),),
     )
+    # v40: the problem's goal is the top group's charter.
+    groups_mod.ensure_top_group(c, "p", charter="T")
     c.commit()
     return c
 
 
 @pytest.fixture
-def mfst() -> manifest.Manifest:
-    return manifest.Manifest(problem="p", body="T")
+def pintent() -> intent.ProblemIntent:
+    return intent.ProblemIntent(problem="p", charter="T")
 
 
 def _insert_root(conn: sqlite3.Connection) -> int:
@@ -263,7 +266,7 @@ def _spawn_script(rebuttals_before_pass: int):
 
 def test_rebut_then_pass_advances_rev(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _insert_root(conn)
     fake, state = _spawn_script(rebuttals_before_pass=1)
@@ -271,7 +274,7 @@ def test_rebut_then_pass_advances_rev(
 
     r = strategist.run_strategist(
         conn, problem="p", trigger_kind="routine", tick=1,
-        workspace=workspace, mfst=mfst, pipeline_id="adv-1",
+        workspace=workspace, intent=pintent, pipeline_id="adv-1",
     )
     assert r.outcome == "success"
     # One rebuttal round: 2 strategist spawns, 2 adversary spawns,
@@ -298,7 +301,7 @@ def test_rebut_then_pass_advances_rev(
 
 def test_exhaustion_records_rejection(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _insert_root(conn)
     monkeypatch.setenv("ASTERISM_STRATEGIST_VERIFY_RETRY", "2")
@@ -307,7 +310,7 @@ def test_exhaustion_records_rejection(
 
     r = strategist.run_strategist(
         conn, problem="p", trigger_kind="routine", tick=1,
-        workspace=workspace, mfst=mfst, pipeline_id="adv-2",
+        workspace=workspace, intent=pintent, pipeline_id="adv-2",
     )
     assert r.outcome == "failed"
     assert r.failure_reason == "strategist_proposal_rejected"
@@ -342,7 +345,7 @@ def test_exhaustion_records_rejection(
 
 def test_mechanical_discard_also_records_a_reason(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The non-Adversary discard paths (package verify exhausted,
     revision spawn rc≠0, unusable revision output) left NO record
@@ -369,7 +372,7 @@ def test_mechanical_discard_also_records_a_reason(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     r = strategist.run_strategist(
         conn, problem="p", trigger_kind="routine", tick=1,
-        workspace=workspace, mfst=mfst, pipeline_id="adv-mech",
+        workspace=workspace, intent=pintent, pipeline_id="adv-mech",
     )
     assert r.outcome == "failed"
     assert r.failure_reason == "strategist_schema_invalid"
@@ -384,7 +387,7 @@ def test_mechanical_discard_also_records_a_reason(
 
 def test_exempt_batch_skips_adversary(
     workspace: Path, conn: sqlite3.Connection,
-    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    pintent: intent.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A Noop-only batch (wholly exempt kinds) never spawns the
     Adversary and needs no proposal.md."""
@@ -403,7 +406,7 @@ def test_exempt_batch_skips_adversary(
 
     r = strategist.run_strategist(
         conn, problem="p", trigger_kind="routine", tick=1,
-        workspace=workspace, mfst=mfst, pipeline_id="adv-3",
+        workspace=workspace, intent=pintent, pipeline_id="adv-3",
     )
     assert r.failure_reason == "strategist_noop"
     assert calls["adversary"] == 0
@@ -555,7 +558,9 @@ def test_projection_contents(
         proof_warn="WARN: long proof")
 
     assert proj == attempts / "adversary" / "r2"
-    assert (proj / "Manifest.md").exists()
+    # v40: no Manifest.md copy — the judge gets the group charter render.
+    assert (proj / "charter.md").exists()
+    assert "T" in (proj / "charter.md").read_text(encoding="utf-8")
     cat = (proj / "CATALOG.md").read_text(encoding="utf-8")
     assert "brick_a" in cat and "Proved catalog" in cat
     assert (proj / "Root.lean").exists()
@@ -761,13 +766,12 @@ def test_projection_catalog_matches_strategist_view_nested_problem(
     own companion byte for byte."""
     ndir = workspace / "Problems" / "Dom" / "nested"
     (ndir / "proofs").mkdir(parents=True)
-    (ndir / "Manifest.md").write_text(
-        "---\nproblem: Dom.nested\n---\n\n## Statement\nT\n",
+    (ndir / "problem.json").write_text(
+        json.dumps({"problem": "Dom.nested", "charter": "Statement: T"}),
         encoding="utf-8")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done) VALUES ('Dom.nested',"
-        " 'Problems/Dom/nested/Manifest.md', ?, 1)", (db.now(),))
+        "INSERT INTO problems (name, created_at,"
+        " bootstrap_done) VALUES ('Dom.nested', ?, 1)", (db.now(),))
     full = "def is_cube (n : ℕ) : Prop := ∃ k, n = k ^ 3"
     (ndir / "proofs" / "L_is_cube.lean").write_text(
         "import Mathlib\n\nnamespace Problems.Dom.nested\n\n"
@@ -843,8 +847,7 @@ def _rendered_subgroup_section() -> str:
     conn.row_factory = _sqlite3.Row
     _db.init_schema(conn)
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'Manifest.md', 't')")
+        "INSERT INTO problems (name, created_at) VALUES ('p', 't')")
     top = _groups.ensure_top_group(conn, "p")
     sub = _groups.open_group(conn, problem="p", parent_group_id=top,
                              charter="c")

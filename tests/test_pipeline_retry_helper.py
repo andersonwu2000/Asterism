@@ -46,9 +46,9 @@ def _seed_goal(conn: sqlite3.Connection, *, attempts: int = 0,
                status: str = "open") -> int:
     """Insert a fresh goal row and bump attempts to the requested value."""
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        ("p", "Problems/p/Manifest.md", db.now()),
+        "INSERT INTO problems (name, created_at, bootstrap_done) "
+        "VALUES (?, ?, 1)",
+        ("p", db.now()),
     )
     conn.commit()
     gid = db.insert_goal(
