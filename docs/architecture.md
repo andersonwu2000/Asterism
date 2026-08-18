@@ -2,7 +2,7 @@
 
 Originally written 2026-05-06; fully rewritten against the code 2026-07-03; drift-corrected
 2026-07-29 (Formalizer merge, research mode, problem FSM); discussion group tree added
-2026-08-02 (v35). This doc covers the **conceptual shape**: what roles make up the system,
+2026-08-02 (v35); Manifest retired 2026-08-19 (v40). This doc covers the **conceptual shape**: what roles make up the system,
 where state lives, and which invariants uphold correctness. Dynamic flow (how a tick runs,
 pipeline step-by-step) is in `docs/data-flow.md`; failure vocabulary in `docs/failure_modes.md`;
 the code is authoritative for technical detail — read it when you touch it.
@@ -25,7 +25,8 @@ Strategies. The whole reasoning tree lives in sqlite (`goals` × `strategies` ×
 Two completion modes:
 
 - **classic**: root goal proved → integrity gate → (opt-in) Library promotion.
-- **anchor+claim** (since 2026-06): a human writes the Manifest in natural language; the
+- **anchor+claim** (since 2026-06): a human states the goal in natural language (since v40
+  this is the top group's charter, DB-resident — see §4); the
   Strategist generates defs/claims and marks deliverables with `MarkDeliverable`; the kernel
   computes the anchor closure for human `asterism review` / `reject`; once all deliverables
   reach a terminal state the Strategist issues `Ingest`, which goes through **human sign-off**
@@ -94,8 +95,11 @@ whole problem" into **a tree**:
 
 > Group = one charter + its own Programme + its own strategist/Adversary loop + the subtree beneath it.
 
-The charter is a natural-language claim delegated by the parent group — **charter is to a
-child group what the Manifest is to the whole problem**, so a child group inherits every
+A group's charter is a natural-language claim: a child group's comes verbatim from the
+parent's Delegate brief, and the top group's is the problem's goal itself, written at init
+(v40, 2026-08-19: Manifest retired — the old analogy "charter : sub-group :: Manifest :
+problem" is now literal: **every group at every depth, top included, is judged against its
+own charter and nothing else**), so a child group inherits every
 whole-problem mechanism all the way to its endgame. Groups are **partitions within the same
 problem** (cross-problem citation is forbidden by the cite gate), not recursive problems; the
 top-level group is a real row in the `groups` table with `parent_group_id IS NULL`, unique per
@@ -134,7 +138,7 @@ Design SoT: `docs/internal/discussion_group_design.md`.
 | Form | Contents |
 |---|---|
 | **DB** (`asterism.db`, sqlite WAL; version number and table list are authoritative in `state/db.py` `_CURRENT_USER_VERSION` (v35 and 17 tables at time of writing); recent milestones: v17 queue lease, v21 spawn_usage accounting, v23 Scholar/FetchPaper, v25 AttemptDisproof, v28 user_file_history, v29 problem FSM, v30/v31 Programme revision chain, v33 Formalizer merge, v35 discussion group tree) | The whole graph, pipeline history, dead attempt forensics, Strategist decisions, Programme revisions, group tree, Librarian lifecycle, KB lessons, spawn usage |
-| **`Manifest.md`** | The only human-authored file (§4) |
+| **Problem intent** (DB: top group's `groups.charter` + `problems.user_word` + `problem_settings`) | The human's goal, standing directives, and machine settings (§4); durable seed `problem.json` |
 | **`Defs.lean` / `Root.lean`** | Problem's custom definitions / framework-managed root (§5) |
 | **`proofs/L_<slug>.lean`, `_strategy_s<sid>.lean`** | One file per sub-Goal, one assembled patch per Strategy |
 | **`.drafts/`, `.presearch/`** | Cross-spawn progress notes / per-node pre-search cache |
@@ -155,15 +159,33 @@ states — see §7); the 4 group states
 
 ## 4. Human interface
 
-**Manifest.md** (YAML frontmatter + markdown body; field SoT `state/manifest.py`):
-`axioms_whitelist`, `forbidden_lemmas`, `library: true` (opt-in Library promotion),
-`signoff: false` (benchmark unattended mode only, skips human sign-off; any parse anomaly is
-coerced back to true); `paper:` is deprecated (binding moved to the `problem_papers` table).
-`init` parses leniently: missing fields get defaults + a warning. **Not a single character of
-the body is parsed** (2026-08-11): the operator writes whatever headings they like and the
-whole thing is sent verbatim to every agent (median body size across 616 Manifests: 440B).
-The formerly extracted-by-name
-`## Statement` / `## Strategic notes` are no longer fields — the canonical statement is the
+**Problem intent** (DB-resident since v40, 2026-08-19 — `Manifest.md` retired; SoT
+`state/intent.py`, dataclass `ProblemIntent` + `IntentCache` (per-access DB read)). Three
+homes:
+
+- **Charter** (the goal): the top discussion group's `groups.charter` row. Every group at
+  every depth, top included, is judged against its own charter and nothing else; sub-group
+  charters come verbatim from the parent's Delegate brief (§2 group tree).
+- **The user's word** (`problems.user_word`): standing directives from the human, rendered
+  verbatim into every agent surface at every depth (strategist context "The user's word",
+  judge projection `user_word.md`, worker BRIEF section). Never replaced by any charter,
+  never machine-amendable.
+- **Machine settings** in `problem_settings` (`state/settings.py`, no file fallback):
+  `axioms_whitelist`, `forbidden_lemmas`, `library: true` (opt-in Library promotion),
+  `signoff: false` (benchmark unattended mode only, skips human sign-off); `paper:` binding
+  lives in the `problem_papers` table.
+
+Not a character of charter or word is parsed — both go verbatim to every agent. Durable
+seed: `Problems/<p>/problem.json` (machine-format JSON: `{"problem", "charter", "word"?,
+"settings"?, "papers"?}`); `asterism init` / `init-batch` read it to seed the DB, and every
+sanctioned charter/word/settings write refreshes it best-effort (chokepoint dual-write,
+proof_store-style), so `asterism reset` + re-init round-trips. The runtime never re-reads it
+after init. Writers: `state/intent.set_charter` / `set_word` (history rows in
+`user_file_history` under pseudo-keys 'charter'/'word'), UI `GET/POST
+/api/problems/{p}/intent`, CLI `asterism charter <p> [--file F]` / `asterism word <p>
+[--file F|--clear]`. `RequestUserAmend` may target {`Defs.lean`, `Root.lean`, `charter`}
+(an accepted charter amend writes the DB via `set_charter`); the user's word has no machine
+amend path. The canonical statement is the
 theorem signature in `Root.lean`, and the prover's hint channel is the auto-generated
 `## Candidate lemmas`.
 
@@ -177,8 +199,8 @@ mathlib top-level naming (`Topology`/`NumberTheory`/`Analysis`… by convention,
 hard-coded whitelist). Old problems cannot be moved with a bare `git mv` — Lean module path =
 file path, the build breaks. `Defs.lean` / `Root.lean`
 are both optional (pure-NL may lack both); after hand-editing the Root statement, re-run
-`init` or `asterism repin`
-(user-file baselines go through `user_file_history`, v28).
+`init` or `asterism repin` (choices: `Root.lean` / `Defs.lean` / `charter` / `word`;
+baselines go through `user_file_history`, v28).
 
 ---
 
@@ -314,7 +336,8 @@ Key points:
 
 Principle (settled 2026-07-03): **`proved` is only marked after the axiom set has been
 verified against the whitelist; re-verify after every high-risk rewrite**. The whitelist comes
-from Manifest `axioms_whitelist`; when absent, framework default
+from the problem's `axioms_whitelist` setting (`problem_settings`, read via
+`state/intent.effective_axioms`); when absent, framework default
 (Classical.choice / propext / Quot.sound) + warning — **never skip because the field is
 absent**.
 
@@ -343,7 +366,8 @@ Tooling/
               warmup.py (NL-first gateway warmup), process_group.py (Job Object)
   state/      db.py (schema DDL + query), db_migrations.py (full migration set),
               transitions.py (goal/strategy/problem state machines + ProvedReceipt + cascade_one),
-              programme.py (Programme revision chain), manifest.py, proof_store.py (proofs/
+              programme.py (Programme revision chain), intent.py (charter / user word +
+              problem.json seed), settings.py (problem_settings), proof_store.py (proofs/
               chokepoint), recovery.py (startup repair + orphan sweep), failures.py
               (failure-reason registry = machine SoT), thresholds.py, regress.py,
               consistency.py (drift-check predicates), kb.py / kb_ingest.py (lessons, Model B)

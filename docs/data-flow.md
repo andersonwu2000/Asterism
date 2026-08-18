@@ -6,7 +6,7 @@ mechanisms shared across pipelines. Static shape (roles, invariants, schema) is 
 `docs/failure_modes.md` §2 and is not repeated here.
 
 > Originally written 2026-05-06; fully rewritten against the code 2026-07-29 (Formalizer merge, research mode, constant corrections);
-> 2026-08-02 added the discussion-group tree (v35, per-group seats).
+> 2026-08-02 added the discussion-group tree (v35, per-group seats); 2026-08-19 Manifest retired (v40: charter/word/settings are DB-resident).
 > All numbers in this doc are **program defaults**; this repo's overrides live in `Asterism.yaml`, which is authoritative.
 
 ---
@@ -192,7 +192,7 @@ Flow (`forward.py`; retry budget = `FORWARD_RETRY_BUDGET`):
 2. intake same as the goal job (two decline vocab words); work-turn decline `-- decline: library_sufficient` → `agent_declined` terminal
 3. `extract_forward_metadata`: slug / rationale / kind / sorry_free; missing fields or unrecognized kind → `parse_rejected`; `inductive` carrying sorry rejected outright
 4. auto-prepend imports → self_verify (`verify_file` probe; build error → `forward_no_new_goal` + retry_context)
-5. **Defs vocabulary protection**: a non-theorem kind whose slug collides with Manifest statement vocabulary → reject, steer toward `RequestUserAmend(Defs.lean)`
+5. **Defs vocabulary protection**: a non-theorem kind whose slug collides with charter statement vocabulary → reject, steer toward `RequestUserAmend(Defs.lean)`
 6. sorry-bearing with no type annotation → declInfo oracle fills in the signature, reject only when it can't
 7. **dedupe, three branches**: same-problem alive/parked twin → `reuse` (Inject repointed to the existing goal; cascade-shelved ones revived + detached, no new row); hit on proved → land an alias; otherwise commit normally
 8. `commit_forward_lemma`: move to `proofs/L_<slug>.lean` + INSERT goal (sorry_free → proved, else open; always `detached=1`)
@@ -269,7 +269,7 @@ no fetchable copy → `paper_unfetchable`, with the precise request written into
 
 ### 3.5 Librarian
 
-Harvests proved problems into mathlib-shaped `Library/`. Auto-start condition: Manifest `library: true` ∧
+Harvests proved problems into mathlib-shaped `Library/`. Auto-start condition: the problem's `library: true` setting ∧
 Ingested ∧ no harvest artifacts yet; while sign-off is pending, all automatic paths pause.
 
 Chained `dedup → classify → migrate → cleanup → bridge`; the work-kind is derived from the
@@ -354,14 +354,15 @@ statements in the `CATALOG.md` companion) → previous progress note / previous 
 `docs/archive/design/goal_history_unified.md`).
 
 **mint** (`compile_forward_context`): brief → Library inventory → past mint proposals →
-active goals → Manifest meta → paper index. (No TREE, **no Programme section**.)
+active goals → charter (+ user word) → paper index. (No TREE, **no Programme section**.)
 
 **Strategist** (`compile_strategist_context`): trigger → (pending_review only: failure
 replay / existing strategies / ancestor chain) → stall warning + Ingest availability →
 disproof guidance → **Programme** (current rev full text + Adversary reservations + one line for the last rejection)
 → directive → plan note (`.drafts/strategist_plan.md`, private notes) → completed Inject
 batches (with landed decl names) → pending reopen-promises → active goals → recent decisions →
-TREE → catalog → Manifest meta → (routine only: KB curation surface).
+TREE → catalog → "## Your charter" (own charter inline at every depth; the top group also
+gets a Defs.lean preview) → "## The user's word" → (routine only: KB curation surface).
 
 ### Sandbox
 
@@ -375,8 +376,8 @@ agent cwd locked to problem_dir:
   `python -m Tooling.knowledge.loogle` and `python -m json.tool` (Scholar additionally gets
   `papers.search` / `papers.fetch`; spawn env injects the repo root into `PYTHONPATH`); LSP MCP
   tools (apply_edit / goal_at / errors_at / validate_file)
-- **spawn flags**: `--setting-sources ""` (CLAUDE.md never loaded); user files
-  (Manifest/Defs/Root/PROGRAMME) fully disallowed for Write+Edit
+- **spawn flags**: `--setting-sources ""` (CLAUDE.md never loaded); user/framework files
+  (problem.json/Defs/Root/PROGRAMME) fully disallowed for Write+Edit
 
 ### Pre-written framework-locked files
 

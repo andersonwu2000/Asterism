@@ -178,7 +178,7 @@ def _pool_size() -> int:
     if not cfg.exists():
         return 4
     try:
-        import yaml  # PyYAML is already an Asterism dep (Manifest parser)
+        import yaml  # PyYAML is already an Asterism dep
         data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     except Exception:
         return 4
@@ -663,7 +663,7 @@ def _lookup_spawn_info(spawn_dir: Path) -> tuple[str, str] | None:
         return None
     try:
         # Read the whole file. Earlier versions capped at 80 / 300 lines,
-        # but BRIEF.md inlined at the top grew with richer Manifests and
+        # but BRIEF.md inlined at the top grew with richer problem intents and
         # kept overflowing the cap (residue_thm 2026-05-19: BRIEF 81
         # lines pushed the `# Context for goal <slug>` header to line
         # 82, stats showed every spawn as `spawning, ?`). Any constant
