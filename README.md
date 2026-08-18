@@ -82,6 +82,11 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-17
+- Fixed bookkeeping bugs in how the system avoids duplicating work, including a truncated type-signature bug and a rule change so results claimed by one search branch remain reusable by others.
+- Repaired a batch of edge-case bugs in proof verification and file editing, several of them exposed by an acceptance-testing pass.
+- Let spawned worker agents write their output files directly to the server instead of through the sandbox, and updated their instructions to say exactly where outputs should go.
+
 ### 2026-08-16
 - fix(spawn): never inherit stdin — a nested spawn was blocking on the MCP server's own pipe
 - fix(recovery): bring pre-cascade trees under the law at startup
@@ -221,12 +226,6 @@ Programme revisions and worker declines now appear on the project's timeline and
 - The web console gained the ability to resolve search patterns to concrete problems and survived crashes caused by cycles in the strategy hierarchy.
 - The reset routine was hardened to sweep leftover plan and route files, so a fresh run no longer inherits stale state from a previous attempt.
 - Memory accounting was corrected to stop double-counting a shared library cache, alongside a batch of smaller prompt and pipeline fixes.
-
-### 2026-07-18
-- Configuration changes can now be handed off to a run already in progress, and waiting for quota windows became an explicit opt-in rather than the default.
-- The web interface gained an explainer chat that cites its claims back to the visualization, a unified prose renderer, and a set of layout and navigation fixes.
-- Research mode gained a wider rebuttal budget, a longer hang guard, and a reworked external-review batch; the proof-search prompts were tightened around declined lemmas and goal-statement collisions.
-- Several correctness fixes landed in the proof pipeline and its bookkeeping: chapter probes now carry module context, unconverged diagnostics no longer look clean, and telemetry and database cleanup were corrected.
 
 <!-- ASTERISM-PROGRESS:END -->
 
