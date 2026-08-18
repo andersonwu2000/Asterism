@@ -692,28 +692,39 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     # rows the DB already has.
     try:
         live = list(conn.execute(
-            "SELECT batch_id, COUNT(*) n FROM strategist_decisions"
+            "SELECT batch_id, COUNT(*) n, MAX(group_id) grp"
+            " FROM strategist_decisions"
             " WHERE problem = ? AND outcome IS NULL AND batch_id IS NOT NULL"
             " GROUP BY batch_id ORDER BY MAX(updated_at) DESC", (problem,)))
     except sqlite3.OperationalError:
         live = []
+    # Own-group hashes only (2026-08-18 context diet): a mature run had
+    # ~60 problem-wide in-flight batch ids inlined here, ~1.6KB of hex
+    # the reader cannot act on — the actionable fact is "don't
+    # re-dispatch MINE"; other groups' work needs a count, not a roster.
+    # `group_id=None` (top-group / legacy callers) keeps the full list.
+    mine = [r for r in live
+            if group_id is None or r["grp"] == group_id]
+    other_n = len(live) - len(mine)
     in_flight = [f"`{str(r['batch_id'])[:8]}` ({r['n']} step(s))"
-                 for r in live]
+                 for r in mine]
+    others_note = (f" (+{other_n} other groups' batch(es) also in flight)"
+                   if other_n else "")
     if not batch_ids:
-        if in_flight:
-            return (["## Dispatched, still running (problem-wide)", "",
+        if in_flight or other_n:
+            return (["## Dispatched, still running", "",
                      "Not finished, and therefore not below: "
-                     + ", ".join(in_flight)
-                     + ". Some may belong to another group. Their "
-                       "outcomes reach you on the batch-done "
+                     + (", ".join(in_flight) or "(none of yours)")
+                     + others_note
+                     + ". Their outcomes reach you on the batch-done "
                        "wake — do not re-dispatch them.", ""]
                     + decline_lines)
         return decline_lines
     out = ["## Completed Inject batches (newest first)", ""]
-    if in_flight:
-        out += ["_Still running, so not listed below (problem-wide, so "
-                "some may be another group's): "
-                + ", ".join(in_flight) + "._", ""]
+    if in_flight or other_n:
+        out += ["_Still running, so not listed below: "
+                + (", ".join(in_flight) or "(none of yours)")
+                + others_note + "._", ""]
     placeholders = ",".join("?" * len(batch_ids))
     # Inject rows only: every wake's decisions share the batch_id, so
     # ConfirmShelve/EmitDirective siblings used to render as brief-less
@@ -1447,10 +1458,18 @@ def _section_tree_inline(conn: sqlite3.Connection,
         f"**Counters:** {count_line}",
         "",
     ]
-    exceptions = [r for r in rows if str(r["status"]) != "proved"]
-    if exceptions:
-        out.append("_Non-proved goals:_")
-        for r in exceptions:
+    # ALIVE only (2026-08-18 context diet): the 07-13 design listed
+    # every non-proved goal on the premise that exceptions are a
+    # handful; a mature descent tree grew that list back to 164 rows /
+    # 9KB, of which the 132 shelved/disproved/dead are a strictly worse
+    # copy of TREE.md's by-status sections (same list, no ancestor
+    # paths). The decision-relevant rows are the live ones.
+    alive = [r for r in rows if str(r["status"]) in (
+        "open", "attempting", "pending_strategist_review", "frozen")]
+    if alive:
+        out.append("_Live non-proved goals (parked/dead ones are in "
+                   "the counters above and listed in the full tree):_")
+        for r in alive:
             att = (f", attempts={r['attempts']}"
                    if r["attempts"] else "")
             out.append(f"- `{r['slug']}`  ({r['status']}{att})")

@@ -64,6 +64,40 @@ def test_a_finished_batch_is_not_called_running(conn: sqlite3.Connection):
     assert "done-bat" not in text or "running" not in text.lower(), text
 
 
+def test_only_your_groups_running_batches_are_rostered(
+        conn: sqlite3.Connection):
+    """2026-08-18 context diet: a mature run inlined ~60 problem-wide
+    in-flight batch ids (~1.6KB of hex, most of it other groups') —
+    the actionable fact is "don't re-dispatch MINE"; other groups'
+    work is a count. A group-less caller keeps the full roster."""
+    from Tooling.state import db
+    from Tooling.state import groups as groups_store
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at,"
+        " bootstrap_done) VALUES ('p', '', ?, 1)", (ts,))
+    top = groups_store.ensure_top_group(conn, "p")
+    kid = groups_store.open_group(conn, problem="p", parent_group_id=top,
+                                  charter="theirs")
+    for batch, grp in (("mine-batch-1", top), ("their-batch-1", kid)):
+        conn.execute(
+            "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+            " trigger_kind, decision_kind, group_id, target_id, brief,"
+            " reason, payload, batch_id, outcome, created_at, updated_at)"
+            " VALUES ('p', 0, 'routine', 'Inject', ?, NULL, 'do it', NULL,"
+            "         '{}', ?, NULL, ?, ?)", (grp, batch, ts, ts))
+    conn.commit()
+    text = "\n".join(phase2_context._section_inject_batch_outcomes(
+        conn, "p", group_id=top))
+    assert "mine-bat" in text, text
+    assert "their-ba" not in text, text
+    assert "+1 other groups'" in text, text
+    # No group in hand → the old problem-wide roster stands.
+    bare = "\n".join(phase2_context._section_inject_batch_outcomes(
+        conn, "p"))
+    assert "mine-bat" in bare and "their-ba" in bare, bare
+
+
 def test_the_judge_reads_the_same_section():
     """One render, two readers — so the line cannot land on one side
     only. Fixing half of this pair is how it survived a week."""

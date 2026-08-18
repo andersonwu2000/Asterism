@@ -1249,6 +1249,35 @@ def test_tree_inline_keeps_pure_nl_forest(
     assert "brick_a" in text
 
 
+def test_tree_inline_lists_only_live_goals(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """2026-08-18 context diet: the 07-13 'exception list' premise
+    (non-proved goals are a handful) broke on a mature descent tree —
+    164 rows / 9KB, mostly a shelved graveyard that TREE.md's by-status
+    sections already carry with ancestor paths. The inline list keeps
+    only live statuses; the census survives in the counters and the
+    pointer names the lazy home."""
+    _insert_problem(conn)
+    for slug, status in (
+            ("g_open", "open"), ("g_att", "attempting"),
+            ("g_rev", "pending_strategist_review"),
+            ("g_shelved", "shelved"), ("g_dis", "disproved"),
+            ("g_dead", "dead"), ("g_proved", "proved")):
+        db.insert_goal(conn, problem="p", slug=slug,
+                       lean_path=f"P/L_{slug}.lean", statement="S",
+                       origin="forward", status=status)
+    text = "\n".join(
+        phase2_context._section_tree_inline(conn, workspace, "p"))
+    for s in ("g_open", "g_att", "g_rev"):
+        assert f"`{s}`" in text, s
+    for s in ("g_shelved", "g_dis", "g_dead", "g_proved"):
+        assert f"`{s}`" not in text, s
+    assert "1 shelved" in text and "1 disproved" in text, (
+        "the counters must keep the full census")
+    assert "## Shelved" in text, "the pointer must name the lazy home"
+
+
 def test_delivered_vs_briefed_is_not_decided_by_a_regex(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, tmp_path: Path,
