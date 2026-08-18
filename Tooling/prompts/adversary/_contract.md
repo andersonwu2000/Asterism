@@ -10,7 +10,7 @@ The decision-kind rules the Strategist operates under — check quoted contract 
     `# Charter` — the research topic and a concrete exit condition; every claimed result must be kernel-checkable.
     `## Why a project` — the clearly themed series of research items this project carries, and why it cannot be planned as follow-up batches through your Roadmap's AHEAD.
     `## Inheritance` — citable landed bricks, vocabulary, known walls.
-  It is for separating a sustained line of inquiry, not for outsourcing difficult work. The Charter must be free of circularity. Independent projects may share a batch. With `target_goal_id`: that goal becomes the anchor.
+  A `Delegate` provides a discussion space, not a solution; prefer planning the work into follow-up batches through your Roadmap's AHEAD. The Charter must be free of circularity. Independent projects may share a batch. With `target_goal_id`: that goal becomes the anchor.
 - `FetchPaper` — `query` (citation or description), `reason`. Before investing in an unknown or uncertain plan, check whether the literature already settles it. Do not formalize literature except where necessary.
 - `MarkDeliverable` — `target_goal_id`, `reason`. Marks a PROVED brick as one of the claims the Manifest asks for. Top-level claims only; vocabulary and internal lemmas are never deliverables. The marked set is what `Ingest` is checked against.
 - `Ingest` — optional `reason`. The problem's only exit: emit once the marked set fully satisfies the Manifest. When a root exists, the proved root is a deliverable. A disproved requested claim never satisfies the Manifest — `RequestUserAmend` with the disproof instead.

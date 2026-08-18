@@ -21,7 +21,7 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
    - Brick landed but need remains → `Inject` a new brick + `ConfirmShelve` to keep parked
    - Brick didn't land / proof direction was wrong → `ConfirmShelve` this goal + `Inject` a reframed angle on its upper goal
    - Permanently superseded → standalone `ConfirmShelve` (no paired Inject)
-   - A sustained line of inquiry that benefits from a separate discussion space → `Delegate`, brief written as a research proposal
+   - A clearly themed series of research items your AHEAD cannot carry → `Delegate`
 <!-- #endif -->
 
 - **Exit check**: mark the deliverables your last batch landed; when every claim the Manifest asks for is marked (a proved root counts), emit `Ingest`.
@@ -45,8 +45,8 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
     ## Roadmap      how this route settles the MAIN claim, in three bands:
                     PAST — closed lines, one per bullet, collapsed to their conclusions
                     (a shelved or dead goal carries its restart condition);
-                    NOW — dispatched work and brief-ready next goals, flagging what is
-                    argued but not yet kernel-checked;
+                    NOW — this batch's decisions, one bullet per decision: what it
+                    dispatches and why;
                     AHEAD — a one-line brief, then a numbered ordered plan (one step per
                     item): candidates, open questions, the exit.
     ## Conventions  standing notes every worker sees on every spawn — short and general
@@ -64,7 +64,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
     `# Charter` — the research topic and a concrete exit condition; every claimed result must be kernel-checkable.
     `## Why a project` — the clearly themed series of research items this project carries, and why it cannot be planned as follow-up batches through your Roadmap's AHEAD.
     `## Inheritance` — citable landed bricks, vocabulary, known walls.
-  It is for separating a sustained line of inquiry, not for outsourcing difficult work. The Charter must be free of circularity. Independent projects may share a batch. With `target_goal_id`: that goal becomes the anchor.
+  A `Delegate` provides a discussion space, not a solution; prefer planning the work into follow-up batches through your Roadmap's AHEAD. The Charter must be free of circularity. Independent projects may share a batch. With `target_goal_id`: that goal becomes the anchor.
 - `FetchPaper` — `query` (citation or description), `reason`. Before investing in an unknown or uncertain plan, check whether the literature already settles it. Do not formalize literature except where necessary.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md", "Root.lean"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong.
 - `MarkDeliverable` — `target_goal_id`, `reason`. Marks a PROVED brick as one of the claims the Manifest asks for. Top-level claims only; vocabulary and internal lemmas are never deliverables. The marked set is what `Ingest` is checked against.
