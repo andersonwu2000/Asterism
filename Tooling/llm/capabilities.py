@@ -282,6 +282,13 @@ class ProviderCapabilities:
     #: this and dispatches to the wired source. False means the caller
     #: must fall back to its blind backoff instead of inventing a time.
     states_quota_reset: bool = False
+    #: The HTTPS host this provider's CLI must reach to work at all —
+    #: the network-park probe's first target (`core/network_wait`,
+    #: 2026-08-18). None = undeclared; the probe falls back to its
+    #: generic anchors. Declare only a VERIFIED host (the 08-17/18
+    #: outage verified both live ones: claude stayed alive on
+    #: api.anthropic.com over IPv6 while codex died with chatgpt.com).
+    api_host: "str | None" = None
     #: Does the CLI emit parseable incremental events? claude: yes
     #: (`--output-format stream-json --include-partial-messages`, which
     #: `llm/stream_parser.py` consumes). agy: no — one JSON envelope at
@@ -421,6 +428,10 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         # tell quota from a broken exe. The refusing spawn had carried
         # `resetsAt` in its own output the whole time.
         states_quota_reset=True,
+        # Verified in the 08-17/18 split-stack outage: claude spawns
+        # stayed alive on this host over IPv6 while the IPv4 default
+        # route was dead.
+        api_host="api.anthropic.com",
         stream_events=True,
         # `--include-partial-messages`: a `content_block_delta` every
         # ~1.5s inside a thinking block (measured 2026-08-07 on both
@@ -656,6 +667,10 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         # trust is `rate_limits.rate_limit_reached_type` from the
         # rollout, not prose.
         rc_contract=RC_UNINFORMATIVE,
+        # Verified in the 08-17/18 outage: every codex spawn died
+        # `stream disconnected` the moment this host became
+        # unreachable (IPv4-only endpoint, dead default route).
+        api_host="chatgpt.com",
         # Measured 2026-08-12: the tool surface is governed by FEATURE
         # FLAGS, and the two that matter behave as written — with
         # `shell_tool=false` the shell is gone, with `apps=false` the

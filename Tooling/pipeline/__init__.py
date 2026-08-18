@@ -335,6 +335,7 @@ def _spawn_failure(rc: int, attempts_dir: Path, spawn_dur: float,
     """
     from ..llm import capabilities as _caps
     from ..llm.base import SpawnRC
+    from ..state import failures as _failures
     _provider = _caps.provider_for_kind(kind)
     _contract = _caps.capabilities_for(_provider).rc_contract
     _caps.warn_if_undeclared(_provider, context=f"kind={kind or '?'}")
@@ -366,6 +367,18 @@ def _spawn_failure(rc: int, attempts_dir: Path, spawn_dur: float,
             if rc >= 0x40000000 else \
             f"agent rc={rc} (provider CLI runtime crashed)"
         reason = "system_killed"
+    elif _failures.is_network_failure(stderr_tail):
+        # Transport evidence outranks the duration heuristics below: a
+        # dead network kills a spawn fast OR slow (37s-454s in the 08-17
+        # outage), and both shapes carry the same stderr prose. The
+        # dispatcher probes connectivity and parks (`core/network_wait`)
+        # instead of counting this toward the unclassified breaker
+        # (2026-08-18 owner ruling: a network drop is a park, not a
+        # fault needing an operator).
+        base = (f"agent rc={rc} (network failure in {spawn_dur:.0f}s — "
+                f"not charged; the daemon probes connectivity and parks "
+                f"until it returns)")
+        reason = "provider_network"
     elif spawn_dur < SPAWN_FAST_FAIL_SEC:
         # Duration evidence, not rc evidence — so it survives an
         # `uninformative` / `undeclared` rc contract unchanged: a

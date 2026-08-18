@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .. import agent, pipeline
-from . import config, fsutil, gateway_health, quota, quota_wait
+from . import config, fsutil, gateway_health, network_wait, quota, quota_wait
 from .admission import (ADMIT, DENY_KIND_BACKOFF, DENY_QUOTA,
                         DENY_TARGET_COOLED, admission)
 from ..state import db, manifest, thresholds, transitions, tree
@@ -1147,6 +1147,16 @@ class SchedulerState:
     # "machine never self-stops" promise is about hard PROBLEMS; broken
     # machinery is exactly when stopping loudly is correct.
     consec_unclassified: int = 0
+    # Network-wait state (`core/network_wait`, 2026-08-18): a spawn
+    # death whose stderr names a transport failure parks dispatch until
+    # a connectivity probe answers, instead of feeding the unclassified
+    # breaker.
+    net_wait_down: bool = False
+    net_wait_entered: float = 0.0
+    net_wait_probed_at: float = 0.0
+    net_wait_logged_at: float = 0.0
+    net_wait_paused: float = 0.0
+    net_wait_hosts: "tuple[str, ...]" = ()
     # DB write-through — see class docstring.
     librarian_fail_counts: "dict[str, int]" = field(default_factory=dict)
     # Lazy verify cache: problem → Defs/Root built clean (False =
@@ -2222,7 +2232,19 @@ def run(workspace: Path, *, once: bool = False,
                           and reason in _failures.TARGET_COOLDOWN_REASONS):
                         st.cooldown_until[(tid, kind)] = (
                             time.time() + SPAWN_COOLDOWN_SEC)
-                        if reason == "unclassified_spawn_failure":
+                        if reason == "provider_network":
+                            # A named transport failure: probe, and park
+                            # when the probe confirms the network is
+                            # gone — never the unclassified breaker
+                            # (2026-08-18; the 08-17 outage exited rc=2
+                            # on twelve of these needing an operator on
+                            # site). A positive probe = blip: keep the
+                            # ordinary cooldown and move on.
+                            network_wait.maybe_enter(
+                                st, kind=kind,
+                                source=f"{kind} {tk}={tid} network "
+                                       f"failure")
+                        elif reason == "unclassified_spawn_failure":
                             st.consec_unclassified += 1
                             print(f"[cooldown] {kind} {tk}={tid} cooled "
                                   f"{SPAWN_COOLDOWN_SEC:.0f}s after an "
@@ -2593,6 +2615,9 @@ def run(workspace: Path, *, once: bool = False,
         # window resets.
         quota_waiting = quota_wait.tick(st, time.time(),
                                          enabled=quota_wait_enabled)
+        # Network-wait gate, same contract: while the network is down,
+        # spawn nothing; DB-only housekeeping below still runs.
+        network_waiting = network_wait.tick(st, time.time())
 
         # Per-(provider, model) quota, ahead of the global wait: a cap
         # that names ONE model must not stop the pipelines seated on a
@@ -2618,7 +2643,7 @@ def run(workspace: Path, *, once: bool = False,
         # holds spawn_fast_fail back-offs; st.kind_backoff_until holds the
         # rc=126 rate brake; scope restricts to a benchmark subset like
         # `minif2f_%`).
-        if not quota_waiting:
+        if not (quota_waiting or network_waiting):
             bfs_refill(conn, running, st.cooldown_until, scope=scope,
                        kind_backoff=st.kind_backoff_until,
                        blocked_kinds=blocked_kinds,
@@ -2667,7 +2692,8 @@ def run(workspace: Path, *, once: bool = False,
         # Free liveness check, dormant until a spawn has already told us
         # the gateway is unreachable. See `core.gateway_health`.
         gateway_down = gateway_health.liveness_gate(st)
-        while (not (stopping or drifting or quota_waiting or gateway_down
+        while (not (stopping or drifting or quota_waiting
+                    or network_waiting or gateway_down
                     or gateway_warm["failed"])
                 and len(futures) < pool_size):
             row = db.pop_queue(
@@ -2891,7 +2917,8 @@ def run(workspace: Path, *, once: bool = False,
         # budget_sec must not read as budget exhaustion (that would be
         # exit-on-quota with extra steps).
         _now = time.time()
-        if _now - start_time - quota_wait.paused_total(st, _now) > budget_sec:
+        if (_now - start_time - quota_wait.paused_total(st, _now)
+                - network_wait.paused_total(st, _now)) > budget_sec:
             print(f"[dispatcher] {budget_sec}s budget exceeded; stopping",
                   flush=True)
             _exit_pool_fast(pool)

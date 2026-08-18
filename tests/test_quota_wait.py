@@ -368,17 +368,20 @@ def test_pop_loop_and_refill_gate_on_quota_wait():
     # gate — it is always false) and carried an `or <whole source>`
     # fallback, so this assertion could not fail in either direction.
     before_call = src.split("bfs_refill(")[0]
-    assert "if not quota_waiting:" in before_call.rsplit(
+    assert "if not (quota_waiting or network_waiting):" in before_call.rsplit(
         "# Refill queue", 1)[-1], (
-        "bfs_refill must be gated on quota_waiting")
-    assert "stopping or drifting or quota_waiting" in src, (
-        "pop loop must not spawn during quota-wait")
+        "bfs_refill must be gated on quota_waiting and network_waiting")
+    assert ("stopping or drifting or quota_waiting\n"
+            "                    or network_waiting" in src), (
+        "pop loop must not spawn during quota-wait or network-wait")
 
 
 def test_budget_check_excludes_paused_time():
     src = inspect.getsource(dispatcher.run)
-    assert "quota_wait.paused_total(st, _now) > budget_sec" in src, (
+    assert "quota_wait.paused_total(st, _now)" in src, (
         "budget clock must subtract quota-wait pauses")
+    assert "network_wait.paused_total(st, _now)) > budget_sec" in src, (
+        "budget clock must subtract network-wait pauses too (08-18)")
 
 
 def test_once_runs_never_quota_wait():

@@ -1,6 +1,6 @@
 Your prior turn was killed by wall-clock timeout before you finalized output. Your session memory still holds what you read, considered, were about to write.
 
-Write a short note (~200 words) into `_progress.md` in your sandbox. The framework inlines it into the next attempt's Context.md so the next spawn picks up from your sketch.
+Write a short note (~200 words) into `_progress.md` in your sandbox. The framework inlines it into the next attempt's Context.md so the next spawn picks up from your sketch. On MCP-only seats use `write_file` for this — a blocked `apply_patch` loses the note.
 
 Capture only:
 

@@ -33,6 +33,10 @@ def test_provider_infra_set_pinned():
         # under a live session). Provider-infra so it never burns a goal
         # attempt — one of these used to arrive as `lake_build_error`.
         "verify_infra",
+        # 08-18: a transport-level death (stream disconnected / DNS) —
+        # the daemon parks behind a connectivity probe instead of
+        # feeding the unclassified breaker.
+        "provider_network",
         # 07-30: shutdown kills must not burn goal attempts (SG#14 class).
         "daemon_shutdown",
         # 07-30: agy provider — bad model slug / refused credentials /
@@ -72,6 +76,8 @@ def test_non_agent_set_pinned():
         "goal_no_longer_open", "unknown_kind", "return_to_nl",
         "problem_not_found", "system_killed",
         "unclassified_spawn_failure",
+        # 08-18: a dead NIC teaches the agent nothing either.
+        "provider_network",
         # A provider config error teaches the agent nothing — the fix is
         # an operator edit to the CLI's permission/model settings.
         "provider_misconfigured",
@@ -90,6 +96,9 @@ def test_target_cooldown_set_pinned():
         "spawn_fast_fail", "missing_dep", "gateway_unreachable",
         "transient_timeout", "strategist_proposal_rejected",
         "system_killed", "unclassified_spawn_failure",
+        # 08-18: one beat before the same target re-fires while the
+        # network-park probe decides.
+        "provider_network",
         # #125: ghost queue rows (no loadable Manifest) must not be
         # re-dispatched in a tight T4-pumped loop.
         "problem_not_found",
@@ -307,3 +316,23 @@ def test_zero_diagnostics_is_a_worker_failure_not_a_lean_verdict():
         encoding="utf-8")
     assert bwd.count("not a Lean verdict") >= 2
     assert failures.REGISTRY["framework_verify_error"].origin == "framework"
+
+
+def test_rogue_axioms_message_teaches_the_way_out():
+    """2026-08-18: the bare "rogue axioms: [...]" bounced four
+    native_decide proofs in one day (40-54min builds each) and taught
+    nothing — the fifth arrived after the Manifest note said not to.
+    The message now names the source when native_decide is the cause,
+    states the whitelist is fixed, and offers the two ways out. One
+    home (`failures.rogue_axioms_message`): the commit gate and
+    validate_file's pre-commit mirror must never grow two spellings."""
+    m = failures.rogue_axioms_message(["Lean.ofReduceBool"])
+    assert "rogue axioms" in m
+    assert "native_decide" in m
+    assert "fixed and not negotiable" in m
+    assert "decline with the cut you would make" in m
+    # ...and the native_decide clause is evidence-conditional: a rogue
+    # axiom that is not the native pair must not be blamed on it.
+    m2 = failures.rogue_axioms_message(["Classical.somethingElse"])
+    assert "native_decide" not in m2
+    assert "fixed and not negotiable" in m2

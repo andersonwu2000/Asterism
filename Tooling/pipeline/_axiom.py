@@ -148,8 +148,9 @@ def axiom_gate(
                                    f"axiom probe error: {v['axiom_error']}", v)
         rogue = set(v.get("axioms") or []) - set(whitelist)
         if rogue:
+            from ..state.failures import rogue_axioms_message
             return AxiomGateResult(False, "axiom_violation",
-                                   f"rogue axioms: {sorted(rogue)}", v)
+                                   rogue_axioms_message(rogue), v)
     return AxiomGateResult(True, verify=v)
 
 
@@ -203,7 +204,8 @@ def axiom_probe(
     used: set[str] = set(result.get("axioms") or [])
     rogue = used - set(whitelist)
     if rogue:
-        return False, f"rogue axioms: {sorted(rogue)}"
+        from ..state.failures import rogue_axioms_message
+        return False, rogue_axioms_message(rogue)
     return True, f"axioms ok: {sorted(used) or '[]'}"
 
 

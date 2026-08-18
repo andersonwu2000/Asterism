@@ -150,6 +150,17 @@ REGISTRY: "dict[str, FailureTraits]" = {
     # breaker).
     "unclassified_spawn_failure": _T("provider_infra", agent_visible=False,
                                      cooldown_scope="target"),
+    # The spawn's stderr names a TRANSPORT failure (stream disconnected,
+    # DNS, connection reset — see `is_network_failure`). 2026-08-18
+    # owner ruling: a network drop is a PARK, not a fault — twelve
+    # `stream disconnected` deaths in the 08-17 outage tripped the
+    # unclassified breaker and the daemon exited rc=2 needing an
+    # operator on site, for a cause the stderr had named all along.
+    # Same no-charge traits as unclassified; the dispatcher additionally
+    # probes connectivity and parks (`core/network_wait`) instead of
+    # counting it toward the breaker.
+    "provider_network": _T("provider_infra", agent_visible=False,
+                           cooldown_scope="target"),
 
     # --- pipeline-level infra (clean declines / framework self-reject) --
     "strategist_noop": _T("pipeline_infra"),
@@ -299,6 +310,65 @@ def is_infra(failure_reason: str) -> bool:
 #: is provider-independent. An rc OUTSIDE this set is a residue whose
 #: meaning depends on the provider's `rc_contract` — see below.
 _FRAMEWORK_RCS: frozenset = frozenset({0, 123, 124, 125, 126, 127, 128, 129})
+
+
+#: Transport-failure prose, matched case-insensitively against a dead
+#: spawn's stderr. Substrings, not regexes, and deliberately transport-
+#: level: HTTP-level refusals (429, 5xx bodies) are the provider
+#: answering, which is the opposite fact. Sources: codex/reqwest
+#: ("stream disconnected before completion: error sending request",
+#: 08-17 outage, 12 rows), node/undici ("fetch failed", ENOTFOUND...),
+#: and the classic POSIX/getaddrinfo vocabulary.
+_NETWORK_STDERR_MARKERS: "tuple[str, ...]" = (
+    "stream disconnected before completion",
+    "error sending request",
+    "connection reset",
+    "connection refused",
+    "connection closed before message completed",
+    "network is unreachable",
+    "temporary failure in name resolution",
+    "dns error",
+    "getaddrinfo",
+    "tls handshake",
+    "fetch failed",
+    "enotfound",
+    "econnreset",
+    "econnrefused",
+    "etimedout",
+    "eai_again",
+)
+
+
+def rogue_axioms_message(rogue) -> str:
+    """The axiom gate's refusal, with the way out in it (owner-approved
+    wording, 2026-08-18). One home for the message: the commit gate
+    (`pipeline._axiom`) and the pre-commit mirror (`validate_file`'s
+    submission block) both render it, and a bare "rogue axioms: [...]"
+    taught nothing — four native_decide proofs bounced off it in one day
+    (g7913/g7937/g7930/g7961), 40-54 minutes each, with the fifth
+    arriving after the Manifest note said not to."""
+    rogue = sorted(rogue)
+    msg = f"rogue axioms: {rogue}"
+    if any("ofReduceBool" in a or "ofReduceNat" in a or "_native" in a
+           for a in rogue):
+        msg += (" — `Lean.ofReduceBool` means a `native_decide` "
+                "slipped in.")
+    msg += (" The Manifest's axiom whitelist is fixed and not "
+            "negotiable. Way out: plain `decide` with a heartbeat "
+            "budget on a smaller check — or decline with the cut you "
+            "would make, so the claim is re-planned as smaller bricks.")
+    return msg
+
+
+def is_network_failure(stderr: "str | None") -> bool:
+    """True iff a spawn's stderr names a transport-level network failure
+    — the classification hook for `provider_network` (2026-08-18). The
+    stderr is the ONLY evidence read: rc values are provider-shaped and
+    a network drop is not."""
+    if not stderr:
+        return False
+    low = stderr.lower()
+    return any(m in low for m in _NETWORK_STDERR_MARKERS)
 
 
 def rc_to_reason(rc: int, *, rc_contract: "str | None" = None) -> str:

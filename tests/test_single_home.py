@@ -147,9 +147,9 @@ _GRANDFATHERED: "dict[tuple[str, tuple[str, ...]], str]" = {
     ("Tooling/state/programme.py",
      ("agent_no_output", "agent_timeout", "daemon_shutdown",
       "framework_verify_error", "gateway_unreachable", "missing_dep",
-      "provider_misconfigured", "quota_exhausted", "spawn_fast_fail",
-      "system_killed", "transient_timeout", "unclassified_spawn_failure",
-      "verify_infra")):
+      "provider_misconfigured", "provider_network", "quota_exhausted",
+      "spawn_fast_fail", "system_killed", "transient_timeout",
+      "unclassified_spawn_failure", "verify_infra")):
         "channels whose discard is a MACHINE failure → trait "
         "`infra_discard`. Already half-guarded by an invariant test "
         "asserting every provider_infra reason lands here, which is "

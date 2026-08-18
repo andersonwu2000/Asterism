@@ -2311,7 +2311,10 @@ def _heartbeat_gate(meta: SessionMetadata, content: str) -> "str | None":
             f"every check until then slower.{cost}, against a spawn budget "
             f"measured in minutes. What works instead: bound the quantity "
             f"rather than evaluating it, or lift the heavy step into its "
-            f"own `new_<slug>.lean` with a small context and cite it.")
+            f"own `new_<slug>.lean` with a small context and cite it. If "
+            f"neither fits, the claim itself is too coarse for one check "
+            f"— decline with the cut you would make, and the review loop "
+            f"will re-plan it as smaller bricks.")
     else:
         head = (
             f"This file asks for {budget} heartbeats. That is allowed and "
@@ -2797,6 +2800,53 @@ def withdraw_stub(slug: str = "") -> str:
         ensure_ascii=False)
 
 
+#: Cap on decls probed per validate — a patch carries one theorem, a
+#: batch stub file one decl; anything past this is pathological input.
+_AXIOM_PROBE_DECL_CAP = 8
+
+
+def _axioms_submission(backend, slot, content: str,
+                       meta: "SessionMetadata") -> "dict | None":
+    """The commit axiom gate, mirrored pre-commit (2026-08-18). g7941:
+    a `native_decide` proof validated green here, built for 51 minutes,
+    and died at the commit gate — a verdict knowable at this probe for
+    one warm RPC per decl. Returns a failing submission entry when a
+    decl's axioms exceed the Manifest whitelist, None when clean /
+    unknowable (the commit gate stays the authority; this only warns).
+
+    `sorryAx` is deliberately NOT flagged here: `:= by sorry` stubs are
+    the legal decomposition currency pre-commit, and the commit gate's
+    own tripwire handles the illegal cases."""
+    try:
+        mpath = (db.problem_dir(meta.workspace, meta.problem)
+                 / "Manifest.md")
+        wl = set(manifest.effective_axioms(
+            manifest.parse(mpath), problem=meta.problem))
+    except Exception:  # noqa: BLE001 — no Manifest, no verdict
+        return None
+    wl.add("sorryAx")
+    names: "list[str]" = []
+    for m in _GW_DECL_HEAD_RE.finditer(content):
+        if m.group(2) not in names:
+            names.append(m.group(2))
+    rogue: "set[str]" = set()
+    for name in names[:_AXIOM_PROBE_DECL_CAP]:
+        try:
+            r = backend.rpc_call(
+                slot.slot_uri, "Asterism.printAxioms",
+                {"fqName": f"Problems.{meta.problem}.{name}"},
+                timeout=30)
+        except Exception:  # noqa: BLE001 — probe is best-effort
+            continue
+        if r.get("found"):
+            rogue |= set(r.get("axioms") or []) - wl
+    if not rogue:
+        return None
+    from ..state.failures import rogue_axioms_message
+    return {"ok": False, "rogue": sorted(rogue),
+            "note": rogue_axioms_message(rogue)}
+
+
 @mcp.tool(structured_output=False)
 @_offload_to_thread
 def validate_file(content: str = "") -> str:
@@ -2900,6 +2950,7 @@ def validate_file(content: str = "") -> str:
     elaborate_failed = False
     elaborate_error = ""
     timed_out = False
+    axioms_sub: "dict | None" = None
     _slot_kind: str = "unknown"
     backend = _state.backend
     # validate_file uses a slot like apply_edit — swap_in=False (we'll
@@ -2923,6 +2974,14 @@ def validate_file(content: str = "") -> str:
                 timed_out = True
             try:
                 diags = backend.diagnostics_for(slot.slot_uri)
+                # Pre-commit axiom mirror — needs the slot while it
+                # still holds this candidate, and a clean elaboration
+                # (collectAxioms wants a final cmd state).
+                if not timed_out and not any(
+                        _format_diag(d).get("severity") == "error"
+                        for d in diags):
+                    axioms_sub = _axioms_submission(
+                        backend, slot, content, meta)
             finally:
                 # validate_file's content isn't the session's "real"
                 # mirror, just a probe. Clear content_pipeline_id so the
@@ -3017,6 +3076,12 @@ def validate_file(content: str = "") -> str:
         "annotation": _annotation_submission(
             content, is_mint=meta.target_path.name.startswith("new_forward")),
         "decl_head": _declhead_submission(content)}
+    if axioms_sub is not None:
+        # Pre-commit mirror of the commit axiom gate (2026-08-18):
+        # `ok: false` here rides `commit_will_reject` like every other
+        # submission gate, so a native_decide proof learns its fate at
+        # validate time instead of after the full build.
+        submission["axioms"] = axioms_sub
     cite = _citation_submission(content, meta.problem, meta.workspace,
                                 set(inlined_slugs), kind=meta.kind)
     if cite is not None:

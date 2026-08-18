@@ -1015,6 +1015,49 @@ class _DiagBackend:
     def diagnostics_for(self, *a, **kw): return list(self._diags)
 
 
+def test_axioms_submission_mirrors_the_commit_gate(tmp_path) -> None:
+    """2026-08-18 (g7941): a native_decide proof validated green, built
+    51 minutes, and died at the commit axiom gate — a verdict knowable
+    at validate time. The mirror flags whitelist violations with the
+    gate's own teaching message; a clean file and a `sorry` stub stay
+    silent (sorryAx is the legal pre-commit decomposition currency)."""
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    (pdir / "Manifest.md").write_text(
+        "---\nproblem: p\naxioms_whitelist:\n  - propext\n---\n# p\n",
+        encoding="utf-8")
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="pipe-ax", target_path=tmp_path / "x.lean",
+        problem="p", workspace=tmp_path, log_path=None, file_content="")
+
+    class _Slot:
+        slot_uri = "file:///slot0.lean"
+
+    class _Backend:
+        def __init__(self, axioms):
+            self.axioms = axioms
+            self.asked: list = []
+
+        def rpc_call(self, uri, method, params, timeout=0):
+            self.asked.append(params["fqName"])
+            return {"found": True, "axioms": self.axioms}
+
+    content = "theorem t : True := by native_decide"
+    be = _Backend(["propext", "Lean.ofReduceBool"])
+    sub = lsp_gateway._axioms_submission(be, _Slot(), content, meta)
+    assert sub is not None and sub["ok"] is False
+    assert "Lean.ofReduceBool" in sub["rogue"]
+    assert "native_decide" in sub["note"]
+    assert "decline with the cut you would make" in sub["note"]
+    assert be.asked == ["Problems.p.t"]
+    # Clean file → silent (the commit gate stays the only authority).
+    assert lsp_gateway._axioms_submission(
+        _Backend(["propext"]), _Slot(), content, meta) is None
+    # A stub's sorryAx is not a rogue axiom pre-commit.
+    assert lsp_gateway._axioms_submission(
+        _Backend(["sorryAx"]), _Slot(), content, meta) is None
+
+
 def test_validate_file_names_a_framework_fault_instead_of_going_mute(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -2437,6 +2480,20 @@ def test_raising_after_a_timeout_fires_however_small(tmp_path):
         m, "set_option maxHeartbeats 1000000 in\n")
     assert msg and "does not converge" in msg
     assert "200,000 to 1,000,000" in msg
+
+
+def test_the_escalation_names_the_third_way_out(tmp_path):
+    """2026-08-18 (g8133): the escalating message offered two in-turn
+    moves (bound the quantity / lift into a brick) and nothing for the
+    case where the CLAIM is too coarse for any single check — the worker
+    that had already found the right four-block cut had no instruction
+    that handing the cut back is a legitimate deliverable. The third
+    sentence is the hand-back."""
+    m = _hb_meta(tmp_path, hb_saw_timeout=True, hb_limit=200_000)
+    msg = lsp_gateway._heartbeat_gate(
+        m, "set_option maxHeartbeats 1000000 in\n")
+    assert "decline with the cut you would make" in msg
+    assert "re-plan it as smaller bricks" in msg
 
 
 def test_the_trigger_is_not_keyed_on_the_timing_out_line(tmp_path):

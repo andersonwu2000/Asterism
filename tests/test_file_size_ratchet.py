@@ -269,7 +269,9 @@ _WATERMARKS = {
     # one place every dispatch passes; anywhere else needs a copy per
     # enqueuer, which is the shape this day was spent removing.
     # Conscious bump.
-    "Tooling/core/dispatcher.py": 2914,
+    # 08-18 +27: the provider_network branch + network-wait gates
+    # (`core/network_wait` holds the behavior; this is the wiring).
+    "Tooling/core/dispatcher.py": 2941,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

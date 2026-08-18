@@ -195,6 +195,36 @@ def test_spawn_failure_classifies_slow_nontimeout_as_unclassified(
     assert reason == "unclassified_spawn_failure"
 
 
+def test_spawn_failure_names_a_network_death(tmp_path: Path) -> None:
+    """stderr naming a transport failure → `provider_network`, whatever
+    the duration says (2026-08-18: the 08-17 outage's deaths ran 37s to
+    454s — both sides of the fast-fail line — all carrying the same
+    `stream disconnected` prose, and twelve of them tripped the
+    unclassified breaker into an rc=2 exit needing an operator)."""
+    (tmp_path / "_spawn.stderr").write_text(
+        "rc=1\nstream disconnected before completion: error sending "
+        "request for url", encoding="utf-8")
+    reason, detail = _pipeline._spawn_failure(
+        rc=1, attempts_dir=tmp_path, spawn_dur=37.0)
+    assert reason == "provider_network"
+    assert "network failure" in detail
+    # ...and it outranks the fast-fail duration heuristic.
+    reason, _ = _pipeline._spawn_failure(
+        rc=1, attempts_dir=tmp_path, spawn_dur=2.0)
+    assert reason == "provider_network"
+
+
+def test_spawn_timeout_outranks_the_network_prose(tmp_path: Path) -> None:
+    """rc=124 is the framework's own SIGKILL — unambiguous, and it wins
+    over any stderr prose (a timed-out worker may well have logged a
+    transient network line on the way)."""
+    (tmp_path / "_spawn.stderr").write_text(
+        "rc=124\nconnection reset by peer", encoding="utf-8")
+    reason, _ = _pipeline._spawn_failure(
+        rc=124, attempts_dir=tmp_path, spawn_dur=1800.0)
+    assert reason == "agent_timeout"
+
+
 def test_spawn_failure_includes_stderr_tail(tmp_path: Path) -> None:
     """When _spawn.stderr exists, its first ~600 chars are folded into
     failure_detail so dead_attempts isn't a black box."""
