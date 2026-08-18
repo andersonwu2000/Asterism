@@ -1,0 +1,20 @@
+{
+  "problem": "Topology.brouwer_fixed_point",
+  "charter": "# Topology.brouwer_fixed_point — Brouwer fixed-point theorem (convex compact set in finite-dim inner product space)\n\n## Statement\n∀ {E : Type*} [NormedAddCommGroup E] [InnerProductSpace ℝ E]\n  [FiniteDimensional ℝ E] {K : Set E}\n  (hne : K.Nonempty) (hcomp : IsCompact K) (hconv : Convex ℝ K)\n  {f : E → E} (hcont : ContinuousOn f K) (hmaps : Set.MapsTo f K K),\n  ∃ x ∈ K, f x = x\n\n## Setting\n- `E` finite-dim inner product space over ℝ\n- `K ⊆ E` nonempty, compact, convex\n- `f : E → E` continuous on `K`, maps `K` to `K`\n\n## Lemma hints\n- `Set.MapsTo` / `Set.Nonempty`\n- `IsCompact` / `Convex`\n- `ContinuousOn` / `Continuous` / `Continuous.comp`\n- `Metric.closedBall` / `EuclideanSpace` / `Metric.sphere`\n- `FiniteDimensional` / `Module.finrank`\n- `Homeomorph`\n- `IsCompact.exists_isMinOn` / `IsCompact.exists_forall_le`\n\n## Strategic notes\n\n### Spine (mandatory)\n\n```\nBrouwer  ⇐  No-retraction(Dⁿ → Sⁿ⁻¹)  ⇐  H_{n-1}(Sⁿ⁻¹) ≠ 0  ∧  H_{n-1}(Dⁿ) = 0\n```\n\nOnly allowed algebraic invariant: **singular homology**.\n\n1. Reduce `K` to `closedBall 0 1` (or a standard simplex) via `Homeomorph`,\n   transport the fixed-point problem.\n2. No-retraction lemma: `¬ ∃ r : Dⁿ → Sⁿ⁻¹` continuous with `r ∘ i = id`\n   (where `i : Sⁿ⁻¹ ↪ Dⁿ`). Brouwer follows by the standard\n   contrapositive (assume no fixed point → build retraction via the ray\n   `f(x) → x` extended to `Sⁿ⁻¹` → contradiction).\n3. No-retraction via `H_{n-1}` functor: `r ∘ i = id` would give a\n   factorization `ℤ ≅ H_{n-1}(Sⁿ⁻¹) → H_{n-1}(Dⁿ) = 0 → ℤ` equal to `id`.\n\n### R1 — search before reconstructing (hard rule)\n\nBefore injecting any new `lemma` / `def` / `structure` / `class`:\n\n1. `Grep` mathlib (`.lake/packages/mathlib/Mathlib/**`) for the type /\n   functor / theorem name you intend to build, plus synonym variants.\n   Any hit → `Read` to confirm semantics.\n2. `python -m Tooling.knowledge.loogle <query>` for a statement-shape\n   second pass.\n3. If a match or near-match exists: **reuse it; write a thin bridge\n   lemma** to this problem's types/naming. Do not reconstruct any\n   foundational layer (chain complex, homology functor, homeomorph\n   constructors, etc.).\n4. Only after confirmed missing, inject a new Forward. The\n   `## Forward rationale` first line must state `Grep + Loogle\n   confirmed missing` and list the exact keywords searched.\n\nStrategist: when a Forward output is an obvious mathlib candidate that\nthe agent did not Grep, `ConfirmShelve` it and re-inject a Forward\nrequiring the search step first.\n\n### Forbidden angles\n\n- Sperner / Kuhn / any simplicial labelling counting argument\n  (`forbidden_lemmas` covers the namespace).\n- Homotopy-group route (πₙ₋₁(Sⁿ⁻¹)) — violates the spine.\n- Brouwer degree theory — derives from homology, circular.\n- Winding-number tooling from `residue_thm` — bypasses the spine.\n- IVT for n=1 then claiming the general case — logically invalid.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [
+      "sperner*",
+      "Sperner*",
+      "kuhn*",
+      "Kuhn*",
+      "simplicial_label*",
+      "barycentric_label*",
+      "rainbow_label*"
+    ]
+  }
+}

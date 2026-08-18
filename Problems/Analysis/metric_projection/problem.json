@@ -1,0 +1,13 @@
+{
+  "problem": "Analysis.metric_projection",
+  "charter": "# Analysis.metric_projection — metric projection onto a closed convex set is non-expansive\n\n## Statement\n\nIn a real inner-product space `X`, given a nonempty closed convex set `K`, a\nmap `P : X → X` is a *metric projector* onto `K` when for every `x`, `P x ∈ K`\nand `‖x - P x‖ ≤ ‖x - y‖` for all `y ∈ K`. Prove that any metric projector\nonto such a `K` is non-expansive: `‖P x - P y‖ ≤ ‖x - y‖` for all `x y`.\n\n### Deliverables\n\nForward-build these (snake_case names); Backward-decompose the hard ones;\n`MarkDeliverable` each; then `Ingest`:\n\n- `is_metric_projector` — the defining predicate described above,\n- `proj_nonexpansive_of_metric_projector` — the non-expansiveness theorem.\n\n### Proof shape (classical Hilbert-space argument, three natural layers)\n\n1. **Variational inequality**: from the minimisation property derive\n   `Real.inner (x − P x) (y − P x) ≤ 0` for every `y ∈ K` (perturb along the\n   segment toward `y` via `Convex.combo_mem`, expand with\n   `norm_sub_pow_two_real`, divide by the parameter, take the limit).\n2. **Monotonicity**: apply (1) at `x` with `y := P y'` and at `y'` with\n   `y := P x`, add — get `‖P x − P y'‖² ≤ Real.inner (x − y') (P x − P y')`.\n3. **Cauchy–Schwarz** (`real_inner_le_norm`) on (2) and desquare.\n\n### Useful mathlib entry points\n\n- `Mathlib.Analysis.InnerProductSpace.Basic` — `inner_sub_left/right`,\n  `real_inner_self_eq_norm_sq`\n- `real_inner_le_norm` — Cauchy–Schwarz\n- `norm_sub_pow_two_real` / `norm_add_pow_two_real`\n- `Convex.combo_mem` — convex-combination membership for the perturbation\n\nALWAYS search mathlib first (grep + loogle) — cite what exists, only build the\ngenuinely missing. Do NOT introduce axioms or `sorry`-bearing shortcuts.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

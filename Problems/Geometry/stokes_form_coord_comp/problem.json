@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.stokes_form_coord_comp",
+  "charter": "# Geometry.stokes_form_coord_comp — cocycle condition for the `⋀ᵏ T*M` transition\n\n## Statement\n`formCoordChange I k j l x (formCoordChange I k i j x v) = formCoordChange I k i l x v`\non the triple overlap. (§A.3 — the `coordChange_comp` field of the `VectorBundleCore`.)\n\n## Setting\n`formCoordChange I k i j x := compContinuousLinearMapCLM ((tangentBundleCore I M).coordChange j i x)`.\nBecause forms are contravariant, `formCoordChange i j` precomposes by the tangent\ntransition `j i`; the cocycle therefore reads with the indices as stated.\n\n## Lemma hints\n- `Mathlib/Geometry/Manifold/VectorBundle/Tangent.lean` — `tangentBundleCore`,\n  `VectorBundleCore.coordChange_comp` (tangent cocycle `τ_jk ∘ τ_ij = τ_ik`).\n- `ContinuousAlternatingMap.compContinuousLinearMapCLM` — contravariant functor:\n  `compContinuousLinearMapCLM g ∘ compContinuousLinearMapCLM h = compContinuousLinearMapCLM (h ∘ g)`.\n- Strategy: unfold both sides to precompositions, apply the contravariant\n  functoriality, then close with the tangent cocycle at `(l, j, i)`.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

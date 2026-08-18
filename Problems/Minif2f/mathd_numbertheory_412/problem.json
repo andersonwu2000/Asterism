@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_numbertheory_412",
+  "charter": "# Minif2f.mathd_numbertheory_412 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_numbertheory_412`.\n\n## Statement\n∀ (x y : ℤ) (h₀ : x % 19 = 4) (h₁ : y % 19 = 7), (x + 1) ^ 2 * (y + 5) ^ 3 % 19 = 13\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

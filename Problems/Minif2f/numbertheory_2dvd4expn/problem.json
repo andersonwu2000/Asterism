@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.numbertheory_2dvd4expn",
+  "charter": "# Minif2f.numbertheory_2dvd4expn — imported from miniF2F\n\nOriginal miniF2F theorem name: `numbertheory_2dvd4expn`.\n\n## Statement\n∀ (n : ℕ) (h₀ : n ≠ 0), 2 ∣ 4 ^ n\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

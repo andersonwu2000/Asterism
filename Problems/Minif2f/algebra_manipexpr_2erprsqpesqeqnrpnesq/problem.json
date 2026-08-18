@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.algebra_manipexpr_2erprsqpesqeqnrpnesq",
+  "charter": "# Minif2f.algebra_manipexpr_2erprsqpesqeqnrpnesq — imported from miniF2F\n\nOriginal miniF2F theorem name: `algebra_manipexpr_2erprsqpesqeqnrpnesq`.\n\n## Statement\n∀ (e r : ℂ), 2 * (e * r) + (e ^ 2 + r ^ 2) = (-r + -e) ^ 2\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

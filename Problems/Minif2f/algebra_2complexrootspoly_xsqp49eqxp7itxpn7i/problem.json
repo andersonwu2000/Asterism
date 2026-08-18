@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.algebra_2complexrootspoly_xsqp49eqxp7itxpn7i",
+  "charter": "# Minif2f.algebra_2complexrootspoly_xsqp49eqxp7itxpn7i — imported from miniF2F\n\nOriginal miniF2F theorem name: `algebra_2complexrootspoly_xsqp49eqxp7itxpn7i`.\n\n## Statement\n∀ (x : ℂ), x ^ 2 + 49 = (x + 7 * Complex.I) * (x + -7 * Complex.I)\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

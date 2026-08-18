@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_algebra_422",
+  "charter": "# Minif2f.mathd_algebra_422 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_algebra_422`.\n\n## Statement\n∀ (x : ℝ) (σ : Equiv ℝ ℝ) (h₀ : ∀ x, σ.1 x = 5 * x - 12) (h₁ : σ.1 (x + 1) = σ.2 x), x = 47 / 24\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

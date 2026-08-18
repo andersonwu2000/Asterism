@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.integral_param",
+  "charter": "# Geometry.integral_param — the multi-chart density transition law\n\n## Statement\nFor a top `d`-form `g` on a `d`-manifold `N` (modelled on `EuclideanSpace ℝ (Fin d)`), the local\nscalar density `localCoeff g x` read in the chart at `x` relates to the density read in the chart\nat another point `x₀` by the Jacobian determinant of the chart transition. For `y ∈\n(extChartAt I x).target` with `(extChartAt I x).symm y ∈ (chartAt EH x₀).source`:\n\n`localCoeff g x y = det(d(extChartAt x₀ ∘ (extChartAt x).symm)(y)) * localCoeff g x₀ (extChartAt x₀ ((extChartAt x).symm y))`\n\nThis is the **hard core of the multi-chart parametrization integral**: how a top-form's density\ntransforms across overlapping charts (the determinant factor is exactly the change-of-variables\nJacobian). The full \"∫_N g via an arbitrary parametrization spanning multiple charts\" cites this.\n\n## Setting\nStress-test problem for the Model B knowledge base + target-2 KB retrieval, built on the proved\nStokes-tower Library. **Not** harvested into the Library (`library: false`) — re-proved later\nalongside the Library KB. The proof must cite the Library's differential-form chart-transition\nlaw, so it exercises Library-citation plumbing end to end.\n\n## Lemma hints\n- `Library.Geometry.Manifold.MExtDerivCoord.form_in_coord_pullback` :\n  `formInCoord I φ x y = (formInCoord I φ x₀ (extChartAt I x₀ ((extChartAt I x).symm y))).compContinuousLinearMap (fderivWithin ℝ (↑(extChartAt I x₀) ∘ ↑(extChartAt I x).symm) (Set.range I) y)`\n  — the form's coordinate rep at `x` pulled back to `x₀` via the transition derivative. Take\n  `topCoeff` of both sides (its hypotheses `hy` / `hy'` are exactly this goal's).\n- `Library.Geometry.Manifold.StokesIntegralDefs` : `localCoeff φ x y = topCoeff (formInCoord I φ x y)`\n  and `topCoeff α = α (EuclideanSpace.basisFun (Fin d) ℝ)` (both by `rfl`/unfold).\n- Determinant step: `topCoeff (α.compContinuousLinearMap L) = L.det * topCoeff α` for a top\n  `d`-form `α` — precomposing a top alternating form by a linear map scales the standard-basis\n  coefficient by `det L`. Find the Mathlib alternating-map / determinant lemma (via\n  `ContinuousAlternatingMap.compContinuousLinearMap` → `AlternatingMap`, or the basis-image\n  `Matrix.det` identity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

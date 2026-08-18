@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.stokes_bdry_chartedspace",
+  "charter": "# Geometry.stokes_bdry_chartedspace — assemble the boundary chart + mem_chart_source\n\n## Statement\n`p ∈ (bdryChart p).source` for every boundary point `p` — the `mem_chart_source`\naxiom of the boundary `ChartedSpace`. Owns `bdryChart`, the boundary chart as an\n`OpenPartialHomeomorph` (assembled from the cited chart data + partial-equiv laws +\ntopological laws, all proven).\n\n## Setting\nPARKED until P7c (`stokes_bdry_chart_topo`) migrates — `bdryChart`'s topological\nfields cite P7c's `chart_*_is_open` / `*_continuous_on`, whose Library module is not\nyet final (P7c migrate stalled on a librarian gap).\n\n`(bdryChart p).source = chartSource p = Subtype.val ⁻¹' (extChartAt (𝓡∂ (n+1)) p.val).source`,\nand `p.val ∈ (extChartAt (𝓡∂ (n+1)) p.val).source`, so `p ∈ chartSource p`.\n\n## Lemma hints\n- `mem_extChartAt_source` / `mem_chart_source` — a point is in its own chart source.\n- `Set.mem_preimage`, `chartSource` unfolds to the `Subtype.val` preimage.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

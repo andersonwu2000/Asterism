@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.numbertheory_nckeqnm1ckpnm1ckm1",
+  "charter": "# Minif2f.numbertheory_nckeqnm1ckpnm1ckm1 — imported from miniF2F\n\nOriginal miniF2F theorem name: `numbertheory_nckeqnm1ckpnm1ckm1`.\n\n## Statement\n∀ (n k : ℕ) (h₀ : 0 < n ∧ 0 < k) (h₁ : k ≤ n), Nat.choose n k = Nat.choose (n - 1) k + Nat.choose (n - 1) (k - 1)\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

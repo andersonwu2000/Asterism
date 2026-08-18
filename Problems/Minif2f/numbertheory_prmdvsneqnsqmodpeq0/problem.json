@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.numbertheory_prmdvsneqnsqmodpeq0",
+  "charter": "# Minif2f.numbertheory_prmdvsneqnsqmodpeq0 — imported from miniF2F\n\nOriginal miniF2F theorem name: `numbertheory_prmdvsneqnsqmodpeq0`.\n\n## Statement\n∀ (n : ℤ) (p : ℕ) (h₀ : Nat.Prime p), ↑p ∣ n ↔ n ^ 2 % p = 0\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

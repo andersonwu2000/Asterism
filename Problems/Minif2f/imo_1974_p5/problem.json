@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.imo_1974_p5",
+  "charter": "# Minif2f.imo_1974_p5 — imported from miniF2F\n\nOriginal miniF2F theorem name: `imo_1974_p5`.\n\n## Statement\n∀ (a b c d s : ℝ) (h₀ : 0 < a ∧ 0 < b ∧ 0 < c ∧ 0 < d) (h₁ : s = a / (a + b + d) + b / (a + b + c) + c / (b + c + d) + d / (a + c + d)), 1 < s ∧ s < 2\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

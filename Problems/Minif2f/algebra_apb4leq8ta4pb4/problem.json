@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.algebra_apb4leq8ta4pb4",
+  "charter": "# Minif2f.algebra_apb4leq8ta4pb4 — imported from miniF2F\n\nOriginal miniF2F theorem name: `algebra_apb4leq8ta4pb4`.\n\n## Statement\n∀ (a b : ℝ) (h₀ : 0 < a ∧ 0 < b), (a + b) ^ 4 ≤ 8 * (a ^ 4 + b ^ 4)\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

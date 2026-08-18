@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.pullback_flat_form",
+  "charter": "# Geometry.pullback_flat_form — pullback of a flat test k-form is a smooth bundle section\n\n## Statement\n∀ {n k : ℕ} {N : Type*} [TopologicalSpace N]\n  [ChartedSpace (EuclideanHalfSpace (n + 1)) N] [IsManifold (𝓡∂ (n + 1)) ∞ N]\n  {F : Type*} [NormedAddCommGroup F] [NormedSpace ℝ F]\n  (e : N → F) (φ : F → (F [⋀^Fin k]→L[ℝ] ℝ)),\n  ContMDiff (𝓡∂ (n + 1)) 𝓘(ℝ, F) ∞ e → ContDiff ℝ ∞ φ →\n  ContMDiff … (fun p => TotalSpace.mk' … p (pullbackFlatFormFun e φ p))\n\n## Strategic notes\nIntegration-current bridge, first brick: the pullback `e* φ` of a *flat* test `k`-form\n`φ` on the ambient `F` along a smooth map `e : N → F` is a genuine smooth section of the\nform bundle on the manifold-with-boundary `N`. (Once proved, `e* φ` is a `DiffForm`, so\nclassical Stokes on `N` applies to it — that is the keystone `∂[[e]] = [[∂e]]`.)\n\n**Model closely on the boundary pullback** `contMDiff_pullbackBdryFun`\n(`Library/Geometry/ManifoldBdry/PullbackFormContMDiff.lean`) — the structure is identical:\ntrivialization-read identity → fixed-basepoint coordinate formula is smooth →\n`Trivialization.contMDiffAt_section_iff` + `congr_of_eventuallyEq`.\n\nThe ONE difference: the coordinate derivative here is the *varying*\n`fderiv ℝ (e ∘ (extChartAt …).symm)` (the boundary case had the *constant* `faceEmbedL`).\nIts fibrewise smoothness is the proved analytic core\n`Library.Geometry.Manifold.AlternatingMapContDiff.contdiff_comp_continuous_linear_map_clm`\ncomposed with `ContDiff.fderiv_right` (the coordinate derivative `x ↦ fderiv ℝ ê x` is\n`C^∞` because `ê = e ∘ chart.symm` is). `e` and `φ` are given smooth — neither is\nconstructed; the work is the manifold-bundle assembly, not new analysis.\n\nHelpers to mirror (boundary file): `pullback_triv_read_coord_change`,\n`pullback_coord_rep_contmdiffon_target`, `pullback_fixed_chart_contmdiff_at`,\n`pullback_coord_change_commute` (the coord-change naturality — for general `e` this is the\nchain rule for `fderiv` under chart change, vs the face-sandwich identity in the boundary\ncase).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

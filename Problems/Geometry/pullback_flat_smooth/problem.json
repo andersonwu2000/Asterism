@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.pullback_flat_smooth",
+  "charter": "# Geometry.pullback_flat_smooth — smoothness of the flat-form pullback representative\n\n## Statement\n∀ {E : Type*} [NormedAddCommGroup E] [NormedSpace ℝ E]\n  {F : Type*} [NormedAddCommGroup F] [NormedSpace ℝ F] {k : ℕ}\n  (e : E → F) (φ : F → (F [⋀^Fin k]→L[ℝ] ℝ)),\n  ContDiff ℝ ∞ e → ContDiff ℝ ∞ φ →\n  ContDiff ℝ ∞ (fun x => (φ (e x)).compContinuousLinearMap (fderiv ℝ e x))\n\n## Strategic notes\nThis is the analytic core of the integration-current bridge's first brick: the\npullback of a flat ambient `k`-form along a smooth map `e : E → F`, read in\ncoordinates. The existing boundary pullback (`contMDiff_pullbackBdryFun`) is the\ntemplate, but it has the *constant* coordinate derivative `faceEmbedL`; here the\nderivative `fderiv ℝ e x` varies with `x`, which is the new ingredient.\n\nThree independent pieces, each a natural sub-goal:\n\n1. **`φ ∘ e` is smooth** — the form field composed with the map.\n2. **`x ↦ fderiv ℝ e x` is smooth** — the derivative of a smooth map is itself\n   smooth (one order is spent, but the target order is `∞`).\n3. **The fibrewise composition is smooth in both arguments** — the map sending an\n   alternating form `w` and a linear map `L` to `w.compContinuousLinearMap L`.\n   This is the hard piece: it is *linear* in `w` but *degree-`k`* in `L`, so the\n   fixed-`L` API (linear in `w` only) does not suffice; the joint smoothness must\n   be assembled. This is a genuine gap above the boundary case.\n\nThen combine 1–3 by composition. `e` and `φ` are given as smooth hypotheses — no\nconstruction of either is required.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

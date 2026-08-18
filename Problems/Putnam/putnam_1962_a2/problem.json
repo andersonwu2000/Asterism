@@ -1,0 +1,13 @@
+{
+  "problem": "Putnam.putnam_1962_a2",
+  "charter": "# Putnam.putnam_1962_a2 — imported from PutnamBench\n\nOriginal theorem: `putnam_1962_a2` (Putnam 1962 A2).\n\n## Statement\n\nFind every real-valued function $f$ whose domain is an interval $I$ (finite or infinite) having 0 as a left-hand endpoint, such that for every positive member $x$ of $I$ the average of $f$ over the closed interval $[0, x]$ is equal to the geometric mean of the numbers $f(0)$ and $f(x)$.\n\nThe formal statement is pinned in `Root.lean` (`theorem main`).\nThe `_solution` abbrev in `Defs.lean` carries the OFFICIAL\nanswer (upstream ships it as a comment; this matches the\nstandard solutions-replaced evaluation protocol — the task\nis proving, not answer-finding).\n\n## Strategic notes\n\nImported via `Benchmarks/putnambench/adapter.py` from\ntrishullab/PutnamBench @ a23d8e6. No per-problem hints —\nbenchmark integrity. The pinned statement is never edited;\nif you believe it is FALSE, that is what `AttemptDisproof` /\n`RequestUserAmend` are for.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  }
+}

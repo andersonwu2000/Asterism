@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.stokes_bdry_compact",
+  "charter": "# Geometry.stokes_bdry_compact — the boundary ∂M of a compact manifold is compact\n\n## Statement\n`CompactSpace (Bdry n M)` where `Bdry n M = {x : M // x ∈ (𝓡∂ (n+1)).boundary M}`\nand `M` is a compact `C^∞` `(n+1)`-manifold-with-boundary. (§6 — the\n`instBdryCompact` instance the boundary integral needs.)\n\n## Setting\n`Bdry n M` is the boundary subtype of `M`. The boundary of a model-with-corners is\na closed set, so `Bdry n M` is a closed subspace of the compact `M`, hence compact.\n\n## Lemma hints\n- `Mathlib/Geometry/Manifold/ModelWithCorners` /\n  `Mathlib/Geometry/Manifold/InteriorBoundary.lean` — `ModelWithCorners.boundary`,\n  and that it is closed (`isClosed_boundary` or via `IsClosed` of the boundary set).\n- `IsClosed.isCompact` (closed subset of compact space is compact) +\n  `isCompact_iff_compactSpace` / `IsClosed.compactSpace` to get the `CompactSpace`\n  instance on the subtype.\n- Strategy: show the boundary set is closed, then transfer compactness to the\n  subtype via the closed-subset-of-compact lemma.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

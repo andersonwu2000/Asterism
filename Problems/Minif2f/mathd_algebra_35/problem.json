@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_algebra_35",
+  "charter": "# Minif2f.mathd_algebra_35 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_algebra_35`.\n\n## Statement\n∀ (p q : ℝ → ℝ) (h₀ : ∀ x, p x = 2 - x ^ 2) (h₁ : ∀ x : ℝ, x ≠ 0 → q x = 6 / x), p (q 2) = -7\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

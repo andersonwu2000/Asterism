@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_algebra_13",
+  "charter": "# Minif2f.mathd_algebra_13 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_algebra_13`.\n\n## Statement\n∀ (a b : ℝ) (h₀ : ∀ x, x - 3 ≠ 0 ∧ x - 5 ≠ 0 → 4 * x / (x ^ 2 - 8 * x + 15) = a / (x - 3) + b / (x - 5)), a = -6 ∧ b = 10\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

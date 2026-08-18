@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.aime_1991_p1",
+  "charter": "# Minif2f.aime_1991_p1 — imported from miniF2F\n\nOriginal miniF2F theorem name: `aime_1991_p1`.\n\n## Statement\n∀ (x y : ℕ) (h₀ : 0 < x ∧ 0 < y) (h₁ : x * y + (x + y) = 71) (h₂ : x ^ 2 * y + x * y ^ 2 = 880), x ^ 2 + y ^ 2 = 146\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

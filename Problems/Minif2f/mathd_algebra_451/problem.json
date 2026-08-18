@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_algebra_451",
+  "charter": "# Minif2f.mathd_algebra_451 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_algebra_451`.\n\n## Statement\n∀ (σ : Equiv ℝ ℝ) (h₀ : σ.2 (-15) = 0) (h₁ : σ.2 0 = 3) (h₂ : σ.2 3 = 9) (h₃ : σ.2 9 = 20), σ.1 (σ.1 9) = 0\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

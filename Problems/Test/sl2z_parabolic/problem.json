@@ -1,0 +1,16 @@
+{
+  "problem": "Test.sl2z_parabolic",
+  "charter": "# Test.sl2z_parabolic\n\n## Statement\n\nA sibling problem (`Test.sl2z_monodromy`) already covers the two open\nsides of the paper's monodromy trace classification. This one is the\nboundary that was left out: for `A ∈ SL(2,ℤ)` with trace on the\nboundary, decide the order dichotomy. The paper says which geometry\nthis case carries and which matrices are the exceptions — check it.\n\n### Deliverables\n\n`MarkDeliverable` each; then `Ingest`:\n\n- `sl2z_parabolic_infinite_order`\n\nDo NOT introduce axioms or `sorry`-bearing shortcuts.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  },
+  "papers": [
+    "1d60ef74ee5d"
+  ]
+}

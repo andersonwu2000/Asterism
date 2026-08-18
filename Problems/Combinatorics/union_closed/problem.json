@@ -1,0 +1,13 @@
+{
+  "problem": "Combinatorics.union_closed",
+  "charter": "# Combinatorics.union_closed — the union-closed sets conjecture (Frankl)\n\n## Statement\n\nProve the union-closed sets conjecture:\n\nLet F be a finite family of finite sets that is closed under union and\ncontains at least one nonempty set. Then there exists an element x that\nbelongs to at least half of the members of F.\n\nThe formal statement is pinned in `Root.lean` (`theorem main`).\n\n(This is the stress test required for framework development. Keep an open mind. native_decide is not allowed.)\n\n## Strategic notes\n\nAttempt to prove the original conjecture. Use the framework to verify your own\nthinking and conjectures — do not stay within known results. Judge every arc by\nthe distance it removes.\n\nSurvey the literature before committing to a line of attack — `FetchPaper` is\navailable.\n\nPartial results with kernel-checked content — improved constants, new structural\nclasses settled, sharpened lemmas — are valuable deliverables in their own right;\nmark them as you go rather than holding everything for the endgame.\n\nDirective: `ReturnToParent`, level by level, unless your parent is the top group.\nReason: the group tree is too deep, and the stacked hypotheses are too deep.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

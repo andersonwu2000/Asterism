@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.induction_ineq_nsqlefactn",
+  "charter": "# Minif2f.induction_ineq_nsqlefactn — imported from miniF2F\n\nOriginal miniF2F theorem name: `induction_ineq_nsqlefactn`.\n\n## Statement\n∀ (n : ℕ) (h₀ : 4 ≤ n), n ^ 2 ≤ n !\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

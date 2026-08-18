@@ -1,0 +1,13 @@
+{
+  "problem": "Putnam.putnam_2005_a4",
+  "charter": "# Putnam.putnam_2005_a4 — imported from PutnamBench\n\nOriginal theorem: `putnam_2005_a4` (Putnam 2005 A4).\n\n## Statement\n\nLet $H$ be an $n \\times n$ matrix all of whose entries are $\\pm 1$ and whose rows are mutually orthogonal. Suppose $H$ has an $a \\times b$ submatrix whose entries are all $1$. Show that $ab \\leq n$.\n\nThe formal statement is pinned in `Root.lean` (`theorem main`).\nNo solution abbrev — pure proof task.\n\n## Strategic notes\n\nImported via `Benchmarks/putnambench/adapter.py` from\ntrishullab/PutnamBench @ a23d8e6. No per-problem hints —\nbenchmark integrity. The pinned statement is never edited;\nif you believe it is FALSE, that is what `AttemptDisproof` /\n`RequestUserAmend` are for.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  }
+}

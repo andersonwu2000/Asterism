@@ -1,0 +1,13 @@
+{
+  "problem": "Logic.prop_deduction",
+  "charter": "# Logic.prop_deduction — deduction theorem for a Hilbert propositional calculus\n\n## Statement\n\nA self-contained classical propositional calculus, built from scratch\n(mathlib has no syntactic propositional proof system):\n\n- `prop_formula` — an **inductive type** of formulas: atoms over ℕ\n  (`atom : ℕ → prop_formula`), implication\n  (`imp : prop_formula → prop_formula → prop_formula`), and falsum\n  (`bot : prop_formula`). Negation is the abbreviation `A.imp bot`.\n- `prop_derives` — an **inductive** derivability relation\n  `Set prop_formula → prop_formula → Prop` (write `Γ ⊢ A` informally)\n  with exactly five rules:\n  - `hyp` : `A ∈ Γ → Γ ⊢ A`\n  - `axK` : `Γ ⊢ A.imp (B.imp A)`\n  - `axS` : `Γ ⊢ (A.imp (B.imp C)).imp ((A.imp B).imp (A.imp C))`\n  - `axDNE` : `Γ ⊢ ((A.imp bot).imp bot).imp A`\n  - `mp` : `Γ ⊢ A.imp B → Γ ⊢ A → Γ ⊢ B`\n- `prop_eval` — evaluation under a valuation\n  (`(ℕ → Prop) → prop_formula → Prop`): an atom holds iff its\n  valuation holds, `imp` is implication, `bot` is `False`.\n\n### Deliverables\n\nForward-build the vocabulary above (snake_case names as given);\n`MarkDeliverable` each claim; then `Ingest`:\n\n- `prop_identity` — `Γ ⊢ A.imp A` for every `Γ A`.\n- `prop_weakening` — `Γ ⊢ A → Γ ⊆ Δ → Δ ⊢ A`.\n- `prop_deduction` — the deduction theorem:\n  `prop_derives (insert A Γ) B → prop_derives Γ (A.imp B)`.\n- `prop_soundness` — `prop_derives Γ A →` for every valuation `v`\n  with `∀ B ∈ Γ, prop_eval v B`, also `prop_eval v A`.\n\n### Proof shape\n\n- `prop_identity`: the SKK derivation — `mp (mp axS axK) axK` with\n  `B := A.imp A`.\n- `prop_weakening`: induction on the derivation; only `hyp` touches `Γ`.\n- `prop_deduction`: induction on the derivation of `insert A Γ ⊢ B`:\n  the `hyp` case splits `B = A` (use `prop_identity`) vs `B ∈ Γ`\n  (axK + mp); each axiom case is axK + mp; the `mp` case combines the\n  two induction hypotheses via axS.\n- `prop_soundness`: induction on the derivation; axiom cases are\n  propositional tautologies (`tauto` after unfolding `prop_eval`).\n\nThis calculus is the stepping stone toward propositional completeness\n(Lindenbaum / maximal consistent sets) and, further, Gödel completeness.\nDo NOT introduce axioms or `sorry`-bearing shortcuts.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

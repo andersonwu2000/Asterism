@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.imo_1973_p3",
+  "charter": "# Minif2f.imo_1973_p3 — imported from miniF2F\n\nOriginal miniF2F theorem name: `imo_1973_p3`.\n\n## Statement\n∀ (a b : ℝ) (h₀ : ∃ x, x ^ 4 + a * x ^ 3 + b * x ^ 2 + a * x + 1 = 0), 4 / 5 ≤ a ^ 2 + b ^ 2\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

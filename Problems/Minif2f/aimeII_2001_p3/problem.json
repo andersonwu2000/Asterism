@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.aimeII_2001_p3",
+  "charter": "# Minif2f.aimeII_2001_p3 — imported from miniF2F\n\nOriginal miniF2F theorem name: `aimeII_2001_p3`.\n\n## Statement\n∀ (x : ℕ → ℤ) (h₀ : x 1 = 211) (h₂ : x 2 = 375) (h₃ : x 3 = 420) (h₄ : x 4 = 523) (h₆ : ∀ n ≥ 5, x n = x (n - 1) - x (n - 2) + x (n - 3) - x (n - 4)), x 531 + x 753 + x 975 = 898\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

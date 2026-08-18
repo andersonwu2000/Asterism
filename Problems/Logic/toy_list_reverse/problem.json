@@ -1,0 +1,13 @@
+{
+  "problem": "Logic.toy_list_reverse",
+  "charter": "# Logic.toy_list_reverse — reversing a hand-rolled list\n\n## Statement\n\nA natural-number list type and its reversal, built from scratch (do NOT\nreuse Mathlib's `List` — the point is the custom vocabulary):\n\n- `toy_list` — an **inductive type** of lists of naturals: a\n  `nil : toy_list` constructor and `cons : ℕ → toy_list → toy_list`.\n- `toy_append` — concatenation (`toy_list → toy_list → toy_list`):\n  appending to `nil` returns the other list; appending `cons x l` is\n  `cons x` of appending `l`.\n- `toy_reverse` — naive reversal (`toy_list → toy_list`): `nil` reverses\n  to itself; `cons x l` reverses to `toy_append (toy_reverse l)\n  (cons x nil)`.\n- `toy_length` — the element count (`toy_list → ℕ`): `nil` has length 0;\n  `cons x l` has length `toy_length l + 1`.\n\n### Deliverables\n\nForward-build the vocabulary above (snake_case names as given);\n`MarkDeliverable` each claim; then `Ingest`:\n\n- `toy_reverse_involutive` — reversing twice is the identity:\n  `∀ l, toy_reverse (toy_reverse l) = l`.\n- `toy_reverse_length` — reversal preserves the element count:\n  `∀ l, toy_length (toy_reverse l) = toy_length l`.\n\n### Proof shape\n\nBoth claims are structural induction on the list. Expect to need small\nhelper lemmas about `toy_append` (e.g. reverse of an append, length of\nan append) — prove them as their own bricks.\n\nDo NOT introduce axioms or `sorry`-bearing shortcuts.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

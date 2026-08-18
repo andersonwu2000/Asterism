@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.stokes_theorem",
+  "charter": "# Geometry.stokes_theorem — the generalized Stokes theorem on a manifold with boundary\n\n## Statement\nThe capstone: for a compact oriented `(n+1)`-manifold-with-boundary `M` (with compact\nboundary `∂M`) and any smooth `n`-form `φ`, `∫_M dφ = ∫_∂M ι*φ` — both sides the single\n`DiffForm.integral` operator (`mextDeriv φ` on `M`, `pullbackBdry φ` on `∂M`). Owns\n`pullbackBdry` (the assembled `ι*`) and `instBdryOriented` (`∂M`'s `OrientedManifold`\ninstance). Cites the whole tower.\n\n## Setting\n`mextDeriv` (P6, `Library.Geometry.Manifold.DDZero`) is the exterior derivative;\n`pullbackBdry` assembles P10's `pullbackBdryFun` + `contMDiff_pullbackBdryFun`\n(`Library.Geometry.ManifoldBdry.{PullbackBdryDefs, PullbackFormContMDiff}`);\n`DiffForm.integral` + `OrientedManifold` are P11 (`StokesIntegralDefs`); `∂M`'s orientation\nis P12b's `inducedOrient` / `inducedOrient_ne_zero` (`InducedOrientNonzero`).\n\n## Lemma hints\n- Both sides are `DiffForm.integral` (P11): `∫_N μ = ∫ topCoeff` against the reference form;\n  `localCoeff`/`topCoeff` are coordinate readouts. Use linearity of `DiffForm.integral`,\n  `mextDeriv`, and `pullbackBdry` to reduce to a single POU-bump-supported `φ`.\n- Smooth partition of unity on `M` subordinate to an atlas of boundary + interior charts\n  (`SmoothPartitionOfUnity.exists_isSubordinate_chartAt_source`); `φ = ∑ᶠ f_i • φ`,\n  each `f_i • φ` supported in one chart.\n- Interior chart (support in `interior M`): `∫_M d(f_i•φ) = 0` (compactly-supported exact\n  form, divergence theorem on `ℝ^{n+1}` / `MeasureTheory.integral_deriv_eq_zero`-style) and\n  `∫_∂M ι*(f_i•φ) = 0` (support disjoint from `∂M`).\n- Boundary chart (half-space `{x₀ ≥ 0}`): in coordinates `d(f_i•φ)` integrates by the\n  fundamental theorem of calculus in the `x₀` slot\n  (`intervalIntegral.integral_deriv_eq_sub` / `MeasureTheory.integral_Iic_deriv`), leaving\n  the face integral over `{x₀ = 0}` — which is `∫_∂M ι*(f_i•φ)` via `formInCoord` /\n  `faceEmbedL` (`MExtDerivCoord.form_in_coord_mext_deriv_eq`, the coordinate `extDerivWithin`).\n- Sum over `i` telescopes the boundary terms; interior bumps cancel. `mextDeriv φ` has degree\n  `n+1` (top form on `M`), `pullbackBdry φ` degree `n` (top form on `∂M`).\n- `Library.Geometry.Manifold.MExtDerivCoord.{formInCoord, form_in_coord_mext_deriv_eq,\n  ext_deriv_locality_pullback}`; `DDZero.mextDeriv`; `StokesIntegralDefs.DiffForm.integral`.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

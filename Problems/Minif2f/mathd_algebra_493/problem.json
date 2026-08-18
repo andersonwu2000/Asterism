@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_algebra_493",
+  "charter": "# Minif2f.mathd_algebra_493 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_algebra_493`.\n\n## Statement\n∀ (f : ℝ → ℝ) (h₀ : ∀ x, f x = x ^ 2 - 4 * Real.sqrt x + 1), f (f 4) = 70\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

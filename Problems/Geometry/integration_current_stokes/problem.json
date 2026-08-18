@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.integration_current_stokes",
+  "charter": "# Geometry.integration_current_stokes — currents bridge keystone `∂[[e]] = [[∂e]]` (functional level)\n\n## Statement\n∀ {n : ℕ} {N : Type*} [compact oriented manifold-with-boundary on EuclideanHalfSpace (n+1)]\n  {F : Type*} [NormedAddCommGroup F] [NormedSpace ℝ F]\n  (e : N → F) (ψ : F → (F [⋀^Fin n]→L[ℝ] ℝ))\n  (he : ContMDiff … ∞ e) (hψ : ContDiff ℝ ∞ ψ) (hdψ : ContDiff ℝ ∞ (extDeriv ψ)),\n  integrationCurrent e (extDeriv ψ) he hdψ = boundaryIntegrationCurrent e ψ he hψ\n\n## Strategic notes\n**Capstone of the de Rham integration-current bridge.** This is classical Stokes expressed\nas the currents boundary identity `∂[[e]] = [[∂e]]`, evaluated on a flat test `n`-form `ψ`:\n`∂[[e]](ψ) = [[e]](dψ) = ∫_N e*(dψ) = ∫_N d(e*ψ) = ∫_{∂N} (e*ψ)|_{∂N} = [[∂e]](ψ)`.\n\nUnfolding `integrationCurrent`/`boundaryIntegrationCurrent` (Defs.lean), the goal is\n`DiffForm.integral (pullbackFlatForm e (extDeriv ψ) …) = DiffForm.integral (pullbackBdry (pullbackFlatForm e ψ …))`.\n**Two-step leaf-bypass, both citations in Library:**\n\n1. **d-step** — rewrite the LHS form via brick ②\n   `Library.Geometry.ManifoldBdry.PullbackFlatDNat.mextDeriv_pullbackFlatForm`\n   (`mextDeriv (𝓡∂ (n+1)) (pullbackFlatForm e ψ he hψ) = pullbackFlatForm e (extDeriv ψ) he hdψ`),\n   used right-to-left so `pullbackFlatForm e (extDeriv ψ) …` becomes\n   `mextDeriv (𝓡∂ (n+1)) (pullbackFlatForm e ψ he hψ)`.\n2. **Stokes** — close with the Library keystone\n   `Library.Geometry.Manifold.PerBumpStokes.integral_mextDeriv_eq_integral_pullbackBdry`\n   (`∀ φ, DiffForm.integral (mextDeriv (𝓡∂ (n+1)) φ) = DiffForm.integral (pullbackBdry φ)`)\n   applied to `φ := pullbackFlatForm e ψ he hψ`.\n\nSo: `simp only [integrationCurrent, boundaryIntegrationCurrent];\nrw [← mextDeriv_pullbackFlatForm e ψ he hψ hdψ];\nexact integral_mextDeriv_eq_integral_pullbackBdry (pullbackFlatForm e ψ he hψ)` (modulo\nexact-name/implicit fiddling). No new analysis — the d-naturality (brick ②) and Stokes\n(P13) are both done and harvested.\n\nThe only deferred piece of the bridge is the **continuity** that would make `ψ ↦ [[e]](ψ)`\na genuine topological-dual `Current` (a sup-norm bound on `DiffForm.integral`); not needed\nfor this functional-level identity.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

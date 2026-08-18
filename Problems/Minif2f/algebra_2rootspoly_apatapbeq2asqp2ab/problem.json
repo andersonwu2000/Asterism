@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.algebra_2rootspoly_apatapbeq2asqp2ab",
+  "charter": "# Minif2f.algebra_2rootspoly_apatapbeq2asqp2ab — imported from miniF2F\n\nOriginal miniF2F theorem name: `algebra_2rootspoly_apatapbeq2asqp2ab`.\n\n## Statement\n∀ (a b : ℂ), (a + a) * (a + b) = 2 * a ^ 2 + 2 * (a * b)\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

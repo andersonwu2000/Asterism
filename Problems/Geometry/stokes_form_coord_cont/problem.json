@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.stokes_form_coord_cont",
+  "charter": "# Geometry.stokes_form_coord_cont — `⋀ᵏ T*M` transition is continuous on the overlap\n\n## Statement\n`ContinuousOn (formCoordChange I k i j) (baseSet i ∩ baseSet j)` for the form-bundle\ntransition. (§A.2 of the Stokes form-bundle construction — the\n`continuousOn_coordChange` field of the `VectorBundleCore`.)\n\n## Setting\n`formCoordChange I k i j x := compContinuousLinearMapCLM ((tangentBundleCore I M).coordChange j i x)`\nis the transition of `⋀ᵏ T*M` (alternating `k`-forms on `TM`) for a `C^∞` manifold\n`M`. Continuity must hold on the chart overlap `baseSet i ∩ baseSet j`.\n\n## Lemma hints\n- `Mathlib/Geometry/Manifold/VectorBundle/Tangent.lean` —\n  `tangentBundleCore`, `VectorBundleCore.continuousOn_coordChange`.\n- `ContinuousAlternatingMap.compContinuousLinearMapCLM` — continuous (it is a CLM);\n  compose its continuity with the tangent transition's `ContinuousOn`.\n- Strategy: `compContinuousLinearMapCLM` is itself continuous, so\n  `ContinuousOn` reduces to the tangent `continuousOn_coordChange` via\n  `ContinuousOn.comp` / `Continuous.comp_continuousOn`.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

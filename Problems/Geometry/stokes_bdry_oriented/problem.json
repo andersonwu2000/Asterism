@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.stokes_bdry_oriented",
+  "charter": "# Geometry.stokes_bdry_oriented — the induced boundary orientation vanishes nowhere\n\n## Statement\n`inducedOrient` (the induced boundary orientation form `ι_ν μ` on `∂M`, assembled as a\ngenuine smooth `n`-form from P12's POU-glued `inducedOrientFun` + its smoothness witness)\nvanishes nowhere: `∀ p : Bdry n M, inducedOrient p ≠ 0`. This is `refForm_ne`, the last\nobligation for `∂M`'s `OrientedManifold` instance (assembled in P13). Owns `inducedOrient`.\n\n## Setting\nThe induced orientation contracts `M`'s nowhere-zero reference form `μ` with the outward\nnormal `ν = −e₀`, transverse to the boundary face `{x₀ = 0}`. Each chart-local candidate\n`inducedOrientChartFun q` is therefore a nonzero top `n`-form, and (the cocycle / positive\nnormal derivative) all candidates at a point lie on the SAME positive ray. The POU glue\n`∑ᶠ q, (pou q) • (chartFun q)` has nonnegative coefficients summing to `1`, so the convex\ncombination of same-ray nonzero vectors is nonzero — `ι_ν μ` vanishes nowhere.\n\n## Lemma hints\n- `inducedOrient p` unfolds to P12's `inducedOrientFun p =`\n  `∑ᶠ q, inducedOrientPOU n M q p • inducedOrientChartFun q p`\n  (`Library.Geometry.Manifold.InducedOrientDefs.{inducedOrientFun, inducedOrientPOU,\n  inducedOrientChartFun}`).\n- POU partition: `SmoothPartitionOfUnity.sum_eq_one` (coeffs sum to 1 at every point),\n  `SmoothPartitionOfUnity.nonneg`; `inducedOrientPOU n M` is the chosen POU.\n- Same-ray positivity: each `inducedOrientChartFun q p` (for `q` in the POU support at `p`)\n  is a positive multiple of any other via the boundary coordinate-change cocycle with\n  positive normal derivative `c = ∂τ⁰/∂x⁰ > 0`; the tangential defect dies by alternation\n  (`AlternatingMap.map_linearDependent` — `range faceEmbedL` is `n`-dimensional in `n+1`).\n- A nonneg-weighted (weights summing to 1) combination of nonzero vectors on a common open\n  ray is nonzero; `finsum`/`Finset.sum` positivity (`Finset.sum_ne_zero` via a strictly\n  positive coordinate), `ContinuousAlternatingMap` nonzero at a fixed `n`-frame.\n- `inducedOrient` is `Library.Geometry.Manifold.DiffFormBundle.DiffForm` (a smooth section);\n  `inducedOrient p = inducedOrientFun p` definitionally.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

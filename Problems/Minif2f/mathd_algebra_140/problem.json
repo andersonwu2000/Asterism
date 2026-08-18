@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_algebra_140",
+  "charter": "# Minif2f.mathd_algebra_140 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_algebra_140`.\n\n## Statement\n∀ (a b c : ℝ) (h₀ : 0 < a ∧ 0 < b ∧ 0 < c) (h₁ : ∀ x, 24 * x ^ 2 - 19 * x - 35 = (a * x - 5) * (2 * (b * x) + c)), a * b - 3 * c = -9\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

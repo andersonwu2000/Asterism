@@ -1,0 +1,13 @@
+{
+  "problem": "Algebra.toy_sized",
+  "charter": "# Algebra.toy_sized — a class, a structure, and a named instance\n\n## Statement\n\nMinimal typeclass-resolution vocabulary, built from scratch:\n\n- `toy_sized` — a **class** over a type `α` with a single field\n  `tsize : α → ℕ`.\n- `toy_pair` — a **structure** with two fields `a b : ℕ`.\n- `toy_pair_sized` — a **named instance** `toy_sized toy_pair` whose\n  `tsize` is `a + b`. (Name it exactly `toy_pair_sized` — the\n  framework requires named instances.)\n\n### Deliverables\n\nForward-build the vocabulary above; `MarkDeliverable` the claim; then\n`Ingest`:\n\n- `toy_pair_tsize_val` — `toy_sized.tsize (toy_pair.mk 2 3) = 5`,\n  where `tsize` is found by typeclass resolution (do not name the\n  instance in the statement).\n\n### Proof shape\n\nUnfold `tsize` for the registered instance; `rfl` or `simp` closes it.\n\nDo NOT introduce axioms or `sorry`-bearing shortcuts.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  }
+}

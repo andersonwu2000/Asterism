@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.currents_boundary_zero",
+  "charter": "# Geometry.currents_boundary_zero — ∂∘∂ = 0 for de Rham currents\n\n## Statement\nFor a de Rham `(k+2)`-current `T` on an open `Ω ⊆ E` (a continuous linear\nfunctional on test forms; see `Defs.lean`), the boundary operator `∂`\n(`boundary`, defined by `(∂T)(φ) = T(dφ)`) satisfies\n\n`boundary (boundary T) = 0`\n\n— the chain-complex relation `∂∘∂ = 0` of the currents complex.\n\n## Setting\nSecond brick of the **de Rham currents → Federer-Fleming** foundation, building\ndirectly on the first (harvested into the Library). `∂` is precomposition with\nthe test-form exterior-derivative CLM `extDerivCLM`; `∂∘∂ = 0` is the dual of\nthe test-form `d∘d = 0` already in the Library. This makes currents into a chain\ncomplex (whose homology is, by de Rham, the cohomology of `Ω`).\n\n## Strategic notes\nUnfold both `boundary`s: `boundary (boundary T) = (T.comp (extDerivCLM (k+1)))\n.comp (extDerivCLM k)`. Reassociate the continuous-linear-map composition\n(`ContinuousLinearMap.comp_assoc`) to `T.comp ((extDerivCLM (k+1)).comp\n(extDerivCLM k))`, rewrite the inner composition to `0` via the Library's\n`extDerivCLM_comp_extDerivCLM_eq_zero`, then `ContinuousLinearMap.comp_zero`\ncloses it. Likely a clean leaf-bypass — no decomposition needed.\n\n## Lemma hints\n- `Library.Geometry.Manifold.ExtDerivCLMSquareZero.extDerivCLM_comp_extDerivCLM_eq_zero` : `(extDerivCLM (k+1)).comp (extDerivCLM k) = 0` — the Library d∘d=0 this reduces to.\n- `Library.Geometry.Manifold.ExtDerivCLMSquareZero.extDerivCLM` : the exterior-derivative CLM `∂` precomposes with.\n- `ContinuousLinearMap.comp_assoc` : `(f.comp g).comp h = f.comp (g.comp h)`.\n- `ContinuousLinearMap.comp_zero` : `f.comp 0 = 0`.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

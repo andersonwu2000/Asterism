@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.amc12a_2003_p25",
+  "charter": "# Minif2f.amc12a_2003_p25 — imported from miniF2F\n\nOriginal miniF2F theorem name: `amc12a_2003_p25`.\n\n## Statement\n∀ (a b : ℝ) (f : ℝ → ℝ) (h₀ : 0 < b) (h₁ : ∀ x, f x = Real.sqrt (a * x ^ 2 + b * x)) (h₂ : { x | 0 ≤ f x } = f '' { x | 0 ≤ f x }), a = 0 ∨ a = -4\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

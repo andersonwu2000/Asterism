@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_numbertheory_136",
+  "charter": "# Minif2f.mathd_numbertheory_136 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_numbertheory_136`.\n\n## Statement\n∀ (n : ℕ) (h₀ : 123 * n + 17 = 39500), n = 321\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "problem": "Test.sl2z_monodromy",
+  "charter": "# Test.sl2z_monodromy\n\n## Statement\n\nThe bound paper classifies torus bundles by the trace of the monodromy\nmatrix (somewhere around §2.8 / §3.2). Formalize the algebraic\ndichotomy behind that classification for `A ∈ SL(2,ℤ)`: small trace\nmeans finite order, large trace means infinite order. Check the paper\nfor what small/large mean exactly and which side the boundary cases\nbelong to — the boundary itself is out of scope.\n\n### Deliverables\n\n`MarkDeliverable` each; then `Ingest`:\n\n- `sl2z_small_trace_finite_order`\n- `sl2z_large_trace_infinite_order`\n\nDo NOT introduce axioms or `sorry`-bearing shortcuts.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  },
+  "papers": [
+    "1d60ef74ee5d"
+  ]
+}

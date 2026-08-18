@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_algebra_131",
+  "charter": "# Minif2f.mathd_algebra_131 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_algebra_131`.\n\n## Statement\n∀ (a b : ℝ) (f : ℝ → ℝ) (h₀ : ∀ x, f x = 2 * x ^ 2 - 7 * x + 2) (h₁ : f a = 0) (h₂ : f b = 0) (h₃ : a ≠ b), 1 / (a - 1) + 1 / (b - 1) = -1\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

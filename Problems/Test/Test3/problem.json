@@ -1,0 +1,13 @@
+{
+  "problem": "Test.Test3",
+  "charter": "# Test.Test3\n\n## Statement\n\n這是個運行測試. 請計算 [ 1 & 2 \\\\ 3 & 4 ]^5 的行列式.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  }
+}

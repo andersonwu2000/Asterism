@@ -1,0 +1,13 @@
+{
+  "problem": "PutnamCmp.putnam_2025_b6_1",
+  "charter": "# Putnam.putnam_2025_b6_1 — Putnam 2025 B6, Seed-Prover statement\n\nOriginal theorem: `putnam_2025_b6` (Putnam 2025 B6). Same informal\nproblem as sibling `Putnam.putnam_2025_b6`; this variant pins the\nformal statement from the Seed-Prover 1.5 Putnam 2025 release\n(ByteDance-Seed/Seed-Prover) — `g : ℕ+ → ℕ+` encoding, answer\n`(1/4 : ℝ)` inline — for cross-encoding comparison runs. File\nscaffold (imports/namespace/`main`) is ours; the theorem TYPE is\nbyte-faithful to upstream.\n\n## Statement\n\nLet $\\mathbb{N} = \\{1, 2, 3, \\ldots\\}$. Find the largest real constant $r$ such that\nthere exists a function $g: \\mathbb{N} \\to \\mathbb{N}$ such that\n$$g(n+1) - g(n) \\geq (g(g(n)))^r$$\nfor all $n \\in \\mathbb{N}$.\n\nThe formal statement is pinned in `Root.lean` (`theorem main`); the\nofficial answer (1/4) is inline in the statement, per upstream\n(solutions-replaced evaluation protocol — the task is proving, not\nanswer-finding).\n\n## Strategic notes\n\nStatement imported from Seed-Prover 1.5 upstream, unedited. No\nper-problem hints — benchmark integrity. The pinned statement is\nnever edited; if you believe it is FALSE, that is what\n`AttemptDisproof` / `RequestUserAmend` are for.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  }
+}

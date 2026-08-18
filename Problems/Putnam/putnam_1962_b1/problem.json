@@ -1,0 +1,13 @@
+{
+  "problem": "Putnam.putnam_1962_b1",
+  "charter": "# Putnam.putnam_1962_b1 — imported from PutnamBench\n\nOriginal theorem: `putnam_1962_b1` (Putnam 1962 B1).\n\n## Statement\n\nLet $x^{(n)} = x(x-1)\\cdots(x-n+1)$ for $n$ a positive integer and let $x^{(0)} = 1.$ Prove that \\[ (x+y)^{(n)} = \\sum_{k=0}^n {n \\choose k} x^{(k)} y^{(n-k)}. \\]\n\nThe formal statement is pinned in `Root.lean` (`theorem main`).\nNo solution abbrev — pure proof task.\n\n## Strategic notes\n\nImported via `Benchmarks/putnambench/adapter.py` from\ntrishullab/PutnamBench @ a23d8e6. No per-problem hints —\nbenchmark integrity. The pinned statement is never edited;\nif you believe it is FALSE, that is what `AttemptDisproof` /\n`RequestUserAmend` are for.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  }
+}

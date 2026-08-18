@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.induction_divisibility_3div2tooddnp1",
+  "charter": "# Minif2f.induction_divisibility_3div2tooddnp1 — imported from miniF2F\n\nOriginal miniF2F theorem name: `induction_divisibility_3div2tooddnp1`.\n\n## Statement\n∀ (n : ℕ), 3 ∣ 2 ^ (2 * n + 1) + 1\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

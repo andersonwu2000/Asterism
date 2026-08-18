@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.amc12a_2020_p21",
+  "charter": "# Minif2f.amc12a_2020_p21 — imported from miniF2F\n\nOriginal miniF2F theorem name: `amc12a_2020_p21`.\n\n## Statement\n∀ (S : Finset ℕ) (h₀ : ∀ n : ℕ, n ∈ S ↔ 5 ∣ n ∧ Nat.lcm 5! n = 5 * Nat.gcd 10! n), S.card = 48\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

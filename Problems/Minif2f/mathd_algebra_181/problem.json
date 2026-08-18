@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_algebra_181",
+  "charter": "# Minif2f.mathd_algebra_181 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_algebra_181`.\n\n## Statement\n∀ (n : ℝ) (h₀ : n ≠ 3) (h₁ : (n + 5) / (n - 3) = 2), n = 11\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

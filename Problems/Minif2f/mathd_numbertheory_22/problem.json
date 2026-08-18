@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_numbertheory_22",
+  "charter": "# Minif2f.mathd_numbertheory_22 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_numbertheory_22`.\n\n## Statement\n∀ (b : ℕ) (h₀ : b < 10) (h₁ : Nat.sqrt (10 * b + 6) * Nat.sqrt (10 * b + 6) = 10 * b + 6), b = 3 ∨ b = 1\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

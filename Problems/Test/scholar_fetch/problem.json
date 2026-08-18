@@ -1,0 +1,16 @@
+{
+  "problem": "Test.scholar_fetch",
+  "charter": "# Test.scholar_fetch\n\n## Statement\n\nThe bound paper's §3.3 (polyhedra) leans on the cited companion work\nby Roeder–Hubbard–Dunbar on Andreev's theorem. We will eventually need\nthat companion in the workspace. Independently, formalize one small\nwarm-up fact about the paper's §2.8 monodromy matrices.\n\n### Deliverables\n\n`MarkDeliverable` the claim; then `Ingest`:\n\n- `sl2z_neg_one_sq` — in `Matrix.SpecialLinearGroup (Fin 2) ℤ`,\n  `(-1 : SL(2,ℤ))^2 = 1`.\n\n## Strategic notes\n\nBefore Ingest, make sure the Roeder–Hubbard–Dunbar companion paper\n(cited in the bound paper's §3.3) is fetched and bound to this problem\n— use `FetchPaper` with the citation; a Scholar agent resolves it.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  },
+  "papers": [
+    "1d60ef74ee5d"
+  ]
+}

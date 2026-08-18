@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_algebra_462",
+  "charter": "# Minif2f.mathd_algebra_462 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_algebra_462`.\n\n## Statement\n((1 : ℚ) / 2 + 1 / 3) * (1 / 2 - 1 / 3) = 5 / 36\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

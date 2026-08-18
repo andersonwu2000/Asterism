@@ -1,0 +1,13 @@
+{
+  "problem": "Topology.sphere_homology",
+  "charter": "# Topology.sphere_homology — singular homology of the n-sphere\n\n## Statement\n\nCompute the singular homology of the spheres, with coefficients in an\narbitrary ring `R`. The Mayer–Vietoris long exact sequence is already in the\nLibrary (`Library.AlgebraicTopology.MayerVietoris.*`) — cite it, do not\nrebuild it.\n\nFor `n ≥ 1`: `H_k(S^n; R) ≅ R` for `k = 0` and `k = n`, and `H_k(S^n; R) ≅ 0`\nfor all other `k`. Here `S^n` is `TopCat.sphere n` and `H_k` is mathlib's\nsingular homology (`AlgebraicTopology.singularHomologyFunctor`).\n\n### Deliverables\n\n- `sphere_homology_top` — `H_n(S^n; R) ≅ R` (n ≥ 1)\n- `sphere_homology_zero` — `H_0(S^n; R) ≅ R`\n- `sphere_homology_eq_zero_of_ne` — `H_k(S^n; R) ≅ 0` for `k ∉ {0, n}` (n ≥ 1)\n\nIf a genuine wall is hit, stalling is diagnostic data — do NOT introduce\naxioms or `sorry`-bearing shortcuts.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "problem": "Algebra.localization_euclidean",
+  "charter": "# localization_euclidean — `S⁻¹D` is Euclidean if `D` is\n\n## Statement\n∀ {D : Type*} [EuclideanDomain D] (S : Submonoid D),\n  0 ∉ S → Nonempty (EuclideanDomain (Localization S))\n\n## Lemma hints\n- `EuclideanDomain` — Mathlib structure with fields `r`, `quotient`, `remainder`, `quotient_mul_add_remainder_eq`, `r_wellFounded`, `remainder_lt`\n- `Localization`, `Localization.mk`, `Localization.r` — the equivalence on `D × S` plus quotient construction\n- `Localization.mk_eq_mk_iff` — when two fractions agree\n- `Localization.lift` / `Localization.liftOn` — define functions out of the localization respecting the equivalence\n- `EuclideanDomain.quotient`, `EuclideanDomain.remainder`, `EuclideanDomain.remainder_lt` — for transferring the underlying division\n- `IsDomain` instance for `EuclideanDomain` (no zero divisors); `Localization.instIsDomain` if applicable\n\n## Strategic notes\nThe classical construction has 3-4 layers:\n\n1. **Define the localized valuation** `ν̃ : Localization S → ℕ` representative-\n   independently. The simplest definition is `ν̃ ⟦(a, s)⟧ := EuclideanDomain.r a 0`-\n   based — the \"size of the numerator\" — but this needs a representative\n   choice. Use `Localization.liftOn` with a proof that the value doesn't\n   depend on which `(a, s)` is picked.\n\n2. **Define quotient and remainder** on `Localization S`. Given fractions\n   `a/s` and `b/t` (both nonzero), pick a representative pair and reduce\n   to `D`'s division. Concretely: `(a/s) = (b/t) · q + r` reduces to\n   `at = bq's + r's·t` for some `q', r' ∈ D` after clearing denominators.\n\n3. **Verify the Euclidean axioms** for the constructed `ν̃, quotient, remainder`:\n   well-foundedness of `r`, the division identity, and `r remainder < r divisor`.\n\n4. **Wrap into the instance**. The Mathlib `EuclideanDomain` structure\n   bundles all the data; produce it via `EuclideanDomain.mk` or refine\n   from the existing `CommRing (Localization S)` instance.\n\nThe key trick (from the user's HW): for `a/s ≠ 0`, the localized valuation\nof `a/s` is `EuclideanDomain.r a 0` of the **numerator only** — denominators\nare units in the localization. Independence-of-representative reduces to a\ndivisibility argument inside `D`. Don't expect a one-line proof; the\nexistence + axioms together will need 3-5 sub-goals.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

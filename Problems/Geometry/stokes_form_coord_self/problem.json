@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.stokes_form_coord_self",
+  "charter": "# Geometry.stokes_form_coord_self — `⋀ᵏ T*M` transition fixes the fibre on a self-overlap\n\n## Statement\nFor the form-bundle transition `formCoordChange I k i i` at a self-overlap,\n`formCoordChange I k i i x v = v` for every `x` in the base set and every `v`.\n(§A.1 of the Stokes form-bundle construction.)\n\n## Setting\n`formCoordChange I k i j x := compContinuousLinearMapCLM ((tangentBundleCore I M).coordChange j i x)`\nis the transition of the bundle `⋀ᵏ T*M` of alternating `k`-forms on the tangent\nspaces of a `C^∞` manifold `M` (model `I`). It is the contravariant\n(precomposition) push of the tangent transition. This obligation is the\n`coordChange_self` field needed to make `formCoordChange` a `VectorBundleCore`.\n\n## Lemma hints\n- `Mathlib/Geometry/Manifold/VectorBundle/Tangent.lean` — `tangentBundleCore`,\n  `VectorBundleCore.coordChange_self` (the tangent self-overlap identity).\n- `Mathlib/Topology/Algebra/Module/Alternating/Basic.lean` /\n  `Mathlib/Analysis/.../Alternating` — `ContinuousAlternatingMap.compContinuousLinearMapCLM`,\n  its action on `ContinuousLinearMap.id` (precomposition by `id` is `id`).\n- Strategy: rewrite the tangent `coordChange_self` to turn the inner CLM into\n  `ContinuousLinearMap.id`, then `compContinuousLinearMapCLM id = id`.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

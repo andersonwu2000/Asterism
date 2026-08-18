@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.stokes_bdry_invfun_mem",
+  "charter": "# Geometry.stokes_bdry_invfun_mem — the boundary chart's inverse lands in ∂M\n\n## Statement\nFor a boundary point `p : Bdry n M` and `z` with `faceEmbed z ∈ (extChartAt (𝓡∂ (n+1)) p.val).target`,\nthe inverse `(extChartAt (𝓡∂ (n+1)) p.val).symm (faceEmbed z)` lies in\n`(𝓡∂ (n+1)).boundary M`. (Prerequisite for the boundary chart's guarded `invFun`.)\n\n## Setting\n`Bdry` is cited from `Library.Geometry.ManifoldBoundary.CompactBdry`. `faceEmbed`\nplaces `z` in coordinates `1..n`, so `(faceEmbed z) 0 = 0` — i.e. `faceEmbed z`\nlies on the model boundary `{x₀ = 0}`. On the chart target, `extChartAt`'s symm is\nthe genuine inverse and carries a boundary point of the model to a boundary point\nof `M` (boundary is preserved by charts).\n\n## Lemma hints\n- `Mathlib/Geometry/Manifold/InteriorBoundary.lean` — `ModelWithCorners.boundary`,\n  membership criteria; the chart/`extChartAt` ↔ boundary compatibility lemmas\n  (`extChartAt_target`, boundary-preimage characterizations).\n- `Mathlib/Geometry/Manifold/Instances/Real.lean` — `EuclideanHalfSpace`,\n  `𝓡∂`, the boundary of the half-space is `{x | x 0 = 0}`.\n- `faceEmbed z` has `0`-th coordinate `0`: from the `Fin.succ` indexing in the sum\n  (no `e₀` term), `EuclideanSpace.basisFun … i.succ 0 = 0`.\n- Strategy: show `faceEmbed z` is in the model boundary (`x 0 = 0`), transfer along\n  `extChartAt`'s symm using the on-target hypothesis.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "problem": "sylvester_gallai",
+  "charter": "# sylvester_gallai — every non-collinear point set has an ordinary line\n\n## Statement\n∀ (P : Finset (ℝ × ℝ)),\n    (∃ a ∈ P, ∃ b ∈ P, ∃ c ∈ P, ¬ Collinear a b c) →\n    ∃ p ∈ P, ∃ q ∈ P, p ≠ q ∧ ∀ r ∈ P, Collinear p q r → r = p ∨ r = q\n\n## Strategic notes\n\nSylvester–Gallai theorem. Freek-100; known proven, NOT in Mathlib.\n\nThe custom `Collinear p q r` is the determinant test\n`(p.1 - r.1) * (q.2 - r.2) = (p.2 - r.2) * (q.1 - r.1)` (see `Defs.lean`),\nnot Mathlib's `AffineSubspace`-based predicate.\n\nKelly's proof (1948):\n- Consider pairs (line ℓ through ≥2 points of P, point p ∈ P off ℓ).\n- Minimise the perpendicular distance from p to ℓ; pick minimiser (ℓ*, p*).\n- Suppose ℓ* contains ≥3 points. The foot of perpendicular from p*\n  has at least two of them on one side; the closer of those two with\n  p* defines a line strictly closer to the third. Contradiction.\n- Hence ℓ* has exactly 2 points of P.\n\n## Lemma hints\n- `Collinear p q r` ≝ `(p.1 - r.1)*(q.2 - r.2) = (p.2 - r.2)*(q.1 - r.1)`\n- `Finset.min'_image` / `Finset.exists_min_image` — minimiser existence\n- Real distance / arithmetic inequalities\n- Classical `by_contra` + finite induction over `P.card`",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

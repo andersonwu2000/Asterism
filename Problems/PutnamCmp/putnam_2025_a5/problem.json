@@ -1,0 +1,13 @@
+{
+  "problem": "PutnamCmp.putnam_2025_a5",
+  "charter": "# Putnam.putnam_2025_a5 — imported from PutnamBench\n\nOriginal theorem: `putnam_2025_a5` (Putnam 2025 A5).\n\n## Statement\n\nLet $n$ be an integer with $n \\ge 2$. For a sequence $s = (s_1, \\ldots, s_{n-1})$ where each\n$s_i = \\pm 1$, let $f(s)$ be the number of permutations $(a_1, \\ldots, a_n)$ of $\\{1, 2, \\ldots, n\\}$\nsuch that $s_i(a_{i+1} - a_i) > 0$ for all $i$. For each $n$, determine the sequences $s$ for which\n$f(s)$ is maximal.\n\nThe formal statement is pinned in `Root.lean` (`theorem main`).\nThe `_solution` abbrev in `Defs.lean` carries the OFFICIAL\nanswer (upstream ships it as a comment; this matches the\nstandard solutions-replaced evaluation protocol — the task\nis proving, not answer-finding).\n\n## Strategic notes\n\nImported via `Benchmarks/putnambench/adapter.py` from\ntrishullab/PutnamBench @ a23d8e6. No per-problem hints —\nbenchmark integrity. The pinned statement is never edited;\nif you believe it is FALSE, that is what `AttemptDisproof` /\n`RequestUserAmend` are for.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.stokes_induced_orient",
+  "charter": "# Geometry.stokes_induced_orient — the induced boundary orientation is smooth\n\n## Statement\n`inducedOrientFun` is a `C^∞` section of `⋀ⁿ T*∂M` (the smoothness of the induced\nboundary orientation form `ι_ν μ`). §A.8. Owns `inducedOrientFun`.\n\n## Setting\nThe boundary orientation Stokes selects is the contraction of `M`'s orientation `μ`\nwith the outward normal `ν = -e₀`, restricted to `∂M`. In coordinates:\n`compContinuousLinearMapCLM faceEmbedL ((μ's coord rep).curryLeft (-e₀))`. Cites P11\n(`OrientedManifold` + `refForm`), P10 (`faceEmbedL`), P5 (`formInCoord`), P4\n(`DiffForm`/`formBundleCore`), `Bdry`, and `∂M`'s manifold structure (global instance\n`isManifold_bdry`).\n\n## Lemma hints\n- Mirror P10 (`Geometry.stokes_pullback`): explicit `ContMDiff` of the total-space map,\n  fibre family pinned by `(E := …)`; `instFormBundleContMDiff` gives the smooth bundle.\n- Section smoothness reduces (via `Trivialization.symmL` / `continuousLinearMapAt`) to\n  smoothness of the coordinate map. `formInCoord` of the smooth `refForm μ` is smooth\n  (P5); `curryLeft (-e₀)` and `compContinuousLinearMapCLM faceEmbedL` are fixed CLMs\n  (smooth); `extChartAt` / `p.val` (the `∂M` inclusion) are smooth.\n- `ContinuousAlternatingMap.curryLeft`, `compContinuousLinearMapCLM`,\n  `EuclideanSpace.basisFun`; the boundary-inclusion smoothness `bdry_val_contmdiff`\n  (Library `BdryValSmooth`, from P10) is available.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

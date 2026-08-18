@@ -1,0 +1,12 @@
+{
+  "problem": "Algebra.gen_generates",
+  "charter": "# gen_generates — exam IV cyclic group generator lemma\n\n## Statement\n∀ (n : ℕ) [Fact (2 ≤ n)] (x : G n), x ∈ Subgroup.zpowers (gen n)\n\n## Lemma hints\n- `Subgroup.mem_zpowers_iff` — `x ∈ Subgroup.zpowers g ↔ ∃ k : ℤ, g^k = x`\n- `Multiplicative.ofAdd`, `Multiplicative.toAdd`, `Multiplicative.toAdd_zpow`\n- `AddSubgroup.mem_zmultiples_iff` — additive analogue\n- `ZMod.intCast_cast`, `ZMod.intCast_zmod_cast`\n- `Int.cast` / `zsmul` lemmas for ZMod\n- The additive form: every `x : ZMod n` equals `(x.val : ℤ) • 1` (i.e. `x.val * 1 = x`)\n\n## Strategic notes\n`G n = Multiplicative (ZMod n)`, `gen n = Multiplicative.ofAdd (1 : ZMod n)`.\n\nGoal: for any `x : G n`, exhibit `k : ℤ` such that `(gen n) ^ k = x`.\n\nTranslation through `Multiplicative`:\n`(Multiplicative.ofAdd a) ^ k = Multiplicative.ofAdd (k • a)` (zsmul on the\nadditive side). So `(gen n)^k = x` ⟺ `k • (1 : ZMod n) = Multiplicative.toAdd x`.\n\nIn `ZMod n`, `k • (1 : ZMod n) = (k : ZMod n)` (integer cast). And every\nelement of `ZMod n` is the image of some integer cast (e.g. `Multiplicative.toAdd x`\nitself reinterpreted as ℤ via `.val`). So a valid `k` is `((Multiplicative.toAdd x).val : ℤ)`.\n\nAlternate route: Mathlib's `IsCyclic` instance for `ZMod n` might be available;\nthe multiplicative wrapping inherits it. If you can find `IsCyclic.exists_pow_eq`\nor similar, the proof is one application.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

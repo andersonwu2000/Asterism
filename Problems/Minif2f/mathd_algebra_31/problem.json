@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_algebra_31",
+  "charter": "# Minif2f.mathd_algebra_31 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_algebra_31`.\n\n## Statement\n∀ (x : NNReal) (u : ℕ → NNReal) (h₀ : ∀ n, u (n + 1) = NNReal.sqrt (x + u n)) (h₁ : Filter.Tendsto u Filter.atTop (𝓝 9)), 9 = NNReal.sqrt (x + 9)\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

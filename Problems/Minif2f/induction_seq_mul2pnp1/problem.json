@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.induction_seq_mul2pnp1",
+  "charter": "# Minif2f.induction_seq_mul2pnp1 — imported from miniF2F\n\nOriginal miniF2F theorem name: `induction_seq_mul2pnp1`.\n\n## Statement\n∀ (n : ℕ) (u : ℕ → ℕ) (h₀ : u 0 = 0) (h₁ : ∀ n, u (n + 1) = 2 * u n + (n + 1)), u n = 2 ^ (n + 1) - (n + 2)\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

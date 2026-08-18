@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.algebra_xmysqpymzsqpzmxsqeqxyz_xpypzp6dvdx3y3z3",
+  "charter": "# Minif2f.algebra_xmysqpymzsqpzmxsqeqxyz_xpypzp6dvdx3y3z3 — imported from miniF2F\n\nOriginal miniF2F theorem name: `algebra_xmysqpymzsqpzmxsqeqxyz_xpypzp6dvdx3y3z3`.\n\n## Statement\n∀ (x y z : ℤ) (h₀ : (x - y) ^ 2 + (y - z) ^ 2 + (z - x) ^ 2 = x * y * z), x + y + z + 6 ∣ x ^ 3 + y ^ 3 + z ^ 3\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

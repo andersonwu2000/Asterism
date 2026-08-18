@@ -1,0 +1,13 @@
+{
+  "problem": "Topology.simple_loop_conjecture",
+  "charter": "# Topology.simple_loop_conjecture\n\n## Statement\n\nProve Conjecture 2 (Simple Loop Conjecture) of the paper [p.5]:\n\nLet f : S → M be a map from an orientable surface to a 3-manifold.\nIf f∗ : π₁(S) → π₁(M) is not injective, there is an element in\nker f∗ that is represented by a simple (that is, embedded) loop.\n\n(This is the stress test required for framework development. Keep an open mind.)\n\n## Strategic notes\n\nAttempt to prove the original conjecture. Use the framework to verify your own\nthinking and conjectures — do not stay within known results. Judge every arc by\nthe distance it removes.\n\nSurvey the literature before committing to a line of attack — `FetchPaper` is\navailable.\n\nThe paper-fetch whitelist now includes publisher open archives (AMS / Project\nEuclid / MSP); a paper previously recorded as unfetchable may now resolve.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "problem": "Logic.toy_soundness",
+  "charter": "# Logic.toy_soundness — soundness of a two-rule toy Hilbert system\n\n## Statement\n\nA toy propositional language and its semantics, built from scratch:\n\n- `toy_formula` — an **inductive type** of formulas over natural-number\n  atoms: an atom constructor `atom : ℕ → toy_formula` and implication\n  `imp : toy_formula → toy_formula → toy_formula`.\n- `toy_model` — a **structure** bundling a valuation `val : ℕ → Prop`.\n- `toy_eval` — evaluation of a formula in a model (`toy_model →\n  toy_formula → Prop`): an atom holds iff its valuation holds,\n  `imp A B` holds iff `A`'s evaluation implies `B`'s.\n- `toy_derives` — an **inductive** derivability predicate\n  (`toy_formula → Prop`) with exactly two rules: axiom scheme K,\n  `⊢ A.imp (B.imp A)` for all `A B`, and modus ponens (from `⊢ A.imp B`\n  and `⊢ A` conclude `⊢ B`).\n- `has_toy_depth` — a **class** over a type `α` exposing a single\n  field `depth : α → ℕ` (an abstract size interface; no instance is\n  required by the claims below).\n\n### Deliverables\n\nForward-build the vocabulary above (snake_case names as given);\n`MarkDeliverable` each claim; then `Ingest`:\n\n- `toy_soundness` — every derivable formula is true in every model:\n  `toy_derives A → ∀ M, toy_eval M A`.\n- `toy_depth_pos` — for any `α` with `[has_toy_depth α]` and any\n  `x : α`, `0 < has_toy_depth.depth x + 1`.\n\n### Proof shape\n\n`toy_soundness` is induction over the `toy_derives` derivation: the K\ncase is propositional logic (`intro`/`exact`), the modus-ponens case\napplies the two induction hypotheses. `toy_depth_pos` is arithmetic\n(`Nat.succ_pos`).\n\nDo NOT introduce axioms or `sorry`-bearing shortcuts.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  }
+}

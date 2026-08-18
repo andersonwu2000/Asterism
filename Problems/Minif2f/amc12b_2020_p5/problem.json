@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.amc12b_2020_p5",
+  "charter": "# Minif2f.amc12b_2020_p5 — imported from miniF2F\n\nOriginal miniF2F theorem name: `amc12b_2020_p5`.\n\n## Statement\n∀ (a b : ℕ) (h₀ : (5 : ℚ) / 8 * b = 2 / 3 * a + 7) (h₁ : (b : ℚ) - 5 / 8 * b = a - 2 / 3 * a + 7), a = 42\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

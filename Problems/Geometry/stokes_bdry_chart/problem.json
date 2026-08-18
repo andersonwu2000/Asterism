@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.stokes_bdry_chart",
+  "charter": "# Geometry.stokes_bdry_chart — boundary chart data is a PartialEquiv\n\n## Statement\nThe boundary chart data at `p` (`chartToFun`/`chartInvFun`/`chartSource`/`chartTarget`)\nsatisfies the four partial-equiv laws: `map_source`, `map_target`, `left_inv`,\n`right_inv` on `source`/`target`.\n\n## Setting\nCites `Library.Geometry.ManifoldBoundary` for `Bdry`, `faceEmbed`, and\n`faceEmbed_symm_mem_boundary`. The chart is `M`'s extended chart at `p` projected to\nthe boundary face via `faceProj` (the left inverse of `faceEmbed` on `{x₀=0}`);\n`invFun` is guarded (off-target → `p`).\n\nKey facts the proof needs:\n- `faceProj (faceEmbed z) = z` (mutual inverses on the face).\n- For a chart-source boundary point `q.val`, `extChartAt p.val q.val` lies on the\n  face `{x₀=0}` (boundary maps to model boundary), so `faceEmbed (faceProj …) = …`.\n- `extChartAt`'s `map_source`/`map_target`/`left_inv`/`right_inv` on source/target.\n\n## Lemma hints\n- `Mathlib/Geometry/Manifold/InteriorBoundary.lean` — boundary ↦ model-boundary\n  under charts (the converse direction of the Library lemmas already proved).\n- `extChartAt_source`, `extChartAt_target`, `PartialEquiv.map_source`,\n  `PartialEquiv.left_inv`, `PartialEquiv.right_inv`.\n- `EuclideanSpace.basisFun_apply`, `Fin.succ_ne_zero` for the `faceProj`/`faceEmbed`\n  coordinate round-trip.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

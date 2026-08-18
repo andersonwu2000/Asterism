@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.stokes_mextderiv",
+  "charter": "# Geometry.stokes_mextderiv — the exterior derivative is a smooth section\n\n## Statement\n`CMDiff ∞ (T% (mextDerivFun I φ))` — `mextDerivFun I φ` (the chart-transport of\nmathlib's `extDerivWithin`) is a `C^∞` section of `⋀^(k+1) T*M`. (§A.5. Owns\n`formInCoord` / `mextDerivFun`.)\n\n## Setting\nPARKED until P4 (`stokes_form_bundle`) migrates — `formInCoord`/`mextDerivFun` cite\nP4's `DiffForm` / `formBundleCore` / fibre-bundle instances. Stated as a standalone\nRoot (not the inline `contMDiff_toFun` field of `mextDeriv`) so the bundle instances\nare in scope for the `T%`/`CMDiff` section-smoothness elaborator.\n\n## Lemma hints\n- mathlib `Analysis/Calculus/DifferentialForm/Basic.lean` — `extDerivWithin`, its\n  smoothness (`ContDiffOn`/`ContMDiff` of `extDerivWithin` of a smooth family).\n- `ContMDiffSection` / `Bundle.contMDiff_section`, `Trivialization.symmL` /\n  `continuousLinearMapAt` smoothness, `contMDiffAt_extChartAt`.\n- Strategy: section smoothness reduces (via the trivialisation) to smoothness of the\n  coordinate map `x ↦ extDerivWithin (formInCoord I φ x) (range I) (extChartAt I x x)`;\n  `extDerivWithin` is smooth in the form when the form is smooth, and `φ` is smooth\n  (it is a `ContMDiffSection`).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

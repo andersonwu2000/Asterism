@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.stokes_integral",
+  "charter": "# Geometry.stokes_integral — the canonical integral operator ∫_N\n\n## Statement\n`DiffForm.integral (0 : DiffForm I N d) = 0` — the integral of the zero top-form is\nzero. A sanity lemma owning the `∫_N` vocabulary: the general `OrientedManifold`\nclass, `topCoeff`, `localCoeff`, and `DiffForm.integral` (the partition-of-unity sum).\n\n## Setting\n`∫_N` is general over any oriented compact `d`-manifold `N` modelled on\n`EuclideanSpace ℝ (Fin d)` — so `∫_M` (M with boundary) and `∫_∂M` (boundaryless ∂M)\nare THIS one operator at different `(I, N)`. Cites P4 (`DiffForm`), P5 (`formInCoord`).\n\n## Lemma hints\n- `localCoeff (0 : DiffForm I N d) x = topCoeff (formInCoord I 0 x ·)`; `formInCoord`\n  of the zero section is the zero map (`ContinuousLinearMap.map_zero` /\n  `ContMDiffSection`'s `0` is the zero section), so `topCoeff 0 = 0` and `localCoeff 0 = 0`.\n- Each PoU term has factor `localCoeff 0 = 0`, so `∫ … = 0`; `finsum_eq_zero` /\n  `MeasureTheory.integral_zero`.\n- `ContinuousAlternatingMap.zero_apply`, `EuclideanSpace.basisFun`.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

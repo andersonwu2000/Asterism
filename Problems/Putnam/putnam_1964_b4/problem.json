@@ -1,0 +1,13 @@
+{
+  "problem": "Putnam.putnam_1964_b4",
+  "charter": "# Putnam.putnam_1964_b4 — imported from PutnamBench\n\nOriginal theorem: `putnam_1964_b4` (Putnam 1964 B4).\n\n## Statement\n\n$n$ great circles on the sphere are in general position (in other words at most two circles pass through any two points on the sphere). How many regions do they divide the sphere into?\n\nThe formal statement is pinned in `Root.lean` (`theorem main`).\nThe `_solution` abbrev in `Defs.lean` carries the OFFICIAL\nanswer (upstream ships it as a comment; this matches the\nstandard solutions-replaced evaluation protocol — the task\nis proving, not answer-finding).\n\n## Strategic notes\n\nImported via `Benchmarks/putnambench/adapter.py` from\ntrishullab/PutnamBench @ a23d8e6. No per-problem hints —\nbenchmark integrity. The pinned statement is never edited;\nif you believe it is FALSE, that is what `AttemptDisproof` /\n`RequestUserAmend` are for.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  }
+}

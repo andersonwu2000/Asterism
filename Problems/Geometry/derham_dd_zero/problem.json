@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.derham_dd_zero",
+  "charter": "# Geometry.derham_dd_zero — d∘d = 0 for the test-form exterior-derivative CLM\n\n## Statement\nFor the continuous-linear exterior derivative `extDerivCLM` on smooth compactly-\nsupported test k-forms on an open `Ω ⊆ E` (see `Defs.lean`),\n\n`(extDerivCLM (k+1)) ∘ (extDerivCLM k) = 0`\n\ni.e. `d∘d = 0` of the de Rham complex, realized at the level of the\ncontinuous-linear-map operator on the LF test-form space.\n\n## Setting\nFirst brick of the **de Rham currents** program: a k-current is a continuous\nlinear functional on test k-forms, and the boundary `∂T := T ∘ extDerivCLM`. The\ncurrents' `∂∘∂ = 0` is the dual (precomposition) corollary of THIS `d∘d = 0`.\n`extDerivCLM` is given in `Defs.lean` (a composition of Mathlib CLMs —\n`fderivCLM`, `postcompCLM`, `alternatizeUncurryFinCLM` — so its continuity is\nautomatic). This problem is the analytic core: proving the operator squares to\nzero. It is a **probe** of whether the framework can do test-function /\ndistribution functional analysis (a domain not previously exercised).\n\n## Strategic notes\nTwo continuous linear maps into a normed space are equal iff they agree on every\ninput (`ContinuousLinearMap.ext`); two test functions are equal iff their\nunderlying functions agree (`TestFunction.ext` / `DFunLike.ext`). So the goal\nreduces, for a test form `f` and a point `x`, to a pointwise identity on the\nunderlying functions. Unfold `extDerivCLM f` via `fderivCLM_apply` +\n`postcompCLM_apply`: its underlying function is `extDeriv f.toFun`\n(`extDeriv ω x = alternatizeUncurryFin (fderiv ℝ ω x)`). The goal then becomes\n`extDeriv (extDeriv f) = 0`, which is Mathlib's `extDeriv_extDeriv` (the C∞\nhypothesis holds: a test function is `ContDiff ℝ ∞`, and `minSmoothness ℝ 2 ≤ ⊤`).\n\n## Lemma hints\n- `extDeriv_extDeriv` : `extDeriv (extDeriv ω) = 0` for `ContDiff ℝ r ω`, `minSmoothness ℝ 2 ≤ r` — the pointwise d∘d=0 the whole proof reduces to.\n- `TestFunction.fderivCLM_apply` : underlying function of `fderivCLM` is `fderiv ℝ`.\n- `TestFunction.postcompCLM_apply` : underlying function of `postcompCLM T` is `T ∘ ·`.\n- `ContinuousLinearMap.ext` : two CLMs equal iff pointwise equal.\n- `ContinuousAlternatingMap.alternatizeUncurryFinCLM` : the alternation CLM; `extDeriv ω x = alternatizeUncurryFin (fderiv ℝ ω x)`.\n- `extDeriv` (`Mathlib.Analysis.Calculus.DifferentialForm.Basic`) : the flat exterior derivative on a normed space.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

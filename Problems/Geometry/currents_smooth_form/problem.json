@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.currents_smooth_form",
+  "charter": "# Geometry.currents_smooth_form — smooth k-form as a de Rham current\n\n## Statement\nA locally integrable **smooth k-form** `w : E → (E [⋀^Fin k]→L[ℝ] ℝ)`, together\nwith a continuous bilinear pairing `B` on k-covectors, embeds as a k-current\n`ofSmoothForm B μ w : Current Ω k` (see `Defs.lean`). The defining evaluation is\n\n`ofSmoothForm B μ w φ = ∫ x, B (φ x) (w x) ∂μ`\n\nfor any locally-integrable `w` (`hw : LocallyIntegrableOn w Ω μ`) and test k-form\n`φ`.\n\n## Setting\nThird brick of the **de Rham currents → Federer-Fleming** foundation, on top of the\nharvested `Library.Geometry.Currents.BoundarySquareZero` (`Current`, `boundary`,\n`∂∘∂=0`). It realizes the smooth special case of the FF representation\n`T(φ) = ∫ ⟨φ, w⟩ d‖T‖`: the orienting field is `w`, the mass measure is `μ`, and the\npairing `⟨·,·⟩` is supplied abstractly as `B` (so no inner product is baked in;\n`B := ⟪·,·⟫` recovers the metric current as one instance). Metric-free at the\ndefinition level and general over any real normed `E`. The continuity of the\nfunctional on the LF test-form space is supplied by Mathlib's\n`TestFunction.integralAgainstBilinCLM`, which lifts the fixed-compact-support\nconstruction across the inductive limit for free.\n\n(Design note: the FF-canonical *covector·vector* evaluation pairing would put the\nfield in the dual `Λ^k →L ℝ`, whose `ContinuousENorm` instance is currently missing\nin Mathlib for alternating-map CLM spaces — an instance diamond on\n`(ContinuousAlternatingMap) →L ℝ`. Parametrizing by `B` with the field in `Λ^k`\nsidesteps that gap while staying more general.)\n\n## Strategic notes\nUnfold `ofSmoothForm` to `TestFunction.integralAgainstBilinCLM B μ w` applied to\n`φ`. Rewrite with `TestFunction.integralAgainstBilinCLM_eq_integral hw` (discharging\nits `LocallyIntegrableOn w Ω μ` side condition with the hypothesis `hw`) to land\ndirectly on `∫ x, B (φ x) (w x) ∂μ`. This closes the goal — a clean leaf-bypass, no\ndecomposition needed. (Verified: `rw [ofSmoothForm,\nTestFunction.integralAgainstBilinCLM_eq_integral hw]` alone discharges it.)\n\n## Lemma hints\n- `TestFunction.integralAgainstBilinCLM_eq_integral` : `(hφ : LocallyIntegrableOn φ Ω μ) → integralAgainstBilinCLM B μ φ f = ∫ x, B (f x) (φ x) ∂μ` — the LF eval lemma; here `f := φ` (the test form), the lemma's `φ := w`, and `B` is our pairing.\n- `ofSmoothForm` (from `Defs.lean`) : unfold to expose `integralAgainstBilinCLM`.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

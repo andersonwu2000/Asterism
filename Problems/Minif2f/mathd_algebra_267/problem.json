@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_algebra_267",
+  "charter": "# Minif2f.mathd_algebra_267 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_algebra_267`.\n\n## Statement\n∀ (x : ℝ) (h₀ : x ≠ 1) (h₁ : x ≠ -2) (h₂ : (x + 1) / (x - 1) = (x - 2) / (x + 2)), x = 0\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

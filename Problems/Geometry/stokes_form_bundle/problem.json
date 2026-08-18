@@ -1,0 +1,13 @@
+{
+  "problem": "Geometry.stokes_form_bundle",
+  "charter": "# Geometry.stokes_form_bundle — the ⋀ᵏ T*M bundle has C^∞ transitions\n\n## Statement\n`(formBundleCore I k).IsContMDiff I ∞` — the vector-bundle core of `⋀ᵏ T*M` has\n`C^∞` transition functions. (§A.4. Owns `formBundleCore` / the bundle instances /\n`DiffForm`.)\n\n## Setting\nCites `Library.Geometry.Manifold.FormCoordChange*` for `formCoordChange` and its\nthree coherence lemmas (`formCoordChange_self`, `continuousOn_formCoordChange`,\n`formCoordChange_comp`), which become the `VectorBundleCore` fields. The transition\n`formCoordChange I k i j = compContinuousLinearMapCLM ((tangentBundleCore I M).coordChange j i)`.\n\n## Lemma hints\n- `Mathlib/Geometry/Manifold/VectorBundle/Tangent.lean` — `tangentBundleCore`,\n  its `IsContMDiff` / smoothness (`(tangentBundleCore I M).contMDiff_coordChange` or\n  the `ContMDiffVectorBundle`/`SmoothManifoldWithCorners` machinery).\n- `ContinuousAlternatingMap.compContinuousLinearMapCLM` is a `ContinuousLinearMap`,\n  hence `C^∞`; smoothness of `coordChange` is preserved under post-composition by a\n  fixed CLM. Reduce `VectorBundleCore.IsContMDiff` to the tangent core's via the\n  smooth dependence of `compContinuousLinearMapCLM (tangent coordChange)` on the base.\n- `VectorBundleCore.IsContMDiff` unfolds to `ContMDiffOn` of each `coordChange i j`\n  as a map into the operator space.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": true
+  }
+}

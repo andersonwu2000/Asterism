@@ -1,0 +1,13 @@
+{
+  "problem": "Test.false_claim",
+  "charter": "# Test.false_claim\n\n## Statement\n\nThe original conjecture — every prime `n : ℕ` stays prime after adding\ntwo — is FALSE: `n = 7` is prime but `7 + 2 = 9 = 3 * 3` is not. The\ncomputed examples (3→5, 5→7, 11→13) were twin-prime coincidences. The\ndeliverable is the kernel-checked disproof:\n`¬ ∀ n : ℕ, Nat.Prime n → Nat.Prime (n + 2)`.\n\n### Deliverables\n\n`MarkDeliverable` the disproof; then `Ingest`:\n\n- `not_forall_prime_plus_two_prime`\n\nDo NOT introduce axioms or `sorry`-bearing shortcuts.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  }
+}

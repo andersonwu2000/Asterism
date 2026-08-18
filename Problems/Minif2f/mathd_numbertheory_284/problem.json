@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_numbertheory_284",
+  "charter": "# Minif2f.mathd_numbertheory_284 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_numbertheory_284`.\n\n## Statement\n∀ (a b : ℕ) (h₀ : 1 ≤ a ∧ a ≤ 9 ∧ b ≤ 9) (h₁ : 10 * a + b = 2 * (a + b)), 10 * a + b = 18\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

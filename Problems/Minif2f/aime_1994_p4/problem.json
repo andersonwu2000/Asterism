@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.aime_1994_p4",
+  "charter": "# Minif2f.aime_1994_p4 — imported from miniF2F\n\nOriginal miniF2F theorem name: `aime_1994_p4`.\n\n## Statement\n∀ (n : ℕ) (h₀ : 0 < n) (h₀ : (∑ k ∈ Finset.Icc 1 n, Int.floor (Real.logb 2 k)) = 1994), n = 312\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}

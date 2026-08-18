@@ -1,0 +1,13 @@
+{
+  "problem": "Putnam.putnam_2005_a2",
+  "charter": "# Putnam.putnam_2005_a2 — imported from PutnamBench\n\nOriginal theorem: `putnam_2005_a2` (Putnam 2005 A2).\n\n## Statement\n\nLet $\\mathbf{S} = \\{(a,b) | a = 1, 2, \\dots,n, b = 1,2,3\\}$.\nA \\emph{rook tour} of $\\mathbf{S}$ is a polygonal path made up of line segments connecting points $p_1, p_2, \\dots, p_{3n}$ in sequence such that\n\\begin{enumerate}\n\\item[(i)] $p_i \\in \\mathbf{S}$,\n\\item[(ii)] $p_i$ and $p_{i+1}$ are a unit distance apart, for\n$1 \\leq i <3n$,\n\\item[(iii)] for each $p \\in \\mathbf{S}$ there is a unique $i$ such that\n$p_i = p$.\n\\end{enumerate}\nHow many rook tours are there that begin at $(1,1)$\nand end at $(n,1)$?\n\nThe formal statement is pinned in `Root.lean` (`theorem main`).\nThe `_solution` abbrev in `Defs.lean` carries the OFFICIAL\nanswer (upstream ships it as a comment; this matches the\nstandard solutions-replaced evaluation protocol — the task\nis proving, not answer-finding).\n\n## Strategic notes\n\nImported via `Benchmarks/putnambench/adapter.py` from\ntrishullab/PutnamBench @ a23d8e6. No per-problem hints —\nbenchmark integrity. The pinned statement is never edited;\nif you believe it is FALSE, that is what `AttemptDisproof` /\n`RequestUserAmend` are for.",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false
+  }
+}

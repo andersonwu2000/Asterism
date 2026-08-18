@@ -1,0 +1,12 @@
+{
+  "problem": "Minif2f.mathd_numbertheory_690",
+  "charter": "# Minif2f.mathd_numbertheory_690 — imported from miniF2F\n\nOriginal miniF2F theorem name: `mathd_numbertheory_690`.\n\n## Statement\nIsLeast { a : ℕ | 0 < a ∧ a ≡ 2 [MOD 3] ∧ a ≡ 4 [MOD 5] ∧ a ≡ 6 [MOD 7] ∧ a ≡ 8 [MOD 9] } 314\n\n## Lemma hints\n\n## Strategic notes\nImported via `python -m Tooling.adapters.minif2f`. No\nper-problem hints — benchmark integrity (compare against\nLeanDojo / DeepSeek-Prover head-to-head on the same\nproblem distribution).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": []
+  }
+}
