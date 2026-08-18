@@ -73,6 +73,12 @@ STRATEGY_STATES: frozenset[str] = frozenset({
 # Terminal classes (referenced by cascade/propagation guards). A *hard*
 # terminal is never downgraded to a softer one (`proved` is a finished proof;
 # `disproved`/`dead` are stronger negatives than `shelved`).
+#: `disproved` stays in this READ-side set on purpose (2026-08-18):
+#: citing one is still an error, its inject outcome still settles, and
+#: BFS still skips it. What changed is the FSM: a ("disproved","open")
+#: edge exists, so a strategist Inject (or an operator repair) can
+#: revive one — it is parked on a claimed counterexample, not settled
+#: by the kernel.
 GOAL_HARD_TERMINALS: frozenset[str] = frozenset({"proved", "disproved", "dead"})
 GOAL_TERMINALS: frozenset[str] = GOAL_HARD_TERMINALS | {"shelved"}
 #: Hard-settled AND failed: never citable, never revived by a proof —
@@ -143,6 +149,15 @@ GOAL_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("shelved", "open"),                      # backward-revive / forward-reuse / strategist reopen
     ("pending_strategist_review", "open"),    # strategist Reopen / reconcile
     ("frozen", "open"),                       # strategist reopen of a frozen root
+    # 2026-08-18 (owner ruling): `disproved` is parked on a CLAIMED
+    # counterexample, not a kernel verdict — 8/8 of union_closed's
+    # disproved goals were prose-flipped `sorry` files, and one (g8014)
+    # was kernel-proven TRUE after the flip (#eval of the landed
+    # checker). This edge removes the irreversibility; every read site
+    # keeps treating disproved as settled-unless-revived, and a future
+    # kernel-witnessed disproof (the deliberately unscheduled "disproof
+    # leg") re-earns real terminality via a receipt.
+    ("disproved", "open"),                    # Inject revival / operator repair
     ("proved", "open"),                       # rollback: culprit chain reverted
     ("proved", "attempting"),                 # rollback: non-culprit pre-verify state
 

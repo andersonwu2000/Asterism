@@ -451,11 +451,16 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         if str(g["problem"]) != problem:
             return (f"target goal belongs to problem "
                     f"{g['problem']!r}, not {problem!r}")
-        if str(g["status"]) in transitions.GOAL_HARD_TERMINALS:
+        if str(g["status"]) in ("proved", "dead"):
             return (f"target_goal_id={target} is {g['status']!r}; "
                     f"Inject cannot redispatch a terminal goal. "
-                    f"proved/disproved/dead are hard terminals; "
+                    f"proved/dead are hard terminals; "
                     f"open a different angle on a different goal instead.")
+        # `disproved` passes on purpose (2026-08-18): it is parked on a
+        # CLAIMED counterexample, not a kernel verdict, and an Inject on
+        # it IS the revival route — argue in the proof why the claimed
+        # counterexample fails. The ancestor walk below still blocks
+        # descendants of one (revive the ancestor itself first).
         # Ancestor safety walk (was Reopen's responsibility pre-2026-05-28;
         # now the goal-targeted Inject takes over as the unified
         # reactivation mechanism). disproved ancestor = counterexample
@@ -468,8 +473,12 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
             if anc_kind == "disproved":
                 return (
                     f"Inject rejected: goal {target} has a "
-                    f"'disproved' ancestor (counterexample already shown). "
-                    f"Use ConfirmShelve."
+                    f"'disproved' ancestor (a counterexample was "
+                    f"claimed for a parent statement, so this "
+                    f"descendant is moot as long as that stands). "
+                    f"If you believe the parent claim after all, "
+                    f"Inject the disproved ancestor itself — that "
+                    f"revives it. Otherwise ConfirmShelve."
                 )
             return (
                 f"Inject rejected: goal {target} has a "
@@ -1480,10 +1489,12 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
     # Force-reopen target so BFS / inject dispatch can run on it.
     # Auto-detach if the upward chain has died — same path Strategist
     # Reopen takes. `dead` is a hard terminal already rejected by
-    # verify_decision; this list intentionally excludes it.
+    # verify_decision; this list intentionally excludes it. `disproved`
+    # is IN it (2026-08-18): an Inject on one is the revival route for
+    # a claimed-counterexample park.
     g = db.get_goal(conn, target_id)
     if g and str(g["status"]) in ("shelved", "pending_strategist_review",
-                                   "frozen"):
+                                   "frozen", "disproved"):
         transitions.apply_goal_transition(
             conn, target_id, "open", event="strategist_reopen")
         if _dispatcher._has_dead_strategy_in_chain(conn, target_id):

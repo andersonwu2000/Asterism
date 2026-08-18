@@ -322,7 +322,9 @@ _WATERMARKS = {
     # group, moved out of `_commit_close_group` into one verb so the
     # ancestor cascade and the startup sweep park anchors too (#223).
     # 2026-08-17. Conscious bump.
-    "Tooling/state/transitions.py": 1810,
+    # 08-18 +15: the recovery event labels + the disproved revival edge
+    # and its incident documentation (claimed-counterexample park).
+    "Tooling/state/transitions.py": 1825,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.

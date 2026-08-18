@@ -267,8 +267,11 @@ CREATE TABLE IF NOT EXISTS goals (
     -- Phase 2 status additions:
     --   'pending_strategist_review' (transitional) — agent declined with
     --     `shelve` directive; Strategist judges (ConfirmShelve/Reopen/Inject).
-    --   'disproved' (terminal hard) — agent declined with `unprovable`;
-    --     dedupe blocks same-shape proposals.
+    --   'disproved' — agent declined with `unprovable`; dedupe blocks
+    --     same-shape proposals. 2026-08-18: a claimed-counterexample
+    --     PARK, no longer irreversibly terminal — a strategist Inject
+    --     revives it (GOAL_EDGES ("disproved","open")); a kernel
+    --     witness requirement is the deliberately unscheduled sequel.
     -- Existing 'shelved' semantic shifted to soft terminal (reopenable; dedupe
     -- doesn't block) covering: parent_needs_fix decline, ConfirmShelve from
     -- Strategist, and cascade descendants of ConfirmShelve.
@@ -290,8 +293,9 @@ CREATE TABLE IF NOT EXISTS goals (
     -- Terminal soft/hard semantics:
     --   'shelved' — soft terminal; Strategist may Reopen, dedupe DOES
     --     NOT block, upward strategies stay 'proposed' (wait for Reopen).
-    --   'disproved' — hard terminal; never Reopen, dedupe BLOCKS, kills
-    --     upward strategies.
+    --   'disproved' — hard for readers (citing = error, dedupe BLOCKS,
+    --     kills upward strategies) but revivable by Inject since
+    --     2026-08-18 — the mark records a CLAIMED counterexample.
     --   'dead' — hard terminal in this strategy context; never Reopen,
     --     dedupe DOES NOT block (same statement may be valid under a
     --     different parent strategy), kills upward strategies so parent

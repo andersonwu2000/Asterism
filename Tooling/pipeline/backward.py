@@ -1648,7 +1648,11 @@ def _backward_parse_and_commit(
         return _abort(
             "same_as_disproved",
             f"sub-goal(s) recapitulate a previously-disproved statement "
-            f"in this problem: {detail}. Pick a different decomposition.",
+            f"in this problem: {detail}. Pick a different decomposition — "
+            f"or, if you believe the statement is true after all, decline "
+            f"and say so: a disproved mark records a CLAIMED "
+            f"counterexample, and the Strategist can revive the original "
+            f"goal rather than mint a twin.",
             leading,
         )
 
