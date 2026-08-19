@@ -187,7 +187,7 @@ def write_file(path: str = "", content: str = "") -> str:
     """Write a file into your attempts directory. Full-file overwrite.
 
     This is how your outputs land — decision.json, proposal.md,
-    _plan.md, verdict.json, any `proof_file` / `brief_file` target.
+    _plan.md, verdict.json.
     The write happens in the framework's own process and completes
     immediately; prefer it over `apply_patch` for every file you
     produce. Pass the absolute path your prompt gave you, or a bare

@@ -213,48 +213,12 @@ class Decision:
 # Parsing
 # ---------------------------------------------------------------------
 
-def resolve_directive_body_files(decisions: "list[Decision]",
-                                 attempts_dir: Path) -> str:
-    """File-form hand-off for the two multi-KB text fields: EmitDirective
-    `body_file` → payload['body'], Inject `proof_file` and Delegate
-    `brief_file` → the decision's prose
-    (2026-07-19; agent_feedback ×3 in the a5 run — these are multi-KB
-    Lean-and-markdown blobs the sandbox forces agents to hand-escape
-    into JSON, one stray backslash from silent corruption). Each ref is
-    a bare filename inside the strategist's attempts dir. The framework
-    ingests the content HERE, right after parse: downstream (verify,
-    commit, worker Context rendering) sees plain text — the file is a
-    hand-off vehicle, never a live reference. The file wins over an
-    inline value when both are present. Returns a verify-style error
-    string ('' = ok)."""
-    def _read(ref: object, field: str) -> "tuple[str | None, str]":
-        name = Path(str(ref)).name        # basename only — no traversal
-        try:
-            text = (attempts_dir / name).read_text(encoding="utf-8")
-        except OSError as e:
-            return None, (f"{field} {ref!r} unreadable ({e}). Write the "
-                          f"text to a file in your attempts dir first, "
-                          f"then reference its bare filename.")
-        if not text.strip():
-            return None, f"{field} {ref!r} is empty"
-        return text.strip(), ""
-
-    for d in decisions:
-        if d.kind == "EmitDirective" and d.payload.get("body_file"):
-            text, err = _read(d.payload["body_file"],
-                              "EmitDirective.body_file")
-            if err:
-                return err
-            d.payload["body"] = text
-        elif d.kind == "Inject" and d.payload.get("proof_file"):
-            text, err = _read(d.payload["proof_file"], "Inject.proof_file")
-            if err:
-                return err
-            d.brief = text
-        # (Delegate `brief_file` retired with the 2026-08-19 payload
-        # reshape — measured zero uses across 103 Delegates since it
-        # shipped 07-19, and `brief` no longer carries the charter.)
-    return ""
+# (resolve_directive_body_files retired 2026-08-19: the `*_file`
+# hand-off shipped 07-19 against JSON-escaping corruption and was
+# measured at ZERO uses across 1,174 Injects / 103 Delegates / every
+# EmitDirective — its only living consumer was the retired kind. If
+# escaping corruption ever returns, design against the observed shape
+# rather than reviving an affordance nobody reached for.)
 
 
 def parse_decisions(json_text: str) -> tuple[list[Decision] | None, str]:
@@ -2521,11 +2485,10 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     proposal_body: "str | None" = None
     first_err: "str | None" = None
     while True:
-        err = (resolve_directive_body_files(decisions, attempts_dir)
-               or verify_decisions(decisions, conn, problem=problem,
-                                   workspace=workspace,
-                                   trigger_kind=trigger_kind,
-                                   group_id=group_id))
+        err = verify_decisions(decisions, conn, problem=problem,
+                               workspace=workspace,
+                               trigger_kind=trigger_kind,
+                               group_id=group_id)
         err_is_rebuttal = False
         if not err and package_gate_applies(decisions, trigger_kind):
             proposal_body, sections, err = verify_proposal_package(

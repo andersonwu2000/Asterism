@@ -997,7 +997,7 @@ def test_plan_note_rewrite_step_synced_and_names_attempts_dir() -> None:
     persist_plan_note found nothing in the sandbox, so soft-cap telemetry
     and the next wake's plan-note context section silently vanished
     (cube_e2e same day: sandbox write, channel fine). The step must carry
-    the same location convention as proposal.md / brief_file and stay
+    the same location convention as proposal.md / decision.json and stay
     byte-identical across the three wake prompts."""
     root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
     steps = []

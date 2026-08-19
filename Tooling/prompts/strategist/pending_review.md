@@ -60,7 +60,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
 - Before submitting, re-check your ## Proof.
 
 ## Decision kinds
-- `Inject` — `proof` or `proof_file` (a filename under `{attempts_dir}/` — Write it there, no JSON escaping). The part of this batch's `## Proof` that settles this brick, copied across with the vocabulary it uses. It is what the worker formalizes against; the worker does not read the rest. Two shapes:
+- `Inject` — `proof`. The part of this batch's `## Proof` that settles this brick, copied across with the vocabulary it uses. It is what the worker formalizes against; the worker does not read the rest. Two shapes:
   - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself.
   - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
@@ -106,12 +106,13 @@ Follow-up brick Y for the remaining step..."},
 ```
 
 ```json
-// a claim splits into independent lines → delegate them together, never one
+// a claim splits into independent lines → delegate them together, never one.
+// A strong reason names what landed, why it falls short, and what open search remains.
 [{"kind": "Delegate",
   "charter": "Prove or refute `case_A`: <full statement>.",
-  "reason": "An open-ended search I cannot close myself nor pace through AHEAD; it needs its own Programme.",
-  "brief": "The direct route died twice (PAST has the closures); the invariant angle is live. Cite `shared_split` from CATALOG — don't re-derive."},
+  "reason": "The landed `weak_bound` is too weak here and the direct route is closed (PAST has both deaths with their instantiations); what remains is an invariant search with no bounded next step — a Programme of its own, not an AHEAD item. A refutation would settle the parent claim outright.",
+  "brief": "Walls: both direct-route deaths transfer to any reformulation that keeps hypothesis H. The invariant angle is live. Cite `shared_split` from CATALOG — don't re-derive."},
  {"kind": "Delegate",
   "charter": "Prove or refute `case_B`: <full statement>.",
-  "reason": "The independent sibling case — disjoint hypotheses, so it runs in parallel rather than waiting behind `case_A`."}]
+  "reason": "The complementary case, same open-ended depth but disjoint hypotheses — nothing from `case_A` transfers, so serializing it behind `case_A` buys nothing and either outcome narrows the parent claim."}]
 ```
