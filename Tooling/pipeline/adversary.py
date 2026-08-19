@@ -105,6 +105,12 @@ def _decisions_digest(decisions, conn=None, problem=None) -> str:
             out.append(str(brief))
         if body:
             out.append("Directive body:\n" + str(body))
+        # Delegate's guidance hand-off (2026-08-19): payload['brief'] —
+        # shown so the judge rules on the whole package, not just the
+        # charter and the justification.
+        guidance = (getattr(d, "payload", None) or {}).get("brief")
+        if kind == "Delegate" and guidance:
+            out.append("Guidance to the group:\n" + str(guidance))
         if reason:
             out.append(f"reason: {reason}")
         out.append("")

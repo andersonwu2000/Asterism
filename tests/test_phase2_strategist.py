@@ -2476,12 +2476,15 @@ def test_the_file_hand_off_follows_each_kinds_own_key(tmp_path):
                  payload={"pipeline": "Forward", "proof_file": "b0.md"})
     assert resolve_directive_body_files([d], tmp_path) == ""
     assert d.brief == "## Need\ntheorem f_pos ..."
+    # Delegate `brief_file` retired with the 2026-08-19 reshape
+    # (measured zero uses across 103 Delegates): the key is inert —
+    # the charter stays whatever the decision carried.
     (tmp_path / "c0.md").write_text("settle the pigeonhole bound",
                                     encoding="utf-8")
-    g = Decision(kind="Delegate", brief="inline junk",
+    g = Decision(kind="Delegate", brief="the charter",
                  payload={"brief_file": "c0.md"})
     assert resolve_directive_body_files([g], tmp_path) == ""
-    assert g.brief == "settle the pigeonhole bound"
+    assert g.brief == "the charter"
     missing = Decision(kind="Inject", target_id=7,
                        payload={"pipeline": "Forward",
                                 "proof_file": "absent.md"})

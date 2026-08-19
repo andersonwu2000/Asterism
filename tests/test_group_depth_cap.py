@@ -23,12 +23,8 @@ from Tooling.state import groups as _groups
 
 _PROMPTS = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
 
-_BRIEF = (
-    "# Charter\nSettle the toy claim series.\n"
-    "## Why a project\nA clearly themed series of research items that "
-    "cannot ride AHEAD.\n"
-    "## Inheritance\nNothing yet.\n"
-)
+_BRIEF = "Settle the toy claim — a kernel-checkable research item."
+_REASON = "cannot prove in-house nor pace through AHEAD"
 
 
 def _chain(conn: sqlite3.Connection) -> "tuple[int, int, int]":
@@ -56,7 +52,7 @@ def test_delegate_allowed_above_the_cap(conn: sqlite3.Connection) -> None:
     top, d1, _ = _chain(conn)
     for gid in (top, d1):
         err = verify_decision(
-            Decision(kind="Delegate", brief=_BRIEF),
+            Decision(kind="Delegate", brief=_BRIEF, reason=_REASON),
             conn, problem="P", group_id=gid)
         assert "unavailable at your depth" not in err, (gid, err)
 
@@ -65,7 +61,7 @@ def test_delegate_refused_at_the_cap_with_the_way_out(
         conn: sqlite3.Connection) -> None:
     _, _, d2 = _chain(conn)
     err = verify_decision(
-        Decision(kind="Delegate", brief=_BRIEF),
+        Decision(kind="Delegate", brief=_BRIEF, reason=_REASON),
         conn, problem="P", group_id=d2)
     assert "unavailable at your depth" in err
     # The gate names reachable actions, never a bare refusal.

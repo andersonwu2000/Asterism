@@ -1,11 +1,12 @@
-"""A Delegate opens a fan, never a relay (owner ruling 2026-08-19).
+"""A batch delegates several groups or none — never exactly one (owner
+ruling 2026-08-19, tightened the same day from the active-children
+count: as long as one line was already in flight, per-batch top-ups let
+a group keep shirking one Delegate at a time).
 
-A single sub-group buys zero concurrency over in-house AHEAD batches —
-it is the parent's own pipeline stage wearing a fresh judgment loop
-(the 2026-08-18 evidence: six single-child Delegates in 4.5h, every
-author zero-own-brick, d7→d10). The count is on the RESULT (existing
-active children + this batch's Delegates), so topping up a live fan
-with one more line stays legal. Racing two groups on the same anchor
+The evidence: six single-child Delegates in 4.5h (2026-08-18, all
+post-wording), every author zero-own-brick, two returned the same day,
+d7→d10 — pipeline stages wearing fresh judgment loops. The count is
+per BATCH and only per batch; racing two groups on the same anchor
 goal is explicitly legal OR-parallelism, and ownership routing over a
 double anchor must be deterministic."""
 from __future__ import annotations
@@ -19,13 +20,6 @@ from Tooling.state import groups as _groups
 
 _PROMPTS = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
 
-_BRIEF = (
-    "# Charter\nSettle the toy claim series.\n"
-    "## Why a project\nA clearly themed series of research items that "
-    "cannot ride AHEAD.\n"
-    "## Inheritance\nNothing yet.\n"
-)
-
 
 def _top(conn: sqlite3.Connection) -> int:
     conn.execute(
@@ -36,46 +30,48 @@ def _top(conn: sqlite3.Connection) -> int:
     return top
 
 
-def _delegate() -> Decision:
-    return Decision(kind="Delegate", brief=_BRIEF)
+def _delegate(claim: str = "case A") -> Decision:
+    return Decision(kind="Delegate",
+                    brief=f"Settle {claim} — a kernel-checkable item.",
+                    reason="cannot prove in-house nor pace through AHEAD")
 
 
-def test_a_fan_of_one_is_refused_with_the_way_out(
+def test_a_lone_delegate_is_refused_with_the_way_out(
         conn: sqlite3.Connection) -> None:
     top = _top(conn)
     err = verify_decisions([_delegate()], conn, problem="P", group_id=top)
-    assert "never a relay" in err
+    assert "never exactly one" in err
     assert "AHEAD" in err
 
 
-def test_two_delegates_in_one_batch_pass_the_fan_check(
+def test_two_delegates_in_one_batch_pass(
         conn: sqlite3.Connection) -> None:
     top = _top(conn)
-    err = verify_decisions([_delegate(), _delegate()], conn,
-                           problem="P", group_id=top)
-    assert "never a relay" not in err
+    err = verify_decisions([_delegate("case A"), _delegate("case B")],
+                           conn, problem="P", group_id=top)
     assert err == ""
 
 
-def test_topping_up_a_live_fan_with_one_line_is_legal(
+def test_an_existing_live_fan_does_not_excuse_a_lone_delegate(
         conn: sqlite3.Connection) -> None:
+    """The tightening's whole point: with the old active-children
+    count, one line in flight let a group top up one group at a time
+    forever — serial relay under a fan-shaped alibi."""
     top = _top(conn)
     _groups.open_group(conn, problem="P", parent_group_id=top,
                        charter="Existing live line.")
     conn.commit()
     err = verify_decisions([_delegate()], conn, problem="P", group_id=top)
-    assert err == ""
+    assert "never exactly one" in err
 
 
-def test_a_returned_sibling_does_not_count_toward_the_fan(
+def test_a_batch_with_no_delegates_is_untouched(
         conn: sqlite3.Connection) -> None:
     top = _top(conn)
-    gid = _groups.open_group(conn, problem="P", parent_group_id=top,
-                             charter="Line that came back.")
-    _groups.set_status(conn, gid, "returned", event="test")
-    conn.commit()
-    err = verify_decisions([_delegate()], conn, problem="P", group_id=top)
-    assert "never a relay" in err
+    err = verify_decisions(
+        [Decision(kind="Noop", reason="work in flight")],
+        conn, problem="P", group_id=top)
+    assert "never exactly one" not in err
 
 
 def test_two_groups_may_race_one_goal_and_routing_is_deterministic(
@@ -98,7 +94,7 @@ def test_two_groups_may_race_one_goal_and_routing_is_deterministic(
     assert owner is not None and int(owner["id"]) == max(a, b)
 
 
-def test_the_fan_sentence_is_mirrored_in_all_four_prompts() -> None:
+def test_the_delegate_contract_is_mirrored_in_all_four_prompts() -> None:
     files = [
         _PROMPTS / "adversary" / "_contract.md",
         _PROMPTS / "strategist" / "routine.md",
@@ -107,5 +103,6 @@ def test_the_fan_sentence_is_mirrored_in_all_four_prompts() -> None:
     ]
     for f in files:
         text = f.read_text(encoding="utf-8")
-        assert "opens a FAN, never a relay" in text, f
-        assert "Two groups may race one goal." in text, f
+        assert ("A batch delegates several groups or none — never "
+                "exactly one" in text), f
+        assert "`charter`, `reason`, optional `brief`" in text, f

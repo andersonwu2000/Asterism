@@ -251,11 +251,9 @@ def resolve_directive_body_files(decisions: "list[Decision]",
             if err:
                 return err
             d.brief = text
-        elif d.kind == "Delegate" and d.payload.get("brief_file"):
-            text, err = _read(d.payload["brief_file"], "Delegate.brief_file")
-            if err:
-                return err
-            d.brief = text
+        # (Delegate `brief_file` retired with the 2026-08-19 payload
+        # reshape — measured zero uses across 103 Delegates since it
+        # shipped 07-19, and `brief` no longer carries the charter.)
     return ""
 
 
@@ -343,15 +341,22 @@ def _parse_one(obj: dict[str, Any]) -> tuple[Decision | None, str]:
         else:
             return None, (f"target_id must be int, slug string, or null "
                           f"(got {type(target_id).__name__})")
-    # One column, two contracts (2026-08-11). An Inject's prose is the
-    # argument that settles its brick — the part of the batch's
-    # `## Proof` the author copied across — so the key it is written
-    # under is `proof`. A Delegate's is the charter: a claim a new group
-    # must settle, which is not a proof of anything. Naming them apart
-    # is what stops each contract teaching the other's meaning; they
-    # share a row because a decision carries one piece of prose, not
-    # because the prose means one thing.
-    brief = obj.get("proof") if kind == "Inject" else obj.get("brief")
+    # One column, three contracts (2026-08-11; Delegate reshaped
+    # 2026-08-19). An Inject's prose is the argument that settles its
+    # brick — the part of the batch's `## Proof` the author copied
+    # across — so the key it is written under is `proof`. A Delegate's
+    # is the CHARTER: the claim a new group must settle, written under
+    # `charter` (its old key `brief` now names the optional guidance
+    # hand-off instead — see below). Naming them apart is what stops
+    # each contract teaching the other's meaning; they share a row
+    # because a decision carries one piece of prose, not because the
+    # prose means one thing.
+    if kind == "Inject":
+        brief = obj.get("proof")
+    elif kind == "Delegate":
+        brief = obj.get("charter")
+    else:
+        brief = obj.get("brief")
     reason = obj.get("reason")
     # Pull all structured params (anything not already consumed) into
     # payload. Lets agent send either nested-payload or flat shape.
@@ -362,9 +367,15 @@ def _parse_one(obj: dict[str, Any]) -> tuple[Decision | None, str]:
         payload = {}
     for k, v in obj.items():
         if k in ("kind", "target_goal_id", "target_id",
-                 "brief", "proof", "reason", "payload"):
+                 "brief", "proof", "reason", "payload", "charter"):
             continue
         payload[k] = v
+    # Delegate's `brief` (2026-08-19 contract): guidance and lessons
+    # handed to the group — payload data the child's context renders,
+    # never part of the judged charter. (Historical rows: a Delegate
+    # `brief` column value from before this reshape IS the charter.)
+    if kind == "Delegate" and obj.get("brief"):
+        payload["brief"] = obj["brief"]
     return Decision(kind=kind, target_id=target_id, brief=brief,
                     reason=reason, payload=payload), ""
 
@@ -499,31 +510,24 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         return ""
 
     if k == "Delegate":
-        # The charter IS what the sub-group is judged against — the fixed reference
-        # point its own Adversary judges against — so an empty or
-        # gestural one leaves the group with nothing to be judged on.
+        # Reshaped 2026-08-19 (owner wording): `charter` is the claim
+        # the group is judged against, `reason` is the parent-side
+        # justification the judge rules on, `brief` (optional payload)
+        # is guidance handed to the child. The old three-heading
+        # research-proposal check retired with the split — the fan rule
+        # and the depth cap carry the structural burden now, and the
+        # judge rules on substance.
         if not decision.brief or not str(decision.brief).strip():
-            return ("Delegate requires a `brief`: the charter — the "
-                    "claim this group exists to settle, stated precisely "
-                    "enough that 'is it settled?' has an answer")
+            return ("Delegate requires a `charter`: the kernel-checkable "
+                    "research item this group exists to settle, stated "
+                    "precisely enough that 'is it settled?' has an "
+                    "answer")
+        if not decision.reason or not str(decision.reason).strip():
+            return ("Delegate requires a `reason`: why you cannot prove "
+                    "this yourself and `Inject` it, nor pace it through "
+                    "AHEAD batch by batch — why it must be a group's "
+                    "burden")
         charter = str(decision.brief).strip()
-        # The brief is a research proposal (owner ruling 2026-08-16):
-        # opening a group is opening a problem, and the writing cost is
-        # the filter that keeps small unknowns in-house. Heading
-        # PRESENCE is mechanical (structured signal); substance is the
-        # Adversary's.
-        missing = [h for h in ("# Charter", "## Why a project",
-                               "## Inheritance") if h not in charter]
-        if missing:
-            return ("Delegate's brief is a research proposal with three "
-                    f"sections; missing: {', '.join(missing)}. "
-                    "`# Charter` — the claim to settle, kernel-provable "
-                    "or -refutable; `## Why a project` — why this claim "
-                    "earns a project of its own and why your Roadmap "
-                    "cannot carry the work; `## Inheritance` — citable "
-                    "landed bricks, vocabulary, known walls. A burden "
-                    "that cannot fill `## Why a project` is your own "
-                    "work — Inject it or keep it in AHEAD")
         parent = _authoring_group(conn, problem, group_id)
         if parent is None:
             return ("Delegate has no authoring group; the problem's top "
@@ -986,30 +990,24 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
         return (f"{len(failures)} decisions were rejected — fix all of "
                 f"them in the next batch:\n" + "\n".join(failures))
 
-    # Cross-decision (owner ruling 2026-08-19): a Delegate opens a FAN,
-    # never a relay. A single sub-group buys zero concurrency over
-    # doing the work in-house — it is the parent's own pipeline stage
-    # wearing a fresh judgment loop (six such relays in the 4.5h after
-    # the discussion-space wording landed, d7→d10). Counted on the
-    # RESULT, not the batch: topping up an existing fan with one more
-    # line is legal; starting a fan of one is not. Racing two groups on
-    # one goal satisfies the count — that is OR-parallelism on the
-    # anchor, the thing groups exist for.
+    # Cross-decision (owner rulings 2026-08-19, tightened same day): a
+    # batch delegates SEVERAL groups or none — never exactly one. A
+    # lone Delegate is the parent's own pipeline stage wearing a fresh
+    # judgment loop (six such relays in the 4.5h after the
+    # discussion-space wording landed, d7→d10). Counted per BATCH, not
+    # against existing children — the earlier existing-fan allowance
+    # let a group with one line already in flight keep shirking one
+    # group at a time.
     n_delegates = sum(1 for d in decisions if d.kind == "Delegate")
-    if n_delegates:
-        me = _authoring_group(conn, problem, group_id)
-        existing = (len(_groups.children(conn, int(me["id"]),
-                                         active_only=True))
-                    if me is not None else 0)
-        if existing + n_delegates == 1:
-            return (
-                "A Delegate opens a fan, never a relay: this batch "
-                "would leave you with exactly ONE active sub-group. "
-                "Open at least two parallel lines in one batch (two "
-                "groups may even race the same goal), or keep "
-                "single-line work in your Roadmap's AHEAD — the next "
-                "wake fires when this batch completes."
-            )
+    if n_delegates == 1:
+        return (
+            "A batch delegates several groups or none — never exactly "
+            "one: a lone Delegate is your own next step wearing a new "
+            "group. Split the burden into parallel lines and delegate "
+            "them together (two groups may even race the same goal), "
+            "or keep single-line work in your Roadmap's AHEAD — the "
+            "next wake fires when this batch completes."
+        )
 
     # Cross-decision: no ConfirmShelve(G) + goal-targeted Inject(
     # target=G) pair. The Inject force-reopens G (shelved /
@@ -1627,6 +1625,11 @@ def _commit_delegate(decision: Decision, conn: sqlite3.Connection,
     }
     if target is not None:
         row_payload["target_goal_id"] = target
+    # Guidance hand-off (2026-08-19 reshape): lives on THIS audit row;
+    # the child's context reads it back through `groups.opened_by` —
+    # no schema change, and it never touches the judged charter.
+    if decision.payload.get("brief"):
+        row_payload["brief"] = str(decision.payload["brief"])
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, group_id, target_id, brief, reason,"

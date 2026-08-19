@@ -40,7 +40,7 @@ def _field_the_parser_reads(kind: str) -> str:
     test's expectation automatically instead of leaving it asserting
     yesterday's contract."""
     reads = []
-    for field in ("proof", "brief"):
+    for field in ("proof", "brief", "charter"):
         d, _err = strategist._parse_one({"kind": kind, field: "X"})
         if d is not None and getattr(d, "brief", None) == "X":
             reads.append(field)
@@ -72,9 +72,11 @@ def test_there_are_examples_to_check() -> None:
 def test_the_two_prose_fields_are_still_distinct(kind: str) -> None:
     """If these ever collapse onto one name the rest of this file is
     pointless, and the collapse itself would be the bug: an Inject's
-    prose is an argument, a Delegate's is a charter."""
+    prose is an argument, a Delegate's is a charter (2026-08-19: the
+    wire key says so — `charter`; `brief` became the optional guidance
+    hand-off, parked in payload, never the judged prose)."""
     assert _field_the_parser_reads("Inject") == "proof"
-    assert _field_the_parser_reads("Delegate") == "brief"
+    assert _field_the_parser_reads("Delegate") == "charter"
 
 
 def test_every_example_uses_the_field_its_kind_reads() -> None:
@@ -84,10 +86,14 @@ def test_every_example_uses_the_field_its_kind_reads() -> None:
             want = _field_the_parser_reads(kind)
         except AssertionError:
             continue        # kinds with no prose field at all
-        other = "brief" if want == "proof" else "proof"
-        if f'"{other}"' in block:
-            wrong.append(f"  {f.name}:{ln} — {kind} example uses "
-                         f'"{other}", but the parser reads "{want}"')
+        # For a Delegate, `brief` is a LEGAL auxiliary key (the
+        # guidance hand-off) — only a key that silently misreads as
+        # the judged prose is wrong.
+        legal_aux = {"brief"} if kind == "Delegate" else set()
+        for other in {"proof", "brief", "charter"} - {want} - legal_aux:
+            if f'"{other}"' in block:
+                wrong.append(f"  {f.name}:{ln} — {kind} example uses "
+                             f'"{other}", but the parser reads "{want}"')
     assert not wrong, (
         "a worked example is teaching a field the parser will not read, "
         "so a Strategist that copies it gets the batch refused:\n"
@@ -196,18 +202,3 @@ def test_the_label_shown_back_follows_the_kind() -> None:
     assert _prose_label("Delegate") == _field_the_parser_reads("Delegate")
     # An unknown kind must not silently claim to be a proof.
     assert _prose_label(None) == "brief"
-
-
-def test_delegate_has_no_worked_example_yet() -> None:
-    """Recorded, not enforced. `Delegate` is the ONE kind whose prose
-    field differs from `Inject`'s, and it is the one kind with no
-    example to copy — which is how the confusion had room to start.
-
-    Left as a failing-when-fixed marker rather than a silent gap: adding
-    the example is a prompt-wording change, and those go past the owner
-    before they ship. Delete this test in the same edit that adds one.
-    """
-    kinds = {k for _f, _ln, k, _b in _examples()}
-    assert "Delegate" not in kinds, (
-        "a Delegate example exists now — good; delete this test, its "
-        "job is done")

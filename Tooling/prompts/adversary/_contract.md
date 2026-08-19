@@ -6,11 +6,11 @@ The decision-kind rules the Strategist operates under — check quoted contract 
   - With `target_goal_id`: work that goal. The worker chooses prove-directly vs decompose itself.
   - Without `target_goal_id`: mint ONE new def/theorem into `proofs/L_<slug>.lean` (snake_case slug). Search for an existing lemma first. Do not add defs via `Defs.lean`. Never mint an alive goal's statement.
 - `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone. Shelve parks the goal (revivable) and cascades only DOWN to its descendants — it never kills an ancestor or the root.
-- `Delegate` — `brief` or `brief_file`, optional `target_goal_id`. Opens a separate discussion space for a research topic:
-    `# Charter` — the research topic and a concrete exit condition; every claimed result must be kernel-checkable.
-    `## Why a project` — the clearly themed series of research items this project carries, and why it cannot be planned as follow-up batches through your Roadmap's AHEAD.
-    `## Inheritance` — citable landed bricks, vocabulary, known walls.
-  A `Delegate` provides a discussion space, not a solution; prefer planning the work into follow-up batches through your Roadmap's AHEAD. A Delegate opens a FAN, never a relay: a batch that would leave you with exactly one active sub-group is rejected — single-line work stays in AHEAD. Two groups may race one goal. The Charter must be free of circularity. Independent projects may share a batch. With `target_goal_id`: that goal becomes the anchor.
+- `Delegate` — `charter`, `reason`, optional `brief`, optional `target_goal_id`. Dispatches sub-groups:
+    `charter` — the kernel-checkable research item this group exists to settle.
+    `reason` — why you cannot prove this yourself and `Inject` it, nor pace it through AHEAD batch by batch — why it must be a group's burden.
+    `brief` — guidance and lessons for the group.
+  A batch delegates several groups or none — never exactly one; delegation stops two levels below the top. With `target_goal_id`: that goal becomes the anchor.
 - `FetchPaper` — `query` (citation or description), `reason`. Before investing in an unknown or uncertain plan, check whether the literature already settles it. Do not formalize literature except where necessary.
 - `MarkDeliverable` — `target_goal_id`, `reason`. Marks a PROVED brick as one of the claims the charter asks for. Top-level claims only; vocabulary and internal lemmas are never deliverables. The marked set is what `Ingest` is checked against.
 - `Ingest` — optional `reason`. The problem's only exit: emit once the marked set fully satisfies the charter. When a root exists, the proved root is a deliverable. A disproved requested claim never satisfies the charter — `RequestUserAmend` with the disproof instead.

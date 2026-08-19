@@ -635,18 +635,19 @@ def test_delegate_with_a_target_anchors_it_as_attempting(tmp_path):
 
 
 def _proposal_brief(claim="claim A"):
-    """The minimal legal Delegate brief (research-proposal shape,
-    owner ruling 2026-08-16)."""
-    return (f"# Charter\n{claim}\n"
-            "## Why a project\nNeeds route exploration of its own.\n"
-            "## Inheritance\nBricks B1, B2; wall W.")
+    """The minimal legal Delegate charter (2026-08-19 reshape: the
+    three-heading research-proposal shape retired with the
+    charter/reason/brief split — the fan rule and the depth cap carry
+    the structural burden now, and the judge rules on substance)."""
+    return f"Settle {claim} — a kernel-checkable research item."
 
 
-def test_a_delegate_brief_must_be_a_research_proposal(tmp_path):
-    """Opening a group is opening a problem — the brief is its charter.
-    The writing cost is the filter that keeps small unknowns in-house
-    (the depth-9 outsource-the-outsource tail, 2026-08-15). Heading
-    presence is mechanical; substance stays the Adversary's."""
+def test_a_delegate_requires_charter_and_reason(tmp_path):
+    """2026-08-19 reshape: the claim (charter) and the parent-side
+    justification (reason) are both mandatory; the guidance hand-off
+    (brief) is optional. Successor of the retired research-proposal
+    check — same intent (a group must have something to be judged on,
+    and the opening must be argued), new fields."""
     conn = _conn(tmp_path)
     p = _problem(conn, "Test.proposalbrief")
     top = groups.ensure_top_group(conn, p)
@@ -654,14 +655,13 @@ def test_a_delegate_brief_must_be_a_research_proposal(tmp_path):
     S = _S()
     err = _verify(conn, S.Decision(kind="Delegate", brief="settle claim A"),
                   p, top)
-    assert "## Why a project" in err and "## Inheritance" in err
+    assert "reason" in err
     assert "AHEAD" in err, "the refusal names the in-house alternative"
-    # One section present, two missing — only the missing are named.
     err = _verify(conn, S.Decision(
-        kind="Delegate", brief="# Charter\nSettle claim A."), p, top)
-    assert "# Charter" not in err.split("missing:")[1].split(".")[0]
+        kind="Delegate", reason="cannot prove in-house"), p, top)
+    assert "charter" in err
     assert _verify(conn, S.Decision(
-        kind="Delegate", brief=_proposal_brief()), p, top) == ""
+        kind="Delegate", brief=_proposal_brief(), reason="cannot prove in-house nor pace through AHEAD"), p, top) == ""
 
 
 def test_delegate_verify_rejects_the_shapes_that_would_strand_work(
@@ -676,28 +676,28 @@ def test_delegate_verify_rejects_the_shapes_that_would_strand_work(
         conn, S.Decision(kind="Delegate", brief="   "), p, top)
     # byte-identical to a LIVE sibling = double dispatch
     _commit(conn, tmp_path,
-            [S.Decision(kind="Delegate", brief=_proposal_brief())], p, top)
+            [S.Decision(kind="Delegate", brief=_proposal_brief(), reason="cannot prove in-house nor pace through AHEAD")], p, top)
     err = _verify(conn, S.Decision(
-        kind="Delegate", brief=_proposal_brief()), p, top)
+        kind="Delegate", brief=_proposal_brief(), reason="cannot prove in-house nor pace through AHEAD"), p, top)
     assert "duplicate" in err.lower()
     # ...but the same charter after that group RETURNED is allowed: only
     # the Adversary can judge whether the retry differs.
     kid = groups.children(conn, top)[0]
     groups.set_status(conn, int(kid["id"]), "returned")
     assert _verify(conn, S.Decision(
-        kind="Delegate", brief=_proposal_brief()), p, top) == ""
+        kind="Delegate", brief=_proposal_brief(), reason="cannot prove in-house nor pace through AHEAD"), p, top) == ""
     # a settled goal has nothing for a group to work
     done = _goal(conn, p, "done", status="proved")
     assert "proved" in _verify(
-        conn, S.Decision(kind="Delegate", brief=_proposal_brief("c"),
+        conn, S.Decision(kind="Delegate", brief=_proposal_brief("c"), reason="cannot prove in-house nor pace through AHEAD",
                          target_id=done), p, top)
     # one anchor, one group
     g = _goal(conn, p, "g")
     _commit(conn, tmp_path,
-            [S.Decision(kind="Delegate", brief=_proposal_brief("own it"),
+            [S.Decision(kind="Delegate", brief=_proposal_brief("own it"), reason="cannot prove in-house nor pace through AHEAD",
                         target_id=g)], p, top)
     assert "already anchors" in _verify(
-        conn, S.Decision(kind="Delegate", brief=_proposal_brief("mine too"),
+        conn, S.Decision(kind="Delegate", brief=_proposal_brief("mine too"), reason="cannot prove in-house nor pace through AHEAD",
                          target_id=g), p, top)
 
 
@@ -1239,7 +1239,7 @@ def test_mark_and_ingest_in_one_batch_is_a_legal_exit(tmp_path):
     conn.commit()
     S = _S()
     _commit(conn, tmp_path,
-            [S.Decision(kind="Delegate", brief=_proposal_brief())], p, top)
+            [S.Decision(kind="Delegate", brief=_proposal_brief(), reason="cannot prove in-house nor pace through AHEAD")], p, top)
     sub = int(groups.children(conn, top)[0]["id"])
     brick = _goal(conn, p, "brick", status="proved")
     conn.execute("UPDATE goals SET is_deliverable = 0 WHERE id = ?", (brick,))
@@ -1325,9 +1325,9 @@ def test_a_mark_is_shareable_across_groups(tmp_path):
     conn.commit()
     S = _S()
     _commit(conn, tmp_path,
-            [S.Decision(kind="Delegate", brief=_proposal_brief("a"))], p, top)
+            [S.Decision(kind="Delegate", brief=_proposal_brief("a"), reason="cannot prove in-house nor pace through AHEAD")], p, top)
     _commit(conn, tmp_path,
-            [S.Decision(kind="Delegate", brief=_proposal_brief("b"))], p, top)
+            [S.Decision(kind="Delegate", brief=_proposal_brief("b"), reason="cannot prove in-house nor pace through AHEAD")], p, top)
     ga, gb = [int(r["id"]) for r in groups.children(conn, top)][:2]
     brick = _goal(conn, p, "shared_brick", status="proved")
     conn.execute("UPDATE goals SET is_deliverable = 0 WHERE id = ?",
@@ -1369,8 +1369,8 @@ def test_a_delegate_only_batch_is_a_real_action(tmp_path):
     conn.commit()
     S = _S()
     err = S.verify_decisions(
-        [S.Decision(kind="Delegate", brief=_proposal_brief()),
-         S.Decision(kind="Delegate", brief=_proposal_brief())], conn,
+        [S.Decision(kind="Delegate", brief=_proposal_brief(), reason="cannot prove in-house nor pace through AHEAD"),
+         S.Decision(kind="Delegate", brief=_proposal_brief("claim B"), reason="the independent sibling case")], conn,
         problem=p, group_id=top)
     assert err == "", err
 
@@ -2237,10 +2237,12 @@ def test_a_delivery_always_reaches_a_group_that_can_act_on_it(tmp_path):
     conn.commit()
     S = _S()
     _commit(conn, tmp_path, [S.Decision(kind="Delegate",
-                                        brief=_proposal_brief("mid"))], p, top)
+                                        brief=_proposal_brief("mid"),
+                                        reason="cannot prove in-house nor pace through AHEAD")], p, top)
     mid = int(groups.children(conn, top)[0]["id"])
     _commit(conn, tmp_path, [S.Decision(kind="Delegate",
-                                        brief=_proposal_brief("kid"))], p, mid)
+                                        brief=_proposal_brief("kid"),
+                                        reason="cannot prove in-house nor pace through AHEAD")], p, mid)
     kid = int(groups.children(conn, mid)[0]["id"])
 
     # A parent that is ALREADY terminal with a live child. The cascade
@@ -2294,13 +2296,13 @@ def test_retiring_a_charter_retires_the_work_it_delegated(tmp_path):
     conn.commit()
     S = _S()
     _commit(conn, tmp_path,
-            [S.Decision(kind="Delegate", brief=_proposal_brief("mid"))], p, top)
+            [S.Decision(kind="Delegate", brief=_proposal_brief("mid"), reason="cannot prove in-house nor pace through AHEAD")], p, top)
     mid = int(groups.children(conn, top)[0]["id"])
     _commit(conn, tmp_path,
-            [S.Decision(kind="Delegate", brief=_proposal_brief("kid"))], p, mid)
+            [S.Decision(kind="Delegate", brief=_proposal_brief("kid"), reason="cannot prove in-house nor pace through AHEAD")], p, mid)
     kid = int(groups.children(conn, mid)[0]["id"])
     _commit(conn, tmp_path,
-            [S.Decision(kind="Delegate", brief=_proposal_brief("grandkid"))],
+            [S.Decision(kind="Delegate", brief=_proposal_brief("grandkid"), reason="cannot prove in-house nor pace through AHEAD")],
             p, kid)
     grand = int(groups.children(conn, kid)[0]["id"])
 
@@ -2356,10 +2358,10 @@ def test_a_delivering_group_takes_its_live_sub_projects_with_it(tmp_path):
     conn.commit()
     S = _S()
     _commit(conn, tmp_path,
-            [S.Decision(kind="Delegate", brief=_proposal_brief("mid"))], p, top)
+            [S.Decision(kind="Delegate", brief=_proposal_brief("mid"), reason="cannot prove in-house nor pace through AHEAD")], p, top)
     mid = int(groups.children(conn, top)[0]["id"])
     _commit(conn, tmp_path,
-            [S.Decision(kind="Delegate", brief=_proposal_brief("kid"))], p, mid)
+            [S.Decision(kind="Delegate", brief=_proposal_brief("kid"), reason="cannot prove in-house nor pace through AHEAD")], p, mid)
     kid = int(groups.children(conn, mid)[0]["id"])
     brick = _goal(conn, p, "mid_brick", status="proved")
     _mark(conn, p, brick, mid)

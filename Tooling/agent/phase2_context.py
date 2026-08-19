@@ -586,17 +586,22 @@ def _step_artifact_lines(conn: sqlite3.Connection,
 def _prose_label(decision_kind: "str | None") -> str:
     """What to CALL a decision's prose when showing it back to the agent.
 
-    One column, two contracts (`strategist._parse_one`): an Inject's
+    One column, three contracts (`strategist._parse_one`): an Inject's
     prose is the `proof` that settles its brick; a Delegate's is the
-    `brief` that charters a group. They share the DB column `brief`
-    because a decision carries one piece of prose — but echoing the
-    COLUMN name at the agent teaches the wrong field name for Inject,
-    and the agent writes back what it was shown. That is the whole
-    mechanism by which a 2026-08-11 rename of the wire field kept
+    `charter` a new group must settle (2026-08-19 reshape — its old key
+    `brief` now names the optional guidance hand-off). They share the
+    DB column `brief` because a decision carries one piece of prose —
+    but echoing the COLUMN name at the agent teaches the wrong field
+    name, and the agent writes back what it was shown. That is the
+    whole mechanism by which a 2026-08-11 rename of the wire field kept
     costing rejected batches into 2026-08-14: the spec moved, and every
     surface that still spelled it the old way taught the old way.
     """
-    return "proof" if decision_kind == "Inject" else "brief"
+    if decision_kind == "Inject":
+        return "proof"
+    if decision_kind == "Delegate":
+        return "charter"
+    return "brief"
 
 
 def _write_batches_companion(conn: sqlite3.Connection,
@@ -1769,9 +1774,25 @@ def _section_your_group(conn: sqlite3.Connection, problem: str,
     # refuse invents workarounds; one never told plans with AHEAD from
     # the start.
     at_cap = _groups.depth(conn, int(group_id)) >= _groups.GROUP_DEPTH_CAP
+    # Guidance hand-off (2026-08-19): the parent's optional `brief`
+    # rides the Delegate audit row; read back through `opened_by`.
+    # Context, never part of the charter under judgment.
+    guidance = ""
+    if me["opened_by"] is not None:
+        try:
+            row = conn.execute(
+                "SELECT payload FROM strategist_decisions WHERE id = ?",
+                (int(me["opened_by"]),)).fetchone()
+            if row is not None:
+                guidance = str(json.loads(
+                    row["payload"] or "{}").get("brief") or "").strip()
+        except (ValueError, TypeError):
+            guidance = ""
     return [
         "## Your group", "",
         "Your charter and the chain above it: `charter.md`.", "",
+        *([f"Guidance from your parent (context, not the claim):\n"
+           f"{guidance}", ""] if guidance else []),
         # (v40 — the old charter::Manifest override bullet is gone: the
         # prompts now say "charter" natively at every depth, so there is
         # nothing to override. Only the level-dependent verb semantics
