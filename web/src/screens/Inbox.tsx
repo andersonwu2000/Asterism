@@ -37,11 +37,18 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
     }
   }
 
+  // What is being amended. Two of the three targets are files; the
+  // third is the problem's GOAL, which stopped being a file in v40 —
+  // naming a DB value "Manifest.md" would send the reader to a path
+  // that no longer exists.
+  const isGoal = a.file === 'charter'
+  const target = isGoal ? 'the goal' : a.file
+
   // Decision-first anatomy (design review): headline = the short ask
   // (reason when present — it's the strategist's TL;DR), actions above
   // the fold, the long reasoning wall collapsed, diff = changed hunks.
   const longQuestion = a.question.length > 280
-  const headline = a.reason || (longQuestion ? `Amend ${a.file} — decision needed` : a.question)
+  const headline = a.reason || (longQuestion ? `Amend ${target} — decision needed` : a.question)
   const [showReasoning, setShowReasoning] = useState(!longQuestion && !a.reason)
 
   return (
@@ -54,8 +61,17 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
           >
             {a.problem}
           </Link>
-          <span className="rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-ink-dim">
-            {a.file}
+          <span
+            className={`rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] text-ink-dim ${
+              isGoal ? '' : 'font-mono'
+            }`}
+            title={
+              isGoal
+                ? "engine term: charter — the problem's goal, which lives in the engine, not in a file"
+                : undefined
+            }
+          >
+            {target}
           </span>
         </div>
         {(() => {
@@ -113,8 +129,9 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
           "Either choice" misled next to THREE buttons (cold-eye): Edit
           is a mode toggle, not a resolution — name the two that are. */}
       <div className="mb-3 truncate text-[11px] text-ink-faint">
-        Accept writes the file (with your edits, if any); Reject keeps it and asks you
-        why — either resolution unpauses the problem.
+        Accept {isGoal ? 'replaces the goal' : 'writes the file'} (with your edits, if any);
+        Reject keeps {isGoal ? 'the current one' : 'it'} and asks you why — either resolution
+        unpauses the problem.
       </div>
 
       {(longQuestion || a.reason) && (

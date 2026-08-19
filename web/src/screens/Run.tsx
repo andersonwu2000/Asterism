@@ -573,7 +573,7 @@ export default function Run() {
           <Link
             to={`/problems/${encodeURIComponent(data.problem)}`}
             className="font-mono text-sm text-ink-dim underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"
-            title="open the problem — its sky, goals, manifest"
+            title="open the problem — its sky, goals, intent"
           >
             {data.problem}
           </Link>

@@ -334,7 +334,7 @@ function Shell() {
             active={section === '' || section === 'problems'}
           />
           {/* ONE door for the machine (owner, 2026-07-14): console,
-              manifest steering, settings and the usage ledger are four
+              intent steering, settings and the usage ledger are four
               faces of the same engine — Run + Settings had begun
               duplicating its cost surfaces across two pages */}
           <NavItem
@@ -429,7 +429,7 @@ function Shell() {
           ) : section === 'engine' ? (
             <Engine
               tab={
-                (['manifest', 'programme', 'timeline', 'settings', 'usage'].includes(
+                (['intent', 'programme', 'timeline', 'settings', 'usage'].includes(
                   route.segments[1] ?? '',
                 )
                   ? route.segments[1]

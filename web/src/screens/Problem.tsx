@@ -13,15 +13,15 @@ import StrategyPanel from '../components/StrategyPanel'
 import Timeline from '../components/Timeline'
 import ProgrammeView from '../components/ProgrammeView'
 import FileViewer from '../components/FileViewer'
-import ManifestEditor from '../components/ManifestEditor'
+import IntentEditor from '../components/IntentEditor'
 import RunControl from '../components/RunControl'
 import type { DaemonStatus, Goal, ProblemDetail, Programme } from '../lib/types'
 
-type Tab = 'stars' | 'manifest' | 'programme' | 'goals' | 'timeline' | 'files'
+type Tab = 'stars' | 'intent' | 'programme' | 'goals' | 'timeline' | 'files'
 
 /** The Programme (research mode): the machine's standing argument —
  * what it believes, the route, the whole story — adversarially
- * reviewed before every revision. The Manifest is what the HUMAN
+ * reviewed before every revision. The Intent tab is what the HUMAN
  * asked; this is what the ENGINE currently argues. Read-only by
  * construction (the only writer is a passed proposal commit). */
 function ProgrammePanel({ problem }: { problem: string }) {
@@ -431,7 +431,7 @@ export default function Problem({ name }: { name: string }) {
   )
   const { data: daemon } = usePoll<DaemonStatus>('/api/daemon', 3000)
   const [tab, setTab] = useState<Tab>('stars')
-  const [manifestDirty, setManifestDirty] = useState(false)
+  const [intentDirty, setIntentDirty] = useState(false)
   const [selectedGoal, setSelectedGoal] = useState<number | null>(null)
   // stars lit by hovering a route in the goal panel (owner: the text
   // and the map must point at each other)
@@ -477,7 +477,7 @@ export default function Problem({ name }: { name: string }) {
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'stars', label: 'Constellation' },
-    { id: 'manifest', label: 'Manifest' },
+    { id: 'intent', label: 'Intent' },
     // the tab exists only once a Programme exists — pre-research-mode
     // problems keep their old anatomy
     ...(data.programme_rev !== null
@@ -566,7 +566,7 @@ export default function Problem({ name }: { name: string }) {
             label: (
               <>
                 {t.label}
-                {t.id === 'manifest' && manifestDirty && (
+                {t.id === 'intent' && intentDirty && (
                   <span className="ml-1 text-star" title="unsaved changes">
                     ·
                   </span>
@@ -596,7 +596,7 @@ export default function Problem({ name }: { name: string }) {
                 </>
               ) : (
                 <>
-                  <div>No goals yet — the Strategist bootstraps from the Manifest once the engine runs.</div>
+                  <div>No goals yet — the Strategist bootstraps from the goal once the engine runs.</div>
                   <div className="text-xs text-ink-faint">
                     press <span className="font-semibold text-ink-dim">Run</span> in the header —
                     the engine works this problem only
@@ -627,12 +627,12 @@ export default function Problem({ name }: { name: string }) {
               />
             </div>
           )}
-          {/* the manifest editor stays mounted (hidden, not unmounted) so
+          {/* the intent editor stays mounted (hidden, not unmounted) so
               an unsaved draft survives a tab switch */}
-          <div className={tab === 'manifest' ? undefined : 'hidden'}>
-            <ManifestEditor
+          <div className={tab === 'intent' ? undefined : 'hidden'}>
+            <IntentEditor
               problem={data.name}
-              onDirtyChange={setManifestDirty}
+              onDirtyChange={setIntentDirty}
               bridged={data.status === 'bridged'}
             />
             <DeleteProblem problem={data.name} />
@@ -673,7 +673,7 @@ export default function Problem({ name }: { name: string }) {
         {selectedGoal !== null &&
           tab !== 'files' &&
           tab !== 'timeline' &&
-          tab !== 'manifest' &&
+          tab !== 'intent' &&
           tab !== 'programme' && (
           <GoalPanel
             problem={data.name}
@@ -698,7 +698,7 @@ export default function Problem({ name }: { name: string }) {
           selectedStrategy !== null &&
           tab !== 'files' &&
           tab !== 'timeline' &&
-          tab !== 'manifest' &&
+          tab !== 'intent' &&
           tab !== 'programme' && (
             <StrategyPanel
               problem={data.name}

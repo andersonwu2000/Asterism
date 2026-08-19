@@ -2,7 +2,7 @@
  * Minimal line diff for the amend side-by-side view (dependency freeze:
  * no diff package). LCS over lines, then aligned two-column rows;
  * delete+insert runs are paired into 'change' rows. Amend targets are
- * Manifest.md / Defs.lean — small files, O(n·m) DP is fine (guarded).
+ * a goal / Defs.lean — small texts, O(n·m) DP is fine (guarded).
  */
 
 export interface DiffRow {

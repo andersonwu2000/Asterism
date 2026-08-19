@@ -144,7 +144,7 @@ export interface Group {
   id: number
   problem: string
   parent_id: number | null
-  /** the top group IS the problem; its charter is the Manifest */
+  /** the top group IS the problem; its charter is the problem's goal */
   is_top: boolean
   /** the claim this group was handed (empty for the top group) */
   charter: string
@@ -268,6 +268,8 @@ export interface GoalDetail extends Omit<Goal, 'dead_attempts'> {
 export interface Amend {
   id: number
   problem: string
+  /** what the strategist asks to change: 'charter' (the problem's
+   * goal, DB-resident) or a pinned Lean file (Defs.lean / Root.lean) */
   file: string
   proposed_body: string
   current_body: string
@@ -530,9 +532,14 @@ export interface DaemonStatus {
   } | null
 }
 
-export interface ManifestData {
+/** What the human asked, DB-resident since v40 (Manifest.md retired):
+ * the GOAL (the top group's charter — the engine may propose changes
+ * to it) and the user's standing WORD (carried verbatim to every agent
+ * at every depth, never machine-amendable), plus machine settings. */
+export interface IntentData {
   problem: string
-  body: string
+  charter: string
+  word: string
   settings: {
     axioms_whitelist: string[]
     forbidden_lemmas: string[]

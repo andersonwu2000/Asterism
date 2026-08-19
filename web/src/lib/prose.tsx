@@ -17,7 +17,7 @@ import { emitGoalHover, emitGoalOpen } from './goalFocus'
  * renders that as a ragged column. Citation links come from bracket
  * tokens the model emits while the CLIENT owns every route.
  *
- * NOT for the Manifest editor overlay (lib/markdown.tsx is metric-
+ * NOT for the intent editor overlay (lib/markdown.tsx is metric-
  * faithful colouring, a different job).
  */
 
@@ -247,9 +247,9 @@ function renderTable(lines: string[], keyBase: string): ReactNode {
 
 /** Full prose body. `mode: 'chat'` = compact, heading marks stripped;
  * `mode: 'document'` = a reading page — real headings (the Programme's
- * title + sections, the Manifest in the Files tab), more air between
+ * title + sections, a document in the Files tab), more air between
  * blocks. `frontmatter` renders a leading `---` block as a quiet mono
- * preamble instead of prose (Manifest.md settings). */
+ * preamble instead of prose (a settings block). */
 export function renderProse(
   text: string,
   {

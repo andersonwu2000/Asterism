@@ -390,7 +390,7 @@ function inner(
 }
 
 /** The MACHINE's knobs. Config is read once at run start (the banner
- * says so while a run is live); the Manifest tab next door is the
+ * says so while a run is live); the Intent tab next door is the
  * hot-reloaded lever. The account moved to the console's own Settings
  * page (owner, 2026-08-07): which model a role uses is the engine's
  * business, but who is paying for it is yours. */

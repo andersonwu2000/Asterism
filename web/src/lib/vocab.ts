@@ -78,7 +78,8 @@ const DECISION_KIND_TITLE: Record<string, string> = {
     'engine term: ConfirmShelve — a goal was set aside (not failed; it can be picked up again)',
   EmitDirective: 'engine term: EmitDirective — a standing note steering its own agents',
   RequestUserAmend:
-    'engine term: RequestUserAmend — the run paused to ask you to amend the Manifest',
+    'engine term: RequestUserAmend — the run paused to ask you to amend the goal or a' +
+    ' pinned Lean file',
   Noop: 'engine term: Noop — looked at the state and changed nothing',
   MarkDeliverable: 'engine term: MarkDeliverable — flagged a result as a deliverable claim',
   Ingest: "engine term: Ingest — accepted the finished work as the problem's final state",
@@ -126,7 +127,7 @@ const EVENT_LABEL: Record<string, string> = {
   for_review: 'for review',
   // "claimed" read as somebody claiming something — the reader's first
   // question was what it meant (owner, 2026-08-07). `deliverable` is
-  // the word the Manifest and the sky's ◈ already use for this.
+  // the word the sign-off surfaces and the sky's ◈ already use.
   deliverable: 'deliverable',
   ingested: 'closed',
   rev: 'rev',
@@ -183,7 +184,9 @@ const EVENT_TITLE: Record<string, string> = {
     'engine term: ReturnToParent \u2014 a group gave its claim back to the group'
     + ' above it: refuted, needing an amendment, or exhausted',
   closed_group: 'a group was retired — the route no longer needs its claim',
-  asked_you: 'the run paused to ask you to amend the Manifest',
+  asked_you:
+    'engine term: RequestUserAmend — the run paused because something you own reads'
+    + ' wrong: the goal, or a pinned Lean file. It waits in the Inbox.',
   directive: 'a standing note steering its own agents',
   held: 'looked at the state and changed nothing',
   paper: "a paper was pulled into the problem's sources",

@@ -211,7 +211,7 @@ function DeclEntry({
         {d.is_deliverable && (
           <span
             className="text-[10px] tracking-wide text-star"
-            title="a result the Manifest asked for — accepted at sign-off"
+            title="a result the problem's goal asked for — accepted at sign-off"
           >
             main result
           </span>

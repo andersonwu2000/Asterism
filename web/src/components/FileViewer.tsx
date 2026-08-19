@@ -18,7 +18,9 @@ export default function FileViewer({
   proofFiles: string[]
   initialFile?: string | null
 }) {
-  const files = ['Manifest.md', 'Defs.lean', ...proofFiles.map((f) => `proofs/${f}`)]
+  // the problem's hand-authored files (v40 USER_INTENT_FILES — the
+  // goal itself is no longer a file; it lives on the Intent tab)
+  const files = ['Root.lean', 'Defs.lean', ...proofFiles.map((f) => `proofs/${f}`)]
   const [selected, setSelected] = useState(
     initialFile && files.includes(initialFile) ? initialFile : files[0],
   )

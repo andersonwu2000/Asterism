@@ -4,18 +4,25 @@ import { Link } from '../lib/router'
 import { Button, Select } from './ui'
 import ListField from './ListField'
 import { MarkdownEditor } from '../lib/markdown'
-import type { ManifestData, PaperShelfItem, ProblemPaperBinding } from '../lib/types'
+import type { IntentData, PaperShelfItem, ProblemPaperBinding } from '../lib/types'
 
 /*
- * The Manifest as the user's instrument: settings are controls, the
- * body is natural language. Hot-reload means a save applies to the
- * running engine on its next tick. Manual edits lock while a
- * strategist amend is pending — two writers, one file.
+ * What the HUMAN asked, as the user's instrument (v40 — Manifest.md
+ * retired, the intent lives in the engine's own DB): the GOAL, the
+ * standing WORD, and the machine settings. Each reaches the running
+ * engine on its next tick.
+ *
+ * The two halves are not the same kind of thing, which is the whole
+ * reason they were split: the goal is the claim to settle and the
+ * engine may PROPOSE a change to it (that proposal locks the goal
+ * until you answer it in the Inbox), while the word is yours alone —
+ * carried verbatim into every agent at every depth, never
+ * machine-amendable, and so it never locks.
  */
 
-/** Papers bound to this problem. Bindings live in the DB, not in
- * Manifest.md, so this block deliberately sits OUTSIDE the
- * pending_amend fieldset lock — binding a paper never collides with a
+/** Papers bound to this problem. A binding is its own DB row, not part
+ * of the goal, so this block deliberately sits OUTSIDE the
+ * pending_amend lock — binding a paper never collides with a
  * strategist amend. */
 function PapersBlock({ problem }: { problem: string }) {
   const [bindings, setBindings] = useState<ProblemPaperBinding[] | null>(null)
@@ -79,7 +86,7 @@ function PapersBlock({ problem }: { problem: string }) {
     <div className="mt-6">
       <div
         className="mb-2 text-[11px] font-medium tracking-widest text-ink-faint uppercase"
-        title="the engine reads bound papers for definitions and proof routes. Bindings are DB rows, not Manifest text, so they keep working even while a pending amend locks the editor above."
+        title="the engine reads bound papers for definitions and proof routes. A binding is its own row, not part of the goal, so it keeps working even while a pending amend locks the goal above."
       >
         papers
       </div>
@@ -155,7 +162,7 @@ function PapersBlock({ problem }: { problem: string }) {
   )
 }
 
-export default function ManifestEditor({
+export default function IntentEditor({
   problem,
   onDirtyChange,
   bridged = false,
@@ -165,13 +172,18 @@ export default function ManifestEditor({
   /** work already in the Library — the `library` flag is settled */
   bridged?: boolean
 }) {
-  const [data, setData] = useState<ManifestData | null>(null)
+  const [data, setData] = useState<IntentData | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [body, setBody] = useState('')
-  const [settings, setSettings] = useState<ManifestData['settings'] | null>(null)
-  const [dirty, setDirty] = useState(false)
+  const [charter, setCharter] = useState('')
+  const [word, setWord] = useState('')
+  const [settings, setSettings] = useState<IntentData['settings'] | null>(null)
+  // per FIELD, not one flag: every sanctioned write records a history
+  // row and re-mirrors the durable seed, so posting a field nobody
+  // touched would file a change that never happened
+  const [touched, setTouched] = useState<Set<'charter' | 'word' | 'settings'>>(new Set())
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
+  const dirty = touched.size > 0
 
   // the parent shows an unsaved-changes dot on the tab
   useEffect(() => {
@@ -191,11 +203,12 @@ export default function ManifestEditor({
 
   useEffect(() => {
     let cancelled = false
-    apiGet<ManifestData>(`/api/problems/${encodeURIComponent(problem)}/manifest`)
+    apiGet<IntentData>(`/api/problems/${encodeURIComponent(problem)}/intent`)
       .then((d) => {
         if (cancelled) return
         setData(d)
-        setBody(d.body)
+        setCharter(d.charter)
+        setWord(d.word)
         setSettings(d.settings)
       })
       .catch((e) => !cancelled && setError(String((e as Error).message)))
@@ -204,29 +217,47 @@ export default function ManifestEditor({
     }
   }, [problem])
 
-  if (error)
+  if (error && !data)
     return (
       <div className="p-6 text-xs text-ink-dim">
-        {/* raw "404: no Manifest.md" is machine voice — say what it
-            means and what to do (a problem row whose folder was moved
-            or reset; audit 2026-07-11) */}
-        {/404|no Manifest/i.test(error)
-          ? 'This problem has no Manifest.md on disk — its folder was likely moved or reset. Re-create the file, or delete the problem below.'
+        {/* raw "404: unknown problem" is machine voice — say what it
+            means and what to do (a problem the engine no longer knows;
+            audit 2026-07-11) */}
+        {/404|unknown problem|no DB/i.test(error)
+          ? 'The engine does not know this problem — it was likely reset or removed. Create it again, or delete the row below.'
           : error}
       </div>
     )
   if (!data || !settings)
     return <div className="late-fade p-6 text-xs text-ink-faint">Loading…</div>
 
+  const touch = (what: 'charter' | 'word' | 'settings') => {
+    setTouched((old) => new Set(old).add(what))
+    setSaved(false)
+  }
+
   const save = async () => {
     setBusy(true)
     setError(null)
     try {
-      await apiPost(`/api/problems/${encodeURIComponent(problem)}/manifest`, {
-        body,
-        settings,
+      await apiPost(`/api/problems/${encodeURIComponent(problem)}/intent`, {
+        ...(touched.has('charter') ? { charter } : {}),
+        ...(touched.has('word') ? { word } : {}),
+        // only the two knobs this panel OWNS. The read carries more
+        // than that (the axiom gate, which is read-only, and machine
+        // channels this UI never shows) and writing a value back
+        // merely because it was read is how a surface starts
+        // asserting settings nobody chose here.
+        ...(touched.has('settings')
+          ? {
+              settings: {
+                library: settings.library,
+                forbidden_lemmas: settings.forbidden_lemmas,
+              },
+            }
+          : {}),
       })
-      setDirty(false)
+      setTouched(new Set())
       setSaved(true)
       setTimeout(() => setSaved(false), 2500)
     } catch (e) {
@@ -236,35 +267,61 @@ export default function ManifestEditor({
     }
   }
 
-  const touch = () => {
-    setDirty(true)
-    setSaved(false)
-  }
+  const eyebrow = 'mb-1.5 text-[11px] font-medium tracking-widest text-ink-faint uppercase'
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-5">
       {data.pending_amend && (
         <div className="mb-4 rounded-lg border border-warn/50 bg-warn/10 px-3 py-2 text-xs text-warn">
-          The strategist has a pending amend request on this Manifest — editing is locked so
-          the two changes don't collide.{' '}
+          The strategist has proposed a change to this goal — editing it is locked so the two
+          changes don't collide.{' '}
           <Link to="/inbox" className="underline">
             Resolve it in the Inbox
           </Link>
           .
         </div>
       )}
-      {/* One subject per block. The editor IS the page — it needs no
-          eyebrow announcing itself — and the three settings under it
-          were three shouting eyebrows for what is really one small
-          group (owner: cluttered, 2026-08-07). */}
-      <fieldset disabled={data.pending_amend} className="flex flex-col gap-4">
-        <MarkdownEditor
-          value={body}
-          onChange={(v) => {
-            setBody(v)
-            touch()
-          }}
-        />
+      <div className="flex flex-col gap-5">
+        {/* THE GOAL — the engine may propose a change to it, so it locks */}
+        <fieldset disabled={data.pending_amend}>
+          <div
+            className={eyebrow}
+            title="engine term: the top group's charter — every group, this one included, is judged against its charter and nothing else"
+          >
+            the goal
+          </div>
+          <MarkdownEditor
+            value={charter}
+            onChange={(v) => {
+              setCharter(v)
+              touch('charter')
+            }}
+          />
+        </fieldset>
+
+        {/* YOUR WORD — the machine reads it and never writes it, so it
+            stays editable even while an amend is pending */}
+        <div>
+          <div
+            className={eyebrow}
+            title="carried verbatim into every agent at every depth of the discussion tree. The engine has no way to amend it — there is no request it can make against your word."
+          >
+            your standing word
+          </div>
+          <MarkdownEditor
+            heightClass="h-64"
+            value={word}
+            onChange={(v) => {
+              setWord(v)
+              touch('word')
+            }}
+          />
+          <div className="mt-1 text-[11px] text-ink-faint">
+            what holds however the goal is rewritten — routes to prefer or avoid, standards to
+            keep. Empty is fine.
+          </div>
+        </div>
+
         <div className="flex items-center gap-3">
           <Button variant="primary" disabled={busy || !dirty} onClick={() => void save()}>
             {busy ? 'Saving…' : 'Save'}
@@ -276,7 +333,11 @@ export default function ManifestEditor({
           </span>
           {error && <span className="text-[11px] text-ink-dim">{error}</span>}
         </div>
-        <div className="flex flex-col gap-2.5 rounded-xl border border-edge bg-surface px-3.5 py-3">
+
+        <fieldset
+          disabled={data.pending_amend}
+          className="flex flex-col gap-2.5 rounded-xl border border-edge bg-surface px-3.5 py-3"
+        >
           <label
             className={`flex items-center gap-2 text-xs text-ink-dim ${bridged ? 'opacity-60' : ''}`}
             title={bridged ? "settled — this problem's work is already in the Library" : undefined}
@@ -287,7 +348,7 @@ export default function ManifestEditor({
               disabled={bridged}
               onChange={(e) => {
                 setSettings({ ...settings, library: e.target.checked })
-                touch()
+                touch('settings')
               }}
             />
             harvest finished work into the Library
@@ -302,7 +363,7 @@ export default function ManifestEditor({
             values={settings.forbidden_lemmas}
             onChange={(v) => {
               setSettings({ ...settings, forbidden_lemmas: v })
-              touch()
+              touch('settings')
             }}
           />
           {/* the axiom gate is FIXED AT CREATION (server enforces 409):
@@ -320,11 +381,11 @@ export default function ManifestEditor({
                 : settings.axioms_whitelist.join(' · ')}
             </span>
           </div>
-        </div>
-      </fieldset>
-      {/* NOTE: outside the fieldset on purpose — paper bindings are DB
-          rows, not Manifest.md content, so the pending_amend lock does
-          not apply to them */}
+        </fieldset>
+      </div>
+      {/* NOTE: outside the lock on purpose — paper bindings are their own
+          DB rows, not part of the goal, so a pending amend does not
+          apply to them */}
       <PapersBlock problem={problem} />
     </div>
   )

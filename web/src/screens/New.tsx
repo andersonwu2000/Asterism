@@ -13,7 +13,7 @@ import type { PaperShelfItem } from '../lib/types'
  * Problem authoring, mathematician-first: a name, a natural-language
  * description, and sensible defaults. The frontmatter is controls, not
  * yaml; pinned Lean files stay behind an "advanced" fold. Everything
- * here can be changed later on the problem's Manifest tab.
+ * here can be changed later on the problem's Intent tab.
  */
 
 const NAME_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*$/
@@ -24,6 +24,10 @@ const DEFAULT_AXIOMS = ['propext', 'Quot.sound', 'Classical.choice']
 export default function New() {
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
+  // the standing word (v40): what holds however the goal is later
+  // rewritten. The engine reads it at every depth and can never amend
+  // it, which is exactly why it is asked for separately.
+  const [word, setWord] = useState('')
   const [showLean, setShowLean] = useState(false)
   const [defs, setDefs] = useState('')
   const [root, setRoot] = useState('')
@@ -115,17 +119,18 @@ export default function New() {
   const create = async () => {
     setBusy(true)
     setError(null)
-    // No `## Statement` heading: named sections stopped being parsed
-    // (`23146735`) and the whole body now reaches the agent verbatim.
-    // A template that keeps stamping a dead heading is exactly what
-    // that commit indicted — 531 of 611 Manifests still carry
-    // `## Lemma hints`, retired in 2026-07, because an importer kept
-    // writing it. This form would have been the next such importer.
-    const body = `# ${name}\n\n${desc.trim()}\n`
+    // The description IS the charter, verbatim — no `# name` title, no
+    // `## Statement` heading. Named sections stopped being parsed
+    // (`23146735`) and the whole thing reaches the agent as written; a
+    // form that keeps stamping dead scaffolding is exactly what that
+    // commit indicted (531 of 611 Manifests still carried a
+    // `## Lemma hints` retired in 2026-07, because an importer kept
+    // writing it). This form would have been the next such importer.
     try {
       await apiPost<{ problem: string }>('/api/problems/create', {
         name,
-        body,
+        charter: desc.trim(),
+        ...(word.trim() === '' ? {} : { word: word.trim() }),
         settings: {
           // whether finished work enters the Library is decided by a
           // human AT SIGN-OFF (owner: no automatic harvest) — true
@@ -180,6 +185,22 @@ export default function New() {
         }
         value={desc}
         onChange={(e) => setDesc(e.target.value)}
+      />
+
+      <label
+        className="mt-4 mb-1 block text-[11px] font-medium tracking-widest text-ink-faint uppercase"
+        title="carried verbatim into every agent at every depth of the discussion tree. The engine reads it and has no way to amend it, while the goal above it may be amended by request."
+      >
+        anything that must hold whatever happens <span className="lowercase">(optional)</span>
+      </label>
+      <textarea
+        className="h-24 w-full resize-y rounded-lg border border-edge bg-surface p-3 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+        placeholder={
+          'Standing instructions the engine may never rewrite: routes to prefer or avoid, ' +
+          'standards to keep, what counts as done.'
+        }
+        value={word}
+        onChange={(e) => setWord(e.target.value)}
       />
 
       {shelf.length > 0 && (

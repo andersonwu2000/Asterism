@@ -3,7 +3,7 @@ import { usePoll } from '../lib/api'
 import { Link } from '../lib/router'
 import RunConsole, { CycleLine } from './Run'
 import { SettingsTab, UsageTab } from './Telemetry'
-import ManifestEditor from '../components/ManifestEditor'
+import IntentEditor from '../components/IntentEditor'
 import ProgrammeView from '../components/ProgrammeView'
 import Timeline from '../components/Timeline'
 import { cycleForGroup, resolveGroup, seatedGroups } from '../lib/programmeFocus'
@@ -15,7 +15,7 @@ import type { DaemonStatus, Programme, RunStatus } from '../lib/types'
  * described the same machine from two pages, and the cost surfaces
  * had started duplicating). Four faces of one thing:
  *   Console  — what is it doing right now (instruments, not knobs)
- *   Manifest — steer the live run (hot-reloaded instructions)
+ *   Intent   — steer the live run (hot-reloaded instructions)
  *   Settings — knobs + account (read once at run start)
  *   Usage    — the ledger (per-problem, per-agent-kind)
  * Page anatomy matches Problem/Library chapter exactly: title, TabNav,
@@ -24,7 +24,7 @@ import type { DaemonStatus, Programme, RunStatus } from '../lib/types'
 
 export type EngineTab =
   | 'console'
-  | 'manifest'
+  | 'intent'
   | 'programme'
   | 'timeline'
   | 'settings'
@@ -33,10 +33,11 @@ export type EngineTab =
 const TABS: { id: EngineTab; label: string; href: string; title?: string }[] = [
   { id: 'console', label: 'Console', href: '/engine' },
   {
-    id: 'manifest',
-    label: 'Manifest',
-    href: '/engine/manifest',
-    title: 'steer the live run — saved instructions reach the next agent, no restart',
+    id: 'intent',
+    label: 'Intent',
+    href: '/engine/intent',
+    title: 'steer the live run — what you asked for, saved straight to the next agent,'
+      + ' no restart',
   },
   {
     id: 'programme',
@@ -56,10 +57,10 @@ const TABS: { id: EngineTab; label: string; href: string; title?: string }[] = [
   { id: 'usage', label: 'Usage', href: '/engine/usage' },
 ]
 
-/** The steering face: the LIVE run's Manifest, editable in place —
- * instructions are hot-reloaded (each agent reads them at spawn), so
- * this is the one lever that reaches a run in flight. */
-function SteerManifest() {
+/** The steering face: the LIVE run's intent, editable in place —
+ * the goal and your standing word are read fresh by each agent at
+ * spawn, so this is the one lever that reaches a run in flight. */
+function SteerIntent() {
   const { data } = usePoll<DaemonStatus>('/api/daemon', 3000)
   const { data: run } = usePoll<RunStatus>('/api/run', 5000)
   const [, setDirty] = useState(false)
@@ -91,7 +92,7 @@ function SteerManifest() {
             : 'saved instructions apply when the next run starts'}
         </span>
       </div>
-      <ManifestEditor problem={problem} onDirtyChange={setDirty} bridged={false} />
+      <IntentEditor problem={problem} onDirtyChange={setDirty} bridged={false} />
     </div>
   )
 }
@@ -188,13 +189,13 @@ export default function Engine({ tab }: { tab: EngineTab }) {
       <h1 className="font-display text-[22px] font-medium text-ink">Engine</h1>
       <TabNav className="mt-3" tabs={TABS} active={tab} />
       {tab === 'console' && <RunConsole />}
-      {tab === 'manifest' && <SteerManifest />}
+      {tab === 'intent' && <SteerIntent />}
       {tab === 'programme' && <RunProgramme />}
       {tab === 'timeline' && (
         /* The run's own framing of the problem page's log (`419dcb31`'s
            law: what you read while watching belongs on the page you
            watch from). A tab, not a strip under the slots — the
-           Manifest and the Programme are carried over the same way, and
+           Intent and the Programme are carried over the same way, and
            a document does not live in an instrument's footer (owner,
            2026-08-07). */
         <div className="mt-5">

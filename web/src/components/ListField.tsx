@@ -2,8 +2,8 @@ import { useState } from 'react'
 
 /**
  * Chip-list editor for a list-of-strings setting (forbidden lemmas,
- * lemma hints, axiom whitelist). Extracted from ManifestEditor so the
- * New-problem form and the Manifest tab share one control.
+ * lemma hints, axiom whitelist). Extracted from IntentEditor so the
+ * New-problem form and the Intent tab share one control.
  */
 export default function ListField({
   label,
