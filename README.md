@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-18
+- Fixed how claimed disproofs are handled: a reported counterexample is now set aside for verification instead of being treated as a final verdict.
+- Reduced the amount of text agents load into their working context, by deferring rarely-needed records and refusing oversized file reads in favor of a file outline.
+- Fixed a crash-recovery bug that reactivated problems which had been deliberately set aside, and added several small safeguards including early warnings when a proof depends on extra axioms.
+- Refined the written guidance given to agents, clarifying that subtasks handed to helpers are open discussions around a theme rather than single questions expecting a finished answer.
+
 ### 2026-08-17
 - Fixed bookkeeping bugs in how the system avoids duplicating work, including a truncated type-signature bug and a rule change so results claimed by one search branch remain reusable by others.
 - Repaired a batch of edge-case bugs in proof verification and file editing, several of them exposed by an acceptance-testing pass.
@@ -218,14 +224,6 @@ live serve.
 - Polished the web interface with a round of QA fixes, including chat improvements, keyboard-shortcut behavior, and having each chapter open to its corresponding theorem.
 - Fixed an off-by-one line-counting error in the interactive synchronization.
 - Reduced the worker pool from six to four to run one problem on its own and restore parity with the baseline setup.
-
-### 2026-07-19
-Programme revisions and worker declines now appear on the project's timeline and console, which previously left parts of the reasoning invisible.
-
-- The adversary component was given read-only access to a problem's root definitions and shown their names, so its critiques can reference the actual objects in play.
-- The web console gained the ability to resolve search patterns to concrete problems and survived crashes caused by cycles in the strategy hierarchy.
-- The reset routine was hardened to sweep leftover plan and route files, so a fresh run no longer inherits stale state from a previous attempt.
-- Memory accounting was corrected to stop double-counting a shared library cache, alongside a batch of smaller prompt and pipeline fixes.
 
 <!-- ASTERISM-PROGRESS:END -->
 
