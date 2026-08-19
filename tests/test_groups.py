@@ -1358,7 +1358,10 @@ def test_a_mark_is_shareable_across_groups(tmp_path):
 def test_a_delegate_only_batch_is_a_real_action(tmp_path):
     """The scenario the design leans on — a fresh problem whose FIRST
     batch delegates a burden instead of working the frozen root — was
-    the one the anti-idle gate rejected: it counted only `Inject`."""
+    the one the anti-idle gate rejected: it counted only `Inject`.
+    (Two Delegates since the 2026-08-19 fan rule: a batch's Delegates
+    must leave >=2 active sub-groups; the anti-idle invariant this test
+    pins is unchanged.)"""
     conn = _conn(tmp_path)
     p = _problem(conn, "Test.delegonly")
     top = groups.ensure_top_group(conn, p)
@@ -1366,7 +1369,8 @@ def test_a_delegate_only_batch_is_a_real_action(tmp_path):
     conn.commit()
     S = _S()
     err = S.verify_decisions(
-        [S.Decision(kind="Delegate", brief=_proposal_brief())], conn,
+        [S.Decision(kind="Delegate", brief=_proposal_brief()),
+         S.Decision(kind="Delegate", brief=_proposal_brief())], conn,
         problem=p, group_id=top)
     assert err == "", err
 

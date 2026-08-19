@@ -986,6 +986,31 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
         return (f"{len(failures)} decisions were rejected — fix all of "
                 f"them in the next batch:\n" + "\n".join(failures))
 
+    # Cross-decision (owner ruling 2026-08-19): a Delegate opens a FAN,
+    # never a relay. A single sub-group buys zero concurrency over
+    # doing the work in-house — it is the parent's own pipeline stage
+    # wearing a fresh judgment loop (six such relays in the 4.5h after
+    # the discussion-space wording landed, d7→d10). Counted on the
+    # RESULT, not the batch: topping up an existing fan with one more
+    # line is legal; starting a fan of one is not. Racing two groups on
+    # one goal satisfies the count — that is OR-parallelism on the
+    # anchor, the thing groups exist for.
+    n_delegates = sum(1 for d in decisions if d.kind == "Delegate")
+    if n_delegates:
+        me = _authoring_group(conn, problem, group_id)
+        existing = (len(_groups.children(conn, int(me["id"]),
+                                         active_only=True))
+                    if me is not None else 0)
+        if existing + n_delegates == 1:
+            return (
+                "A Delegate opens a fan, never a relay: this batch "
+                "would leave you with exactly ONE active sub-group. "
+                "Open at least two parallel lines in one batch (two "
+                "groups may even race the same goal), or keep "
+                "single-line work in your Roadmap's AHEAD — the next "
+                "wake fires when this batch completes."
+            )
+
     # Cross-decision: no ConfirmShelve(G) + goal-targeted Inject(
     # target=G) pair. The Inject force-reopens G (shelved /
     # pending_strategist_review / frozen → open in

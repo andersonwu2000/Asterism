@@ -147,7 +147,13 @@ SELECT gid, depth, rank, did FROM (
       ON CAST(d.produced_goal_id AS INTEGER) = up.gid
    WHERE d.group_id IS NOT NULL
 )
- ORDER BY depth ASC, rank ASC, did DESC
+-- gid DESC: two groups may RACE the same anchor goal (owner ruling
+-- 2026-08-19 — same-goal double-anchor is legal OR-parallelism), and
+-- without a final key the anchor tie at equal depth made LIMIT 1
+-- nondeterministic. Newest racer wins shared-subtree routing;
+-- deterministic beats arbitrary, and each racer's OWN minted work
+-- still resolves to itself at depth 0.
+ ORDER BY depth ASC, rank ASC, did DESC, gid DESC
  LIMIT 1
 """
 
