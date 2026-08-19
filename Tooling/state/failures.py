@@ -191,6 +191,13 @@ REGISTRY: "dict[str, FailureTraits]" = {
     # --- race (parallel cascade settled the target mid-run) -------------
     "goal_no_longer_open": _T("race", terminal_in_loop=True,
                               agent_visible=False),
+    # The group-side twin: the authoring group reached a terminal status
+    # (an ancestor's ReturnToParent cascaded, or its own charter was
+    # retired) while its Strategist wake was mid-dialogue. The wake
+    # self-aborts at the next round boundary and nothing commits — a
+    # retired charter accepts no new batch. Not infra: re-enqueueing the
+    # wake would only meet the dispatcher's stale-row drop.
+    "group_retired": _T("race", agent_visible=False),
 
     # --- framework shape errors (no agent involvement) ------------------
     "goal_not_found": _T("framework", agent_visible=False),

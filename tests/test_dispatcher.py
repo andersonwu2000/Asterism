@@ -1078,14 +1078,15 @@ def test_cmd_run_refuses_no_scope_without_all_problems() -> None:
     assert rc == 2
 
 
-def test_strategist_row_is_stale(conn: sqlite3.Connection) -> None:
+def test_row_is_stale(conn: sqlite3.Connection) -> None:
     """Phase 6 — a queued Strategist row (target_id=<problem name>) is
     dropped at spawn iff its problem has committed the terminal Ingest
     (nothing left to decide). A PROVED-but-not-ingested root keeps the
     row: that wake is what commits the Ingest. Guards: live problem →
-    keep; ingested → drop; non-Strategist kind → never stale; unknown
+    keep; ingested → drop; non-Strategist non-Goal kind → never stale
+    (Goal rows have their own arm, test_terminal_target_gates); unknown
     problem → not stale."""
-    from Tooling.core.dispatcher import _strategist_row_is_stale
+    from Tooling.core.dispatcher import _row_is_stale
     conn.execute(
         "INSERT INTO problems (name, created_at, "
         "bootstrap_done) VALUES (?, ?, 1)",
@@ -1095,18 +1096,18 @@ def test_strategist_row_is_stale(conn: sqlite3.Connection) -> None:
         conn, problem="p", slug="main", lean_path="Problems/p/Root.lean",
         statement="T", origin="root",
     )
-    assert _strategist_row_is_stale(conn, "p", "Strategist") is False
+    assert _row_is_stale(conn, "p", "Strategist") is False
     # Proved root alone does NOT make the row stale (the Strategist must
     # still wake to judge the charter and commit Ingest).
     db.update_goal_status(conn, gid, "proved")
-    assert _strategist_row_is_stale(conn, "p", "Strategist") is False
+    assert _row_is_stale(conn, "p", "Strategist") is False
     # Committed Ingest → terminal → stale.
     db.set_problem_ingested(conn, "p")
-    assert _strategist_row_is_stale(conn, "p", "Strategist") is True
+    assert _row_is_stale(conn, "p", "Strategist") is True
     # A non-Strategist row is never gated by this rule.
-    assert _strategist_row_is_stale(conn, "p", "Backward") is False
+    assert _row_is_stale(conn, "p", "Backward") is False
     # Defensive: unknown problem → not stale (don't wedge).
-    assert _strategist_row_is_stale(conn, "no-such-problem",
+    assert _row_is_stale(conn, "no-such-problem",
                                     "Strategist") is False
 
 
@@ -1122,7 +1123,7 @@ def test_a_terminal_group_holds_no_seat(conn: sqlite3.Connection) -> None:
     Measured 2026-08-13/14 on union_closed: groups 383 and 381 ran two
     post-delivery batches EACH. This is the door every dispatch passes,
     so this is where the fact belongs."""
-    from Tooling.core.dispatcher import _strategist_row_is_stale
+    from Tooling.core.dispatcher import _row_is_stale
     from Tooling.state import groups as _groups
     conn.execute(
         "INSERT INTO problems (name, created_at,"
@@ -1131,18 +1132,18 @@ def test_a_terminal_group_holds_no_seat(conn: sqlite3.Connection) -> None:
     top = _groups.ensure_top_group(conn, "q")
     sub = _groups.open_group(conn, problem="q", parent_group_id=top,
                              charter="settle X")
-    assert _strategist_row_is_stale(conn, str(sub), "Strategist",
+    assert _row_is_stale(conn, str(sub), "Strategist",
                                     "Group") is False
     for terminal in ("delivered", "returned", "closed"):
         conn.execute("UPDATE groups SET status = ? WHERE id = ?",
                      (terminal, sub))
-        assert _strategist_row_is_stale(
+        assert _row_is_stale(
             conn, str(sub), "Strategist", "Group") is True, terminal
     # The top group is not exempt from the rule, only from ever being
     # terminal while the problem is live — and a live sub-group stays
     # dispatchable, which is the half that must not regress.
     conn.execute("UPDATE groups SET status = 'active' WHERE id = ?", (sub,))
-    assert _strategist_row_is_stale(conn, str(sub), "Strategist",
+    assert _row_is_stale(conn, str(sub), "Strategist",
                                     "Group") is False
 
 

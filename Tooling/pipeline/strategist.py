@@ -363,6 +363,28 @@ def _authoring_group(conn: sqlite3.Connection, problem: str,
     return _groups.top_group(conn, problem)
 
 
+def _group_retired_status(conn: sqlite3.Connection, problem: str,
+                          group_id: "int | None") -> "str | None":
+    """The authoring group's terminal status, or None while it is live.
+
+    The group-side mirror of Backward's goal race-guard: a group can be
+    retired mid-wake (an ancestor's ReturnToParent cascades `closed`
+    under it) and the wake finds out only by asking. Measured 2026-08-19
+    (fold day): g464/g485 were closed at 11:02Z and their in-flight
+    wakes debated on to adversary round 11 — every round after the flip
+    was spent on a batch that had nowhere legal to land.
+
+    Resolves through `_authoring_group`, so `group_id=None` means the
+    top group — a post-Ingest ghost wake on a delivered top group is the
+    same disease (2026-08-13/14: groups 383/381, four batches on
+    delivered charters)."""
+    row = _authoring_group(conn, problem, group_id)
+    if row is None:
+        return None
+    status = str(row["status"])
+    return status if status in _groups.TERMINAL_STATUSES else None
+
+
 def verify_decision(decision: Decision, conn: sqlite3.Connection,
                     *, problem: str,
                     workspace: "Path | None" = None,
@@ -1778,6 +1800,16 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
 
     Returns one CommitOutcome per decision (same order).
     """
+    # A retired charter accepts no new batch — the any-caller backstop
+    # behind `run_strategist`'s round-boundary and pre-commit doors.
+    # Raising (not dropping) is deliberate: every sanctioned path checks
+    # first, so reaching here retired means an unguarded caller.
+    _retired = _group_retired_status(conn, problem, group_id)
+    if _retired is not None:
+        raise ValueError(
+            f"commit_decisions: group {group_id} is {_retired} — a "
+            "retired charter accepts no new batch (check "
+            "_group_retired_status before committing)")
     # v35 — stamp every row this batch writes with its AUTHORING group.
     # Done as one post-pass keyed on "rows that did not exist before",
     # rather than threading the id through a dozen per-kind INSERTs: a
@@ -2485,6 +2517,24 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     proposal_body: "str | None" = None
     first_err: "str | None" = None
     while True:
+        # Round-boundary race-guard: the authoring group can be retired
+        # mid-dialogue (ancestor ReturnToParent cascade). Ask before
+        # spending a verify + adversary round — the batch of a retired
+        # charter has nowhere legal to land, so the wake self-aborts
+        # instead of debating on (fold day 2026-08-19: 11 rounds burned
+        # past the flip). The commit door below backstops the window
+        # between this check and Stage 5.
+        _retired = _group_retired_status(conn, problem, group_id)
+        if _retired is not None:
+            _discard_proposal(
+                conn, problem, proposal_body, dialogue, rounds_used,
+                f"authoring group retired ({_retired}) mid-wake",
+                attempts_dir, group_id=group_id, channel="group_retired")
+            return PipelineResult(
+                outcome="failed", failure_reason="group_retired",
+                failure_detail=(
+                    f"group {group_id} is {_retired}; a retired charter "
+                    "accepts no new batch"))
         err = verify_decisions(decisions, conn, problem=problem,
                                workspace=workspace,
                                trigger_kind=trigger_kind,
@@ -2647,6 +2697,22 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             )
 
     # Stage 5 — commit + outcome mapping
+    # Commit door: last look before side effects. The round loop above
+    # checks at every boundary, but the group can flip terminal between
+    # the final pass verdict and here; `commit_decisions` itself raises
+    # on this as the any-caller backstop, and a raise there would be
+    # mis-filed as a framework bug — so the known race exits cleanly.
+    _retired = _group_retired_status(conn, problem, group_id)
+    if _retired is not None:
+        _discard_proposal(
+            conn, problem, proposal_body, dialogue, rounds_used,
+            f"authoring group retired ({_retired}) before commit",
+            attempts_dir, group_id=group_id, channel="group_retired")
+        return PipelineResult(
+            outcome="failed", failure_reason="group_retired",
+            failure_detail=(
+                f"group {group_id} is {_retired}; a retired charter "
+                "accepts no new batch"))
     if all(d.kind == "Noop" for d in decisions):
         # Pure-Noop batch (one or more Noops): commit audit rows so
         # last_strategist_at + bootstrap_done advance, but map the

@@ -2265,7 +2265,7 @@ def test_a_delivery_always_reaches_a_group_that_can_act_on_it(tmp_path):
               conn.execute("SELECT target_id, target_kind FROM queue"
                            " WHERE kind = 'Strategist'")]
     live = [q for q in queued
-            if not _disp._strategist_row_is_stale(conn, q[0], "Strategist",
+            if not _disp._row_is_stale(conn, q[0], "Strategist",
                                                   q[1])]
     assert live, (
         f"the delivery woke nobody: queued={queued}, all dropped as stale")

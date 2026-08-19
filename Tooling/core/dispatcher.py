@@ -969,10 +969,21 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
     return ("routine", pending_id)
 
 
-def _strategist_row_is_stale(conn: sqlite3.Connection,
-                             target_id: str, kind: str,
-                             target_kind: str = "Problem") -> bool:
-    """A queued Strategist whose problem has already committed `Ingest`
+def _row_is_stale(conn: sqlite3.Connection,
+                  target_id: str, kind: str,
+                  target_kind: str = "Problem") -> bool:
+    """A queued row whose target has already reached a terminal state
+    is dropped at THIS door — the one place every dispatch passes.
+
+    Goal rows (Formalizer / Builder): the goal settled between enqueue
+    and pop — proved by an OR-parallel racer, shelved by a cascade, or
+    dead. Backward's in-pipeline race-guards (`goal_no_longer_open`)
+    still catch a mid-spawn flip; this check catches the pre-spawn one
+    so the whole spawn is never paid. Statuses that legitimately
+    dispatch are exactly `open` / `attempting` (a rescue Delegate
+    promotes its anchor to `attempting` at commit, before the row pops).
+
+    A queued Strategist whose problem has already committed `Ingest`
     has nothing left to decide — it would only spawn, Noop, and advance
     `last_strategist_at`. The dispatcher drops such a popped row.
 
@@ -996,6 +1007,14 @@ def _strategist_row_is_stale(conn: sqlite3.Connection,
     stale"): that branch is reached by a name, and refusing to drop on a
     name we cannot resolve is the anti-wedge default it was given.
     """
+    if str(target_kind or "") == "Goal" and kind in (
+            "Formalizer", "Builder"):
+        row = conn.execute(
+            "SELECT status FROM goals WHERE id = ?",
+            (str(target_id),)).fetchone()
+        if row is None:
+            return True
+        return str(row["status"]) not in ("open", "attempting")
     if kind != "Strategist":
         return False
     kind_str = str(target_kind or "Problem")
@@ -2755,13 +2774,14 @@ def run(workspace: Path, *, once: bool = False,
                 # re-derive. See `db.unclaim_queue_row`.
                 deferred_rows.append(qid)
                 continue
-            # Drop a queued Strategist whose problem already committed
-            # Ingest (e.g. a wake that raced the terminal commit). It
-            # would only spawn + Noop. See `_strategist_row_is_stale`.
-            if _strategist_row_is_stale(conn, target_id, kind, target_kind):
-                print(f"[dispatch] skip Strategist "
-                      f"{target_kind}={target_id} — already ingested "
-                      f"(or its group is gone)", flush=True)
+            # Drop a row whose target settled between enqueue and pop:
+            # a Strategist for an ingested problem / retired group, or
+            # a Formalizer/Builder for a goal an OR-parallel racer or a
+            # cascade already settled. See `_row_is_stale`.
+            if _row_is_stale(conn, target_id, kind, target_kind):
+                print(f"[dispatch] skip {kind} "
+                      f"{target_kind}={target_id} — target already "
+                      f"settled (terminal / retired / gone)", flush=True)
                 db.complete_queue_row(conn, qid)
                 continue
             # Lazy verify gate — must hold before any worker spawn.

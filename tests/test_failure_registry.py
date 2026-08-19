@@ -74,6 +74,9 @@ def test_non_agent_set_pinned():
         "agent_shelved", "goal_not_found", "lean_file_missing",
         "missing_parent_stub", "parent_stub_not_decomposable",
         "goal_no_longer_open", "unknown_kind", "return_to_nl",
+        # 08-19: the group-side twin of goal_no_longer_open — the wake's
+        # own group was retired mid-dialogue; nothing to teach an agent.
+        "group_retired",
         "problem_not_found", "system_killed",
         "unclassified_spawn_failure",
         # 08-18: a dead NIC teaches the agent nothing either.

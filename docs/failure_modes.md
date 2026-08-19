@@ -105,6 +105,7 @@ attempts++ (already counted on the spot by the helper).
 | `missing_parent_stub` | Backward | reading the parent lean failed (OSError) |
 | `parent_stub_not_decomposable` | Backward | skeleton cannot extract a signature from the parent stub |
 | `goal_no_longer_open` | Backward | mid-run the goal status is no longer `'open'` (race protection; `_abort` first rolls back written files) |
+| `group_retired` | Strategist | the wake's authoring group reached a terminal status mid-dialogue (ancestor ReturnToParent cascade / post-delivery ghost wake) — the wake self-aborts at the round boundary or the pre-commit door; the discarded proposal + dialogue go to `programme_revisions` (2026-08-19: g464/g485 debated 11 rounds past their cascade-close) |
 | `unknown_kind` | dispatcher | `_run_pipeline` got a task_kind that is neither Builder nor Backward (unreachable in current code; kept for enum completeness) |
 | `worker_exception` | dispatcher (v38, 2026-08-08) | worker thread died of an uncaught **non-infra** exception: the cascade books one attempts++ against the Goal target, and this forensic row is written on the spot by the dispatcher's exception handler (the pipelines row exists since dispatch, so the FK is writable), so every increment has evidence; infra classifications (gateway_unreachable etc.) neither ++ attempts nor write this row |
 

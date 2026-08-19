@@ -271,7 +271,11 @@ _WATERMARKS = {
     # Conscious bump.
     # 08-18 +27: the provider_network branch + network-wait gates
     # (`core/network_wait` holds the behavior; this is the wiring).
-    "Tooling/core/dispatcher.py": 2941,
+    # 2941→2950 (2026-08-19): the stale door generalizes — Goal rows
+    # (Formalizer/Builder) whose goal settled between enqueue and pop
+    # drop at the same one-place-every-dispatch-passes check that
+    # already held the terminal-group fact. Conscious bump.
+    "Tooling/core/dispatcher.py": 2950,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

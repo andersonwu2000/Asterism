@@ -368,6 +368,19 @@ def open_group(conn: sqlite3.Connection, *, problem: str,
     """
     if not str(charter).strip():
         raise ValueError("a group's charter must not be empty")
+    # A retired charter delegates nothing: opening a child under a
+    # terminal parent would resurrect a tree its ancestors already
+    # withdrew (the fold's whole point is that closed stays closed).
+    # Loud by design — every sanctioned path (the Strategist wake's
+    # round-boundary door + commit door) checks first, so reaching
+    # here retired means an unguarded caller.
+    parent = conn.execute(
+        "SELECT status FROM groups WHERE id = ?",
+        (int(parent_group_id),)).fetchone()
+    if parent is not None and str(parent["status"]) in TERMINAL_STATUSES:
+        raise ValueError(
+            f"open_group: parent group {int(parent_group_id)} is "
+            f"{parent['status']!r} — a retired charter delegates nothing")
     ts = now()
     cur = conn.execute(
         "INSERT INTO groups (problem, parent_group_id, charter,"
