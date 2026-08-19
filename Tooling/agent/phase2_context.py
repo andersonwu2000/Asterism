@@ -1763,6 +1763,12 @@ def _section_your_group(conn: sqlite3.Connection, problem: str,
     me = _groups.get(conn, int(group_id))
     if me is None or _groups.is_top(me):
         return []
+    # Conditional affordance (owner ruling 2026-08-19): the Delegate
+    # verb disappears from this group's instructions the moment it is
+    # structurally unavailable — an agent told about a verb a gate will
+    # refuse invents workarounds; one never told plans with AHEAD from
+    # the start.
+    at_cap = _groups.depth(conn, int(group_id)) >= _groups.GROUP_DEPTH_CAP
     return [
         "## Your group", "",
         "Your charter and the chain above it: `charter.md`.", "",
@@ -1770,6 +1776,11 @@ def _section_your_group(conn: sqlite3.Connection, problem: str,
         # prompts now say "charter" natively at every depth, so there is
         # nothing to override. Only the level-dependent verb semantics
         # remain.)
+        *(["- `Delegate` is not available at your depth (the group tree "
+           "caps two levels below the top). Plan follow-up work in your "
+           "Roadmap's AHEAD — the next wake fires when this batch "
+           "completes — or `ReturnToParent(amend)` if your charter "
+           "itself needs recutting."] if at_cap else []),
         "- `Ingest` here delivers your bricks upward and ends this "
         "group, not the problem.",
         "- `ReturnToParent` — `flavour ∈ "

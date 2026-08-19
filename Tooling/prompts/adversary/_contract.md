@@ -31,6 +31,6 @@ Standing rules the batch itself must satisfy — same source, same words:
 - Same-batch Injects must be independent (concurrent dispatch); one that waits, even through a parked goal, stays `ConfirmShelve`d for the next batch.
 - The mathematics — claims, arguments, lemma names, invariant constructions, proof techniques — is yours. Tactics, Lean syntax, statement shape (ranges, off-by-ones, constants) are the worker's.
 
-`ReturnToParent` is available only to a sub-group; `RequestUserAmend` only to the top group; `CloseGroup` only to a group that has live children.
+`ReturnToParent` is available only to a sub-group; `RequestUserAmend` only to the top group; `CloseGroup` only to a group that has live children; `Delegate` only to the top group and its direct sub-groups — the group tree caps two levels below the top.
 
 Goal statuses you will see in `TREE.md`: `open` / `attempting` are alive; `proved` / `dead` are terminal; `disproved` is parked on a CLAIMED counterexample — an `Inject` on it revives it when the plan argues the claim is true after all; `shelved` / `pending_strategist_review` are parked and revivable; **`frozen` is the root before its first launch** — not parked, never started. All four parked kinds are legal `Inject` targets, and for a frozen root that is its only dispatch path. An `attempting` goal may be a sub-group's anchor.

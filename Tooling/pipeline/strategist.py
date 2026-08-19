@@ -529,6 +529,15 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
             return ("Delegate has no authoring group; the problem's top "
                     "group is missing (framework bug — a problem without "
                     "one has no Strategist seat at all)")
+        # Hard depth cap (owner ruling 2026-08-19): ancestry count is
+        # the whole check — structured signal, never charter prose.
+        if _groups.depth(conn, int(parent["id"])) >= _groups.GROUP_DEPTH_CAP:
+            return ("Delegate is unavailable at your depth — the group "
+                    "tree caps two levels below the top. Plan the work "
+                    "as follow-up batches in your Roadmap's AHEAD (the "
+                    "next wake fires when this batch completes), or, if "
+                    "your charter itself needs recutting, hand it back "
+                    "with `ReturnToParent(amend)`.")
         # Byte-identical duplicate of a LIVE sibling: two groups working
         # the same charter is double-dispatch, not parallelism. A charter
         # a sibling RETURNED is deliberately allowed through — retrying a

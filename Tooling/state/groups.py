@@ -82,6 +82,23 @@ def children(conn: sqlite3.Connection, group_id: int, *,
     return list(conn.execute(sql + " ORDER BY id", (int(group_id),)))
 
 
+#: Hard depth cap on the group tree (owner ruling 2026-08-19): the top
+#: group and its direct sub-groups may Delegate; a depth-2 group may
+#: not. Group depth partitions JUDGMENT, not mathematics — the goal
+#: tree under any group stays unbounded — and past depth 2 the observed
+#: behavior was pipeline-stage delegation under stacked hypotheses
+#: (d7→d10 in 4.5h, six single-task charters, all from zero-own-brick
+#: groups, 2026-08-18) with no strategist left holding the whole
+#: argument. Mechanical: enforced on ancestry count at verify, never on
+#: charter text.
+GROUP_DEPTH_CAP = 2
+
+
+def depth(conn: sqlite3.Connection, group_id: int) -> int:
+    """0 for the top group, 1 for its children, … (ancestry count)."""
+    return len(ancestors(conn, int(group_id)))
+
+
 def ancestors(conn: sqlite3.Connection, group_id: int) -> list[sqlite3.Row]:
     """From the parent up to the top group, nearest first. Cycle-safe."""
     out: list[sqlite3.Row] = []
