@@ -826,7 +826,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 40
+_CURRENT_USER_VERSION = 41
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:

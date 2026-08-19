@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 40
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 41
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -369,7 +369,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 40
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 41
     conn.close()
 
 
@@ -509,7 +509,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 40
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 41
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -549,7 +549,7 @@ def test_v28_manifest_history_carryover(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 40
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 41
     rows = conn.execute(
         "SELECT problem, file, sha, body, source FROM user_file_history"
     ).fetchall()
@@ -596,7 +596,7 @@ def test_v29_problem_state_backfill(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 40
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 41
     states = {str(r["name"]): str(r["state"]) for r in conn.execute(
         "SELECT name, state FROM problems")}
     assert states == {"p_active": "active", "p_await": "awaiting_human",
@@ -896,4 +896,58 @@ def test_v26_trigger_kind_accepts_audit(tmp_path, monkeypatch):
     row = conn.execute("SELECT trigger_kind FROM strategist_decisions"
                        " WHERE trigger_kind='audit'").fetchone()
     assert row is not None
+    conn.close()
+
+
+def test_v41_retires_stranded_manifest_amend_rows(tmp_path, monkeypatch):
+    """v41 — a pre-v40 `RequestUserAmend` row still awaiting_human with
+    payload file='Manifest.md' is unresolvable after the retirement:
+    `amend._ALLOWED_FILES` no longer admits the target and the check
+    sits BEFORE both the accept and reject paths, so the Inbox card was
+    immortal and its problem paused forever (live-DB row 213,
+    Topology.brouwer_fixed_point, ruled moot 2026-08-19). The migration
+    auto-rejects exactly those rows and lifts the pause; historical
+    resolved rows and awaiting rows on live targets stay untouched."""
+    import json as _json
+    monkeypatch.chdir(tmp_path)
+    conn = db.connect()
+    db.init_schema(conn)
+    ts = db.now()
+    for name in ("p_stranded", "p_live", "p_done"):
+        conn.execute("INSERT INTO problems (name, created_at)"
+                     " VALUES (?, ?)", (name, ts))
+    def _rua(problem, file, outcome):
+        conn.execute(
+            "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+            " trigger_kind, decision_kind, payload, outcome, created_at,"
+            " updated_at) VALUES (?, 0, 'routine', 'RequestUserAmend',"
+            " ?, ?, ?, ?)",
+            (problem, _json.dumps({"file": file, "proposed_body": "x",
+                                   "question": "q"}), outcome, ts, ts))
+    _rua("p_stranded", "Manifest.md", "awaiting_human")
+    _rua("p_live", "charter", "awaiting_human")
+    _rua("p_done", "Manifest.md", "accepted")
+    conn.execute("UPDATE problems SET state = 'awaiting_human'"
+                 " WHERE name IN ('p_stranded', 'p_live')")
+    conn.execute("PRAGMA user_version = 40")
+    conn.commit()
+
+    from Tooling.state import db_migrations
+    db_migrations.apply(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 41
+    rows = {str(r["problem"]): (str(r["outcome"]),
+                                str(r["outcome_detail"] or ""))
+            for r in conn.execute(
+                "SELECT problem, outcome, outcome_detail"
+                " FROM strategist_decisions"
+                " WHERE decision_kind = 'RequestUserAmend'")}
+    assert rows["p_stranded"][0] == "rejected"
+    assert "v41" in rows["p_stranded"][1]
+    assert rows["p_live"] == ("awaiting_human", "")      # live target stays
+    assert rows["p_done"][0] == "accepted"               # history untouched
+    states = {str(r["name"]): str(r["state"]) for r in conn.execute(
+        "SELECT name, state FROM problems")}
+    assert states["p_stranded"] == "active"    # pause lifted
+    assert states["p_live"] == "awaiting_human"  # still legitimately held
     conn.close()

@@ -876,6 +876,60 @@ def apply(conn: sqlite3.Connection) -> None:
         _migrate_to_v40(conn)
         conn.execute("PRAGMA user_version = 40")
         conn.commit()
+    if v < 41:
+        # v41 — retire stranded Manifest.md amend requests (owner call
+        # 2026-08-19). A pre-v40 `RequestUserAmend` row with payload
+        # file='Manifest.md' that was still awaiting_human can no
+        # longer be resolved: `amend._ALLOWED_FILES` is now
+        # (Defs.lean, Root.lean, charter), and `resolve_amend` hits
+        # that whitelist BEFORE both the accept and reject paths — so
+        # the Inbox card could neither be applied nor dismissed and
+        # its problem stayed paused forever (one such row in the live
+        # DB: id 213, Topology.brouwer_fixed_point, awaiting since
+        # 2026-05-22 — ruled moot rather than re-targeted). Historical
+        # resolved rows keep their payloads untouched; only stranded
+        # awaiting_human rows are auto-rejected, and their problems'
+        # awaiting_human pause lifts when no other request holds it.
+        _migrate_to_v41(conn)
+        conn.execute("PRAGMA user_version = 41")
+        conn.commit()
+
+
+def _migrate_to_v41(conn: sqlite3.Connection) -> None:
+    from .db import now as _now
+    import json as _json
+    stranded = []
+    for row in conn.execute(
+            "SELECT id, problem, payload FROM strategist_decisions"
+            " WHERE decision_kind = 'RequestUserAmend'"
+            "   AND outcome = 'awaiting_human'").fetchall():
+        try:
+            file = str(_json.loads(row[2] or "{}").get("file", ""))
+        except (TypeError, ValueError):
+            continue
+        if file == "Manifest.md":
+            stranded.append((int(row[0]), str(row[1])))
+    for rid, problem in stranded:
+        conn.execute(
+            "UPDATE strategist_decisions SET outcome = 'rejected',"
+            " outcome_detail = 'auto-rejected at v41: the Manifest.md"
+            " amend target retired with v40; the request predates the"
+            " retirement and was ruled moot', updated_at = ?"
+            " WHERE id = ?", (_now(), rid))
+        # Lift the pause only when nothing else holds it (mirrors
+        # resolve_amend's gate-lift; direct state write is the
+        # migration precedent, cf. the v29 backfill).
+        still = conn.execute(
+            "SELECT 1 FROM strategist_decisions WHERE problem = ?"
+            "   AND outcome = 'awaiting_human' LIMIT 1",
+            (problem,)).fetchone()
+        if still is None:
+            conn.execute(
+                "UPDATE problems SET state = 'active'"
+                " WHERE name = ? AND state = 'awaiting_human'",
+                (problem,))
+        print(f"[v41] {problem}: stranded Manifest.md amend row {rid}"
+              f" auto-rejected", flush=True)
 
 
 def _v40_parse_legacy_manifest(text: str) -> "tuple[dict, str]":
