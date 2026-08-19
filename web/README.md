@@ -14,8 +14,9 @@ and one polling hook.
 - **New problem** (`#/new`) — a name + a natural-language description,
   paper checkboxes to ground the run, and two advanced folds (pinned
   Defs.lean/Root.lean; engine constraints: axiom whitelist / forbidden
-  lemmas / lemma hints). Settings land in the DB via the chokepoint;
-  Manifest.md is the human prose.
+  lemmas / lemma hints). Everything lands in the DB via the
+  chokepoint: the description IS the goal, and an optional standing
+  word rides along.
 - **Problem** (`#/problems/<name>`) — the cockpit. Run/Stop for THIS
   problem in the header (single-problem runs are the only mode); a
   run strip while the engine works it (phase in plain words, wall
@@ -24,9 +25,11 @@ and one polling hook.
   what grew from the root above the horizon, other forward work
   below, citation threads crossing where it is used; while anything
   is live the unproved stars carry the light and the proved mass
-  recedes (a finished sky flips back to trophy). Manifest tab = NL
-  instructions + settings controls (DB-backed, hot-reloaded) + paper
-  bindings; Goals / Timeline / Files.
+  recedes (a finished sky flips back to trophy). Intent tab = the
+  goal + your standing word (the engine may propose a change to the
+  first and can never touch the second) + settings controls
+  (DB-backed, hot-reloaded) + paper bindings; Goals / Timeline /
+  Files.
 - **Papers** (`#/papers`) — the shelf. Add a PDF (or .md/.tex) by
   path; each paper lists its size, citing problems, and index state;
   opening one renders the original document beside a rail for
