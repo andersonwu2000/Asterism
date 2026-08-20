@@ -82,6 +82,11 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-19
+- Moved each problem's statement and goal description out of a per-problem text file and into the system's database, updating the web console, test suite, data seeds, and documentation to match.
+- Redesigned how proof tasks are delegated to sub-workers: delegations now carry a structured charter with an explicit rationale, can be issued in batches, always branch out into parallel subtasks rather than chaining, and the resulting task tree is capped at two levels deep.
+- Fixed a bug where finished proof goals could still be assigned new work.
+
 ### 2026-08-18
 - Fixed how claimed disproofs are handled: a reported counterexample is now set aside for verification instead of being treated as a final verdict.
 - Reduced the amount of text agents load into their working context, by deferring rarely-needed records and refusing oversized file reads in favor of a file outline.
@@ -219,11 +224,6 @@ live serve.
 
 ### 2026-07-22
 - Made uploading papers easier by replacing the manual file-path field with drag-and-drop in the browser.
-
-### 2026-07-20
-- Polished the web interface with a round of QA fixes, including chat improvements, keyboard-shortcut behavior, and having each chapter open to its corresponding theorem.
-- Fixed an off-by-one line-counting error in the interactive synchronization.
-- Reduced the worker pool from six to four to run one problem on its own and restore parity with the baseline setup.
 
 <!-- ASTERISM-PROGRESS:END -->
 
