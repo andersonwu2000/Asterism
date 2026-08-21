@@ -75,16 +75,66 @@ def test_stream_once_returns_completed_response(
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setitem(zen_shim._KEY_CACHE, "OPENCODE_ZEN_API_KEY", "k")
     monkeypatch.setitem(zen_shim._KEY_CACHE, "OPENROUTER_API_KEY", "k")
-    out = zen_shim._stream_once("https://opencode.ai/zen/v1",
+    out = zen_shim._stream_once("https://openrouter.ai/api/v1",
                                 {"model": "x-preview-f-free", "input": []})
     assert out == {"output": [{"type": "message"}], "usage": {}}
     assert captured["body"]["stream"] is True
-    # per-upstream model naming: zen keeps its native id...
-    assert captured["body"]["model"] == "x-preview-f-free"
-    # ...openrouter gets the stealth id
-    zen_shim._stream_once("https://openrouter.ai/api/v1",
-                          {"model": "x-preview-f-free", "input": []})
+    # openrouter wears the stealth id
     assert captured["body"]["model"] == "stealth/ox-alpha"
+
+
+def test_zen_leg_rides_chat_completions(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    # Zen's /responses dialect is broken both ways (non-stream: edge
+    # kill; stream: tool-call arguments dropped) — the zen leg must go
+    # through /chat/completions and reassemble a /responses-shaped
+    # response: text -> message item, tool_call deltas -> function_call
+    # item with concatenated arguments.
+    sse = (
+        b'data: {"choices":[{"delta":{"content":"half "}}]}\n'
+        b'data: {"choices":[{"delta":{"content":"done"}}]}\n'
+        b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1",'
+        b'"function":{"name":"mcp__asterism_tools__compute",'
+        b'"arguments":"{\\"co"}}]}}]}\n'
+        b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+        b'"function":{"arguments":"de\\":\\"1+1\\"}"}}]}}]}\n'
+        b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],'
+        b'"usage":{"prompt_tokens":10,"completion_tokens":7}}\n'
+        b'data: [DONE]\n')
+    captured: dict = {}
+
+    def fake_urlopen(req, timeout=0):
+        captured["url"] = req.full_url
+        captured["body"] = __import__("json").loads(req.data)
+        return _FakeResponse(sse, {})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setitem(zen_shim._KEY_CACHE, "OPENCODE_ZEN_API_KEY", "k")
+    out = zen_shim._stream_once(
+        "https://opencode.ai/zen/v1",
+        {"model": "x-preview-f-free",
+         "instructions": "[session x] agent",
+         "input": [{"type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "go"}]},
+                   {"type": "function_call", "name": "t", "call_id": "c0",
+                    "arguments": "{}"},
+                   {"type": "function_call_output", "call_id": "c0",
+                    "output": "4"}],
+         "tools": [{"type": "function", "name": "t",
+                    "parameters": {"type": "object"}}]})
+    assert captured["url"].endswith("/chat/completions")
+    # zen keeps its native model id; effort is pinned by default
+    assert captured["body"]["model"] == "x-preview-f-free"
+    assert captured["body"]["reasoning"] == {"effort": zen_shim.ZEN_EFFORT}
+    # history translated: system + user + assistant(tool_calls) + tool
+    roles = [m["role"] for m in captured["body"]["messages"]]
+    assert roles == ["system", "user", "assistant", "tool"]
+    # response reassembled in /responses vocabulary
+    assert out["output"][0]["content"][0]["text"] == "half done"
+    fc = out["output"][1]
+    assert fc["type"] == "function_call" and fc["call_id"] == "c1"
+    assert fc["arguments"] == '{"code":"1+1"}'
+    assert out["usage"] == {"input_tokens": 10, "output_tokens": 7}
 
 
 def test_stream_once_raises_when_stream_never_completes(

@@ -45,19 +45,17 @@ import uuid
 # pathology (unbounded thinking until max_tokens, content never
 # written — measured on both gateways); OpenRouter honors it and also
 # serves a conformant /responses. Model ids differ per gateway.
-# Two upstreams (2026-08-22): OpenRouter is PRIMARY — fast, stable,
-# but capped at 1000 requests/day platform-wide for free models. Zen is
-# the RESCUE tier for the moment that cap dies mid-day: its token quota
-# is the free week's "near unlimited" one and its old long-output 500
-# was OUR bug (non-streaming call; Zen's edge times it out at ~35s —
-# `stream: true` delivered a 400-word essay in 59s). Zen stays rescue
-# rather than primary because on tool-bearing fleet requests it answers
-# EMPTY chronically (0 items, ~40 reasoning tokens; measured when v6
-# briefly ran Zen-first) and its pool is slower — degraded fallback,
-# not an equal.
-ZEN = os.environ.get("ASTERISM_ZEN_UPSTREAM", "https://openrouter.ai/api/v1")
+# Two upstreams (2026-08-22, owner call: the fleet cannot live on
+# OpenRouter's 1000-requests/day free cap). Zen is PRIMARY via its
+# /chat/completions endpoint — the free week's near-unlimited token
+# quota, healthy in streaming with effort pinned (its /responses
+# dialect is broken both ways: non-stream edge-killed at ~35s, stream
+# drops tool-call arguments). OpenRouter stays as the RESCUE tier for
+# Zen hiccups — 1000 requests/day is a useless primary but a fine
+# parachute.
+ZEN = os.environ.get("ASTERISM_ZEN_UPSTREAM", "https://opencode.ai/zen/v1")
 ZEN_RESCUE = os.environ.get("ASTERISM_ZEN_RESCUE",
-                            "https://opencode.ai/zen/v1")
+                            "https://openrouter.ai/api/v1")
 
 
 def _model_for(base: str, model: "str | None") -> "str | None":
@@ -263,6 +261,140 @@ def _dump_4xx(e: "urllib.error.HTTPError", body: dict) -> "urllib.error.HTTPErro
         e.url, e.code, e.reason, e.headers, io.BytesIO(err_bytes))
 
 
+def _to_chat(body: dict) -> dict:
+    """/responses request → /chat/completions request.
+
+    Zen's /responses dialect is broken in both transports (non-stream:
+    the edge kills >35s responses; stream: function_call arguments are
+    never emitted and response.completed carries no output). Its
+    /chat/completions endpoint is healthy in streaming — tool-call
+    arguments flow, long text completes — PROVIDED `reasoning.effort`
+    rides along (bare and max_tokens both leave the runaway uncured;
+    all measured 2026-08-22)."""
+    msgs: list = []
+    if body.get("instructions"):
+        msgs.append({"role": "system", "content": body["instructions"]})
+    pending_calls: list = []
+
+    def _flush_calls() -> None:
+        if pending_calls:
+            msgs.append({"role": "assistant", "content": None,
+                         "tool_calls": list(pending_calls)})
+            pending_calls.clear()
+
+    for it in body.get("input") or []:
+        if not isinstance(it, dict):
+            _flush_calls()
+            msgs.append({"role": "user", "content": str(it)})
+            continue
+        t = it.get("type")
+        if t == "function_call":
+            pending_calls.append(
+                {"id": it.get("call_id") or it.get("id") or "",
+                 "type": "function",
+                 "function": {"name": it.get("name"),
+                              "arguments": it.get("arguments") or "{}"}})
+            continue
+        _flush_calls()
+        if t == "function_call_output":
+            msgs.append({"role": "tool",
+                         "tool_call_id": it.get("call_id") or "",
+                         "content": str(it.get("output") or "")})
+        elif t == "reasoning":
+            continue
+        else:  # message (or role-bearing item)
+            role = it.get("role") or "user"
+            parts = it.get("content")
+            if isinstance(parts, list):
+                text = "\n".join(
+                    str(p.get("text", "")) for p in parts
+                    if isinstance(p, dict)
+                    and p.get("type") in ("input_text", "output_text",
+                                          "text"))
+            else:
+                text = str(parts or "")
+            msgs.append({"role": "assistant" if role == "assistant"
+                         else "user", "content": text})
+    _flush_calls()
+    chat: dict = {"stream": True, "messages": msgs,
+                  "reasoning": body.get("reasoning")
+                  or {"effort": ZEN_EFFORT}}
+    tools = [{"type": "function",
+              "function": {"name": t.get("name"),
+                           "description": t.get("description", ""),
+                           "parameters": t.get("parameters") or {}}}
+             for t in body.get("tools") or []
+             if t.get("type") == "function"]
+    if tools:
+        chat["tools"] = tools
+    return chat
+
+
+def _chat_stream_once(base: str, body: dict) -> dict:
+    """Streaming /chat/completions call, assembled back into a
+    /responses-shaped response object so the shim's main loop stays in
+    one vocabulary."""
+    chat = _to_chat(body)
+    chat["model"] = _model_for(base, body.get("model"))
+    req = urllib.request.Request(
+        base + "/chat/completions",
+        data=json.dumps(chat, ensure_ascii=False).encode(),
+        headers={"Authorization": "Bearer " + _key_for(base),
+                 "Content-Type": "application/json",
+                 "Accept": "text/event-stream",
+                 "User-Agent": "asterism-zen-shim/6.0"})
+    text: list = []
+    calls: dict = {}
+    usage: dict = {}
+    finish = None
+    with urllib.request.urlopen(req, timeout=1740) as r:
+        for raw in r:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:") or line == "data: [DONE]":
+                continue
+            try:
+                d = json.loads(line[5:])
+            except ValueError:
+                continue
+            if d.get("usage"):
+                usage = d["usage"]
+            ch = (d.get("choices") or [{}])[0]
+            delta = ch.get("delta") or {}
+            if delta.get("content"):
+                text.append(delta["content"])
+            for tc in delta.get("tool_calls") or []:
+                slot = calls.setdefault(
+                    tc.get("index", len(calls)),
+                    {"id": "", "name": "", "arguments": []})
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                f = tc.get("function") or {}
+                if f.get("name"):
+                    slot["name"] = f["name"]
+                if f.get("arguments"):
+                    slot["arguments"].append(f["arguments"])
+            if ch.get("finish_reason"):
+                finish = ch["finish_reason"]
+    if finish is None and not text and not calls:
+        raise urllib.error.URLError("chat stream ended empty, no finish")
+    items: list = []
+    if text:
+        items.append({"type": "message", "role": "assistant",
+                      "content": [{"type": "output_text",
+                                   "text": "".join(text)}]})
+    for i in sorted(calls):
+        c = calls[i]
+        cid = c["id"] or f"call_{uuid.uuid4().hex[:12]}"
+        items.append({"type": "function_call", "name": c["name"],
+                      "id": cid, "call_id": cid,
+                      "arguments": "".join(c["arguments"]) or "{}"})
+    return {"output": items,
+            "usage": {"input_tokens": usage.get("prompt_tokens",
+                                                usage.get("input_tokens")),
+                      "output_tokens": usage.get(
+                          "completion_tokens", usage.get("output_tokens"))}}
+
+
 def _stream_once(base: str, body: dict) -> dict:
     """One STREAMING /responses call; returns the final response object.
 
@@ -270,8 +402,12 @@ def _stream_once(base: str, body: dict) -> dict:
     kills a non-streaming response at ~35s, which we mis-filed as 'Zen
     cannot do long outputs' for two days — the same request with
     `stream: true` finishes fine (413-word essay, 59s, measured
-    2026-08-22). The last `response.completed` event carries the whole
-    response object, so the delta traffic needs no assembly."""
+    2026-08-22). On OpenRouter the last `response.completed` event
+    carries the whole response object; Zen's /responses stream is
+    broken (drops function-call arguments, empty completed) so the
+    Zen leg goes through /chat/completions instead."""
+    if "openrouter" not in base:
+        return _chat_stream_once(base, body)
     b = dict(body)
     b["model"] = _model_for(base, b.get("model"))
     b["stream"] = True
