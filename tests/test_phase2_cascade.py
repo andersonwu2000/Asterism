@@ -192,6 +192,36 @@ def test_record_outcome_preserves_prewritten_detail(
     assert row["outcome_detail"] == "brief under-specified: name the lemma"
 
 
+def test_record_outcome_recovers_detail_from_dead_attempts(
+    conn: sqlite3.Connection,
+) -> None:
+    """An exhausted Forward's death causes live in dead_attempts keyed
+    by pipeline — the decision row must carry the LAST retry's cause
+    instead of a bare `exhausted:forward_no_new_goal` (Erdős fleet
+    2026-08-22: strategists did archaeology for a fact the framework
+    had fully spelled out)."""
+    from Tooling.core.dispatcher import _record_inject_decision_outcome
+    did = _insert_decision(conn)
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind,"
+        " status, started_at) VALUES ('pipe-1', 'Formalizer', 'p',"
+        " 'Problem', 'running', ?)", (db.now(),))
+    conn.commit()
+    for detail in ("parse rejected: slug 'X' bad",
+                   "lake elaborate failed: type mismatch at line 9"):
+        db.record_dead_attempt(
+            conn, target_id=0, target_kind="Problem", pipeline_id="pipe-1",
+            failure_reason="forward_no_new_goal", failure_detail=detail)
+    _record_inject_decision_outcome(
+        conn, did, "exhausted", "forward_no_new_goal", pipeline_id="pipe-1")
+    row = conn.execute(
+        "SELECT outcome, outcome_detail FROM strategist_decisions WHERE id=?",
+        (did,)).fetchone()
+    assert row["outcome"] == "exhausted:forward_no_new_goal"
+    assert row["outcome_detail"] == (
+        "lake elaborate failed: type mismatch at line 9")
+
+
 def test_set_outcome_detail_skips_when_outcome_already_settled(
     conn: sqlite3.Connection,
 ) -> None:

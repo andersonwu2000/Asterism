@@ -781,7 +781,8 @@ def _record_inject_decision_outcome(conn: sqlite3.Connection,
                                     decision_id: int,
                                     outcome: str,
                                     failure_reason: str,
-                                    detail: str | None = None) -> None:
+                                    detail: str | None = None,
+                                    pipeline_id: str | None = None) -> None:
     """Write the Forward pipeline's terminal outcome back into the
     strategist_decisions row that emitted it.
 
@@ -797,6 +798,21 @@ def _record_inject_decision_outcome(conn: sqlite3.Connection,
     reads WHY its brief was declined, not just `failed:agent_declined`.
     """
     text = outcome if not failure_reason else f"{outcome}:{failure_reason}"
+    if detail is None and pipeline_id:
+        # An exhausted Forward reached here with `outcome_detail` NULL
+        # while its per-retry death causes (lake diagnostics, parse
+        # rejections) sat fully spelled out in dead_attempts — the
+        # Strategist then read bare `exhausted:forward_no_new_goal` and
+        # did archaeology (two feedback entries, Erdős fleet
+        # 2026-08-22). The knowledge already has a home keyed by this
+        # very pipeline; hand the LAST retry's cause over instead of
+        # flattening it away.
+        row = conn.execute(
+            "SELECT failure_detail FROM dead_attempts"
+            " WHERE pipeline_id = ? ORDER BY id DESC LIMIT 1",
+            (pipeline_id,)).fetchone()
+        if row is not None and row["failure_detail"]:
+            detail = str(row["failure_detail"])[:2000]
     # COALESCE: a pipeline may have already stashed `outcome_detail` while
     # `outcome` was NULL (e.g. forward.run_forward writes a decline's
     # `## Why` — see db.set_inject_decision_outcome_detail). Passing
@@ -1684,6 +1700,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             else:
                 _record_inject_decision_outcome(
                     conn, decision_id, outcome, failure_reason,
+                    pipeline_id=pipeline_id,
                 )
                 _maybe_enqueue_inject_batch_done(conn, decision_id)
         return
