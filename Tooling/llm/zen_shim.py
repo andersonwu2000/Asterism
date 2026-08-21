@@ -120,9 +120,15 @@ def _mcp_http(payload: dict, headers: dict) -> "tuple[dict | None, dict]":
                  "Accept": "application/json, text/event-stream",
                  **headers})
     with urllib.request.urlopen(req, timeout=1200) as r:
-        resp_headers = dict(r.headers)
+        # HTTP header names are case-insensitive but dict() keeps the
+        # wire casing — uvicorn sends lowercase `content-type`, and a
+        # `.get("Content-Type")` miss silently rerouted every SSE body
+        # through the JSON branch (all LSP tools died "no parseable
+        # response" for the fleet's whole first hour, 2026-08-22).
+        # Normalize ONCE here; every caller looks up lowercase.
+        resp_headers = {k.lower(): v for k, v in r.headers.items()}
         raw = r.read().decode("utf-8", "replace")
-    if "event-stream" in str(resp_headers.get("Content-Type", "")):
+    if "event-stream" in str(resp_headers.get("content-type", "")):
         obj = None
         for line in raw.splitlines():
             if line.startswith("data:"):
@@ -157,7 +163,7 @@ def _lsp_session_for(attempt_dir: str) -> "tuple[str, str] | None":
                                     "clientInfo": {"name": "zen-shim",
                                                    "version": "5.0"}}},
                         hdr)
-    sid = rh.get("mcp-session-id") or rh.get("Mcp-Session-Id") or ""
+    sid = rh.get("mcp-session-id") or ""  # rh is lowercase-normalized
     if sid:
         hdr2 = {**hdr, "Mcp-Session-Id": sid}
         try:
