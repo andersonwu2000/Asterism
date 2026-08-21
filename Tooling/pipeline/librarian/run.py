@@ -502,7 +502,8 @@ def _run_structured(conn, *, problem, work_kind, workspace,
         # dedup_audit and migrate both search Mathlib for a twin; loogle
         # is an MCP tool now, so without this the prompt names a tool the
         # agent cannot call.
-        mcp_config_path=_write_tools_cfg(attempts_dir, workspace))
+        mcp_config_path=_write_tools_cfg(attempts_dir, workspace,
+                                         seat="librarian"))
     if rc != 0:
         return PipelineResult(
             outcome="failed", failure_reason="agent_error",

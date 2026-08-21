@@ -104,7 +104,8 @@ def run_intake(*, prompt_dir: Path, attempts_dir: Path,
     if workspace is not None:
         try:
             from . import write_tools_mcp_config
-            mcp_path = write_tools_mcp_config(attempts_dir, workspace)
+            mcp_path = write_tools_mcp_config(attempts_dir, workspace,
+                                              seat="formalizer")
         except OSError as exc:
             print(f"[intake] {label}: could not write the tools MCP config "
                   f"({exc}) — the turn will run without `inspect`",

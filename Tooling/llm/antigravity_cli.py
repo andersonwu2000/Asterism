@@ -354,7 +354,9 @@ def _spawn_home(req: LLMRequest) -> "Path | None":
                 encoding="utf-8")).get("mcpServers", {})
         elif workspace is not None:
             from ..pipeline import tools_mcp_entry
-            servers = {"asterism_tools": tools_mcp_entry(workspace)}
+            from .envelope import seat_of_kind
+            servers = {"asterism_tools": tools_mcp_entry(
+                workspace, seat_of_kind(req.kind))}
         # Which attempt the tools server is serving. agy's own env
         # allowlist never carried it, and the server is a child agy
         # starts — so it travels in the config, the way this backend
@@ -738,7 +740,9 @@ def ensure_mcp_config(problem_dir: "Path | None") -> None:
         workspace = _workspace_of(problem_dir)
         if workspace is None:
             return
-        want = tools_mcp_entry(workspace)
+        # Global (operator) config — the only sanctioned full-surface
+        # grant; every SPAWN's config is seat-scoped.
+        want = tools_mcp_entry(workspace, None)
         path = mcp_config_path()
         cfg: dict = {}
         if path.exists():

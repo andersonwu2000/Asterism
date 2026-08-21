@@ -38,32 +38,44 @@ from ..quality import diagnostics
 from ..state import assemble
 
 
-def tools_mcp_entry(workspace: Path) -> dict:
+def tools_mcp_entry(workspace: Path, seat: "str | None") -> dict:
     """The `asterism_tools` stdio server entry, shared by every config.
 
     PYTHONPATH rather than cwd: the client spawns this from the spawn's
     own directory, and the MCP config schemas (claude's and agy's alike)
-    carry `env` but not `cwd`."""
+    carry `env` but not `cwd`.
+
+    `seat` scopes the server (owner ruling 2026-08-22): it registers
+    only the seat's whitelist (`envelope.SEAT_ASTERISM_TOOLS`), so every
+    provider lists the same filtered surface. An undeclared seat fails
+    loudly at config-write time, not silently at full-surface. `None`
+    is the OPERATOR grant (agy's global config, tests) — full surface,
+    never a spawn's."""
+    env = {"PYTHONPATH": str(workspace)}
+    if seat is not None:
+        from ..llm.envelope import asterism_tools_for
+        asterism_tools_for(seat)  # raise NOW on an undeclared seat
+        env["ASTERISM_SEAT"] = seat
     return {
         "type": "stdio",
         "command": sys.executable,
         "args": ["-m", "Tooling.knowledge.mcp_tools"],
-        "env": {"PYTHONPATH": str(workspace)},
+        "env": env,
     }
 
 
-def write_tools_mcp_config(attempts_dir: Path, workspace: Path) -> Path:
+def write_tools_mcp_config(attempts_dir: Path, workspace: Path,
+                           seat: str) -> Path:
     """MCP config for the spawns that need the framework's tools but not
-    the Lean gateway — Strategist and Adversary.
-
-    They had no MCP at all and reached loogle through the shell, which is
-    the capability that made a `command` allowance necessary in the first
-    place. Registering a gateway session for them would open a Lean
-    backend slot nobody uses, so this writes the tools server alone."""
+    the Lean gateway — the NL layer. Registering a gateway session for
+    them would open a Lean backend slot nobody uses, so this writes the
+    tools server alone: the NL layer's no-Lean rule is constructive,
+    not advisory."""
     path = attempts_dir / "_mcp_tools.json"
     path.write_text(
         json.dumps({"mcpServers": {"asterism_tools":
-                                   tools_mcp_entry(workspace)}}, indent=2),
+                                   tools_mcp_entry(workspace, seat)}},
+                   indent=2),
         encoding="utf-8")
     return path
 
@@ -158,7 +170,7 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
     # `knowledge/mcp_tools.py` for why a shell allowlist could not.
     config = {
         "mcpServers": {
-            "asterism_tools": tools_mcp_entry(workspace),
+            "asterism_tools": tools_mcp_entry(workspace, "formalizer"),
             "lsp": {
                 "type": "http",
                 "url": f"{base}/mcp",

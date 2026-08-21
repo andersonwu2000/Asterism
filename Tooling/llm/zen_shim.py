@@ -527,6 +527,8 @@ class Shim(http.server.BaseHTTPRequestHandler):
                     flat.append(t)
                 # anything else (web_search etc.) dropped: Zen 1210s
             body["tools"] = flat
+        declared_tools = {str(t.get("name")) for t in body.get("tools") or []
+                          if t.get("type") == "function"}
         body.pop("client_metadata", None)
         body.pop("stream", None)
         nonce = uuid.uuid4().hex[:12]
@@ -593,7 +595,18 @@ class Shim(http.server.BaseHTTPRequestHandler):
                     except ValueError:
                         args = {}
                     t_tool = time.time()
-                    if full.startswith(LSP_NS + "__"):
+                    if full not in declared_tools:
+                        # The whitelist is the request's OWN declared
+                        # list (which the seat-scoped MCP server
+                        # produced) — the model naming an undeclared
+                        # tool is a capability probe, not a route
+                        # (owner ruling 2026-08-22: seats get exactly
+                        # their surface, on every provider).
+                        tool = full[full.rfind("__") + 2:] or full
+                        out = (f"{full} is not in this seat's toolset. "
+                               f"Available: "
+                               + ", ".join(sorted(declared_tools)))
+                    elif full.startswith(LSP_NS + "__"):
                         tool = full[len(LSP_NS) + 2:]
                         out = _run_lsp_tool(tool, args, attempt_dir)
                     else:

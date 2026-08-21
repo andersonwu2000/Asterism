@@ -6,12 +6,13 @@ The ONLY network surface that writes to disk. Whitelisted hosts only
 OA content — 2026-07-07 probe — and are deliberately refused: that is
 the human-request path, not an arms race to fight). On success the
 file is shelved (`shelf.add_paper` — content-hash dedupe), indexed
-when large enough, and bound to `--problem` with origin='scholar'.
+when large enough, and bound to `--problem` with the calling seat as origin.
 
 Caps (D15): per-problem scholar fetches, single-file size.
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 import urllib.parse
@@ -133,8 +134,13 @@ def fetch_and_shelve(workspace: Path, target: str, *,
             paper_index.generate_index(workspace, meta.id,
                                        prompt_dir=PROMPT_DIR)
         if problem and conn is not None:
+            # Provenance = the calling seat (ASTERISM_SEAT travels in the
+            # MCP server env; the shim's in-process path has none and
+            # lands on 'agent'). 'scholar' used to be hardcoded here and
+            # mislabelled a strategist's direct fetch (2026-08-22).
             db.bind_paper(conn, problem=problem, paper_id=meta.id,
-                          origin="scholar", reason=reason or url)
+                          origin=os.environ.get("ASTERISM_SEAT") or "agent",
+                          reason=reason or url)
             print(f"[fetch] bound Papers/{meta.id} → {problem}",
                   flush=True)
         return meta.id

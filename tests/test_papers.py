@@ -425,7 +425,9 @@ def test_fetch_refuses_non_pdf_response(tmp_path: Path,
 
 def test_fetch_shelves_and_binds(tmp_path: Path, monkeypatch) -> None:
     """arXiv id → resolved URL → shelved via content hash → bound with
-    origin='scholar'. Uses a real (tiny) PDF so extraction runs."""
+    the calling seat as origin ('agent' when no ASTERISM_SEAT env —
+    the hardcoded 'scholar' mislabelled a strategist's direct fetch,
+    2026-08-22). Uses a real (tiny) PDF so extraction runs."""
     import io
     import sqlite3
     from Tooling.papers import fetch, shelf
@@ -458,7 +460,7 @@ def test_fetch_shelves_and_binds(tmp_path: Path, monkeypatch) -> None:
     conn.row_factory = sqlite3.Row
     rows = _db.paper_bindings(conn, "Test.px")
     assert [(r["paper_id"], r["origin"]) for r in rows] \
-        == [(pid, "scholar")]
+        == [(pid, "agent")]
     conn.close()
 
 
@@ -519,101 +521,17 @@ def _v2_conn(tmp_path: Path):
     return conn
 
 
-def test_fetchpaper_verify_and_commit(tmp_path: Path) -> None:
-    from Tooling.pipeline.strategist import (Decision, verify_decision,
-                                             _commit_fetch_paper)
-    from Tooling.state import db as _db
+def test_fetchpaper_decision_kind_is_retired(tmp_path: Path) -> None:
+    """FetchPaper retired 2026-08-22 (owner ruling): the Strategist
+    fetches directly via paper_search/paper_fetch — the decision kind
+    stays recognized so the gate TEACHES the replacement."""
+    from Tooling.pipeline.strategist import Decision, verify_decision
     conn = _v2_conn(tmp_path)
-    # Missing query / reason → rejected.
-    assert "query" in verify_decision(
-        Decision(kind="FetchPaper"), conn, problem="Test.px")
-    assert "reason" in verify_decision(
-        Decision(kind="FetchPaper", payload={"query": "Thurston 1982"}),
+    err = verify_decision(
+        Decision(kind="FetchPaper", reason="need the JSJ statement",
+                 payload={"query": "Thurston 1982"}),
         conn, problem="Test.px")
-    d = Decision(kind="FetchPaper", reason="need the JSJ statement",
-                 payload={"query": "Thurston 1982 three-manifolds"})
-    assert verify_decision(d, conn, problem="Test.px") == ""
-    # Cap → rejected at DECISION time.
-    from Tooling.papers.fetch import MAX_SCHOLAR_FETCHES_PER_PROBLEM
-    for i in range(MAX_SCHOLAR_FETCHES_PER_PROBLEM):
-        _db.bind_paper(conn, problem="Test.px", paper_id=f"c{i}",
-                       origin="scholar")
-    assert "cap" in verify_decision(d, conn, problem="Test.px")
-    conn.execute("DELETE FROM problem_papers")
-    conn.commit()
-    # Commit: audit row first, queue row carries decision_id + payload.
-    # group_id must land on the audit row (2026-08-05: this was the ONE
-    # per-kind INSERT call site that dropped it — the first post-v35
-    # FetchPaper tripped the batch group invariant mid-commit and the
-    # raise cost the judged founding rev).
-    from Tooling.state import groups as _groups
-    gid = _groups.ensure_top_group(conn, "Test.px")
-    out = _commit_fetch_paper(d, conn, problem="Test.px", tick=1,
-                              trigger_kind="routine", group_id=gid)
-    row = conn.execute(
-        "SELECT * FROM queue WHERE kind='Scholar'").fetchone()
-    assert row is not None
-    assert int(row["decision_id"]) == out.decision_row_id
-    drow = conn.execute(
-        "SELECT group_id FROM strategist_decisions WHERE id = ?",
-        (out.decision_row_id,)).fetchone()
-    assert drow is not None and int(drow["group_id"]) == gid
-    import json
-    payload = json.loads(row["payload"])
-    assert payload["query"].startswith("Thurston")
-    assert row["target_kind"] == "Problem" and row["problem"] == "Test.px"
-    conn.close()
-
-
-def test_run_scholar_outcomes(tmp_path: Path, monkeypatch) -> None:
-    """Fetched → binding delta → success + outcome fill; no fetch →
-    result file becomes the precise human request in outcome_detail."""
-    import json
-    from Tooling import agent as _agent
-    from Tooling.pipeline import scholar
-    from Tooling.pipeline.strategist import Decision, _commit_fetch_paper
-    from Tooling.state import db as _db
-    conn = _v2_conn(tmp_path)
-    (tmp_path / "Problems" / "Test" / "px").mkdir(parents=True)
-    d = Decision(kind="FetchPaper", reason="need it",
-                 payload={"query": "Roeder Newton polyhedra"})
-    out = _commit_fetch_paper(d, conn, problem="Test.px", tick=1,
-                              trigger_kind="routine")
-    did = out.decision_row_id
-
-    # Case 1: agent "fetches" (stub binds a paper mid-spawn).
-    def _spawn_binds(**kw):
-        _db.bind_paper(conn, problem="Test.px", paper_id="newpaper001",
-                       origin="scholar", reason="fetched")
-    monkeypatch.setattr(_agent, "spawn_llm", _spawn_binds)
-    r = scholar.run_scholar(conn, problem="Test.px", workspace=tmp_path,
-                            pipeline_id="pid1", decision_id=did)
-    assert r.outcome == "success"
-    row = conn.execute("SELECT outcome, outcome_detail FROM"
-                       " strategist_decisions WHERE id=?", (did,)).fetchone()
-    assert row["outcome"] == "paper_fetched"
-    assert "newpaper001" in row["outcome_detail"]
-
-    # Case 2: nothing fetched; agent leaves the precise request.
-    out2 = _commit_fetch_paper(d, conn, problem="Test.px", tick=2,
-                               trigger_kind="routine")
-
-    def _spawn_declines(**kw):
-        adir = kw["attempts_dir"]
-        (adir / scholar.RESULT_FILENAME).write_text(
-            "Thurston 1982, DOI 10.1090/x — AMS only: https://ams.org/x",
-            encoding="utf-8")
-    monkeypatch.setattr(_agent, "spawn_llm", _spawn_declines)
-    r2 = scholar.run_scholar(conn, problem="Test.px", workspace=tmp_path,
-                             pipeline_id="pid2",
-                             decision_id=out2.decision_row_id)
-    assert r2.outcome == "failed"
-    assert r2.failure_reason == "paper_unfetchable"
-    row2 = conn.execute("SELECT outcome, outcome_detail FROM"
-                        " strategist_decisions WHERE id=?",
-                        (out2.decision_row_id,)).fetchone()
-    assert row2["outcome"] == "paper_unfetchable"
-    assert "DOI 10.1090/x" in row2["outcome_detail"]
+    assert "retired" in err and "paper_fetch" in err
     conn.close()
 
 

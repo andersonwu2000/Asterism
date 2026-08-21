@@ -67,7 +67,6 @@ DISPATCH_KIND: "dict[str, str]" = {
     "strategist": "Strategist",
     "formalizer": "Formalizer",
     "librarian": "Librarian",
-    "scholar": "Scholar",
 }
 
 

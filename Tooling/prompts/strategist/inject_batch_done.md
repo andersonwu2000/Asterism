@@ -65,7 +65,7 @@ Any batch that moves the route (contains Inject / ConfirmShelve / Ingest) ships 
     `reason` — why you cannot prove this yourself and `Inject` it, nor pace it through AHEAD batch by batch — why it must be a group's burden.
     `brief` — guidance and lessons for the group.
   A batch delegates several groups or none — never exactly one; delegation stops two levels below the top. With `target_goal_id`: that goal becomes the anchor.
-- `FetchPaper` — `query` (citation or description), `reason`. Before investing in an unknown or uncertain plan, check whether the literature already settles it. Do not formalize literature except where necessary.
+- Papers are fetched with your tools, not with a decision: `paper_search` resolves a citation to open copies, `paper_fetch` downloads, shelves and binds one to this problem — during this wake, before investing in an unknown or uncertain plan. Do not formalize literature except where necessary.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Root.lean", "charter"}`, `proposed_body`, `question`, `reason`. Only when a user file — or the problem's charter (the top group's goal) — is wrong. The user's word is never amendable.
 - `MarkDeliverable` — `target_goal_id`, `reason`. Marks a PROVED brick as one of the claims the charter asks for. Top-level claims only; vocabulary and internal lemmas are never deliverables. The marked set is what `Ingest` is checked against.
 - `Ingest` — optional `reason`. The problem's only exit: emit once the marked set fully satisfies the charter. When a root exists, the proved root is a deliverable. A disproved requested claim never satisfies the charter — `RequestUserAmend` with the disproof instead.

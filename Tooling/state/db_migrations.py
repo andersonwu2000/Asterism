@@ -893,6 +893,17 @@ def apply(conn: sqlite3.Connection) -> None:
         _migrate_to_v41(conn)
         conn.execute("PRAGMA user_version = 41")
         conn.commit()
+    if v < 42:
+        # v42 — problem_papers.origin becomes the calling seat (owner
+        # ruling 2026-08-22: paper_fetch is any seat's tool now, the
+        # Scholar pipeline retired). The old CHECK allowed only
+        # manifest/scholar/user, and bind_paper's INSERT OR IGNORE
+        # swallowed the CHECK violation SILENTLY — a strategist's
+        # direct fetch shelved the paper and bound nothing. SQLite
+        # cannot widen a CHECK in place; rebuild the table.
+        _migrate_to_v42(conn)
+        conn.execute("PRAGMA user_version = 42")
+        conn.commit()
 
 
 def _migrate_to_v41(conn: sqlite3.Connection) -> None:
@@ -2540,3 +2551,25 @@ def _migrate_to_phase14(conn: sqlite3.Connection) -> None:
             )
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_v42(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE problem_papers_v42 (
+            problem    TEXT NOT NULL REFERENCES problems(name),
+            paper_id   TEXT NOT NULL,
+            origin     TEXT NOT NULL CHECK(origin IN ('manifest','scholar',
+                'user','agent','strategist','adversary','formalizer',
+                'librarian','presearch')),
+            reason     TEXT NULL DEFAULT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (problem, paper_id)
+        )""")
+    n = conn.execute("INSERT INTO problem_papers_v42"
+                     " SELECT * FROM problem_papers").rowcount
+    conn.execute("DROP TABLE problem_papers")
+    conn.execute("ALTER TABLE problem_papers_v42 RENAME TO problem_papers")
+    if n:
+        # Silent on fresh/empty DBs: cmd_status --json shares stdout.
+        print(f"[v42] problem_papers rebuilt with the seat-family origin"
+              f" CHECK ({n} binding(s) carried)", flush=True)

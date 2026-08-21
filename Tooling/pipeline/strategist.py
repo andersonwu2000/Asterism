@@ -719,23 +719,15 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         return ""
 
     if k == "FetchPaper":
-        # Paper pipeline v2 (D11): request a cited paper. Payload needs
-        # a resolvable description; the Scholar pipeline does the fuzzy
-        # work. Cap checked here so a capped problem fails the DECISION
-        # (visible to the agent immediately) instead of burning a spawn.
-        query = str(decision.payload.get("query") or "").strip()
-        if not query:
-            return ("FetchPaper requires payload.query — the citation "
-                    "as printed (authors, title fragment, year) or an "
-                    "arXiv id/DOI")
-        if not decision.reason or not str(decision.reason).strip():
-            return "FetchPaper requires non-empty reason (why needed)"
-        from ..papers.fetch import MAX_SCHOLAR_FETCHES_PER_PROBLEM
-        n = db.scholar_fetch_count(conn, problem)
-        if n >= MAX_SCHOLAR_FETCHES_PER_PROBLEM:
-            return (f"FetchPaper blocked: per-problem scholar fetch cap "
-                    f"reached ({n}/{MAX_SCHOLAR_FETCHES_PER_PROBLEM})")
-        return ""
+        # Retired 2026-08-22 (owner ruling): paper fetching is now the
+        # Strategist's OWN tool surface, not a delegated spawn — the
+        # decision round-trip and the Scholar pipeline it fed are gone.
+        return ("FetchPaper is retired — fetch papers yourself, during "
+                "this wake: `paper_search(query=...)` (or `doi=...`) "
+                "resolves open copies with direct pdf_url locations, "
+                "then `paper_fetch(target=<url|arxiv id>, "
+                "problem=<this problem>, reason=...)` downloads, "
+                "shelves and binds in one call.")
 
     if k == "AttemptDisproof":
         # Retired 2026-08-04 (one use all-time — its own acceptance
@@ -1900,43 +1892,6 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
     )[0]
 
 
-def _commit_fetch_paper(decision: Decision, conn: sqlite3.Connection,
-                        *, problem: str, tick: int,
-                        group_id: "int | None" = None,
-                        trigger_kind: str) -> CommitOutcome:
-    """FetchPaper (paper v2, D11) — 1 audit row + 1 Scholar enqueue.
-
-    Mirrors `_commit_inject_forward`: the audit row is inserted first
-    so the queue row carries `decision_id`; the dispatcher fills this
-    decision's `outcome` when the Scholar pipeline finishes
-    ('paper_fetched' / the failure reason). The queue payload carries
-    query+reason so the Scholar's Context renders them without a
-    decision-row read."""
-    ts = db.now()
-    query = str(decision.payload.get("query") or "").strip()
-    row_payload = {"query": query}
-    cur = conn.execute(
-        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
-        " trigger_kind, decision_kind, group_id, target_id, brief,"
-        " reason, payload, outcome, created_at, updated_at)"
-        " VALUES (?, ?, ?, 'FetchPaper', ?, NULL, NULL, ?, ?, NULL, ?, ?)",
-        (problem, tick, trigger_kind, group_id, decision.reason,
-         json.dumps(row_payload, ensure_ascii=False), ts, ts),
-    )
-    row_id = int(cur.lastrowid)
-    db.enqueue(
-        conn, kind="Scholar", target_id=problem,
-        target_kind="Problem", priority=3,
-        decision_id=row_id, problem=problem,
-        payload={"query": query, "reason": str(decision.reason or "")})
-    conn.commit()
-    return CommitOutcome(
-        decision_row_id=row_id,
-        enqueued_forward=False,
-        final_outcome="committed",
-    )
-
-
 def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
                    workspace: Path,
                    group_id: "int | None" = None) -> None:
@@ -2194,17 +2149,6 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         # 'success').
         db.mark_deliverable(conn, int(decision.target_id))  # type: ignore[arg-type]
 
-    elif k == "FetchPaper":
-        # Paper v2 (D11): own commit path — audit row FIRST so the
-        # Scholar queue row carries decision_id (Inject pattern; the
-        # dispatcher fills this decision's `outcome` on completion).
-        # group_id threads through like every sibling (2026-08-05: the
-        # one call site that dropped it — the first post-v35 FetchPaper
-        # tripped the batch group invariant and the RAISE cost the
-        # judged founding rev; caught by the invariant, live).
-        return _commit_fetch_paper(
-            decision, conn, problem=problem, tick=tick,
-            trigger_kind=trigger_kind, group_id=group_id)
 
     elif k == "Ingest":
         # Terminal judgment → pause for human sign-off (unless the
@@ -2430,7 +2374,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # Lean file open, and registering one would hold a backend slot for
     # nothing.
     from . import write_tools_mcp_config as _write_tools_cfg
-    tools_cfg = _write_tools_cfg(attempts_dir, workspace)
+    tools_cfg = _write_tools_cfg(attempts_dir, workspace, seat="strategist")
     rc = agent.spawn_llm(
         kind="strategist", prompt_path=prompt_path,
         problem_dir=problem_dir, attempts_dir=attempts_dir,

@@ -34,10 +34,11 @@ _quota_ledger = quota.Ledger()
 
 #: Every pipeline that spawns a model, and therefore every seat that can
 #: run out of quota independently. `presearch` burns its own cheap model
-#: (research_mode_design §0) and `scholar` its own — both are seats even
-#: though neither is a decision-maker.
+#: (research_mode_design §0) — a seat even though it is not a
+#: decision-maker. (`scholar` retired 2026-08-22: paper fetching became
+#: the Strategist's own tool surface.)
 _QUOTA_SEATS = ("strategist", "adversary", "formalizer", "presearch",
-                "scholar", "librarian", "paper_index")
+                "librarian", "paper_index")
 
 
 def _pipeline_seats() -> "dict[str, tuple[str, str | None]]":
@@ -1365,39 +1366,6 @@ def _run_pipeline(workspace: Path,
                     )
                 return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                         r.outcome, str(r.failure_reason or ""))
-
-            if task_kind == "Scholar":
-                # Paper v2 (D11): resolve + fetch a cited paper. Problem-
-                # targeted like Forward; query/reason ride the FetchPaper
-                # decision row (decision_id threaded from the queue).
-                problem = target_id
-                if not _ensure_intent(conn, intents, problem):
-                    db.finish_pipeline(conn, pipeline_id=pipeline_id,
-                                       status="failed", outcome="failed")
-                    return WorkerDone(pipeline_id, task_kind, target_id,
-                                      target_kind, "failed",
-                                      "problem_not_found")
-                from ..pipeline import scholar
-                r = scholar.run_scholar(
-                    conn, problem=problem, workspace=workspace,
-                    pipeline_id=pipeline_id, decision_id=decision_id,
-                )
-                status = ("succeeded" if r.outcome in ("proved", "success")
-                          else "failed")
-                db.finish_pipeline(conn, pipeline_id=pipeline_id,
-                                   status=status, outcome=r.outcome)
-                if status == "failed":
-                    _arts = pipeline.collect_artifacts(attempts_dir)
-                    db.record_dead_attempt(
-                        conn, target_id=0, target_kind=target_kind,
-                        pipeline_id=pipeline_id,
-                        failure_reason=str(r.failure_reason or "failed"),
-                        failure_detail=str(r.failure_detail or ""),
-                        artifacts=(_json.dumps(_arts) if _arts else ""),
-                    )
-                return WorkerDone(pipeline_id, task_kind, target_id,
-                                  target_kind, r.outcome,
-                                  str(r.failure_reason or ""))
 
             if task_kind == "Librarian":
                 # Problem-targeted background harvest (plan §5). Derive

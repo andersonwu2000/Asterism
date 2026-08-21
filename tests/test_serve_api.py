@@ -1535,7 +1535,8 @@ def test_config_get_and_set(workspace: Path) -> None:
     got = c.get("/api/config").json()["settings"]
     keys = {row["key"] for row in got}
     assert "strategist.model" in keys and "dispatch.pool" in keys
-    assert "scholar.model" in keys
+    # (scholar seat retired 2026-08-22 with the Scholar pipeline)
+    assert "scholar.model" not in keys
     # .model keys carry dropdown choices (typo-proof select); the
     # resolved value is always a legal choice; bools render as a
     # true/false select reflecting the ENGINE default when unset

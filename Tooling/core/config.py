@@ -302,14 +302,13 @@ def resolve_workspace(explicit: "Path | str | None" = None) -> Path:
 #: be able to pick the backend that runs it (2026-08-14: three backends
 #: are live and `<kind>.provider` was yaml-only).
 UI_SEATS = ("formalizer", "strategist", "presearch", "librarian",
-            "scholar", "adversary")
+            "adversary")
 
 UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
     "formalizer.model": (str, "model that turns the argued proof into Lean (prove/split/mint)"),
     "strategist.model": (str, "model that plans the campaign"),
     "presearch.model": (str, "model that scouts Mathlib before proving"),
     "librarian.model": (str, "model that curates the Library"),
-    "scholar.model": (str, "model that searches and fetches cited papers"),
     "adversary.model": (str, "model that adversarially reviews the research programme"),
     "dispatch.pool": (int, "max agents working at once"),
     "dispatch.budget_sec": (int, "wall-clock budget per engine run (seconds)"),

@@ -68,8 +68,34 @@ _ARG_HELP = "{tool}: {hint}"
 
 mcp = FastMCP("asterism_tools")
 
+# ── Seat gate (owner ruling 2026-08-22) ───────────────────────────────
+# The server registers only the seat's declared surface. ASTERISM_SEAT
+# is written into this server's env by the pipeline config writers; the
+# whitelist itself lives in llm/envelope.SEAT_ASTERISM_TOOLS so every
+# provider reads the same table. No env var = full surface (operator
+# use, tests, the shim's in-process import — the shim enforces
+# per-request declared tools itself).
+_SEAT = os.environ.get("ASTERISM_SEAT", "")
+if _SEAT:
+    from ..llm.envelope import asterism_tools_for as _seat_tools
+    _ALLOWED = _seat_tools(_SEAT)
+else:
+    _ALLOWED = None
 
-@mcp.tool(structured_output=False)
+
+def _seat_tool(**tool_kwargs):
+    """`@mcp.tool` that registers only when the seat's whitelist says
+    so; the function itself always exists (the shim imports this module
+    and dispatches by getattr — its own gate is the request's declared
+    tool list)."""
+    def deco(fn):
+        if _ALLOWED is None or fn.__name__ in _ALLOWED:
+            return mcp.tool(**tool_kwargs)(fn)
+        return fn
+    return deco
+
+
+@_seat_tool(structured_output=False)
 def loogle(pattern: str = "", query: str = "",
            limit: int = _loogle.DEFAULT_LIMIT) -> str:
     """Search Mathlib (loogle.lean-lang.org).
@@ -102,7 +128,7 @@ def loogle(pattern: str = "", query: str = "",
     return text
 
 
-@mcp.tool(structured_output=False)
+@_seat_tool(structured_output=False)
 def validate_json(text: str = "") -> str:
     """Check that `text` parses as JSON before you emit it.
 
@@ -127,7 +153,7 @@ def validate_json(text: str = "") -> str:
     return f"OK: {type(obj).__name__}"
 
 
-@mcp.tool(structured_output=False)
+@_seat_tool(structured_output=False)
 def inspect(queries: list = None) -> str:
     """Ask several questions about the files here, in one call.
 
@@ -182,7 +208,7 @@ def inspect(queries: list = None) -> str:
     return workspace_query.run_queries(queries, delivery_chars=delivery)
 
 
-@mcp.tool(structured_output=False)
+@_seat_tool(structured_output=False)
 def write_file(path: str = "", content: str = "") -> str:
     """Write a file into your attempts directory. Full-file overwrite.
 
@@ -211,7 +237,7 @@ def write_file(path: str = "", content: str = "") -> str:
     return workspace_query.run_write(path, content)
 
 
-@mcp.tool(structured_output=False)
+@_seat_tool(structured_output=False)
 def compute(code: str = "") -> str:
     """Run a short Python calculation and get back what it prints.
 
@@ -334,7 +360,7 @@ def _compute_via_gateway(code: str) -> str:
                          killed=str(data.get("killed") or "")).render()
 
 
-@mcp.tool(structured_output=False)
+@_seat_tool(structured_output=False)
 def paper_search(query: str = "", doi: str = "") -> str:
     """Find a paper by citation text, keywords, or DOI.
 
@@ -370,7 +396,7 @@ def paper_search(query: str = "", doi: str = "") -> str:
     return out
 
 
-@mcp.tool(structured_output=False)
+@_seat_tool(structured_output=False)
 def paper_fetch(target: str = "", problem: str = "", reason: str = "") -> str:
     """Download a paper, shelve it, and bind it to the problem.
 

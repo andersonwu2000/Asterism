@@ -502,21 +502,20 @@ def test_live_inject_open_subtree_is_live(tmp_path: Path) -> None:
 
 def test_review_discharge_rejects_notes_only_batch(tmp_path: Path) -> None:
     """While a goal waits in pending_strategist_review, an
-    notes-only batch (FetchPaper; held the retired EmitDirective pre-RS-B) discharges nothing — reject; the same
+    notes-only batch (Noop; held FetchPaper, and EmitDirective before
+    RS-B — both retired) discharges nothing — reject; the same
     batch plus a decision TARGETING the reviewed goal passes."""
     import json
     from Tooling.pipeline import strategist
     conn = _conn(tmp_path)
     _ga, grev = _pending_review_wedge(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "FetchPaper", "query": "wall survey",
-         "reason": "record the wall"},
+        {"kind": "Noop", "reason": "record the wall"},
     ]))
     err = strategist.verify_decisions(ds, conn, problem=P)
     assert "review not discharged" in err and f"g{grev}" in err
     ds2, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "FetchPaper", "query": "wall survey",
-         "reason": "record the wall"},
+        {"kind": "Noop", "reason": "record the wall"},
         {"kind": "Inject", "pipeline": "Backward",
          "target_goal_id": grev, "proof": "## Need\nfresh attack"},
     ]))
@@ -688,8 +687,7 @@ def test_review_discharge_exempts_periodic_wakes(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _ga, grev = _pending_review_wedge(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "FetchPaper", "query": "audit context survey",
-         "reason": "clean audit"},
+        {"kind": "Noop", "reason": "clean audit"},
     ]))
     err = strategist.verify_decisions(ds, conn, problem=P,
                                       trigger_kind="routine")
@@ -713,8 +711,7 @@ def test_alignment_invariant_stalled_implies_gate_rejects(
 
     def gate_accepts_notes_only(conn) -> bool:
         ds, _ = strategist.parse_decisions(json.dumps([
-            {"kind": "FetchPaper", "query": "notes survey",
-             "reason": "notes"},
+            {"kind": "Noop", "reason": "notes"},
         ]))
         return strategist.verify_decisions(ds, conn, problem=P) == ""
 

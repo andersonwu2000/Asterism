@@ -26,13 +26,11 @@ _PINNED = {
     "strategist.provider",
     "presearch.provider",
     "librarian.provider",
-    "scholar.provider",
     "adversary.provider",
     "formalizer.model",
     "strategist.model",
     "presearch.model",
     "librarian.model",
-    "scholar.model",
     "adversary.model",
     # dispatch knobs a mathematician tunes
     "dispatch.pool",

@@ -328,7 +328,7 @@ _WATERMARKS = {
     # 2026-08-17. Conscious bump.
     # 08-18 +15: the recovery event labels + the disproved revival edge
     # and its incident documentation (claimed-counterexample park).
-    "Tooling/state/transitions.py": 1825,
+    "Tooling/state/transitions.py": 1845,  # +dead-attempt detail handover (2026-08-22)
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.
@@ -442,7 +442,7 @@ _WATERMARKS = {
     # 3855→3870 (2026-08-19): v40 Manifest retirement — `problems` DDL
     # loses manifest_path / gains user_word, and the SCHEMA comments
     # explaining the DB-resident intent pair. Conscious bump.
-    "Tooling/state/db.py": 3870,
+    "Tooling/state/db.py": 3880,  # v42 CHECK comment
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,
@@ -473,7 +473,7 @@ _WATERMARKS = {
     # legacy Manifest.md, problem_settings seeding, manifest_path DROP).
     # The chain grows by one block per schema version by design.
     # Conscious bump.
-    "Tooling/state/db_migrations.py": 2545,  # v41 step (stranded Manifest.md amend retirement, 2026-08-19)
+    "Tooling/state/db_migrations.py": 2580,  # +v42 origin rebuild  # v41 step (stranded Manifest.md amend retirement, 2026-08-19)
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

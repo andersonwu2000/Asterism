@@ -520,7 +520,8 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
     # claims, and that was its only shell use. The config lands INSIDE
     # the projection, so the isolation is unchanged.
     from . import write_tools_mcp_config as _write_tools_cfg
-    _tools_cfg = _write_tools_cfg(proj, attempts_dir.parent.parent)
+    _tools_cfg = _write_tools_cfg(proj, attempts_dir.parent.parent,
+                                  seat="adversary")
     while True:
         sid = str(uuid.uuid4())
         rc = agent.spawn_llm(

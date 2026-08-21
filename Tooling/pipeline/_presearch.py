@@ -415,7 +415,8 @@ def _ensure(*, cache: Path, label: str, statement: str, exclude_slug: str,
             # Searching Mathlib IS this spawn's whole job, and loogle is
             # an MCP tool now — without the config the prompt would name
             # a tool the agent cannot call.
-            mcp_config_path=_write_tools_cfg(sandbox, workspace),
+            mcp_config_path=_write_tools_cfg(sandbox, workspace,
+                                             seat="presearch"),
         )
 
         if not out_path.is_file():

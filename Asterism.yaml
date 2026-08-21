@@ -249,12 +249,8 @@ librarian:
 feedback:
   enabled: true                # re-enabled for the Formalizer e2e acceptance (user 2026-07-29); the ~15-30s questionnaire resume per spawn is acceptable in dev runs
 
-scholar:
-  # 2026-08-22 Erdős/ox-alpha era: scholar rides zen too (user, same
-  # order as presearch). Restore: model: claude-sonnet-5 (no provider).
-  provider: zen
-  model: x-preview-f-free
-  reasoning_effort: high
+# (scholar seat retired 2026-08-22 — paper fetching is the Strategist's
+# own tool surface now; the Scholar pipeline is gone.)
 
 adversary:
   # 2026-08-18: back to the claude baseline (user) — save codex quota

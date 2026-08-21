@@ -2129,45 +2129,19 @@ def test_verify_decisions_rejects_confirmshelve_paired_only_with_request_user_am
     assert "ConfirmShelve" in err and "alone" in err.lower()
 
 
-def test_verify_decisions_rejects_confirmshelve_paired_only_with_fetch_paper(
+def test_fetch_paper_decision_is_retired_with_teaching(
     conn: sqlite3.Connection,
 ) -> None:
-    """Literature intake is not action. ConfirmShelve must pair with at
-    least one Inject or Reopen — fetching a survey about the wall does
-    not dispatch a fresh attempt or redirect focus to another goal.
-    (Previously pinned with the retired EmitDirective as the
-    non-qualifying partner; the property is about ANY articulation-only
-    sibling, so FetchPaper carries it now.)"""
-    root = _insert_root(conn)
+    """FetchPaper retired 2026-08-22 (owner ruling): paper fetching is
+    the Strategist's own tool surface now. The kind stays recognized so
+    the gate can TEACH the replacement instead of reading as a typo."""
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "FetchPaper", "query": "survey of the blocked route",
          "reason": "record learning before shelving"},
-        {"kind": "ConfirmShelve", "target_goal_id": root,
-         "reason": "two Reopens failed; read up before retrying"},
     ]))
     err = strategist.verify_decisions(ds, conn, problem="p")
-    assert "ConfirmShelve" in err and "action" in err.lower()
-
-
-def test_verify_decisions_accepts_three_decision_batch_with_fetch_paper(
-    workspace: Path, conn: sqlite3.Connection,
-) -> None:
-    """FetchPaper as an EXTRA on top of an Inject + ConfirmShelve is
-    fine — the action requirement is satisfied by the Inject; the fetch
-    is bonus context intake. (Held the retired EmitDirective before
-    RS-B; the property is that an articulation sibling never poisons a
-    batch that DOES carry action.)"""
-    root = _insert_root(conn)
-    ds, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "Inject", "pipeline": "Forward",
-         "proof": "## Need\nalternative angle around the blocked gap"},
-        {"kind": "ConfirmShelve", "target_goal_id": root,
-         "reason": "current direction exhausted"},
-        {"kind": "FetchPaper",
-         "query": "Cauchy on simply connected reformulations survey",
-         "reason": "context for the pivot"},
-    ]))
-    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+    assert "retired" in err
+    assert "paper_fetch" in err and "paper_search" in err
 
 
 def test_verify_decisions_rejects_confirmshelve_plus_inject_bb_same_target(

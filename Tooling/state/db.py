@@ -502,7 +502,11 @@ CREATE TABLE IF NOT EXISTS queue (
 CREATE TABLE IF NOT EXISTS problem_papers (
     problem    TEXT NOT NULL REFERENCES problems(name),
     paper_id   TEXT NOT NULL,
-    origin     TEXT NOT NULL CHECK(origin IN ('manifest','scholar','user')),
+    -- v42 (owner ruling 2026-08-22): origin = the calling seat.
+    -- 'scholar' stays for historical rows; 'agent' is the
+    -- in-process (shim) path where no ASTERISM_SEAT env exists.
+    origin     TEXT NOT NULL CHECK(origin IN ('manifest','scholar','user','agent',
+        'strategist','adversary','formalizer','librarian','presearch')),
     reason     TEXT NULL DEFAULT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY (problem, paper_id)
@@ -826,7 +830,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 41
+_CURRENT_USER_VERSION = 42
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:

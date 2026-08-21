@@ -158,7 +158,7 @@ def test_every_spawning_pipeline_has_a_seat():
     — it would spawn into an exhausted window and nobody would know."""
     from Tooling.core import dispatcher
     for kind in ("strategist", "adversary", "formalizer", "presearch",
-                 "scholar"):
+                 ):
         assert kind in dispatcher._QUOTA_SEATS
 
 

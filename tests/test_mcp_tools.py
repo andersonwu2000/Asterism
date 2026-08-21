@@ -102,12 +102,14 @@ def test_tools_config_is_stdio_with_pythonpath(tmp_path: Path) -> None:
 
     att = tmp_path / "att"
     att.mkdir()
-    path = pipeline.write_tools_mcp_config(att, tmp_path)
+    path = pipeline.write_tools_mcp_config(att, tmp_path,
+                                           seat="strategist")
     cfg = json.loads(path.read_text(encoding="utf-8"))
     entry = cfg["mcpServers"]["asterism_tools"]
     assert entry["type"] == "stdio"
     assert entry["args"] == ["-m", "Tooling.knowledge.mcp_tools"]
     assert entry["env"]["PYTHONPATH"] == str(tmp_path)
+    assert entry["env"]["ASTERISM_SEAT"] == "strategist"
     # No gateway session for a wake with no Lean file open — registering
     # one would hold a backend slot for nothing.
     assert set(cfg["mcpServers"]) == {"asterism_tools"}
@@ -120,7 +122,7 @@ def test_gateway_config_carries_the_same_tools_entry() -> None:
     from Tooling import pipeline
 
     src = inspect.getsource(pipeline._write_mcp_config)
-    assert "tools_mcp_entry(workspace)" in src
+    assert 'tools_mcp_entry(workspace, "formalizer")' in src
     assert '"asterism_tools"' in src
 
 
@@ -141,12 +143,9 @@ def test_every_prompt_naming_a_tool_gets_a_config() -> None:
         "adversary": ["Tooling/pipeline/adversary.py"],
         "librarian": ["Tooling/pipeline/librarian/run.py"],
         "formalizer": ["Tooling/pipeline/_retry.py"],
-        # Added when the shell closed: scholar's two commands became MCP
-        # tools, and its spawn had never carried a config because
-        # `python -m Tooling.papers.…` reached them through Bash. The
-        # test missed it for exactly the reason below — it matched two
-        # hardcoded tool names, not the server's actual list.
-        "scholar": ["Tooling/pipeline/scholar.py"],
+        # (scholar retired 2026-08-22 — paper_search/paper_fetch are the
+        # Strategist's own surface now; its spawn already carries the
+        # tools config checked above.)
         "_shared": ["Tooling/pipeline/_presearch.py",
                     "Tooling/pipeline/_retry.py"],
     }
@@ -255,9 +254,12 @@ def test_loogle_left_the_shell_allowlist() -> None:
         node.name for node in ast.walk(src)
         if isinstance(node, ast.FunctionDef)
         and any(isinstance(d, ast.Call)
-                and isinstance(d.func, ast.Attribute)
-                and d.func.attr == "tool"
+                and ((isinstance(d.func, ast.Attribute)
+                      and d.func.attr == "tool")
+                     or (isinstance(d.func, ast.Name)
+                         and d.func.id == "_seat_tool"))
                 for d in node.decorator_list)
+        and node.name != "_seat_tool"
     }
     assert registered, "no @mcp.tool functions found — parser drifted"
     assert set(claude_cli._TOOLS_MCP_PATTERNS) == {

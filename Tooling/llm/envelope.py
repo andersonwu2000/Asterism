@@ -37,6 +37,58 @@ from .base import LLMRequest
 #: framework code, not by a spawn's tools.
 _LIBRARY_EDITING_KINDS = ("librarian", "migrate", "classify", "alias")
 
+# ── Per-seat asterism_tools surface (owner ruling 2026-08-22) ─────────
+#
+# The `mcp_tools` server used to expose every tool to every seat on the
+# MCP-config providers (codex/zen/agy) — observed when a strategist
+# called `paper_fetch` directly, mid-wake, before its first batch. The
+# ruling: `paper_search`/`paper_fetch` are RATIFIED as strategist
+# surface (the Scholar pipeline retires with them), everything else is
+# seat-scoped, the same table on every provider, and the NL layer never
+# touches a Lean surface (the LSP server rides a separate config that
+# only Lean workers receive — `write_tools_mcp_config` vs
+# `_write_mcp_config` keeps that separation by construction).
+#
+# The gate is server-side: `mcp_tools` reads ASTERISM_SEAT from its env
+# (written into the server entry by the config writers) and registers
+# only this table's tools, so codex, claude, and agy all list the same
+# filtered surface. The zen shim additionally refuses to execute any
+# call whose name was not declared in the request itself.
+
+_NL_TOOLS = frozenset({"inspect", "write_file", "compute", "loogle",
+                       "validate_json"})
+
+SEAT_ASTERISM_TOOLS: "dict[str, frozenset[str]]" = {
+    "strategist": _NL_TOOLS | {"paper_search", "paper_fetch"},
+    "adversary": _NL_TOOLS,
+    "presearch": _NL_TOOLS,
+    "formalizer": _NL_TOOLS,     # intake/mint turns; Lean phase adds
+                                 # the lsp server via _write_mcp_config
+    "librarian": _NL_TOOLS,
+}
+
+
+def asterism_tools_for(seat: str) -> "frozenset[str]":
+    """The seat's tool whitelist; unknown seats fail LOUDLY — a seat
+    nobody declared must not inherit the widest surface by accident."""
+    try:
+        return SEAT_ASTERISM_TOOLS[seat]
+    except KeyError:
+        raise KeyError(
+            f"seat {seat!r} has no declared asterism_tools surface — "
+            f"add it to envelope.SEAT_ASTERISM_TOOLS") from None
+
+
+def seat_of_kind(kind: str) -> str:
+    """Pipeline kind → tool-surface seat. The Formalizer's arms and the
+    librarian family each share one seat; everything else is itself."""
+    if kind in ("forward", "backward", "builder", "mint", "intake",
+                "formalizer", "prove", "split"):
+        return "formalizer"
+    if kind in _LIBRARY_EDITING_KINDS or kind.startswith("cleanup"):
+        return "librarian"
+    return kind
+
 
 @dataclass(frozen=True)
 class Envelope:

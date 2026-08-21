@@ -520,20 +520,18 @@ def test_a_committed_batch_is_stamped_with_its_authoring_group(tmp_path):
     sub = groups.open_group(conn, problem=p, parent_group_id=top,
                             charter="claim A")
     conn.commit()
-    # FetchPaper rides along: its per-kind INSERT was the ONE call site
-    # that dropped group_id (2026-08-05, first post-v35 fetch tripped
-    # the exhaustiveness invariant mid-commit and the raise cost the
-    # judged founding rev).
+    # Two kinds so the stamp is proven per-row, not per-batch.
+    # (FetchPaper used to ride here — its per-kind INSERT was the ONE
+    # call site that dropped group_id, 2026-08-05 — retired 2026-08-22.)
     ds = [_strategist.Decision(kind="Noop", reason="waiting"),
-          _strategist.Decision(kind="FetchPaper", reason="frontier check",
-                               payload={"query": "Thurston 1982"})]
+          _strategist.Decision(kind="Noop", reason="second note")]
     _strategist.commit_decisions(ds, conn, problem=p, tick=0,
                                  trigger_kind="routine",
                                  workspace=tmp_path, group_id=sub)
     rows = conn.execute(
         "SELECT decision_kind, group_id FROM strategist_decisions"
         " WHERE problem = ?", (p,)).fetchall()
-    assert {str(r["decision_kind"]) for r in rows} == {"Noop", "FetchPaper"}
+    assert [str(r["decision_kind"]) for r in rows] == ["Noop", "Noop"]
     assert all(int(r["group_id"]) == sub for r in rows)
     # ...and the routine commit advanced THAT group's clock, not another's.
     assert groups.get(conn, sub)["last_routine_at"] is not None
@@ -1945,7 +1943,7 @@ def test_v35_migrates_a_v34_db_without_losing_rows(tmp_path):
               for t in ("strategist_decisions", "queue", "pipelines",
                         "programme_revisions")}
     db_migrations.apply(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 41
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 42
     after = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
              for t in before}
     assert before == after
@@ -1969,7 +1967,7 @@ def test_init_schema_upgrades_a_v34_db_in_place(tmp_path):
     """
     conn = _v34_db(tmp_path)
     db.init_schema(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 41
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 42
     cols = {r[1] for r in conn.execute(
         "PRAGMA table_info(strategist_decisions)")}
     assert {"group_id", "produced_group_id"} <= cols
