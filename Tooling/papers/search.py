@@ -118,6 +118,30 @@ def _unpaywall(doi: str) -> list[dict]:
     return out
 
 
+def _enrich_via_unpaywall(hits: list[dict], cap: int = 3) -> None:
+    """Attach a pdf_url to DOI-only hits, in place.
+
+    The search side used to hand back rows with a DOI and no pdf_url,
+    while _unpaywall — one lookup away, in this same module — knew the
+    direct open-access PDF (Erdos.p1, 2026-08-22: the exact 1996 target
+    came back DOI-only from Crossref while unpaywall held its ams.org
+    PDF; the scholar was left to fetch doi.org and be refused). The
+    framework held both halves of the answer — join them here, once,
+    rather than teach every caller a second round-trip. `cap` bounds
+    the extra lookups per search."""
+    for hit in hits:
+        if cap <= 0:
+            return
+        if hit.get("pdf_url") or not hit.get("doi"):
+            continue
+        cap -= 1
+        for loc in _unpaywall(str(hit["doi"])):
+            if loc.get("pdf_url"):
+                hit["pdf_url"] = loc["pdf_url"]
+                hit["pdf_via"] = "unpaywall"
+                break
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
@@ -129,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         query = " ".join(args)
         hits = _openalex(query) + _arxiv(query) + _crossref(query)
+        _enrich_via_unpaywall(hits)
     print(json.dumps(hits, ensure_ascii=False, indent=1))
     return 0
 

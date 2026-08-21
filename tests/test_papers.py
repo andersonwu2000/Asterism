@@ -352,6 +352,59 @@ def test_fetch_refuses_non_whitelisted_host(tmp_path: Path) -> None:
                                problem=None, reason=None)
 
 
+def test_fetch_whitelist_covers_cambridge() -> None:
+    # 2026-08-22 (user call): Cambridge Core hosts the free CMS journal
+    # backfiles — Moser's CMB 1963 paper was structurally unfetchable
+    # without it (same publisher-open-archive shape as the AMS entry).
+    from Tooling.papers import fetch
+    assert "www.cambridge.org" in fetch.FETCH_HOST_WHITELIST
+    assert "cambridge.org" in fetch.FETCH_HOST_WHITELIST
+
+
+def test_fetch_doi_refusal_names_the_way_out(tmp_path: Path) -> None:
+    # doi.org is a redirector; the refusal must point at a move the
+    # agent can actually make (paper_search(doi=…)), not just recite
+    # the whitelist — Erdos.p1's scholar held a DOI whose open copy
+    # sat on whitelisted ams.org and was taught nothing.
+    from Tooling.papers import fetch
+    with pytest.raises(ValueError, match=r'paper_search\(doi='):
+        fetch.fetch_and_shelve(
+            tmp_path, "https://doi.org/10.1090/s0002-9939-96-03653-2",
+            problem=None, reason=None)
+
+
+def test_search_enriches_doi_only_hits_via_unpaywall(monkeypatch) -> None:
+    # The query path must join its own two halves: a DOI-only hit and
+    # the unpaywall lookup living in the same module. (Erdos.p1: the
+    # exact target came back DOI-only while unpaywall held its ams.org
+    # PDF — the scholar was left to fetch doi.org and be refused.)
+    import io
+    import json as _json
+    from contextlib import redirect_stdout
+
+    from Tooling.papers import search
+    monkeypatch.setattr(search, "_openalex", lambda q: [
+        {"source": "openalex", "title": "other", "doi": "10.1/other",
+         "pdf_url": "https://arxiv.org/pdf/1.1"}])
+    monkeypatch.setattr(search, "_arxiv", lambda q: [])
+    monkeypatch.setattr(search, "_crossref", lambda q: [
+        {"source": "crossref", "title": "target", "doi": "10.2/target"}])
+    seen: list[str] = []
+    monkeypatch.setattr(search, "_unpaywall", lambda doi: (
+        seen.append(doi) or [
+            {"source": "unpaywall", "host_type": "publisher",
+             "pdf_url": "https://www.ams.org/x.pdf"}]))
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        assert search.main(["some", "query"]) == 0
+    hits = _json.loads(buf.getvalue())
+    target = next(h for h in hits if h["title"] == "target")
+    assert target["pdf_url"] == "https://www.ams.org/x.pdf"
+    assert target["pdf_via"] == "unpaywall"
+    # rows that already carry a pdf_url are not re-looked-up
+    assert seen == ["10.2/target"]
+
+
 def test_fetch_refuses_non_pdf_response(tmp_path: Path,
                                         monkeypatch) -> None:
     from Tooling.papers import fetch

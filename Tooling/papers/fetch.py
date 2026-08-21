@@ -27,7 +27,17 @@ FETCH_HOST_WHITELIST = frozenset({
     "www.ams.org", "ams.org",
     "projecteuclid.org", "www.projecteuclid.org",
     "msp.org", "www.msp.org",
+    # Cambridge Core (2026-08-22, user call): CMS journal backfiles are
+    # free there — Moser's CMB 1963 paper died paper_unfetchable with
+    # the Cambridge PDF as its only open copy (same shape as Hass).
+    "www.cambridge.org", "cambridge.org",
 })
+
+# doi.org is a REDIRECTOR, not a host — refusing it with the generic
+# whitelist message taught nothing reachable (Erdos.p1, 2026-08-22: the
+# scholar held a DOI whose open copy sat on whitelisted ams.org, one
+# paper_search(doi=…) away). The gate must name that move.
+_DOI_REDIRECTOR_HOSTS = frozenset({"doi.org", "www.doi.org", "dx.doi.org"})
 MAX_FETCH_BYTES = 50 * 1024 * 1024
 # 5 → 20 (2026-08-05, user call): a research-grade survey legitimately
 # needs 7+ papers (SLC restart hit 6 in its first two batches and the
@@ -56,6 +66,13 @@ def fetch_and_shelve(workspace: Path, target: str, *,
     shelf id. Raises ValueError/RuntimeError loudly on refusal."""
     url = _resolve_url(target)
     host = urllib.parse.urlparse(url).hostname or ""
+    if host in _DOI_REDIRECTOR_HOSTS:
+        doi = urllib.parse.urlparse(url).path.lstrip("/")
+        raise ValueError(
+            f"{host} is a DOI redirector, not a paper host — its landing "
+            f"page is rarely the PDF. Resolve the open copies first: "
+            f'paper_search(doi="{doi}") lists direct pdf_url locations; '
+            f"fetch one of those instead.")
     if host not in FETCH_HOST_WHITELIST:
         raise ValueError(
             f"host {host!r} is not fetch-whitelisted "
