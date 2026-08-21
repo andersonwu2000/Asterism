@@ -42,6 +42,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   codex: 'Codex CLI',
   gemini: 'Gemini CLI',
   openai: 'OpenAI-compatible API',
+  zen: 'OpenCode',
 }
 
 /** One account, drawn from what the backend DECLARES about itself plus
@@ -91,22 +92,35 @@ function Account({ p, onChanged }: { p: ProviderRow; onChanged: () => void }) {
   // and rendering unknown as "not signed in" is a nag that never
   // clears (codex read that way the moment it landed, 2026-08-14).
   const signedIn = p.logged_in === undefined ? null : p.logged_in
+  // the api-key flavor: the credential is an env/.env line, presence is
+  // the honest local answer, and there is deliberately NO input field —
+  // a key typed into a browser form would cross an unauthenticated HTTP
+  // layer and land in a second store (owner, 2026-08-22)
+  const keyed = p.auth_flow === 'api_key' && Boolean(p.env_key)
   const dot = !p.installed
     ? seated
       ? 'bg-warn'
       : 'bg-ink-faint'
-    : signedIn === false
-      ? 'bg-warn'
-      : 'bg-ok'
+    : keyed
+      ? p.key_present
+        ? 'bg-ok'
+        : 'bg-warn'
+      : signedIn === false
+        ? 'bg-warn'
+        : 'bg-ok'
   const line = !p.installed
     ? seated
       ? `${label} missing — a seat is pointed at it`
       : `${label} not installed`
-    : signedIn === true
-      ? `${label} signed in${p.subscription ? ` · ${p.subscription} plan` : ''}`
-      : signedIn === false
-        ? `${label} is not signed in`
-        : `${label} installed`
+    : keyed
+      ? p.key_present
+        ? `${label} — key in place`
+        : `${label} has no key`
+      : signedIn === true
+        ? `${label} signed in${p.subscription ? ` · ${p.subscription} plan` : ''}`
+        : signedIn === false
+          ? `${label} is not signed in`
+          : `${label} installed`
 
   return (
     <Row>
@@ -135,7 +149,7 @@ function Account({ p, onChanged }: { p: ProviderRow; onChanged: () => void }) {
                 </Button>
               </>
             )}
-            {p.can_probe && p.installed && (
+            {p.can_probe && p.installed && !keyed && (
               /* the honest check where no file states the answer: make
                  the CLI do something the account is needed for. An
                  action, not a poll — agy's costs ~2.5s. */
@@ -170,6 +184,20 @@ function Account({ p, onChanged }: { p: ProviderRow; onChanged: () => void }) {
               sign-in lives in its own app
             </span>
           )}
+          {keyed &&
+            (p.key_present ? (
+              <span title="presence only — the key itself is never read, shown, or sent anywhere">
+                {p.env_key} found in env / .env
+              </span>
+            ) : (
+              /* the way out, exactly — a warn dot with no reachable
+                 action is a nag, not a gate */
+              <span className="text-warn">
+                add <span className="font-mono">{p.env_key}=…</span> to{' '}
+                <span className="font-mono">.env</span> at the workspace root — the engine
+                reads it at spawn; the console never asks for the value
+              </span>
+            ))}
           {p.identity === 'legacy_file' && (
             /* presence is the only detectable signal, and nothing errors
                when the wrong account wins — the run just spends it */

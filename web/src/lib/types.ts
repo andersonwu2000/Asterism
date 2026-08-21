@@ -598,6 +598,12 @@ export interface ProviderRow {
    * it is the wrong one */
   identity?: string | null
   identity_path?: string | null
+  /** api-key providers only: WHICH variable carries the credential,
+   * and whether a non-empty assignment exists (env or workspace .env).
+   * Presence only — the value never crosses the HTTP layer, which is
+   * why the console has no input field for it (owner, 2026-08-22). */
+  env_key?: string | null
+  key_present?: boolean
 }
 
 export interface Meta {
