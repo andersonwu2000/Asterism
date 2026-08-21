@@ -28,6 +28,7 @@ Key:  OPENCODE_ZEN_API_KEY env, or .env's OPENCODE_ZEN_API_KEY.
 from __future__ import annotations
 
 import http.server
+import io
 import json
 import os
 import re
@@ -233,7 +234,33 @@ def _zen_call(body: dict) -> dict:
             with urllib.request.urlopen(req, timeout=1740) as r:
                 return json.loads(r.read())
         except urllib.error.HTTPError as e:
-            if e.code < 500 or attempt == 3:
+            if e.code < 500:
+                # Deterministic client rejection — retrying is waste, but
+                # the 150-byte log line buried the diagnosis (p143's
+                # strategist died agent_no_output on an unexplained
+                # `invalid_prompt`, 2026-08-22). Dump the FULL request
+                # and error body so the offending field is readable,
+                # then re-raise with the body re-attached (the outer
+                # handler forwards it to codex verbatim).
+                err_bytes = e.read()
+                try:
+                    dump = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "..", "..", ".asterism", "logs",
+                        f"zen_shim_4xx_{int(time.time())}.json")
+                    with open(dump, "w", encoding="utf-8") as f:
+                        json.dump({"status": e.code,
+                                   "error": err_bytes.decode(
+                                       "utf-8", "replace"),
+                                   "request": body}, f,
+                                  ensure_ascii=False, indent=1)
+                    print(f"[shim] 4xx dumped -> {dump}", flush=True)
+                except Exception:  # noqa: BLE001 — dump is best-effort
+                    pass
+                raise urllib.error.HTTPError(
+                    e.url, e.code, e.reason, e.headers,
+                    io.BytesIO(err_bytes))
+            if attempt == 3:
                 raise
             e.read()
             last = e
