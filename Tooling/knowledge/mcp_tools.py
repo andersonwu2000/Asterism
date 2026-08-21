@@ -400,9 +400,10 @@ def paper_search(query: str = "", doi: str = "") -> str:
 def paper_fetch(target: str = "", problem: str = "", reason: str = "") -> str:
     """Download a paper, shelve it, and bind it to the problem.
 
-    `target` is an arXiv id or a URL on a whitelisted host. This is the
-    success action of a Scholar wake: say in `reason` why the work is
-    needed — the binding is audited.
+    `target` is an arXiv id or a URL on a whitelisted host — use
+    `paper_search` first to resolve a citation to fetchable open
+    copies. Pass `problem` so the paper binds to your problem, and say
+    in `reason` why the work is needed — the binding is audited.
     """
     import io
     from contextlib import redirect_stdout

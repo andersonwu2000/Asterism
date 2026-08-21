@@ -89,7 +89,7 @@ def fetch_and_shelve(workspace: Path, target: str, *,
             n = db.scholar_fetch_count(conn, problem)
             if n >= MAX_SCHOLAR_FETCHES_PER_PROBLEM:
                 raise RuntimeError(
-                    f"per-problem scholar fetch cap reached "
+                    f"per-problem paper fetch cap reached "
                     f"({n}/{MAX_SCHOLAR_FETCHES_PER_PROBLEM}) — justify "
                     f"further papers to the human instead")
 

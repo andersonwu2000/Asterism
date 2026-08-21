@@ -1575,11 +1575,12 @@ def _section_paper_index_strategist(intent: intent_mod.ProblemIntent,
         "`paper_ref: \"p.N <label>\"` in its payload (where the paper "
         "states the claim) — it is shown to the human at sign-off.",
         "When the paper cites a work you genuinely need (a proof "
-        "detail this paper omits), decide "
-        "`{\"kind\": \"FetchPaper\", \"query\": \"<citation as "
-        "printed>\", \"reason\": \"<why>\"}` — a Scholar agent "
-        "resolves and fetches it; fetched papers appear under "
-        "`### Auxiliary papers` on later wakes.",
+        "detail this paper omits), fetch it yourself during this "
+        "wake: `paper_search(query=\"<citation as printed>\")` (or "
+        "`doi=...`) resolves open copies, then "
+        "`paper_fetch(target=<url|arxiv id>, problem=<this problem>, "
+        "reason=<why>)` shelves and binds it; fetched papers appear "
+        "under `### Auxiliary papers` on later wakes.",
         "",
     ]
 
