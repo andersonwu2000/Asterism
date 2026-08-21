@@ -326,3 +326,41 @@ function Test-Preflight($decisions, $workspace) {
     }
     return $errors
 }
+
+# ---- opening a URL without assuming an http handler ------------------
+# A fresh Windows profile (Windows Sandbox's WDAGUtilityAccount; some
+# locked-down machines) has NO app registered for the http protocol:
+# shell-executing a URL there pops "you need a new app to open this
+# http link" and opens nothing. The association is a registry fact, so
+# read it first; when it is absent, drive a browser BINARY directly -
+# a plain exe launch needs no protocol registration, and Edge ships
+# with every supported Windows. Shell-execute stays the first choice
+# because it is the only route that respects the user's own default
+# browser.
+function Open-Url($url) {
+    $choice = Get-ItemProperty -ErrorAction SilentlyContinue -Path `
+        'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice'
+    if ($choice -and $choice.ProgId) {
+        Start-Process $url
+        return
+    }
+    # interpolated strings, NOT Join-Path: an absent root (there is no
+    # ProgramFiles(x86) on 32-bit Windows) must merely fail the
+    # Test-Path below, not throw while the list is being built
+    $browsers = @(
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+        "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
+        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+        "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe",
+        "$env:ProgramFiles\Mozilla Firefox\firefox.exe"
+    )
+    foreach ($b in $browsers) {
+        if ($b -and (Test-Path $b)) {
+            Start-Process -FilePath $b -ArgumentList $url
+            return
+        }
+    }
+    # nothing found: let Windows say so (its dialog names the problem
+    # better than silence would)
+    Start-Process $url
+}

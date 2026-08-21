@@ -18,7 +18,7 @@ function Open-Setup {
     Start-Process -FilePath 'powershell' -WindowStyle Hidden -ArgumentList `
         ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' +
          (Join-Path $PSScriptRoot 'setup-server.ps1') + '" 8641')
-    if (-not $NoBrowser) { Start-Process 'http://127.0.0.1:8641/' }
+    if (-not $NoBrowser) { Open-Url 'http://127.0.0.1:8641/' }
 }
 
 $up = Get-NetTCPConnection -LocalPort 8642 -State Listen -ErrorAction SilentlyContinue
@@ -50,5 +50,5 @@ if (-not $up) {
     return
 }
 if (-not $NoBrowser) {
-    Start-Process 'http://127.0.0.1:8642'
+    Open-Url 'http://127.0.0.1:8642'
 }
