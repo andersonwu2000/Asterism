@@ -77,6 +77,8 @@ CONFIG_SPEC: "dict[str, str]" = {
     "<kind>.model": "per-pipeline model override (ASTERISM_<KIND>_MODEL → ASTERISM_AGENT_MODEL)",
     "<kind>.provider": "per-pipeline LLM provider (ASTERISM_<KIND>_PROVIDER → ASTERISM_LLM_PROVIDER; 'claude')",
     "<kind>.reasoning_effort": "per-pipeline reasoning depth, codex only (ASTERISM_<KIND>_REASONING_EFFORT; 'xhigh'). claude carries no such knob — its thinking budget is set per spawn from the wall-clock budget.",
+    "zen.base_url": "zen-flavor codex upstream — the local shim that translates /responses to OpenRouter and self-executes tools (ASTERISM_ZEN_BASE_URL; http://127.0.0.1:8898/v1)",
+    "zen.api_key": "yaml fallback for the zen seat's key when OPENCODE_ZEN_API_KEY is unset; the shim itself reads OPENROUTER_API_KEY from .env (OPENCODE_ZEN_API_KEY; '')",
 }
 
 # Module-level cache so reading the file once per daemon-run avoids

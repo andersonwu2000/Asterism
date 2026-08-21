@@ -237,7 +237,8 @@ def _mcp_servers_toml(mcp_config_path: "Path | None",
     return "\n".join(out) + "\n"
 
 
-def _render_config(req: LLMRequest, model: str, effort: str) -> str:
+def _render_config(req: LLMRequest, model: str, effort: str,
+                   flavor: str = "openai") -> str:
     """codex's dialect of the capability envelope.
 
     The same three grants claude gets from flags. The tool half is the
@@ -279,6 +280,14 @@ def _render_config(req: LLMRequest, model: str, effort: str) -> str:
         'approval_policy = "never"',
         # The agent must write patch.lean / PROPOSAL.md / decision.json.
         'sandbox_mode = "workspace-write"',
+        # TOML: top-level keys MUST precede the first [table] header —
+        # appended after [windows] they silently become [windows].* keys
+        # and codex ignores them (measured 2026-08-22: the first zen
+        # fleet spawn went to api.openai.com with no bearer).
+        *([
+            'web_search = "disabled"',
+            'model_provider = "zen"',
+        ] if flavor == "zen" else []),
         "",
         "[features]",
         "shell_tool = false",
@@ -318,6 +327,25 @@ def _render_config(req: LLMRequest, model: str, effort: str) -> str:
         "[windows]",
         'sandbox = "unelevated"',
     ]
+    if flavor == "zen":
+        # OpenCode Zen (free ox-alpha window, 2026-08-21): route through
+        # the local translation shim — Zen's /responses stream is
+        # nonconformant and its upstream 500s on codex's hard-injected
+        # `web_search` tool type; the shim fixes both and adds the
+        # per-request nonce that defuses Zen's poisonable prefix cache.
+        # Start the shim first: `python -m Tooling.llm.zen_shim`.
+        from ..core import config as _config
+        base = _config.get("zen.base_url",
+                           env_var="ASTERISM_ZEN_BASE_URL",
+                           default="http://127.0.0.1:8898/v1")
+        lines += [
+            "",
+            "[model_providers.zen]",
+            'name = "OpenCode Zen"',
+            f'base_url = {_toml_str(str(base))}',
+            'env_key = "OPENCODE_ZEN_API_KEY"',
+            'wire_api = "responses"',
+        ]
     # THE WRITABLE ROOTS BELONG IN THE CONFIG, not only on the command
     # line. `codex exec resume` accepts no `--add-dir` (nor `-C`, nor
     # `--sandbox`): a resumed turn inherits what the SESSION recorded,
@@ -357,7 +385,8 @@ def _render_config(req: LLMRequest, model: str, effort: str) -> str:
         spec.write_roots[0] if spec.write_roots else None)
 
 
-def _spawn_home(req: LLMRequest, model: str, effort: str) -> "Path | None":
+def _spawn_home(req: LLMRequest, model: str, effort: str,
+                flavor: str = "openai") -> "Path | None":
     """Build this spawn's CODEX_HOME and return it, or None on failure.
 
     Two files: the credential, copied from the operator's own home
@@ -371,12 +400,22 @@ def _spawn_home(req: LLMRequest, model: str, effort: str) -> "Path | None":
     auth_src = operator_codex_home() / "auth.json"
     try:
         home.mkdir(parents=True, exist_ok=True)
-        if not auth_src.is_file():
+        if flavor == "zen":
+            # NO auth.json for zen: the credential is OPENCODE_ZEN_API_KEY
+            # via the provider's env_key. With a ChatGPT auth.json present
+            # codex routes to the subscription backend instead and 400s:
+            # "The 'x-preview-f-free' model is not supported when using
+            # Codex with a ChatGPT account" (measured 2026-08-22, first
+            # fleet spawn).
+            pass
+        elif not auth_src.is_file():
             print(f"[llm:codex] no credential at {auth_src} — run "
                   f"`codex login` as the operator", flush=True)
             return None
-        shutil.copyfile(auth_src, home / "auth.json")
-        (home / "config.toml").write_text(_render_config(req, model, effort),
+        else:
+            shutil.copyfile(auth_src, home / "auth.json")
+        (home / "config.toml").write_text(_render_config(req, model, effort,
+                                                          flavor=flavor),
                                           encoding="utf-8")
     except (OSError, ValueError) as e:
         print(f"[llm:codex] could not build the spawn's capability envelope "
@@ -665,6 +704,12 @@ class _Events:
 
 
 class CodexCliProvider:
+    def __init__(self, flavor: str = "openai") -> None:
+        #: "openai" = the subscription backend; "zen" = OpenCode Zen via
+        #: the local shim (free ox-alpha window). Chosen by
+        #: `llm.get_provider` from the seat's `provider:` value.
+        self.flavor = flavor
+
     def spawn(self, req: LLMRequest) -> int:
         from .claude_cli import (_build_cold_prompt, _load_prompt,
                                  is_shutdown_requested, track_proc,
@@ -679,7 +724,7 @@ class CodexCliProvider:
 
         model = _resolve_model(req.kind)
         effort = _resolve_effort(req.kind)
-        home = _spawn_home(req, model, effort)
+        home = _spawn_home(req, model, effort, flavor=self.flavor)
         if home is None:
             return SpawnRC.MISSING_DEP
 
@@ -747,6 +792,17 @@ class CodexCliProvider:
         env[WRITE_ROOTS_ENV] = spec.write_roots_env()
         env[READ_DENY_ROOTS_ENV] = spec.read_deny_roots_env()
         env["CODEX_HOME"] = str(home)
+        if self.flavor == "zen":
+            key = os.environ.get("OPENCODE_ZEN_API_KEY", "")
+            if not key:
+                from ..core import config as _config
+                key = str(_config.get("zen.api_key",
+                                      env_var="OPENCODE_ZEN_API_KEY",
+                                      default="") or "")
+            if not key:
+                print("[llm:codex] zen flavor but no OPENCODE_ZEN_API_KEY"
+                      " (env or .env) — spawn will fail auth", flush=True)
+            env["OPENCODE_ZEN_API_KEY"] = key
         _repo_root = str(Path(__file__).resolve().parents[2])
         env["PYTHONPATH"] = (
             _repo_root + os.pathsep + env["PYTHONPATH"]

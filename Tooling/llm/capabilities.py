@@ -62,7 +62,7 @@ the fact per provider.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from pathlib import Path
 
 # --------------------------------------------------------------- rc
@@ -386,6 +386,16 @@ class ProviderCapabilities:
     install_command: "str | None" = None
     #: Where the credential comes from — see the AUTH_* constants.
     auth_flow: str = AUTH_UNDECLARED
+    #: Under `AUTH_API_KEY`: the env var (also honoured as a `.env`
+    #: line) that carries the key. Declared so serve's provider rows can
+    #: report key-PRESENCE by looking for the line — never the value.
+    #: None everywhere else (invariant test pins the pairing).
+    env_key: "str | None" = None
+    #: The executable this provider actually runs, when it is not the
+    #: provider's own name — zen rides the codex binary, so an
+    #: installed-check must resolve `codex`, not a `zen` that will never
+    #: exist. None = "same as `name`" (every provider with its own CLI).
+    exe_name: "str | None" = None
     #: Whether the framework can READ that credential's state locally.
     #: Tri-state on purpose: `opaque` means "no local answer exists",
     #: `undeclared` means "nobody has looked", and an installer renders
@@ -724,6 +734,26 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
                "tool and reaches the workspace only through MCP"),
     ),
 }
+
+#: OpenCode Zen rides the SAME codex CLI binary through the local
+#: translation shim (`Tooling/llm/zen_shim.py`), so its runtime shape
+#: is codex's. What differs: the endpoint host, and the quota story —
+#: no rate_limits events observed on the free window, so nothing
+#: states a reset epoch (quota_wait gets UNKNOWN, which is correct).
+CAPABILITIES["zen"] = _dc_replace(
+    CAPABILITIES["codex"], name="zen", api_host="openrouter.ai",
+    states_quota_reset=False,
+    # The runtime SHAPE is codex's (same binary through the local
+    # shim), but install and auth are NOT: there is no `zen`
+    # executable (the codex binary carries the seat), and the
+    # credential is an API key in env/.env — no OAuth, no auth.json
+    # (codex_cli deliberately skips the auth copy for this flavor).
+    exe_name="codex",
+    install_method=INSTALL_NOT_NEEDED,
+    install_command=None,
+    auth_flow=AUTH_API_KEY,
+    env_key="OPENROUTER_API_KEY")
+
 
 #: config spellings -> canonical name (mirrors `llm.get_provider`).
 ALIASES: "dict[str, str]" = {"agy": "antigravity"}
