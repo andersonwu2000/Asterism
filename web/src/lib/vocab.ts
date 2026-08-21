@@ -248,6 +248,9 @@ const FAILURE_LABEL: Record<string, string> = {
   parent_stub_not_decomposable: 'its parent cannot be split further',
   missing_parent_stub: 'its parent stub was missing',
   goal_no_longer_open: 'settled before this attempt finished',
+  // the group-side twin (1d34f80d): the authoring group folded
+  // while its strategist wake was mid-dialogue
+  group_retired: 'its group retired before the wake finished',
   spawn_fast_fail: 'the agent never started',
   daemon_shutdown: 'the engine stopped mid-run',
   paper_unfetchable: 'the paper could not be fetched',
