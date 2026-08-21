@@ -396,11 +396,16 @@ def _chat_stream_once(base: str, body: dict) -> dict:
         items.append({"type": "function_call", "name": c["name"],
                       "id": cid, "call_id": cid,
                       "arguments": "".join(c["arguments"]) or "{}"})
+    # codex (0.149+) REJECTS a ResponseCompleted whose usage lacks
+    # `total_tokens` — "stream disconnected before completion", spawn
+    # rc=1, filed unclassified (g618, 2026-08-22). Always send all
+    # three, zero-defaulted.
+    in_t = usage.get("prompt_tokens", usage.get("input_tokens")) or 0
+    out_t = usage.get("completion_tokens", usage.get("output_tokens")) or 0
     return {"output": items,
-            "usage": {"input_tokens": usage.get("prompt_tokens",
-                                                usage.get("input_tokens")),
-                      "output_tokens": usage.get(
-                          "completion_tokens", usage.get("output_tokens"))}}
+            "usage": {"input_tokens": in_t, "output_tokens": out_t,
+                      "total_tokens": usage.get("total_tokens")
+                      or (in_t + out_t)}}
 
 
 def _stream_once(base: str, body: dict) -> dict:

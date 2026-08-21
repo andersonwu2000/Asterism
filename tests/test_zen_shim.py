@@ -134,7 +134,8 @@ def test_zen_leg_rides_chat_completions(
     fc = out["output"][1]
     assert fc["type"] == "function_call" and fc["call_id"] == "c1"
     assert fc["arguments"] == '{"code":"1+1"}'
-    assert out["usage"] == {"input_tokens": 10, "output_tokens": 7}
+    assert out["usage"] == {"input_tokens": 10, "output_tokens": 7,
+                            "total_tokens": 17}
 
 
 def test_stream_once_raises_when_stream_never_completes(
