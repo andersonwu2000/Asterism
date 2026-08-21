@@ -376,6 +376,27 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             "lean_ready": _lean_ready(),
         }
 
+    def _env_key_present(var: str) -> bool:
+        """PRESENCE of an api-key credential — never its value.
+
+        Mirrors the consumer (`llm/zen_shim._key`): the process env
+        wins, the workspace `.env` is the fallback. Reports only that
+        a non-empty assignment exists; the key itself never crosses
+        the HTTP layer — that is the whole reason the console has no
+        input field for it (owner ruling, 2026-08-22)."""
+        import os
+        if os.environ.get(var, "").strip():
+            return True
+        try:
+            for ln in (workspace / ".env").read_text(
+                    encoding="utf-8").splitlines():
+                ln = ln.strip()
+                if ln.startswith(var + "=") and ln[len(var) + 1:].strip():
+                    return True
+        except OSError:
+            pass
+        return False
+
     def _provider_rows() -> "list[dict]":
         """One row per DECLARED backend: what it is, and what this
         machine has of it.
@@ -410,16 +431,22 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                 verdict, path = agy_identity()
                 extra = {"identity": verdict,
                          "identity_path": str(path) if path else None}
+            elif cap.exe_name is not None:
+                # the DECLARED binary — zen rides codex's, so installed
+                # means "the carrier is here", never a `zen` that will
+                # not exist. Checked before install_method: a provider
+                # can have nothing of its own to install and still
+                # depend on a binary being present.
+                import shutil
+                exe = shutil.which(cap.exe_name)
             elif cap.install_method == _caps.INSTALL_NOT_NEEDED:
                 # reached over HTTP — there is no binary to find, and
                 # saying "not installed" about one would be a lie
                 exe = ""
             else:
-                # a GUESS from the name — codex ships `codex`. The
-                # installer bridge makes the identical guess
-                # (`installer/provider-info.py`); they must not drift,
-                # which is why it wants to be declared rather than
-                # written twice.
+                # the provider ships a CLI named after itself — codex
+                # ships `codex`. Anything else declares exe_name (branch
+                # above); the installer bridge follows the same rule.
                 import shutil
                 exe = shutil.which(name)
             seats = []
@@ -437,6 +464,9 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                         f"{seat}.model",
                         env_var=f"ASTERISM_{seat.upper()}_MODEL",
                         default="", workspace=workspace) or "") or None})
+            if cap.auth_flow == _caps.AUTH_API_KEY and cap.env_key:
+                extra["env_key"] = cap.env_key
+                extra["key_present"] = _env_key_present(cap.env_key)
             rows.append({
                 "name": name,
                 "installed": exe is not None,
@@ -569,7 +599,7 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             exe = resolve_agy_executable()
         else:
             import shutil
-            exe = shutil.which(name)
+            exe = shutil.which(cap.exe_name or name)
         if exe is None:
             raise HTTPException(status_code=409,
                                 detail=f"{name} is not installed here")

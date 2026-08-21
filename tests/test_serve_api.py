@@ -1859,3 +1859,66 @@ def test_shutdown_with_force_stops_the_engine_first(
     assert r.status_code == 200
     assert r.json()["stopped"] == ["engine", "Lean gateway", "console"]
     assert calls[:2] == ["daemon(force=True)", "gateway(222)"]
+
+
+# ---------------------------------------------------------------------
+# provider rows: the api-key flavor (zen, 2026-08-22)
+# ---------------------------------------------------------------------
+
+def _zen_row(workspace: Path) -> dict:
+    body = _client(workspace).get("/api/meta").json()
+    rows = [p for p in body["providers"] if p["name"] == "zen"]
+    assert rows, "zen is declared — it must have a row"
+    return rows[0]
+
+
+def test_api_key_provider_reports_presence_never_value(
+        workspace: Path, monkeypatch) -> None:
+    """The console has no input field for a key (owner, 2026-08-22):
+    the row says WHICH variable and WHETHER it is set, and nothing else
+    — the value must not cross the HTTP layer."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    row = _zen_row(workspace)
+    assert row["env_key"] == "OPENROUTER_API_KEY"
+    assert row["key_present"] is False
+
+    secret = "sk-or-v1-0123456789abcdef"
+    (workspace / ".env").write_text(
+        f"# comment\nOPENROUTER_API_KEY={secret}\n", encoding="utf-8")
+    body = _client(workspace).get("/api/meta").json()
+    row = [p for p in body["providers"] if p["name"] == "zen"][0]
+    assert row["key_present"] is True
+    assert secret not in json.dumps(body)  # presence, never the value
+
+
+def test_env_key_empty_assignment_is_absent(
+        workspace: Path, monkeypatch) -> None:
+    # `NAME=` with nothing after it is how a key gets REMOVED in a
+    # .env; reporting it present would point the reader away from
+    # the actual fix
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    (workspace / ".env").write_text(
+        "OPENROUTER_API_KEY=\n", encoding="utf-8")
+    assert _zen_row(workspace)["key_present"] is False
+
+
+def test_env_beats_dotenv_for_presence(workspace: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-x")
+    assert _zen_row(workspace)["key_present"] is True
+
+
+def test_zen_installed_means_the_carrier_binary(
+        workspace: Path, monkeypatch) -> None:
+    """zen declares exe_name='codex' — installed answers about the
+    binary it actually runs, never about a `zen` that will not exist."""
+    import shutil as _sh
+    seen: list[str] = []
+
+    def fake_which(name: str) -> "str | None":
+        seen.append(name)
+        return r"C:\fake\codex.exe" if name == "codex" else None
+
+    monkeypatch.setattr(_sh, "which", fake_which)
+    row = _zen_row(workspace)
+    assert row["installed"] is True
+    assert "zen" not in seen
