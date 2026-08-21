@@ -53,16 +53,23 @@ import uuid
 # drops tool-call arguments). OpenRouter stays as the RESCUE tier for
 # Zen hiccups — 1000 requests/day is a useless primary but a fine
 # parachute.
-ZEN = os.environ.get("ASTERISM_ZEN_UPSTREAM", "https://opencode.ai/zen/v1")
+# 2026-08-22 (late): Nous Portal joined the free window
+# (inference-api.nousresearch.com, "1 quadrillion tokens/day") and
+# measured strictly better than Zen on every axis — 5/5 clean, long
+# output 15s vs Zen's 53s, and even BARE long output finishes (the
+# runaway that kills Zen without the effort pin does not appear).
+# Nous is PRIMARY; OpenCode Zen stays the rescue tier.
+ZEN = os.environ.get("ASTERISM_ZEN_UPSTREAM",
+                     "https://inference-api.nousresearch.com/v1")
 ZEN_RESCUE = os.environ.get("ASTERISM_ZEN_RESCUE",
-                            "https://openrouter.ai/api/v1")
+                            "https://opencode.ai/zen/v1")
 
 
 def _model_for(base: str, model: "str | None") -> "str | None":
     """The same brain wears a different name per gateway."""
     if model is None:
         return model
-    if "openrouter" in base:
+    if "openrouter" in base or "nousresearch" in base:
         return {"x-preview-f-free": "stealth/ox-alpha"}.get(model, model)
     return {"stealth/ox-alpha": "x-preview-f-free"}.get(model, model)
 ZEN_EFFORT = os.environ.get("ASTERISM_ZEN_EFFORT", "medium")
@@ -83,7 +90,8 @@ _KEY_CACHE: "dict[str, str]" = {}
 
 
 def _key_for(base: str) -> str:
-    name = ("OPENROUTER_API_KEY" if "openrouter" in base
+    name = ("NOUS_API_KEY" if "nousresearch" in base
+            else "OPENROUTER_API_KEY" if "openrouter" in base
             else "OPENCODE_ZEN_API_KEY")
     if name in _KEY_CACHE:
         return _KEY_CACHE[name]
