@@ -1,6 +1,13 @@
 import { useState } from 'react'
 import { emitGoalOpen } from '../lib/goalFocus'
-import { charterTitle, groupMeta, groupTone, treeRows } from '../lib/groupTree'
+import {
+  charterTitle,
+  groupMeta,
+  groupTone,
+  isStub,
+  prunedTreeRows,
+  stubBreakdown,
+} from '../lib/groupTree'
 import type { GroupTone } from '../lib/groupTree'
 import { renderProse } from '../lib/prose'
 import { navigate } from '../lib/router'
@@ -70,16 +77,55 @@ export function GroupTree({
   livePhase?: Record<number, string>
   onPick: (id: number | null) => void
 }) {
-  const rows = treeRows(data.groups)
+  // the settled mass folds into per-parent stubs (113 groups, 101 of
+  // them corpses — union_closed 2026-08-22); the reader unfolds one
+  // level per click, and the fold resets with the mount
+  const [unfolded, setUnfolded] = useState<Set<number | null>>(new Set())
+  const rows = prunedTreeRows(data.groups, group, unfolded)
   // only a problem that HAS delegated shows this — one group is the
   // ordinary case and must read exactly as it did before groups
-  if (rows.filter((r) => !r.group.is_top).length === 0) return null
+  if ((data.groups ?? []).filter((g) => !g.is_top).length === 0) return null
   return (
     <div className="mb-5">
-      <div className="mb-1 text-[11px] tracking-wider text-ink-faint uppercase">
-        arguing
+      <div className="mb-1 flex items-baseline gap-3">
+        <span className="text-[11px] tracking-wider text-ink-faint uppercase">arguing</span>
+        {unfolded.size > 0 && (
+          <button
+            className="text-[10.5px] text-ink-faint transition-colors hover:text-ink-dim"
+            onClick={() => setUnfolded(new Set())}
+            title="fold the settled groups away again"
+          >
+            fold settled
+          </button>
+        )}
       </div>
-      {rows.map(({ group: g, depth }) => {
+      {rows.map((row) => {
+        if (isStub(row)) {
+          return (
+            <button
+              key={`stub-${row.parent ?? 'root'}`}
+              className="block w-full rounded-md px-1.5 py-0.5 text-left transition-colors hover:bg-surface/60"
+              onClick={() => setUnfolded((old) => new Set(old).add(row.parent))}
+              title={`${stubBreakdown(row)} — show them`}
+            >
+              <span
+                className="flex items-baseline gap-1.5 text-[11px] text-ink-faint"
+                style={{ paddingLeft: `${row.depth * 14}px` }}
+              >
+                {row.depth > 0 && (
+                  <span className="shrink-0 text-ink-faint/50" aria-hidden>
+                    └
+                  </span>
+                )}
+                <span aria-hidden>▸</span>
+                <span className="tnum">
+                  {row.hidden} settled
+                </span>
+              </span>
+            </button>
+          )
+        }
+        const { group: g, depth } = row
         const on = g.is_top ? group === null : group === g.id
         const tone = groupTone(g, liveIds?.includes(g.id) ?? false)
         return (
