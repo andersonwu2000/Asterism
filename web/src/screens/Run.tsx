@@ -12,13 +12,15 @@ import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
 import { renderInline, renderProse } from '../lib/prose'
 import { scopedRows } from '../lib/quota'
+import { providerLabel } from '../lib/vocab'
 import { Link, navigate } from '../lib/router'
 import { Button } from '../components/ui'
 import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
 import StrategyPanel from '../components/StrategyPanel'
 import LogTail from '../components/LogTail'
-import type { ConfigSetting, ProblemDetail, RunStatus, RunWorker } from '../lib/types'
+import type {
+  Meta, ConfigSetting, ProblemDetail, RunStatus, RunWorker } from '../lib/types'
 
 /*
  * Run — mission control. The one page that answers "what is the
@@ -398,6 +400,10 @@ export default function Run() {
     2000,
   )
   const { data: cfg } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
+  // which backend each seat rides — the quota strip must NAME whose
+  // window it shows and stay silent about accounts nothing spends
+  // (owner 2026-08-22: a zen fleet ran under an unlabeled Claude meter)
+  const { data: meta } = usePoll<Meta>('/api/meta', 15000)
   // the sky rides along (owner: the console shows the constellation):
   // full problem detail only when a problem is in focus
   const focusProblem = data?.problem ?? null
@@ -890,22 +896,48 @@ export default function Run() {
         </section>
       )}
 
-      {data.quota && (
+      {(() => {
+        // seats per backend, from the declaration-driven rows. Until
+        // meta answers, show the meter as before — hiding a real
+        // reading on a flaky poll would be the worse lie.
+        const seated = (meta?.providers ?? []).filter((p) => p.seats.length > 0)
+        const claudeSeats =
+          meta === null
+            ? null
+            : (seated.find((p) => p.name === 'claude')?.seats ?? []).map((x) => x.seat)
+        const others = seated.filter((p) => p.name !== 'claude')
+        const showMeter = data.quota && (claudeSeats === null || claudeSeats.length > 0)
+        if (!showMeter && others.length === 0 && (claudeSeats?.length ?? 0) === 0) return null
+        return (
         <section className="mt-7">
           {/* the gloss and the switch-account move both moved to the
               console's own Settings page (owner, 2026-08-07): here the
               meters are what you watch while it burns, and a label is
-              enough */}
+              enough — but the label must SAY WHOSE window this is:
+              an unlabeled meter under a zen fleet read as the run's
+              own quota when nothing on screen was spending Claude */}
           <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
-            <span title="engine term: quota windows — usage read live from your subscription">
-              plan usage
-            </span>
+            {showMeter ? (
+              <span title="engine term: quota windows — usage read live from your Claude subscription. Shown while any seat rides it.">
+                claude plan
+                {claudeSeats !== null && claudeSeats.length > 0 && (
+                  <span className="ml-2 font-normal tracking-normal normal-case">
+                    · {claudeSeats.join(' · ')}
+                  </span>
+                )}
+              </span>
+            ) : (
+              <span title="what each seated backend lets this console know about its remaining allowance">
+                plan usage
+              </span>
+            )}
           </div>
+          {!showMeter ? null : (
           <div className="flex max-w-xl flex-col gap-2">
             {(
               [
-                ['5-hour window', data.quota.five_hour],
-                ['week', data.quota.seven_day],
+                ['5-hour window', data.quota!.five_hour],
+                ['week', data.quota!.seven_day],
               ] as const
             ).map(
               ([label, w]) =>
@@ -922,7 +954,7 @@ export default function Run() {
                 BINDING, not the cap's existence — filtering on it made
                 a real reading blink in and out (owner, two accounts
                 showing different rows, 2026-08-03). */}
-            {scopedRows(data.quota.scoped).map((s) => (
+            {scopedRows(data.quota!.scoped).map((s) => (
               <QuotaMeter
                 key={s.name}
                 label={`${s.name} · week`}
@@ -938,8 +970,44 @@ export default function Run() {
               />
             ))}
           </div>
+          )}
+          {/* the other seated backends: none of them can be ASKED
+              before spending (usage_endpoint is claude's alone), so
+              the honest row is who rides them and why no meter —
+              silence here read as "no other account is being spent" */}
+          {(others.length > 0 || (!showMeter && (claudeSeats?.length ?? 0) > 0)) && (
+            <div className="mt-2 flex max-w-xl flex-col gap-1">
+              {/* claude seated but its endpoint is not answering right
+                  now (429/offline): silence would read as "nothing
+                  spends Claude" — the same lie the other rows exist
+                  to prevent */}
+              {!showMeter && (claudeSeats?.length ?? 0) > 0 && (
+                <div className="text-[11px] text-ink-faint">
+                  <span className="text-ink-dim">Claude Code</span>
+                  {' — '}
+                  {claudeSeats!.join(' · ')}
+                  <span title="the subscription's usage endpoint is not answering right now (rate-limited or offline) — the meter returns by itself">
+                    {' · meter unreachable right now'}
+                  </span>
+                </div>
+              )}
+              {others.map((p) => (
+                <div key={p.name} className="text-[11px] text-ink-faint">
+                  <span className="text-ink-dim">{providerLabel(p.name)}</span>
+                  {' — '}
+                  {p.seats.map((x) => x.seat).join(' · ')}
+                  <span
+                    title="this backend offers no way to read its usage from here — the engine reacts to its quota markers when they arrive"
+                  >
+                    {' · no live meter'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
-      )}
+        )
+      })()}
 
       {/* burn figures moved to the Usage tab (owner, 2026-07-18):
           accounting lives with accounting; the console keeps the live

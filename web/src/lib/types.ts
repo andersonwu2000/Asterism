@@ -484,8 +484,8 @@ export interface PaperShelfItem {
   source_name: string
   /** owner-editable display title; null = the filename stands in */
   title: string | null
-  /** who shelved it: 'user' (upload/CLI) or 'fetched' (the Scholar
-   * agent during a run); null = shelved before provenance existed */
+  /** who shelved it: 'user' (upload/CLI) or 'fetched' (the engine,
+   * mid-run); null = shelved before provenance existed */
   added_by: string | null
   pages: number
   chars: number
@@ -498,7 +498,8 @@ export interface PaperShelfItem {
 /** One paper bound to a problem (GET /api/problems/{p}/papers). */
 export interface ProblemPaperBinding {
   id: string
-  /** who bound it: 'manifest' | 'user' | 'scholar' */
+  /** who bound it: 'manifest' | 'user' | 'agent' ('scholar' on
+   * rows from before that pipeline retired, 020ebf85) */
   origin: string
   reason: string | null
   source_name: string | null

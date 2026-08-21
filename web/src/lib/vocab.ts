@@ -293,3 +293,18 @@ export const GOAL_STATUS_CLS: Record<string, string> = {
   dead: 'text-ink-faint',
   frozen: 'text-ink-faint',
 }
+
+/** Backend names as the reader knows them. One map — the accounts
+ * panel and the run console's quota strip must not drift apart. */
+export const PROVIDER_LABEL: Record<string, string> = {
+  claude: 'Claude Code',
+  antigravity: 'Antigravity CLI',
+  codex: 'Codex CLI',
+  gemini: 'Gemini CLI',
+  openai: 'OpenAI-compatible API',
+  zen: 'OpenCode',
+}
+
+export function providerLabel(name: string): string {
+  return PROVIDER_LABEL[name] ?? name
+}

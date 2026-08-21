@@ -6,6 +6,7 @@ import type { Theme } from '../lib/theme'
 import { Button } from '../components/ui'
 import { QuotaMeter } from './Run'
 import { scopedRows } from '../lib/quota'
+import { PROVIDER_LABEL } from '../lib/vocab'
 import type { Meta, ProviderRow, RunStatus } from '../lib/types'
 import type { ShutdownPreview } from '../lib/types'
 import { markStopped } from '../lib/shutdown'
@@ -36,15 +37,6 @@ function Label({ children }: { children: React.ReactNode }) {
 /** VENDOR NAMES, for the one thing a declaration cannot carry: what a
  * person calls this thing. Everything else on the card is measured or
  * declared. */
-const PROVIDER_LABEL: Record<string, string> = {
-  claude: 'Claude Code',
-  antigravity: 'Antigravity CLI',
-  codex: 'Codex CLI',
-  gemini: 'Gemini CLI',
-  openai: 'OpenAI-compatible API',
-  zen: 'OpenCode',
-}
-
 /** One account, drawn from what the backend DECLARES about itself plus
  * what this machine has of it (`/api/meta` -> providers).
  *

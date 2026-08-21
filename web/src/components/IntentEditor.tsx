@@ -119,7 +119,9 @@ function PapersBlock({ problem }: { problem: string }) {
               <span
                 className="text-[10px] text-ink-faint"
                 title={
-                  b.origin === 'scholar'
+                  // 'agent' since the Scholar pipeline retired
+                  // (020ebf85; 'scholar' survives on legacy rows)
+                  b.origin === 'scholar' || b.origin === 'agent'
                     ? 'fetched by the engine during a run'
                     : b.origin === 'manifest'
                       ? 'bound when the problem was created'

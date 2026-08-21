@@ -89,12 +89,13 @@ function ShelfRow({ p, onChanged }: { p: PaperShelfItem; onChanged: () => void }
                 {p.title ?? p.source_name}
               </Link>
               {/* provenance: the default case (user upload) stays
-                  unmarked; only the exception — the Scholar agent
-                  fetching mid-run — wears a tag */}
+                  unmarked; only the exception — the engine fetching
+                  mid-run — wears a tag (the strategist fetches with
+                  its own tools since the Scholar retired, 020ebf85) */}
               {p.added_by === 'fetched' && (
                 <span
                   className="shrink-0 rounded-md border border-edge px-1 py-px text-[10px] text-ink-faint"
-                  title="fetched by the Scholar agent during a run"
+                  title="fetched by the engine during a run"
                 >
                   fetched
                 </span>
@@ -331,7 +332,7 @@ export default function Papers() {
       ) : papers.length === 0 ? (
         <EmptyState title="The shelf is empty">
           Papers ground the engine's citations — drop a PDF (or .md/.tex) anywhere on this
-          page; the Scholar pipeline can also fetch cited papers on its own during a run.
+          page; the engine can also fetch cited papers on its own during a run.
         </EmptyState>
       ) : (
         <table className="w-full table-fixed border-collapse text-left">
