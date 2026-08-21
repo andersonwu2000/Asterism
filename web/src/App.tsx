@@ -50,6 +50,30 @@ function AskChip({
  * The login flow itself is Claude Code's own wizard; the button just
  * opens it in a terminal window, and the 3s meta poll turns the
  * banner off the moment the credentials land. */
+/** An update was unzipped over a LIVE console: the pages now come
+ * from the new release while this process still answers with the old
+ * endpoints. Nothing else can say so — the stale process cannot know
+ * on its own which of its answers are lies — so the banner names the
+ * one way out. (The launcher recycles a stale console by itself; this
+ * shows when the reader updated without relaunching.) */
+function UpdateBanner({ meta }: { meta: Meta | null }) {
+  const v = meta?.version ?? null
+  const disk = meta?.disk_version ?? null
+  if (!v || !disk || v === disk) return null
+  return (
+    <div className="flex items-center gap-3 border-b border-edge bg-surface-2 px-4 py-2 text-xs">
+      <span className="bg-warn h-1.5 w-1.5 shrink-0 rounded-full" />
+      <span className="text-ink">
+        a newer Asterism is on disk — quit from Settings, then open Asterism.exe again to
+        finish the update
+      </span>
+      <span className="font-mono text-[10px] text-ink-faint">
+        {v.slice(0, 8)} → {disk.slice(0, 8)}
+      </span>
+    </div>
+  )
+}
+
 function ClaudeBanner({ meta }: { meta: Meta | null }) {
   const [msg, setMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -407,6 +431,7 @@ function Shell() {
         {/* no top chrome — the sidebar carries "where am I", each screen
             carries its own title, the constellation gets the sky. The
             ONE exception: the auth banner (a silently-fatal state) */}
+        <UpdateBanner meta={meta} />
         <ClaudeBanner meta={meta} />
         <LeanBanner meta={meta} />
         <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">

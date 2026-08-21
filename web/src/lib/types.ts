@@ -608,6 +608,11 @@ export interface ProviderRow {
 
 export interface Meta {
   workspace: string
+  /** the release stamp this serve PROCESS started from (null in a dev
+   * workspace); `disk_version` is what an unzip left on disk right
+   * now — differing means an update landed under a live console */
+  version?: string | null
+  disk_version?: string | null
   db: 'ok' | 'missing' | 'behind'
   daemon: DaemonStatus
   inbox_count: number

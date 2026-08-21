@@ -373,3 +373,15 @@ function Open-Url($url) {
     # better than silence would)
     Start-Process $url
 }
+
+# ---- release stamp ---------------------------------------------------
+# VERSION rides in the release zip (build-release stamps the git sha);
+# a dev workspace has none and everything degrades to "no answer".
+function Get-AsterismVersion($root) {
+    $f = Join-Path $root 'VERSION'
+    if (Test-Path $f) {
+        $v = (Get-Content $f -TotalCount 1 -ErrorAction SilentlyContinue)
+        if ($v) { return $v.Trim() }
+    }
+    return $null
+}

@@ -139,8 +139,16 @@ class ShutdownBody(BaseModel):
     """`force` carries the SAME meaning it has for the daemon: abandon
     in-flight agents instead of draining them. Shutdown refuses while
     the engine is live without it, rather than deciding on the user's
-    behalf that their run is expendable."""
+    behalf that their run is expendable.
+
+    `console_only` is the UPDATE door (2026-08-22): the launcher found
+    a newer release on disk and wants THIS process replaced. The
+    engine and the gateway are left alone — the daemon reloads new
+    code from disk by its own skew handoff, and the gateway holds a
+    warm Mathlib that costs minutes to rebuild. Refuses nothing: a
+    console restart abandons no work."""
     force: bool = False
+    console_only: bool = False
 
 
 def _creds_path() -> Path:
@@ -346,6 +354,19 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
 
     # -- meta ---------------------------------------------------------
 
+    # The release stamp this PROCESS started from (VERSION rides in the
+    # release zip; a dev workspace has none). Read once: the point is
+    # "what code am I running", and a file read at import answers it —
+    # re-reading later would report the DISK, which is the other field.
+    def _read_version() -> "str | None":
+        try:
+            v = (workspace / "VERSION").read_text(encoding="utf-8").strip()
+            return v or None
+        except OSError:
+            return None
+
+    loaded_version = _read_version()
+
     @app.get("/api/meta")
     def meta() -> dict:
         from ..core.cli import daemon_status
@@ -367,6 +388,12 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                     db_state = "unavailable"
         return {
             "workspace": str(workspace),
+            # loaded != disk means an update landed under a live
+            # console — the banner tells the reader to quit and
+            # relaunch; the launcher reads `version` to recycle a
+            # stale console before opening it
+            "version": loaded_version,
+            "disk_version": _read_version(),
             "db": db_state,
             "daemon": daemon_status(workspace),
             "inbox_count": inbox_n,
@@ -1487,6 +1514,13 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         import threading
         from ..core.cli import daemon_status, daemon_stop
         stopped: "list[str]" = []
+        if body.console_only:
+            # the update recycle: replace this process, touch nothing
+            # else (the engine self-handles code skew; the gateway's
+            # warm toolchain must survive)
+            stopped.append("console")
+            _schedule_process_exit()
+            return {"stopped": stopped}
         d = daemon_status(workspace)
         if d.get("running"):
             if not body.force:

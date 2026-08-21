@@ -13,6 +13,15 @@ $ErrorActionPreference = 'SilentlyContinue'
 $Root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'setup-lib.ps1')
 
+# First run after an unzip: the shipped yaml is a TEMPLATE
+# (Asterism.yaml.default) so an update never clobbers the user's own
+# settings; materialize it once, only when no real file exists yet.
+$yamlDefault = Join-Path $Root 'Asterism.yaml.default'
+$yamlReal = Join-Path $Root 'Asterism.yaml'
+if ((Test-Path $yamlDefault) -and -not (Test-Path $yamlReal)) {
+    Copy-Item $yamlDefault $yamlReal
+}
+
 function Open-Setup {
     # idempotent: setup-server exits at bind time if 8641 is taken
     Start-Process -FilePath 'powershell' -WindowStyle Hidden -ArgumentList `
@@ -22,6 +31,35 @@ function Open-Setup {
 }
 
 $up = Get-NetTCPConnection -LocalPort 8642 -State Listen -ErrorAction SilentlyContinue
+
+# Update recycle: a console that predates the files on disk must be
+# replaced, not reused - web\dist is read from disk per request, so a
+# stale serve under a fresh unzip serves NEW pages against OLD
+# endpoints. The engine is untouched (it reloads code by its own skew
+# handoff) and the gateway keeps its warm toolchain. If anything here
+# fails, fall through and open the console - its own banner names the
+# mismatch and the way out.
+if ($up) {
+    $disk = Get-AsterismVersion $Root
+    if ($disk) {
+        try {
+            $meta = Invoke-RestMethod -Uri 'http://127.0.0.1:8642/api/meta' -TimeoutSec 5
+            if ($meta.version -ne $disk) {
+                try {
+                    Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8642/api/shutdown' `
+                        -Body '{"console_only": true}' -ContentType 'application/json' `
+                        -TimeoutSec 10 | Out-Null
+                } catch {}
+                for ($i = 0; $i -lt 20; $i++) {
+                    Start-Sleep -Milliseconds 500
+                    $up = Get-NetTCPConnection -LocalPort 8642 -State Listen -ErrorAction SilentlyContinue
+                    if (-not $up) { break }
+                }
+            }
+        } catch {}
+    }
+}
+
 if (-not $up) {
     # FAST readiness check before any waiting: on a machine where the
     # engine was never installed, the old flow stalled 30s on a port

@@ -1922,3 +1922,57 @@ def test_zen_installed_means_the_carrier_binary(
     row = _zen_row(workspace)
     assert row["installed"] is True
     assert "zen" not in seen
+
+
+# ---------------------------------------------------------------------
+# the update flow: VERSION stamp + the console-only recycle (2026-08-22)
+# ---------------------------------------------------------------------
+
+def test_meta_reports_loaded_and_disk_version(tmp_path: Path) -> None:
+    """`version` is what THIS process started from (read once);
+    `disk_version` is what an unzip left there now. Differing is how
+    both the launcher and the banner detect a half-landed update."""
+    (tmp_path / "VERSION").write_text("aaaa11112222\n", encoding="utf-8")
+    c = TestClient(create_app(tmp_path))
+    d = c.get("/api/meta").json()
+    assert d["version"] == "aaaa11112222"
+    assert d["disk_version"] == "aaaa11112222"
+    # the unzip lands a new stamp under the LIVE console
+    (tmp_path / "VERSION").write_text("bbbb33334444\n", encoding="utf-8")
+    d = c.get("/api/meta").json()
+    assert d["version"] == "aaaa11112222"   # unchanged: the loaded code
+    assert d["disk_version"] == "bbbb33334444"
+
+
+def test_meta_version_null_in_a_dev_workspace(tmp_path: Path) -> None:
+    d = TestClient(create_app(tmp_path)).get("/api/meta").json()
+    assert d["version"] is None
+    assert d["disk_version"] is None
+
+
+def test_shutdown_console_only_touches_nothing_else(
+        tmp_path: Path, monkeypatch) -> None:
+    """The update recycle: the engine reloads code by its own skew
+    handoff and the gateway holds a warm Mathlib — a console restart
+    must not cost either. Even a RUNNING engine is no reason to
+    refuse: replacing the console abandons no work."""
+    import Tooling.core.cli as _cli
+    import Tooling.serve.app as _app
+    calls: "list[str]" = []
+    monkeypatch.setattr(_cli, "daemon_status", lambda ws: (
+        calls.append("daemon_status"),
+        {"running": True, "pid": 111, "scope": "Cmp.a",
+         "in_flight_leases": 3})[1])
+    monkeypatch.setattr(_cli, "daemon_stop",
+                        lambda ws, force=False: (calls.append("daemon_stop"),
+                                                 (0, "stopped"))[1])
+    monkeypatch.setattr(_app, "_schedule_process_exit",
+                        lambda: calls.append("exit"))
+    from Tooling.lsp import lifecycle as _gw
+    monkeypatch.setattr(_gw, "_kill_stale_gateway",
+                        lambda pid: calls.append("gateway"))
+    r = TestClient(create_app(tmp_path)).post(
+        "/api/shutdown", json={"console_only": True})
+    assert r.status_code == 200
+    assert r.json()["stopped"] == ["console"]
+    assert calls == ["exit"]

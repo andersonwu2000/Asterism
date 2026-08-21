@@ -54,6 +54,19 @@ if (Test-Path $webDev) { Remove-Item -Recurse -Force $webDev }
 Write-Host '[3/4] Adding the built web console...'
 Copy-Item -Recurse (Join-Path $root 'web\dist') (Join-Path $stage 'web\dist')
 
+# The release stamp: serve reports it on /api/meta, and the launcher
+# compares the running console's stamp against this file to recycle a
+# stale console after an unzip-over update (2026-08-22).
+Set-Content -Path (Join-Path $stage 'VERSION') -Value $sha -Encoding ASCII
+
+# The shipped yaml is a TEMPLATE, not the user's file: unzip-over
+# updates were clobbering the receiver's own settings. The launcher
+# copies it to Asterism.yaml on first run only.
+$yaml = Join-Path $stage 'Asterism.yaml'
+if (Test-Path $yaml) {
+    Move-Item $yaml (Join-Path $stage 'Asterism.yaml.default')
+}
+
 Write-Host '[4/4] Compressing...'
 $outDir = Join-Path $root '.asterism\releases'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
