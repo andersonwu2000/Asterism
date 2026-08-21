@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { cycleForGroup, defaultGroup, fleetProblem, resolveGroup } from './programmeFocus'
+import {
+  cycleForGroup,
+  defaultGroup,
+  fleetProblem,
+  resolveGroup,
+  scopeCovers,
+} from './programmeFocus'
 import type { Group, RunWorker } from './types'
 
 const group = (id: number, is_top: boolean): Group => ({
@@ -135,5 +141,32 @@ describe('which problem a fleet face opens on', () => {
       workers: [seatOn(516, 'Erdos.p143'), seatOn(517, 'Erdos.p143')],
     }
     expect(fleetProblem(null, run, 'Erdos.%')).toBe('Erdos.p143')
+  })
+})
+
+describe('whether a scope covers a problem', () => {
+  it('a pattern covers its fleet members and nothing else', () => {
+    expect(scopeCovers('Erdos.%', 'Erdos.p358')).toBe(true)
+    expect(scopeCovers('Erdos.%', 'Topology.loop')).toBe(false)
+    // the dot in the namespace is a literal, not regex "any"
+    expect(scopeCovers('Erdos.%', 'ErdosXp358')).toBe(false)
+  })
+
+  it('an exact name covers exactly itself', () => {
+    expect(scopeCovers('Combinatorics.union_closed', 'Combinatorics.union_closed')).toBe(true)
+    expect(scopeCovers('Erdos.p1', 'Erdos.p12')).toBe(false)
+  })
+
+  it('a null scope is an unscoped run — it covers everything', () => {
+    expect(scopeCovers(null, 'Erdos.p358')).toBe(true)
+  })
+
+  it('mirrors SQL LIKE exactly — _ matches any one character', () => {
+    // the daemon scopes with SQL LIKE, where union_closed's _ matches
+    // any char; this mirror must agree with the engine, not with the
+    // intuition that _ is literal (it covers the literal name too)
+    expect(scopeCovers('Combinatorics.union_closed', 'Combinatorics.unionXclosed')).toBe(true)
+    expect(scopeCovers('Erdos.p_', 'Erdos.p3')).toBe(true)
+    expect(scopeCovers('Erdos.p_', 'Erdos.p35')).toBe(false)
   })
 })

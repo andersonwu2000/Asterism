@@ -6,6 +6,7 @@ import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
 import { onGoalHover, onGoalOpen, takePendingGoalOpen } from '../lib/goalFocus'
 import { goalStatusLabel } from '../lib/vocab'
+import { scopeCovers } from '../lib/programmeFocus'
 import { Button, ErrorState, StatusBadge, TabNav } from '../components/ui'
 import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
@@ -583,7 +584,7 @@ export default function Problem({ name }: { name: string }) {
         <div className="min-w-0 flex-1 overflow-y-auto">
           {tab === 'stars' && data.goals.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-ink-faint">
-              {daemon?.running && daemon.scope === data.name ? (
+              {daemon?.running && scopeCovers(daemon.scope, data.name) ? (
                 <>
                   <span className="flex items-center gap-2 text-ink-dim">
                     <span className="h-2 w-2 animate-pulse rounded-full bg-accent" />

@@ -94,3 +94,28 @@ export function fleetProblem(
   if (scope && !/[%*]/.test(scope)) return scope
   return null
 }
+
+/**
+ * Does a daemon scope COVER this problem? The scope is a SQL LIKE
+ * pattern (`Erdos.%` runs a fleet), and two surfaces compared it to a
+ * problem name with `===` — every fleet member's page then read
+ * "engine busy elsewhere" about its own run (same 2026-08-22 class as
+ * fleetProblem). Null scope = an unscoped run, which covers
+ * everything. LIKE's `_` maps to `.`, which still matches a literal
+ * underscore, so real names like union_closed stay covered either way.
+ */
+export function scopeCovers(
+  scope: string | null | undefined,
+  problem: string,
+): boolean {
+  if (scope === null || scope === undefined) return true
+  if (scope === problem) return true
+  if (!/[%_]/.test(scope)) return false
+  const re = scope
+    .split('')
+    .map((c) =>
+      c === '%' ? '.*' : c === '_' ? '.' : c.replace(/[.*+?^${}()|[\]\\]/, '\\$&'),
+    )
+    .join('')
+  return new RegExp('^' + re + '$').test(problem)
+}

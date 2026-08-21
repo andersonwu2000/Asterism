@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
+import { scopeCovers } from '../lib/programmeFocus'
 import { Link } from '../lib/router'
 import type { DaemonStatus } from '../lib/types'
 
@@ -32,12 +33,16 @@ export default function RunControl({ problem }: { problem: string }) {
   }
 
   if (!d) return null
-  const mine = d.running && d.scope === problem
+  // COVERS, not equals: a fleet's scope is a LIKE pattern, and every
+  // member's page read "engine busy elsewhere" about its own run
+  // (2026-08-22, the first Erdos fleet)
+  const mine = d.running && scopeCovers(d.scope, problem)
+  const fleet = mine && d.scope !== problem
   // boot window: the engine hasn't claimed its lock yet — without this
   // state the button flashed Run again seconds after being pressed
   // (owner, 2026-07-12). No Stop here: a stop request during boot is
   // swept by the child's own startup hygiene.
-  const startingMine = !d.running && d.starting && d.scope === problem
+  const startingMine = !d.running && d.starting && scopeCovers(d.scope, problem)
   const busyElsewhere = (d.running || d.starting) && !mine && !startingMine
 
   return (
@@ -65,11 +70,18 @@ export default function RunControl({ problem }: { problem: string }) {
               ? 'engine running — stopping'
               : d.gateway === 'warming'
                 ? 'warming the Lean toolchain — a few minutes on a cold start'
-                : 'engine running'}
+                : fleet
+                  ? 'engine running — this problem rides a fleet'
+                  : 'engine running'}
           </span>
           <button
             className="rounded-lg border border-edge px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-edge-strong hover:text-ink disabled:pointer-events-none disabled:opacity-45"
             disabled={busy || d.stopping}
+            title={
+              fleet
+                ? `stops the whole run — every problem under ${d.scope}`
+                : undefined
+            }
             onClick={() => void act('/api/daemon/stop', { force: false }, 'stop')}
           >
             Stop
@@ -90,7 +102,7 @@ export default function RunControl({ problem }: { problem: string }) {
             d.last_exit !== null &&
             d.last_exit.rc !== null &&
             d.last_exit.rc !== 0 &&
-            d.last_exit.scope === problem && (
+            scopeCovers(d.last_exit.scope, problem) && (
               <span className="max-w-96 text-[11px] leading-snug text-danger">
                 the last run crashed
                 {d.last_exit.error?.includes('gateway')
