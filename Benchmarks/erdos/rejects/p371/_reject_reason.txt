@@ -1,0 +1,1 @@
+D:\Asterism\_spike\erdos_screen\p371.lean:7:21: error(lean.unknownIdentifier): Unknown constant `Nat.maxPrimeFac`

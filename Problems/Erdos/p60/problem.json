@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p60",
+  "charter": "# Erdos.p60 — Erdős problem 60\n\nReference: https://www.erdosproblems.com/60\nImported from google-deepmind/formal-conjectures (`ErdosProblems/60.lean`, theorem `erdos_60`, AMS 5).\n\nDoes every graph on $n$ vertices with $>\\mathrm{ex}(n;C_4)$ edges contain $\\gg n^{1/2}$ many\ncopies of $C_4$?\n\n## Statement\n∃ c : ℝ, c > 0 ∧\n      ∀ᶠ n : ℕ in atTop,\n        ∀ (G : SimpleGraph (Fin n)) [DecidableRel G.Adj],\n          (extremalNumber n (cycleGraph 4) < G.edgeFinset.card) →\n          (c * Real.sqrt (n : ℝ) ≤ ({ H' : G.Subgraph | Nonempty (H'.coe ≃g cycleGraph 4) }.ncard : ℝ))\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

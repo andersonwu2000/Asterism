@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p142",
+  "charter": "# Erdos.p142 — Erdős problem 142\n\nReference: https://www.erdosproblems.com/142\nImported from google-deepmind/formal-conjectures (`ErdosProblems/142.lean`, theorem `erdos_142.variants.lower`, AMS 11).\n\nShow that $r_k(N) = o_k(N / \\log N)$, where $r_k(N)$ the largest possible size of a subset\nof $\\{1, \\dots, N\\}$ that does not contain any non-trivial $k$-term arithmetic progression.\n\n## Statement\n∀ (k : ℕ) (hk : 1 < k), (fun N => (r k N : ℝ)) =o[atTop] (fun N : ℕ => N / (N : ℝ).log)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

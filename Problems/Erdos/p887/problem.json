@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p887",
+  "charter": "# Erdos.p887 — Erdős problem 887\n\nReference: https://www.erdosproblems.com/887\nImported from google-deepmind/formal-conjectures (`ErdosProblems/887.lean`, theorem `erdos_887.parts.ii`, AMS 11).\n\nIs there an absolute constant $K$ such that, for every $C > 0$, if $n$ is sufficiently large then\n$n$ has at most $K$ divisors in $(n^{\\frac{1}{2}}, n^{\\frac{1}{2}} + C n^{\\frac{1}{4}})$.\n\n## Statement\n∃ K, ∀ C > (0 : ℝ), ∀ᶠ n in atTop,\n    #{ d ∈ Ioo ⌊√n⌋₊ ⌈√n + C * n^((1 : ℝ) / 4)⌉₊ | d ∣ n } ≤ K\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

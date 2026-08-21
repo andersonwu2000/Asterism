@@ -1,0 +1,1 @@
+D:\Asterism\_spike\erdos_screen\p1074.lean:14:15: error(lean.unknownIdentifier): Unknown constant `Problems.Erdos.p1074.EHSNumbers.HasDensity`

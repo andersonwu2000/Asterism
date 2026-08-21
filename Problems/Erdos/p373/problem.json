@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p373",
+  "charter": "# Erdos.p373 — Erdős problem 373\n\nReference: https://www.erdosproblems.com/373\nImported from google-deepmind/formal-conjectures (`ErdosProblems/373.lean`, theorem `erdos_373`, AMS 11).\n\nShow that the equation `n!=a_1!a_2!···a_k!`, with `n−1 > a_1 ≥ a_2 ≥ ··· ≥ a_k`, has\nonly finitely many solutions.\n\n## Statement\nS.Finite\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

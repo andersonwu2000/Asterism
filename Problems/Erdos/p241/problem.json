@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p241",
+  "charter": "# Erdos.p241 — Erdős problem 241\n\nReference: https://www.erdosproblems.com/241\nImported from google-deepmind/formal-conjectures (`ErdosProblems/241.lean`, theorem `erdos_241.variants.generalization`, AMS 5).\n\nMore generally, Bose and Chowla [BoCh62] conjectured that the maximum size of\n$A\\subseteq \\{1,\\ldots,N\\}$ with all $r$-fold sums distinct (aside from the trivial coincidences)\nthen $\\lvert A\\rvert \\sim N^{1/r}.$\n\n## Statement\n∀ (r : ℕ) (hr : r ≥ 2), BoseChowlaConjecture r\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

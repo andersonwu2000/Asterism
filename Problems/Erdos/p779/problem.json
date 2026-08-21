@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p779",
+  "charter": "# Erdos.p779 — Erdős problem 779\n\nReference: https://www.erdosproblems.com/779\nImported from google-deepmind/formal-conjectures (`ErdosProblems/779.lean`, theorem `erdos_779`, AMS 11).\n\n# Erdős Problem 779\n\n*Reference:* [erdosproblems.com/779](https://www.erdosproblems.com/779)\n\n## Statement\n∀ (n : ℕ) (hn : n ≥ 1), let P := ∏ i ∈ range (n + 1), nth Nat.Prime i\n    ∃ p, p.Prime ∧ (P + p).Prime ∧ nth Nat.Prime n < p ∧ p < P\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

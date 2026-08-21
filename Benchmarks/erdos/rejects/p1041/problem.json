@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p1041",
+  "charter": "# Erdos.p1041 — Erdős problem 1041\n\nReference: https://www.erdosproblems.com/1041\nImported from google-deepmind/formal-conjectures (`ErdosProblems/1041.lean`, theorem `erdos_1041`, AMS 32).\n\nLet\n$$ f(z) = \\prod_{i=1}^{n} (z - z_i) \\in \\mathbb{C}[x] $$\nwith $|z_i| < 1$ for all $i$.\n\nConjecture: Must there always exist a path of length less than 2 in\n$$ \\{ z \\in \\mathbb{C} \\mid |f(z)| < 1 \\} $$\nwhich connects two of the roots of $f$?\n\n## Statement\n∃ (z₁ z₂ : ℂ) (h : ({z₁, z₂} : Multiset ℂ) ≤ f.roots) (γ : Path z₁ z₂),\n      Set.range γ ⊆ { z : ℂ | ‖f.eval z‖ < 1 } ∧ length (Set.range γ) < 2\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

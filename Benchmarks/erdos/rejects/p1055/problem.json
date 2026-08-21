@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p1055",
+  "charter": "# Erdos.p1055 — Erdős problem 1055\n\nReference: https://www.erdosproblems.com/1055\nImported from google-deepmind/formal-conjectures (`ErdosProblems/1055.lean`, theorem `erdos_1055`, AMS 11).\n\nA prime $p$ is in class $1$ if the only prime divisors of $p+1$ are\n$2$ or $3$. In general, a prime $p$ is in class $r$ if every prime factor\nof $p+1$ is in some class $\\leq r-1$, with equality for at least one prime factor.\nAre there infinitely many primes in each class?\n\n## Statement\n∀ (r), {p | p.Prime ∧ IsOfClass r p}.Infinite\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

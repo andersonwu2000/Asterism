@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p101",
+  "charter": "# Erdos.p101 — Erdős problem 101\n\nReference: https://www.erdosproblems.com/101\nImported from google-deepmind/formal-conjectures (`ErdosProblems/101.lean`, theorem `erdos_101`, AMS 52).\n\nGiven $n$ points in $\\mathbb{R}^2$, no five of which are on a line, the number of\nlines containing four points is $o(n^2)$.\n\n## Statement\n(fun n => (numLinesWithFourPointMax n : ℝ)) =o[atTop] (fun n => (n : ℝ)^2)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

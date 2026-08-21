@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p291",
+  "charter": "# Erdos.p291 — Erdős problem 291\n\nReference: https://www.erdosproblems.com/291\nImported from google-deepmind/formal-conjectures (`ErdosProblems/291.lean`, theorem `erdos_291.variants.shiu_heuristic_asymptotic`, AMS 11).\n\nThis leads to a heuristic prediction (see for example a preprint of Shiu [Sh16]) of\n$\\asymp\\frac{x}{\\log x}$ for the number of $n\\in [1,x]$ such that $(a_n,L_n)=1$.\n\n## Statement\nAsymptotics.IsTheta atTop\n      (fun x : ℕ ↦ ((((Finset.Icc 1 x).filter (fun n ↦ Nat.gcd (a n) (L n) = 1)).card : ℝ)))\n      (fun x : ℕ ↦ (x : ℝ) / Real.log x)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

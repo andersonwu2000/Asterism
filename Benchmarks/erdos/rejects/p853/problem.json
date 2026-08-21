@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p853",
+  "charter": "# Erdos.p853 — Erdős problem 853\n\nReference: https://www.erdosproblems.com/853\nImported from google-deepmind/formal-conjectures (`ErdosProblems/853.lean`, theorem `erdos_853.parts.i`, AMS 11).\n\nLet $d_n = p_{n+1} - p_n$, where $p_n$ is the $n$th prime. Let $r(x)$ be the smallest even\ninteger $t$ such that $d_n = t$ has no solutions for $n \\le x$.\n\nIs it true that $r(x) \\to \\infty$?\n\n## Statement\natTop.Tendsto r atTop\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

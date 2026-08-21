@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p865",
+  "charter": "# Erdos.p865 — Erdős problem 865\n\nReference: https://www.erdosproblems.com/865\nImported from google-deepmind/formal-conjectures (`ErdosProblems/865.lean`, theorem `erdos_865.variants.sos`, AMS 5 11).\n\nErdős and Sós conjectured that\n$f_k(N)\\sim \\frac{1}{2}\\left(1+\\sum_{1\\leq r\\leq k-2}\\frac{1}{4^r}\\right) N$,\nwhere $f_k(N)$ is the minimal size of a subset of $\\{1, \\dots, N\\}$ guaranteeing $k$ elements\nhave all pairwise sums in the set.\n\n## Statement\n∀ᵉ (k : ℕ) (hk : 2 ≤ k),\n    (fun N ↦ (f N k : ℝ)) ~[atTop] (fun N ↦ (1 / 2 : ℝ) * (1 + ∑ r ∈ Icc 1 (k - 2),\n      (1 / 4 : ℝ) ^ r) * N)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

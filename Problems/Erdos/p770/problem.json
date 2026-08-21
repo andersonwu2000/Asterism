@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p770",
+  "charter": "# Erdos.p770 — Erdős problem 770\n\nReference: https://www.erdosproblems.com/770\nImported from google-deepmind/formal-conjectures (`ErdosProblems/770.lean`, theorem `erdos_770.variants.three`, AMS 11).\n\nIt is probably true that `h n = 3` for infinitely many `n`.\n\n## Statement\n{n | h n = 3}.Infinite\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

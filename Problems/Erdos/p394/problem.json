@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p394",
+  "charter": "# Erdos.p394 — Erdős problem 394\n\nReference: https://www.erdosproblems.com/394\nImported from google-deepmind/formal-conjectures (`ErdosProblems/394.lean`, theorem `erdos_394.variants.hall_conjecture`, AMS 11).\n\nErdős and Hall conjecture that the sum is $o(x^2/(\\log x)^c)$ for any $c<\\log 2$.\n\n## Statement\n∀ c < Real.log 2, (fun x ↦ ∑ n ∈ Icc 1 ⌊x⌋₊,\n    (t 2 n : ℝ)) =o[atTop]\n    (fun x ↦ x ^ 2 / (Real.log x) ^ c)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

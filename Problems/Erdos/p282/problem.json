@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p282",
+  "charter": "# Erdos.p282 — Erdős problem 282\n\nReference: https://www.erdosproblems.com/282\nImported from google-deepmind/formal-conjectures (`ErdosProblems/282.lean`, theorem `erdos_282`, AMS 5).\n\nLet $A\\subseteq \\mathbb{N}$ be an infinite set and consider the following\ngreedy algorithm for a rational $x\\in (0,1)$: choose the minimal $n\\in A$ such\nthat $n\\geq 1/x$ and repeat with $x$ replaced by $x-\\frac{1}{n}$. If this\nterminates after finitely many steps then this produces a representation of\n$x$ as the sum of distinct unit fractions with denominators from $A$.\n\nDoes this process always terminate if $x$ has odd denominator and $A$ is the\nset of odd numbers?\n\n## Statement\n∀ {x : ℚ} (hx : x ∈ Set.Ioo 0 1) (hx_den : Odd x.den), greedyUnitFractionRem { n | Odd n } x =ᶠ[atTop] 0\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

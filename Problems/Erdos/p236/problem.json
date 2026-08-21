@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p236",
+  "charter": "# Erdos.p236 — Erdős problem 236\n\nReference: https://www.erdosproblems.com/236\nImported from google-deepmind/formal-conjectures (`ErdosProblems/236.lean`, theorem `erdos_236`, AMS 5 11).\n\nLet $f(n)$ count the number of solutions to $n=p+2^k$ for prime $p$ and $k\\geq 0$. Show that $f(n)=o(\\log n)$.\n\n## Statement\n(fun n => (f n : ℝ)) =o[atTop] (fun n => Real.log (n : ℝ))\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

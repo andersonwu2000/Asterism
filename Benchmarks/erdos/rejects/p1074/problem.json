@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p1074",
+  "charter": "# Erdos.p1074 — Erdős problem 1074\n\nReference: https://www.erdosproblems.com/1074\nImported from google-deepmind/formal-conjectures (`ErdosProblems/1074.lean`, theorem `erdos_1074.variants.EHSNumbers_one_half`, AMS 11).\n\nRegarding the first question, Hardy and Subbarao computed all EHS numbers up to $2^{10}$, and\nwrite \"...if this trend conditions we expect [the limit] to be around 0.5, if it exists.\"\n\n## Statement\nEHSNumbers.HasDensity (1 / 2)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

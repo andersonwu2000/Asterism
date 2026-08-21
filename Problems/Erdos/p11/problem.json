@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p11",
+  "charter": "# Erdos.p11 — Erdős problem 11\n\nReference: https://www.erdosproblems.com/11\nImported from google-deepmind/formal-conjectures (`ErdosProblems/11.lean`, theorem `erdos_11`, AMS 11).\n\nIs every odd $n > 1$ the sum of a squarefree number and a power of 2?\n\n## Statement\n∀ (n : ℕ) (hn : Odd n) (hn' : 1 < n), ∃ k l : ℕ, Squarefree k ∧ n = k + 2 ^ l\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

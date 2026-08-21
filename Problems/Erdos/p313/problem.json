@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p313",
+  "charter": "# Erdos.p313 — Erdős problem 313\n\nReference: https://www.erdosproblems.com/313\nImported from google-deepmind/formal-conjectures (`ErdosProblems/313.lean`, theorem `erdos_313.variants.primary_pseudoperfect_are_infinite`, AMS 11).\n\nIt is conjectured that the set of primary pseudoperfect numbers is infinite.\n\n## Statement\nSet.Infinite {n | IsPrimaryPseudoperfect n}\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p932",
+  "charter": "# Erdos.p932 — Erdős problem 932\n\nReference: https://www.erdosproblems.com/932\nImported from google-deepmind/formal-conjectures (`ErdosProblems/932.lean`, theorem `erdos_932`, AMS 11).\n\nLet $p_k$ denote the $k$th prime. For infinitely many $r$ there are at least two\nintegers $p_r < n < p_{r+1}$ all of whose prime factors are $< p_{r + 1} - p_r$.\n\n## Statement\n{ r : ℕ | 2 ≤ (Finset.Ioo (r.nth Nat.Prime) (r.succ.nth Nat.Prime) |>.filter\n      (fun m => m.maxPrimeFac < r.succ.nth Nat.Prime - r.nth Nat.Prime)).card }.Infinite\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

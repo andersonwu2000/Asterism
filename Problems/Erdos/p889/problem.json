@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p889",
+  "charter": "# Erdos.p889 — Erdős problem 889\n\nReference: https://www.erdosproblems.com/889\nImported from google-deepmind/formal-conjectures (`ErdosProblems/889.lean`, theorem `erdos_889`, AMS 11).\n\nLet $v(n,k)$ count the prime factors of $n+k$ which\ndo not divide $n+i$ for $0\\leq i < k$. Is it true that\n$v_0(n)=\\max_{k\\geq 0}v(n,k)\\to \\infty$ as $n\\to \\infty$?\n\n## Statement\nTendsto v₀ atTop (𝓝 ⊤)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

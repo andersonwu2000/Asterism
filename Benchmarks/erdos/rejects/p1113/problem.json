@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p1113",
+  "charter": "# Erdos.p1113 — Erdős problem 1113\n\nReference: https://www.erdosproblems.com/1113\nImported from google-deepmind/formal-conjectures (`ErdosProblems/1113.lean`, theorem `erdos_1113.variants.filaseta_finch_kozek`, AMS 11).\n\n**Filaseta–Finch–Kozek conjecture (2008).** Every Sierpiński number is either a perfect power\nor possesses a finite covering set of primes.\n\n## Statement\n∀ k, k.IsSierpinskiNumber →\n      k.IsPerfectPower ∨ HasFinitePrimeCoveringSet k\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

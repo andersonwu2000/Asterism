@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p184",
+  "charter": "# Erdos.p184 — Erdős problem 184\n\nReference: https://www.erdosproblems.com/184\nImported from google-deepmind/formal-conjectures (`ErdosProblems/184.lean`, theorem `erdos_184`, AMS 5).\n\nAny graph on $n$ vertices can be decomposed into $O(n)$ many edge-disjoint cycles and edges.\n\n## Statement\n∃ f : ℕ → ℝ,\n      (f =O[atTop] fun n : ℕ ↦ (n : ℝ)) ∧\n      ∀ {V : Type*} [Fintype V] [DecidableEq V] (G : SimpleGraph V),\n      ∃ (D : Finset G.Subgraph),\n        (∀ H ∈ D, IsCycleOrEdge H.coe) ∧\n        IsDecomposition G D ∧\n        (D.card : ℝ) ≤ f (Fintype.card V)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

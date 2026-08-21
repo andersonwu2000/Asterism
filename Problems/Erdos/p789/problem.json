@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p789",
+  "charter": "# Erdos.p789 — Erdős problem 789\n\nReference: https://www.erdosproblems.com/789\nImported from google-deepmind/formal-conjectures (`ErdosProblems/789.lean`, theorem `erdos_789.variants.sq`, AMS 5).\n\nLet $h(n)$ be maximal such that if $A\\subseteq \\mathbb{Z}$ with $\\lvert A\\rvert=n$\nthen there is $B\\subseteq A$ with $\\lvert B\\rvert \\geq h(n)$ such that if\n$a_1+\\cdots+a_r=b_1+\\cdots+b_s$ with $a_i,b_i\\in B$ then $r=s$.\n\nIs $h(n) = \\Theta(\\sqrt{n})$?\n\n## Statement\n(fun n ↦ (subsetSumThreshold n : ℝ)) =Θ[atTop] fun n ↦ √n\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

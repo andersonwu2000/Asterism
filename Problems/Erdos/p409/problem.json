@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p409",
+  "charter": "# Erdos.p409 — Erdős problem 409\n\nReference: https://www.erdosproblems.com/409\nImported from google-deepmind/formal-conjectures (`ErdosProblems/409.lean`, theorem `erdos_409.variants.sigma_termination`, AMS 11).\n\nIf $n > 1$ then the iteration $n\\mapsto\\sigma(n) - 1$ necessarily reaches a prime.\nNote: this is open — it is not clear that the σ iteration always terminates,\nsince it is non-decreasing (unlike the φ iteration which is strictly decreasing).\n\n## Statement\n∀ (n : ℕ) (hn : n > 1), ∃ i, (σ 1 · - 1)^[i] n |>.Prime\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

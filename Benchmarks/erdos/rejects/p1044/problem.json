@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p1044",
+  "charter": "# Erdos.p1044 — Erdős problem 1044\n\nReference: https://www.erdosproblems.com/1044\nImported from google-deepmind/formal-conjectures (`ErdosProblems/1044.lean`, theorem `erdos_1044.variants.fixed_degree`, AMS 30).\n\nTang also suggests that, if the degree $n$ is fixed, then the infimum over all such $f$ of\ndegree $n$ is attained by $f_n(z)=z^n-1$.\n\n## Statement\n∀ (n : ℕ) (hn : 0 < n), IsLeast {L : ℝ≥0∞ | ∃ f : ℂ[X], IsAdmissible f ∧ f.natDegree = n ∧ maxBoundaryLength f = L}\n      (maxBoundaryLength (X ^ n - 1))\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

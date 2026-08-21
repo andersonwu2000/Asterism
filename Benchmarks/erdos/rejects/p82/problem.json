@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p82",
+  "charter": "# Erdos.p82 — Erdős problem 82\n\nReference: https://www.erdosproblems.com/82\nImported from google-deepmind/formal-conjectures (`ErdosProblems/82.lean`, theorem `erdos_82`, AMS 5).\n\n$F(n) / \\log n \\to \\infty as n \\to \\infty$\n\n## Statement\nTendsto (fun n => F n / Real.log n) atTop atTop\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

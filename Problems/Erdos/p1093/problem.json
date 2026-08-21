@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p1093",
+  "charter": "# Erdos.p1093 — Erdős problem 1093\n\nReference: https://www.erdosproblems.com/1093\nImported from google-deepmind/formal-conjectures (`ErdosProblems/1093.lean`, theorem `erdos_1093.parts.ii`, AMS 5).\n\nAre there only finitely many binomial coefficients with deficiency > 1?\n\n## Statement\n{x : ℕ × ℕ | let k := x.1; let n := x.2; 2 * k ≤ n ∧ deficiency n k > 1 ∧\n      ∀ p, p.Prime → (p ∣ choose n k) → k < p}.Finite\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

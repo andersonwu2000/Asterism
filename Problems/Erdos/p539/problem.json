@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p539",
+  "charter": "# Erdos.p539 — Erdős problem 539\n\nReference: https://www.erdosproblems.com/539\nImported from google-deepmind/formal-conjectures (`ErdosProblems/539.lean`, theorem `erdos_539.variants.sq`, AMS 5 11).\n\nLet $h(n)$ be maximal such that, for any set $A\\subseteq \\mathbb{N}$ of size $n$, the\nset$$\\left\\{ \\frac{a}{(a,b)}: a,b\\in A\\right\\}$$has size at least $h(n)$.\nIs $h(n) = \\Theta(\\sqrt{n})$?\n\n## Statement\n(fun n ↦ (cofactorThreshold n : ℝ)) =Θ[atTop] fun n ↦ √n\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

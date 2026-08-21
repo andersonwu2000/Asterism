@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p349",
+  "charter": "# Erdos.p349 — Erdős problem 349\n\nReference: https://www.erdosproblems.com/349\nImported from google-deepmind/formal-conjectures (`ErdosProblems/349.lean`, theorem `complete_for_alpha_in_Ioo_one_to_goldenRatio`, AMS 11).\n\nIt seems likely that the sequence is complete for all\nfor all $t>0$ and all $1 < \\alpha < \\frac{1+\\sqrt{5}}{2}$.\n\n## Statement\n∀ (t α : ℝ) (ht : 0 < t)\n    (hα : α ∈ Set.Ioo 1 ((1 + √5) / 2)), IsGoodPair t α\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

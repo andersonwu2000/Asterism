@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p859",
+  "charter": "# Erdos.p859 — Erdős problem 859\n\nReference: https://www.erdosproblems.com/859\nImported from google-deepmind/formal-conjectures (`ErdosProblems/859.lean`, theorem `erdos_859`, AMS 11).\n\nThe density of the divisor sum set is asymptotically equivalent to $c_1 / \\log(t)^{c_2}$.\n\n## Statement\n∃ c₁ > 0, ∃ c₂ > (0 : ℝ), ∃ d : ℕ → ℝ, (∀ t > 0, (DivisorSumSet t).HasDensity (d t)) ∧\n      (fun (t : ℕ) ↦ d t) ~[atTop] (fun t ↦ c₁ / Real.log t ^ c₂)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

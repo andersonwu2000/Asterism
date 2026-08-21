@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p28",
+  "charter": "# Erdos.p28 — Erdős problem 28\n\nReference: https://www.erdosproblems.com/28\nImported from google-deepmind/formal-conjectures (`ErdosProblems/28.lean`, theorem `erdos_28`, AMS 11).\n\nIf $A ⊆ \\mathbb{N}$ is such that $A + A$ contains all but finitely many integers then\n $\\limsup 1_A ∗ 1_A(n) = \\infty$.\n\n## Statement\n∀ (A : Set ℕ) (h : (A + A)ᶜ.Finite), limsup (fun (n : ℕ) => (sumRep A n : ℕ∞)) atTop = (⊤ : ℕ∞)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

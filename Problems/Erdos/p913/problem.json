@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p913",
+  "charter": "# Erdos.p913 — Erdős problem 913\n\nReference: https://www.erdosproblems.com/913\nImported from google-deepmind/formal-conjectures (`ErdosProblems/913.lean`, theorem `erdos_913.variants.infinite_many_8p_sq_add_one_primes`, AMS 11).\n\nIt is likely that there are infinitely many primes $p$ such that $8p^2 - 1$ is also prime.\n\n## Statement\n{ p | p.Prime ∧ (8 * p ^ 2 - 1).Prime }.Infinite\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p406",
+  "charter": "# Erdos.p406 — Erdős problem 406\n\nReference: https://www.erdosproblems.com/406\nImported from google-deepmind/formal-conjectures (`ErdosProblems/406.lean`, theorem `erdos_406.variants.one_two`, AMS 11).\n\nIf we only allow the digits $1$ and $2$ then $2^{15}$ seems to be the largest such power\nof $2$.\n\n## Statement\nIsGreatest { n | n.isPowerOfTwo ∧ Nat.digits 3 n ⊆ [1, 2] } (2 ^ 15)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

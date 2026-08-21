@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p1084",
+  "charter": "# Erdos.p1084 — Erdős problem 1084\n\nReference: https://www.erdosproblems.com/1084\nImported from google-deepmind/formal-conjectures (`ErdosProblems/1084.lean`, theorem `erdos_1084.variants.triangular_optimal_d2`, AMS 52).\n\nErdős conjectured that the triangular lattice is best possible in 2D, in particular that\n$f_2(3n^2 + 3n + 1) < 9n^2 + 3n$.\n\nNote: in [Er75f] is read $9n^2 + 6n$, but this seems to be a typo.\n\n## Statement\nf 2 (3 * n ^ 2 + 3 * n + 1) = 9 * n ^ 2 + 3 * n\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

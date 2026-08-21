@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p364",
+  "charter": "# Erdos.p364 — Erdős problem 364\n\nReference: https://www.erdosproblems.com/364\nImported from google-deepmind/formal-conjectures (`ErdosProblems/364.lean`, theorem `erdos_364`, AMS 11).\n\nThere is no consecutive triple of powerful numbers.\n\n## Statement\n¬ ∃ (n : ℕ), Powerful n ∧ Powerful (n + 1) ∧ Powerful (n + 2)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

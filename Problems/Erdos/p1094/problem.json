@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p1094",
+  "charter": "# Erdos.p1094 — Erdős problem 1094\n\nReference: https://www.erdosproblems.com/1094\nImported from google-deepmind/formal-conjectures (`ErdosProblems/1094.lean`, theorem `erdos_1094`, AMS 11).\n\nFor all $n\\ge 2k$ the least prime factor of $\\binom{n}{k}$ is $\\le\\max(n/k,k)$, with only\nfinitely many exceptions.\n\n## Statement\n{(n, k) : ℕ × ℕ | 0 < k ∧ 2 * k ≤ n ∧ (n.choose k).minFac > max (n / k) k}.Finite\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

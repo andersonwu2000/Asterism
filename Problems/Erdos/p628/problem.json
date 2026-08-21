@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p628",
+  "charter": "# Erdos.p628 — Erdős problem 628\n\nReference: https://www.erdosproblems.com/628\nImported from google-deepmind/formal-conjectures (`ErdosProblems/628.lean`, theorem `erdos_628`, AMS 5).\n\nLet $G$ be a graph with chromatic number $k$ containing no $K_k$. If $a,b\\geq 2$ and $a+b=k+1$\nthen must there exist two disjoint subgraphs of $G$ with chromatic numbers $\\geq a$ and $\\geq b$\nrespectively?\n\n## Statement\n∀ (V : Type*) [Fintype V] (G : SimpleGraph V) (k : ℕ)\n    (hG_chrom : G.chromaticNumber = (k : ℕ∞))\n    (hG_clique : G.CliqueFree k)\n    (a b : ℕ) (ha : a ≥ 2) (hb : b ≥ 2) (hab : a + b = k + 1), ∃ (s : Set V),\n      (G.induce s).chromaticNumber ≥ (a : ℕ∞) ∧\n      (G.induce sᶜ).chromaticNumber ≥ (b : ℕ∞)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

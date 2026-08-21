@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p340",
+  "charter": "# Erdos.p340 — Erdős problem 340\n\nReference: https://www.erdosproblems.com/340\nImported from google-deepmind/formal-conjectures (`ErdosProblems/340.lean`, theorem `erdos_340`, AMS 5).\n\nLet $A = \\{1, 2, 4, 8, 13, 21, 31, 45, 66, 81, 97, \\ldots\\}$ be the greedy Sidon sequence:\nwe begin with $1$ and iteratively include the next smallest integer that preserves the\nSidon property (i.e. there are no non-trivial solutions to $a + b = c + d$). What is the\norder of growth of $A$? Is it true that $|A \\cap \\{1, \\ldots, N\\}| \\gg N^{1/2 - \\varepsilon}$\nfor all $\\varepsilon > 0$ and large $N$?\n\n## Statement\n∀ (ε : ℝ) (hε : ε > 0), (fun n : ℕ ↦ √n / n ^ ε) =O[atTop]\n      fun n : ℕ ↦ ((Set.range greedySidon ∩ Set.Icc 1 n).ncard : ℝ)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p357",
+  "charter": "# Erdos.p357 — Erdős problem 357\n\nReference: https://www.erdosproblems.com/357\nImported from google-deepmind/formal-conjectures (`ErdosProblems/357.lean`, theorem `erdos_357.parts.i`, AMS 11).\n\nLet $f(n)$ be the maximal $k$ such that there exist integers $1 \\le a_1 < \\dotsc < a_k \\le n$\nsuch that all sums of the shape $\\sum_{u \\le i \\le v} a_i$ are distinct. Is $f(n)=o(n)$?\n\n## Statement\n(fun n ↦ (f n : ℝ)) =o[atTop] (fun n ↦ (n : ℝ))\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

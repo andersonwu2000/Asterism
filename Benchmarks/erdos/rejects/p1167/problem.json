@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p1167",
+  "charter": "# Erdos.p1167 — Erdős problem 1167\n\nReference: https://www.erdosproblems.com/1167\nImported from google-deepmind/formal-conjectures (`ErdosProblems/1167.lean`, theorem `finite_targets`, AMS 5).\n\n**Finite-target case.** When all $\\kappa_\\alpha$ are finite, $\\kappa_\\alpha + 1$\nis the ordinary natural-number successor. Special case of `erdos_1167`.\n\n## Statement\n∀ (r : ℕ) (hr : 2 ≤ r) (lam : Cardinal.{u}) (hlam : ℵ₀ ≤ lam)\n    (γ : Ordinal.{u}) (hγ : 2 ≤ γ) (n : γ.ToType → ℕ), cardinalPartitionRel ((2 : Cardinal.{u}) ^ lam) (r + 1) γ\n        (fun α => (n α : Cardinal.{u}) + 1) →\n    cardinalPartitionRel lam r γ (fun α => (n α : Cardinal.{u}))\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

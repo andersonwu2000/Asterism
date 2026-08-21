@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p100",
+  "charter": "# Erdos.p100 — Erdős problem 100\n\nReference: https://www.erdosproblems.com/100\nImported from google-deepmind/formal-conjectures (`ErdosProblems/100.lean`, theorem `erdos_100.variants.strong`, AMS 52).\n\nStronger conjecture: diameter $\\geq n - 1$ for sufficiently large $n$.\n\n## Statement\n∀ᶠ n in atTop, ∀ A : Finset ℝ²,\n      A.card = n →\n      DistancesSeparated A →\n      diam (A : Set ℝ²) ≥ n - 1\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

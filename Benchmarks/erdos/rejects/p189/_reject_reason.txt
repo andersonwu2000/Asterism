@@ -1,0 +1,1 @@
+D:\Asterism\_spike\erdos_screen\p189.lean:9:22: error: unexpected token '²'; expected ')'

@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p233",
+  "charter": "# Erdos.p233 — Erdős problem 233\n\nReference: https://www.erdosproblems.com/233\nImported from google-deepmind/formal-conjectures (`ErdosProblems/233.lean`, theorem `erdos_233`, AMS 11).\n\nA conjecture by Heath-Brown:\nThe sum of squares of the first $N$ gaps between consecutive primes behaves like $N * (log N)^2$.\n\n## Statement\n(fun N => ((∑ n ∈ Finset.range N, (primeGap n) ^ 2) : ℝ)) =O[atTop] fun N => N * (log N)^2\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

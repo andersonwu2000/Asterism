@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p477",
+  "charter": "# Erdos.p477 — Erdős problem 477\n\nReference: https://www.erdosproblems.com/477\nImported from google-deepmind/formal-conjectures (`ErdosProblems/477.lean`, theorem `erdos_477.variants.X_pow_three`, AMS 12).\n\nProbably there is no such $A$ for the polynomial $X^3$.\n\n## Statement\nletI f := X ^ 3\n    ∀ A : Set ℤ, ∃ z, ¬ ∃! a ∈ A ×ˢ (Set.range f.eval), z = a.1 + a.2\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

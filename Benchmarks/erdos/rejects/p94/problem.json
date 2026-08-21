@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p94",
+  "charter": "# Erdos.p94 — Erdős problem 94\n\nReference: https://www.erdosproblems.com/94\nImported from google-deepmind/formal-conjectures (`ErdosProblems/94.lean`, theorem `erdos_94.variants.regular_ngon`, AMS 5 52).\n\nErdős and Fishburn also make the stronger conjecture that $\\sum f(u_i)^2$ is maximal for the\nregular $n$-gon (for large enough $n$).\n\n## Statement\n∀ᶠ n : ℕ in atTop, ∀ P : Finset ℝ²,\n    P.card = n → ConvexIndep (P : Set ℝ²) →\n    ∑ u ∈ distanceSet P, (distanceMultiplicity P u : ℝ) ^ 2 ≤\n      ∑ u ∈ distanceSet (regularNGon n), (distanceMultiplicity (regularNGon n) u : ℝ) ^ 2\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

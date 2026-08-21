@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p143",
+  "charter": "# Erdos.p143 — Erdős problem 143\n\nReference: https://www.erdosproblems.com/143\nImported from google-deepmind/formal-conjectures (`ErdosProblems/143.lean`, theorem `erdos_143.parts.ii`, AMS 11).\n\nOr\n$$\n\\sum_{x \\in A} \\frac{1}{x \\log x} < \\infty,\n$$\n\n## Statement\n∀ (A : Set ℝ) (h : WellSeparatedSet A), Summable fun (x : A) ↦ 1 / (x * Real.log x)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

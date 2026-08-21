@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p371",
+  "charter": "# Erdos.p371 — Erdős problem 371\n\nReference: https://www.erdosproblems.com/371\nImported from google-deepmind/formal-conjectures (`ErdosProblems/371.lean`, theorem `erdos_371`, AMS 11).\n\nLet $P(n)$ denote the largest prime factor of $n$. Show that the set of $n$\nwith $P(n+1) > P(n)$ has density $\\frac{1}{2}$.\n\n## Statement\n{ n | Nat.maxPrimeFac (n + 1) > Nat.maxPrimeFac n }.HasDensity (1/2)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

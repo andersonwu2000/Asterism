@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p126",
+  "charter": "# Erdos.p126 — Erdős problem 126\n\nReference: https://www.erdosproblems.com/126\nImported from google-deepmind/formal-conjectures (`ErdosProblems/126.lean`, theorem `erdos_126.variants.isLittleO`, AMS 11).\n\nErdős says that $f(n) = o(\\frac{n}{\\log n})$ has never been proved.\n\n## Statement\n∀ (f : ℕ → ℕ)\n    (hf : IsMaximalAddFactorsCard f), (fun (n : ℕ) => (f n : ℝ)) =o[atTop] (fun (n : ℕ) => n / Real.log n)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

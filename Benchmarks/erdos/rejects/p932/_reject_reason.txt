@@ -1,0 +1,1 @@
+D:\Asterism\_spike\erdos_screen\p932.lean:8:18: error(lean.invalidField): Invalid field `maxPrimeFac`: The environment does not contain `Nat.maxPrimeFac`, so it is not possible to project the field `m

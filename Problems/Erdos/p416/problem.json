@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p416",
+  "charter": "# Erdos.p416 — Erdős problem 416\n\nReference: https://www.erdosproblems.com/416\nImported from google-deepmind/formal-conjectures (`ErdosProblems/416.lean`, theorem `erdos_416.parts.i`, AMS 11).\n\nLet `V(x)` count the number of `n≤x` such that `ϕ(m)=n` is solvable. Does `V(2x)/V(x)→2` ?\n\n## Statement\nFilter.Tendsto (fun x => (V (2 * x) / V (x))) Filter.atTop (𝓝 2)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

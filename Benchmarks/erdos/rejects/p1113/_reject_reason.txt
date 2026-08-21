@@ -1,0 +1,1 @@
+D:\Asterism\_spike\erdos_screen\p1113.lean:10:22: error(lean.invalidField): Invalid field `IsSierpinskiNumber`: The environment does not contain `Nat.IsSierpinskiNumber`, so it is not possible to proj

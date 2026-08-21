@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p89",
+  "charter": "# Erdos.p89 — Erdős problem 89\n\nReference: https://www.erdosproblems.com/89\nImported from google-deepmind/formal-conjectures (`ErdosProblems/89.lean`, theorem `erdos_89`, AMS 52).\n\nErdős [Er46] asked whether every set of $n$ distinct points in $\\mathbb{R}^2$\ndetermines $\\gg \\frac{n}{\\sqrt{\\log n}}$ many distinct distances.\n\n## Statement\n(fun (n : ℕ) => n/(n : ℝ).log.sqrt) =O[atTop] (fun n => (minimalDistinctDistances n : ℝ))\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

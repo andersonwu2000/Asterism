@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p912",
+  "charter": "# Erdos.p912 — Erdős problem 912\n\nReference: https://www.erdosproblems.com/912\nImported from google-deepmind/formal-conjectures (`ErdosProblems/912.lean`, theorem `erdos_912`, AMS 11).\n\nProve that there exists some $c>0$ such that\n$$h(n) \\sim c \\left(\\frac{n}{\\log n}\\right)^{1/2}$$\nas $n\\to \\infty$.\n\n## Statement\n∃ c > 0,\n    (fun n => (h n : ℝ)) ~[atTop] (fun n => c * (n / Real.log n) ^ (1 / 2 : ℝ))\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p358",
+  "charter": "# Erdos.p358 — Erdős problem 358\n\nReference: https://www.erdosproblems.com/358\nImported from google-deepmind/formal-conjectures (`ErdosProblems/358.lean`, theorem `erdos_358.variants.prime_set`, AMS 5 11).\n\nWhen $A =\\{a_1 < \\cdots\\}$ corresponds to the set of primes, it is conjectured that the\n$\\limsup$ of the number of representations $$n=\\sum_{u\\leq i\\leq v}a_i$$ is infinite.\n\n## Statement\natTop.limsup (fun n ↦ (f (Nat.nth Nat.Prime) n : ℕ∞)) = ⊤\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

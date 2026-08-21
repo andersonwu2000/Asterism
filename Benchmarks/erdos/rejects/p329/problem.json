@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p329",
+  "charter": "# Erdos.p329 — Erdős problem 329\n\nReference: https://www.erdosproblems.com/329\nImported from google-deepmind/formal-conjectures (`ErdosProblems/329.lean`, theorem `erdos_329.variants.converse_implication`, AMS 5 11).\n\nThe converse: if the maximum density is 1, then any finite Sidon set\ncan be embedded in a perfect difference set modulo $n > 0$.\n\nSince the consequent is false (due to the counterexamples in [Ha47] and [AlMi25]),\nthis implication is logically equivalent to the statement that the maximum upper\ndensity of Sidon sets is NOT 1.\nBecause the maximum upper density problem is still open, the truth value of this\nimplication is also an open research problem.\n\n## Statement\n(sSup {sidonUpperDensity A | (A : Set ℕ) (_ : IsSidon A)} = 1) →\n    (∀ (A : Finset ℕ), IsSidon (A : Set ℕ) → ∃ (D : Set ℕ) (n : ℕ) (_ : n > 0),\n      ↑A ⊆ D ∧ IsPerfectDifferenceSet D n)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

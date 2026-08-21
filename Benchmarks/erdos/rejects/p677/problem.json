@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p677",
+  "charter": "# Erdos.p677 — Erdős problem 677\n\nReference: https://www.erdosproblems.com/677\nImported from google-deepmind/formal-conjectures (`ErdosProblems/677.lean`, theorem `erdos_677`, AMS 11).\n\nDenote by $M(n, k)$ the least common multiple of the finite set $\\{n+1, \\dotsc, n+k\\}$.\nIs it true that for all $m \\geq n + k$, we get $M(m, k) \\neq M(n, k)$?\n\n## Statement\n∀ (m n k : ℕ), k > 0 → m ≥ n + k → lcmInterval m k ≠ lcmInterval n k\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

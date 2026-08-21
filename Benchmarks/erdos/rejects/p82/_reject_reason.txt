@@ -1,0 +1,1 @@
+D:\Asterism\_spike\erdos_screen\p82.lean:11:21: error(lean.synthInstanceFailed): failed to synthesize instance of type class

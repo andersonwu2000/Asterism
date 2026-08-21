@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p218",
+  "charter": "# Erdos.p218 — Erdős problem 218\n\nReference: https://www.erdosproblems.com/218\nImported from google-deepmind/formal-conjectures (`ErdosProblems/218.lean`, theorem `erdos_218.variants.le`, AMS 11).\n\nThe set of indices $n$ for which a prime gap is followed by a larger or equal prime gap has a\nnatural density of $\\frac 1 2$.\n\n## Statement\n{n | primeGap n ≤ primeGap (n + 1)}.HasDensity <| 1 / 2\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

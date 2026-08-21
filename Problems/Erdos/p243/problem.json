@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p243",
+  "charter": "# Erdos.p243 — Erdős problem 243\n\nReference: https://www.erdosproblems.com/243\nImported from google-deepmind/formal-conjectures (`ErdosProblems/243.lean`, theorem `erdos_243`, AMS 40).\n\nLet $a_1 < a_2 < \\dots$ be a sequence of integers such that\n$\\lim_{n\\to\\infty} \\frac{a_n}{a_{n-1}^2} = 1$ and $\\sum \\frac{1}{a_n} \\in \\mathbb{Q}$.\n\nThen, for all sufficiently large $n \\ge 1$, $a_n = a_{n-1}^2 - a_{n-1} + 1$.\n\n## Statement\n∀ (a : ℕ → ℕ) (ha₀ : StrictMono a)\n    (ha₁ : Tendsto (fun n ↦ (a n : ℝ) / a (n - 1) ^ 2) atTop (𝓝 1))\n    (ha₂ : Summable ((1 : ℚ) / a ·)), ∀ᶠ n in atTop, a n = a (n - 1) ^ 2 - a (n - 1) + 1\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

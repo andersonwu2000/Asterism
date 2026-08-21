@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p624",
+  "charter": "# Erdos.p624 — Erdős problem 624\n\nReference: https://www.erdosproblems.com/624\nImported from google-deepmind/formal-conjectures (`ErdosProblems/624.lean`, theorem `erdos_624`, AMS 5).\n\nLet $X$ be a finite set of size $n$ and $H(n)$ be such that there is a function\n$f:\\{A : A\\subseteq X\\}\\to X$ so that for every $Y\\subseteq X$ with $\\lvert Y\\rvert \\geq H(n)$\nwe have $\\left\\{ f(A) : A\\subseteq Y\\right\\}=X$.\nProve that $H(n)-\\log_2 n \\to \\infty$.\n\n## Statement\natTop.Tendsto (fun n : ℕ => H n - Real.logb 2 (n : ℝ)) atTop\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

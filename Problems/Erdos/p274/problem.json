@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p274",
+  "charter": "# Erdos.p274 — Erdős problem 274\n\nReference: https://www.erdosproblems.com/274\nImported from google-deepmind/formal-conjectures (`ErdosProblems/274.lean`, theorem `herzog_schonheim`, AMS 20).\n\nLet $G$ be a group, and let $A = \\{a_1G_1, \\dots, a_kG_k\\}$ be a finite system of left cosets of\nsubgroups $G_1, \\dots, G_k$ of $G$.\n\nHerzog and Schönheim conjectured that if $A$ forms a partition of $G$ with $k > 1$, then the\nindices $[G:G_1], \\dots, [G:G_k]$ cannot be distinct.\n\n## Statement\n∀ {G : Type*} [Group G] (hG : 1 < ENat.card G) {ι : Type*} [Fintype ι]\n    (hι : 1 < Fintype.card ι) (P : Group.ExactCovering G ι), ∃ i j, i ≠ j ∧ (P.parts i).index = (P.parts j).index\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

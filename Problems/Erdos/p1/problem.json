@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p1",
+  "charter": "# Erdos.p1 — Erdős problem 1\n\nReference: https://www.erdosproblems.com/1\nImported from google-deepmind/formal-conjectures (`ErdosProblems/1.lean`, theorem `erdos_1`, AMS 5 11).\n\nIf $A\\subseteq\\{1, ..., N\\}$ with $|A| = n$ is such that the subset sums $\\sum_{a\\in S}a$ are\ndistinct for all $S\\subseteq A$ then\n$$\n  N \\gg 2 ^ n.\n$$\n\n## Statement\n∃ C > (0 : ℝ), ∀ (N : ℕ) (A : Finset ℕ) (_ : IsSumDistinctSet A N),\n    N ≠ 0 → C * 2 ^ A.card < N\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

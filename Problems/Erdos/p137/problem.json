@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p137",
+  "charter": "# Erdos.p137 — Erdős problem 137\n\nReference: https://www.erdosproblems.com/137\nImported from google-deepmind/formal-conjectures (`ErdosProblems/137.lean`, theorem `erdos_137.variants.multiple_powerful_factors`, AMS 11).\n\nErdős [Er82c] conjectures that, if $k$ is fixed, then for all $n$ sufficiently large and all\npositive integers $m$, there must be at least $k$ distinct primes $p$ such that\n$p\\mid m(m+1)\\cdots (m+n)$ and yet $p^2$ does not divide the right hand side.\n\n[Er82c] Erdős, Paul, \"Miscellaneous problems in number theory\". Congr. Numer. (1982), 25-45.,\n\n## Statement\n∀ (k : ℕ), ∀ᶠ n in Filter.atTop,\n    ∀ (m : ℕ) (hm : 0 < m),\n    letI N := ∏ x ∈ Finset.Ioc m (m + n), x\n    ∃ P : Finset ℕ, P.card = k ∧ ∀ p ∈ P, p.Prime ∧\n    p ∣ N ∧ ¬ p ^ 2 ∣ N\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

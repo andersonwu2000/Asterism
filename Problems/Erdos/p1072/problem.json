@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p1072",
+  "charter": "# Erdos.p1072 — Erdős problem 1072\n\nReference: https://www.erdosproblems.com/1072\nImported from google-deepmind/formal-conjectures (`ErdosProblems/1072.lean`, theorem `erdos_1072.variants.littleo`, AMS 11).\n\nErdős, Hardy, and Subbarao [HaSu02], believed that the number of $p \\le x$ for which $f(p)=p−1$\nis $o(x/\\log x)$.\n\n[HaSu02] Hardy, G. E. and Subbarao, M. V., _A modified problem of Pillai and some related questions._\nAmer. Math. Monthly (2002), 554--559.\n\n## Statement\n(fun x ↦ (({p | p.Prime ∧ f p = p - 1} ∩ Icc 0 x).ncard : ℝ)) =o[atTop]\n      (fun x ↦ x / Real.log x)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p1101",
+  "charter": "# Erdos.p1101 — Erdős problem 1101\n\nReference: https://www.erdosproblems.com/1101\nImported from google-deepmind/formal-conjectures (`ErdosProblems/1101.lean`, theorem `erdos_1101.parts.i`, AMS 11).\n\n1. There is NO good sequence with polynomial growth.\n\n## Statement\n¬ ∃ u, IsGood u ∧ ∃ k : ℕ, (fun n => (u n : ℝ)) =O[atTop] (fun n => (n : ℝ) ^ k)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

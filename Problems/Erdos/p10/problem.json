@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p10",
+  "charter": "# Erdos.p10 — Erdős problem 10\n\nReference: https://www.erdosproblems.com/10\nImported from google-deepmind/formal-conjectures (`ErdosProblems/10.lean`, theorem `erdos_10.variants.granville_soundararajan_odd`, AMS 5 11).\n\nGranville and Soundararajan [GrSo98] have conjectured that at most $3$\npowers of $2$ suffice for all odd integers, and hence at most $4$ powers of $2$\nsuffice for all even integers.\n\nRef: Granville, A. and Soundararajan, K., _A Binary Additive Problem of Erdős and the Order of $2$ mod $p^2$_\n\n## Statement\n{n : ℕ | Odd n ∧ 1 < n} ⊆ sumPrimeAndTwoPows 3 ∧\n      {n : ℕ | Even n ∧ n ≠ 0} ⊆ sumPrimeAndTwoPows 4\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

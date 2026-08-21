@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p931",
+  "charter": "# Erdos.p931 — Erdős problem 931\n\nReference: https://www.erdosproblems.com/931\nImported from google-deepmind/formal-conjectures (`ErdosProblems/931.lean`, theorem `erdos_931.variants.exists_prime`, AMS 11).\n\nErdős was unable to prove that if the two products have the same factors\nthen there must exist a prime between $n_1$ and $n_2$.\n\n## Statement\n∀ (k₁ k₂ n₁ n₂ : ℕ) (h₁ : k₂ ≤ k₁) (h₂ : 3 ≤ k₂)\n    (h₃ : n₁ + k₁ ≤ n₂) (h₄ : (∏ i ∈ Finset.Icc 1 k₁, (n₁ + i)).primeFactors =\n      (∏ j ∈ Finset.Icc 1 k₂, (n₂ + j)).primeFactors), ∃ (p : ℕ), p.Prime ∧ n₁ ≤ p ∧ p ≤ n₂\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

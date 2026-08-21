@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p1107",
+  "charter": "# Erdos.p1107 — Erdős problem 1107\n\nReference: https://www.erdosproblems.com/1107\nImported from google-deepmind/formal-conjectures (`ErdosProblems/1107.lean`, theorem `erdos_1107`, AMS 11).\n\nLet $r \\ge 2$. Is every large integer the sum of at most $r + 1$ many $r$-powerful numbers?\n\n## Statement\n∀ r ≥ 2, ∀ᶠ n in atTop, SumOfRPowerful r n\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

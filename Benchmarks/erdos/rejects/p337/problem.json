@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p337",
+  "charter": "# Erdos.p337 — Erdős problem 337\n\nReference: https://www.erdosproblems.com/337\nImported from google-deepmind/formal-conjectures (`ErdosProblems/337.lean`, theorem `erdos_337.variants.ruzsa_turjanyi`, AMS 5 11).\n\nRuzsa and Turjányi do prove (under the same hypotheses) that\n$$\n\\lim_{N\\to \\infty}\\frac{\\lvert (A+A+A)\\cap \\{1,\\ldots,3N\\}\\rvert}\n{\\lvert A\\cap \\{1,\\ldots,N\\}\\rvert}=\\infty,\n$$\nand conjecture that the same should be true with $(A+A)\\cap \\{1,\\ldots,2N\\}$ in the numerator.\n\n## Statement\n∀ A : Set ℕ, A.IsAsymptoticAddBasis →\n      (fun N : ℕ ↦ ((A ∩ Icc 1 N).ncard : ℝ)) =o[atTop] (fun N : ℕ ↦ (N : ℝ)) →\n      Tendsto (fun N : ℕ ↦\n          (((A + A) ∩ Icc 1 (2 * N)).ncard : ℝ) / ((A ∩ Icc 1 N).ncard : ℝ))\n        atTop atTop\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

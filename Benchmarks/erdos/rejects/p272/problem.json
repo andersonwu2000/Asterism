@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p272",
+  "charter": "# Erdos.p272 — Erdős problem 272\n\nReference: https://www.erdosproblems.com/272\nImported from google-deepmind/formal-conjectures (`ErdosProblems/272.lean`, theorem `erdos_272.variants.szabo_strong`, AMS 5).\n\nSzabo asks whether the maximal $t$ is given by\n$$\n  \\frac{N^2}{2} + O(N)\n$$\n\n## Statement\n(fun N ↦ (maxArithInterCard N - N ^ 2 / 2 : ℝ)) =O[atTop] fun N : ℕ ↦ (N : ℝ)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

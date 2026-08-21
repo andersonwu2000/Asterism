@@ -1,0 +1,1 @@
+D:\Asterism\_spike\erdos_screen\p1107.lean:10:45: error(lean.unknownIdentifier): Unknown constant `Nat.Full`

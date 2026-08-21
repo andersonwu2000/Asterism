@@ -1,0 +1,14 @@
+{
+  "problem": "Erdos.p189",
+  "charter": "# Erdos.p189 — Erdős problem 189\n\nReference: https://www.erdosproblems.com/189\nImported from google-deepmind/formal-conjectures (`ErdosProblems/189.lean`, theorem `erdos_189.variants.parallelogram`, AMS 5 51).\n\nSeems to be open, as of January 2025.\n\n## Statement\n¬ Erdos189For\n      (fun a b c d ↦\n        line[ℝ, a, b] ∥ line[ℝ, c, d] ∧\n        line[ℝ, a, d] ∥ line[ℝ, b, c])\n      (fun a b c d ↦ dist a b * dist b c * (∡ a b c).sin)\n\n## Strategic notes\nOpen conjecture — prove-or-refute posture applies to sub-claims,\nbut the root asserts the conjectured statement itself. No\nper-problem hints (benchmark integrity).\n",
+  "settings": {
+    "axioms_whitelist": [
+      "propext",
+      "Quot.sound",
+      "Classical.choice"
+    ],
+    "forbidden_lemmas": [],
+    "library": false,
+    "signoff": false
+  }
+}

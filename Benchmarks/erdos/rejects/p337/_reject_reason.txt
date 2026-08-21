@@ -1,0 +1,1 @@
+D:\Asterism\_spike\erdos_screen\p337.lean:10:30: error(lean.invalidField): Invalid field `IsAsymptoticAddBasis`: The environment does not contain `Function.IsAsymptoticAddBasis`, so it is not possible
