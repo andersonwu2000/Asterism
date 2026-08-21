@@ -66,3 +66,31 @@ export function cycleForGroup(
   const seat = seatedGroups(workers).find((s) => s.group.id === resolvedGroupId)
   return seat?.worker.cycle ?? null
 }
+
+/**
+ * WHICH PROBLEM the run-scoped faces open on. A pattern scope runs a
+ * fleet, and the daemon's `scope` is then a LIKE pattern ("Erdos.%"),
+ * not a problem name — using it as one 404'd both the Programme and
+ * the Intent tab for every fleet run (2026-08-22). Same shape as
+ * resolveGroup: the reader's pick wins; otherwise follow the run —
+ * exactly one problem with a seated strategist means the action is
+ * there, several (or none) fall back to the run's own focus pick.
+ * A scope with no wildcard is a plain problem name and still serves
+ * as the last resort (the engine idle, nothing else known).
+ */
+export function fleetProblem(
+  pick: string | null,
+  run: { problem?: string | null; workers?: RunWorker[] } | null | undefined,
+  scope?: string | null,
+): string | null {
+  if (pick !== null) return pick
+  const seated = [...new Set(
+    seatedGroups(run?.workers ?? []).map((s) => s.group.problem),
+  )]
+  if (seated.length === 1) return seated[0]
+  if (run?.problem) return run.problem
+  // `_` is a LIKE wildcard too, but real problem names carry it
+  // (union_closed) — only % and * mark a scope as a pattern here
+  if (scope && !/[%*]/.test(scope)) return scope
+  return null
+}

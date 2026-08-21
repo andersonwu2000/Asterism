@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cycleForGroup, defaultGroup, resolveGroup } from './programmeFocus'
+import { cycleForGroup, defaultGroup, fleetProblem, resolveGroup } from './programmeFocus'
 import type { Group, RunWorker } from './types'
 
 const group = (id: number, is_top: boolean): Group => ({
@@ -91,5 +91,49 @@ describe('whose cycle is narrated above the body', () => {
     expect(cycleForGroup(workers, 1)).toBe(null)
     expect(cycleForGroup(workers, null)).toBe(null)
     expect(cycleForGroup([], 7)).toBe(null)
+  })
+})
+
+describe('which problem a fleet face opens on', () => {
+  const gOn = (id: number, problem: string): Group => ({ ...group(id, true), problem })
+  const seatOn = (id: number, problem: string): RunWorker => strategist(gOn(id, problem))
+
+  it('never treats a pattern scope as a problem', () => {
+    // the bug that hid the whole tab (2026-08-22): scope "Erdos.%"
+    expect(fleetProblem(null, { problem: null, workers: [] }, 'Erdos.%')).toBeNull()
+    expect(fleetProblem(null, null, 'Erdos.*')).toBeNull()
+  })
+
+  it('a plain single-problem scope still serves as the last resort', () => {
+    expect(fleetProblem(null, { problem: null, workers: [] }, 'Combinatorics.union_closed')).toBe(
+      'Combinatorics.union_closed',
+    )
+  })
+
+  it('follows the one problem where a strategist is seated', () => {
+    const run = { problem: 'Erdos.p358', workers: [seatOn(516, 'Erdos.p143'), formalizer] }
+    expect(fleetProblem(null, run, 'Erdos.%')).toBe('Erdos.p143')
+  })
+
+  it('several seated problems fall back to the run focus — picking one would be arbitrary', () => {
+    const run = {
+      problem: 'Erdos.p358',
+      workers: [seatOn(516, 'Erdos.p143'), seatOn(520, 'Erdos.p1')],
+    }
+    expect(fleetProblem(null, run, 'Erdos.%')).toBe('Erdos.p358')
+  })
+
+  it('the reader pin beats everything', () => {
+    const run = { problem: 'Erdos.p358', workers: [seatOn(516, 'Erdos.p143')] }
+    expect(fleetProblem('Erdos.p912', run, 'Erdos.%')).toBe('Erdos.p912')
+  })
+
+  it('two seats in ONE problem still follow that problem', () => {
+    // concurrent sibling groups are the same argument's fan, not a tie
+    const run = {
+      problem: 'Erdos.p358',
+      workers: [seatOn(516, 'Erdos.p143'), seatOn(517, 'Erdos.p143')],
+    }
+    expect(fleetProblem(null, run, 'Erdos.%')).toBe('Erdos.p143')
   })
 })

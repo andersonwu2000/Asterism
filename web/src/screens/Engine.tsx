@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { Link } from '../lib/router'
 import RunConsole, { CycleLine } from './Run'
@@ -6,7 +6,7 @@ import { SettingsTab, UsageTab } from './Telemetry'
 import IntentEditor from '../components/IntentEditor'
 import ProgrammeView from '../components/ProgrammeView'
 import Timeline from '../components/Timeline'
-import { cycleForGroup, resolveGroup, seatedGroups } from '../lib/programmeFocus'
+import { cycleForGroup, fleetProblem, resolveGroup, seatedGroups } from '../lib/programmeFocus'
 import { ErrorState, TabNav } from '../components/ui'
 import type { DaemonStatus, Programme, RunStatus } from '../lib/types'
 
@@ -57,15 +57,82 @@ const TABS: { id: EngineTab; label: string; href: string; title?: string }[] = [
   { id: 'usage', label: 'Usage', href: '/engine/usage' },
 ]
 
+/** A pattern scope runs a FLEET — several problems under one daemon.
+ * The run-scoped faces then need to say which problem they are
+ * showing, and let the watcher pick. One quiet chip row; a dot marks
+ * where a strategist is seated this minute. Hidden entirely for the
+ * ordinary single-problem run. */
+function FleetStrip({
+  run,
+  shown,
+  pick,
+  onPick,
+}: {
+  run: RunStatus | null | undefined
+  shown: string | null
+  pick: string | null
+  onPick: (p: string | null) => void
+}) {
+  const fleet = run?.problems ?? []
+  if (fleet.length < 2) return null
+  const seated = new Set(seatedGroups(run?.workers ?? []).map((s) => s.group.problem))
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-1.5">
+      {fleet.map((name) => (
+        <button
+          key={name}
+          className={`rounded-full border px-2 py-0.5 font-mono text-[11px] ${
+            name === shown
+              ? 'border-star/60 bg-star/10 text-star'
+              : 'border-edge text-ink-faint hover:text-ink'
+          }`}
+          title={
+            name +
+            (seated.has(name)
+              ? ' — a strategist is seated on it right now'
+              : ' — in the fleet, between wakes')
+          }
+          onClick={() => onPick(name === pick ? null : name)}
+        >
+          {seated.has(name) && (
+            <span
+              className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-starlight align-middle"
+              aria-hidden
+            />
+          )}
+          {name.replace(/^.*\./, '')}
+        </button>
+      ))}
+      {pick !== null && (
+        <button
+          className="text-[10.5px] text-ink-faint transition-colors hover:text-ink-dim"
+          onClick={() => onPick(null)}
+          title="stop pinning — show wherever the run's strategist is working"
+        >
+          follow the run
+        </button>
+      )}
+    </div>
+  )
+}
+
 /** The steering face: the LIVE run's intent, editable in place —
  * the goal and your standing word are read fresh by each agent at
  * spawn, so this is the one lever that reaches a run in flight. */
-function SteerIntent() {
+function SteerIntent({
+  pick,
+  onPick,
+}: {
+  pick: string | null
+  onPick: (p: string | null) => void
+}) {
   const { data } = usePoll<DaemonStatus>('/api/daemon', 3000)
   const { data: run } = usePoll<RunStatus>('/api/run', 5000)
   const [, setDirty] = useState(false)
-  // the engine's scope while running; the last run's focus when idle
-  const problem = data?.scope ?? run?.problem ?? null
+  // the pinned pick, else follow the run. NEVER the raw scope — a
+  // fleet's scope is a LIKE pattern, not a problem (2026-08-22:
+  // "Erdos.%" 404'd this whole face)
+  const problem = fleetProblem(pick, run, data?.scope)
   if (!problem)
     return (
       <p className="mt-6 text-xs text-ink-faint">
@@ -78,7 +145,8 @@ function SteerIntent() {
     )
   return (
     <div className="mt-4">
-      <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
+      <FleetStrip run={run} shown={problem} pick={pick} onPick={onPick} />
+      <div className="mt-3 mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
         <Link
           to={`/problems/${encodeURIComponent(problem)}`}
           className="font-mono text-ink underline decoration-edge-strong underline-offset-2 hover:text-starlight"
@@ -92,7 +160,7 @@ function SteerIntent() {
             : 'saved instructions apply when the next run starts'}
         </span>
       </div>
-      <IntentEditor problem={problem} onDirtyChange={setDirty} bridged={false} />
+      <IntentEditor key={problem} problem={problem} onDirtyChange={setDirty} bridged={false} />
     </div>
   )
 }
@@ -104,17 +172,36 @@ function SteerIntent() {
  * never has to pick). Owner, 2026-08-02: during a run this is the most
  * readable account of where the work is — more so than opening stars
  * one Lean statement at a time. */
-function RunProgramme() {
+function RunProgramme({
+  fleetPick,
+  onFleetPick,
+}: {
+  fleetPick: string | null
+  onFleetPick: (p: string | null) => void
+}) {
   const { data: daemon } = usePoll<DaemonStatus>('/api/daemon', 3000)
   const { data: run } = usePoll<RunStatus>('/api/run', 5000)
   // three states, not two: undefined = follow the run, null = the
   // reader chose the problem's own argument, a number = that group
   const [pick, setPick] = useState<number | null | undefined>(undefined)
-  const problem = daemon?.scope ?? run?.problem ?? null
+  // the pinned fleet pick, else follow the run — never the raw scope
+  // (a pattern scope is not a problem name; 2026-08-22)
+  const problem = fleetProblem(fleetPick, run, daemon?.scope)
+  // a group id belongs to ONE problem — crossing to another problem
+  // with a stale id would 404 the whole read
+  const shownRef = useRef(problem)
+  if (shownRef.current !== problem) {
+    shownRef.current = problem
+    if (pick !== undefined) setPick(undefined)
+  }
   // Sibling groups run CONCURRENTLY (that is what the tree buys), so
   // "the seated strategist" can be several — the selection and cycle
   // laws live in lib/programmeFocus, tested there.
-  const workers = run?.workers ?? []
+  // The seat lists span the whole FLEET; the tree must only light
+  // groups that belong to the problem on screen.
+  const workers = (run?.workers ?? []).filter(
+    (w) => !w.group || w.group.problem === problem,
+  )
   const seats = seatedGroups(workers)
   const liveIds = seats.map((s) => s.group.id)
   // each seated group's argument phase, so the tree says what every
@@ -157,6 +244,7 @@ function RunProgramme() {
   if (!data) return null
   return (
     <div className="mt-4">
+      <FleetStrip run={run} shown={problem} pick={fleetPick} onPick={onFleetPick} />
       <ProgrammeView
         data={data}
         group={group}
@@ -184,13 +272,18 @@ function RunProgramme() {
 }
 
 export default function Engine({ tab }: { tab: EngineTab }) {
+  // which fleet problem the run-scoped faces are pinned to (null =
+  // follow the run). Lifted here so a tab switch keeps the pin.
+  const [fleetPick, setFleetPick] = useState<string | null>(null)
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
       <h1 className="font-display text-[22px] font-medium text-ink">Engine</h1>
       <TabNav className="mt-3" tabs={TABS} active={tab} />
       {tab === 'console' && <RunConsole />}
-      {tab === 'intent' && <SteerIntent />}
-      {tab === 'programme' && <RunProgramme />}
+      {tab === 'intent' && <SteerIntent pick={fleetPick} onPick={setFleetPick} />}
+      {tab === 'programme' && (
+        <RunProgramme fleetPick={fleetPick} onFleetPick={setFleetPick} />
+      )}
       {tab === 'timeline' && (
         /* The run's own framing of the problem page's log (`419dcb31`'s
            law: what you read while watching belongs on the page you
