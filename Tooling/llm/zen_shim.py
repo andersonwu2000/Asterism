@@ -45,8 +45,28 @@ import uuid
 # pathology (unbounded thinking until max_tokens, content never
 # written — measured on both gateways); OpenRouter honors it and also
 # serves a conformant /responses. Model ids differ per gateway.
+# Two upstreams (2026-08-22): OpenRouter is PRIMARY — fast, stable,
+# but capped at 1000 requests/day platform-wide for free models. Zen is
+# the RESCUE tier for the moment that cap dies mid-day: its token quota
+# is the free week's "near unlimited" one and its old long-output 500
+# was OUR bug (non-streaming call; Zen's edge times it out at ~35s —
+# `stream: true` delivered a 400-word essay in 59s). Zen stays rescue
+# rather than primary because on tool-bearing fleet requests it answers
+# EMPTY chronically (0 items, ~40 reasoning tokens; measured when v6
+# briefly ran Zen-first) and its pool is slower — degraded fallback,
+# not an equal.
 ZEN = os.environ.get("ASTERISM_ZEN_UPSTREAM", "https://openrouter.ai/api/v1")
-MODEL_MAP = {"x-preview-f-free": "stealth/ox-alpha"}
+ZEN_RESCUE = os.environ.get("ASTERISM_ZEN_RESCUE",
+                            "https://opencode.ai/zen/v1")
+
+
+def _model_for(base: str, model: "str | None") -> "str | None":
+    """The same brain wears a different name per gateway."""
+    if model is None:
+        return model
+    if "openrouter" in base:
+        return {"x-preview-f-free": "stealth/ox-alpha"}.get(model, model)
+    return {"stealth/ox-alpha": "x-preview-f-free"}.get(model, model)
 ZEN_EFFORT = os.environ.get("ASTERISM_ZEN_EFFORT", "medium")
 NS = "mcp__asterism_tools"
 LSP_NS = "mcp__lsp"
@@ -61,25 +81,28 @@ _TOOL_LOCK = threading.Lock()
 _ATTEMPT_RE = re.compile(r"[A-Za-z]:\\[^\s'\"]*\.attempts\\[0-9a-fA-F-]{36}")
 
 
-def _key() -> str:
-    names = (("OPENROUTER_API_KEY",) if "openrouter" in ZEN
-             else ("OPENCODE_ZEN_API_KEY",))
-    for n in names:
-        k = os.environ.get(n, "")
-        if k:
-            return k
-    env = os.path.join(_REPO, ".env")
-    try:
-        for line in open(env, encoding="utf-8"):
-            for n in names:
-                if line.startswith(n + "="):
-                    return line.split("=", 1)[1].strip()
-    except OSError:
-        pass
-    raise SystemExit(f"no {names[0]} (env or .env)")
+_KEY_CACHE: "dict[str, str]" = {}
 
 
-KEY = None  # filled in main()
+def _key_for(base: str) -> str:
+    name = ("OPENROUTER_API_KEY" if "openrouter" in base
+            else "OPENCODE_ZEN_API_KEY")
+    if name in _KEY_CACHE:
+        return _KEY_CACHE[name]
+    k = os.environ.get(name, "")
+    if not k:
+        env = os.path.join(_REPO, ".env")
+        try:
+            for line in open(env, encoding="utf-8"):
+                if line.startswith(name + "="):
+                    k = line.split("=", 1)[1].strip()
+                    break
+        except OSError:
+            pass
+    if not k:
+        raise SystemExit(f"no {name} (env or .env)")
+    _KEY_CACHE[name] = k
+    return k
 
 
 def _tools_module():
@@ -217,62 +240,110 @@ def _attempt_dir_of(body: dict) -> "str | None":
     return m.group(0) if m else None
 
 
+def _dump_4xx(e: "urllib.error.HTTPError", body: dict) -> "urllib.error.HTTPError":
+    """Full forensics on a deterministic client rejection, re-raising
+    with the error body re-attached (the outer handler forwards it to
+    codex verbatim). The 150-byte log line buried the diagnosis once
+    (p143's strategist died agent_no_output on an unexplained
+    `invalid_prompt`, 2026-08-22)."""
+    err_bytes = e.read()
+    try:
+        dump = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "..", ".asterism", "logs",
+            f"zen_shim_4xx_{int(time.time())}.json")
+        with open(dump, "w", encoding="utf-8") as f:
+            json.dump({"status": e.code,
+                       "error": err_bytes.decode("utf-8", "replace"),
+                       "request": body}, f, ensure_ascii=False, indent=1)
+        print(f"[shim] 4xx dumped -> {dump}", flush=True)
+    except Exception:  # noqa: BLE001 — dump is best-effort
+        pass
+    return urllib.error.HTTPError(
+        e.url, e.code, e.reason, e.headers, io.BytesIO(err_bytes))
+
+
+def _stream_once(base: str, body: dict) -> dict:
+    """One STREAMING /responses call; returns the final response object.
+
+    Streaming is load-bearing, not a transport preference: Zen's edge
+    kills a non-streaming response at ~35s, which we mis-filed as 'Zen
+    cannot do long outputs' for two days — the same request with
+    `stream: true` finishes fine (413-word essay, 59s, measured
+    2026-08-22). The last `response.completed` event carries the whole
+    response object, so the delta traffic needs no assembly."""
+    b = dict(body)
+    b["model"] = _model_for(base, b.get("model"))
+    b["stream"] = True
+    req = urllib.request.Request(
+        base + "/responses",
+        data=json.dumps(b, ensure_ascii=False).encode(),
+        headers={"Authorization": "Bearer " + _key_for(base),
+                 "Content-Type": "application/json",
+                 "Accept": "text/event-stream",
+                 "User-Agent": "asterism-zen-shim/6.0"})
+    with urllib.request.urlopen(req, timeout=1740) as r:
+        final: "dict | None" = None
+        for raw in r:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            try:
+                d = json.loads(line[5:])
+            except ValueError:
+                continue
+            if d.get("type") == "response.completed":
+                final = d.get("response")
+            elif d.get("type") == "response.failed":
+                raise urllib.error.URLError(
+                    f"upstream response.failed: "
+                    f"{json.dumps(d)[:300]}")
+    if final is None:
+        raise urllib.error.URLError("stream ended without "
+                                    "response.completed")
+    return final
+
+
 def _zen_call(body: dict) -> dict:
-    """POST once, retrying 5xx/transport errors in place: the free
-    endpoint 503s routinely, and aborting the whole request makes codex
-    restart the entire turn — a multi-step tool loop then never
-    finishes (measured 2026-08-22)."""
-    data = json.dumps(body, ensure_ascii=False).encode()
+    """Streaming POST with two tiers: retry 5xx/transport on the
+    primary (Zen 503s routinely, and aborting makes codex restart the
+    whole turn), then hand the same request to the rescue upstream
+    (OpenRouter, 1000 req/day) before giving up. 4xx anywhere is
+    deterministic — dump and raise, no retry."""
     last: Exception | None = None
-    for attempt in range(4):
-        req = urllib.request.Request(
-            ZEN + "/responses", data=data,
-            headers={"Authorization": "Bearer " + KEY,
-                     "Content-Type": "application/json",
-                     "User-Agent": "asterism-zen-shim/3.0"})
+    for attempt in range(3):
         try:
-            with urllib.request.urlopen(req, timeout=1740) as r:
-                return json.loads(r.read())
+            return _stream_once(ZEN, body)
         except urllib.error.HTTPError as e:
+            if e.code == 429:
+                # The daily request cap — expected once a day, not an
+                # anomaly worth a dump. The rescue tier exists for
+                # exactly this moment: degraded continuation beats a
+                # parked fleet.
+                e.read()
+                print("[shim] primary 429 (daily cap) — rescue tier",
+                      flush=True)
+                break
             if e.code < 500:
-                # Deterministic client rejection — retrying is waste, but
-                # the 150-byte log line buried the diagnosis (p143's
-                # strategist died agent_no_output on an unexplained
-                # `invalid_prompt`, 2026-08-22). Dump the FULL request
-                # and error body so the offending field is readable,
-                # then re-raise with the body re-attached (the outer
-                # handler forwards it to codex verbatim).
-                err_bytes = e.read()
-                try:
-                    dump = os.path.join(
-                        os.path.dirname(os.path.abspath(__file__)),
-                        "..", "..", ".asterism", "logs",
-                        f"zen_shim_4xx_{int(time.time())}.json")
-                    with open(dump, "w", encoding="utf-8") as f:
-                        json.dump({"status": e.code,
-                                   "error": err_bytes.decode(
-                                       "utf-8", "replace"),
-                                   "request": body}, f,
-                                  ensure_ascii=False, indent=1)
-                    print(f"[shim] 4xx dumped -> {dump}", flush=True)
-                except Exception:  # noqa: BLE001 — dump is best-effort
-                    pass
-                raise urllib.error.HTTPError(
-                    e.url, e.code, e.reason, e.headers,
-                    io.BytesIO(err_bytes))
-            if attempt == 3:
-                raise
+                raise _dump_4xx(e, body)
             e.read()
             last = e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
-            if attempt == 3:
-                raise
             last = e
+        if attempt == 2:
+            print(f"[shim] primary upstream exhausted ({last}) — "
+                  f"rescue tier", flush=True)
+            break
         wait = 5 * (attempt + 1)
-        print(f"[shim]   retry {attempt+1}/3 in {wait}s ({last})",
+        print(f"[shim]   primary retry {attempt+1}/2 in {wait}s ({last})",
               flush=True)
         time.sleep(wait)
-    raise RuntimeError("unreachable")
+    try:
+        return _stream_once(ZEN_RESCUE, body)
+    except urllib.error.HTTPError as e:
+        if e.code < 500:
+            raise _dump_4xx(e, body)
+        raise
 
 
 class Shim(http.server.BaseHTTPRequestHandler):
@@ -311,7 +382,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
         nonce = uuid.uuid4().hex[:12]
         inst = body.get("instructions") or ""
         body["instructions"] = f"[session {nonce}]\n{inst}"
-        body["model"] = MODEL_MAP.get(body.get("model"), body.get("model"))
+        # model naming is per-upstream — _stream_once maps at call time
         # Pin the reasoning phase: unbounded (or effort-high), ox-alpha
         # thinks its whole budget away on long-form outputs and never
         # writes content. OpenRouter's /responses rejects
@@ -470,10 +541,15 @@ class Shim(http.server.BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    global KEY
-    KEY = _key()
+    _key_for(ZEN)  # fail fast on a missing primary key
+    try:
+        _key_for(ZEN_RESCUE)
+    except SystemExit:
+        print("[shim] WARNING: no rescue-tier key — running primary-only",
+              flush=True)
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8898
-    print(f"[shim] zen shim v3 on 127.0.0.1:{port} -> {ZEN}", flush=True)
+    print(f"[shim] zen shim v6 on 127.0.0.1:{port} -> {ZEN} "
+          f"(rescue: {ZEN_RESCUE})", flush=True)
     http.server.ThreadingHTTPServer(("127.0.0.1", port), Shim).serve_forever()
     return 0
 

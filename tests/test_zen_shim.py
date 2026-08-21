@@ -57,6 +57,96 @@ def test_mcp_http_parses_sse_with_lowercase_content_type(
     assert rh["mcp-session-id"] == "abc123"
 
 
+def test_stream_once_returns_completed_response(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    # Streaming upstream is load-bearing: Zen's edge kills non-stream
+    # responses at ~35s (mis-filed as "Zen cannot do long outputs" for
+    # two days). The final response.completed event carries the whole
+    # response object.
+    sse = (b'data: {"type":"response.output_text.delta","delta":"x"}\n'
+           b'data: {"type":"response.completed",'
+           b'"response":{"output":[{"type":"message"}],"usage":{}}}\n')
+    captured: dict = {}
+
+    def fake_urlopen(req, timeout=0):
+        captured["body"] = __import__("json").loads(req.data)
+        return _FakeResponse(sse, {})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setitem(zen_shim._KEY_CACHE, "OPENCODE_ZEN_API_KEY", "k")
+    monkeypatch.setitem(zen_shim._KEY_CACHE, "OPENROUTER_API_KEY", "k")
+    out = zen_shim._stream_once("https://opencode.ai/zen/v1",
+                                {"model": "x-preview-f-free", "input": []})
+    assert out == {"output": [{"type": "message"}], "usage": {}}
+    assert captured["body"]["stream"] is True
+    # per-upstream model naming: zen keeps its native id...
+    assert captured["body"]["model"] == "x-preview-f-free"
+    # ...openrouter gets the stealth id
+    zen_shim._stream_once("https://openrouter.ai/api/v1",
+                          {"model": "x-preview-f-free", "input": []})
+    assert captured["body"]["model"] == "stealth/ox-alpha"
+
+
+def test_stream_once_raises_when_stream_never_completes(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    # A stream that dies mid-flight must surface as a retryable error,
+    # not a silent empty response.
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda req, timeout=0: _FakeResponse(
+            b'data: {"type":"response.output_text.delta","delta":"x"}\n',
+            {}))
+    monkeypatch.setitem(zen_shim._KEY_CACHE, "OPENCODE_ZEN_API_KEY", "k")
+    with pytest.raises(urllib.error.URLError):
+        zen_shim._stream_once("https://opencode.ai/zen/v1",
+                              {"model": "x-preview-f-free", "input": []})
+
+
+def test_zen_call_falls_back_to_rescue_upstream(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    # Primary (OpenRouter) exhausts its retries -> the SAME request goes
+    # to the rescue upstream (Zen) before the shim gives up.
+    calls: list[str] = []
+
+    def fake_stream(base, body):
+        calls.append(base)
+        if base == zen_shim.ZEN:
+            raise urllib.error.URLError("primary down")
+        return {"output": [], "usage": {}}
+
+    monkeypatch.setattr(zen_shim, "_stream_once", fake_stream)
+    monkeypatch.setattr(zen_shim.time, "sleep", lambda s: None)
+    out = zen_shim._zen_call({"model": "x-preview-f-free", "input": []})
+    assert out == {"output": [], "usage": {}}
+    assert calls[:-1] == [zen_shim.ZEN] * 3
+    assert calls[-1] == zen_shim.ZEN_RESCUE
+
+
+def test_zen_call_429_goes_straight_to_rescue(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    # The daily request cap (429) is expected, not an anomaly: no
+    # primary retries, no forensics dump — straight to the rescue tier
+    # so the fleet degrades instead of parking.
+    calls: list[str] = []
+
+    def fake_stream(base, body):
+        calls.append(base)
+        if base == zen_shim.ZEN:
+            raise urllib.error.HTTPError(
+                base, 429, "Too Many Requests", None,
+                __import__("io").BytesIO(b'{"error":"cap"}'))
+        return {"output": ["rescued"], "usage": {}}
+
+    monkeypatch.setattr(zen_shim, "_stream_once", fake_stream)
+    dumped: list = []
+    monkeypatch.setattr(zen_shim, "_dump_4xx",
+                        lambda e, b: dumped.append(1) or e)
+    out = zen_shim._zen_call({"model": "x-preview-f-free", "input": []})
+    assert out == {"output": ["rescued"], "usage": {}}
+    assert calls == [zen_shim.ZEN, zen_shim.ZEN_RESCUE]
+    assert not dumped
+
+
 def test_mcp_http_normalizes_mixed_case_headers(
         monkeypatch: pytest.MonkeyPatch) -> None:
     body = b'{"jsonrpc":"2.0","id":1,"result":{}}'
