@@ -346,9 +346,16 @@ def _interactive_slots(workspace: Path) -> int:
 # 16 under the per-spawn architecture). Model: one shared base + a
 # per-worker marginal (private heap + headroom for elaboration
 # spikes). Used only to DOWNSIZE an unaffordable pool — never to grow
-# it; an 8 GB laptop still clamps to 1 ((4.8−3)/1.5).
+# it; an 8 GB laptop still clamps to 1 ((4.8−3)/1.0).
+#
+# Marginal history: 1.5 was calibrated with a per-spawn CLI.exe process
+# riding each slot (claude.exe keeps its own multi-hundred-MB heap).
+# The zen/API-key channel has no such passenger — its spawns are one
+# thin codex.exe against a local shim — so the marginal is the Lean
+# worker alone (user, 2026-08-22, Erdős fleet at pool 15). Restore 1.5
+# when the pool returns to CLI-heavy seats.
 _SHARED_MATHLIB_GB = 3.0
-_WORKER_MARGINAL_GB = 1.5
+_WORKER_MARGINAL_GB = 1.0
 
 
 def physical_ram_gb() -> "tuple[float, float] | None":

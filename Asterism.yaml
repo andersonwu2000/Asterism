@@ -8,7 +8,12 @@
 
 dispatch:
   quota_wait: true
-  pool: 4                     # Max in-flight pipelines, also = number of
+  pool: 15                    # 2026-08-22 Erdős fleet (user): zen/API-key
+                              # spawns carry no CLI.exe passenger, so the
+                              # RAM clamp marginal dropped 1.5→1.0 GB and
+                              # this box affords 15+1. Restore 10 (or 8)
+                              # for CLI-heavy seats.
+                              # Max in-flight pipelines, also = number of
                               # persistent lean workers in the LSP gateway
                               # pool (1:1 binding — every spawn claims one
                               # dedicated worker for its lifetime, freed on
@@ -28,7 +33,7 @@ dispatch:
                               #                          ~1 GB but most not resident)
                               # Approximation:
                               #   RAM ≈ 3.7 + 0.95×pool  GB
-  budget_sec: 86400           # 24hr daemon wall-clock cutoff (was 18000
+  budget_sec: 604800          # 7d daemon wall-clock cutoff (was 86400=24h:
                               # = 5hr; 7200 for miniF2F stress test, 16200
                               # for older SG baselines)
   shelve_threshold: 5         # total attempts per goal before shelving
@@ -98,9 +103,12 @@ formalizer:
   # subscription of its own. luna at `xhigh` does the throughput work;
   # the NL layer takes `sol`. Baseline: provider: claude / model:
   # claude-sonnet-5
-  provider: codex
-  model: gpt-5.6-luna
-  reasoning_effort: xhigh
+  # 2026-08-22 Erdős free-window fleet: ox-alpha everywhere (user).
+  # Restore union_closed seats with: provider: codex / model:
+  # gpt-5.6-luna / reasoning_effort: xhigh
+  provider: zen
+  model: x-preview-f-free
+  reasoning_effort: high
   # 2026-08-13: back off codex after the smoke run. The seat is proven
   # on codex (Test.provider_probe: brick proved, seven-tool roll-call
   # recorded, intake sentinel written) — restore with
@@ -141,8 +149,10 @@ strategist:
   # cannot be built), and this worker has no Read/Grep at all — it
   # reaches every file through the `inspect` MCP tool.
   # Baseline: claude / claude-opus-5.
-  provider: codex
-  model: gpt-5.6-sol
+  # 2026-08-22 Erdős fleet: zen. Restore: provider: codex /
+  # model: gpt-5.6-sol / reasoning_effort: high
+  provider: zen
+  model: x-preview-f-free
   reasoning_effort: high   # user 2026-08-15: sol does not need xhigh to
                            # hold the NL layer; luna keeps xhigh below.
   # Back on the opus tier 2026-08-06 after the
@@ -193,8 +203,10 @@ presearch:
   enabled: true                # off → skip pre-search (provers grep on their own)
   # Moves with the formalizer: `quota.BOUND` ties {presearch,
   # formalizer}, so a split pair stops on one seat's window.
-  provider: claude
-  model: claude-sonnet-5
+  # 2026-08-22 Erdős/ox-alpha era: presearch rides zen too (user).
+  # Restore: provider: claude / model: claude-sonnet-5
+  provider: zen
+  model: x-preview-f-free
   # 2026-08-15: back to sonnet. haiku landed the probe brick but
   # dropped the brief's secondary written requirements, and on a
   # real board that shows up as commit-gate rework, not as a
@@ -238,17 +250,28 @@ feedback:
   enabled: true                # re-enabled for the Formalizer e2e acceptance (user 2026-07-29); the ~15-30s questionnaire resume per spawn is acceptable in dev runs
 
 scholar:
-  model: claude-sonnet-5
+  # 2026-08-22 Erdős/ox-alpha era: scholar rides zen too (user, same
+  # order as presearch). Restore: model: claude-sonnet-5 (no provider).
+  provider: zen
+  model: x-preview-f-free
+  reasoning_effort: high
 
 adversary:
+  # 2026-08-18: back to the claude baseline (user) — save codex quota
+  # for the throughput seat; the judge no longer matches its author
+  # (sol stays on strategist), accepted as a deliberate split.
   # 2026-08-15: codex for the cache-hit probe (user) — the judge follows
   # its author, as the A/B rule below requires, so the NL layer stays one
   # variable. Also first time on this seat for this backend.
-  # Baseline: claude / claude-opus-5.
-  provider: codex
-  model: gpt-5.6-sol
-  reasoning_effort: high   # matches the author, as the A/B rule below
-                           # requires — one variable on the NL layer.
+  # 2026-08-21: judge = author again (user) — burn only the GPT quota
+  # while the claude window rests; the A/B "one NL variable" shape is
+  # restored as a side effect. Restore claude with:
+  # provider: claude / model: claude-opus-5
+  # 2026-08-22 Erdős fleet: zen. Restore: provider: codex /
+  # model: gpt-5.6-sol / reasoning_effort: high
+  provider: zen
+  model: x-preview-f-free
+  reasoning_effort: high
   # 2026-08-13: back on fable (user). The 08-12 detour to opus-5 was
   # only because fable's weekly window was spent and the ledger BINDs
   # {strategist, adversary} — a blocked judge stops the pair.
