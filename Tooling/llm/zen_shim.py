@@ -362,6 +362,19 @@ class Shim(http.server.BaseHTTPRequestHandler):
             self.send_response(400)
             self.end_headers()
             return
+        if not body.get("model"):
+            # Liveness curls POST `{}` — answer locally instead of
+            # forwarding a model-less request upstream (each one burned
+            # an OpenRouter daily-cap slot and manufactured the
+            # `invalid_prompt` mystery 400s of 2026-08-22 — which were
+            # our own probes all along).
+            blob = b'{"error":"no model \xe2\x80\x94 shim alive"}'
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(blob)))
+            self.end_headers()
+            self.wfile.write(blob)
+            return
         # --- request surgery -----------------------------------------
         if isinstance(body.get("tools"), list):
             flat = []
