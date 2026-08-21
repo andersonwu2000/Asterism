@@ -338,11 +338,20 @@ function Test-Preflight($decisions, $workspace) {
 # because it is the only route that respects the user's own default
 # browser.
 function Open-Url($url) {
+    # Trust the association only when the ProgId actually RESOLVES.
+    # Windows Sandbox stamps UserChoice=MSEdgeHTM into the image while
+    # shipping no HKCR\MSEdgeHTM class at all (measured 2026-08-22,
+    # browser-probe) - a ProgId-is-present check walks straight into
+    # the "you need a new app" dialog it was written to avoid.
     $choice = Get-ItemProperty -ErrorAction SilentlyContinue -Path `
         'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice'
     if ($choice -and $choice.ProgId) {
-        Start-Process $url
-        return
+        $open = (Get-ItemProperty -ErrorAction SilentlyContinue -Path `
+            ('Registry::HKEY_CLASSES_ROOT\' + $choice.ProgId + '\shell\open\command')).'(default)'
+        if ($open) {
+            Start-Process $url
+            return
+        }
     }
     # interpolated strings, NOT Join-Path: an absent root (there is no
     # ProgramFiles(x86) on 32-bit Windows) must merely fail the
