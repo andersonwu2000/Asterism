@@ -172,11 +172,13 @@ def test_zen_call_falls_back_to_rescue_upstream(
     assert calls[-1] == zen_shim.ZEN_RESCUE
 
 
-def test_zen_call_429_goes_straight_to_rescue(
+def test_zen_call_429_walks_the_plan_without_dumping(
         monkeypatch: pytest.MonkeyPatch) -> None:
-    # The daily request cap (429) is expected, not an anomaly: no
-    # primary retries, no forensics dump — straight to the rescue tier
-    # so the fleet degrades instead of parking.
+    # A 429 on EITHER tier is an expected quota event, not an anomaly:
+    # no forensics dump, no propagation — keep walking the alternating
+    # schedule until a slot answers. (Strategists died quota_exhausted
+    # through 'Zen empty ×3 → rescue 429 → propagate' before the
+    # schedule treated a dead parachute as one more transient.)
     calls: list[str] = []
 
     def fake_stream(base, body):
@@ -188,13 +190,39 @@ def test_zen_call_429_goes_straight_to_rescue(
         return {"output": ["rescued"], "usage": {}}
 
     monkeypatch.setattr(zen_shim, "_stream_once", fake_stream)
+    monkeypatch.setattr(zen_shim.time, "sleep", lambda s: None)
     dumped: list = []
     monkeypatch.setattr(zen_shim, "_dump_4xx",
                         lambda e, b: dumped.append(1) or e)
     out = zen_shim._zen_call({"model": "x-preview-f-free", "input": []})
     assert out == {"output": ["rescued"], "usage": {}}
-    assert calls == [zen_shim.ZEN, zen_shim.ZEN_RESCUE]
+    # walked Zen slots until the first rescue slot answered
+    assert calls == [zen_shim.ZEN] * 3 + [zen_shim.ZEN_RESCUE]
     assert not dumped
+
+
+def test_zen_call_dead_parachute_returns_to_primary(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    # Rescue 429 (daily cap spent) while Zen answers empty: the request
+    # must come BACK to Zen and win when Zen recovers, not die on the
+    # parachute's quota.
+    calls: list[str] = []
+
+    def fake_stream(base, body):
+        calls.append(base)
+        if base == zen_shim.ZEN_RESCUE:
+            raise urllib.error.HTTPError(
+                base, 429, "Too Many Requests", None,
+                __import__("io").BytesIO(b'{"error":"cap"}'))
+        if len(calls) < 6:
+            raise urllib.error.URLError("chat stream ended empty")
+        return {"output": ["late win"], "usage": {}}
+
+    monkeypatch.setattr(zen_shim, "_stream_once", fake_stream)
+    monkeypatch.setattr(zen_shim.time, "sleep", lambda s: None)
+    out = zen_shim._zen_call({"model": "x-preview-f-free", "input": []})
+    assert out == {"output": ["late win"], "usage": {}}
+    assert calls[3] == zen_shim.ZEN_RESCUE and calls[5] == zen_shim.ZEN
 
 
 def test_mcp_http_normalizes_mixed_case_headers(

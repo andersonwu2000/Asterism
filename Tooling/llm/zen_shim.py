@@ -440,46 +440,47 @@ def _stream_once(base: str, body: dict) -> dict:
     return final
 
 
+#: Alternating upstream schedule. Peak-hour Zen answers EMPTY
+#: stochastically (22 hits in 15 fleet-minutes, 2026-08-22 06:20 local),
+#: so three tries is a coin flip while eight is near-certain; and the
+#: rescue's own 429 (daily cap spent, resets 00:00 UTC) must NOT kill
+#: the request — a dead parachute sends us back to hammering Zen, not
+#: to the ground. Strategists died quota_exhausted through exactly that
+#: chain (Zen empty ×3 → rescue 429 → propagate) before this schedule.
+_UPSTREAM_PLAN = (ZEN, ZEN, ZEN, ZEN_RESCUE, ZEN, ZEN, ZEN, ZEN_RESCUE,
+                  ZEN, ZEN)
+
+
 def _zen_call(body: dict) -> dict:
-    """Streaming POST with two tiers: retry 5xx/transport on the
-    primary (Zen 503s routinely, and aborting makes codex restart the
-    whole turn), then hand the same request to the rescue upstream
-    (OpenRouter, 1000 req/day) before giving up. 4xx anywhere is
-    deterministic — dump and raise, no retry."""
+    """Streaming POST walking `_UPSTREAM_PLAN`: transient failures
+    (5xx / transport / empty stream / EITHER tier's 429) step to the
+    next slot; non-429 4xx is deterministic — dump and raise. The last
+    slot's failure propagates."""
     last: Exception | None = None
-    for attempt in range(3):
+    for i, base in enumerate(_UPSTREAM_PLAN):
+        is_last = i == len(_UPSTREAM_PLAN) - 1
         try:
-            return _stream_once(ZEN, body)
+            return _stream_once(base, body)
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                # The daily request cap — expected once a day, not an
-                # anomaly worth a dump. The rescue tier exists for
-                # exactly this moment: degraded continuation beats a
-                # parked fleet.
                 e.read()
-                print("[shim] primary 429 (daily cap) — rescue tier",
-                      flush=True)
-                break
-            if e.code < 500:
+                last = e
+                print(f"[shim]   {('rescue' if base == ZEN_RESCUE else 'primary')}"
+                      f" 429 — next slot", flush=True)
+            elif e.code < 500:
                 raise _dump_4xx(e, body)
-            e.read()
-            last = e
+            else:
+                e.read()
+                last = e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             last = e
-        if attempt == 2:
-            print(f"[shim] primary upstream exhausted ({last}) — "
-                  f"rescue tier", flush=True)
+        if is_last:
             break
-        wait = 5 * (attempt + 1)
-        print(f"[shim]   primary retry {attempt+1}/2 in {wait}s ({last})",
-              flush=True)
+        wait = min(5 * (i + 1), 20)
+        print(f"[shim]   retry {i+1}/{len(_UPSTREAM_PLAN)-1} in {wait}s "
+              f"({last})", flush=True)
         time.sleep(wait)
-    try:
-        return _stream_once(ZEN_RESCUE, body)
-    except urllib.error.HTTPError as e:
-        if e.code < 500:
-            raise _dump_4xx(e, body)
-        raise
+    raise last if isinstance(last, Exception) else RuntimeError("no upstream")
 
 
 class Shim(http.server.BaseHTTPRequestHandler):
