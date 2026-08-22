@@ -622,10 +622,9 @@ class Shim(http.server.BaseHTTPRequestHandler):
                              or str(it.get("name", "")).startswith(
                                  LSP_NS + "__"))]
                 _log(f"[shim] iter {iters}: zen {time.time()-t_call:.0f}s, "
-                      f"{len(items)} item(s), "
-                      + (", ".join(str(it.get('name'))[len(NS)+2:]
-                                   for it in mine) or "final"),
-                      flush=True)
+                     f"{len(items)} item(s), "
+                     + (", ".join(str(it.get('name'))[len(NS)+2:]
+                                  for it in mine) or "final"))
                 if not mine or iters >= MAX_TOOL_ITERATIONS:
                     break
                 iters += 1
