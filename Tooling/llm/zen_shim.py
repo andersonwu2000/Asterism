@@ -264,7 +264,12 @@ def _attempt_dir_from_path(path: str) -> "str | None":
     parts = m.group(1).split("/")
     if any(p in ("", ".", "..") for p in parts):
         return None
-    return os.path.join(_REPO, ".attempts", *parts)
+    cand = os.path.join(_REPO, ".attempts", *parts)
+    # The dispatcher creates the dir before the spawn, so a real
+    # channel always names an existing dir; a miss means a stale
+    # generation's config (basename-only URLs) — fall back to the
+    # request-text archaeology rather than answer confidently wrong.
+    return cand if os.path.isdir(cand) else None
 
 
 def _attempt_dir_of(body: dict) -> "str | None":
