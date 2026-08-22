@@ -80,7 +80,14 @@ NS = "mcp__asterism_tools"
 LSP_NS = "mcp__lsp"
 GATEWAY_MCP = os.environ.get("ASTERISM_GATEWAY_MCP",
                              "http://127.0.0.1:8765/mcp")
-MAX_TOOL_ITERATIONS = 80
+#: Iteration cap = runaway backstop only, NOT the work budget — the
+#: seat wall caps bound total time and the pacer bounds call rate, so
+#: this only has to stop an infinite ping-pong. 80 was arbitrary and
+#: healthy validate→fix loops hit it 25 times in one day (2026-08-22);
+#: 200 ≈ 50-80 min of tool work, inside every seat's wall budget. The
+#: cap-10 warning and the wrap-up turn ride whatever the value is.
+MAX_TOOL_ITERATIONS = int(
+    os.environ.get("ASTERISM_ZEN_MAX_TOOL_ITERS") or 200)
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, _REPO)
