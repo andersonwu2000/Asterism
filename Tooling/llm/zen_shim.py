@@ -561,6 +561,32 @@ def _pace() -> None:
         time.sleep(min(wait, 5.0))
 
 
+#: Concurrent upstream inference requests. The 2026-08-22 storm's true
+#: cause (friend-machine probe): Nous throttles CONCURRENCY for
+#: low-credit accounts — six tiny simultaneous requests all 429'd
+#: ("Too many concurrent inference requests for an account with low
+#: available credits") while the per-minute headers sat nearly full,
+#: so RPM pacing treats the wrong variable. The semaphore is the
+#: matching choke point: excess requests queue here, orderly, instead
+#: of burning 429 retries upstream. Exact account limit unknown;
+#: 5 held two fleets' worth of traffic under it. 0 disables.
+_CONCURRENCY = int(os.environ.get("ASTERISM_ZEN_CONCURRENCY") or 5)
+_CONC_SEM = threading.BoundedSemaphore(max(_CONCURRENCY, 1))
+
+
+def _touch_heartbeat(attempt_dir: "str | None") -> None:
+    """Progress signal for the watchdog's third clock — also written
+    while WAITING in the concurrency queue, because an orderly wait on
+    a busy account is liveness, not a wedge."""
+    if not attempt_dir:
+        return
+    try:
+        with open(os.path.join(attempt_dir, "_shim_heartbeat"), "w"):
+            pass
+    except OSError:
+        pass
+
+
 #: Total seconds ONE call may spend waiting out 429s (both tiers
 #: throttled) before the failure propagates. A throttle is a rolling
 #: window — waiting is guaranteed to clear it, and a dead strategist
@@ -573,7 +599,7 @@ _UPSTREAM_PLAN = (ZEN, ZEN, ZEN, ZEN_RESCUE, ZEN, ZEN, ZEN, ZEN_RESCUE,
                   ZEN, ZEN)
 
 
-def _zen_call(body: dict) -> dict:
+def _zen_call(body: dict, attempt_dir: "str | None" = None) -> dict:
     """Streaming POST walking `_UPSTREAM_PLAN`: transient failures
     (5xx / transport / empty stream / EITHER tier's 429) step to the
     next slot; non-429 4xx is deterministic — dump and raise.
@@ -592,6 +618,16 @@ def _zen_call(body: dict) -> dict:
             try:
                 if base != ZEN_RESCUE:
                     _pace()
+                    if _CONCURRENCY > 0:
+                        # Orderly queue on the account's concurrency
+                        # window; heartbeat while waiting so the
+                        # watchdog reads the queue as liveness.
+                        while not _CONC_SEM.acquire(timeout=5):
+                            _touch_heartbeat(attempt_dir)
+                        try:
+                            return _stream_once(base, body)
+                        finally:
+                            _CONC_SEM.release()
                 return _stream_once(base, body)
             except urllib.error.HTTPError as e:
                 if e.code == 429:
@@ -599,12 +635,20 @@ def _zen_call(body: dict) -> dict:
                     ra = (hdrs.get("Retry-After") or "").strip()
                     if ra.isdigit():
                         retry_after = int(ra)
-                    e.read()
+                    body_head = b""
+                    try:
+                        body_head = e.read()[:120]
+                    except Exception:  # noqa: BLE001
+                        pass
                     last = e
                     saw_429 = True
+                    # The body names WHICH limit fired (concurrency vs
+                    # rpm vs tokens) — evidence the 2026-08-22 storm
+                    # took a friend-machine probe to recover.
                     _log(f"[shim]   "
                           f"{('rescue' if base == ZEN_RESCUE else 'primary')}"
-                          f" 429 — next slot")
+                          f" 429 — next slot "
+                          f"({body_head.decode('utf-8', 'replace')})")
                 elif e.code < 500:
                     raise _dump_4xx(e, body)
                 else:
@@ -728,7 +772,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
                           f"abandoning the loop (no quota for orphans)")
                     return
                 t_call = time.time()
-                resp = _zen_call(body)
+                resp = _zen_call(body, attempt_dir)
                 items = resp.get("output") or []
                 if not items:
                     # Degenerate empty response (no output array at
@@ -741,7 +785,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
                             f"[session {uuid.uuid4().hex[:12]}]" + chr(10) + inst)
                         _log(f"[shim]   empty response — retry "
                               f"{extra+1}/2")
-                        resp = _zen_call(body)
+                        resp = _zen_call(body, attempt_dir)
                         items = resp.get("output") or []
                         if items:
                             break
@@ -760,13 +804,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
                 # at 2400s (2026-08-22; the pacer had stretched legal
                 # request spans past the pre-pacer calibration). The
                 # watchdog reads this file's mtime as a third clock.
-                if attempt_dir:
-                    try:
-                        with open(os.path.join(attempt_dir,
-                                               "_shim_heartbeat"), "w"):
-                            pass
-                    except OSError:
-                        pass
+                _touch_heartbeat(attempt_dir)
                 if not mine:
                     break
                 if iters >= MAX_TOOL_ITERATIONS:
