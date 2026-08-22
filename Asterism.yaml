@@ -8,11 +8,11 @@
 
 dispatch:
   quota_wait: true
-  pool: 15                    # 2026-08-22 Erdős fleet (user): zen/API-key
-                              # spawns carry no CLI.exe passenger, so the
-                              # RAM clamp marginal dropped 1.5→1.0 GB and
-                              # this box affords 15+1. Restore 10 (or 8)
-                              # for CLI-heavy seats.
+  pool: 12                    # 2026-08-22 (user): 8→12, part of the RAM
+                              # returned. zen/API-key spawns carry no
+                              # CLI.exe passenger (clamp marginal
+                              # 1.0 GB); this box affords 15+1 with the
+                              # full allotment back.
                               # Max in-flight pipelines, also = number of
                               # persistent lean workers in the LSP gateway
                               # pool (1:1 binding — every spawn claims one
