@@ -266,3 +266,87 @@ def test_mcp_http_normalizes_mixed_case_headers(
     assert obj == {"jsonrpc": "2.0", "id": 1, "result": {}}
     assert rh["mcp-session-id"] == "MiXeD"
     assert "Mcp-Session-Id" not in rh
+
+
+# ---------------------------------------------------------------------
+# 429 handling: pace, wait out the window, abandon orphans (2026-08-22
+# two-machines-one-key storm: 864 retries in one 55-min tick)
+# ---------------------------------------------------------------------
+
+def test_zen_call_waits_out_a_full_plan_of_429s(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    # Both tiers throttled through the WHOLE plan is a rolling window,
+    # not a failure: wait (honoring Retry-After) and walk again.
+    calls: list[str] = []
+    state = {"walks": 0}
+
+    def fake_stream(base, body):
+        calls.append(base)
+        if len(calls) <= len(zen_shim._UPSTREAM_PLAN):
+            raise urllib.error.HTTPError(
+                base, 429, "Too Many Requests", {"Retry-After": "7"},
+                __import__("io").BytesIO(b'{"error":"cap"}'))
+        return {"output": ["after the window"], "usage": {}}
+
+    slept: list = []
+    monkeypatch.setattr(zen_shim, "_stream_once", fake_stream)
+    monkeypatch.setattr(zen_shim, "_pace", lambda: None)
+    monkeypatch.setattr(zen_shim, "_429_WAIT_BUDGET", 60)
+    monkeypatch.setattr(zen_shim.time, "sleep", lambda s: slept.append(s))
+    out = zen_shim._zen_call({"model": "x-preview-f-free", "input": []})
+    assert out == {"output": ["after the window"], "usage": {}}
+    # one full walk, then the window wait (Retry-After 7 floors to 30),
+    # then the first slot of walk 2 answers
+    assert len(calls) == len(zen_shim._UPSTREAM_PLAN) + 1
+    assert 30.0 in slept
+
+
+def test_zen_call_429_budget_zero_restores_fail_fast(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_stream(base, body):
+        raise urllib.error.HTTPError(
+            base, 429, "Too Many Requests", None,
+            __import__("io").BytesIO(b'{"error":"cap"}'))
+
+    monkeypatch.setattr(zen_shim, "_stream_once", fake_stream)
+    monkeypatch.setattr(zen_shim, "_pace", lambda: None)
+    monkeypatch.setattr(zen_shim, "_429_WAIT_BUDGET", 0)
+    monkeypatch.setattr(zen_shim.time, "sleep", lambda s: None)
+    with pytest.raises(urllib.error.HTTPError):
+        zen_shim._zen_call({"model": "x-preview-f-free", "input": []})
+
+
+def test_pace_holds_the_rolling_window(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    # The pacer is the root-cause half: hold OURSELVES to the known
+    # budget so a 429 means outside contention, not our own burst.
+    clock = {"t": 1000.0}
+    slept: list = []
+    monkeypatch.setattr(zen_shim, "_RPM", 2)
+    zen_shim._PACE_STAMPS.clear()
+    monkeypatch.setattr(zen_shim.time, "monotonic", lambda: clock["t"])
+
+    def fake_sleep(s):
+        slept.append(s)
+        clock["t"] += s
+
+    monkeypatch.setattr(zen_shim.time, "sleep", fake_sleep)
+    zen_shim._pace()
+    zen_shim._pace()
+    assert not slept, "inside the window no one waits"
+    zen_shim._pace()
+    assert slept and sum(slept) >= 55, "the third call waits the window out"
+    zen_shim._PACE_STAMPS.clear()
+
+
+def test_client_alive_detects_a_closed_peer() -> None:
+    # A killed codex's loop burned throttled quota for a reply nobody
+    # reads; the probe sees the closed socket and the loop abandons.
+    import socket as _socket
+    a, b = _socket.socketpair()
+    try:
+        assert zen_shim._client_alive(a) is True
+        b.close()
+        assert zen_shim._client_alive(a) is False
+    finally:
+        a.close()

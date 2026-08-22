@@ -27,11 +27,14 @@ Key:  OPENCODE_ZEN_API_KEY env, or .env's OPENCODE_ZEN_API_KEY.
 """
 from __future__ import annotations
 
+import collections
 import http.server
 import io
 import json
 import os
 import re
+import select
+import socket
 import sys
 import threading
 import time
@@ -513,6 +516,44 @@ def _stream_once(base: str, body: dict) -> dict:
 #: the request — a dead parachute sends us back to hammering Zen, not
 #: to the ground. Strategists died quota_exhausted through exactly that
 #: chain (Zen empty ×3 → rescue 429 → propagate) before this schedule.
+#: Client-side pacing to the primary's known window (Nous free tier:
+#: 50 req/min rolling). Paced at 40 to leave margin for the request the
+#: window counts that we do not see (a second machine on the same key
+#: produced an 864-retry storm, 2026-08-22). 0 disables.
+_RPM = int(os.environ.get("ASTERISM_ZEN_RPM") or 40)
+_PACE_LOCK = threading.Lock()
+_PACE_STAMPS: "collections.deque[float]" = collections.deque()
+
+
+def _pace() -> None:
+    """Take one slot in the rolling window, sleeping until one frees.
+
+    Pacing is the root-cause half of 429 handling: with the client
+    holding itself to the known budget, a 429 is contention from
+    OUTSIDE (another machine on the key) rather than our own burst —
+    rare instead of chronic. The wait half lives in `_zen_call`."""
+    if _RPM <= 0:
+        return
+    while True:
+        with _PACE_LOCK:
+            now = time.monotonic()
+            while _PACE_STAMPS and now - _PACE_STAMPS[0] > 60:
+                _PACE_STAMPS.popleft()
+            if len(_PACE_STAMPS) < _RPM:
+                _PACE_STAMPS.append(now)
+                return
+            wait = 60.0 - (now - _PACE_STAMPS[0]) + 0.05
+        time.sleep(min(wait, 5.0))
+
+
+#: Total seconds ONE call may spend waiting out 429s (both tiers
+#: throttled) before the failure propagates. A throttle is a rolling
+#: window — waiting is guaranteed to clear it, and a dead strategist
+#: wake costs far more than a minute of patience (user call,
+#: 2026-08-22). Bounded so the daemon's own fuses (silent-kill 2400s,
+#: seat caps) stay the outer layers, and 0 restores fail-fast.
+_429_WAIT_BUDGET = int(os.environ.get("ASTERISM_ZEN_429_BUDGET") or 600)
+
 _UPSTREAM_PLAN = (ZEN, ZEN, ZEN, ZEN_RESCUE, ZEN, ZEN, ZEN, ZEN_RESCUE,
                   ZEN, ZEN)
 
@@ -520,33 +561,74 @@ _UPSTREAM_PLAN = (ZEN, ZEN, ZEN, ZEN_RESCUE, ZEN, ZEN, ZEN, ZEN_RESCUE,
 def _zen_call(body: dict) -> dict:
     """Streaming POST walking `_UPSTREAM_PLAN`: transient failures
     (5xx / transport / empty stream / EITHER tier's 429) step to the
-    next slot; non-429 4xx is deterministic — dump and raise. The last
-    slot's failure propagates."""
-    last: Exception | None = None
-    for i, base in enumerate(_UPSTREAM_PLAN):
-        is_last = i == len(_UPSTREAM_PLAN) - 1
-        try:
-            return _stream_once(base, body)
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
-                e.read()
+    next slot; non-429 4xx is deterministic — dump and raise.
+
+    An exhausted plan that saw a 429 is a WINDOW, not a failure: both
+    tiers throttled means the rolling quota will clear, so the call
+    waits (honoring Retry-After when the edge sends one) and walks the
+    plan again, up to `_429_WAIT_BUDGET` seconds of waiting — then the
+    failure propagates and the daemon's retry machinery decides."""
+    wait_spent = 0.0
+    while True:
+        last: Exception | None = None
+        saw_429 = False
+        retry_after: int | None = None
+        for i, base in enumerate(_UPSTREAM_PLAN):
+            try:
+                if base != ZEN_RESCUE:
+                    _pace()
+                return _stream_once(base, body)
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    hdrs = getattr(e, "headers", None) or {}
+                    ra = (hdrs.get("Retry-After") or "").strip()
+                    if ra.isdigit():
+                        retry_after = int(ra)
+                    e.read()
+                    last = e
+                    saw_429 = True
+                    _log(f"[shim]   "
+                          f"{('rescue' if base == ZEN_RESCUE else 'primary')}"
+                          f" 429 — next slot")
+                elif e.code < 500:
+                    raise _dump_4xx(e, body)
+                else:
+                    e.read()
+                    last = e
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
                 last = e
-                _log(f"[shim]   {('rescue' if base == ZEN_RESCUE else 'primary')}"
-                      f" 429 — next slot")
-            elif e.code < 500:
-                raise _dump_4xx(e, body)
-            else:
-                e.read()
-                last = e
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            last = e
-        if is_last:
-            break
-        wait = min(5 * (i + 1), 20)
-        _log(f"[shim]   retry {i+1}/{len(_UPSTREAM_PLAN)-1} in {wait}s "
-              f"({last})")
-        time.sleep(wait)
-    raise last if isinstance(last, Exception) else RuntimeError("no upstream")
+            if i == len(_UPSTREAM_PLAN) - 1:
+                break
+            wait = min(5 * (i + 1), 20)
+            _log(f"[shim]   retry {i+1}/{len(_UPSTREAM_PLAN)-1} in {wait}s "
+                  f"({last})")
+            time.sleep(wait)
+        if saw_429 and wait_spent < _429_WAIT_BUDGET:
+            wait = float(min(max(retry_after or 0, 30), 120))
+            wait_spent += wait
+            _log(f"[shim]   throttled through the whole plan — waiting "
+                  f"{wait:.0f}s for the window "
+                  f"({wait_spent:.0f}s/{_429_WAIT_BUDGET}s of 429 budget)")
+            time.sleep(wait)
+            continue
+        raise last if isinstance(last, Exception) else RuntimeError("no upstream")
+
+
+def _client_alive(conn) -> bool:
+    """Is the codex on the other end of this request still there?
+
+    A killed spawn's shim loop used to keep iterating against the
+    upstream — burning the very quota the live spawns were being
+    throttled out of — until its final answer died on the dead socket
+    (429 storm, 2026-08-22). An HTTP/1.1 client awaiting its response
+    sends nothing, so a readable socket here means EOF or RST."""
+    try:
+        r, _, _ = select.select([conn], [], [], 0)
+        if not r:
+            return True
+        return conn.recv(1, socket.MSG_PEEK) != b""
+    except OSError:
+        return False
 
 
 class Shim(http.server.BaseHTTPRequestHandler):
@@ -625,6 +707,10 @@ class Shim(http.server.BaseHTTPRequestHandler):
         resp: dict = {}
         try:
             while True:
+                if not _client_alive(self.connection):
+                    _log(f"[shim] client gone at iter {iters} — "
+                          f"abandoning the loop (no quota for orphans)")
+                    return
                 t_call = time.time()
                 resp = _zen_call(body)
                 items = resp.get("output") or []
