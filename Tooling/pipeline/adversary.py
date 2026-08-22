@@ -500,10 +500,23 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
     papers_dir = (workspace / "Papers").resolve()
     prompt_src = PROMPT_DIR / "adversary" / "adversary.md"
     prompt_path = attempts_dir / "_adversary_prompt.md"
+    # Appended dynamically, not written into the static prompt: which
+    # dossier files exist varies per round ("(if present)" on a fresh
+    # problem covered half the list), and 8 judges reported burning a
+    # probe round just discovering the package layout (2026-08-22).
+    # The builder knows exactly what it wrote — say so.
+    present = sorted(p.name for p in proj.iterdir()
+                     if p.is_file() and not p.name.startswith("_"))
+    manifest = ("\n\n## This round's dossier — actually present\n"
+                + ", ".join(f"`{n}`" for n in present)
+                + "\n(a dossier file from the list above that is not "
+                  "named here does not exist this round — do not probe "
+                  "for it)\n")
     prompt_path.write_text(
         prompt_src.read_text(encoding="utf-8")
         .replace(PROOFS_DIR_PLACEHOLDER, proofs_dir.as_posix())
-        .replace(PAPERS_DIR_PLACEHOLDER, papers_dir.as_posix()),
+        .replace(PAPERS_DIR_PLACEHOLDER, papers_dir.as_posix())
+        + manifest,
         encoding="utf-8")
 
     # One re-spawn on a missing/malformed verdict (cheap; a judge that

@@ -192,8 +192,10 @@ def _find_unique(content: str, needle: str, index: int, label: str,
             + (". A region differs only in whitespace — resubmit with this "
                "text VERBATIM (indentation is part of the anchor):"
                if closest else
-               ". Read the region first, then anchor on text you have "
-               "actually seen."),
+               ". Read the file first — `inspect` can read your working "
+               'file live (`[{"read": "<your file>", "raw": true}]`; '
+               "apply_edit writes through to disk) — then anchor on "
+               "text you have actually seen."),
             **({"closest_region": closest} if closest else {}))
     if len(hits) > 1:
         raise EditError(

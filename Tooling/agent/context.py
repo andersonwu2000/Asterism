@@ -531,12 +531,16 @@ def write_catalog_companion(conn: sqlite3.Connection, problem: str,
         return []
     if workspace is None:
         workspace = attempts_dir.parent.parent
+    taken = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
         f"# Proved catalog — {problem} ({len(rows)} entries)",
         "_Machine-generated from the framework's goal records on every"
         " spawn; always matches what actually landed. Each entry carries"
         " the exact import line and the name to cite (the file's inner"
         " `s<N>` head is an internal alias target — never cite it)._",
+        f"_Snapshot taken {taken}. Statuses move while you work — when"
+        " one decides anything, ask the record live:"
+        " `inspect({\"decl\": \"<slug>\"})`._",
         "",
     ]
     # Alive goals up top (user call 2026-07-19): the mint rule

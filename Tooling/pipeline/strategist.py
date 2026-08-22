@@ -417,9 +417,21 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
             (problem, decision.target_id),
         ).fetchone()
         if row is None:
+            # Two wakes were bounced back-to-back on this exact shape
+            # (2026-08-22): the slug named a brick ANOTHER Inject in the
+            # same batch was about to mint. A batch's decisions run in
+            # parallel — a mint has no goal id until it lands, so
+            # targeting it is structurally impossible, and the old
+            # message ("use the integer id") named an id that cannot
+            # exist yet.
             return (f"target_id={decision.target_id!r} (slug) not found "
-                    f"in problem {problem!r}; use the integer goal id "
-                    f"shown in Context.md's active goal list")
+                    f"in problem {problem!r}. If this slug is minted by "
+                    f"another Inject in THIS batch: a batch's decisions "
+                    f"run in parallel and cannot target each other — "
+                    f"fold the dependent step into that mint's own "
+                    f"proof, or dispatch it next wake once the brick "
+                    f"lands. Otherwise use the integer goal id shown in "
+                    f"Context.md's active goal list")
         decision.target_id = int(row["id"])
 
     if k == "Inject":

@@ -224,11 +224,19 @@ def _lsp_session_for(attempt_dir: str) -> "tuple[str, str] | None":
 
 
 def _run_lsp_tool(name: str, args: dict, attempt_dir: "str | None") -> str:
+    # The teaching names the way out: an agent whose Lean surface was
+    # down used to hand-write a turn of unverified Lean and get bounced
+    # at commit anyway (2026-08-22 ×2 — the commit gate held, the turn
+    # was wasted). Failing fast IS the retry path.
+    _down = (" — the Lean surface is unavailable this turn. Do NOT "
+             "hand-write unverified Lean around it: end your turn now "
+             "stating the surface was down; the framework retries the "
+             "wake when it returns.")
     if not attempt_dir:
-        return "lsp tools need a session; no attempts dir found in request"
+        return "lsp tools need a session; no attempts dir found" + _down
     sess = _lsp_session_for(attempt_dir)
     if sess is None:
-        return "no _gateway_session.token in attempts dir — lsp unavailable"
+        return "no _gateway_session.token in attempts dir" + _down
     sid, token = sess
     hdr = {"X-Asterism-Session": token}
     if sid:

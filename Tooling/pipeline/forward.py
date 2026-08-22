@@ -692,9 +692,42 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 src, body = cand, text
                 break
         if src is None:
+            # Say what was checked and what was found — "produced no
+            # lemma" alone sent a retry in blind (the agent's prior
+            # turn believed it had succeeded; 2026-08-22 feedback).
+            looked = "; ".join(
+                f"{p.name}: "
+                + ("absent" if not p.exists() else
+                   f"{len(p.read_text(encoding='utf-8', errors='replace'))}"
+                   " chars, no `theorem`/`lemma` head and no decline "
+                   "marker")
+                for p in ordered[:4])
             return PipelineResult(
                 outcome="failed", failure_reason="forward_no_new_goal",
-                failure_detail="agent produced no lemma in new_forward.lean",
+                failure_detail=(
+                    "agent produced no lemma: checked "
+                    f"[{looked}] — write ONE declaration (keyword at "
+                    f"line head) into {target.name}, or a leading "
+                    "`-- decline: <reason>`"),
+            )
+
+        # Namespace fidelity: the seed carries the canonical
+        # `namespace Problems.<problem>`, but a full-overwrite can
+        # respell its case (`P912` for `p912`, 2026-08-22) — the file
+        # then elaborates clean while the axiom probe, which resolves
+        # the constant under the canonical name, dies "constant not
+        # found" and the death wears axiom_violation colours.
+        want_ns = f"Problems.{problem}"
+        m_ns = re.search(r"^namespace\s+(\S+)", body, re.M)
+        if m_ns and m_ns.group(1) != want_ns and not is_decline(body):
+            return PipelineResult(
+                outcome="failed", failure_reason="forward_no_new_goal",
+                failure_detail=(
+                    f"`namespace {m_ns.group(1)}` does not match the "
+                    f"canonical `namespace {want_ns}` (case included) — "
+                    f"keep the seed's namespace/end lines exactly as "
+                    f"seeded; the axiom probe resolves your declaration "
+                    f"under {want_ns}"),
             )
 
         # Metaprogramming gate — same scanner as the gateway and Backward
