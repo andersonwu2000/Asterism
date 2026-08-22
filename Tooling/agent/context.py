@@ -60,19 +60,30 @@ def write_context_stats(attempts_dir: Path, *, label: str,
 
 def goal_display_signature(workspace: Path, slug: str,
                            lean_path: "str | None",
-                           statement: "str | None") -> str:
+                           statement: "str | None",
+                           flatten: bool = True) -> str:
     """Full binders+conclusion display form for a goal (#5, user call
     2026-07-18): `goals.statement` stores the bare conclusion — a
     by_contra sub-goal reads as just `False` — while the on-disk stub
     carries the whole signature. Read it CATALOG-style; fall back to
     the stored statement. Display-only: dedupe keeps matching on the
-    statement column."""
+    statement column.
+
+    `flatten=False` preserves the source's own line structure: a
+    flattened `let`-chain is not merely ugly but actively falsifying
+    (adversary self-reports, 2026-08-20 — a phantom defect burned a
+    worker, a batch and a review round). One-line list surfaces keep
+    the default; anything quoting the signature as mathematics should
+    pass False."""
     if lean_path:
         try:
             text = (workspace / str(lean_path)).read_text(encoding="utf-8")
             sig = _decl_signature(text, slug)
             if sig:
-                return " ".join(sig.split())
+                if flatten:
+                    return " ".join(sig.split())
+                return "\n".join(ln.rstrip() for ln in
+                                 sig.strip("\n").splitlines()).strip()
         except OSError:
             pass
     return str(statement or "")
@@ -84,7 +95,8 @@ def _section_header(goal: sqlite3.Row, workspace: Path) -> list[str]:
         "",
         "## Goal statement",
         goal_display_signature(workspace, str(goal["slug"]),
-                               goal["lean_path"], goal["statement"]),
+                               goal["lean_path"], goal["statement"],
+                               flatten=False),
         "",
     ]
 

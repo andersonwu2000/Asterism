@@ -671,3 +671,94 @@ def test_an_oversize_headingless_read_teaches_lines_and_grep(tmp_path):
                          per_query_chars=500)
     assert "could only ever deliver a silent prefix" in out
     assert "lines" in out and "grep" in out
+
+
+def test_raw_read_is_exact_bytes_or_refused_never_truncated(tmp_path):
+    """The 2026-08-19 sequel to the 57-entry cluster: a 14KB proposal
+    was overwritten with a 992-byte truncated fragment because the raw
+    answer still carried the `[n]` label and a silent budget clip. Raw
+    is now byte-faithful (no label at all) or REFUSED whole — and it
+    must travel alone, so labels never re-enter the round-trip."""
+    body = "alpha\nbeta\n"
+    (tmp_path / "doc.md").write_text(body, encoding="utf-8")
+    out = wq.run_queries([{"read": "doc.md", "raw": True}], cwd=tmp_path)
+    assert out == body.rstrip("\n"), "sole raw read is the bytes, unlabelled"
+
+    big = "x" * 300 + "\n"
+    (tmp_path / "big.md").write_text(big * 10, encoding="utf-8")
+    out2 = wq.run_queries([{"read": "big.md", "raw": True}],
+                          cwd=tmp_path, per_query_chars=500)
+    assert "raw never truncates" in out2
+    assert "xxxx" not in out2, "over-budget raw must not leak a prefix"
+
+    out3 = wq.run_queries([{"read": "doc.md", "raw": True},
+                           {"size": "doc.md"}], cwd=tmp_path)
+    assert "must be the only query" in out3
+
+    # a raw miss is a labelled refusal, never something that could be
+    # mistaken for content
+    out4 = wq.run_queries([{"read": "nope.md", "raw": True}], cwd=tmp_path)
+    assert out4.startswith("[1]") and "no file" in out4
+
+
+def test_sections_accept_outline_spelling_and_dynamic_suffixes(tmp_path):
+    """40+ self-reports: the outline prints `## Programme (rev 3)` but
+    `sections` demanded the bare exact text — copy-pasting from the
+    outline (the obvious workflow) failed, and a rev-suffixed heading
+    was unnameable in advance. Markers are stripped; the parenthetical
+    suffix is presentation on the same name (matched WITH disclosure);
+    a true near-miss still refuses, now naming the closest headings."""
+    (tmp_path / "doc.md").write_text(
+        "## Programme (rev 3, judge-passed)\npayload\n\n"
+        "## Pre-search\nother\n", encoding="utf-8")
+    out = wq.run_queries([{"read": "doc.md",
+                           "sections": ["## Programme (rev 3, judge-passed)"]}],
+                         cwd=tmp_path)
+    assert "payload" in out, "outline spelling (with ##) must resolve"
+
+    out2 = wq.run_queries([{"read": "doc.md", "sections": ["Programme"]}],
+                          cwd=tmp_path)
+    assert "payload" in out2 and "[matched" in out2
+
+    out3 = wq.run_queries([{"read": "doc.md",
+                            "sections": ["Programme (rev 2)"]}],
+                          cwd=tmp_path)
+    assert "payload" in out3, "a stale rev suffix still names the section"
+
+    out4 = wq.run_queries([{"read": "doc.md", "sections": ["Programm"]}],
+                          cwd=tmp_path)
+    assert "no section named" in out4, "a near-miss still refuses (no fuzzy)"
+
+    out5 = wq.run_queries([{"read": "doc.md", "sections": ["search"]}],
+                          cwd=tmp_path)
+    assert "no section named" in out5 and "close:" in out5
+    assert "Pre-search" in out5, "the miss names its nearest heading"
+
+
+def test_empty_section_says_so(tmp_path):
+    """2026-08-22 strategist self-report: a named section that exists
+    but is empty answered with silence, indistinguishable from absent,
+    misspelled, or truncated."""
+    (tmp_path / "doc.md").write_text("## Done\n\n## Next\ncontent\n",
+                                     encoding="utf-8")
+    out = wq.run_queries([{"read": "doc.md", "sections": ["Done"]}],
+                         cwd=tmp_path)
+    assert "this section is empty" in out
+
+
+def test_decl_signature_keeps_line_structure(tmp_path, monkeypatch):
+    """2026-08-20 adversary: a `let`-chain flattened to one line is
+    "not merely ugly but actively falsifying" — a phantom defect burned
+    a worker, a batch and a review round. The decl answer now preserves
+    the source's own lines."""
+    from Tooling.agent import context as ctx
+    (tmp_path / "L_x.lean").write_text(
+        "theorem multi_line_sig {n : Nat}\n"
+        "    (h : 0 < n) :\n"
+        "    n ≤ n * n := by\n  nlinarith\n", encoding="utf-8")
+    sig = ctx.goal_display_signature(
+        tmp_path, "multi_line_sig", "L_x.lean", "n ≤ n * n", flatten=False)
+    assert "\n" in sig, "flatten=False must keep the source's lines"
+    flat = ctx.goal_display_signature(
+        tmp_path, "multi_line_sig", "L_x.lean", "n ≤ n * n")
+    assert "\n" not in flat, "default stays one-line for list surfaces"

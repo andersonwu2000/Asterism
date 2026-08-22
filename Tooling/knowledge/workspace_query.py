@@ -403,6 +403,32 @@ def _numbered(lines: "list[str]", a: int, b: int) -> "list[str]":
             for n in range(max(1, a), min(len(lines), b) + 1)]
 
 
+#: A raw answer is byte-faithful file content and carries NO decoration,
+#: so anything that is NOT content (a refusal, a miss, an ambiguity)
+#: must say so in-band — this prefix is how `run_queries` tells the two
+#: apart and keeps the label on the non-content case. Without it, a
+#: refusal shipped undecorated reads as file content and gets written
+#: back verbatim.
+RAW_REFUSAL = "raw read refused: "
+
+
+def _strip_parenthetical(s: str) -> str:
+    """`programme (rev 3, judge-passed)` -> `programme` — the dynamic
+    annotation is presentation on the same name, dropped on BOTH sides
+    so yesterday's `(rev 2)` still names today's section."""
+    return re.sub(r"\s*\([^()]*\)\s*$", "", s).strip()
+
+
+def _heading_key(s: str) -> str:
+    """A requested section name, normalized the way readers type it.
+
+    The outline prints `## Programme (rev 3)` and `sections` used to
+    accept only the bare heading text — copy-pasting from the outline,
+    the obvious workflow, failed (40+ self-reports). Leading heading
+    markers and wrapping backticks are presentation, not identity."""
+    return str(s).strip().strip("`").lstrip("#").strip().lower()
+
+
 def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
     """A document is read by the SECTION; a window is the fallback.
 
@@ -428,12 +454,15 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
     """
     spec = str(q.get("read") or "")
     p = _resolve(spec, cwd)
+    raw_flag = bool(q.get("raw"))
     root = _denied(p.resolve(), deny)
     if root is not None:
-        return [f"{p} is operator-private (under {root}) — Context.md, "
-                f"BRIEF.md carry what you are meant to know"]
+        msg = (f"{p} is operator-private (under {root}) — Context.md, "
+               f"BRIEF.md carry what you are meant to know")
+        return [RAW_REFUSAL + msg] if raw_flag else [msg]
     if not p.is_file():
-        return [f"no file at {p}; {_nearest_existing(p, cwd)}"]
+        msg = f"no file at {p}; {_nearest_existing(p, cwd)}"
+        return [RAW_REFUSAL + msg] if raw_flag else [msg]
     lines = _read_text(p).splitlines()
     secs = _sections(lines)
     raw = bool(q.get("raw"))
@@ -467,18 +496,46 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
         # disclosed, so the reader knows there is another.
         by_name: "dict[str, list[tuple[str, int, int]]]" = {}
         for text, _l, a, b in secs:
-            by_name.setdefault(text.lower(), []).append((text, a, b))
+            by_name.setdefault(_heading_key(text), []).append((text, a, b))
         chosen: "list[str]" = []
         missing: "list[str]" = []
         for name in names:
-            hits = by_name.get(name.strip().lower())
+            key = _heading_key(name)
+            hits = by_name.get(key)
+            matched_by = ""
+            if hits is None and key:
+                # Headings carry dynamic parenthetical suffixes
+                # (`Programme (rev 3, judge-passed)`) the reader cannot
+                # know in advance; the name with the suffix dropped is
+                # the SAME name, not a fuzzy neighbour. Matching stays
+                # exact on that stripped key ("Programm" still refuses)
+                # and the full heading is disclosed in the banner.
+                bare = _strip_parenthetical(key)
+                cands = [h for k, hs in by_name.items()
+                         if _strip_parenthetical(k) == bare for h in hs]
+                if len(cands) == 1:
+                    hits = cands
+                    matched_by = f"  [matched {cands[0][0]!r}]"
             if hits is None:
                 missing.append(name)
                 continue
             text, a, b = hits[0]
+            if raw and (len(hits) > 1 or matched_by):
+                # raw is a byte-faithful round-trip surface: an answer
+                # that needs a disclosure note cannot be pure content.
+                return [RAW_REFUSAL + (
+                    f"section {name!r} matched "
+                    + (f"{len(hits)} headings" if len(hits) > 1
+                       else f"{text!r} only via its suffix")
+                    + " — raw carries no disclosure notes, so read it "
+                      "by exact heading or `lines`.")]
             if not raw:
-                chosen.append(f"── {text}  (lines {a}-{b})")
+                chosen.append(f"── {text}  (lines {a}-{b}){matched_by}")
             chosen += _render(a, b)
+            if not raw and all(not lines[n - 1].strip()
+                               for n in range(a + 1, b + 1)):
+                chosen.append("(this section is empty — the heading "
+                              "exists but has no content yet)")
             if len(hits) > 1 and not raw:
                 where = ", ".join(f"lines {a2}-{b2}"
                                   for _t, a2, b2 in hits[1:])
@@ -488,19 +545,29 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
                     f"{'s are' if len(hits) > 2 else ' is'} at {where} "
                     f"(read one with `lines`).")
         if missing:
-            # No fuzzy matching: a near-miss that silently answers with
-            # the wrong section is worse than a refusal. And NO roster
-            # (owner ruling 2026-08-15): `outline` already IS the
-            # roster, with line ranges and sizes — on the 383-section
-            # CATALOG.md the inlined listing was itself a 12KB cap-hit,
-            # a refusal whose length scaled with the file. The count
-            # stays: one number, and it tells the reader whether to
-            # think before calling `outline` at all.
-            chosen.append(
+            # No fuzzy ANSWERING: a near-miss that silently answers with
+            # the wrong section is worse than a refusal (unique-prefix
+            # above is disclosed, not silent). And NO roster (owner
+            # ruling 2026-08-15): `outline` already IS the roster — on
+            # the 383-section CATALOG.md the inlined listing was itself
+            # a 12KB cap-hit. But a bounded HINT is not a roster: name
+            # the closest headings so the retry is one call, not two.
+            close = []
+            for name in missing:
+                k = _heading_key(name)
+                cands = [hs[0][0] for key2, hs in by_name.items()
+                         if k and (k in key2 or key2 in k)][:3]
+                if cands:
+                    close.append(f"{name!r} — close: "
+                                 + ", ".join(map(repr, cands)))
+            miss_note = (
                 f"no section named {', '.join(map(repr, missing))} in "
                 f"this file — it has {len(secs)} section"
                 f"{'' if len(secs) == 1 else 's'}; `outline: true` "
-                f"lists them.")
+                f"lists them." + ("".join(f"\n  {c}" for c in close)))
+            if raw:
+                return [RAW_REFUSAL + miss_note]
+            chosen.append(miss_note)
         return chosen or [f"{len(lines)} lines, no sections matched"]
 
     rng = str(q.get("lines") or "").strip()
@@ -510,7 +577,8 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
             a = int(lo) if lo else 1
             b = int(hi) if hi else len(lines)
         except ValueError:
-            return [f"bad `lines` {rng!r} — use \"380-420\", \"-40\" or \"40-\""]
+            msg = f"bad `lines` {rng!r} — use \"380-420\", \"-40\" or \"40-\""
+            return [RAW_REFUSAL + msg] if raw else [msg]
         return _render(a, b)
     # Whole file. The byte budget in `run_queries` bounds it and says
     # where to resume; an explicit `max` still caps by line for a caller
@@ -584,10 +652,33 @@ def _q_decl(q: dict, cwd: Path, deny) -> "list[str]":
             # name wants THAT one, and burying it among six near-misses
             # is the same "answer is in there somewhere" failure the
             # CATALOG had.
-            "SELECT slug, lean_path, statement, status, problem FROM goals "
+            "SELECT slug, lean_path, statement, status, problem, "
+            "alias_target_id FROM goals "
             "WHERE slug = ? OR slug LIKE ? "
             "ORDER BY (slug = ?) DESC, slug LIMIT 6",
             (name, f"%{name}%", name)).fetchall()
+        # An alias row's own file is `def slug := @sNNN` — truthful and
+        # useless (90 self-reports: "shows the full statement for
+        # unproved goals but only the alias for proved ones"). The
+        # framework KNOWS the target; showing the pointer instead of
+        # what it points at is the flattening family. Resolve it here,
+        # disclosed, one hop at a time up to a short chain.
+        alias_of: "dict[str, tuple[str, str, str, str]]" = {}
+        for r in rows:
+            tid, seen = r["alias_target_id"], 0
+            target = None
+            while tid is not None and seen < 4:
+                target = conn.execute(
+                    "SELECT slug, lean_path, statement, status, "
+                    "alias_target_id FROM goals WHERE id = ?",
+                    (tid,)).fetchone()
+                if target is None:
+                    break
+                tid, seen = target["alias_target_id"], seen + 1
+            if target is not None:
+                alias_of[str(r["slug"])] = (
+                    str(target["slug"]), target["lean_path"],
+                    target["statement"], str(target["status"]))
     except Exception as exc:  # noqa: BLE001
         return [f"declaration index unavailable ({type(exc).__name__})"]
     finally:
@@ -623,11 +714,18 @@ def _q_decl(q: dict, cwd: Path, deny) -> "list[str]":
         out.append(note)
     for r in rows:
         out.append(f"{r['slug']}  [{r['status']}]  {r['lean_path']}")
+        slug, lp, stmt = str(r["slug"]), r["lean_path"], r["statement"]
+        target = alias_of.get(slug)
+        if target is not None:
+            tslug, lp, stmt, tstatus = target
+            out.append(f"    alias of {tslug}  [{tstatus}] — "
+                       f"showing the target's signature:")
+            slug = tslug
         try:
-            sig = _ctx.goal_display_signature(
-                ws, str(r["slug"]), r["lean_path"], r["statement"])
+            sig = _ctx.goal_display_signature(ws, slug, lp, stmt,
+                                              flatten=False)
         except Exception:  # noqa: BLE001 — a missing stub falls back
-            sig = r["statement"] or ""
+            sig = stmt or ""
         out += [f"    {ln}" for ln in (sig or "").strip().splitlines()[:16]]
     return out
 
@@ -819,11 +917,40 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                 if key in q:
                     where = f" in {q['in']}" if q.get("in") else ""
                     head = f"[{n}] {key} {q[key]!r}{where}"
+                    raw_read = key == "read" and bool(q.get("raw"))
+                    if raw_read and len(queries) > 1:
+                        # A raw answer is undecorated file bytes; it
+                        # cannot share a reply with labelled answers
+                        # without regrowing the very delimiters `raw`
+                        # exists to strip (992-byte overwrite incident,
+                        # 2026-08-19).
+                        block = (head + "\nraw read must be the only "
+                                 "query in the call — its answer is "
+                                 "byte-faithful content with no labels. "
+                                 "Send it alone.")
+                        break
                     try:
                         body = fn(q, here, deny)
                     except Exception as exc:  # noqa: BLE001 — one bad query
                         body = [f"failed: {type(exc).__name__}: {exc}"]
                     text = "\n".join(body)
+                    if raw_read:
+                        # Byte-faithful or refused — never decorated,
+                        # never clipped (a truncated round-trip corrupts
+                        # the file on write-back).
+                        if text.startswith(RAW_REFUSAL):
+                            block = head + "\n" + text[len(RAW_REFUSAL):]
+                        elif len(text) > per_query_chars:
+                            block = (head + f"\nraw read is "
+                                     f"{len(text):,} chars — over the "
+                                     f"{per_query_chars:,}-char reply "
+                                     f"budget, and raw never truncates. "
+                                     f"Read a `sections`/`lines` slice "
+                                     f"(still raw), or drop `raw` to "
+                                     f"browse with the map.")
+                        else:
+                            block = text
+                        break
                     if len(text) > per_query_chars:
                         if (key == "read" and not any(
                                 k in q for k in ("sections", "lines",

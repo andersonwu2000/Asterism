@@ -716,7 +716,11 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         # `max_output_tokens` pragma can raise it, but compliance is
         # the model's choice — the framework budgets for the default.
         mcp_result_delivery_chars=30_000,
-        tested_version="0.147.0",
+        # 0.149 smoke: a full production night (2026-08-22, Erdős
+        # fleet on the zen shim) after the strict-response family it
+        # shipped was absorbed shim-side (total_tokens, response id,
+        # forward-slash skills paths).
+        tested_version="0.149.0",
         marker_tables=("Tooling.llm.codex_cli._QUOTA_MARKERS",
                        "Tooling.llm.codex_cli._MISCONFIG_MARKERS"),
         single_instance_lock=False,
