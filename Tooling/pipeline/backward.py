@@ -1137,8 +1137,11 @@ def _backward_parse_and_commit(
     if not leading.strip():
         return _abort(
             "agent_no_annotation",
-            "patch.lean present but had no leading comment block; "
-            "strategy rationale is required for goal annotation propagation.",
+            "patch.lean present but had no comment block before the "
+            "first declaration; write your strategy rationale as `--` "
+            "lines or a `/- … -/` block above the theorem (after the "
+            "imports is fine) — it is required for goal annotation "
+            "propagation.",
             leading,
         )
 

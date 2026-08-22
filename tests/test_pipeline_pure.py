@@ -1444,3 +1444,32 @@ def test_signature_prefix_survives_let_binder_in_type() -> None:
             "    1 <= 2  := by exact h\n")
     sig2 = signature_prefix(src2, "t2")
     assert "1 <= 2" in sig2 and "exact h" not in sig2
+
+
+def test_extract_leading_comments_accepts_block_and_doc_comments() -> None:
+    """12 complete patches (one a finished CRT induction) died
+    agent_no_annotation on the 2026-08-22 friend-machine fleet for
+    writing the rationale as a Mathlib-style `/-- … -/` doc comment
+    after the imports — the natural spelling, and the extractor only
+    read `--` lines. Both block forms now count, wherever they sit
+    before the first declaration."""
+    text = (
+        "import Mathlib\n"
+        "namespace P\n\n"
+        "/-- Strategy: CRT induction on the residue tower;\n"
+        "    base case is the singleton class. -/\n"
+        "theorem t : True := trivial\n")
+    got = _extract_leading_comments(text)
+    assert "CRT induction" in got and "singleton class" in got
+    assert all(ln.startswith("--") for ln in got.splitlines() if ln.strip())
+
+    text2 = ("/- decline: unprovable\n   the hypothesis is false -/\n"
+             "import Mathlib\ntheorem t : True := trivial\n")
+    got2 = _extract_leading_comments(text2)
+    from Tooling.pipeline import _extract_decline_reason
+    assert _extract_decline_reason(got2) == "unprovable"
+
+    # no rationale anywhere still yields empty (the gate must keep
+    # refusing the truly-absent case)
+    assert _extract_leading_comments(
+        "import Mathlib\ntheorem t : True := trivial\n").strip() == ""

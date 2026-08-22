@@ -711,6 +711,19 @@ def _extract_leading_comments(text: str) -> str:
     m = _FIRST_DECL_RE.search(text)
     upper_bound = m.start() if m else len(text)
     region = text[:upper_bound]
+    # Block comments count too: `/- … -/` and the Mathlib doc-comment
+    # `/-- … -/` are the forms the models naturally write (12 complete
+    # patches — one a finished CRT induction — died agent_no_annotation
+    # on the friend-machine fleet, 2026-08-22, for spelling the
+    # rationale the MATHLIB way). Normalized to `--` lines so the
+    # decline directive and annotation propagation see one shape.
+    # (Non-greedy match: a NESTED block comment truncates the capture —
+    # acceptable, the gate only needs a non-empty rationale.)
+    def _blocks_to_lines(mt: "re.Match[str]") -> str:
+        inner = mt.group(1).strip("-").strip()
+        return "".join(f"-- {ln.strip()}\n"
+                       for ln in inner.splitlines() if ln.strip())
+    region = re.sub(r"/-(.*?)-/", _blocks_to_lines, region, flags=re.S)
     out: list[str] = []
     buffered_blanks: list[str] = []
     for ln in region.splitlines(keepends=True):
