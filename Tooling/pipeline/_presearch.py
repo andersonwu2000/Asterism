@@ -34,7 +34,14 @@ from pathlib import Path
 from .. import agent
 from ..knowledge import lemma_lookup
 
-_DEFAULT_TIMEOUT_SEC = 240
+# 240 was calibrated to pure work time, before the zen shim's
+# client-side pacing existed. The pacer deliberately trades bounded
+# queueing latency for a 429-free window (worst case one 60s rolling
+# window per model call, and a presearch makes ~3-5 calls), so the
+# hang-guard budget must carry that latency too: a restart re-dispatch
+# herd put the tail presearch over 240s on both fleets (2026-08-22;
+# non-fatal by design, but a lost candidate list degrades the brick).
+_DEFAULT_TIMEOUT_SEC = 420
 _MAX_PER_BLOCK = 10
 _PROMPT_FILENAME = "_presearch_prompt.md"
 _OUT_FILENAME = "_presearch.json"
