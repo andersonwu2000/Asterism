@@ -147,10 +147,35 @@ def validate_json(text: str = "") -> str:
     except ValueError as e:
         return f"INVALID: {e}"
     if isinstance(obj, dict):
+        # Verdict-shaped payloads get their SHAPE checked here too —
+        # "syntactically valid with a misspelled criterion key sailed
+        # through as OK" and died a whole round later at the parser
+        # (4 judge self-reports, 2026-08-22). Same facts the server
+        # parser enforces, surfaced before the hand-in.
+        if "criteria" in obj:
+            crit = obj.get("criteria")
+            if not isinstance(crit, dict):
+                return ("OK as JSON, but verdict-shaped and `criteria` "
+                        "is not an object — the judge parser will "
+                        "reject this")
+            missing = [str(k) for k in range(1, 6)
+                       if str(k) not in {str(c) for c in crit}]
+            notes = []
+            if missing:
+                notes.append(f"`criteria` missing criterion "
+                             f"{', '.join(missing)} — every criterion "
+                             f"gets a line")
+            if "reservations" in obj and not isinstance(
+                    obj.get("reservations"), list):
+                notes.append("`reservations` must be a list of strings")
+            if notes:
+                return ("OK as JSON, but the judge parser will reject "
+                        "it: " + "; ".join(notes))
+            return (f"OK: {len(obj)} top-level key(s); verdict-shaped, "
+                    f"criteria 1-5 all present")
         return f"OK: {len(obj)} top-level key(s)"
     if isinstance(obj, list):
         return f"OK: array of {len(obj)}"
-    return f"OK: {type(obj).__name__}"
 
 
 @_seat_tool(structured_output=False)

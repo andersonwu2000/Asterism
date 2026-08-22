@@ -430,8 +430,11 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                     f"run in parallel and cannot target each other — "
                     f"fold the dependent step into that mint's own "
                     f"proof, or dispatch it next wake once the brick "
-                    f"lands. Otherwise use the integer goal id shown in "
-                    f"Context.md's active goal list")
+                    f"lands. If a PRIOR batch was to mint it: that mint "
+                    f"died before creating the goal (check its outcome "
+                    f"in `## Completed Inject batches`) — re-mint it "
+                    f"rather than target it. Otherwise use the integer "
+                    f"goal id shown in Context.md's active goal list")
         decision.target_id = int(row["id"])
 
     if k == "Inject":
