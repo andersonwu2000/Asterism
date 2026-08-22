@@ -39,6 +39,8 @@ def test_provider_network_is_registered_no_charge() -> None:
 
 def test_a_reachable_probe_declines_to_park(monkeypatch) -> None:
     st = SchedulerState()
+    monkeypatch.setattr(network_wait, "channel_url_for",
+                        lambda kind=None: None)
     monkeypatch.setattr(network_wait, "probe_connectivity",
                         lambda hosts, **kw: True)
     assert network_wait.maybe_enter(
@@ -49,6 +51,8 @@ def test_a_reachable_probe_declines_to_park(monkeypatch) -> None:
 def test_an_unreachable_probe_parks_and_only_a_positive_resumes(
         monkeypatch) -> None:
     st = SchedulerState()
+    monkeypatch.setattr(network_wait, "channel_url_for",
+                        lambda kind=None: None)
     monkeypatch.setattr(network_wait, "probe_connectivity",
                         lambda hosts, **kw: False)
     assert network_wait.maybe_enter(
@@ -74,6 +78,8 @@ def test_an_unreachable_probe_parks_and_only_a_positive_resumes(
 def test_paused_time_is_excluded_from_the_budget_clock(
         monkeypatch) -> None:
     st = SchedulerState()
+    monkeypatch.setattr(network_wait, "channel_url_for",
+                        lambda kind=None: None)
     monkeypatch.setattr(network_wait, "probe_connectivity",
                         lambda hosts, **kw: False)
     network_wait.maybe_enter(st, kind=None, source="test")
@@ -103,3 +109,60 @@ def test_live_providers_declare_their_api_host() -> None:
     from Tooling.llm import capabilities as caps
     assert caps.CAPABILITIES["claude"].api_host == "api.anthropic.com"
     assert caps.CAPABILITIES["codex"].api_host == "chatgpt.com"
+
+
+# ---------------------------------------------------------------------
+# The local-channel breaker (2026-08-22: the shim died, every anchor
+# answered, and dispatch fed a dead channel for 40 minutes)
+# ---------------------------------------------------------------------
+
+def test_a_dead_channel_parks_even_with_a_healthy_internet(
+        monkeypatch) -> None:
+    st = SchedulerState()
+    monkeypatch.setattr(network_wait, "channel_url_for",
+                        lambda kind=None: "http://127.0.0.1:9/v1")
+    monkeypatch.setattr(network_wait, "probe_channel", lambda u, **k: False)
+    monkeypatch.setattr(network_wait, "probe_connectivity",
+                        lambda hosts, **k: True)  # anchors all answer
+    assert network_wait.maybe_enter(st, kind="forward", source="t") is True
+    assert st.net_wait_down and st.net_wait_channel
+
+
+def test_a_channel_park_resumes_only_when_the_channel_answers(
+        monkeypatch) -> None:
+    st = SchedulerState()
+    monkeypatch.setattr(network_wait, "channel_url_for",
+                        lambda kind=None: "http://127.0.0.1:9/v1")
+    alive = {"up": False}
+    monkeypatch.setattr(network_wait, "probe_channel",
+                        lambda u, **k: alive["up"])
+    monkeypatch.setattr(network_wait, "probe_connectivity",
+                        lambda hosts, **k: True)
+    assert network_wait.maybe_enter(st, kind="forward", source="t")
+    t = st.net_wait_probed_at
+    # anchors answering must NOT resume a channel park
+    assert network_wait.tick(
+        st, t + network_wait.NETWORK_PROBE_INTERVAL_SEC + 1) is True
+    alive["up"] = True
+    assert network_wait.tick(
+        st, t + 2 * network_wait.NETWORK_PROBE_INTERVAL_SEC + 2) is False
+    assert not st.net_wait_down and st.net_wait_channel is None
+
+
+def test_the_healthy_tick_watches_the_channel_without_a_casualty(
+        monkeypatch) -> None:
+    # A dead shim must not need a dead spawn to be noticed.
+    st = SchedulerState()
+    monkeypatch.setattr(network_wait, "channel_url_for",
+                        lambda kind=None: "http://127.0.0.1:9/v1")
+    monkeypatch.setattr(network_wait, "probe_channel", lambda u, **k: False)
+    assert network_wait.tick(
+        st, network_wait.CHANNEL_PROBE_INTERVAL_SEC + 1) is True
+    assert st.net_wait_down and st.net_wait_channel
+
+
+def test_no_zen_seat_means_no_channel_probe(monkeypatch) -> None:
+    from Tooling.llm import capabilities as caps
+    monkeypatch.setattr(caps, "provider_for_kind", lambda k, **kw: "claude")
+    assert network_wait.channel_url_for(None) is None
+    assert network_wait.channel_url_for("forward") is None

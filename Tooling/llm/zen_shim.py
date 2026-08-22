@@ -867,13 +867,118 @@ class Shim(http.server.BaseHTTPRequestHandler):
         pass
 
 
+#: Service files for the detached form (`start`/`stop`/`status`). The
+#: shim used to live as a child of whichever operator session launched
+#: it — session dies (or the session's task registry sweeps), fleet
+#: goes dark (2026-08-22: three in-session relaunches were externally
+#: stopped and the daemon fed a dead channel for 40 minutes). Detached,
+#: it belongs to nobody's session.
+_PID_FILE = os.path.join(_REPO, ".asterism", "zen_shim.pid")
+_SVC_LOG = os.path.join(_REPO, ".asterism", "logs", "zen_shim.log")
+
+
+def _pid_alive(pid: int) -> bool:
+    """tasklist, not kill-0: Git-Bash-style probes cannot see native
+    Windows processes (operator rule 8)."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=10).stdout
+        return f'"{pid}"' in out
+    except Exception:  # noqa: BLE001 — a probe must never raise
+        return False
+
+
+def _svc_status(port: int) -> "tuple[int | None, bool]":
+    """(pid from the pid file if that process is alive, port answers)."""
+    pid = None
+    try:
+        cand = int(open(_PID_FILE, encoding="ascii").read().strip())
+        if _pid_alive(cand):
+            pid = cand
+    except (OSError, ValueError):
+        pass
+    try:
+        import urllib.request as _rq
+        req = _rq.Request(f"http://127.0.0.1:{port}/v1", method="GET")
+        try:
+            _rq.urlopen(req, timeout=3)
+            answering = True
+        except urllib.error.HTTPError:
+            answering = True
+    except Exception:  # noqa: BLE001
+        answering = False
+    return pid, answering
+
+
+def _svc_start(port: int) -> int:
+    import subprocess
+    pid, answering = _svc_status(port)
+    if answering:
+        print(f"already serving on {port}"
+              + (f" (pid {pid})" if pid else " (pid unknown)"))
+        return 0
+    os.makedirs(os.path.dirname(_SVC_LOG), exist_ok=True)
+    log = open(_SVC_LOG, "ab")
+    flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
+             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "Tooling.llm.zen_shim", str(port)],
+        cwd=_REPO, stdout=log, stderr=log,
+        stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True)
+    with open(_PID_FILE, "w", encoding="ascii") as fh:
+        fh.write(str(proc.pid))
+    for _ in range(20):
+        time.sleep(0.5)
+        if _svc_status(port)[1]:
+            print(f"zen shim detached: pid {proc.pid}, port {port}, "
+                  f"log {_SVC_LOG}")
+            return 0
+    print(f"started pid {proc.pid} but port {port} is not answering — "
+          f"see {_SVC_LOG}")
+    return 1
+
+
+def _svc_stop(port: int) -> int:
+    import subprocess
+    pid, answering = _svc_status(port)
+    if pid is None:
+        print("no live pid on record"
+              + (" (but the port answers — a foreign shim?)"
+                 if answering else "; nothing to stop"))
+        return 0 if not answering else 1
+    subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                   capture_output=True)
+    try:
+        os.remove(_PID_FILE)
+    except OSError:
+        pass
+    print(f"stopped pid {pid}")
+    return 0
+
+
 def main() -> int:
+    argv = sys.argv[1:]
+    cmd = argv[0] if argv and not argv[0].isdigit() else None
+    port = int(next((a for a in argv if a.isdigit()), 8898))
+    if cmd == "start":
+        return _svc_start(port)
+    if cmd == "stop":
+        return _svc_stop(port)
+    if cmd == "status":
+        pid, answering = _svc_status(port)
+        print(f"pid={pid or '-'} port={port} "
+              f"{'answering' if answering else 'DEAD'}")
+        return 0 if answering else 1
+    if cmd is not None:
+        print(f"unknown command {cmd!r} — use start|stop|status|<port>")
+        return 2
     _key_for(ZEN)  # fail fast on a missing primary key
     try:
         _key_for(ZEN_RESCUE)
     except SystemExit:
         _log("[shim] WARNING: no rescue-tier key — running primary-only")
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8898
     _log(f"[shim] zen shim v6 on 127.0.0.1:{port} -> {ZEN} "
           f"(rescue: {ZEN_RESCUE})")
     http.server.ThreadingHTTPServer(("127.0.0.1", port), Shim).serve_forever()

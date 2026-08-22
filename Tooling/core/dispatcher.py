@@ -1178,6 +1178,12 @@ class SchedulerState:
     net_wait_logged_at: float = 0.0
     net_wait_paused: float = 0.0
     net_wait_hosts: "tuple[str, ...]" = ()
+    #: When the park was triggered by the LOCAL channel (the zen shim),
+    #: this holds its probe URL and resume requires THAT to answer —
+    #: internet anchors answering is exactly what failed to protect the
+    #: fleet on 2026-08-22.
+    net_wait_channel: "str | None" = None
+    net_chan_checked_at: float = 0.0
     # DB write-through — see class docstring.
     librarian_fail_counts: "dict[str, int]" = field(default_factory=dict)
     # Lazy verify cache: problem → Defs/Root built clean (False =
