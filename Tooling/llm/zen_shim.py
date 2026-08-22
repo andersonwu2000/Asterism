@@ -712,6 +712,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
         t0 = time.time()
         iters = 0
         tool_calls_run = 0
+        budget_final = False
         resp: dict = {}
         try:
             while True:
@@ -759,9 +760,49 @@ class Shim(http.server.BaseHTTPRequestHandler):
                             pass
                     except OSError:
                         pass
-                if not mine or iters >= MAX_TOOL_ITERATIONS:
+                if not mine:
                     break
+                if iters >= MAX_TOOL_ITERATIONS:
+                    # The budget guillotine used to be SILENT: 25
+                    # measured cap-hits (2026-08-22) cut agents mid
+                    # validate→fix loop and committed whatever broken
+                    # state was on disk — misread for a whole shift as
+                    # "the model submits unverified proofs". At the cap
+                    # the pending calls are answered with a refusal
+                    # that names the state, and the model gets ONE
+                    # wrap-up turn; if it keeps calling tools, cut.
+                    if budget_final:
+                        break
+                    budget_final = True
+                    iters += 1
+                    for it in items:
+                        body["input"].append(it)
+                    for it in mine:
+                        body["input"].append({
+                            "type": "function_call_output",
+                            "call_id": it.get("call_id"),
+                            "output": (
+                                f"tool budget exhausted "
+                                f"({MAX_TOOL_ITERATIONS} iterations): "
+                                "this call was NOT executed and no "
+                                "further calls will run. Reply now "
+                                "with your final status — what is "
+                                "finished, what is not — and end the "
+                                "turn."),
+                        })
+                    continue
                 iters += 1
+                if iters == MAX_TOOL_ITERATIONS - 10:
+                    # Approach warning, so convergence is a choice the
+                    # model gets to make before the refusals start.
+                    body["input"].append({
+                        "type": "message", "role": "user",
+                        "content": [{"type": "input_text", "text": (
+                            "[framework] tool budget: ~10 iterations "
+                            "remain. Converge now — bring your working "
+                            "file to its best verified state and "
+                            "finish; do not start new explorations.")}],
+                    })
                 for it in items:
                     body["input"].append(it)
                     if it not in mine:

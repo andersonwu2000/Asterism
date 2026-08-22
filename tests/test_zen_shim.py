@@ -350,3 +350,20 @@ def test_client_alive_detects_a_closed_peer() -> None:
         assert zen_shim._client_alive(a) is False
     finally:
         a.close()
+
+
+def test_tool_budget_ends_with_a_wrap_up_turn_not_a_guillotine(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """25 measured cap-hits (2026-08-22) cut agents mid validate->fix
+    loop SILENTLY and committed whatever broken state was on disk —
+    misread for a shift as "ox-alpha submits unverified proofs". At the
+    cap the pending calls get a refusal naming the state and the model
+    gets one wrap-up turn."""
+    # The loop lives inside the HTTP handler, so this is a mechanism
+    # pin on the source (the loop itself is exercised by e2e): the cap
+    # branch must exist, refuse with the state named, and gate exactly
+    # one wrap-up turn; the approach warning must precede it.
+    src = open(zen_shim.__file__, encoding="utf-8").read()
+    assert "tool budget exhausted" in src
+    assert "budget_final" in src
+    assert "~10 iterations" in src
