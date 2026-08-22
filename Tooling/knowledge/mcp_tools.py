@@ -70,6 +70,14 @@ _ARG_HELP = "{tool}: {hint}"
 #: periodic clear; process-global because the tools run in the shim.
 _LOOGLE_REPEATS: "dict[tuple[str, str], int]" = {}
 
+#: The way out of a name miss: Mathlib SOURCE is greppable in place
+#: (explicit `.lake/packages/...` paths override the skip list — owner
+#: ruling 2026-08-22).
+_GREP_THE_SOURCE = (
+    'Grep the source for the current name: inspect([{"grep": '
+    '"<name fragment>", "in": ".lake/packages/mathlib/Mathlib"}]) '
+    '— or a subdir of it for speed.')
+
 mcp = FastMCP("asterism_tools")
 
 # ── Seat gate (owner ruling 2026-08-22) ───────────────────────────────
@@ -113,10 +121,6 @@ def loogle(pattern: str = "", query: str = "",
 
     Returns one line per hit: `name :: type [module]`. No hits is a
     valid answer — refine the pattern rather than retrying it verbatim.
-
-    Several patterns at once: put ONE PER LINE in `pattern` (up to 8) —
-    verifying your whole candidate-lemma list is one call, not a
-    lookup-per-iteration crawl.
     """
     # `query` is an alias because that is what a model reaches for first:
     # the acceptance run called `loogle(query=…)`, MCP raised, and agy
@@ -128,16 +132,6 @@ def loogle(pattern: str = "", query: str = "",
             tool="loogle",
             hint='the parameter is `pattern` (or `query`), e.g. '
                  'loogle(pattern="Nat.factorial _ = _")')
-    # SEVERAL patterns in one call (one per line): name-by-name
-    # verification crawls burned 60-90 iterations at one lookup each
-    # (both fleets, 2026-08-22) when the whole candidate list fits in
-    # one round-trip. Answers are labelled per pattern.
-    if "\n" in pattern:
-        pats = [p.strip() for p in pattern.splitlines() if p.strip()][:8]
-        if len(pats) > 1:
-            return "\n\n".join(
-                f"[{p}]\n{loogle(pattern=p, limit=limit)}" for p in pats)
-        pattern = pats[0] if pats else pattern
     # Exact-repeat teaching: agents resent ONE identical query up to
     # ×114 in a session (both fleets, 2026-08-22 — the top killer of
     # timed-out formalizer turns). The answer cannot change; say so,
@@ -152,14 +146,19 @@ def loogle(pattern: str = "", query: str = "",
         return (f"you have sent this EXACT query {n} times — the "
                 f"answer has not changed and will not. Repeated misses "
                 f"on one shape usually mean Mathlib lacks it in this "
-                f"form: plan without it, prove the special case you "
-                f"need inline, or search a genuinely DIFFERENT shape "
-                f"(a name fragment in quotes, or a weaker pattern).")
+                f"form OR renamed it: " + _GREP_THE_SOURCE + " Or plan "
+                f"without it / prove the special case you need inline.")
     rc, text = _loogle.query(pattern, limit=limit)
     if rc != 0:
         return f"loogle unavailable: {text}"
     if len(text) > MAX_CHARS:
         text = text[:MAX_CHARS] + "\n… (truncated; narrow the pattern)"
+    if "no hits" in text:
+        # A miss on a REMEMBERED name is usually a Mathlib rename
+        # (models' Mathlib memory trails the deprecation cycle; 4 of 6
+        # safari'd names measured absent, 2026-08-22) — the source has
+        # the current name one grep away.
+        text = text.rstrip() + " " + _GREP_THE_SOURCE
     if n >= 2:
         text = (f"[you have sent this exact query {n} times — same "
                 f"answer] " + text)

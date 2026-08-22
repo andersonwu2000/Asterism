@@ -218,13 +218,41 @@ def _expand(spec: str, cwd: Path) -> "list[Path]":
                           if x.is_file())
         return hits
     if p.is_dir():
+        grant = _lake_grant(p.resolve())
+        if isinstance(grant, str):
+            return []  # grep surfaces the teaching via _lake_grant
         return sorted(x for x in p.rglob("*")
-                      if x.is_file() and not _skipped(x))
+                      if x.is_file() and not _skipped(x, allow_lake=grant))
     return [p] if p.exists() else []
 
 
-def _skipped(p: Path) -> bool:
+def _skipped(p: Path, *, allow_lake: bool = False) -> bool:
+    if allow_lake:
+        return any(part in _SKIP_DIRS and part != ".lake"
+                   for part in p.parts)
     return any(part in _SKIP_DIRS for part in p.parts)
+
+
+def _lake_grant(base: Path) -> "bool | str":
+    """A walk whose ROOT the agent explicitly aimed inside `.lake` is a
+    deliberate targeted query, not an accidental 69GB tree-walk — the
+    skip list stops the latter, and it was also stopping agents from
+    grepping Mathlib SOURCE for the real name of a half-remembered
+    lemma, which fed the loogle-guessing spirals (owner ruling
+    2026-08-22: explicit paths override the skip). Sources only:
+    `.lake/packages/...`; the 60GB of build artifacts stay walled.
+
+    Returns True (granted), False (no .lake involved), or a teaching
+    string (aimed at .lake but outside packages/)."""
+    parts = base.parts
+    if ".lake" not in parts:
+        return False
+    i = parts.index(".lake")
+    if len(parts) > i + 1 and parts[i + 1] == "packages":
+        return True
+    return (".lake is searchable only under .lake/packages/ (library "
+            "SOURCES — e.g. in: \".lake/packages/mathlib/Mathlib\"); "
+            "build artifacts are not.")
 
 
 def _find_by_basename(name: str, cwd: Path) -> "Path | None":
@@ -350,6 +378,9 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
         return [f"bad pattern: {exc}"]
     files = _expand(where, cwd)
     if not files:
+        grant = _lake_grant(_resolve(where, cwd).resolve())
+        if isinstance(grant, str):
+            return [grant]
         return [f"nothing to search at {where!r}; {_nearest_existing(cwd / where, cwd)}"]
     hits: "list[str]" = []
     for f in files:
@@ -607,8 +638,12 @@ def _q_find(q: dict, cwd: Path, deny) -> "list[str]":
                          else base), p.name
     if not base.is_dir():
         return [f"no directory at {base}; {_nearest_existing(base)}"]
+    grant = _lake_grant(base)
+    if isinstance(grant, str):
+        return [grant]
     out = [_rel(p, cwd) for p in sorted(base.rglob(pattern))
-           if not _skipped(p) and _denied(p, deny) is None]
+           if not _skipped(p, allow_lake=grant)
+           and _denied(p, deny) is None]
     if not out:
         return ["no matches"]
     kept, note = _cap(out, q.get("max", DEFAULT_MAX), "")

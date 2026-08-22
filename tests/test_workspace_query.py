@@ -762,3 +762,37 @@ def test_decl_signature_keeps_line_structure(tmp_path, monkeypatch):
     flat = ctx.goal_display_signature(
         tmp_path, "multi_line_sig", "L_x.lean", "n ≤ n * n")
     assert "\n" not in flat, "default stays one-line for list surfaces"
+
+
+def test_explicit_lake_path_overrides_the_skip_list(tmp_path):
+    """Agents grepping Mathlib source for a renamed lemma's current
+    name hit "nothing to search" on five path spellings and degraded
+    into loogle-guessing spirals (both fleets, 2026-08-22). Owner
+    ruling: a walk whose root the agent explicitly aimed inside
+    `.lake/packages/` is deliberate — grant it; default walks and
+    build artifacts stay walled."""
+    src = tmp_path / ".lake" / "packages" / "mathlib" / "Mathlib"
+    src.mkdir(parents=True)
+    (src / "Card.lean").write_text(
+        "theorem ncard_le_ncard (h : s \u2286 t) : s.ncard \u2264 t.ncard := hx\n",
+        encoding="utf-8")
+    build = tmp_path / ".lake" / "build"
+    build.mkdir(parents=True)
+    (build / "junk.lean").write_text("theorem ncard_le_ncard_junk : x\n",
+                                     encoding="utf-8")
+
+    out = wq.run_queries([{"grep": "ncard_le", "in":
+                           ".lake/packages/mathlib/Mathlib"}], cwd=tmp_path)
+    assert "ncard_le_ncard" in out, "explicit source path must search"
+
+    out2 = wq.run_queries([{"grep": "ncard_le", "in": ".lake/build"}],
+                          cwd=tmp_path)
+    assert "only under .lake/packages" in out2, "build stays walled"
+
+    out3 = wq.run_queries([{"grep": "ncard_le", "in": "."}], cwd=tmp_path)
+    assert "ncard_le_ncard" not in out3, "default walks still skip .lake"
+
+    out4 = wq.run_queries([{"find": "*.lean", "in":
+                            ".lake/packages/mathlib/Mathlib"}],
+                          cwd=tmp_path)
+    assert "Card.lean" in out4
