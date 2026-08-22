@@ -587,7 +587,13 @@ class Shim(http.server.BaseHTTPRequestHandler):
         # delivered at both; unbounded = 8000 tokens of reasoning and
         # zero content).
         body["reasoning"] = {"effort": ZEN_EFFORT}
-        attempt_dir = _attempt_dir_of(body)
+        # Deterministic channel first: the per-spawn config points codex
+        # at `/a/<uuid>/v1`, so the URL names the attempts dir outright.
+        # The request-text regex stays as fallback (operator overrides
+        # that bypass the per-spawn config).
+        m_aid = re.search(r"/a/([0-9a-fA-F-]{36})/", self.path or "")
+        attempt_dir = (os.path.join(_REPO, ".attempts", m_aid.group(1))
+                       if m_aid else _attempt_dir_of(body))
         if not isinstance(body.get("input"), list):
             body["input"] = [body.get("input")] if body.get("input") else []
 
