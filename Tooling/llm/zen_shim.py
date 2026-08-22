@@ -647,8 +647,16 @@ class Shim(http.server.BaseHTTPRequestHandler):
                     else:
                         tool = full[len(NS) + 2:]
                         out = _run_tool(tool, args, attempt_dir)
-                    print(f"[shim]   tool {tool} {time.time()-t_tool:.1f}s "
-                          f"-> {len(out)}B", flush=True)
+                    # Name the target and echo the result HEAD: a 99B
+                    # success and a 99B refusal were indistinguishable
+                    # by size, which cost a whole forensics round on
+                    # "where did decision.json go" (g636, 2026-08-22).
+                    arg_hint = str(args.get("path") or args.get("query")
+                                   or args.get("target")
+                                   or args.get("pattern") or "")[:60]
+                    print(f"[shim]   tool {tool}({arg_hint}) "
+                          f"{time.time()-t_tool:.1f}s "
+                          f"-> {len(out)}B: {out[:70]!r}", flush=True)
                     tool_calls_run += 1
                     body["input"].append({
                         "type": "function_call_output",
