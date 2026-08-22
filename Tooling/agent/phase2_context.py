@@ -608,7 +608,9 @@ def _write_batches_companion(conn: sqlite3.Connection,
                              attempts_dir: "Path | None",
                              order: "list[str]",
                              grouped: "dict[str, list[sqlite3.Row]]",
-                             step_idx) -> bool:
+                             step_idx,
+                             live_steps: "list[sqlite3.Row] | None" = None,
+                             ) -> bool:
     """`BATCHES.md` — every completed step's brief, reply, and what it left.
 
     The inline scoreboard used to carry both bodies cut at 1200 bytes, and
@@ -627,6 +629,26 @@ def _write_batches_companion(conn: sqlite3.Connection,
              "_Machine-generated per spawn. The inline"
              " `## Completed Inject batches` section carries the"
              " scoreboard; the untruncated text lives here._", ""]
+    # In-flight batches first, IN FULL (owner ruling 2026-08-22: lazy
+    # surfaces don't truncate — inline carries existence + pointer,
+    # the substance lives here where inspect reads it by section).
+    # Cross-group included: sub-groups see each other by design.
+    if live_steps:
+        by_batch: "dict[str, list[sqlite3.Row]]" = {}
+        for r in live_steps:
+            by_batch.setdefault(str(r["batch_id"]), []).append(r)
+        for bid, steps in by_batch.items():
+            lines.append(f"## In flight — batch `{bid[:8]}` "
+                         f"(group {steps[0]['grp']})")
+            lines.append("")
+            for r in steps:
+                if r["target_slug"]:
+                    tgt = (f"target `{r['target_slug']}` "
+                           f"({r['target_status']})")
+                else:
+                    tgt = "mint (a new brick from the brief)"
+                lines += [f"### {r['decision_kind']} — {tgt}", "",
+                          str(r["brief"] or "(no brief)").strip(), ""]
     for bid in order:
         lines.append(f"## Batch `{bid[:8]}`")
         lines.append("")
@@ -716,21 +738,47 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                  for r in mine]
     others_note = (f" (+{other_n} other groups' batch(es) also in flight)"
                    if other_n else "")
+    # WHAT the live batches contain rides the LAZY companion in full
+    # (owner ruling 2026-08-22: lazy surfaces don't truncate; inline
+    # carries existence + the pointer). "Don't re-dispatch mine" was
+    # unactionable from a bare hash — checking one proposed Inject for
+    # duplication took a four-source inference (46+2 self-reports).
+    live_steps: "list[sqlite3.Row]" = []
+    if live:
+        ph = ",".join("?" * len(live))
+        try:
+            live_steps = list(conn.execute(
+                f"SELECT d.batch_id, d.brief, d.decision_kind,"
+                f" d.group_id AS grp, d.target_id,"
+                f" g.slug AS target_slug, g.status AS target_status"
+                f" FROM strategist_decisions d"
+                f" LEFT JOIN goals g ON g.id = d.target_id"
+                f" WHERE d.batch_id IN ({ph}) AND d.outcome IS NULL"
+                f"   AND d.decision_kind IN ('Inject', 'Delegate')"
+                f" ORDER BY d.batch_id, d.id",
+                [str(r["batch_id"]) for r in live]))
+        except sqlite3.OperationalError:
+            live_steps = []
+    pointer = (" Each one's targets and full briefs: "
+               f"`{BATCHES_COMPANION}`, the `## In flight` sections."
+               if live_steps else "")
     if not batch_ids:
         if in_flight or other_n:
+            _write_batches_companion(conn, attempts_dir, [], {},
+                                     lambda r: 0, live_steps=live_steps)
             return (["## Dispatched, still running", "",
                      "Not finished, and therefore not below: "
                      + (", ".join(in_flight) or "(none of yours)")
                      + others_note
                      + ". Their outcomes reach you on the batch-done "
-                       "wake — do not re-dispatch them.", ""]
+                       "wake — do not re-dispatch them." + pointer, ""]
                     + decline_lines)
         return decline_lines
     out = ["## Completed Inject batches (newest first)", ""]
     if in_flight or other_n:
         out += ["_Still running, so not listed below: "
                 + (", ".join(in_flight) or "(none of yours)")
-                + others_note + "._", ""]
+                + others_note + "._" + pointer, ""]
     placeholders = ",".join("?" * len(batch_ids))
     # Inject rows only: every wake's decisions share the batch_id, so
     # ConfirmShelve/EmitDirective siblings used to render as brief-less
@@ -767,7 +815,7 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
             return 0
 
     lazy = _write_batches_companion(conn, attempts_dir, order, grouped,
-                                    _step_idx)
+                                    _step_idx, live_steps=live_steps)
     if lazy:
         out += [f"Full proof/brief and worker reply per step:"
                 f" `{BATCHES_COMPANION}`, beside this file.", ""]

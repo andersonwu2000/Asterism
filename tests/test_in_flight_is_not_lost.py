@@ -113,3 +113,25 @@ def test_an_outcome_less_decision_says_it_is_in_flight():
     result was lost."""
     src = _inspect.getsource(phase2_context._section_failure_replay)
     assert "IN FLIGHT" in src, src[:200]
+
+
+def test_a_running_batchs_substance_rides_the_lazy_companion(
+        conn: sqlite3.Connection, tmp_path):
+    """A bare hash was unactionable: checking one proposed Inject for
+    duplication against "don't re-dispatch mine" took a four-source
+    inference (46+2 self-reports). Owner ruling 2026-08-22: the lazy
+    surface carries the FULL briefs (no truncation), the inline line
+    carries existence + the pointer."""
+    conn.execute(
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES ('p', '2026-01-01', 1)")
+    _seed(conn, batch="cafe1234beef", outcome=None)
+    out = phase2_context._section_inject_batch_outcomes(
+        conn, "p", attempts_dir=tmp_path)
+    text = "\n".join(out)
+    assert "cafe1234" in text
+    assert "In flight" in text and "BATCHES.md" in text
+    companion = (tmp_path / "BATCHES.md").read_text(encoding="utf-8")
+    assert "## In flight — batch `cafe1234`" in companion
+    assert "do it" in companion, "the full brief, untruncated"
+    assert "mint (a new brick from the brief)" in companion
