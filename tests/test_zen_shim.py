@@ -230,6 +230,30 @@ def test_zen_call_dead_parachute_returns_to_primary(
     assert calls[3] == zen_shim.ZEN_RESCUE and calls[5] == zen_shim.ZEN
 
 
+def test_attempt_dir_from_path_carries_nested_projection_dirs() -> None:
+    # The URL segment is a PATH under .attempts, not a bare uuid:
+    # adversary/judge rounds spawn from `<uuid>/adversary/r2`, and a
+    # uuid-shaped parse missed them — every write in those legs was
+    # refused while the strategists' own writes landed (2026-08-22).
+    import os
+    got = zen_shim._attempt_dir_from_path(
+        "/a/c505e391-1cde-4be4-b3c2-407f89796ef7/adversary/r2/v1/responses")
+    assert got is not None
+    assert got.endswith(os.path.join(
+        ".attempts", "c505e391-1cde-4be4-b3c2-407f89796ef7",
+        "adversary", "r2"))
+    # plain per-spawn dir still resolves
+    got = zen_shim._attempt_dir_from_path(
+        "/a/c505e391-1cde-4be4-b3c2-407f89796ef7/v1/responses")
+    assert got is not None and got.endswith(
+        "c505e391-1cde-4be4-b3c2-407f89796ef7")
+    # no channel -> None (body-text fallback takes over)
+    assert zen_shim._attempt_dir_from_path("/v1/responses") is None
+    # traversal never escapes .attempts
+    assert zen_shim._attempt_dir_from_path(
+        "/a/../secrets/v1/responses") is None
+
+
 def test_mcp_http_normalizes_mixed_case_headers(
         monkeypatch: pytest.MonkeyPatch) -> None:
     body = b'{"jsonrpc":"2.0","id":1,"result":{}}'

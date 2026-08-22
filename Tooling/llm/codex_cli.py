@@ -339,16 +339,25 @@ def _render_config(req: LLMRequest, model: str, effort: str,
                            env_var="ASTERISM_ZEN_BASE_URL",
                            default="http://127.0.0.1:8898/v1")
         # This spawn's attempts dir travels IN THE URL PATH
-        # (`/a/<uuid>/v1`): the shim used to recover it by regexing the
-        # request text, and codex only carries those paths on SOME
+        # (`/a/<relpath>/v1`): the shim used to recover it by regexing
+        # the request text, and codex only carries those paths on SOME
         # turns — write_file flickered between working and "no attempts
         # directory" inside one session (2026-08-22). The per-spawn
         # config is already unique to this spawn; the URL is the one
         # deterministic in-band channel the shim always sees.
+        # The segment is the FULL path relative to `.attempts`, not the
+        # basename: adversary and judge rounds spawn from projection
+        # dirs like `<uuid>/adversary/r2`, and the basename alone sent
+        # `/a/r2/v1` — the shim's parse missed it and every write in
+        # those legs was refused (2026-08-22, same evening).
         base = str(base).rstrip("/")
         if req.attempts_dir is not None and base.endswith("/v1"):
-            base = (base[: -len("/v1")]
-                    + f"/a/{Path(req.attempts_dir).name}/v1")
+            parts = Path(req.attempts_dir).resolve().parts
+            if ".attempts" in parts:
+                i = len(parts) - 1 - parts[::-1].index(".attempts")
+                rel = "/".join(parts[i + 1:])
+                if rel:
+                    base = base[: -len("/v1")] + f"/a/{rel}/v1"
         lines += [
             "",
             "[model_providers.zen]",

@@ -250,6 +250,23 @@ def _run_lsp_tool(name: str, args: dict, attempt_dir: "str | None") -> str:
     return text or json.dumps(result)[:2000]
 
 
+def _attempt_dir_from_path(path: str) -> "str | None":
+    """The deterministic channel: `/a/<relpath>/v1/...` names this
+    spawn's attempts dir outright (per-spawn codex config, codex_cli).
+
+    The segment is a PATH under `.attempts`, not a bare uuid: adversary
+    and judge rounds spawn from projection dirs (`<uuid>/adversary/r2`),
+    and a uuid-shaped parse missed them — every write in those legs was
+    refused while the strategists' own writes landed (2026-08-22)."""
+    m = re.match(r"^/a/(.+?)/v1(?:/|$)", path or "")
+    if not m:
+        return None
+    parts = m.group(1).split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        return None
+    return os.path.join(_REPO, ".attempts", *parts)
+
+
 def _attempt_dir_of(body: dict) -> "str | None":
     # Scan the WHOLE request: the 20K slice used here first let the
     # skills preamble push the environment context (which carries the
@@ -588,12 +605,11 @@ class Shim(http.server.BaseHTTPRequestHandler):
         # zero content).
         body["reasoning"] = {"effort": ZEN_EFFORT}
         # Deterministic channel first: the per-spawn config points codex
-        # at `/a/<uuid>/v1`, so the URL names the attempts dir outright.
-        # The request-text regex stays as fallback (operator overrides
+        # at `/a/<relpath>/v1` (see _attempt_dir_from_path). The
+        # request-text regex stays as fallback (operator overrides
         # that bypass the per-spawn config).
-        m_aid = re.search(r"/a/([0-9a-fA-F-]{36})/", self.path or "")
-        attempt_dir = (os.path.join(_REPO, ".attempts", m_aid.group(1))
-                       if m_aid else _attempt_dir_of(body))
+        attempt_dir = (_attempt_dir_from_path(self.path)
+                       or _attempt_dir_of(body))
         if not isinstance(body.get("input"), list):
             body["input"] = [body.get("input")] if body.get("input") else []
 
