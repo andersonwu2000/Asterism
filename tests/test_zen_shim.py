@@ -489,3 +489,64 @@ def test_lsp_tool_evicts_and_retries_once_on_a_session_error(
     assert out == "ok!"
     assert zen_shim._LSP_SESSIONS[str(att)][0] == "fresh-sid"
     zen_shim._LSP_SESSIONS.clear()
+
+
+def test_run_tool_context_is_request_local_not_process_global(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The env-pin under a global lock serialized every tool call — one
+    28-minute grep starved twelve spawns (2026-08-23). Two concurrent
+    _run_tool calls must each see their OWN attempt dir, in parallel,
+    with process env untouched."""
+    import os as _os
+    import threading
+    import time as _time
+    from Tooling.llm.spawn_guard import current_attempt_dir
+
+    seen: dict = {}
+    gate = threading.Barrier(2, timeout=10)
+
+    class _FakeTools:
+        @staticmethod
+        def snoop() -> str:
+            gate.wait()          # both calls INSIDE the tool at once —
+            _time.sleep(0.05)    # impossible under the old global lock
+            return str(current_attempt_dir())
+
+    monkeypatch.setattr(zen_shim, "_tools_module", lambda: _FakeTools)
+
+    def run(tag: str, d: str) -> None:
+        seen[tag] = zen_shim._run_tool("snoop", {}, d)
+
+    t1 = threading.Thread(target=run, args=("a", "D:/att/a"))
+    t2 = threading.Thread(target=run, args=("b", "D:/att/b"))
+    t1.start(); t2.start(); t1.join(10); t2.join(10)
+    assert seen == {"a": "D:/att/a", "b": "D:/att/b"}
+    assert not _os.environ.get("ASTERISM_SPAWN_ATTEMPT_DIR")
+
+
+def test_tools_snapshot_names_the_running_call_and_its_age(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the lock gone a wedged call no longer blocks the channel —
+    the oldest-call age in the snapshot is how a leak is FOUND."""
+    import threading
+    started = threading.Event()
+    release = threading.Event()
+
+    class _FakeTools:
+        @staticmethod
+        def slowpoke() -> str:
+            started.set()
+            release.wait(10)
+            return "done"
+
+    monkeypatch.setattr(zen_shim, "_tools_module", lambda: _FakeTools)
+    t = threading.Thread(
+        target=zen_shim._run_tool, args=("slowpoke", {}, None))
+    t.start()
+    assert started.wait(10)
+    snap = zen_shim._tools_snapshot()
+    assert [r["tool"] for r in snap["tools_running"]] == ["slowpoke"]
+    assert snap["oldest_tool_age_sec"] >= 0
+    release.set()
+    t.join(10)
+    assert zen_shim._tools_snapshot()["tools_running"] == []

@@ -32,6 +32,7 @@ import fnmatch
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 #: Per-query line cap when the caller does not choose one. Applies to
@@ -81,6 +82,20 @@ _HEADING_RE = re.compile(r"^(#{1,4})\s+(\S.*?)\s*$")
 _MAX_FILE_BYTES = 4_000_000
 _SKIP_DIRS = {".git", ".lake", "__pycache__", "node_modules", ".venv",
               "build", ".asterism"}
+
+#: Big trees an agent almost never MEANS when it aims a walk at a broad
+#: root — pruned unless the walk's root is explicitly inside one. The
+#: 2026-08-23 fleet stall was one grep whose walk wandered into these
+#: and read files for 28 minutes.
+_HEAVY_DIRS = {".attempts", "Papers", "_spike", ".playwright-mcp"}
+
+#: Scan budget for ONE grep query: whichever trips first stops the scan
+#: with the partial hits and an actionable note (`after` continues; a
+#: narrower `in` finishes). The budget protects the shared CPU, not the
+#: reply size — output is bounded separately by `max`.
+_SCAN_MAX_FILES = 3000
+_SCAN_MAX_BYTES = 48 * 1024 * 1024
+_SCAN_MAX_SEC = 60.0
 
 
 # --------------------------------------------------------- resolution
@@ -149,8 +164,17 @@ def _own_attempt_dir() -> "Path | None":
     but codex hands its MCP children a fixed core set that drops it.
 
     Each candidate is tried in turn — a first entry that no longer
-    exists must not switch the whole mechanism off silently."""
-    from ..llm.spawn_guard import ATTEMPT_DIR_ENV, WRITE_ROOTS_ENV
+    exists must not switch the whole mechanism off silently.
+
+    The shim's request-local ContextVar comes FIRST: there one process
+    serves many spawns concurrently, and the env route needed a global
+    lock that a 28-minute grep turned into a fleet-wide stall
+    (2026-08-23)."""
+    from ..llm.spawn_guard import (ATTEMPT_DIR_CONTEXT, ATTEMPT_DIR_ENV,
+                                   WRITE_ROOTS_ENV)
+    ctx = ATTEMPT_DIR_CONTEXT.get()
+    if ctx and Path(ctx).is_dir():
+        return Path(ctx)
     for var in (ATTEMPT_DIR_ENV, WRITE_ROOTS_ENV):
         raw = (os.environ.get(var) or "").strip()
         for part in raw.split(os.pathsep):
@@ -231,11 +255,13 @@ def _glob_hits(base: Path, pattern: str) -> "list[Path]":
     if "**" not in toks:
         return sorted(x for x in base.glob(pattern) if x.is_file())
     allow = _lake_grant(base.resolve()) is True
+    aimed = set(base.resolve().parts)
     hits: "list[Path]" = []
     for root, dirs, files in os.walk(base):
         dirs[:] = sorted(
             d for d in dirs
-            if d not in _SKIP_DIRS or (allow and d == ".lake"))
+            if (d not in _SKIP_DIRS or (allow and d == ".lake"))
+            and (d not in _HEAVY_DIRS or d in aimed))
         try:
             rel = Path(root).relative_to(base).parts
         except ValueError:
@@ -273,9 +299,25 @@ def _expand(spec: str, cwd: Path) -> "list[Path]":
         grant = _lake_grant(p.resolve())
         if isinstance(grant, str):
             return []  # grep surfaces the teaching via _lake_grant
-        return sorted(x for x in p.rglob("*")
-                      if x.is_file() and not _skipped(x, allow_lake=grant))
+        if _skipped(p, allow_lake=grant is True):
+            return []  # a walk ROOTED under a skip dir stays walled
+        return _walk_files(p, allow_lake=grant is True)
     return [p] if p.exists() else []
+
+
+def _walk_files(base: Path, *, allow_lake: bool) -> "list[Path]":
+    """Directory walk with the skip list AND the heavy-dir rule (see
+    `_HEAVY_DIRS`); pruning happens during the walk, so a broad root
+    never pays for the trees it will not use."""
+    aimed = set(base.resolve().parts)
+    out: "list[Path]" = []
+    for root, dirs, files in os.walk(base):
+        dirs[:] = sorted(
+            d for d in dirs
+            if (d not in _SKIP_DIRS or (allow_lake and d == ".lake"))
+            and (d not in _HEAVY_DIRS or d in aimed))
+        out += (Path(root) / f for f in files)
+    return sorted(out)
 
 
 def _skipped(p: Path, *, allow_lake: bool = False) -> bool:
@@ -444,8 +486,30 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
         m = re.fullmatch(r"(.*):(\d+)", after)
         skip_rel, skip_line = (m.group(1), int(m.group(2))) if m else (after, 0)
     resumed = not after
-    hits: "list[str]" = []
+    # The scan STOPS as soon as it has `max`+1 hits or trips the scan
+    # budget — the old shape read every file to the end and only then
+    # truncated the output, which is how one broad grep held a CPU for
+    # 28 minutes (2026-08-23). `after` makes stopping safe: the reader
+    # can always continue with no overlap.
+    want = max(1, min(int(q.get("max", DEFAULT_MAX)), MAX_MAX))
+    t0 = time.monotonic()
+    n_files = read_bytes = 0
+    budget_hit = ""
+    more = False
+    blocks: "list[tuple[str, int, list[str]]]" = []  # (rel, line, lines)
     for f in files:
+        if len(blocks) > want:
+            more = True
+            break
+        if n_files >= _SCAN_MAX_FILES:
+            budget_hit = f"{n_files} files"
+            break
+        if read_bytes >= _SCAN_MAX_BYTES:
+            budget_hit = f"{read_bytes >> 20} MB read"
+            break
+        if time.monotonic() - t0 > _SCAN_MAX_SEC:
+            budget_hit = f"{int(time.monotonic() - t0)}s"
+            break
         root = _denied(f.resolve(), deny)
         if root is not None:
             continue
@@ -454,7 +518,10 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
         if not resumed and not boundary:
             continue
         resumed = True
-        lines = _read_text(f).splitlines()
+        n_files += 1
+        text = _read_text(f)
+        read_bytes += len(text)
+        lines = text.splitlines()
         for i, line in enumerate(lines):
             if boundary and i + 1 <= skip_line:
                 continue
@@ -462,23 +529,40 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
                 continue
             if ctx:
                 lo, hi = max(0, i - ctx), min(len(lines), i + ctx + 1)
-                hits.append(f"{rel}:{i + 1}:")
-                hits += [f"  {n + 1:>5}  {lines[n]}" for n in range(lo, hi)]
+                blk = [f"{rel}:{i + 1}:"] + [
+                    f"  {n + 1:>5}  {lines[n]}" for n in range(lo, hi)]
             else:
-                hits.append(f"{rel}:{i + 1}: {line.strip()}")
+                blk = [f"{rel}:{i + 1}: {line.strip()}"]
+            blocks.append((rel, i + 1, blk))
+            if len(blocks) > want:
+                more = True
+                break
+        if more:
+            break
     if after and not resumed:
         return [f"resume point {after!r} names a file outside this "
                 f"search — re-run without `after`."]
+    delivered = blocks[:want]
+    hits = [ln for _r, _n, blk in delivered for ln in blk]
     if not hits:
-        return [f"no more matches past {after}"] if after else ["no matches"]
-    kept, note = _cap(hits, q.get("max", DEFAULT_MAX),
-                      ", or narrow `in` to fewer files")
-    if note:
-        anchor = _last_grep_anchor(kept)
-        if anchor:
-            note += (f' — or continue with no overlap: '
-                     f'`after: "{anchor}"` (same query).')
-    return kept + ([note] if note else [])
+        base_msg = (f"no more matches past {after}" if after
+                    else "no matches")
+        if budget_hit:
+            return [base_msg + f" so far — scan budget hit "
+                    f"({budget_hit}) before the search finished; "
+                    f"narrow `in` to a subdirectory or a glob"]
+        return [base_msg]
+    notes: "list[str]" = []
+    if more or budget_hit:
+        rel_l, line_l, _b = delivered[-1]
+        why = (f"scan budget hit ({budget_hit})" if budget_hit
+               else f"{len(delivered)} delivered, more exist")
+        notes.append(
+            f"… {why}. Continue with no overlap: "
+            f'`after: "{rel_l}:{line_l}"` (same query)'
+            + (", or narrow `in` to a subdirectory or a glob."
+               if budget_hit else "."))
+    return hits + notes
 
 
 def _last_grep_anchor(kept: "list[str]") -> str:

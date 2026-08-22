@@ -166,3 +166,38 @@ def test_no_zen_seat_means_no_channel_probe(monkeypatch) -> None:
     monkeypatch.setattr(caps, "provider_for_kind", lambda k, **kw: "claude")
     assert network_wait.channel_url_for(None) is None
     assert network_wait.channel_url_for("forward") is None
+
+
+def test_probe_channel_measures_the_tool_plane_first(monkeypatch) -> None:
+    """The shim's HTTP door answered through the whole 2026-08-23 stall
+    while the tool plane sat starved — "answers HTTP" was the wrong
+    plane. A pong is alive; a 5xx on the probe is DOWN even though the
+    door spoke; an old build (400 on the probe) falls back to the door
+    check."""
+    import io
+    import urllib.error
+    import urllib.request
+
+    def fake_urlopen_pong(req, timeout=0):
+        return io.BytesIO(b'{"probe": "pong", "tools_running": []}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen_pong)
+    assert network_wait.probe_channel("http://127.0.0.1:1/v1") is True
+
+    def fake_urlopen_500(req, timeout=0):
+        raise urllib.error.HTTPError(req.full_url, 500, "boom", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen_500)
+    assert network_wait.probe_channel("http://127.0.0.1:1/v1") is False
+
+    calls = {"n": 0}
+
+    def fake_urlopen_old_build(req, timeout=0):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise urllib.error.HTTPError(req.full_url, 400, "no model",
+                                         {}, None)
+        return io.BytesIO(b"ok")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen_old_build)
+    assert network_wait.probe_channel("http://127.0.0.1:1/v1") is True

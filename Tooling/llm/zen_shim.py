@@ -17,10 +17,12 @@ Measured facts this file answers (2026-08-21/22, free ox-alpha window):
     codex can digest. codex never sees a flat call.
 
 Tool execution: `Tooling.knowledge.mcp_tools`'s tools are plain module
-functions; the per-spawn context they need travels in env
-(`ASTERISM_SPAWN_ATTEMPT_DIR`), which the shim recovers by parsing the
-attempts-dir path out of the request text and pins under a global lock
-for the duration of each call.
+functions; the per-spawn context they need (the attempts dir, named by
+the request URL) rides a request-local ContextVar
+(`spawn_guard.ATTEMPT_DIR_CONTEXT`), so concurrent requests execute
+tools in parallel without touching process env. (The former global
+lock + env pin starved the whole fleet behind one 28-minute grep,
+2026-08-23.)
 
 Run:  python -m Tooling.llm.zen_shim [port]   (default 8898)
 Key:  OPENCODE_ZEN_API_KEY env, or .env's OPENCODE_ZEN_API_KEY.
@@ -101,7 +103,8 @@ def _log(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
-_TOOL_LOCK = threading.Lock()
+# (the global _TOOL_LOCK died 2026-08-23 — request context rides a
+# ContextVar now; see _run_tool.)
 # Both separators: codex 0.147 rendered the skills-preamble paths with
 # backslashes, 0.149 renders them with FORWARD slashes — the
 # backslash-only pattern silently stopped matching after the upgrade,
@@ -141,27 +144,55 @@ def _tools_module():
     return mcp_tools
 
 
+#: Tool calls in flight: {thread id: (tool, scope, started_at)}. The
+#: observability half of the 2026-08-23 stall fix — with the global
+#: lock gone a wedged call no longer blocks the channel, so the "oldest
+#: running call" age is how an individual leak is found.
+_TOOLS_ACTIVE: "dict[int, tuple[str, str, float]]" = {}
+_TOOLS_ACTIVE_LOCK = threading.Lock()
+
+
+def _tools_snapshot() -> dict:
+    now = time.time()
+    with _TOOLS_ACTIVE_LOCK:
+        running = [{"tool": n, "scope": s, "age_sec": round(now - t, 1)}
+                   for n, s, t in _TOOLS_ACTIVE.values()]
+    running.sort(key=lambda r: -r["age_sec"])
+    with _CONC_LOCK:
+        conc = {"free": _CONC_FREE, "waiting": len(_CONC_WAITERS)}
+    return {"tools_running": running,
+            "oldest_tool_age_sec": running[0]["age_sec"] if running else 0,
+            "upstream_slots": conc}
+
+
 def _run_tool(name: str, args: dict, attempt_dir: "str | None") -> str:
+    """Execute one in-process tool with REQUEST-LOCAL attempt-dir
+    context. The former shape pinned a process-wide env var under a
+    global lock; one 28-minute grep then starved all twelve spawns'
+    tool calls while heartbeats froze (2026-08-23). The ContextVar
+    isolates concurrent requests without serializing them — deleting
+    the lock alone would have let agents read each other's attempt
+    dirs, which is worse than the stall."""
     mod = _tools_module()
     fn = getattr(mod, name, None)
     if fn is None:
         return f"unknown tool {name!r}"
-    with _TOOL_LOCK:
-        prior = os.environ.get("ASTERISM_SPAWN_ATTEMPT_DIR")
+    from Tooling.llm.spawn_guard import ATTEMPT_DIR_CONTEXT
+    tid = threading.get_ident()
+    token = ATTEMPT_DIR_CONTEXT.set(attempt_dir or None)
+    with _TOOLS_ACTIVE_LOCK:
+        _TOOLS_ACTIVE[tid] = (name, json.dumps(args)[:120], time.time())
+    try:
         try:
-            if attempt_dir:
-                os.environ["ASTERISM_SPAWN_ATTEMPT_DIR"] = attempt_dir
-            try:
-                return str(fn(**args))
-            except TypeError as e:
-                return f"bad arguments for {name}: {e}"
-            except Exception as e:  # noqa: BLE001 — tool result surface
-                return f"{name} raised {type(e).__name__}: {e}"
-        finally:
-            if prior is None:
-                os.environ.pop("ASTERISM_SPAWN_ATTEMPT_DIR", None)
-            else:
-                os.environ["ASTERISM_SPAWN_ATTEMPT_DIR"] = prior
+            return str(fn(**args))
+        except TypeError as e:
+            return f"bad arguments for {name}: {e}"
+        except Exception as e:  # noqa: BLE001 — tool result surface
+            return f"{name} raised {type(e).__name__}: {e}"
+    finally:
+        with _TOOLS_ACTIVE_LOCK:
+            _TOOLS_ACTIVE.pop(tid, None)
+        ATTEMPT_DIR_CONTEXT.reset(token)
 
 
 _LSP_SESSIONS: dict = {}
@@ -772,6 +803,22 @@ class Shim(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         if not body.get("model"):
+            if body.get("probe") == "tools":
+                # Tool-plane liveness: a REAL tool through _run_tool +
+                # request context. The HTTP door kept answering through
+                # the whole 2026-08-23 stall while the tool plane sat
+                # starved — this probe measures the plane that matters,
+                # and ships the snapshot that finds an individual leak.
+                pong = _run_tool("ping", {}, None)
+                stats = _tools_snapshot()
+                stats["probe"] = pong
+                blob = json.dumps(stats).encode()
+                self.send_response(200 if pong == "pong" else 500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(blob)))
+                self.end_headers()
+                self.wfile.write(blob)
+                return
             # Liveness curls POST `{}` — answer locally instead of
             # forwarding a model-less request upstream (each one burned
             # an OpenRouter daily-cap slot and manufactured the
@@ -1126,6 +1173,16 @@ def _svc_start(port: int) -> int:
         print(f"already serving on {port}"
               + (f" (pid {pid})" if pid else " (pid unknown)"))
         return 0
+    # Fail LOUD before detaching: the child runs THIS interpreter, and
+    # a venv python without the tool deps detached fine and then
+    # answered every tool call "No module named 'mcp'" (2026-08-23).
+    try:
+        _tools_module()
+    except Exception as e:  # noqa: BLE001 — refuse to detach broken
+        print(f"refusing to detach: this interpreter ({sys.executable}) "
+              f"cannot import the tool surface ({e}). Start the shim "
+              f"with the framework's Python.")
+        return 1
     os.makedirs(os.path.dirname(_SVC_LOG), exist_ok=True)
     log = open(_SVC_LOG, "ab")
     flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
@@ -1177,6 +1234,24 @@ def main() -> int:
         pid, answering = _svc_status(port)
         print(f"pid={pid or '-'} port={port} "
               f"{'answering' if answering else 'DEAD'}")
+        if answering:
+            try:
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/responses",
+                    data=b'{"probe": "tools"}',
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    st = json.loads(r.read())
+                print(f"tool plane: probe={st.get('probe')} "
+                      f"running={len(st.get('tools_running') or [])} "
+                      f"oldest={st.get('oldest_tool_age_sec')}s "
+                      f"upstream={st.get('upstream_slots')}")
+                for t in (st.get("tools_running") or [])[:5]:
+                    print(f"  {t['age_sec']:>7.1f}s  {t['tool']}"
+                          f"  {t['scope']}")
+            except Exception as e:  # noqa: BLE001 — status is best-effort
+                print(f"tool plane: probe failed ({e}) — old shim build "
+                      f"or wedged tool plane")
         return 0 if answering else 1
     if cmd is not None:
         print(f"unknown command {cmd!r} — use start|stop|status|<port>")

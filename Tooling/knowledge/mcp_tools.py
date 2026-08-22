@@ -95,6 +95,14 @@ else:
     _ALLOWED = None
 
 
+def ping() -> str:
+    """Tool-plane liveness for the shim's `{"probe": "tools"}` — a real
+    call through the execution path, not the HTTP door (which answered
+    through the whole 2026-08-23 stall). Deliberately NOT a seat tool:
+    agents never see it."""
+    return "pong"
+
+
 def _seat_tool(**tool_kwargs):
     """`@mcp.tool` that registers only when the seat's whitelist says
     so; the function itself always exists (the shim imports this module
@@ -137,7 +145,8 @@ def loogle(pattern: str = "", query: str = "",
     # timed-out formalizer turns). The answer cannot change; say so,
     # with the way out. Keyed per spawn so parallel agents don't
     # cross-pollute.
-    spawn = os.environ.get("ASTERISM_SPAWN_ATTEMPT_DIR", "")
+    from ..llm.spawn_guard import current_attempt_dir
+    spawn = current_attempt_dir() or ""
     rkey = (spawn, " ".join(pattern.split()))
     if len(_LOOGLE_REPEATS) > 512:
         _LOOGLE_REPEATS.clear()

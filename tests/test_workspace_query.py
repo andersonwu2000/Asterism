@@ -61,12 +61,14 @@ def test_each_query_carries_its_own_cap_and_says_what_it_dropped(
     here: Path,
 ) -> None:
     """A cap that hides its own existence is the thing the "no silent
-    truncation" rule forbids — the answer must name the count AND the
-    way to see the rest."""
+    truncation" rule forbids — the answer must disclose that more exist
+    AND hand back the way to see the rest. (Since the 2026-08-23 stall
+    fix the scan STOPS at max+1 hits, so the exact remainder is unknown
+    by design; the `after` handle replaces the "re-run with max" hint.)"""
     out = wq.run_queries([{"grep": "theorem", "in": "proofs/*.lean",
                            "max": 1}], cwd=here)
-    assert "… 1 more" in out
-    assert "Re-run with max:" in out
+    assert "more exist" in out
+    assert 'after: "' in out
 
 
 def test_a_wrong_path_answers_with_what_is_actually_there(
@@ -851,3 +853,39 @@ def test_a_capped_grep_names_a_resume_handle_and_it_works(tmp_path):
     out3 = wq.run_queries([{"grep": "theorem", "in": "big.lean",
                             "after": "elsewhere.lean:3"}], cwd=tmp_path)
     assert "outside this search" in out3, "a bad anchor teaches the way out"
+
+
+def test_grep_scan_budget_stops_early_and_names_the_way_out(
+    tmp_path, monkeypatch,
+) -> None:
+    """The old shape read EVERY file before truncating output — one
+    broad grep held a CPU for 28 minutes (2026-08-23). The scan stops
+    at the budget with partial hits, an `after` handle, and the
+    narrow-`in` teaching."""
+    for n in range(6):
+        (tmp_path / f"f{n}.lean").write_text(
+            f"theorem t{n} : True := trivial\n", encoding="utf-8")
+    monkeypatch.setattr(wq, "_SCAN_MAX_FILES", 2)
+    out = wq.run_queries([{"grep": "theorem", "in": "."}], cwd=tmp_path)
+    assert "scan budget hit (2 files)" in out
+    assert 'after: "' in out and "narrow `in`" in out
+
+
+def test_a_broad_walk_prunes_heavy_dirs_unless_aimed_inside(
+    tmp_path,
+) -> None:
+    """`.attempts` / `Papers` / `_spike` are trees a broad grep almost
+    never means — the 2026-08-23 stall's walk wandered into them. An
+    explicit aim inside one still works."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.lean").write_text(
+        "theorem src_hit : True := trivial\n", encoding="utf-8")
+    heavy = tmp_path / "Papers" / "deep"
+    heavy.mkdir(parents=True)
+    (heavy / "p.lean").write_text(
+        "theorem paper_hit : True := trivial\n", encoding="utf-8")
+    out = wq.run_queries([{"grep": "theorem", "in": "."}], cwd=tmp_path)
+    assert "src_hit" in out and "paper_hit" not in out
+    out2 = wq.run_queries([{"grep": "theorem", "in": "Papers"}],
+                          cwd=tmp_path)
+    assert "paper_hit" in out2

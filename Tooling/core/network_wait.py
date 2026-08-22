@@ -76,8 +76,32 @@ def channel_url_for(kind: "str | None" = None) -> "str | None":
 
 def probe_channel(url: str, *,
                   timeout: float = PROBE_TIMEOUT_SEC) -> bool:
-    """True iff the local channel answers HTTP at all — any status
-    (the shim's 501 on GET included) proves the process is there."""
+    """True iff the local channel can EXECUTE, not merely answer.
+
+    The tool-plane probe comes first: the shim's HTTP door kept
+    answering through the whole 2026-08-23 stall while its tool plane
+    sat starved, so "answers HTTP" was the wrong plane to measure. A
+    shim build without the probe (404/400 on it) falls back to the old
+    any-status door check."""
+    base = url.rstrip("/")
+    if base.endswith("/responses"):
+        probe_url = base
+    else:
+        probe_url = base + "/responses"
+    try:
+        req = urllib.request.Request(
+            probe_url, data=b'{"probe": "tools"}',
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read(2048)
+            if b'"pong"' in body:
+                return True
+    except urllib.error.HTTPError as e:
+        if e.code >= 500:
+            return False  # the probe RAN and the tool plane failed
+        # 400/404: an older shim build — fall through to the door check
+    except Exception:  # noqa: BLE001 — refused/timeout = down
+        return False
     req = urllib.request.Request(url, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout):

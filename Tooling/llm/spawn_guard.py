@@ -54,6 +54,7 @@ import json
 import os
 import re
 import sys
+from contextvars import ContextVar
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -88,6 +89,24 @@ READ_DENY_ROOTS_ENV = "ASTERISM_SPAWN_READ_DENY_ROOTS"
 # re-learned 2026-08-16 when a fix that read only the claude route
 # shipped while all three NL seats were on codex.
 ATTEMPT_DIR_ENV = "ASTERISM_SPAWN_ATTEMPT_DIR"
+
+#: Request-local override for ATTEMPT_DIR_ENV. The zen shim executes
+#: tools for MANY spawns inside ONE process, and pinning the env var
+#: needed a process-global lock — one 28-minute grep then starved all
+#: twelve spawns' tool calls (2026-08-23). A ContextVar is per-thread
+#: state, so concurrent requests carry their own attempt dir and the
+#: lock is gone. Standalone MCP servers (one process per spawn) keep
+#: the env route; readers go through `current_attempt_dir()`.
+ATTEMPT_DIR_CONTEXT: "ContextVar[str | None]" = ContextVar(
+    "asterism_attempt_dir", default=None)
+
+
+def current_attempt_dir() -> "str | None":
+    """This request's attempt dir: context first, env fallback."""
+    ctx = ATTEMPT_DIR_CONTEXT.get()
+    if ctx:
+        return ctx
+    return os.environ.get(ATTEMPT_DIR_ENV) or None
 
 #: Tools whose path argument is a search ROOT, not a target: they
 #: traverse it, so a private subtree INSIDE the root leaks even though
