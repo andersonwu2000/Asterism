@@ -82,6 +82,15 @@ MAX_TOOL_ITERATIONS = 80
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, _REPO)
 
+def _log(msg: str) -> None:
+    """Shim logs go to STDERR: the tool wrappers in mcp_tools capture
+    sys.stdout process-wide (contextlib.redirect_stdout), and in this
+    THREADED server one request's capture was swallowing every other
+    thread's shim prints — the model received paper_search results
+    that BEGAN with '[shim] iter 31: ...' (live, 2026-08-22)."""
+    print(msg, file=sys.stderr)
+
+
 _TOOL_LOCK = threading.Lock()
 # Both separators: codex 0.147 rendered the skills-preamble paths with
 # backslashes, 0.149 renders them with FORWARD slashes — the
@@ -268,7 +277,7 @@ def _dump_4xx(e: "urllib.error.HTTPError", body: dict) -> "urllib.error.HTTPErro
             json.dump({"status": e.code,
                        "error": err_bytes.decode("utf-8", "replace"),
                        "request": body}, f, ensure_ascii=False, indent=1)
-        print(f"[shim] 4xx dumped -> {dump}", flush=True)
+        _log(f"[shim] 4xx dumped -> {dump}")
     except Exception:  # noqa: BLE001 — dump is best-effort
         pass
     return urllib.error.HTTPError(
@@ -500,8 +509,8 @@ def _zen_call(body: dict) -> dict:
             if e.code == 429:
                 e.read()
                 last = e
-                print(f"[shim]   {('rescue' if base == ZEN_RESCUE else 'primary')}"
-                      f" 429 — next slot", flush=True)
+                _log(f"[shim]   {('rescue' if base == ZEN_RESCUE else 'primary')}"
+                      f" 429 — next slot")
             elif e.code < 500:
                 raise _dump_4xx(e, body)
             else:
@@ -512,8 +521,8 @@ def _zen_call(body: dict) -> dict:
         if is_last:
             break
         wait = min(5 * (i + 1), 20)
-        print(f"[shim]   retry {i+1}/{len(_UPSTREAM_PLAN)-1} in {wait}s "
-              f"({last})", flush=True)
+        _log(f"[shim]   retry {i+1}/{len(_UPSTREAM_PLAN)-1} in {wait}s "
+              f"({last})")
         time.sleep(wait)
     raise last if isinstance(last, Exception) else RuntimeError("no upstream")
 
@@ -601,8 +610,8 @@ class Shim(http.server.BaseHTTPRequestHandler):
                     for extra in range(2):
                         body["instructions"] = (
                             f"[session {uuid.uuid4().hex[:12]}]" + chr(10) + inst)
-                        print(f"[shim]   empty response — retry "
-                              f"{extra+1}/2", flush=True)
+                        _log(f"[shim]   empty response — retry "
+                              f"{extra+1}/2")
                         resp = _zen_call(body)
                         items = resp.get("output") or []
                         if items:
@@ -612,7 +621,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
                         and (str(it.get("name", "")).startswith(NS + "__")
                              or str(it.get("name", "")).startswith(
                                  LSP_NS + "__"))]
-                print(f"[shim] iter {iters}: zen {time.time()-t_call:.0f}s, "
+                _log(f"[shim] iter {iters}: zen {time.time()-t_call:.0f}s, "
                       f"{len(items)} item(s), "
                       + (", ".join(str(it.get('name'))[len(NS)+2:]
                                    for it in mine) or "final"),
@@ -654,9 +663,9 @@ class Shim(http.server.BaseHTTPRequestHandler):
                     arg_hint = str(args.get("path") or args.get("query")
                                    or args.get("target")
                                    or args.get("pattern") or "")[:60]
-                    print(f"[shim]   tool {tool}({arg_hint}) "
+                    _log(f"[shim]   tool {tool}({arg_hint}) "
                           f"{time.time()-t_tool:.1f}s "
-                          f"-> {len(out)}B: {out[:70]!r}", flush=True)
+                          f"-> {len(out)}B: {out[:70]!r}")
                     tool_calls_run += 1
                     body["input"].append({
                         "type": "function_call_output",
@@ -664,8 +673,8 @@ class Shim(http.server.BaseHTTPRequestHandler):
                         "output": out})
         except urllib.error.HTTPError as e:
             payload = e.read()
-            print(f"[shim] upstream {e.code} after {time.time()-t0:.0f}s "
-                  f"(iters={iters}): {payload[:160]!r}", flush=True)
+            _log(f"[shim] upstream {e.code} after {time.time()-t0:.0f}s "
+                  f"(iters={iters}): {payload[:160]!r}")
             self.send_response(e.code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -673,7 +682,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
         except Exception as e:  # noqa: BLE001 — network layer
-            print(f"[shim] transport error (iters={iters}): {e}", flush=True)
+            _log(f"[shim] transport error (iters={iters}): {e}")
             self.send_response(502)
             self.end_headers()
             return
@@ -685,9 +694,9 @@ class Shim(http.server.BaseHTTPRequestHandler):
                               or str(it.get("name", "")).startswith(
                                   LSP_NS + "__")))]
         usage = resp.get("usage") or {}
-        print(f"[shim] ok {time.time()-t0:.0f}s iters={iters} "
+        _log(f"[shim] ok {time.time()-t0:.0f}s iters={iters} "
               f"tools={tool_calls_run} items={len(items)} "
-              f"usage={usage.get('output_tokens')}out", flush=True)
+              f"usage={usage.get('output_tokens')}out")
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -751,11 +760,10 @@ def main() -> int:
     try:
         _key_for(ZEN_RESCUE)
     except SystemExit:
-        print("[shim] WARNING: no rescue-tier key — running primary-only",
-              flush=True)
+        _log("[shim] WARNING: no rescue-tier key — running primary-only")
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8898
-    print(f"[shim] zen shim v6 on 127.0.0.1:{port} -> {ZEN} "
-          f"(rescue: {ZEN_RESCUE})", flush=True)
+    _log(f"[shim] zen shim v6 on 127.0.0.1:{port} -> {ZEN} "
+          f"(rescue: {ZEN_RESCUE})")
     http.server.ThreadingHTTPServer(("127.0.0.1", port), Shim).serve_forever()
     return 0
 
