@@ -129,7 +129,11 @@ def test_zen_leg_rides_chat_completions(
     # history translated: system + user + assistant(tool_calls) + tool
     roles = [m["role"] for m in captured["body"]["messages"]]
     assert roles == ["system", "user", "assistant", "tool"]
-    # response reassembled in /responses vocabulary
+    # response reassembled in /responses vocabulary — with the FULL
+    # envelope (codex 0.149 rejects a completed response missing id or
+    # usage.total_tokens, one field per dead strategist: g618, g623)
+    assert out["id"].startswith("resp_") and out["status"] == "completed"
+    assert out["model"] == "x-preview-f-free"
     assert out["output"][0]["content"][0]["text"] == "half done"
     fc = out["output"][1]
     assert fc["type"] == "function_call" and fc["call_id"] == "c1"

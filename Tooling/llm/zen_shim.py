@@ -396,13 +396,19 @@ def _chat_stream_once(base: str, body: dict) -> dict:
         items.append({"type": "function_call", "name": c["name"],
                       "id": cid, "call_id": cid,
                       "arguments": "".join(c["arguments"]) or "{}"})
-    # codex (0.149+) REJECTS a ResponseCompleted whose usage lacks
-    # `total_tokens` — "stream disconnected before completion", spawn
-    # rc=1, filed unclassified (g618, 2026-08-22). Always send all
-    # three, zero-defaulted.
+    # codex (0.149+) parses ResponseCompleted STRICTLY and rejects a
+    # response missing fields one by one — usage.total_tokens killed
+    # g618, `id` killed g623, each as "stream disconnected before
+    # completion" -> rc=1 -> unclassified. Fix the CLASS: synthesize
+    # the complete response envelope, not just the parts we consume.
     in_t = usage.get("prompt_tokens", usage.get("input_tokens")) or 0
     out_t = usage.get("completion_tokens", usage.get("output_tokens")) or 0
-    return {"output": items,
+    return {"id": "resp_" + uuid.uuid4().hex,
+            "object": "response",
+            "created_at": int(time.time()),
+            "model": chat["model"],
+            "status": "completed",
+            "output": items,
             "usage": {"input_tokens": in_t, "output_tokens": out_t,
                       "total_tokens": usage.get("total_tokens")
                       or (in_t + out_t)}}
