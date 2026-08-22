@@ -657,3 +657,40 @@ def test_silent_kill_zero_disables_and_defers_like_before(
                                monkeypatch=monkeypatch)
     assert flag[0] is False and done[0] is False
     assert proc.term_calls == 0
+
+
+def test_silent_kill_spared_by_a_fresh_shim_heartbeat(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """codex reports at item granularity: a long healthy shim tool
+    loop is total silence on both parser clocks, and five WORKING
+    strategists were reaped at the silent-kill line (2026-08-22).
+    The shim's per-iteration heartbeat is the third clock — freshness
+    there vetoes the kill."""
+    import time as _time
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
+    monkeypatch.setenv("ASTERISM_SILENT_KILL_SEC", "2")
+    monkeypatch.setattr(claude_cli, "_MIN_TRAP_CHECK_SEC", 0)
+    parser = StreamParser()
+    _seed_in_message_text(parser)
+    proc = _FakeProc()
+    hb = tmp_path / "_shim_heartbeat"
+    stuck: list = [False]
+    done: list = [False]
+    th = threading.Thread(
+        target=claude_cli._watchdog, args=(proc, "abc90123"),
+        kwargs={"stuck_flag": stuck, "done_flag": done,
+                "timeout_sec": 30, "parser": parser, "kind": "",
+                "heartbeat_path": str(hb)},
+        daemon=True)
+    th.start()
+    # The "shim" keeps iterating: touch the heartbeat past the 2s kill
+    # line while both parser clocks stay silent.
+    for _ in range(4):
+        hb.write_text("", encoding="ascii")
+        _time.sleep(1.0)
+    proc._done = True
+    th.join(timeout=8.0)
+    assert stuck[0] is False, "a beating heart must not be killed"
+    assert proc.term_calls == 0

@@ -532,7 +532,8 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
               parser: StreamParser,
               kind: str = "",
               provider: str = PROVIDER_NAME,
-              trap_check_sec_override: int | None = None) -> None:
+              trap_check_sec_override: int | None = None,
+              heartbeat_path: "str | None" = None) -> None:
     """Two jobs while the spawn runs:
 
     (1) Completion reclaim (rolling): poll the parser; if a CLEAN finish
@@ -560,6 +561,11 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
     clocks for `dispatch.silent_kill_sec` needs no trap signature —
     the joint silence IS the evidence (either clock alone has a
     false-positive history). Same kill, same STUCK_THINKING routing.
+    `heartbeat_path` is the third clock: the zen shim touches it per
+    tool-loop iteration, because codex reports at ITEM granularity and
+    a long healthy loop is total silence on the other two — five
+    working strategists were reaped at 2400s before it existed
+    (2026-08-22). Freshness there vetoes the silent kill.
     Before this, silent-but-not-trap had no way out short of the
     seat's wall cap (3h for a strategist wedged from birth, 2026-08-22
     p358). 0 disables and restores the old defer-only behavior.
@@ -742,6 +748,12 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
                 completion_since = None
             silence = min(parser.stream_idle_seconds(now),
                           parser.silence_seconds(now))
+            if heartbeat_path is not None:
+                try:
+                    hb_age = time.time() - os.path.getmtime(heartbeat_path)
+                    silence = min(silence, max(0.0, hb_age))
+                except OSError:
+                    pass  # no heartbeat written yet — other clocks rule
             if silence > silent_kill_sec:
                 if proc.poll() is not None:
                     return

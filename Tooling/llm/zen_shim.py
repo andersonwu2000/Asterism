@@ -746,6 +746,19 @@ class Shim(http.server.BaseHTTPRequestHandler):
                      f"{len(items)} item(s), "
                      + (", ".join(str(it.get('name'))[len(NS)+2:]
                                   for it in mine) or "final"))
+                # Progress heartbeat: codex reports at ITEM granularity,
+                # so a long shim loop is total silence on the daemon's
+                # clocks — five strategists mid-work were silent-killed
+                # at 2400s (2026-08-22; the pacer had stretched legal
+                # request spans past the pre-pacer calibration). The
+                # watchdog reads this file's mtime as a third clock.
+                if attempt_dir:
+                    try:
+                        with open(os.path.join(attempt_dir,
+                                               "_shim_heartbeat"), "w"):
+                            pass
+                    except OSError:
+                        pass
                 if not mine or iters >= MAX_TOOL_ITERATIONS:
                     break
                 iters += 1

@@ -935,7 +935,15 @@ class CodexCliProvider:
                 kwargs={"stuck_flag": stuck_flag, "done_flag": done_flag,
                         "timeout_sec": req.timeout_sec, "parser": parser,
                         "kind": req.kind, "provider": PROVIDER_NAME,
-                        "trap_check_sec_override": req.trap_check_sec},
+                        "trap_check_sec_override": req.trap_check_sec,
+                        # Third clock: the zen shim touches this per
+                        # tool-loop iteration — codex reports at item
+                        # granularity, so a long healthy loop is
+                        # silence on the other two (five working
+                        # strategists reaped at 2400s, 2026-08-22).
+                        "heartbeat_path": (
+                            str(Path(req.attempts_dir) / "_shim_heartbeat")
+                            if req.attempts_dir is not None else None)},
                 daemon=True)
             wd.start()
 
