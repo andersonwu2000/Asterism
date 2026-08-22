@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { ApiError, apiDelete, apiPost, apiUpload, usePoll } from '../lib/api'
 import { Link } from '../lib/router'
+import { shelfGroups } from '../lib/papers'
 import { Button, EmptyState, ErrorState } from '../components/ui'
 import type { PaperShelfItem } from '../lib/types'
 
@@ -234,6 +235,12 @@ export default function Papers() {
   const hasFiles = (e: React.DragEvent) => e.dataTransfer.types.includes('Files')
 
   const papers = data?.papers ?? []
+  // the shelf arranged by who each paper serves; `pick` narrows to one
+  // group ('' = the unregistered pile), the chips above are the menu
+  const groups = shelfGroups(papers)
+  const [pick, setPick] = useState<string | null>(null)
+  const shown =
+    pick === null ? groups : groups.filter((g) => (g.problem ?? '') === pick)
   return (
     <div
       className="relative min-h-full"
@@ -335,13 +342,51 @@ export default function Papers() {
           page; the engine can also fetch cited papers on its own during a run.
         </EmptyState>
       ) : (
+        <>
+        {/* the menu the pile grew to need: one chip per problem the
+            shelf serves. Hidden while everything is one group — a
+            single-problem shelf reads as it always did */}
+        {groups.length > 1 && (
+          <div className="mb-3 flex flex-wrap items-center gap-1.5">
+            <button
+              className={`rounded-full border px-2 py-0.5 text-[11px] ${
+                pick === null
+                  ? 'border-star/60 bg-star/10 text-star'
+                  : 'border-edge text-ink-faint hover:text-ink'
+              }`}
+              onClick={() => setPick(null)}
+            >
+              all <span className="tnum">{papers.length}</span>
+            </button>
+            {groups.map((g) => (
+              <button
+                key={g.problem ?? ''}
+                className={`rounded-full border px-2 py-0.5 text-[11px] ${
+                  pick === (g.problem ?? '')
+                    ? 'border-star/60 bg-star/10 text-star'
+                    : 'border-edge text-ink-faint hover:text-ink'
+                }`}
+                title={
+                  g.problem ??
+                  'registered under no problem — uploaded and never bound, or its problem was reset and the binding went with it'
+                }
+                onClick={() =>
+                  setPick(pick === (g.problem ?? '') ? null : (g.problem ?? ''))
+                }
+              >
+                {g.problem ? (g.problem.split('.').pop() ?? g.problem) : 'unregistered'}{' '}
+                <span className="tnum">{g.papers.length}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <table className="w-full table-fixed border-collapse text-left">
           <thead>
             <tr className="border-b border-edge text-xs text-ink-faint">
               <th className="py-2 pr-4 pl-3 font-medium">paper</th>
               {/* size dropped (owner: low-value column) — it lives in
                   the row's hover title now */}
-              <th className="w-[220px] py-2 pr-4 font-medium">cited by</th>
+              <th className="w-[220px] py-2 pr-4 font-medium">registered under</th>
               <th className="w-[90px] py-2 pr-4 font-medium">
                 <span title="a page-level index lets agents jump straight to the relevant pages">
                   index
@@ -351,11 +396,41 @@ export default function Papers() {
             </tr>
           </thead>
           <tbody>
-            {papers.map((p) => (
-              <ShelfRow key={p.id} p={p} onChanged={refresh} />
+            {shown.map((g) => (
+              <Fragment key={g.problem ?? ''}>
+                {/* section header only when there is a second section
+                    to tell apart — same law as the chips */}
+                {groups.length > 1 && (
+                  <tr>
+                    <td
+                      colSpan={4}
+                      className="pt-4 pb-1 pl-3 text-[10px] font-medium tracking-widest text-ink-faint/70 uppercase"
+                    >
+                      {g.problem ? (
+                        <Link
+                          to={`/problems/${encodeURIComponent(g.problem)}`}
+                          className="transition-colors hover:text-ink"
+                          title="open the problem"
+                        >
+                          {g.problem}
+                        </Link>
+                      ) : (
+                        <span title="uploaded and never bound, or its problem was reset and the binding went with it. Bind from a problem's Intent tab.">
+                          registered under no problem
+                        </span>
+                      )}{' '}
+                      · {g.papers.length}
+                    </td>
+                  </tr>
+                )}
+                {g.papers.map((p) => (
+                  <ShelfRow key={`${g.problem ?? ''}#${p.id}`} p={p} onChanged={refresh} />
+                ))}
+              </Fragment>
             ))}
           </tbody>
         </table>
+        </>
       )}
       </div>
     </div>
