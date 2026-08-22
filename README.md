@@ -222,9 +222,6 @@ live serve.
 ### 2026-07-23
 - Began shifting the system's internal proof drafts toward plain natural-language writing: the structured "thesis" summary was replaced by a prose proof section, and the accompanying briefs now explicitly flag gaps in the argument, using wording reviewed and approved by the maintainer.
 
-### 2026-07-22
-- Made uploading papers easier by replacing the manual file-path field with drag-and-drop in the browser.
-
 <!-- ASTERISM-PROGRESS:END -->
 
 
