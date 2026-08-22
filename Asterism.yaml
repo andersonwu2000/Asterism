@@ -8,11 +8,10 @@
 
 dispatch:
   quota_wait: true
-  pool: 12                    # 2026-08-22 (user): 8→12, part of the RAM
-                              # returned. zen/API-key spawns carry no
-                              # CLI.exe passenger (clamp marginal
-                              # 1.0 GB); this box affords 15+1 with the
-                              # full allotment back.
+  pool: 12                    # 2026-08-23 (user): Erdős/zen fleet resumes
+                              # at 12. (08-22 evening interlude: union_closed
+                              # on codex at pool=4 while the ox-alpha hourly
+                              # token wall rested — 10 bricks landed.)
                               # Max in-flight pipelines, also = number of
                               # persistent lean workers in the LSP gateway
                               # pool (1:1 binding — every spawn claims one
@@ -103,9 +102,10 @@ formalizer:
   # subscription of its own. luna at `xhigh` does the throughput work;
   # the NL layer takes `sol`. Baseline: provider: claude / model:
   # claude-sonnet-5
-  # 2026-08-22 Erdős free-window fleet: ox-alpha everywhere (user).
-  # Restore union_closed seats with: provider: codex / model:
-  # gpt-5.6-luna / reasoning_effort: xhigh
+  # 2026-08-22 Erdős free-window fleet: ox-alpha everywhere (user);
+  # resumed 2026-08-23 after the codex/luna union_closed interlude.
+  # union_closed seats: provider: codex / model: gpt-5.6-luna /
+  # reasoning_effort: xhigh
   provider: zen
   model: x-preview-f-free
   reasoning_effort: high
@@ -149,7 +149,8 @@ strategist:
   # cannot be built), and this worker has no Read/Grep at all — it
   # reaches every file through the `inspect` MCP tool.
   # Baseline: claude / claude-opus-5.
-  # 2026-08-22 Erdős fleet: zen. Restore: provider: codex /
+  # 2026-08-22 Erdős fleet: zen; resumed 2026-08-23 after the codex/sol
+  # union_closed interlude. union_closed seats: provider: codex /
   # model: gpt-5.6-sol / reasoning_effort: high
   provider: zen
   model: x-preview-f-free
@@ -203,8 +204,10 @@ presearch:
   enabled: true                # off → skip pre-search (provers grep on their own)
   # Moves with the formalizer: `quota.BOUND` ties {presearch,
   # formalizer}, so a split pair stops on one seat's window.
-  # 2026-08-22 Erdős/ox-alpha era: presearch rides zen too (user).
-  # Restore: provider: claude / model: claude-sonnet-5
+  # 2026-08-22 Erdős/ox-alpha era: presearch rides zen too (user);
+  # resumed 2026-08-23. union_closed seats: provider: codex / model:
+  # gpt-5.6-luna / reasoning_effort: medium (search on a 240s clock —
+  # the codex default xhigh would think the budget away)
   provider: zen
   model: x-preview-f-free
   # 2026-08-15: back to sonnet. haiku landed the probe brick but
@@ -217,7 +220,11 @@ presearch:
                                # root-level Library miss is a coverage problem a bigger model
                                # did not fix; prover-variance dominated the run outcome.
                                # haiku tested 2026-06-29 (proj_nonexpansive): ~141s/node.
-  timeout_sec: 240             # per-node pre-search budget (was 150). The 3-source search
+  timeout_sec: 420             # per-node pre-search budget (was 240; 2026-08-23
+                               # aligned with the code default shipped 08-22 —
+                               # the 3-block search on a slow zen seat dies
+                               # rc=124 at 240s, seen twice this run).
+                               # History: (was 150). The 3-source search
                                # (in-problem + Library + Mathlib loogle) takes longer than the
                                # old Mathlib-only pass; 150s killed haiku mid-Mathlib before it
                                # wrote output (3-block run 2026-06-29). Blocks prover dispatch,
@@ -263,7 +270,9 @@ adversary:
   # while the claude window rests; the A/B "one NL variable" shape is
   # restored as a side effect. Restore claude with:
   # provider: claude / model: claude-opus-5
-  # 2026-08-22 Erdős fleet: zen. Restore: provider: codex /
+  # 2026-08-22 Erdős fleet: zen; resumed 2026-08-23. union_closed
+  # seats (08-22 evening, user: judge MATCHES the strategist — the
+  # A/B "one NL variable" shape): provider: codex /
   # model: gpt-5.6-sol / reasoning_effort: high
   provider: zen
   model: x-preview-f-free

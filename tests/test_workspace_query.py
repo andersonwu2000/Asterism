@@ -796,3 +796,58 @@ def test_explicit_lake_path_overrides_the_skip_list(tmp_path):
                             ".lake/packages/mathlib/Mathlib"}],
                           cwd=tmp_path)
     assert "Card.lean" in out4
+
+
+def test_a_multi_level_glob_expands_instead_of_dying_silently(tmp_path):
+    """Only the LAST component used to be treated as a pattern, so
+    `Library/**/*.lean` walked into a literal `**` directory, matched
+    nothing, and the miss note redirected to an unrelated file — the
+    presearch seat read that as "the Library is unavailable" and
+    shipped an empty block every node (2026-08-22 feedback cluster)."""
+    lib = tmp_path / "Library" / "Deep" / "Deeper"
+    lib.mkdir(parents=True)
+    (lib / "hit.lean").write_text("theorem deep_hit : True := trivial\n",
+                                  encoding="utf-8")
+    (tmp_path / "Library" / "top.lean").write_text(
+        "theorem top_hit : True := trivial\n", encoding="utf-8")
+
+    out = wq.run_queries(
+        [{"grep": "theorem", "in": str(tmp_path / "Library" / "**" / "*.lean")}],
+        cwd=tmp_path)
+    assert "deep_hit" in out and "top_hit" in out
+
+    out2 = wq.run_queries([{"grep": "theorem", "in": "Library/**/*.lean"}],
+                          cwd=tmp_path)
+    assert "deep_hit" in out2
+
+    # `**` walks still honour the skip list — no silent `.git` sweep.
+    git = tmp_path / ".git" / "sub"
+    git.mkdir(parents=True)
+    (git / "junk.lean").write_text("theorem git_junk : True := trivial\n",
+                                   encoding="utf-8")
+    out3 = wq.run_queries([{"grep": "theorem", "in": "**/*.lean"}],
+                          cwd=tmp_path)
+    assert "deep_hit" in out3 and "git_junk" not in out3
+
+
+def test_a_capped_grep_names_a_resume_handle_and_it_works(tmp_path):
+    """The truncation note said only "narrow", which names no reachable
+    action when the query is already narrow (2026-08-22 cluster). The
+    note must carry an `after` anchor, and resending with it must
+    continue with no overlap."""
+    f = tmp_path / "big.lean"
+    f.write_text("".join(f"theorem t{n} : True := trivial\n"
+                         for n in range(20)), encoding="utf-8")
+    out = wq.run_queries([{"grep": "theorem", "in": "big.lean", "max": 5}],
+                         cwd=tmp_path)
+    assert 'after: "' in out, "capped grep must name the resume handle"
+    import re as _re
+    anchor = _re.search(r'after: "([^"]+)"', out).group(1)
+    out2 = wq.run_queries([{"grep": "theorem", "in": "big.lean", "max": 5,
+                            "after": anchor}], cwd=tmp_path)
+    assert "t5 " in out2 or "t5 :" in out2
+    assert "t4 " not in out2 and "t0 " not in out2, "no overlap"
+
+    out3 = wq.run_queries([{"grep": "theorem", "in": "big.lean",
+                            "after": "elsewhere.lean:3"}], cwd=tmp_path)
+    assert "outside this search" in out3, "a bad anchor teaches the way out"

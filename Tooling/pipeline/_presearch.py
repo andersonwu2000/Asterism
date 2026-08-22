@@ -231,6 +231,13 @@ def _verify(blocks, workspace: Path, problem_dir: Path,
                         item["statement"] = (one_line[:157] + "..."
                                              if len(one_line) > 160
                                              else one_line)
+                elif status_map:
+                    # Passed the hay check but is no goal: a strategy-
+                    # internal name or a Defs word. One was advertised
+                    # bare and a backward spawn burned a validation
+                    # round importing `proofs.L_s24234`, which does not
+                    # exist (agent_feedback 2026-08-22). Say what it is.
+                    item["status"] = "not a goal"
                 out.append(item)
 
     # library — keep names among the DB-indexed placed decls. Match on the
@@ -296,6 +303,10 @@ def _render_section(candidates: list) -> str:
                      "non-proved one is citable — it auto-links and "
                      "your strategy waits for it. `disproved` means "
                      "the statement is FALSE — do not assume it.")
+    if any(c.get("status") == "not a goal" for c in candidates):
+        lines[2] += (" `NOT A GOAL` means the name is not in the goal "
+                     "tree (an internal artifact or a Defs word) — "
+                     "never import it as a sibling proof file.")
     for c in candidates:
         name = str(c.get("name") or "")
         tag = _SOURCE_TAG.get(str(c.get("source") or ""), str(c.get("source") or "?"))

@@ -265,3 +265,34 @@ def test_render_section_status_note_citation_rule() -> None:
     assert "citable" in section and "auto-links" in section
     assert "leaf-bypass" not in section
     assert "Builder" not in section
+
+
+def test_verify_marks_a_non_goal_name_instead_of_presenting_it_bare(tmp_path):
+    """agent_feedback 2026-08-22: `s24234` (a strategy-internal name in
+    a proofs/ file) passed the hay check, shipped bare, and a backward
+    spawn burned a validation round importing `proofs.L_s24234`, which
+    does not exist. A name the goals table does not know is flagged
+    `not a goal`, and the section header says never to import one."""
+    from Tooling.state import db as _dbm
+    conn = _dbm.connect(":memory:")
+    _dbm.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, created_at) VALUES ('p','t')")
+    gid = _dbm.insert_goal(
+        conn, problem="p", slug="sib_proved",
+        lean_path="Problems/p/proofs/L_sib_proved.lean",
+        statement="True", origin="backward")
+    conn.execute("UPDATE goals SET status='proved' WHERE id=?", (gid,))
+    conn.commit()
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / "proofs").mkdir(parents=True)
+    (pdir / "proofs" / "_strategy_s24234.lean").write_text(
+        "theorem sib_proved : True := trivial\n"
+        "-- s24234 internal alias\n", encoding="utf-8")
+    blocks = {"in_problem": [{"name": "sib_proved"}, {"name": "s24234"}]}
+    out = _presearch._verify(blocks, tmp_path, pdir, conn=conn, problem="p")
+    by_name = {e["name"]: e for e in out}
+    assert by_name["sib_proved"]["status"] == "proved"
+    assert by_name["s24234"]["status"] == "not a goal"
+    section = _presearch._render_section(out)
+    assert "NOT A GOAL" in section
+    assert "never import it as a sibling proof file" in section

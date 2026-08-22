@@ -28,6 +28,7 @@ the database.
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -191,12 +192,66 @@ def _resolve(spec: str, cwd: Path) -> Path:
     return here
 
 
+def _glob_split(p: Path) -> "tuple[Path, str]":
+    """The deepest glob-free prefix of `p`, and the rest as a pattern.
+
+    Only the LAST component used to be the pattern, so a multi-level
+    glob (`Library/**/*.lean`) walked into a literal `**` directory and
+    silently matched nothing — the presearch seat read that as "the
+    Library is unavailable" and shipped an empty block every node
+    (2026-08-22, the run's largest feedback cluster)."""
+    parts = p.parts
+    for i, part in enumerate(parts):
+        if any(ch in part for ch in "*?["):
+            return Path(*parts[:i]), "/".join(parts[i:])
+    return p.parent, p.name
+
+
+def _tokens_match(parts: "tuple[str, ...]", toks: "list[str]") -> bool:
+    """Path components against glob tokens; `**` spans zero or more."""
+    if not toks:
+        return not parts
+    t, rest = toks[0], toks[1:]
+    if t == "**":
+        return any(_tokens_match(parts[i:], rest)
+                   for i in range(len(parts) + 1))
+    return bool(parts) and fnmatch.fnmatch(parts[0], t) \
+        and _tokens_match(parts[1:], rest)
+
+
+def _glob_hits(base: Path, pattern: str) -> "list[Path]":
+    """Files under `base` matching `pattern` (glob, `**` included).
+
+    `**` needs its own walk: `Path.glob` cannot prune, and an unpruned
+    `**` from a workspace root would sweep `.lake`/`.git`. The walk
+    skips `_SKIP_DIRS` exactly as a directory walk does — `.lake` stays
+    reachable by aiming the glob-free prefix inside `.lake/packages`,
+    the same explicit-target grant as everywhere else."""
+    toks = pattern.split("/")
+    if "**" not in toks:
+        return sorted(x for x in base.glob(pattern) if x.is_file())
+    allow = _lake_grant(base.resolve()) is True
+    hits: "list[Path]" = []
+    for root, dirs, files in os.walk(base):
+        dirs[:] = sorted(
+            d for d in dirs
+            if d not in _SKIP_DIRS or (allow and d == ".lake"))
+        try:
+            rel = Path(root).relative_to(base).parts
+        except ValueError:
+            continue
+        rel = tuple(x for x in rel if x != ".")
+        hits += (Path(root) / f for f in files
+                 if _tokens_match(rel + (f,), toks))
+    return sorted(hits)
+
+
 def _expand(spec: str, cwd: Path) -> "list[Path]":
     """A path or a glob, relative to the agent's own directories."""
     p = _resolve(spec, cwd)
     if any(ch in spec for ch in "*?["):
-        base = p.parent
-        hits = sorted(x for x in base.glob(p.name) if x.is_file())
+        base, pattern = _glob_split(p)
+        hits = _glob_hits(base, pattern)
         own = _own_attempt_dir()
         if not hits and own is not None and not Path(spec).is_absolute():
             # Same containment as `_resolve`: this fallback is the same
@@ -204,18 +259,15 @@ def _expand(spec: str, cwd: Path) -> "list[Path]":
             # skipped the check — `in: "../<other-pid>/*.lean"` served a
             # sibling attempt's files after the literal path was fixed
             # (acceptance pass, 2026-08-17).
-            cand = own / spec
+            base2, pattern2 = _glob_split(own / spec)
             try:
-                # The parent, not `cand`: only the LAST component is a
-                # glob pattern (`base.glob(p.name)` above, same shape),
-                # and `resolve()` on a name with glob characters is
-                # undefined ground on Windows. The directory is what
-                # containment is about.
-                cand.parent.resolve().relative_to(own.resolve())
+                # The glob-free prefix, not the full spec: `resolve()`
+                # on a name with glob characters is undefined ground on
+                # Windows. The directory is what containment is about.
+                base2.resolve().relative_to(own.resolve())
             except (ValueError, OSError):
                 return hits
-            hits = sorted(x for x in cand.parent.glob(cand.name)
-                          if x.is_file())
+            hits = _glob_hits(base2, pattern2)
         return hits
     if p.is_dir():
         grant = _lake_grant(p.resolve())
@@ -372,6 +424,7 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
     pattern = str(q.get("grep") or "")
     where = str(q.get("in") or ".")
     ctx = int(q.get("context") or 0)
+    after = str(q.get("after") or "").strip()
     try:
         rx = re.compile(pattern)
     except re.error as exc:
@@ -382,27 +435,59 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
         if isinstance(grant, str):
             return [grant]
         return [f"nothing to search at {where!r}; {_nearest_existing(cwd / where, cwd)}"]
+    # `after: "<file>:<line>"` resumes a capped search past its last
+    # delivered hit — the old truncation note said only "narrow", which
+    # names no reachable action when the query is already as narrow as
+    # the reader can make it (2026-08-22 feedback cluster).
+    skip_rel, skip_line = "", 0
+    if after:
+        m = re.fullmatch(r"(.*):(\d+)", after)
+        skip_rel, skip_line = (m.group(1), int(m.group(2))) if m else (after, 0)
+    resumed = not after
     hits: "list[str]" = []
     for f in files:
         root = _denied(f.resolve(), deny)
         if root is not None:
             continue
+        rel = _rel(f, cwd)
+        boundary = after and rel == skip_rel
+        if not resumed and not boundary:
+            continue
+        resumed = True
         lines = _read_text(f).splitlines()
         for i, line in enumerate(lines):
+            if boundary and i + 1 <= skip_line:
+                continue
             if not rx.search(line):
                 continue
-            rel = _rel(f, cwd)
             if ctx:
                 lo, hi = max(0, i - ctx), min(len(lines), i + ctx + 1)
                 hits.append(f"{rel}:{i + 1}:")
                 hits += [f"  {n + 1:>5}  {lines[n]}" for n in range(lo, hi)]
             else:
                 hits.append(f"{rel}:{i + 1}: {line.strip()}")
+    if after and not resumed:
+        return [f"resume point {after!r} names a file outside this "
+                f"search — re-run without `after`."]
     if not hits:
-        return ["no matches"]
+        return [f"no more matches past {after}"] if after else ["no matches"]
     kept, note = _cap(hits, q.get("max", DEFAULT_MAX),
                       ", or narrow `in` to fewer files")
+    if note:
+        anchor = _last_grep_anchor(kept)
+        if anchor:
+            note += (f' — or continue with no overlap: '
+                     f'`after: "{anchor}"` (same query).')
     return kept + ([note] if note else [])
+
+
+def _last_grep_anchor(kept: "list[str]") -> str:
+    """`file:line` of the last delivered hit, for the `after` handle."""
+    for ln in reversed(kept):
+        m = re.match(r"(.+):(\d+):", ln)
+        if m:
+            return f"{m.group(1)}:{m.group(2)}"
+    return ""
 
 
 def _sections(lines: "list[str]") -> "list[tuple[str, int, int, int]]":
@@ -793,6 +878,11 @@ def _resume_hint(text: str, kept: str, q: dict) -> str:
         if head.isdigit():
             last = int(head)
     if not last:
+        if "grep" in q:
+            anchor = _last_grep_anchor(kept.splitlines())
+            if anchor:
+                return (f'Continue with no overlap: resend the same '
+                        f'grep with `after: "{anchor}"`.')
         return "Narrow the query."
     if "read" in q:
         return (f'Continue from line {last + 1}: '
