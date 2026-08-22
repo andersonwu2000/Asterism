@@ -113,6 +113,10 @@ def loogle(pattern: str = "", query: str = "",
 
     Returns one line per hit: `name :: type [module]`. No hits is a
     valid answer — refine the pattern rather than retrying it verbatim.
+
+    Several patterns at once: put ONE PER LINE in `pattern` (up to 8) —
+    verifying your whole candidate-lemma list is one call, not a
+    lookup-per-iteration crawl.
     """
     # `query` is an alias because that is what a model reaches for first:
     # the acceptance run called `loogle(query=…)`, MCP raised, and agy
@@ -124,6 +128,16 @@ def loogle(pattern: str = "", query: str = "",
             tool="loogle",
             hint='the parameter is `pattern` (or `query`), e.g. '
                  'loogle(pattern="Nat.factorial _ = _")')
+    # SEVERAL patterns in one call (one per line): name-by-name
+    # verification crawls burned 60-90 iterations at one lookup each
+    # (both fleets, 2026-08-22) when the whole candidate list fits in
+    # one round-trip. Answers are labelled per pattern.
+    if "\n" in pattern:
+        pats = [p.strip() for p in pattern.splitlines() if p.strip()][:8]
+        if len(pats) > 1:
+            return "\n\n".join(
+                f"[{p}]\n{loogle(pattern=p, limit=limit)}" for p in pats)
+        pattern = pats[0] if pats else pattern
     # Exact-repeat teaching: agents resent ONE identical query up to
     # ×114 in a session (both fleets, 2026-08-22 — the top killer of
     # timed-out formalizer turns). The answer cannot change; say so,

@@ -807,6 +807,8 @@ class Shim(http.server.BaseHTTPRequestHandler):
         iters = 0
         tool_calls_run = 0
         budget_final = False
+        lookup_streak = 0
+        crawl_nudged = False
         resp: dict = {}
         try:
             while True:
@@ -886,6 +888,32 @@ class Shim(http.server.BaseHTTPRequestHandler):
                         })
                     continue
                 iters += 1
+                # Lookup-crawl detection: formalizers verified lemma
+                # names ONE loogle per iteration for 60-90 iterations
+                # while patch.lean sat untouched at the seed's `sorry`
+                # (both fleets, 2026-08-22). One nudge per request:
+                # writing first is the faster name-check.
+                names = {str(it.get("name", "")).rsplit("__", 1)[-1]
+                         for it in mine}
+                if names <= {"loogle", "inspect", "paper_search"}:
+                    lookup_streak += 1
+                else:
+                    lookup_streak = 0
+                if lookup_streak == 12 and not crawl_nudged:
+                    crawl_nudged = True
+                    body["input"].append({
+                        "type": "message", "role": "user",
+                        "content": [{"type": "input_text", "text": (
+                            "[framework] 12 consecutive lookup-only "
+                            "iterations and the working file is "
+                            "untouched. Stop enumerating names: write "
+                            "the draft NOW with your best guesses — "
+                            "validate_file names every unknown "
+                            "identifier precisely in one shot, a "
+                            "faster name-check than loogle "
+                            "one-by-one. (loogle also takes several "
+                            "patterns in one call, one per line.)")}],
+                    })
                 if iters == MAX_TOOL_ITERATIONS - 10:
                     # Approach warning, so convergence is a choice the
                     # model gets to make before the refusals start.
