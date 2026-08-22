@@ -571,3 +571,89 @@ def test_stream_idle_kinds_match_the_dispatch_spelling() -> None:
     spelling would be a silent no-op, which is the exact shape the quota
     ledger shipped with on the morning of the same day."""
     assert claude_cli._STREAM_IDLE_KINDS == {"strategist", "adversary"}
+
+
+# ---------------------------------------------------------------------
+# Job (3): silent-kill — the third way out (2026-08-22 p358)
+# ---------------------------------------------------------------------
+
+def _seed_in_message_text(parser: StreamParser) -> None:
+    """Drive the parser to IN_MESSAGE on a text block — alive shape,
+    not a thinking trap."""
+    parser.feed_line(_stream_event({"type": "message_start",
+                                    "message": {"id": "m"}}))
+    parser.feed_line(_stream_event({
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "text", "text": ""}}))
+
+
+def test_silent_but_not_trap_dies_at_the_silent_kill_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A spawn wedged from birth (upstream never answered: p358 sat 22
+    minutes with zero iterations) is `silent-but-not-trap` — before the
+    third way out its only fuse was the seat wall cap (3h for a
+    strategist). Joint silence on BOTH clocks past
+    `dispatch.silent_kill_sec` now kills into the same STUCK_THINKING
+    rescue the trap path uses."""
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
+    monkeypatch.setenv("ASTERISM_SILENT_KILL_SEC", "1")
+    parser = StreamParser()
+    _seed_in_message_text(parser)
+    proc = _FakeProc()
+    flag, done = _run_watchdog(proc, "abc67890", parser, timeout_sec=30,
+                               monkeypatch=monkeypatch)
+    assert flag[0] is True, "joint silence must kill for rescue"
+    assert done[0] is False
+    assert proc.term_calls == 1
+
+
+def test_silent_kill_spares_a_spawn_whose_stream_keeps_moving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh events on EITHER clock hold the kill off — the tool clock
+    alone once read seven legitimate strategist thinks as silent and
+    killed them (2026-08-07), which is why the guard demands joint
+    silence."""
+    import time as _time
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
+    monkeypatch.setenv("ASTERISM_SILENT_KILL_SEC", "4")
+    monkeypatch.setattr(claude_cli, "_MIN_TRAP_CHECK_SEC", 0)
+    parser = StreamParser()
+    _seed_in_message_text(parser)
+    proc = _FakeProc()
+    stuck: list = [False]
+    done: list = [False]
+    th = threading.Thread(
+        target=claude_cli._watchdog, args=(proc, "abc78901"),
+        kwargs={"stuck_flag": stuck, "done_flag": done,
+                "timeout_sec": 30, "parser": parser, "kind": ""},
+        daemon=True)
+    th.start()
+    # Keep the stream clock fresh past the 4s kill line, then let the
+    # proc finish naturally.
+    for _ in range(5):
+        _time.sleep(1.0)
+        parser.feed_line(_stream_event({"type": "message_start",
+                                        "message": {"id": "m2"}}))
+    proc._done = True
+    th.join(timeout=8.0)
+    assert stuck[0] is False, "a moving stream must never be killed"
+    assert proc.term_calls == 0
+
+
+def test_silent_kill_zero_disables_and_defers_like_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
+    monkeypatch.setenv("ASTERISM_SILENT_KILL_SEC", "0")
+    parser = StreamParser()
+    _seed_in_message_text(parser)
+    proc = _FakeProc()
+    flag, done = _run_watchdog(proc, "abc89012", parser, timeout_sec=30,
+                               monkeypatch=monkeypatch)
+    assert flag[0] is False and done[0] is False
+    assert proc.term_calls == 0

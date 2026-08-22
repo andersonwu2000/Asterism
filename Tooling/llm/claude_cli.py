@@ -448,6 +448,22 @@ def _find_session_jsonl(sid: str) -> Path | None:
 
 _DEFAULT_TRAP_CHECK_SEC = 660
 _DEFAULT_SILENCE_THRESHOLD_SEC = 300
+# The third way out (2026-08-22): silence on BOTH clocks at this
+# magnitude needs no trap signature — it is the evidence, whatever
+# the parser state says. Both clocks, not the seat's chosen one: the
+# tool clock alone read seven legitimate strategist thinks as silent
+# and killed them (2026-08-07, the incident that demoted silence to
+# an AND-condition), and the stream clock stays live through a think
+# on the claude dialect — requiring both is strictly more
+# conservative than either. Before this, a spawn wedged from birth
+# (p358: upstream never sent a status line, 22 min of nothing) sat
+# in `silent-but-not-trap` and the only remaining fuse was the
+# seat's wall cap — 3h for a strategist. Calibration: codex reports
+# at ITEM granularity, so one healthy long shim-side request keeps
+# both clocks silent for its whole span — longest healthy observed
+# 767s (2026-08-22 fleet) — hence 3× that, not a rounder number.
+# 0 disables.
+_DEFAULT_SILENT_KILL_SEC = 2400
 # Grace window for the completion-reclaim branch: how long a clean
 # finish (finalized + end_turn) must PERSIST with the process still
 # alive before the watchdog terminates it. Must exceed normal claude
@@ -537,9 +553,16 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
     tool cadence for the formalizer family, stream liveness for the NL
     layer. `stuck_flag[0]`
     on kill routes the spawn to STUCK_THINKING → combined fresh-sid
-    takeover. When AND fails, exit quietly — the spawn runs to its full
-    subprocess timeout and the TIMEOUT path's parser-only trap check
-    picks up the trap-without-silence cases.
+    takeover. When AND fails, the trap-without-silence cases defer to
+    the TIMEOUT path's parser-only check.
+
+    (3) Silent-kill (rolling, after the trap check): silence on BOTH
+    clocks for `dispatch.silent_kill_sec` needs no trap signature —
+    the joint silence IS the evidence (either clock alone has a
+    false-positive history). Same kill, same STUCK_THINKING routing.
+    Before this, silent-but-not-trap had no way out short of the
+    seat's wall cap (3h for a strategist wedged from birth, 2026-08-22
+    p358). 0 disables and restores the old defer-only behavior.
 
     If `proc` finishes naturally before the trap-check moment, exit
     without sampling (no decision to make).
@@ -667,10 +690,73 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
             verdict = "trap-but-not-silent"
         elif not is_trap and is_silent:
             verdict = "silent-but-not-trap"
+        silent_kill_sec = _cfg.get(
+            "dispatch.silent_kill_sec",
+            default=_DEFAULT_SILENT_KILL_SEC,
+            env_var="ASTERISM_SILENT_KILL_SEC", cast=int,
+        )
+        if silent_kill_sec <= 0:
+            print(f"[watchdog] sid={sid[:8]} trap_check "
+                  f"{int(trap_check_sec)}s reached; {verdict} "
+                  f"({label}); deferring to subprocess timeout",
+                  flush=True)
+            return
+        # Job (3), the third way out: keep watching BOTH clocks.
+        # Silence on both at this magnitude needs no trap signature
+        # (see _DEFAULT_SILENT_KILL_SEC — and why it is both clocks,
+        # not the seat's chosen one). A scaled trap-check override
+        # implies at least that much legitimate stillness, so the
+        # kill line never undercuts it.
+        silent_kill_sec = max(silent_kill_sec, trap_check_sec)
         print(f"[watchdog] sid={sid[:8]} trap_check "
               f"{int(trap_check_sec)}s reached; {verdict} "
-              f"({label}); deferring to subprocess timeout",
-              flush=True)
+              f"({label}); watching both clocks — silent-kill at "
+              f"{silent_kill_sec}s of joint silence", flush=True)
+        completion_since = None
+        while proc.poll() is None:
+            now = time.monotonic()
+            snap = parser.snapshot()
+            # Completion-reclaim keeps running out here too — before
+            # this loop the reclaim ended at the trap-check moment, so
+            # an agent that finalized late hung its proc unprotected
+            # (same gap, same fix).
+            if (snap.state.value == "finalized"
+                    and snap.last_stop_reason == "end_turn"):
+                if completion_since is None:
+                    completion_since = now
+                elif now - completion_since >= completion_grace_sec:
+                    if proc.poll() is None:
+                        done_flag[0] = True
+                        print(f"[watchdog] sid={sid[:8]} agent finalized "
+                              f"(end_turn) and idle "
+                              f"{completion_grace_sec}s but proc alive; "
+                              f"terminating to reclaim — salvaging "
+                              f"on-disk output", flush=True)
+                        try:
+                            proc.terminate()
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            kill_proc_tree(proc)
+                    return
+            else:
+                completion_since = None
+            silence = min(parser.stream_idle_seconds(now),
+                          parser.silence_seconds(now))
+            if silence > silent_kill_sec:
+                if proc.poll() is not None:
+                    return
+                stuck_flag[0] = True
+                print(f"[watchdog] sid={sid[:8]} silent "
+                      f"{int(silence)}s ≥ silent-kill "
+                      f"{silent_kill_sec}s — no live signal on "
+                      f"either clock; killing for rescue", flush=True)
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    kill_proc_tree(proc)
+                return
+            time.sleep(2.0)
 
 # Asterism's pipelines need Read / Write / Edit for sandbox file
 # manipulation, plus lemma-discovery search tools:

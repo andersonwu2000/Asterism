@@ -55,6 +55,7 @@ CONFIG_SPEC: "dict[str, str]" = {
     "dispatch.postmortem_timeout_sec": "postmortem spawn cap (ASTERISM_POSTMORTEM_TIMEOUT_SEC; 180)",
     "dispatch.trap_check_sec": "watchdog thinking-trap check point (ASTERISM_TRAP_CHECK_SEC; 660)",
     "dispatch.silence_threshold_sec": "watchdog silence AND-condition (ASTERISM_SILENCE_THRESHOLD_SEC; 300)",
+    "dispatch.silent_kill_sec": "watchdog silent-kill: joint silence on BOTH clocks that kills without a trap signature (ASTERISM_SILENT_KILL_SEC; 2400; 0=off)",
     "dispatch.completion_grace_sec": "watchdog completion-reclaim grace (ASTERISM_COMPLETION_GRACE_SEC; 120)",
     "dispatch.classify_trap_cap_sec": "librarian classify trap cap ceiling (3600)",
     "dispatch.classify_trap_per_decl_sec": "classify trap budget per kept decl (12)",
