@@ -23,7 +23,7 @@ the relevant lemmas; do not keep reformulating.
    `__PACKAGES__` by name. Try a few query shapes; if they miss, move on — leave the
    block thin rather than burning the budget reformulating.
 
-## Output — write `__OUT_PATH__`, then stop
+## Output — overwrite `__OUT_PATH__` after EACH finished block; after the last, stop
 A JSON object with three arrays (each ≤10 entries, any may be empty):
 `{"in_problem": [...], "library": [...], "mathlib": [...]}`
 Each entry: `{"name": "<fully-qualified name>", "why": "<reason, ≤8 words>"}`
