@@ -892,3 +892,18 @@ def test_cold_prompt_carries_the_toolface_alignment_note() -> None:
     assert "authoritative toolset" in src
     # the note must be fenced to the non-resume branch
     assert "if not resuming:" in src
+
+
+def test_zen_turn_budget_margin_scales_with_the_wall(tmp_path: Path) -> None:
+    """A flat 300s wrap-up margin (calibrated on the 1800s formalizer)
+    starved a 420s presearch to a 120s turn budget — tools locked
+    before the first block could be written (friend-fleet report,
+    2026-08-23). The margin is a quarter of the wall, capped at 300s,
+    floored at 60s."""
+    att = tmp_path / ".attempts" / "pid-z"
+    att.mkdir(parents=True)
+    for wall, want in ((1800, 1500), (420, 315), (240, 180), (120, 60)):
+        req = _req(tmp_path, attempts_dir=att, timeout_sec=wall)
+        cfg = codex_cli._render_config(req, "x-preview-f-free", "high",
+                                       flavor="zen")
+        assert f"/b/{want}/v1" in cfg, (wall, cfg)

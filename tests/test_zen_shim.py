@@ -426,3 +426,66 @@ def test_channel_path_carries_the_turn_time_budget(tmp_path, monkeypatch):
     # budget-less URLs (older generations) keep working
     d2, b2 = zen_shim._channel_of_path(f"/a/{uuid}/v1/responses")
     assert d2 == d and b2 is None
+
+
+def test_lsp_session_rehandshakes_when_the_token_changes(
+        tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A permanent (sid, token) cache outlived a rewritten token: the
+    shim kept answering with the dead pair and every LSP call came back
+    "no session" for the rest of the run (friend-fleet report,
+    2026-08-23). The token is read fresh each call; a changed token
+    re-handshakes."""
+    calls: list = []
+
+    def fake_mcp(payload, hdr):
+        calls.append(payload.get("method"))
+        if payload.get("method") == "initialize":
+            return {"result": {}}, {"mcp-session-id": f"sid{len(calls)}"}
+        return None, {}
+
+    monkeypatch.setattr(zen_shim, "_mcp_http", fake_mcp)
+    zen_shim._LSP_SESSIONS.clear()
+    att = tmp_path / "att"
+    att.mkdir()
+    (att / "_gateway_session.token").write_text("tok1", encoding="utf-8")
+    s1 = zen_shim._lsp_session_for(str(att))
+    assert s1 is not None and s1[1] == "tok1"
+    zen_shim._lsp_session_for(str(att))
+    assert calls.count("initialize") == 1, "same token stays cached"
+    (att / "_gateway_session.token").write_text("tok2", encoding="utf-8")
+    s2 = zen_shim._lsp_session_for(str(att))
+    assert s2 is not None and s2[1] == "tok2"
+    assert calls.count("initialize") == 2, "new token re-handshakes"
+    zen_shim._LSP_SESSIONS.clear()
+
+
+def test_lsp_tool_evicts_and_retries_once_on_a_session_error(
+        tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A gateway generation swap invalidates every cached sid, and the
+    shim is a detached long-liver now: without eviction the poisoned
+    entry answered errors until a shim restart. A JSON-RPC-level error
+    from tools/call is the session layer speaking (tool failures ride
+    inside `result`) — evict, re-handshake, retry ONCE."""
+    att = tmp_path / "att"
+    att.mkdir()
+    (att / "_gateway_session.token").write_text("tok", encoding="utf-8")
+    zen_shim._LSP_SESSIONS.clear()
+    zen_shim._LSP_SESSIONS[str(att)] = ("dead-sid", "tok")
+
+    def fake_mcp(payload, hdr):
+        m = payload.get("method")
+        if m == "initialize":
+            return {"result": {}}, {"mcp-session-id": "fresh-sid"}
+        if m == "notifications/initialized":
+            return None, {}
+        if hdr.get("Mcp-Session-Id") == "dead-sid":
+            return ({"error": {"code": -32001,
+                               "message": "session not found"}}, {})
+        return ({"result": {"content": [{"type": "text",
+                                         "text": "ok!"}]}}, {})
+
+    monkeypatch.setattr(zen_shim, "_mcp_http", fake_mcp)
+    out = zen_shim._run_lsp_tool("validate_file", {}, str(att))
+    assert out == "ok!"
+    assert zen_shim._LSP_SESSIONS[str(att)][0] == "fresh-sid"
+    zen_shim._LSP_SESSIONS.clear()

@@ -364,7 +364,13 @@ def _render_config(req: LLMRequest, model: str, effort: str,
                     # wrap-up never triggered and turns died at the
                     # wall salvaging half-states (7 timeouts in one
                     # 37-min window, friend fleet 2026-08-22).
-                    budget = max(120, int(req.timeout_sec) - 300)
+                    # The wrap-up margin scales with the wall: a flat
+                    # 300s (calibrated on the 1800s formalizer) starved
+                    # a 420s presearch to a 120s turn budget — tools
+                    # locked before the first block could be written
+                    # (friend-fleet report, 2026-08-23).
+                    wall = int(req.timeout_sec)
+                    budget = max(60, wall - min(300, max(60, wall // 4)))
                     base = (base[: -len("/v1")]
                             + f"/a/{rel}/b/{budget}/v1")
         lines += [

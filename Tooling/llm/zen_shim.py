@@ -202,15 +202,21 @@ def _lsp_session_for(attempt_dir: str) -> "tuple[str, str] | None":
     """(mcp_session_id, gateway_token) for this spawn, cached. The
     gateway's streamable-HTTP MCP wants an initialize handshake; the
     spawn's auth token sits in `<attempt_dir>/_gateway_session.token`
-    (written by pipeline._write_mcp_config)."""
-    cached = _LSP_SESSIONS.get(attempt_dir)
-    if cached:
-        return cached
+    (written by pipeline._write_mcp_config).
+
+    The token is read fresh EVERY call and the cache holds only the
+    handshake it produced: a permanent (sid, token) cache outlived both
+    a rewritten token (retry spawns) and a gateway generation swap —
+    and the shim is a detached long-liver now, so a poisoned entry
+    used to answer "no session" for the rest of the run."""
     try:
         token = open(os.path.join(attempt_dir, "_gateway_session.token"),
                      encoding="utf-8").read().strip()
     except OSError:
         return None
+    cached = _LSP_SESSIONS.get(attempt_dir)
+    if cached and cached[1] == token:
+        return cached
     hdr = {"X-Asterism-Session": token}
     obj, rh = _mcp_http({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                          "params": {"protocolVersion": "2025-03-26",
@@ -244,28 +250,45 @@ def _run_lsp_tool(name: str, args: dict, attempt_dir: "str | None") -> str:
     sess = _lsp_session_for(attempt_dir)
     if sess is None:
         return "no _gateway_session.token in attempts dir" + _down
-    sid, token = sess
-    hdr = {"X-Asterism-Session": token}
-    if sid:
-        hdr["Mcp-Session-Id"] = sid
-    try:
-        obj, _ = _mcp_http({"jsonrpc": "2.0", "id": 2,
-                            "method": "tools/call",
-                            "params": {"name": name, "arguments": args}},
-                           hdr)
-    except urllib.error.HTTPError as e:
-        return f"lsp gateway HTTP {e.code}: {e.read()[:200]!r}"
-    except Exception as e:  # noqa: BLE001 — tool result surface
-        return f"lsp transport error: {e}"
-    if not obj:
-        return "lsp gateway returned no parseable response"
-    if obj.get("error"):
-        return f"lsp error: {obj['error']}"
-    result = obj.get("result") or {}
-    parts = result.get("content") or []
-    text = "".join(p.get("text", "") for p in parts
-                   if isinstance(p, dict))
-    return text or json.dumps(result)[:2000]
+    # One re-handshake retry: an HTTP error or a JSON-RPC-level error
+    # from tools/call is the session layer speaking (tool failures ride
+    # inside `result`), and the cached sid is dead after a gateway
+    # generation swap. Evict, shake hands again, retry ONCE.
+    for attempt in (1, 2):
+        sid, token = sess
+        hdr = {"X-Asterism-Session": token}
+        if sid:
+            hdr["Mcp-Session-Id"] = sid
+        try:
+            obj, _ = _mcp_http({"jsonrpc": "2.0", "id": 2,
+                                "method": "tools/call",
+                                "params": {"name": name,
+                                           "arguments": args}},
+                               hdr)
+        except urllib.error.HTTPError as e:
+            _LSP_SESSIONS.pop(attempt_dir, None)
+            if attempt == 1:
+                sess = _lsp_session_for(attempt_dir)
+                if sess is not None:
+                    continue
+            return f"lsp gateway HTTP {e.code}: {e.read()[:200]!r}"
+        except Exception as e:  # noqa: BLE001 — tool result surface
+            return f"lsp transport error: {e}"
+        if not obj:
+            return "lsp gateway returned no parseable response"
+        if obj.get("error"):
+            _LSP_SESSIONS.pop(attempt_dir, None)
+            if attempt == 1:
+                sess = _lsp_session_for(attempt_dir)
+                if sess is not None:
+                    continue
+            return f"lsp error: {obj['error']}"
+        result = obj.get("result") or {}
+        parts = result.get("content") or []
+        text = "".join(p.get("text", "") for p in parts
+                       if isinstance(p, dict))
+        return text or json.dumps(result)[:2000]
+    return "lsp session could not be re-established"  # unreachable
 
 
 def _attempt_dir_from_path(path: str) -> "str | None":
