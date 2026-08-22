@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -22,14 +25,59 @@ _MAILTO = "asterism@example.org"  # polite-pool identification
 _TIMEOUT = 20
 _PER_SOURCE = 3
 
+# We are guests on free metadata APIs, and a fleet of concurrent
+# strategists chain-429'd OpenAlex (user call, 2026-08-22: "禮貌是要
+# 禮貌的"). Per-host spacing + one Retry-After-honoring backoff; the
+# state is process-global because these tools execute inside the
+# multi-threaded shim.
+_HOST_MIN_INTERVAL = 1.1
+#: Injectable clock — tests swap THESE, never the stdlib module
+#: (patching time.monotonic globally hangs the xdist machinery).
+_now = time.monotonic
+_sleep = time.sleep
+_HOST_LOCK = threading.Lock()
+_HOST_LAST: "dict[str, float]" = {}
+
+
+def _polite_slot(host: str) -> None:
+    while True:
+        with _HOST_LOCK:
+            now = _now()
+            wait = _HOST_MIN_INTERVAL - (now - _HOST_LAST.get(host, 0.0))
+            # Epsilon, not zero: float residue after a sleep leaves
+            # wait at ~1e-15 and a bare `<= 0` spin-loops on it.
+            if wait <= 1e-6:
+                _HOST_LAST[host] = now
+                return
+        _sleep(min(max(wait, 0.05), _HOST_MIN_INTERVAL))
+
+
+def _polite_read(url: str) -> str:
+    host = urllib.parse.urlsplit(url).netloc
+    for attempt in (1, 2):
+        _polite_slot(host)
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": f"AsterismScholar/0.1 "
+                                            f"(mailto:{_MAILTO})"})
+            with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
+                return r.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt == 1:
+                ra = ((getattr(e, "headers", None) or {})
+                      .get("Retry-After") or "").strip()
+                delay = min(int(ra) if ra.isdigit() else 5, 15)
+                print(f"[search] 429 from {host} — backing off {delay}s",
+                      file=sys.stderr)
+                _sleep(delay)
+                continue
+            raise
+    raise RuntimeError("unreachable")
+
 
 def _get_json(url: str) -> dict | None:
     try:
-        req = urllib.request.Request(
-            url, headers={"User-Agent": f"AsterismScholar/0.1 "
-                                        f"(mailto:{_MAILTO})"})
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
-            return json.loads(r.read().decode("utf-8", errors="replace"))
+        return json.loads(_polite_read(url))
     except Exception as e:  # noqa: BLE001 — one source down ≠ no answer
         print(f"[search] WARN {url.split('?')[0]}: {e}", file=sys.stderr)
         return None
@@ -37,11 +85,7 @@ def _get_json(url: str) -> dict | None:
 
 def _get_text(url: str) -> str:
     try:
-        req = urllib.request.Request(
-            url, headers={"User-Agent": f"AsterismScholar/0.1 "
-                                        f"(mailto:{_MAILTO})"})
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
-            return r.read().decode("utf-8", errors="replace")
+        return _polite_read(url)
     except Exception as e:  # noqa: BLE001
         print(f"[search] WARN {url.split('?')[0]}: {e}", file=sys.stderr)
         return ""
