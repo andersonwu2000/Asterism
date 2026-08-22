@@ -367,3 +367,46 @@ def test_tool_budget_ends_with_a_wrap_up_turn_not_a_guillotine(
     assert "tool budget exhausted" in src
     assert "budget_final" in src
     assert "~10 iterations" in src
+
+
+def test_the_concurrency_gate_is_fifo_with_direct_handoff() -> None:
+    """The first cut polled acquire(timeout=5) and pollers re-joined at
+    the back — mid-iteration spawns re-acquired instantly and starved
+    the queued ones for 30+ minutes while queue-side heartbeats dressed
+    it up as liveness (2026-08-22). The slot must pass head-first."""
+    import threading as th
+    import collections as co
+    # isolate module state
+    old = (zen_shim._CONC_FREE, list(zen_shim._CONC_WAITERS))
+    zen_shim._CONC_WAITERS.clear()
+    zen_shim._CONC_FREE = 1
+    try:
+        zen_shim._conc_acquire(None)          # takes the only slot
+        got: list = []
+        order = []
+
+        def waiter(name):
+            zen_shim._conc_acquire(None)
+            order.append(name)
+            got.append(name)
+
+        t1 = th.Thread(target=waiter, args=("first",), daemon=True)
+        t1.start()
+        import time as _t
+        _t.sleep(0.1)
+        t2 = th.Thread(target=waiter, args=("second",), daemon=True)
+        t2.start()
+        _t.sleep(0.1)
+        assert not got, "both queued behind the held slot"
+        zen_shim._conc_release()              # head-first: 'first'
+        t1.join(timeout=3)
+        assert order == ["first"]
+        # a barger cannot jump the remaining queue
+        zen_shim._conc_release()
+        t2.join(timeout=3)
+        assert order == ["first", "second"]
+        zen_shim._conc_release()
+    finally:
+        zen_shim._CONC_FREE, waiters = old[0], old[1]
+        zen_shim._CONC_WAITERS.clear()
+        zen_shim._CONC_WAITERS.extend(waiters)

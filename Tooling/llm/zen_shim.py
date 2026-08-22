@@ -571,7 +571,42 @@ def _pace() -> None:
 #: of burning 429 retries upstream. Exact account limit unknown;
 #: 5 held two fleets' worth of traffic under it. 0 disables.
 _CONCURRENCY = int(os.environ.get("ASTERISM_ZEN_CONCURRENCY") or 5)
-_CONC_SEM = threading.BoundedSemaphore(max(_CONCURRENCY, 1))
+#: FIFO with DIRECT HANDOFF, not a bare semaphore: the first cut used
+#: `acquire(timeout=5)` polling, and a poller that times out re-joins
+#: at the back — spawns mid-iteration re-acquired instantly and
+#: starved the queued ones for 30+ minutes while their queue-side
+#: heartbeats dressed the starvation up as liveness (caught by the
+#: operator noticing "no files written", 2026-08-22).
+_CONC_LOCK = threading.Lock()
+_CONC_WAITERS: "collections.deque[threading.Event]" = collections.deque()
+_CONC_FREE = max(_CONCURRENCY, 1)
+
+
+def _conc_acquire(attempt_dir: "str | None") -> None:
+    ev: "threading.Event | None" = None
+    with _CONC_LOCK:
+        global _CONC_FREE
+        if _CONC_FREE > 0 and not _CONC_WAITERS:
+            _CONC_FREE -= 1
+            return
+        ev = threading.Event()
+        _CONC_WAITERS.append(ev)
+    waited = 0
+    while not ev.wait(timeout=5):
+        waited += 5
+        _touch_heartbeat(attempt_dir)
+        if waited % 60 == 0:
+            _log(f"[shim]   queue: {waited}s waiting for a "
+                  f"concurrency slot ({len(_CONC_WAITERS)} in line)")
+
+
+def _conc_release() -> None:
+    with _CONC_LOCK:
+        global _CONC_FREE
+        if _CONC_WAITERS:
+            _CONC_WAITERS.popleft().set()  # the slot passes head-first
+        else:
+            _CONC_FREE += 1
 
 
 def _touch_heartbeat(attempt_dir: "str | None") -> None:
@@ -619,15 +654,11 @@ def _zen_call(body: dict, attempt_dir: "str | None" = None) -> dict:
                 if base != ZEN_RESCUE:
                     _pace()
                     if _CONCURRENCY > 0:
-                        # Orderly queue on the account's concurrency
-                        # window; heartbeat while waiting so the
-                        # watchdog reads the queue as liveness.
-                        while not _CONC_SEM.acquire(timeout=5):
-                            _touch_heartbeat(attempt_dir)
+                        _conc_acquire(attempt_dir)
                         try:
                             return _stream_once(base, body)
                         finally:
-                            _CONC_SEM.release()
+                            _conc_release()
                 return _stream_once(base, body)
             except urllib.error.HTTPError as e:
                 if e.code == 429:
