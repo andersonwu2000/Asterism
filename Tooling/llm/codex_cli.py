@@ -357,7 +357,16 @@ def _render_config(req: LLMRequest, model: str, effort: str,
                 i = len(parts) - 1 - parts[::-1].index(".attempts")
                 rel = "/".join(parts[i + 1:])
                 if rel:
-                    base = base[: -len("/v1")] + f"/a/{rel}/v1"
+                    # `/b/<sec>` carries the seat's TIME budget so the
+                    # shim's wrap-up can fire before the wall does: at
+                    # ~20-30s an iteration a 1800s formalizer buys only
+                    # 65-90 of the 200-iteration cap, so the iteration
+                    # wrap-up never triggered and turns died at the
+                    # wall salvaging half-states (7 timeouts in one
+                    # 37-min window, friend fleet 2026-08-22).
+                    budget = max(120, int(req.timeout_sec) - 300)
+                    base = (base[: -len("/v1")]
+                            + f"/a/{rel}/b/{budget}/v1")
         lines += [
             "",
             "[model_providers.zen]",

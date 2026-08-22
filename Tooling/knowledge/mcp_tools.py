@@ -66,6 +66,10 @@ MAX_CHARS = 8000
 #: Cost: one recoverable round-trip instead of a dead spawn.
 _ARG_HELP = "{tool}: {hint}"
 
+#: (spawn attempts-dir, normalized pattern) → times asked. Bounded by
+#: periodic clear; process-global because the tools run in the shim.
+_LOOGLE_REPEATS: "dict[tuple[str, str], int]" = {}
+
 mcp = FastMCP("asterism_tools")
 
 # ── Seat gate (owner ruling 2026-08-22) ───────────────────────────────
@@ -120,11 +124,31 @@ def loogle(pattern: str = "", query: str = "",
             tool="loogle",
             hint='the parameter is `pattern` (or `query`), e.g. '
                  'loogle(pattern="Nat.factorial _ = _")')
+    # Exact-repeat teaching: agents resent ONE identical query up to
+    # ×114 in a session (both fleets, 2026-08-22 — the top killer of
+    # timed-out formalizer turns). The answer cannot change; say so,
+    # with the way out. Keyed per spawn so parallel agents don't
+    # cross-pollute.
+    spawn = os.environ.get("ASTERISM_SPAWN_ATTEMPT_DIR", "")
+    rkey = (spawn, " ".join(pattern.split()))
+    if len(_LOOGLE_REPEATS) > 512:
+        _LOOGLE_REPEATS.clear()
+    n = _LOOGLE_REPEATS[rkey] = _LOOGLE_REPEATS.get(rkey, 0) + 1
+    if n >= 4:
+        return (f"you have sent this EXACT query {n} times — the "
+                f"answer has not changed and will not. Repeated misses "
+                f"on one shape usually mean Mathlib lacks it in this "
+                f"form: plan without it, prove the special case you "
+                f"need inline, or search a genuinely DIFFERENT shape "
+                f"(a name fragment in quotes, or a weaker pattern).")
     rc, text = _loogle.query(pattern, limit=limit)
     if rc != 0:
         return f"loogle unavailable: {text}"
     if len(text) > MAX_CHARS:
         text = text[:MAX_CHARS] + "\n… (truncated; narrow the pattern)"
+    if n >= 2:
+        text = (f"[you have sent this exact query {n} times — same "
+                f"answer] " + text)
     return text
 
 

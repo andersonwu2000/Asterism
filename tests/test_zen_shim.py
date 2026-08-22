@@ -410,3 +410,19 @@ def test_the_concurrency_gate_is_fifo_with_direct_handoff() -> None:
         zen_shim._CONC_FREE, waiters = old[0], old[1]
         zen_shim._CONC_WAITERS.clear()
         zen_shim._CONC_WAITERS.extend(waiters)
+
+
+def test_channel_path_carries_the_turn_time_budget(tmp_path, monkeypatch):
+    """At ~20-30s an iteration a 1800s formalizer buys only 65-90 of
+    the 200-iteration cap — the wrap-up never fired and turns died at
+    the wall salvaging half-states (7 timeouts in one 37-min window,
+    friend fleet 2026-08-22). The seat's budget rides the URL."""
+    import os as _os
+    uuid = "c505e391-1cde-4be4-b3c2-407f89796ef7"
+    (tmp_path / ".attempts" / uuid).mkdir(parents=True)
+    monkeypatch.setattr(zen_shim, "_REPO", str(tmp_path))
+    d, b = zen_shim._channel_of_path(f"/a/{uuid}/b/1500/v1/responses")
+    assert d == str(tmp_path / ".attempts" / uuid) and b == 1500
+    # budget-less URLs (older generations) keep working
+    d2, b2 = zen_shim._channel_of_path(f"/a/{uuid}/v1/responses")
+    assert d2 == d and b2 is None

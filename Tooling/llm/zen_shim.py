@@ -276,18 +276,29 @@ def _attempt_dir_from_path(path: str) -> "str | None":
     and judge rounds spawn from projection dirs (`<uuid>/adversary/r2`),
     and a uuid-shaped parse missed them — every write in those legs was
     refused while the strategists' own writes landed (2026-08-22)."""
-    m = re.match(r"^/a/(.+?)/v1(?:/|$)", path or "")
+    return _channel_of_path(path)[0]
+
+
+def _channel_of_path(path: str) -> "tuple[str | None, int | None]":
+    """(attempts dir, turn time-budget seconds) named by the URL.
+
+    `/a/<relpath>[/b/<sec>]/v1/...` — the optional `/b/` segment is the
+    seat's wall budget minus a wrap-up margin, so the tool loop can
+    finalize BEFORE the subprocess wall kills the turn (see codex_cli;
+    the 200-iteration cap alone was unreachable inside a 1800s wall)."""
+    m = re.match(r"^/a/(.+?)(?:/b/(\d+))?/v1(?:/|$)", path or "")
     if not m:
-        return None
+        return None, None
+    budget = int(m.group(2)) if m.group(2) else None
     parts = m.group(1).split("/")
     if any(p in ("", ".", "..") for p in parts):
-        return None
+        return None, None
     cand = os.path.join(_REPO, ".attempts", *parts)
     # The dispatcher creates the dir before the spawn, so a real
     # channel always names an existing dir; a miss means a stale
     # generation's config (basename-only URLs) — fall back to the
     # request-text archaeology rather than answer confidently wrong.
-    return cand if os.path.isdir(cand) else None
+    return (cand if os.path.isdir(cand) else None), budget
 
 
 def _attempt_dir_of(body: dict) -> "str | None":
@@ -785,8 +796,9 @@ class Shim(http.server.BaseHTTPRequestHandler):
         # at `/a/<relpath>/v1` (see _attempt_dir_from_path). The
         # request-text regex stays as fallback (operator overrides
         # that bypass the per-spawn config).
-        attempt_dir = (_attempt_dir_from_path(self.path)
-                       or _attempt_dir_of(body))
+        attempt_dir, turn_budget = _channel_of_path(self.path)
+        if attempt_dir is None:
+            attempt_dir = _attempt_dir_of(body)
         if not isinstance(body.get("input"), list):
             body["input"] = [body.get("input")] if body.get("input") else []
 
@@ -827,7 +839,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
                                  LSP_NS + "__"))]
                 _log(f"[shim] iter {iters}: zen {time.time()-t_call:.0f}s, "
                      f"{len(items)} item(s), "
-                     + (", ".join(str(it.get('name'))[len(NS)+2:]
+                     + (", ".join(str(it.get('name')).rsplit("__", 1)[-1]
                                   for it in mine) or "final"))
                 # Progress heartbeat: codex reports at ITEM granularity,
                 # so a long shim loop is total silence on the daemon's
@@ -838,7 +850,9 @@ class Shim(http.server.BaseHTTPRequestHandler):
                 _touch_heartbeat(attempt_dir)
                 if not mine:
                     break
-                if iters >= MAX_TOOL_ITERATIONS:
+                over_time = (turn_budget is not None
+                             and time.time() - t0 > turn_budget)
+                if iters >= MAX_TOOL_ITERATIONS or over_time:
                     # The budget guillotine used to be SILENT: 25
                     # measured cap-hits (2026-08-22) cut agents mid
                     # validate→fix loop and committed whatever broken
@@ -858,9 +872,13 @@ class Shim(http.server.BaseHTTPRequestHandler):
                             "type": "function_call_output",
                             "call_id": it.get("call_id"),
                             "output": (
-                                f"tool budget exhausted "
-                                f"({MAX_TOOL_ITERATIONS} iterations): "
-                                "this call was NOT executed and no "
+                                (f"turn TIME budget exhausted "
+                                 f"({turn_budget}s — the seat's wall "
+                                 f"is close)"
+                                 if over_time else
+                                 f"tool budget exhausted "
+                                 f"({MAX_TOOL_ITERATIONS} iterations)")
+                                + ": this call was NOT executed and no "
                                 "further calls will run. Reply now "
                                 "with your final status — what is "
                                 "finished, what is not — and end the "
