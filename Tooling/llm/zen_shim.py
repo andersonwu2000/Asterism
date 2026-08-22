@@ -981,7 +981,14 @@ def main() -> int:
         _log("[shim] WARNING: no rescue-tier key — running primary-only")
     _log(f"[shim] zen shim v6 on 127.0.0.1:{port} -> {ZEN} "
           f"(rescue: {ZEN_RESCUE})")
-    http.server.ThreadingHTTPServer(("127.0.0.1", port), Shim).serve_forever()
+    class _ExclusiveServer(http.server.ThreadingHTTPServer):
+        # SO_REUSEADDR on Windows lets a second shim BIND THE SAME
+        # PORT and silently split the traffic — observed live
+        # 2026-08-22 (two listeners, two pacers, the rolling-window
+        # budget doubled). A port singleton must refuse, loudly.
+        allow_reuse_address = False
+
+    _ExclusiveServer(("127.0.0.1", port), Shim).serve_forever()
     return 0
 
 
