@@ -414,10 +414,11 @@ def _ensure(*, cache: Path, label: str, statement: str, exclude_slug: str,
         prompt_file.write_text(rendered, encoding="utf-8")
 
         from . import write_tools_mcp_config as _write_tools_cfg
-        agent.spawn_llm(
+        sid = str(uuid.uuid4())
+        rc = agent.spawn_llm(
             kind="presearch", prompt_path=prompt_file,
             problem_dir=problem_dir, attempts_dir=sandbox,
-            session_id=str(uuid.uuid4()),
+            session_id=sid,
             timeout_sec_override=timeout,
             # Searching Mathlib IS this spawn's whole job, and loogle is
             # an MCP tool now — without the config the prompt would name
@@ -427,6 +428,13 @@ def _ensure(*, cache: Path, label: str, statement: str, exclude_slug: str,
         )
 
         if not out_path.is_file():
+            # Death observability (owner call 2026-08-22): 52 silent
+            # timeouts in one day — best-effort must not mean
+            # invisible. One grep-able line per death; the patrol
+            # counts them.
+            print(f"[presearch-death] {label}: rc={rc} and no "
+                  f"{_OUT_FILENAME} — this node's brick proceeds "
+                  f"without candidates", flush=True)
             return None
         raw = json.loads(out_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
@@ -440,6 +448,21 @@ def _ensure(*, cache: Path, label: str, statement: str, exclude_slug: str,
         section = _render_section(verified) if verified else _DRY_SECTION
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(section, encoding="utf-8")
+        # The one mute seat gets its questionnaire (owner call
+        # 2026-08-22): every other seat files self-reports and
+        # presearch's environment had never received tuning pressure
+        # from inside. Best-effort like everything here.
+        try:
+            from . import _feedback
+            n_cand = sum(len(v) for v in verified.values())                 if isinstance(verified, dict) else 0
+            _feedback.attempt_feedback(
+                kind="presearch", seat="presearch", sid=sid,
+                slug=label,
+                outcome=(f"candidates:{n_cand}" if n_cand else "dry"),
+                problem_dir=problem_dir, attempts_dir=sandbox,
+                workspace=workspace, problem_label=problem)
+        except Exception:  # noqa: BLE001 — feedback never breaks dispatch
+            pass
         return cache
     except Exception as exc:  # noqa: BLE001 — never break dispatch
         print(f"[presearch] {label}: skipped — {exc}", flush=True)
