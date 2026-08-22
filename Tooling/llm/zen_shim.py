@@ -83,7 +83,13 @@ _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 sys.path.insert(0, _REPO)
 
 _TOOL_LOCK = threading.Lock()
-_ATTEMPT_RE = re.compile(r"[A-Za-z]:\\[^\s'\"]*\.attempts\\[0-9a-fA-F-]{36}")
+# Both separators: codex 0.147 rendered the skills-preamble paths with
+# backslashes, 0.149 renders them with FORWARD slashes — the
+# backslash-only pattern silently stopped matching after the upgrade,
+# attempt_dir came back None, every write_file was refused, and the
+# strategist declared its batch committed anyway (g629, 2026-08-22).
+_ATTEMPT_RE = re.compile(
+    r"[A-Za-z]:[\\/][^\s'\"]*\.attempts[\\/][0-9a-fA-F-]{36}")
 
 
 _KEY_CACHE: "dict[str, str]" = {}
