@@ -361,7 +361,12 @@ def _chat_stream_once(base: str, body: dict) -> dict:
     calls: dict = {}
     usage: dict = {}
     finish = None
-    with urllib.request.urlopen(req, timeout=1740) as r:
+    # The socket timeout is ALSO the per-read (inter-chunk) limit: a
+    # healthy generation streams deltas (reasoning included)
+    # continuously, so 300s of silence is a dead stream, not a
+    # thinking pause — two strategists sat 11+ minutes on stalled
+    # Nous streams under the old 1740s ceiling (2026-08-22).
+    with urllib.request.urlopen(req, timeout=300) as r:
         for raw in r:
             line = raw.decode("utf-8", "replace").strip()
             if not line.startswith("data:") or line == "data: [DONE]":
@@ -443,7 +448,12 @@ def _stream_once(base: str, body: dict) -> dict:
                  "Content-Type": "application/json",
                  "Accept": "text/event-stream",
                  "User-Agent": "asterism-zen-shim/6.0"})
-    with urllib.request.urlopen(req, timeout=1740) as r:
+    # The socket timeout is ALSO the per-read (inter-chunk) limit: a
+    # healthy generation streams deltas (reasoning included)
+    # continuously, so 300s of silence is a dead stream, not a
+    # thinking pause — two strategists sat 11+ minutes on stalled
+    # Nous streams under the old 1740s ceiling (2026-08-22).
+    with urllib.request.urlopen(req, timeout=300) as r:
         final: "dict | None" = None
         for raw in r:
             line = raw.decode("utf-8", "replace").strip()
