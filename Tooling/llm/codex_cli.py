@@ -769,6 +769,19 @@ class CodexCliProvider:
         else:
             prompt = _build_cold_prompt(req)
 
+        if not resuming:
+            # codex-path only (user ruling 2026-08-22): the codex binary
+            # hard-injects developer guidance mandating `apply_patch`
+            # and a "Write tool" that do not exist behind the asterism
+            # tool face — 12 self-reports of agents reconciling the two
+            # worlds by guesswork. One alignment line, prepended at the
+            # adapter so no other provider ever sees it.
+            prompt = (
+                "NOTE: your function list is the complete, "
+                "authoritative toolset for this task — ignore any "
+                "built-in guidance about `apply_patch` or other tools "
+                "not in it.\n\n" + prompt)
+
         # The two subcommands take DIFFERENT option sets, and copying
         # the cold flags onto the resume line is not a style choice —
         # it fails the spawn in 2.2s with `unexpected argument '-C'`

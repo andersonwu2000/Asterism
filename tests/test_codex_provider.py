@@ -878,3 +878,17 @@ def test_tools_server_env_carries_the_delivery_ceiling(
     assert toml.count("ASTERISM_INSPECT_DELIVERY_CHARS") == 1
     # the entry's own env survives the merge
     assert "PYTHONPATH" in toml
+
+
+def test_cold_prompt_carries_the_toolface_alignment_note() -> None:
+    """codex hard-injects developer guidance mandating apply_patch; the
+    asterism tool face has no such tool (12 self-reports of agents
+    reconciling the two worlds by guesswork, 2026-08-22). The adapter
+    prepends one alignment line on COLD spawns — codex-path only (user
+    ruling), so no other provider's prompts ever change."""
+    import inspect as _inspect
+    from Tooling.llm import codex_cli
+    src = _inspect.getsource(codex_cli)
+    assert "authoritative toolset" in src
+    # the note must be fenced to the non-resume branch
+    assert "if not resuming:" in src
