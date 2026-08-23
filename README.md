@@ -82,6 +82,12 @@ live serve.
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-08-22
+- Wired in a new language-model provider through a local proxy, spending much of the day hardening it against rate limits, timeouts, and response-format quirks, with automatic failover between upstream services.
+- Added a benchmark corpus of 46 Erdős problems drawn from a formal-conjectures collection and enlarged the prover fleet to work on them.
+- Improved run reliability, teaching the watchdog to tell a busy prover from a hung one and folding in a batch of small verified fixes from the day's test sweeps.
+- Polished the web dashboard, including paper organization, per-prover run pages, and clearer quota and account displays.
+
 ### 2026-08-19
 - Moved each problem's statement and goal description out of a per-problem text file and into the system's database, updating the web console, test suite, data seeds, and documentation to match.
 - Redesigned how proof tasks are delegated to sub-workers: delegations now carry a structured charter with an explicit rationale, can be issued in batches, always branch out into parallel subtasks rather than chaining, and the resulting task tree is capped at two levels deep.
@@ -218,9 +224,6 @@ live serve.
 - Tightened the reviewing agent's rules so a proof step can only be rejected with an explicit counter-argument, never demoted on a mere reservation.
 - Clarified the division of labor for proof gaps: the proving agent must close its own gaps rather than hand them off, with formalization reserved for steps already settled.
 - Landed a batch of small robustness fixes, including hard failures on bad configuration, earlier recovery from exhausted API quotas, and UTC-based log file naming.
-
-### 2026-07-23
-- Began shifting the system's internal proof drafts toward plain natural-language writing: the structured "thesis" summary was replaced by a prose proof section, and the accompanying briefs now explicitly flag gaps in the argument, using wording reviewed and approved by the maintainer.
 
 <!-- ASTERISM-PROGRESS:END -->
 
