@@ -805,6 +805,23 @@ def _conc_release() -> None:
             _CONC_WAITERS.popleft().set()
 
 
+def _merge_turn_reasoning(segs: "list[tuple[int, str]]") -> "dict | None":
+    """One reasoning item for the WHOLE codex turn. The shim's tool
+    loop consumes intermediate upstream responses — and the tool-call
+    iterations are where the actual thinking happens — so surfacing
+    only the final iteration's reasoning missed the bulk of it
+    (Oracle boarding day, 2026-08-24). Segments carry their iteration
+    number when there is more than one."""
+    if not segs:
+        return None
+    if len(segs) == 1:
+        text = segs[0][1]
+    else:
+        text = "\n\n".join(f"[iter {i}] {t}" for i, t in segs)
+    return {"type": "reasoning", "id": "rs_" + uuid.uuid4().hex,
+            "summary": [{"type": "summary_text", "text": text}]}
+
+
 def _conc_note_concurrency_429() -> None:
     """The upstream's 429 body named CONCURRENCY as the fired limit —
     the one signal that means OUR cap is too high (window/capacity
@@ -1032,6 +1049,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
         budget_final = False
         lookup_streak = 0
         crawl_nudged = False
+        turn_reasoning: "list[tuple[int, str]]" = []
         resp: dict = {}
         try:
             while True:
@@ -1057,6 +1075,16 @@ class Shim(http.server.BaseHTTPRequestHandler):
                         items = resp.get("output") or []
                         if items:
                             break
+                # Harvest EVERY iteration's thinking — the loop consumes
+                # intermediate responses, and those are where the model
+                # actually reasons; only the final response reaches
+                # codex, so this list is what makes the turn's thinking
+                # whole (`_merge_turn_reasoning` at synthesis).
+                for it in items:
+                    if it.get("type") == "reasoning":
+                        for s in it.get("summary") or []:
+                            if s.get("text"):
+                                turn_reasoning.append((iters, s["text"]))
                 mine = [it for it in items
                         if it.get("type") == "function_call"
                         and (str(it.get("name", "")).startswith(NS + "__")
@@ -1207,11 +1235,18 @@ class Shim(http.server.BaseHTTPRequestHandler):
             return
 
         # --- synthesize a conformant Responses SSE stream ------------
+        # The final response's own reasoning item is dropped here — its
+        # text is already in turn_reasoning, and the merged item below
+        # carries the whole turn (every iteration), not just the tail.
         items = [it for it in (resp.get("output") or [])
-                 if not (it.get("type") == "function_call"
-                         and (str(it.get("name", "")).startswith(NS + "__")
-                              or str(it.get("name", "")).startswith(
-                                  LSP_NS + "__")))]
+                 if it.get("type") != "reasoning"
+                 and not (it.get("type") == "function_call"
+                          and (str(it.get("name", "")).startswith(NS + "__")
+                               or str(it.get("name", "")).startswith(
+                                   LSP_NS + "__")))]
+        merged_rsn = _merge_turn_reasoning(turn_reasoning)
+        if merged_rsn is not None:
+            items.insert(0, merged_rsn)
         usage = resp.get("usage") or {}
         _log(f"[shim] ok {time.time()-t0:.0f}s iters={iters} "
               f"tools={tool_calls_run} items={len(items)} "

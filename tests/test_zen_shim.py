@@ -783,3 +783,33 @@ def test_replayed_reasoning_items_never_flow_back_upstream(
     msgs = captured["body"]["messages"]
     assert [m["role"] for m in msgs] == ["user"]
     assert "secret thinking" not in __import__("json").dumps(msgs)
+
+
+def test_merge_turn_reasoning_carries_the_whole_turn() -> None:
+    """The shim's tool loop consumes intermediate responses — where the
+    model actually thinks — so only the final iteration's reasoning
+    used to reach codex. The merged item must carry every iteration,
+    labelled when there is more than one, and vanish when the turn had
+    no reasoning at all."""
+    assert zen_shim._merge_turn_reasoning([]) is None
+    one = zen_shim._merge_turn_reasoning([(0, "only thought")])
+    assert one["type"] == "reasoning" and one["id"].startswith("rs_")
+    assert one["summary"] == [{"type": "summary_text",
+                               "text": "only thought"}]
+    many = zen_shim._merge_turn_reasoning(
+        [(0, "plan the proof"), (3, "loogle came up dry"),
+         (7, "switch to induction")])
+    text = many["summary"][0]["text"]
+    assert text == ("[iter 0] plan the proof\n\n[iter 3] loogle came up "
+                    "dry\n\n[iter 7] switch to induction")
+
+
+def test_tool_loop_harvests_reasoning_every_iteration() -> None:
+    """Mechanism pin on the handler source (house style): the harvest
+    must run per iteration inside the loop, and the synthesis must drop
+    the final response's own reasoning item in favour of the merged
+    whole-turn one."""
+    src = open(zen_shim.__file__, encoding="utf-8").read()
+    assert "turn_reasoning.append((iters, s[\"text\"]))" in src
+    assert "_merge_turn_reasoning(turn_reasoning)" in src
+    assert 'if it.get("type") != "reasoning"' in src
