@@ -895,6 +895,10 @@ def test_cold_prompt_carries_the_toolface_alignment_note() -> None:
     # 2026-08-24 extension: the code-mode door (`functions.exec` +
     # ALL_TOOLS) is named so a spawn does not burn a discovery turn.
     assert "functions.exec" in src and "ALL_TOOLS" in src
+    # Oracle boarding, same day, 6 reports: on Linux the tools arrive
+    # as TOP-LEVEL `mcp__asterism_tools__*` functions — the note must
+    # name that shape too, or it re-opens the guesswork it closes.
+    assert "mcp__asterism_tools__" in src
 
 
 def test_zen_turn_budget_margin_scales_with_the_wall(tmp_path: Path) -> None:

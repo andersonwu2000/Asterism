@@ -798,15 +798,22 @@ class CodexCliProvider:
             # the prompt's tool names inside it. The door cannot be
             # removed (`code_mode_host = false` does not flatten,
             # probed); name it instead.
+            # Third shape (Oracle boarding, 2026-08-24, 6 reports in
+            # the first hour): on Linux the same binary surfaces them
+            # as TOP-LEVEL functions under an `mcp__asterism_tools__`
+            # prefix — the note claiming only the exec door then read
+            # as wrong and re-opened the guesswork it was built to
+            # close. Name all three shapes; promise only the mapping.
             prompt = (
                 "NOTE: your function list is the complete, "
                 "authoritative toolset for this task — ignore any "
                 "built-in guidance about `apply_patch` or other tools "
-                "not in it. If the list shows only `functions.exec`, "
-                "the prompt's tool names (`inspect`, `write_file`, …) "
-                "are reachable through it (ALL_TOOLS) — same tools, "
-                "different door; don't spend turns rediscovering "
-                "them.\n\n" + prompt)
+                "not in it. The prompt's tool names (`inspect`, "
+                "`write_file`, …) may appear verbatim, under an "
+                "`mcp__asterism_tools__` prefix (the prefixed function "
+                "IS that tool), or inside a lone `functions.exec` "
+                "(ALL_TOOLS) — same tools, different doors; don't "
+                "spend turns rediscovering them.\n\n" + prompt)
 
         # The two subcommands take DIFFERENT option sets, and copying
         # the cold flags onto the resume line is not a style choice —

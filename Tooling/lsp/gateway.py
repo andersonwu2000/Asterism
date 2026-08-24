@@ -2826,6 +2826,33 @@ def _declhead_submission(content: str) -> "dict":
                     "a full lake build — rename now"}
 
 
+#: Decline placeholder marker — kept in lockstep with
+#: `pipeline.forward._DECLINE_RE` (the gateway subprocess stays free of
+#: pipeline imports; a source pin in tests holds the two together).
+_GW_DECLINE_RE = re.compile(r"^\s*--\s*decline\s*:\s*([a-z_]+)\b",
+                            re.MULTILINE | re.IGNORECASE)
+
+
+def _namespace_submission(content: str, problem: str) -> "dict | None":
+    """Mirror the forward namespace-fidelity gate (forward.py): the file
+    elaborates clean under ANY `namespace` wrapper, but commit resolves
+    the declaration under the canonical `Problems.<problem>` — a
+    respelled wrapper passed validate_file and only bounced at commit
+    (Test.provider_probe, 2026-08-24 feedback: `Problems.provider_probe`
+    vs `Problems.Test.provider_probe`). None when there is no namespace
+    line, it already matches, or the file is a decline placeholder."""
+    m = re.search(r"^namespace\s+(\S+)", content, re.M)
+    if not m or _GW_DECLINE_RE.search(content):
+        return None
+    want = f"Problems.{problem}"
+    if m.group(1) == want:
+        return None
+    return {"ok": False, "got": m.group(1), "want": want,
+            "note": (f"commit resolves your declaration under the canonical "
+                     f"`namespace {want}` (case included) — keep the seed's "
+                     f"namespace/end lines exactly as seeded")}
+
+
 @mcp.tool(structured_output=False)
 @_offload_to_thread
 def withdraw_stub(slug: str = "") -> str:
@@ -3001,6 +3028,10 @@ def validate_file(content: str = "", file: str = "") -> str:
         comment block; commit rejects a missing one as `agent_no_annotation`.
         `checked:false` when `content` is a `:= by sorry` stub (not a
         submission).
+      - `submission.namespace`: { ok:false, got, want, note } — present only
+        when the file's `namespace` line differs from the canonical
+        `Problems.<problem>` (case included); commit resolves your
+        declaration under the canonical name and bounces a respelled one.
 
     The candidate also elaborates against the session patch's own `open`
     lines (not just Defs.lean's), so a stub using `MeasureTheory` / scoped
@@ -3250,6 +3281,9 @@ def validate_file(content: str = "", file: str = "") -> str:
         "annotation": _annotation_submission(
             content, is_mint=meta.target_path.name.startswith("new_forward")),
         "decl_head": _declhead_submission(content)}
+    ns = _namespace_submission(content, meta.problem)
+    if ns is not None:
+        submission["namespace"] = ns
     if axioms_sub is not None:
         # Pre-commit mirror of the commit axiom gate (2026-08-18):
         # `ok: false` here rides `commit_will_reject` like every other

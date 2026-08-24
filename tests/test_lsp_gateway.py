@@ -2870,3 +2870,34 @@ def test_wedge_falls_back_when_the_slot_lock_is_held(
         assert lsp_gateway._recycle_wedged_slot(slot.slot_uri) is False
     finally:
         slot.lock.release()
+
+
+def test_namespace_submission_mirrors_the_forward_commit_gate() -> None:
+    """validate_file passed clean while commit bounced the respelled
+    wrapper (`Problems.provider_probe` vs `Problems.Test.provider_probe`,
+    2026-08-24 feedback) — the submission block must surface the
+    canonical-namespace verdict pre-commit."""
+    ns = lsp_gateway._namespace_submission(
+        "namespace Problems.provider_probe\n\ntheorem t : True := trivial\n",
+        "Test.provider_probe")
+    assert ns is not None and ns["ok"] is False
+    assert ns["got"] == "Problems.provider_probe"
+    assert ns["want"] == "Problems.Test.provider_probe"
+    # matching wrapper, no wrapper, and a decline all stay silent
+    assert lsp_gateway._namespace_submission(
+        "namespace Problems.Test.provider_probe\ntheorem t : True := trivial\n",
+        "Test.provider_probe") is None
+    assert lsp_gateway._namespace_submission(
+        "theorem t : True := trivial\n", "Test.provider_probe") is None
+    assert lsp_gateway._namespace_submission(
+        "-- decline: library_sufficient\nnamespace Problems.wrong\n",
+        "Test.provider_probe") is None
+
+
+def test_gateway_decline_regex_stays_in_lockstep_with_forward() -> None:
+    """The gateway subprocess replicates forward's decline marker rather
+    than importing the pipeline — the two patterns must never drift."""
+    from Tooling.pipeline import forward
+    assert (lsp_gateway._GW_DECLINE_RE.pattern
+            == forward._DECLINE_RE.pattern)
+    assert (lsp_gateway._GW_DECLINE_RE.flags == forward._DECLINE_RE.flags)

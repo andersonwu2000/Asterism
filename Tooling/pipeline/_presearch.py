@@ -412,8 +412,22 @@ def _ensure(*, cache: Path, label: str, statement: str, exclude_slug: str,
             out_path.unlink()
         except OSError:
             pass
+        # Cold-start pre-flag (2026-08-24 feedback, 3 reports in one
+        # hour): a fresh problem has no proofs/ and no TREE.md, so the
+        # prompt's source-1 grep is dead weight by construction — say
+        # so up front instead of letting every agent discover it.
+        _proofs = problem_dir / "proofs"
+        _n_proofs = (sum(1 for _ in _proofs.glob("*.lean"))
+                     if _proofs.is_dir() else 0)
+        if _n_proofs == 0 and not (problem_dir / "TREE.md").is_file():
+            cold_note = ("**Cold start**: this problem's `proofs/` is empty "
+                         "and TREE.md does not exist yet — skip source 1, "
+                         "start at source 2.")
+        else:
+            cold_note = ""
         rendered = (
             template.read_text(encoding="utf-8")
+            .replace("__COLD_START__", cold_note)
             .replace("__GOAL__", statement)
             .replace("__PACKAGES__", (workspace / ".lake" / "packages").as_posix())
             .replace("__LIBRARY_DIR__", (workspace / "Library").as_posix())

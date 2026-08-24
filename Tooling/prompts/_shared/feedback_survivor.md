@@ -16,7 +16,8 @@ You have a rare inside view the developer cannot get otherwise — default to
 saying something. Reply `(none)` ONLY if you genuinely have no friction,
 suggestion, or critique worth a single line.
 
-Write your answer to `__FEEDBACK_PATH__` using the Write tool:
+Write your answer to `__FEEDBACK_PATH__` with your file-writing tool
+(`Write` or `write_file`, whichever your function list shows):
   - one sentence on the first line,
   - optionally a second line `evidence: <one line>`,
   - or exactly `(none)`.

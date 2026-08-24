@@ -296,3 +296,48 @@ def test_verify_marks_a_non_goal_name_instead_of_presenting_it_bare(tmp_path):
     section = _presearch._render_section(out)
     assert "NOT A GOAL" in section
     assert "never import it as a sibling proof file" in section
+
+
+def test_cold_start_preflag_renders_only_for_fresh_problems(tmp_path, monkeypatch):
+    """3 reports in the first Oracle hour (2026-08-24): a fresh problem
+    has no proofs/ and no TREE.md, so the prompt's source-1 grep is dead
+    weight by construction — the rendered prompt must say so up front,
+    and must NOT say so once siblings exist."""
+    from pathlib import Path
+    from Tooling.pipeline import agent as agent_mod
+    prompts = Path(_presearch.__file__).resolve().parents[1] / "prompts"
+    captured: dict = {}
+
+    def fake_spawn(**kw):
+        captured["prompt"] = kw["prompt_path"].read_text(encoding="utf-8")
+        return 0  # no out_path written -> _ensure returns None; fine
+
+    monkeypatch.setattr(_presearch, "_presearch_enabled", lambda ws: True)
+    monkeypatch.setattr(agent_mod, "spawn_llm", fake_spawn)
+    import Tooling.pipeline as pipeline_pkg
+    monkeypatch.setattr(pipeline_pkg, "write_tools_mcp_config",
+                        lambda *a, **k: None)
+
+    def run(problem_dir):
+        attempts = problem_dir / ".att"
+        attempts.mkdir(parents=True, exist_ok=True)
+        _presearch._ensure(
+            cache=problem_dir / "cache.md", label="t", statement="True",
+            exclude_slug="", problem="Logic.t", workspace=tmp_path,
+            problem_dir=problem_dir, attempts_dir=attempts,
+            prompt_dir=prompts)
+        return captured.pop("prompt")
+
+    cold_dir = tmp_path / "Problems" / "Logic" / "t1"
+    cold_dir.mkdir(parents=True)
+    p = run(cold_dir)
+    assert "Cold start" in p and "skip source 1" in p
+    assert "__COLD_START__" not in p, "placeholder must always be consumed"
+
+    warm_dir = tmp_path / "Problems" / "Logic" / "t2"
+    (warm_dir / "proofs").mkdir(parents=True)
+    (warm_dir / "proofs" / "L_x.lean").write_text("-- x", encoding="utf-8")
+    (warm_dir / "TREE.md").write_text("# tree", encoding="utf-8")
+    p = run(warm_dir)
+    assert "Cold start" not in p
+    assert "__COLD_START__" not in p

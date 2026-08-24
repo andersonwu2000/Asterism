@@ -13,7 +13,7 @@ __GOAL__
 ## Search these sources, IN THIS ORDER (`inspect` grep + `loogle`)
 Prefer the most local source — a hit there is the cleanest cite. Stop once you have
 the relevant lemmas; do not keep reformulating.
-
+__COLD_START__
 1. **In-problem** — `inspect({"grep": "<head symbol>", "in": "__PROBLEM_DIR__/proofs"})`
    + read `__PROBLEM_DIR__/TREE.md` for siblings already proved in THIS problem.
 2. **Library** — `inspect({"grep": "<head symbol>", "in": "__LIBRARY_DIR__"})`
