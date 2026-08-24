@@ -2657,35 +2657,46 @@ def _migrate_to_v43(conn: sqlite3.Connection) -> None:
     # "already exists" (2026-08-24, the crash that exposed the
     # migration race).
     conn.execute("DROP TABLE IF EXISTS _sd_v43")
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table'"
-        " AND name = 'strategist_decisions'").fetchone()
-    sql = (row["sql"] or "") if row else ""
-    if not sql or "'stall'" in sql:
-        return  # fresh DB from current SCHEMA already carries it
-    for old, new in (
-        ("'inject_batch_done','audit'", "'inject_batch_done','audit','stall'"),
-        ("'inject_batch_done'", "'inject_batch_done','stall'"),
-    ):
-        if old in sql:
-            new_sql = sql.replace(old, new, 1)
-            break
-    else:
-        raise RuntimeError(
-            "v43: strategist_decisions CHECK enum not found in its DDL — "
-            "refusing to guess; inspect the table's sqlite_master sql")
-    new_sql = re.sub(r"CREATE TABLE\s+\"?strategist_decisions\"?",
-                     "CREATE TABLE _sd_v43", new_sql, count=1)
-    indexes = [r["sql"] for r in conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'index'"
-        " AND tbl_name = 'strategist_decisions' AND sql IS NOT NULL")]
-    conn.execute(new_sql)
-    n = conn.execute(
-        "INSERT INTO _sd_v43 SELECT * FROM strategist_decisions").rowcount
-    conn.execute("DROP TABLE strategist_decisions")
-    conn.execute("ALTER TABLE _sd_v43 RENAME TO strategist_decisions")
-    for s in indexes:
-        conn.execute(s)
-    if n:
-        print(f"[v43] strategist_decisions rebuilt with 'stall' in the"
-              f" trigger_kind CHECK ({n} row(s) carried)", flush=True)
+    # FK enforcement OFF for the rebuild (the v42 rebuild's own
+    # precedent, right above): with `connect()`'s foreign_keys=ON the
+    # DROP of a table other rows reference is an IntegrityError — the
+    # second crash of the same boarding day (2026-08-24; the fixture
+    # tests used raw sqlite3, whose FK default is OFF, and missed it).
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'strategist_decisions'").fetchone()
+        sql = (row["sql"] or "") if row else ""
+        if not sql or "'stall'" in sql:
+            return  # fresh DB from current SCHEMA already carries it
+        for old, new in (
+            ("'inject_batch_done','audit'",
+             "'inject_batch_done','audit','stall'"),
+            ("'inject_batch_done'", "'inject_batch_done','stall'"),
+        ):
+            if old in sql:
+                new_sql = sql.replace(old, new, 1)
+                break
+        else:
+            raise RuntimeError(
+                "v43: strategist_decisions CHECK enum not found in its DDL"
+                " — refusing to guess; inspect the table's sqlite_master"
+                " sql")
+        new_sql = re.sub(r"CREATE TABLE\s+\"?strategist_decisions\"?",
+                         "CREATE TABLE _sd_v43", new_sql, count=1)
+        indexes = [r["sql"] for r in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index'"
+            " AND tbl_name = 'strategist_decisions' AND sql IS NOT NULL")]
+        conn.execute(new_sql)
+        n = conn.execute(
+            "INSERT INTO _sd_v43 SELECT * FROM strategist_decisions").rowcount
+        conn.execute("DROP TABLE strategist_decisions")
+        conn.execute("ALTER TABLE _sd_v43 RENAME TO strategist_decisions")
+        for s in indexes:
+            conn.execute(s)
+        if n:
+            print(f"[v43] strategist_decisions rebuilt with 'stall' in the"
+                  f" trigger_kind CHECK ({n} row(s) carried)", flush=True)
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")

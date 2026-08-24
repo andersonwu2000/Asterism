@@ -963,6 +963,10 @@ def test_v43_widens_trigger_kind_check_from_the_live_ddl(tmp_path):
     from Tooling.state import db_migrations as m
     conn = _sqlite3.connect(str(tmp_path / "old.db"))
     conn.row_factory = _sqlite3.Row
+    # FK ON, matching db.connect() — the raw-sqlite3 default (OFF) let
+    # the DROP-of-a-referenced-table crash ship (2026-08-24); the
+    # referencing row makes this fixture honest.
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript("""
         CREATE TABLE problems (name TEXT PRIMARY KEY);
         CREATE TABLE strategist_decisions (
@@ -972,12 +976,17 @@ def test_v43_widens_trigger_kind_check_from_the_live_ddl(tmp_path):
                 ('first_launch','pending_review','routine',
                  'inject_batch_done','audit')),
             decision_kind TEXT NOT NULL);
+        CREATE TABLE queue_like (
+            id INTEGER PRIMARY KEY,
+            decision_id INTEGER REFERENCES strategist_decisions(id));
         CREATE INDEX idx_sd_problem ON strategist_decisions(problem);
         INSERT INTO problems VALUES ('p');
         INSERT INTO strategist_decisions
             (problem, trigger_kind, decision_kind)
             VALUES ('p', 'inject_batch_done', 'Inject');
+        INSERT INTO queue_like VALUES (1, 1);
     """)
+    conn.execute("PRAGMA foreign_keys = ON")
     m._migrate_to_v43(conn)
     conn.execute(
         "INSERT INTO strategist_decisions"
