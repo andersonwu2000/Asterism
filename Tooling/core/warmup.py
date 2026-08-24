@@ -23,6 +23,11 @@ from pathlib import Path
 LEAN_QUEUE_KINDS: "tuple[str, ...]" = (
     "Formalizer", "Forward", "Backward", "Builder", "Librarian", "Verify")
 
+#: The other side of the same partition — the RAM ledger's NL admission
+#: excludes these when only Lean capacity is available (and vice
+#: versa). The partition drift test pins LEAN | NL == the queue enum.
+NL_QUEUE_KINDS: "tuple[str, ...]" = ("Strategist", "Scholar")
+
 
 def start_background(workspace: Path) -> dict:
     """Kick off the gateway warm in a daemon thread.

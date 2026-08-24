@@ -2950,3 +2950,119 @@ def test_health_reads_slot_memory_from_an_off_loop_cache(monkeypatch) -> None:
         _t.sleep(0.05)
     assert lsp_gateway._slot_private_mb_cached() == {1: 42}
     assert calls == [1], "fresh cache must be served without a rescan"
+
+
+# ── adaptive warm target (RAM ledger, owner design 2026-08-25) ──────
+
+
+def _mk_slot(slot_id: int, tmp_path: Path, **kw) -> "lsp_gateway.WorkerSlot":
+    p = tmp_path / f"_gateway_slot_{slot_id}.lean"
+    return lsp_gateway.WorkerSlot(
+        slot_id=slot_id, slot_path=p, slot_uri=p.as_uri(), **kw)
+
+
+@pytest.fixture
+def _ledger_state(tmp_path):
+    """Swap _state's pool fields for a fake 3-slot roster; restore."""
+    class FakeBackend:
+        def __init__(self):
+            self.closed: list = []
+
+        def did_close(self, path):
+            self.closed.append(path)
+
+    saved = (_state.workers, _state.backend, _state.warm_target,
+             _state.warm_min_available_gb, _state.warm_converger_on)
+    fake = FakeBackend()
+    _state.workers = [_mk_slot(i, tmp_path) for i in range(3)]
+    _state.backend = fake
+    _state.warm_target = None
+    _state.warm_converger_on = False
+    yield fake
+    (_state.workers, _state.backend, _state.warm_target,
+     _state.warm_min_available_gb, _state.warm_converger_on) = saved
+
+
+def test_shed_is_dormant_in_static_mode(_ledger_state) -> None:
+    """warm_target None = the legacy pool: nothing ever closes."""
+    assert lsp_gateway._shed_slot_if_over_target(_state.workers[0]) is False
+    assert _ledger_state.closed == []
+
+
+def test_shed_closes_a_released_slot_above_target(_ledger_state) -> None:
+    _state.warm_target = 2
+    slot = _state.workers[0]
+    assert lsp_gateway._shed_slot_if_over_target(slot) is True
+    assert slot.closed is True
+    assert _ledger_state.closed == [slot.slot_path]
+    # now open == target: the next release keeps its slot
+    assert lsp_gateway._shed_slot_if_over_target(_state.workers[1]) is False
+
+
+def test_shed_never_takes_the_last_slot(_ledger_state) -> None:
+    """The Lean side's anti-starvation floor: NL priority shrinks the
+    field, never to zero (owner ruling)."""
+    _state.warm_target = 0
+    for s in _state.workers[1:]:
+        s.closed = True
+    assert lsp_gateway._shed_slot_if_over_target(_state.workers[0]) is False
+
+
+def test_shed_skips_claimed_busy_and_reserved(_ledger_state) -> None:
+    _state.warm_target = 1
+    claimed, busy, reserved = _state.workers
+    claimed.claimed_by = "pipe-1"
+    reserved.reserved = True
+    assert lsp_gateway._shed_slot_if_over_target(claimed) is False
+    busy.lock.acquire()
+    try:
+        assert lsp_gateway._shed_slot_if_over_target(busy) is False
+    finally:
+        busy.lock.release()
+    assert lsp_gateway._shed_slot_if_over_target(reserved) is False
+    assert _ledger_state.closed == []
+
+
+def test_shed_failure_reopens_the_roster_entry(_ledger_state) -> None:
+    """A did_close that raises must not leak the slot into `closed`
+    limbo — never lose a slot (same contract as recycle)."""
+    _state.warm_target = 1
+
+    def boom(path):
+        raise RuntimeError("lsp gone")
+
+    _ledger_state.did_close = boom
+    slot = _state.workers[0]
+    assert lsp_gateway._shed_slot_if_over_target(slot) is False
+    assert slot.closed is False
+
+
+def test_claims_skip_closed_slots() -> None:
+    """Both claim sites must treat a closed slot as not there."""
+    import inspect as _inspect
+    src = _inspect.getsource(lsp_gateway)
+    assert src.count("s.claimed_by is None and not s.closed") >= 2
+
+
+def test_release_sheds_before_recycling() -> None:
+    """Shed-first ordering: recycling a slot we are about to close
+    would re-warm a worker just to kill it."""
+    import inspect as _inspect
+    src = _inspect.getsource(lsp_gateway._release_session_internal)
+    assert "_shed_slot_if_over_target(freed)" in src
+    assert "_recycle_slot_if_heavy(freed)" in src
+
+
+def test_converger_refuses_to_race_the_initial_warm(_ledger_state) -> None:
+    """Before first_warm_done both the converger and _start_workers
+    would mint slot ids from the same empty roster and race on the same
+    slot files."""
+    saved = _state.first_warm_done
+    _state.first_warm_done = False
+    _state.warm_target = 5
+    try:
+        lsp_gateway._warm_converger_run()   # must return immediately
+        assert _state.warm_converger_on is False
+        assert all(not s.closed for s in _state.workers)
+    finally:
+        _state.first_warm_done = saved

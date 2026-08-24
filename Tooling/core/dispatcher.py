@@ -1069,7 +1069,7 @@ LEASE_TTL_SEC = 6 * 3600.0
 
 # Re-export (tests + pop loop): the Lean/NL queue-kind partition lives
 # in core/warmup.py with the background-warm machinery.
-from .warmup import LEAN_QUEUE_KINDS  # noqa: E402
+from .warmup import LEAN_QUEUE_KINDS, NL_QUEUE_KINDS  # noqa: E402
 
 
 class WorkerDone(_typing.NamedTuple):
@@ -1876,6 +1876,27 @@ def run(workspace: Path, *, once: bool = False,
     if _clamp_msg:
         print(f"[dispatcher] {_clamp_msg}", flush=True)
         pool_size = _clamped
+    # Adaptive RAM ledger (owner design 2026-08-25): with
+    # `dispatch.ram_budget` set, the static pool number yields — Lean
+    # admission follows the gateway's ledger-driven open-slot count and
+    # NL admission follows measured available RAM (NL priority: a wake
+    # surge may shrink the Lean field; claimed slots finish first).
+    ledger = None
+    from . import ram_ledger
+    _budget_spec = ram_ledger.env_budget_spec(workspace)
+    if _budget_spec:
+        _machine_gb = ram_ledger.total_gb()
+        _budget_gb = ram_ledger.parse_budget(_budget_spec, _machine_gb)
+        if _budget_gb:
+            ledger = ram_ledger.DispatcherLedger(_budget_gb, _machine_gb)
+            print(f"[dispatcher] RAM ledger active — budget "
+                  f"{_budget_gb:.1f} GB of {_machine_gb:.1f} GB; "
+                  f"dispatch.pool yields to the ledger's target_slots",
+                  flush=True)
+        else:
+            print(f"[dispatcher] dispatch.ram_budget={_budget_spec!r} "
+                  f"unparseable — staying on static dispatch.pool",
+                  flush=True)
     budget_sec = config.get(
         "dispatch.budget_sec", default=1800,
         env_var="ASTERISM_BUDGET_SEC", cast=int, workspace=workspace)
@@ -1919,7 +1940,15 @@ def run(workspace: Path, *, once: bool = False,
         env_var="ASTERISM_STRATEGIST_INTERVAL_MIN", cast=float,
         workspace=workspace,
     )
-    pool = ThreadPoolExecutor(max_workers=pool_size)
+    # In ledger mode the executor is a thread-count backstop, not the
+    # admission mechanism — sized to what the budget could ever admit
+    # (Lean ceiling at zero NL demand + the NL hard cap).
+    _executor_cap = pool_size if ledger is None else min(
+        160,
+        ram_ledger.compute_target_slots(
+            budget_gb=ledger.budget_gb, nl_demand=0)
+        + ledger.nl_hard_cap())
+    pool = ThreadPoolExecutor(max_workers=_executor_cap)
     # Background .olean warmer (#103): after verify_housekeeping promotes
     # a strategy (parent → alias rewrite), the alias spine needs a fresh
     # .olean so the later root integrity probe doesn't pay a cold closure
@@ -2002,6 +2031,10 @@ def run(workspace: Path, *, once: bool = False,
     brief.write_for_all_problems(conn, workspace, intents)
 
     scope_label = f", scope={scope!r}" if scope else ""
+    if ledger is not None:
+        print(f"[dispatcher] ledger pools: executor cap "
+              f"{_executor_cap}, nl hard cap {ledger.nl_hard_cap()}",
+              flush=True)
     print(f"[dispatcher] start, pool={pool_size}, "
           f"problems={list(intents)}{scope_label}",
           flush=True)
@@ -2691,14 +2724,39 @@ def run(workspace: Path, *, once: bool = False,
         # Free liveness check, dormant until a spawn has already told us
         # the gateway is unreachable. See `core.gateway_health`.
         gateway_down = gateway_health.liveness_gate(st)
-        while (not (stopping or drifting or quota_waiting
-                    or network_waiting or gateway_down
-                    or gateway_warm["failed"])
-                and len(futures) < pool_size):
+        while not (stopping or drifting or quota_waiting
+                   or network_waiting or gateway_down
+                   or gateway_warm["failed"]):
+            if ledger is None:
+                # Legacy static pool: one number for both worlds.
+                if len(futures) >= pool_size:
+                    break
+                _exclude = (None if gateway_warm["ready"]
+                            else LEAN_QUEUE_KINDS)
+            else:
+                # RAM ledger: the two worlds admit independently. Lean
+                # gates on the gateway's CONFIRMED open slots (the
+                # /register free-slot contract), NL gates on measured
+                # available RAM against the budget's leftover.
+                _lean_fly = sum(1 for _m in futures.values()
+                                if _m.kind in LEAN_QUEUE_KINDS)
+                _nl_fly = len(futures) - _lean_fly
+                ledger.tick(
+                    nl_demand=db.queue_size(
+                        conn, scope=scope, kinds=NL_QUEUE_KINDS)
+                    + _nl_fly,
+                    push=lambda t, f: _gwl.push_warm_target(
+                        t, f, workspace=workspace))
+                _lean_ok = (gateway_warm["ready"]
+                            and _lean_fly < ledger.open_slots)
+                _nl_ok = ledger.nl_admissible(_nl_fly)
+                if not (_lean_ok or _nl_ok):
+                    break
+                _exclude = (LEAN_QUEUE_KINDS if not _lean_ok
+                            else (NL_QUEUE_KINDS if not _nl_ok
+                                  else None))
             row = db.pop_queue(
-                conn, scope=scope,
-                exclude_kinds=(None if gateway_warm["ready"]
-                               else LEAN_QUEUE_KINDS))
+                conn, scope=scope, exclude_kinds=_exclude)
             if row is None:
                 break
             qid = int(row["id"])

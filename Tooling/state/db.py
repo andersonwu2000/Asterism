@@ -3316,12 +3316,14 @@ def queue_count(conn: sqlite3.Connection, *, target_id: str, kind: str) -> int:
 
 def queue_size(conn: sqlite3.Connection, *,
                scope: "str | None" = None,
-               claimable_only: bool = False) -> int:
-    """Queue row count, optionally scoped / restricted to unleased rows.
-    Non-destructive — the dispatcher's `--once` empty check uses
-    `claimable_only=True` instead of a probing pop (the old
-    pop-to-test-emptiness silently discarded a row when every popped row
-    had been skipped)."""
+               claimable_only: bool = False,
+               kinds: "tuple[str, ...] | None" = None) -> int:
+    """Queue row count, optionally scoped / unleased-only / kind-set
+    (the RAM ledger sizes its NL reserve from queued NL wakes — they
+    are imminent demand, owner design 2026-08-25). Non-destructive —
+    the dispatcher's `--once` empty check uses `claimable_only=True`
+    instead of a probing pop (the old pop-to-test-emptiness silently
+    discarded a row when every popped row had been skipped)."""
     q = "SELECT count(*) AS n FROM queue WHERE 1=1"
     args: list = []
     if scope is not None:
@@ -3329,6 +3331,9 @@ def queue_size(conn: sqlite3.Connection, *,
         args.append(scope)
     if claimable_only:
         q += " AND owner_pid IS NULL"
+    if kinds is not None:
+        q += " AND kind IN (" + ",".join("?" for _ in kinds) + ")"
+        args.extend(kinds)
     row = conn.execute(q, args).fetchone()
     return int(row["n"])
 

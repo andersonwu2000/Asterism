@@ -371,8 +371,11 @@ def test_pop_loop_and_refill_gate_on_quota_wait():
     assert "if not (quota_waiting or network_waiting):" in before_call.rsplit(
         "# Refill queue", 1)[-1], (
         "bfs_refill must be gated on quota_waiting and network_waiting")
-    assert ("stopping or drifting or quota_waiting\n"
-            "                    or network_waiting" in src), (
+    # Indentation-insensitive: the pop-loop guard was reshaped by the
+    # RAM ledger (2026-08-25) without changing what it guards.
+    flat = " ".join(src.split())
+    assert ("stopping or drifting or quota_waiting or network_waiting"
+            in flat), (
         "pop loop must not spawn during quota-wait or network-wait")
 
 

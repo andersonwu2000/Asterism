@@ -103,6 +103,11 @@ class WorkerSlot:
     # region). Set whenever content is swapped in; tools translate their
     # positions / diagnostics through it. None until the first swap.
     line_map: "list[int | None] | None" = None
+    # RAM-ledger lifecycle (2026-08-25): a closed slot keeps its roster
+    # entry but has no live worker (did_close freed its RAM) and is
+    # skipped by every claim. The warm-target converger re-opens it —
+    # or extends the roster — when the target rises.
+    closed: bool = False
 
 
 # ─── Session metadata ────────────────────────────────────────
@@ -201,6 +206,16 @@ class GatewayState:
     #: The uvicorn Server, so the watcher can ask it to stop rather
     #: than `os._exit` past the Lean-subtree reap in `main`'s finally.
     http_server: object | None = None
+    #: Adaptive RAM ledger (owner design 2026-08-25). None = static
+    #: mode: the pool is exactly what launch warmed, nothing closes.
+    #: Set via POST /warm_target by the dispatcher's ledger tick; the
+    #: converger warms toward it, the release path sheds above it.
+    warm_target: "int | None" = None
+    #: Measured veto the dispatcher sends with the target: never start
+    #: a warm when the machine's available RAM (GB) is below this.
+    warm_min_available_gb: float = 0.0
+    #: Single-flight latch for the background converger thread.
+    warm_converger_on: bool = False
 
 
 _state = GatewayState()
@@ -694,7 +709,7 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
         free: WorkerSlot | None = None
         with _state.sessions_lock:
             free = next((s for s in _state.workers
-                         if s.claimed_by is None
+                         if s.claimed_by is None and not s.closed
                          and s.reserved == want_reserved), None)
             if free is not None:
                 free.claimed_by = meta.pipeline_id
@@ -822,7 +837,8 @@ def _register_session_internal(
     with _state.sessions_lock:
         free_slot = next(
             (s for s in _state.workers
-             if s.claimed_by is None and s.reserved == interactive), None,
+             if s.claimed_by is None and not s.closed
+             and s.reserved == interactive), None,
         )
         if free_slot is None:
             return "", (
@@ -935,6 +951,147 @@ def _recycle_slot_if_heavy(slot: "WorkerSlot") -> None:
         slot.lock.release()
 
 
+# ─── Adaptive warm target (RAM ledger, owner design 2026-08-25) ──
+#
+# The dispatcher's ledger computes how many Lean slots the RAM budget
+# affords once the NL layer's reserve is taken out, and POSTs it to
+# /warm_target. Convergence is asymmetric on purpose:
+#   * UP: a background converger re-opens closed slots (or extends the
+#     roster) one warm at a time, vetoed by measured available RAM.
+#   * DOWN: nothing is revoked — a claimed slot finishes its work; the
+#     shed lands at release time, where closing the slot (did_close)
+#     actually frees the worker's heap.
+# Static mode (warm_target is None) leaves all of this dormant.
+
+
+def _open_pipeline_slots_locked() -> int:
+    """Non-reserved slots with a live worker. Caller holds
+    sessions_lock."""
+    return sum(1 for s in _state.workers
+               if not s.reserved and not s.closed)
+
+
+def _shed_slot_if_over_target(slot: WorkerSlot) -> bool:
+    """Close a just-released slot when the warm target sits below the
+    open count — its worker exits and the RAM returns to the ledger's
+    NL side. Returns whether the slot was shed. The floor of one open
+    slot is the Lean side's anti-starvation guarantee (owner ruling:
+    NL has priority, but never to zero)."""
+    target = _state.warm_target
+    if target is None or _state.backend is None:
+        return False
+    if not slot.lock.acquire(blocking=False):
+        return False                # busy: not ours to touch
+    try:
+        with _state.sessions_lock:
+            if slot.claimed_by is not None or slot.closed or slot.reserved:
+                return False
+            if _open_pipeline_slots_locked() <= max(1, target):
+                return False
+            slot.closed = True      # invisible to claims from here on
+        try:
+            _state.backend.did_close(slot.slot_path)
+            print(f"[gateway] slot {slot.slot_id} shed — open count above "
+                  f"warm target {target}; its worker exits and the RAM "
+                  f"returns to the ledger", file=sys.stderr, flush=True)
+            return True
+        except Exception as exc:  # noqa: BLE001 — never lose a slot
+            with _state.sessions_lock:
+                slot.closed = False
+            print(f"[gateway] slot {slot.slot_id} shed FAILED "
+                  f"({type(exc).__name__}: {exc}) — slot stays open",
+                  file=sys.stderr, flush=True)
+            return False
+    finally:
+        slot.lock.release()
+
+
+def _kick_warm_converger() -> None:
+    """Start the background warm loop (single-flight)."""
+    with _state.sessions_lock:
+        if _state.warm_converger_on:
+            return
+        _state.warm_converger_on = True
+    threading.Thread(target=_warm_converger_run,
+                     name="warm-converger", daemon=True).start()
+
+
+def _warm_converger_run() -> None:
+    """Warm toward the target, one slot at a time. Exits when the
+    target is met, the measured-RAM veto fires, or static mode returns.
+    The dispatcher re-pushes the target on its ledger tick, so an early
+    exit is re-kicked within seconds — no retry loop lives here."""
+    try:
+        while True:
+            target = _state.warm_target
+            if target is None or _state.backend is None \
+                    or _state.workspace is None \
+                    or not _state.first_warm_done:
+                # Never converge concurrently with the INITIAL warm —
+                # both would mint slot ids from the same (still empty)
+                # roster and race on the same slot files.
+                return
+            floor = _state.warm_min_available_gb
+            if floor > 0:
+                try:
+                    from ..core import ram_ledger
+                    if ram_ledger.available_gb() < floor \
+                            + ram_ledger.SLOT_GB_FALLBACK:
+                        print(f"[gateway] warm-converger paused — "
+                              f"available RAM under the ledger floor "
+                              f"({floor:.1f} GB + one slot)",
+                              file=sys.stderr, flush=True)
+                        return
+                except Exception:  # noqa: BLE001 — veto is best-effort
+                    pass
+            slot: "WorkerSlot | None" = None
+            with _state.sessions_lock:
+                if _open_pipeline_slots_locked() >= target:
+                    return
+                slot = next((s for s in _state.workers
+                             if s.closed and not s.reserved), None)
+                if slot is None:
+                    new_id = max((s.slot_id for s in _state.workers),
+                                 default=-1) + 1
+                    slots_dir = (_state.workspace / ".asterism"
+                                 / "runtime_slots")
+                    slot_path = slots_dir / f"_gateway_slot_{new_id}.lean"
+                    slot = WorkerSlot(
+                        slot_id=new_id, slot_path=slot_path,
+                        slot_uri=slot_path.as_uri(), closed=True)
+                    _state.workers.append(slot)
+            if not slot.lock.acquire(blocking=False):
+                time.sleep(0.5)
+                continue
+            try:
+                t0 = time.perf_counter()
+                slot.slot_path.parent.mkdir(parents=True, exist_ok=True)
+                slot.slot_path.write_text(WARMUP_CONTENT, encoding="utf-8")
+                _state.backend.did_open(slot.slot_path, WARMUP_CONTENT)
+                _state.backend.wait_for_file_done(slot.slot_uri,
+                                                  timeout=300)
+                with _state.sessions_lock:
+                    slot.closed = False
+                print(f"[gateway] slot {slot.slot_id} warmed by the "
+                      f"converger in {time.perf_counter() - t0:.1f}s "
+                      f"(target {target})", file=sys.stderr, flush=True)
+            except Exception as exc:  # noqa: BLE001 — keep converging
+                print(f"[gateway] converger warm of slot {slot.slot_id} "
+                      f"FAILED ({type(exc).__name__}: {exc}) — slot stays "
+                      f"closed; next ledger tick retries",
+                      file=sys.stderr, flush=True)
+                try:
+                    _state.backend.did_close(slot.slot_path)
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+            finally:
+                slot.lock.release()
+    finally:
+        with _state.sessions_lock:
+            _state.warm_converger_on = False
+
+
 def _release_session_internal(token: str) -> None:
     """Drop session metadata and release this pipeline's claimed worker
     slot (1:1 lifecycle, #118). `content_pipeline_id` is left untouched
@@ -956,8 +1113,12 @@ def _release_session_internal(token: str) -> None:
                     "pipeline_id": meta.pipeline_id})
     # OUTSIDE sessions_lock: the recycle re-warms a worker (tens of
     # seconds) and must not hold the lock every register waits on.
+    # Ledger shed first: a slot the target no longer affords is CLOSED
+    # (RAM back to the NL side) — recycling it would re-warm a worker
+    # we are about to kill.
     if freed is not None:
-        _recycle_slot_if_heavy(freed)
+        if not _shed_slot_if_over_target(freed):
+            _recycle_slot_if_heavy(freed)
 
 
 def _current_session() -> SessionMetadata | None:
@@ -4240,6 +4401,47 @@ def _slot_private_mb_cached() -> "dict[int, int | None]":
         return dict(_SLOT_MB_CACHE["val"])
 
 
+@mcp.custom_route("/warm_target", methods=["POST"])
+async def warm_target(request: Request):
+    """RAM-ledger control plane (owner design 2026-08-25): the
+    dispatcher's ledger tick POSTs {target, min_available_gb}; the
+    gateway converges its open-slot count toward it (up via the
+    background converger, down at release time). The reply reports the
+    current open/free counts — the dispatcher's Lean admission gates on
+    `open`, which keeps the /register "no free slot" contract intact
+    while the pool moves."""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001 — malformed body is a client bug
+        return JSONResponse({"error": "JSON body required"},
+                            status_code=400)
+    try:
+        from ..core.ram_ledger import MAX_SLOTS
+        target = max(1, min(int(data.get("target")), MAX_SLOTS))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "target must be an int"},
+                            status_code=400)
+    _state.warm_target = target
+    try:
+        _state.warm_min_available_gb = float(
+            data.get("min_available_gb") or 0.0)
+    except (TypeError, ValueError):
+        _state.warm_min_available_gb = 0.0
+    with _state.sessions_lock:
+        open_n = _open_pipeline_slots_locked()
+        free_n = sum(1 for s in _state.workers
+                     if not s.reserved and not s.closed
+                     and s.claimed_by is None)
+    if open_n < target and _state.first_warm_done:
+        _kick_warm_converger()
+    return JSONResponse({"target": target, "open": open_n,
+                         "free": free_n,
+                         "warming": _state.warm_converger_on,
+                         # the ledger's slot-coefficient instrument —
+                         # same TTL-cached reading /health serves
+                         "slot_private_mb": _slot_private_mb_cached()})
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request):
     """Liveness check. Reports worker pool status + active sessions
@@ -4265,6 +4467,8 @@ async def health(request: Request):
     # gate compares it against dispatch.pool; reserved interactive
     # slots report separately.
     n_workers = sum(1 for s in _state.workers if not s.reserved)
+    n_open = sum(1 for s in _state.workers
+                 if not s.reserved and not s.closed)
     n_interactive = sum(1 for s in _state.workers if s.reserved)
     n_busy = sum(1 for s in _state.workers if s.lock.locked())
     with _state.counters_lock:
@@ -4290,6 +4494,12 @@ async def health(request: Request):
                                else n_workers),
         "workers_interactive": n_interactive,
         "workers_busy": n_busy,
+        # RAM-ledger surface (owner design 2026-08-25): open = slots
+        # with a live worker (closed ones freed their RAM); target =
+        # what the dispatcher's ledger last asked for (None = static
+        # mode). The cockpit reads WHICH AXIS binds from these.
+        "workers_open": n_open,
+        "warm_target": _state.warm_target,
         "sessions_active": n_sessions,
         "init_error": _state.init_error,
         "acquires": counters,
@@ -4366,6 +4576,25 @@ def main() -> None:
         env_var="ASTERISM_POOL", cast=int,
         workspace=workspace,
     )
+    # Adaptive RAM ledger (owner design 2026-08-25): the dispatcher's
+    # ledger tick will own the slot count via /warm_target, so the
+    # LAUNCH count only decides how fast first_warm opens the Lean
+    # plane — start small, let the converger grow the pool in the
+    # background while work already flows.
+    try:
+        from ..core import ram_ledger as _rl
+        _budget_gb = _rl.parse_budget(_rl.env_budget_spec(workspace),
+                                      _rl.total_gb())
+    except Exception:  # noqa: BLE001 — the ledger must not stop launch
+        _budget_gb = None
+    if _budget_gb is not None:
+        _target0 = _rl.compute_target_slots(budget_gb=_budget_gb,
+                                            nl_demand=0)
+        w_count = max(1, min(8, _target0))
+        _state.warm_target = _target0
+        print(f"[gateway] RAM ledger active — budget {_budget_gb:.1f} GB,"
+              f" launch warms {w_count} slot(s), converger grows toward "
+              f"{_target0}", file=sys.stderr, flush=True)
     # Reserved slots for the serve UI's interactive editor — outside
     # the pipeline pool entirely (pipeline=slot identity holds both
     # ways: spawns never see them, the editor never sees spawn slots).

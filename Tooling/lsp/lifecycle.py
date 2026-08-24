@@ -236,6 +236,27 @@ def _ping_health(timeout: float = 2.0) -> dict | None:
         return None
 
 
+def push_warm_target(target: int, min_available_gb: float,
+                     workspace: "Path | None" = None,
+                     timeout: float = 5.0) -> dict | None:
+    """RAM-ledger push: POST the slot target to the gateway. Returns
+    the gateway's {target, open, free, warming} reply, or None when the
+    gateway is unreachable / not this-era (the ledger tick treats None
+    as 'keep last known counts' — never a dispatch stopper)."""
+    import json
+    body = json.dumps({"target": int(target),
+                       "min_available_gb": float(min_available_gb)},
+                      ).encode("utf-8")
+    url = (f"http://127.0.0.1:{_gateway_port(workspace)}/warm_target")
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, json.JSONDecodeError, OSError):
+        return None
+
+
 def gateway_starting_marker(workspace: Path) -> Path:
     """A warming gateway is invisible to `_ping_health` (HTTP opens only
     after the worker pool warms, minutes later) — this marker is its
@@ -317,9 +338,15 @@ def _desired_pool(workspace: Path) -> int | None:
     """The worker count a fresh gateway would launch with — i.e. the
     current `dispatch.pool` (gateway.py sizes its pool from this). Returns
     None if config can't be read (then reuse is left as-is, never worse
-    than the old unconditional-reuse behaviour)."""
+    than the old unconditional-reuse behaviour) — or when the adaptive
+    RAM ledger owns the pool size (`dispatch.ram_budget` set): the slot
+    count then moves at runtime by design, and comparing it against the
+    static yaml number would kill a healthy gateway on every daemon
+    start."""
     try:
-        from ..core import config
+        from ..core import config, ram_ledger
+        if ram_ledger.env_budget_spec(workspace):
+            return None
         return config.get("dispatch.pool", default=4, env_var="ASTERISM_POOL",
                           cast=int, workspace=workspace)
     except Exception:  # noqa: BLE001 — config read is best-effort

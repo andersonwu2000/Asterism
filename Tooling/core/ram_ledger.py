@@ -1,0 +1,240 @@
+"""core.ram_ledger — adaptive RAM ledger for the split worker economy.
+
+Owner design (2026-08-25). The static `dispatch.pool` conflated two
+resources that scale differently: a Lean worker slot costs ~0.95 GB of
+private heap, an NL spawn (strategist wake, adversary round) costs
+~0.15-0.2 GB of codex+node RSS and no Lean at all. On a free NL token
+channel the pool cap was the only thing throttling the planning layer.
+
+The ledger replaces the single number with a RAM budget:
+
+    NL_reserve   = nl_gb x (queued NL wakes + in-flight NL) + margin
+    target_slots = clamp(floor((budget - NL_reserve) / slot_gb),
+                         1, MAX_SLOTS)
+
+* NL demand counts QUEUED wakes, not all existing groups (owner ruling:
+  a queued wake is imminent demand and its admission is what the
+  reserve is for; a dormant group between wakes holds zero RAM).
+* NL has PRIORITY over the Lean field (owner ruling): a wake surge may
+  legitimately shrink target_slots — claimed slots are never revoked,
+  the shrink lands at release time, and the floor of 1 slot is the only
+  anti-starvation guarantee the Lean side keeps.
+* The ledger PLANS; a measured veto DECIDES: every admission and every
+  warm-up also checks the machine's actually-available RAM, so a
+  co-tenant (the operator's browser, a stray build) squeezes the fleet
+  instead of the fleet squeezing the machine. The veto floor is
+  `total - budget + one unit` — the budget is a promise about how much
+  of the MACHINE we may take, not a number private to the model.
+* Coefficients are measured, not pinned: `slot_gb` follows the
+  gateway's per-slot private-MB readings (the recycle policy's own
+  instrument), `nl_gb` follows the RSS of live codex process trees.
+  Calibration fallbacks (0.95 / 0.2, measured 2026-08-25 on the
+  aarch64 fleet) apply when no reading is available.
+
+`dispatch.ram_budget` unset -> the whole module is dormant and the
+legacy static-pool semantics apply unchanged.
+"""
+from __future__ import annotations
+
+import math
+import re
+import time
+
+#: Absolute roster cap — a runaway-target backstop, far above any real
+#: machine (128 slots ~ 125 GB of workers).
+MAX_SLOTS = 128
+
+#: Calibration fallbacks (2026-08-25): slot = the RAM-formula
+#: coefficient (idle 0.6 GB, elaboration-weighted average ~0.95);
+#: NL = codex ~105 MB + node wrapper ~46 MB + pipeline-thread WS.
+SLOT_GB_FALLBACK = 0.95
+NL_GB_FALLBACK = 0.2
+
+#: Bounds for the measured slot coefficient — a reading outside these
+#: is a measurement artifact, not a new truth about the library: below
+#: ~0.6 GB the pool simply has not elaborated yet (planning on the
+#: idle baseline would over-commit the moment real work lands), and a
+#: steady state above ~1.6 GB cannot exist because the recycle policy
+#: (`gateway.slot_recycle_mb`, 1500 MB) closes any idle slot past it.
+_SLOT_GB_MIN, _SLOT_GB_MAX = 0.6, 1.6
+
+_BUDGET_RE = re.compile(
+    r"^\s*(\d+(?:\.\d+)?)\s*(%|G|GB|GIB)?\s*$", re.IGNORECASE)
+
+
+def parse_budget(spec: "str | None", total_gb: float) -> "float | None":
+    """`"28G"` / `"85%"` -> GB; None/empty/unparseable -> None (legacy
+    static-pool mode). A budget above the machine clamps to total."""
+    if not spec:
+        return None
+    m = _BUDGET_RE.match(str(spec))
+    if not m:
+        return None
+    val = float(m.group(1))
+    unit = (m.group(2) or "G").upper()
+    gb = total_gb * val / 100.0 if unit == "%" else val
+    if gb <= 0:
+        return None
+    return min(gb, total_gb)
+
+
+def compute_target_slots(*, budget_gb: float, nl_demand: int,
+                         slot_gb: float = SLOT_GB_FALLBACK,
+                         nl_gb: float = NL_GB_FALLBACK,
+                         margin_gb: "float | None" = None,
+                         max_slots: int = MAX_SLOTS) -> int:
+    """The pure target function. Idempotent — recompute from current
+    demand any time; the floor() quantization IS the hysteresis band
+    (NL demand must move ~slot_gb/nl_gb before the target moves one
+    slot), so no event-delta counters exist to drift."""
+    margin = slot_gb if margin_gb is None else margin_gb
+    lean_ram = budget_gb - nl_demand * nl_gb - margin
+    return max(1, min(max_slots, math.floor(lean_ram / slot_gb)))
+
+
+def slot_gb_from_readings(readings_mb: "list[int | None]") -> float:
+    """The measured slot coefficient: mean of the gateway's per-slot
+    private-MB readings, clamped to sanity. Empty/unmeasured pool ->
+    fallback."""
+    vals = [mb for mb in readings_mb if mb]
+    if not vals:
+        return SLOT_GB_FALLBACK
+    return max(_SLOT_GB_MIN, min(_SLOT_GB_MAX,
+                                 sum(vals) / len(vals) / 1024.0))
+
+
+def total_gb() -> float:
+    import psutil
+    return psutil.virtual_memory().total / 2**30
+
+
+def available_gb() -> float:
+    import psutil
+    return psutil.virtual_memory().available / 2**30
+
+
+def nl_admit_floor_gb(budget_gb: float, machine_gb: float,
+                      nl_gb: float = NL_GB_FALLBACK) -> float:
+    """Available-RAM floor below which NL dispatch queues: what the
+    budget leaves to the rest of the machine, plus the unit about to be
+    spent, plus a small buffer against measurement lag."""
+    return max(0.0, machine_gb - budget_gb) + nl_gb + 0.25
+
+
+#: Measured-NL-coefficient cache (a psutil process scan is not free;
+#: NL RSS drifts slowly).
+_NL_GB_CACHE: "dict" = {"at": 0.0, "val": NL_GB_FALLBACK}
+_NL_GB_TTL = 30.0
+
+
+#: Provider CLI process-name prefixes the llm layer spawns (tracks the
+#: provider table in `llm.__init__`: claude / codex / antigravity-agy).
+#: The NL coefficient is measured from THESE trees only — name+lineage
+#: attribution, so the operator's own node processes (the serve UI, a
+#: dev server) never pollute the reading. General across providers by
+#: construction; a new provider adds its CLI name here (drift test
+#: pins this against the provider table).
+AGENT_PROC_PREFIXES: "tuple[str, ...]" = ("codex", "claude", "agy",
+                                          "gemini")
+
+
+def nl_gb_measured() -> float:
+    """Mean RSS of live agent-CLI process trees (the CLI + a node
+    parent when present). Fallback when none is alive."""
+    now = time.monotonic()
+    if now - _NL_GB_CACHE["at"] < _NL_GB_TTL:
+        return _NL_GB_CACHE["val"]
+    val = NL_GB_FALLBACK
+    try:
+        import psutil
+        totals: "list[float]" = []
+        for p in psutil.process_iter(["name", "memory_info", "ppid"]):
+            try:
+                name = (p.info["name"] or "").lower()
+                if not name.startswith(AGENT_PROC_PREFIXES):
+                    continue
+                rss = p.info["memory_info"].rss
+                try:
+                    parent = p.parent()
+                    if parent and (parent.name() or "").lower().startswith(
+                            "node"):
+                        rss += parent.memory_info().rss
+                except (psutil.Error, OSError):
+                    pass
+                totals.append(rss / 2**30)
+            except (psutil.Error, OSError, KeyError, TypeError):
+                continue
+        if totals:
+            val = max(0.1, min(1.0, sum(totals) / len(totals)))
+    except Exception:
+        pass
+    _NL_GB_CACHE["at"] = now
+    _NL_GB_CACHE["val"] = val
+    return val
+
+
+class DispatcherLedger:
+    """Dispatcher-side ledger state + the rate-limited tick.
+
+    The tick recomputes the slot target from live NL demand and live
+    coefficients, pushes it to the gateway, and records the gateway's
+    confirmed open/free counts — Lean admission gates on `open_slots`
+    (never on the target itself), which keeps the /register
+    "no free slot" contract intact while the pool converges."""
+
+    PUSH_INTERVAL_SEC = 15.0
+
+    def __init__(self, budget_gb: float, machine_gb: float) -> None:
+        self.budget_gb = budget_gb
+        self.machine_gb = machine_gb
+        self.slot_gb = SLOT_GB_FALLBACK
+        self.open_slots = 0
+        self.free_slots = 0
+        self.last_target = 0
+        self._last_push = 0.0
+
+    def nl_hard_cap(self) -> int:
+        """Absolute NL-parallelism backstop — what the budget could
+        house if it held nothing but NL spawns. A runaway guard, not a
+        tuning knob (the measured-RAM floor is the real brake)."""
+        return max(4, min(96, int(self.budget_gb
+                                  / max(0.05, nl_gb_measured()))))
+
+    def nl_admissible(self, nl_in_flight: int) -> bool:
+        if nl_in_flight >= self.nl_hard_cap():
+            return False
+        return available_gb() >= nl_admit_floor_gb(
+            self.budget_gb, self.machine_gb, nl_gb_measured())
+
+    def tick(self, *, nl_demand: int, push) -> None:
+        """Rate-limited recompute + push. `push(target, min_avail_gb)`
+        -> the gateway's reply dict or None (unreachable: keep last
+        known counts — the liveness gate owns that failure)."""
+        now = time.monotonic()
+        if now - self._last_push < self.PUSH_INTERVAL_SEC:
+            return
+        self._last_push = now
+        target = compute_target_slots(
+            budget_gb=self.budget_gb, nl_demand=nl_demand,
+            slot_gb=self.slot_gb, nl_gb=nl_gb_measured())
+        self.last_target = target
+        resp = push(target, max(0.0, self.machine_gb - self.budget_gb))
+        if resp:
+            try:
+                self.open_slots = int(resp.get("open") or 0)
+                self.free_slots = int(resp.get("free") or 0)
+            except (TypeError, ValueError):
+                pass
+            readings = resp.get("slot_private_mb")
+            if isinstance(readings, dict) and readings:
+                self.slot_gb = slot_gb_from_readings(
+                    list(readings.values()))
+
+
+def env_budget_spec(workspace=None) -> "str | None":
+    """The configured budget spec (yaml `dispatch.ram_budget`, env
+    `ASTERISM_RAM_BUDGET`). Import-cycle-safe accessor."""
+    from . import config
+    spec = config.get("dispatch.ram_budget", default="",
+                      env_var="ASTERISM_RAM_BUDGET", workspace=workspace)
+    return str(spec) if spec else None

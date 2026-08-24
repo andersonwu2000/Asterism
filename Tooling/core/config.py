@@ -46,6 +46,7 @@ _CONFIG_FILENAME = "Asterism.yaml"
 # kills). Removing a call? Delete the entry (reverse direction fails too).
 CONFIG_SPEC: "dict[str, str]" = {
     "dispatch.pool": "worker pool == gateway workers, 1:1 #118 (ASTERISM_POOL; 4)",
+    "dispatch.ram_budget": "adaptive RAM ledger budget, '28G' or '85%' — splits the worker economy: Lean slots follow target_slots(budget - NL reserve), NL kinds admit on measured available RAM; unset = legacy static dispatch.pool semantics (ASTERISM_RAM_BUDGET; '')",
     "dispatch.budget_sec": "daemon wall budget (ASTERISM_BUDGET_SEC; 1800)",
     "dispatch.intake_timeout_sec": "Formalizer intake turn spawn cap (ASTERISM_INTAKE_TIMEOUT_SEC; 300)",
     "dispatch.shelve_threshold": "attempts before shelve (ASTERISM_SHELVE_THRESHOLD; 8)",
