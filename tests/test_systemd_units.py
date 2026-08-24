@@ -51,3 +51,14 @@ def test_drift_handoff_exits_nonzero_under_systemd() -> None:
         encoding="utf-8")
     assert 'os.environ.get("INVOCATION_ID")' in src
     assert "return 75" in src
+
+
+def test_stale_gateway_kill_escalates_to_sigkill_on_posix() -> None:
+    """TERM alone is not a kill on POSIX: uvicorn traps it for graceful
+    shutdown and a warm gateway hangs in the drain — the zombie listener
+    starved four daemon generations into the StartLimit brake
+    (2026-08-24). The kill loop must escalate to SIGKILL in-window."""
+    src = pathlib.Path("Tooling/lsp/lifecycle.py").read_text(
+        encoding="utf-8")
+    assert "SIGKILL" in src
+    assert "escalating to SIGKILL" in src

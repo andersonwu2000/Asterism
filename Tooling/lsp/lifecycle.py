@@ -457,7 +457,15 @@ def _kill_stale_gateway(pid) -> None:
     # fresh launch raced it, lost the bind, and the zombie's later 200s
     # were mistaken for the new gateway (2026-07-19 00:24 rc2). Require
     # consecutive dead pings AND a refused TCP connect.
+    #
+    # TERM alone is not a kill on POSIX: uvicorn traps it for graceful
+    # shutdown and a gateway holding warm Lean workers hangs in that
+    # drain past any budget — a zombie listener then starved four
+    # daemon generations into the StartLimit brake (2026-08-24, Oracle
+    # boarding). Escalate to SIGKILL after a grace window; Windows
+    # never reaches it (any signal is already TerminateProcess there).
     deadline = time.monotonic() + 45.0
+    killed_hard = False
     dead_pings = 0
     while time.monotonic() < deadline:
         if _ping_health(timeout=1.0) is None:
@@ -466,6 +474,15 @@ def _kill_stale_gateway(pid) -> None:
                 return
         else:
             dead_pings = 0
+        if (not killed_hard and os.name != "nt"
+                and time.monotonic() > deadline - 30.0):
+            killed_hard = True
+            print(f"[gateway] stale gateway pid={pid} survived SIGTERM's "
+                  f"grace — escalating to SIGKILL", flush=True)
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
         time.sleep(0.5)
     raise RuntimeError(
         f"stale gateway pid={pid} did not release port "
