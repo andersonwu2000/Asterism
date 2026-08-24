@@ -358,15 +358,72 @@ def test_tool_budget_ends_with_a_wrap_up_turn_not_a_guillotine(
     loop SILENTLY and committed whatever broken state was on disk —
     misread for a shift as "ox-alpha submits unverified proofs". At the
     cap the pending calls get a refusal naming the state and the model
-    gets one wrap-up turn."""
+    gets a wrap-up turn."""
     # The loop lives inside the HTTP handler, so this is a mechanism
     # pin on the source (the loop itself is exercised by e2e): the cap
-    # branch must exist, refuse with the state named, and gate exactly
-    # one wrap-up turn; the approach warning must precede it.
+    # branch must exist, refuse with the state named, and gate the
+    # wrap-up; the approach warning must precede it.
     src = open(zen_shim.__file__, encoding="utf-8").read()
     assert "tool budget exhausted" in src
     assert "budget_final" in src
     assert "~10 iterations" in src
+
+
+def test_wrap_up_turn_can_still_write_its_deliverable() -> None:
+    """The first wrap-up shape told the agent to finish and refused
+    even write_file — Group 682's strategist obeyed literally: replied
+    a tidy final status, wrote no decision.json, died agent_no_output
+    (2026-08-24). The teaching message must name only reachable
+    actions: write-shaped calls stay executable for a bounded number of
+    wrap-up iterations."""
+    src = open(zen_shim.__file__, encoding="utf-8").read()
+    assert zen_shim._WRAPUP_WRITE_TOOLS == {
+        "write_file", "apply_edit", "withdraw_stub"}
+    assert zen_shim._WRAPUP_WRITE_ITERS >= 1
+    # the refusal must advertise the write window it grants
+    assert "still run for up to" in src
+    # and the wrap-up branch must consult the whitelist
+    assert "_WRAPUP_WRITE_TOOLS for it in mine" in src
+
+
+def test_lookup_crawl_nudge_rearms_every_streak_window() -> None:
+    """One nudge per request was calibrated for 80-iteration turns; at
+    the 200 cap Group 682's strategist got its single nudge at iter 12
+    and crawled loogle unchallenged to the cap (2026-08-24). The nudge
+    re-fires on every 12-long lookup-only streak, and it branches on
+    the declared toolset (owner call 2026-08-25): Lean-writing seats
+    get the write-first check (validate_file, exact?), NL seats are
+    told verified names are not their deliverable — the old single
+    text spoke patch-language to a strategist with no patch."""
+    src = open(zen_shim.__file__, encoding="utf-8").read()
+    assert "lookup_streak % 12 == 0" in src
+    assert "crawl_nudged" not in src, "the once-per-request latch is gone"
+    flat = " ".join(src.replace('"', "").split())
+    assert "write your deliverable NOW" in flat          # LSP branch
+    assert "by exact?" in flat                           # …teaches exact?
+    assert "NOT your deliverable" in flat                # NL branch
+    assert "has_lsp = any(t.startswith(LSP_NS" in src    # seat signal
+
+
+def test_channel_choice_reads_env_then_dotenv_then_default(
+        tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The upstream choice used to live only in the launching shell's
+    environment: a shim restart without the exported vars silently
+    reverted the fleet to the default upstream. It now falls back to
+    .env (where the channel keys already live); env still wins."""
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("ASTERISM_ZEN_UPSTREAM=https://dotenv.example/v1\n",
+                      encoding="utf-8")
+    monkeypatch.delenv("ASTERISM_ZEN_UPSTREAM", raising=False)
+    assert zen_shim._cfg("ASTERISM_ZEN_UPSTREAM", "https://default/v1",
+                         env_path=str(dotenv)) == "https://dotenv.example/v1"
+    monkeypatch.setenv("ASTERISM_ZEN_UPSTREAM", "https://env.example/v1")
+    assert zen_shim._cfg("ASTERISM_ZEN_UPSTREAM", "https://default/v1",
+                         env_path=str(dotenv)) == "https://env.example/v1"
+    monkeypatch.delenv("ASTERISM_ZEN_UPSTREAM", raising=False)
+    assert zen_shim._cfg("ASTERISM_ZEN_UPSTREAM", "https://default/v1",
+                         env_path=str(tmp_path / "absent")) == \
+        "https://default/v1"
 
 
 def test_the_concurrency_gate_is_fifo_with_direct_handoff() -> None:

@@ -66,10 +66,36 @@ import uuid
 # output 15s vs Zen's 53s, and even BARE long output finishes (the
 # runaway that kills Zen without the effort pin does not appear).
 # Nous is PRIMARY; OpenCode Zen stays the rescue tier.
-ZEN = os.environ.get("ASTERISM_ZEN_UPSTREAM",
-                     "https://inference-api.nousresearch.com/v1")
-ZEN_RESCUE = os.environ.get("ASTERISM_ZEN_RESCUE",
-                            "https://opencode.ai/zen/v1")
+# 2026-08-25: the channel choice reads .env too — it used to live only
+# in the launching shell's environment, so any restart without the
+# exported vars silently reverted the fleet to the default upstream
+# (the same drift trap the keys already solved by living in .env; env
+# still wins for one-off overrides).
+
+
+def _cfg(name: str, default: str, env_path: "str | None" = None) -> str:
+    v = os.environ.get(name, "")
+    if v:
+        return v
+    if env_path is None:
+        repo = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        env_path = os.path.join(repo, ".env")
+    try:
+        with open(env_path, encoding="utf-8") as fh:
+            for ln in fh:
+                if ln.startswith(name + "="):
+                    return ln.split("=", 1)[1].strip() or default
+    except OSError:
+        pass
+    return default
+
+
+
+ZEN = _cfg("ASTERISM_ZEN_UPSTREAM",
+           "https://inference-api.nousresearch.com/v1")
+ZEN_RESCUE = _cfg("ASTERISM_ZEN_RESCUE",
+                  "https://opencode.ai/zen/v1")
 
 
 def _model_for(base: str, model: "str | None") -> "str | None":
@@ -119,6 +145,15 @@ GATEWAY_MCP = os.environ.get("ASTERISM_GATEWAY_MCP",
 #: cap-10 warning and the wrap-up turn ride whatever the value is.
 MAX_TOOL_ITERATIONS = int(
     os.environ.get("ASTERISM_ZEN_MAX_TOOL_ITERS") or 200)
+#: Tools the wrap-up turn may still run after the budget guillotine
+#: falls: exploration is over, but a deliverable not yet on disk is the
+#: whole value of the turn. The first wrap-up shape refused even
+#: write_file while telling the agent to finish — Group 682's
+#: strategist obeyed literally: replied a tidy final status, wrote no
+#: decision.json, died agent_no_output (2026-08-24).
+_WRAPUP_WRITE_TOOLS = {"write_file", "apply_edit", "withdraw_stub"}
+#: How many write-shaped iterations the wrap-up may spend.
+_WRAPUP_WRITE_ITERS = 3
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, _REPO)
@@ -1125,8 +1160,8 @@ class Shim(http.server.BaseHTTPRequestHandler):
         iters = 0
         tool_calls_run = 0
         budget_final = False
+        wrap_writes = 0
         lookup_streak = 0
-        crawl_nudged = False
         turn_reasoning: "list[tuple[int, str]]" = []
         turn_trail: "list[str]" = []
         resp: dict = {}
@@ -1191,58 +1226,102 @@ class Shim(http.server.BaseHTTPRequestHandler):
                     # state was on disk — misread for a whole shift as
                     # "the model submits unverified proofs". At the cap
                     # the pending calls are answered with a refusal
-                    # that names the state, and the model gets ONE
-                    # wrap-up turn; if it keeps calling tools, cut.
+                    # that names the state, and the model gets a
+                    # wrap-up: write-shaped calls still run (a few, to
+                    # secure the deliverable); anything else ends it.
                     if budget_final:
-                        break
-                    budget_final = True
-                    iters += 1
-                    for it in items:
-                        body["input"].append(it)
-                    for it in mine:
-                        body["input"].append({
-                            "type": "function_call_output",
-                            "call_id": it.get("call_id"),
-                            "output": (
-                                (f"turn TIME budget exhausted "
-                                 f"({turn_budget}s — the seat's wall "
-                                 f"is close)"
-                                 if over_time else
-                                 f"tool budget exhausted "
-                                 f"({MAX_TOOL_ITERATIONS} iterations)")
-                                + ": this call was NOT executed and no "
-                                "further calls will run. Reply now "
-                                "with your final status — what is "
-                                "finished, what is not — and end the "
-                                "turn."),
-                        })
-                    continue
+                        wrap_ok = bool(mine) and all(
+                            str(it.get("name", "")).rsplit("__", 1)[-1]
+                            in _WRAPUP_WRITE_TOOLS for it in mine)
+                        if not (wrap_ok and wrap_writes
+                                < _WRAPUP_WRITE_ITERS):
+                            break
+                        wrap_writes += 1
+                    else:
+                        budget_final = True
+                        iters += 1
+                        for it in items:
+                            body["input"].append(it)
+                        for it in mine:
+                            body["input"].append({
+                                "type": "function_call_output",
+                                "call_id": it.get("call_id"),
+                                "output": (
+                                    (f"turn TIME budget exhausted "
+                                     f"({turn_budget}s — the seat's wall "
+                                     f"is close)"
+                                     if over_time else
+                                     f"tool budget exhausted "
+                                     f"({MAX_TOOL_ITERATIONS} iterations)")
+                                    + ": this call was NOT executed. "
+                                    "Exploration is over, but "
+                                    "write_file / apply_edit / "
+                                    "withdraw_stub still run for up to "
+                                    f"{_WRAPUP_WRITE_ITERS} more "
+                                    "iterations — write the output "
+                                    "file(s) your instructions require "
+                                    "NOW (decision.json, patch edits, "
+                                    "the search-output file — whatever "
+                                    "your task names). Then reply with "
+                                    "your final status — what is "
+                                    "finished, what is not — and end "
+                                    "the turn."),
+                            })
+                        continue
                 iters += 1
                 # Lookup-crawl detection: formalizers verified lemma
                 # names ONE loogle per iteration for 60-90 iterations
                 # while patch.lean sat untouched at the seed's `sorry`
-                # (both fleets, 2026-08-22). One nudge per request:
-                # writing first is the faster name-check.
+                # (both fleets, 2026-08-22). Re-armed every 12
+                # lookup-only iterations (was once per request: Group
+                # 682's strategist got its single nudge at iter 12 and
+                # then crawled loogle unchallenged to the 200 cap,
+                # 2026-08-24) and worded for EVERY seat — the old text
+                # named patch-writing tools a strategist doesn't have.
                 names = {str(it.get("name", "")).rsplit("__", 1)[-1]
                          for it in mine}
                 if names <= {"loogle", "inspect", "paper_search"}:
                     lookup_streak += 1
                 else:
                     lookup_streak = 0
-                if lookup_streak == 12 and not crawl_nudged:
-                    crawl_nudged = True
+                if lookup_streak and lookup_streak % 12 == 0:
+                    # The declared toolset is the seat signal (owner
+                    # call 2026-08-25): a session with mcp__lsp__*
+                    # tools is a Lean-writing seat — teach the
+                    # write-first check (validate_file, exact?). One
+                    # without them is an NL seat: verified names are
+                    # not its deliverable at all (Group 682's
+                    # strategist bet the whole wake on name-hunting
+                    # that presearch and the worker would have done).
+                    has_lsp = any(t.startswith(LSP_NS + "__")
+                                  for t in declared_tools)
+                    if has_lsp:
+                        nudge = (
+                            f"[framework] {lookup_streak} consecutive "
+                            "lookup-only iterations and nothing "
+                            "written. Stop enumerating names — write "
+                            "your deliverable NOW with your best "
+                            "candidates: validate_file names every "
+                            "unknown identifier in one shot, and "
+                            "`have <goal> := by exact?` makes Lean "
+                            "search the library for you (the `Try "
+                            "this:` suggestion comes back in "
+                            "diagnostics). (loogle also takes several "
+                            "patterns in one call, one per line.)")
+                    else:
+                        nudge = (
+                            f"[framework] {lookup_streak} consecutive "
+                            "lookup-only iterations and nothing "
+                            "written. Verified lemma names are NOT "
+                            "your deliverable — downstream checks "
+                            "(#check, the worker's validate_file) "
+                            "catch wrong guesses. Write your output "
+                            "file NOW with your best-guess names and "
+                            "move on.")
                     body["input"].append({
                         "type": "message", "role": "user",
-                        "content": [{"type": "input_text", "text": (
-                            "[framework] 12 consecutive lookup-only "
-                            "iterations and the working file is "
-                            "untouched. Stop enumerating names: write "
-                            "the draft NOW with your best guesses — "
-                            "validate_file names every unknown "
-                            "identifier precisely in one shot, a "
-                            "faster name-check than loogle "
-                            "one-by-one. (loogle also takes several "
-                            "patterns in one call, one per line.)")}],
+                        "content": [{"type": "input_text",
+                                     "text": nudge}],
                     })
                 if iters == MAX_TOOL_ITERATIONS - 10:
                     # Approach warning, so convergence is a choice the
@@ -1251,9 +1330,11 @@ class Shim(http.server.BaseHTTPRequestHandler):
                         "type": "message", "role": "user",
                         "content": [{"type": "input_text", "text": (
                             "[framework] tool budget: ~10 iterations "
-                            "remain. Converge now — bring your working "
-                            "file to its best verified state and "
-                            "finish; do not start new explorations.")}],
+                            "remain. Converge now — write the output "
+                            "file(s) your instructions require, bring "
+                            "your working file to its best verified "
+                            "state, and finish; do not start new "
+                            "explorations.")}],
                     })
                 for it in items:
                     body["input"].append(it)
