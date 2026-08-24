@@ -65,6 +65,8 @@ Never use any name in FORBIDDEN_LEMMAS.
 
 `## Candidate lemmas` (Context.md) first — pre-searched and `#check`-verified — then scan proved siblings / Library / `## Lessons learned`. For more, Mathlib is at `.lake/packages/mathlib/Mathlib/` (names drift across versions; verify before citing) — Grep (`(theorem|lemma) <name>\b`) or `loogle('<pattern>')`.
 
+Goal known but name unknown: `have h : <stmt> := by exact?` then validate_file — diagnostics return Lean's `Try this: exact <name> ...`; substitute it. Keep the statement in standard shape (`f + g`, not `fun n => f n + g n`); big goals can time out — fall back to Grep/loogle.
+
 **Citing an existing sibling**: write the import yourself (`import Problems.<problem>.proofs.L_<slug>`, one line each). Any sibling except **dead / disproved** — re-declare those fresh as your own `new_<slug>.lean` instead. Citing a not-yet-proved sibling is a legitimate delivery: the framework records the dependency. What you may not cite: your own ancestor, or a statement equivalent to this goal (or an unproved ancestor).
 
 ## Annotation
