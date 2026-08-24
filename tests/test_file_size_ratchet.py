@@ -473,7 +473,7 @@ _WATERMARKS = {
     # legacy Manifest.md, problem_settings seeding, manifest_path DROP).
     # The chain grows by one block per schema version by design.
     # Conscious bump.
-    "Tooling/state/db_migrations.py": 2700,  # +migration file-mutex & v43 self-heal (2026-08-24) — conscious bump; prior: +v43 stall rebuild
+    "Tooling/state/db_migrations.py": 2710,  # +migration file-mutex & v43 self-heal (2026-08-24) — conscious bump; prior: +v43 stall rebuild
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
