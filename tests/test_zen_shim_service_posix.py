@@ -98,9 +98,12 @@ def test_cmdline_mentions_false_for_unrelated_process(
 
 
 def test_cmdline_mentions_true_when_unreadable() -> None:
-    """No /proc on this host (not Linux) — this test runs unmodified
-    for real, no monkeypatch: 'unknown' must not read as 'dead'."""
-    assert zen_shim._proc_cmdline_mentions(1, "zen_shim") is True
+    """'Unknown' must not read as 'dead'. A pid beyond pid_max has no
+    /proc entry on Linux, and no host lacks /proc more thoroughly than
+    Windows — either way the read fails and the answer is True. (The
+    first cut probed pid 1, whose cmdline IS readable on the ubuntu CI
+    runner and says 'systemd', not 'zen_shim' — 2026-08-24.)"""
+    assert zen_shim._proc_cmdline_mentions(2**30, "zen_shim") is True
 
 
 def test_pid_alive_dispatches_by_os_name(

@@ -136,7 +136,13 @@ def _kill_proc_group_posix(proc: subprocess.Popen,
     half of the same bug, fixed there via Job Objects)."""
     try:
         pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, OSError):
+    except (ProcessLookupError, OSError, AttributeError, TypeError):
+        # AttributeError/TypeError: a proc-like without a usable .pid
+        # (registry fakes, exotic wrappers) — by this function's own
+        # contract that is "the group can't be resolved", so it takes
+        # the direct-kill fallback like any reaped process would.
+        # (First live trip: ubuntu CI on 4edb204c — four registry
+        # fakes, green on the Windows branch that never reads .pid.)
         pgid = None
     if pgid is None:
         try:

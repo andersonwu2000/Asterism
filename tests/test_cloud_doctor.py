@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import platform
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -151,11 +152,17 @@ def test_memory_cap_missing_files_treated_as_absent_not_error(
 
 
 def test_cgroup_memory_cap_wrapper_reports_not_linux_on_this_box() -> None:
-    """This suite runs on Windows — the real wrapper must SKIP cleanly,
-    never raise, regardless of what /proc or /sys look like here."""
+    """The real wrapper must answer cleanly on ANY box — SKIP with
+    not-linux where there is no cgroup (Windows), a real verdict where
+    there is (ubuntu CI, first run 2026-08-24: asserting SKIP
+    unconditionally was the red). Never raise either way."""
     v = cd.cgroup_memory_cap()
-    assert v["verdict"] == "SKIP"
-    assert "not-linux" in v["detail"]
+    if sys.platform == "win32":
+        assert v["verdict"] == "SKIP"
+        assert "not-linux" in v["detail"]
+    else:
+        assert v["verdict"] in ("OK", "WARN", "SKIP", "FAIL")
+        assert v["detail"]
 
 
 # --------------------------------------------------------------------

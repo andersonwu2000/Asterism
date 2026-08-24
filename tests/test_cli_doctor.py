@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -333,7 +334,8 @@ def test_doctor_cloud_runs_without_raising_on_windows(
 ) -> None:
     """`asterism doctor --cloud` (Oracle ARM64 readiness,
     docs/internal/dev/oracle_arm64_cloud_readiness.md P0#1/P1#6) must run
-    cleanly on THIS box — Windows, no elan/lean/cgroup/real providers —
+    cleanly on EITHER CI platform (first ubuntu run, 2026-08-24:
+    the Windows-only not-linux assertion was the red) —
     degrading every Linux-only check to SKIP rather than raising. This
     is the harness the ticket asked for: the real code path, not a
     reimplementation of it."""
@@ -346,7 +348,8 @@ def test_doctor_cloud_runs_without_raising_on_windows(
                    "Provider CLIs", "Lean toolchain",
                    "Ports (must be localhost-only)"):
         assert header in out
-    assert "not-linux" in out  # cgroup check on this Windows box
+    if sys.platform == "win32":
+        assert "not-linux" in out  # cgroup check degrades to SKIP here
     assert "Summary" in out
 
 

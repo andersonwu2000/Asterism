@@ -27,9 +27,56 @@ import pytest
 
 _REPO = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO / "installer" / "install.sh"
-_BASH = shutil.which("bash")
 
-pytestmark = pytest.mark.skipif(_BASH is None, reason="no bash on PATH")
+
+def _find_bash() -> "str | None":
+    """Git Bash on Windows, never WSL. `shutil.which("bash")` on the
+    GitHub windows runner returns System32's WSL launcher: inside WSL
+    the fake-`file` PATH prepend never applies (Windows paths mount
+    AFTER the Linux tree), so the distro's REAL /usr/bin/file answered
+    and five leantar tests went red on paths like /opt/lean/bin
+    (first windows-latest run of the installer suite, 2026-08-24)."""
+    if sys.platform == "win32":
+        found = shutil.which("bash")
+        if found and "system32" not in found.lower():
+            # Git's TOP-LEVEL bin\bash.exe is a re-exec wrapper that
+            # rebuilds the environment — the fake-bin PATH prepend the
+            # leantar tests rely on is gone by the time the script
+            # runs, so the REAL `file` answered and five tests went
+            # red (windows-latest, 2026-08-24; reproduced locally
+            # against the same wrapper). The msys usr\bin\bash.exe
+            # honors the caller's env verbatim — swap to it when the
+            # wrapper is what PATH found.
+            p = Path(found)
+            if p.parent.name.lower() == "bin" \
+                    and p.parent.parent.name.lower() == "git":
+                msys = p.parent.parent / "usr" / "bin" / "bash.exe"
+                if msys.is_file():
+                    return str(msys)
+            return found  # already the msys bash (usr\bin\bash.EXE)
+        candidates = []
+        git = shutil.which("git")
+        if git:
+            # git lives at <root>\cmd\git.exe or <root>\mingw64\bin\
+            # git.exe — probe both plausible roots for the msys bash
+            for root in Path(git).resolve().parents[1:3]:
+                candidates += [root / "usr" / "bin" / "bash.exe",
+                               root / "bin" / "bash.exe"]
+        for pf in (r"C:\Program Files\Git",
+                   r"C:\Program Files (x86)\Git"):
+            candidates += [Path(pf) / "usr" / "bin" / "bash.exe",
+                           Path(pf) / "bin" / "bash.exe"]
+        for c in candidates:
+            if c.is_file():
+                return str(c)
+        return None
+    return shutil.which("bash")
+
+
+_BASH = _find_bash()
+
+pytestmark = pytest.mark.skipif(
+    _BASH is None, reason="no Git Bash / bash on PATH")
 
 
 def _run(snippet: str, *, env_extra: "dict[str, str] | None" = None,
