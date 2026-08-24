@@ -712,3 +712,74 @@ def test_port_bind_is_exclusive_only_where_exclusivity_is_real() -> None:
     boarding, 2026-08-24). The flag must be platform-conditional."""
     src = open(zen_shim.__file__, encoding="utf-8").read()
     assert 'allow_reuse_address = (os.name != "nt")' in src
+
+
+def test_zen_leg_surfaces_reasoning_as_a_responses_item(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The upstream streams the thinking phase (`delta.reasoning`)
+    alongside the answer; dropping it made zen the one black-box seat
+    (owner call 2026-08-24). It must come back as a Responses-API
+    reasoning item, FIRST, so codex records it in the rollout jsonl —
+    and the usage passthrough must carry reasoning_tokens."""
+    sse = (
+        b'data: {"choices":[{"delta":{"reasoning":"think "}}]}\n'
+        b'data: {"choices":[{"delta":{"reasoning":"hard"}}]}\n'
+        b'data: {"choices":[{"delta":{"content":"answer"}}]}\n'
+        b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+        b'"usage":{"prompt_tokens":5,"completion_tokens":9,'
+        b'"completion_tokens_details":{"reasoning_tokens":4}}}\n'
+        b'data: [DONE]\n')
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda req, timeout=0: _FakeResponse(sse, {}))
+    monkeypatch.setitem(zen_shim._KEY_CACHE, "OPENCODE_ZEN_API_KEY", "k")
+    out = zen_shim._stream_once(
+        "https://opencode.ai/zen/v1",
+        {"model": "x-preview-f-free", "input": []})
+    r0 = out["output"][0]
+    assert r0["type"] == "reasoning"
+    assert r0["id"].startswith("rs_")
+    assert r0["summary"] == [{"type": "summary_text", "text": "think hard"}]
+    assert out["output"][1]["content"][0]["text"] == "answer"
+    assert out["usage"]["output_tokens_details"] == {"reasoning_tokens": 4}
+    # no reasoning streamed -> no reasoning item, indices unshifted
+    sse2 = (b'data: {"choices":[{"delta":{"content":"plain"}}]}\n'
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+            b'"usage":{"prompt_tokens":1,"completion_tokens":1}}\n'
+            b'data: [DONE]\n')
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda req, timeout=0: _FakeResponse(sse2, {}))
+    out2 = zen_shim._stream_once(
+        "https://opencode.ai/zen/v1",
+        {"model": "x-preview-f-free", "input": []})
+    assert out2["output"][0]["type"] == "message"
+    assert "output_tokens_details" not in out2["usage"]
+
+
+def test_replayed_reasoning_items_never_flow_back_upstream(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """codex replays the reasoning item in later turns' input; _to_chat
+    must skip it (the free-round-trip half of the visibility design) —
+    the thinking text never re-enters the upstream context."""
+    sse = (b'data: {"choices":[{"delta":{"content":"ok"}}]}\n'
+           b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+           b'"usage":{"prompt_tokens":1,"completion_tokens":1}}\n'
+           b'data: [DONE]\n')
+    captured: dict = {}
+
+    def fake_urlopen(req, timeout=0):
+        captured["body"] = __import__("json").loads(req.data)
+        return _FakeResponse(sse, {})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setitem(zen_shim._KEY_CACHE, "OPENCODE_ZEN_API_KEY", "k")
+    zen_shim._stream_once(
+        "https://opencode.ai/zen/v1",
+        {"model": "x-preview-f-free",
+         "input": [{"type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "go"}]},
+                   {"type": "reasoning", "id": "rs_x",
+                    "summary": [{"type": "summary_text",
+                                 "text": "secret thinking"}]}]})
+    msgs = captured["body"]["messages"]
+    assert [m["role"] for m in msgs] == ["user"]
+    assert "secret thinking" not in __import__("json").dumps(msgs)

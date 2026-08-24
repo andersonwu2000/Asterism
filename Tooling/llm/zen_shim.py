@@ -529,6 +529,7 @@ def _chat_stream_once(base: str, body: dict) -> dict:
                  "Accept": "text/event-stream",
                  "User-Agent": "asterism-zen-shim/6.0"})
     text: list = []
+    rsn: list = []
     calls: dict = {}
     usage: dict = {}
     finish = None
@@ -550,6 +551,15 @@ def _chat_stream_once(base: str, body: dict) -> dict:
                 usage = d["usage"]
             ch = (d.get("choices") or [{}])[0]
             delta = ch.get("delta") or {}
+            # The upstream streams the thinking phase alongside the
+            # answer (`delta.reasoning`, OpenRouter dialect; some
+            # providers spell it `reasoning_content`). Dropping it made
+            # the zen seat the one black-box seat — generated and BILLED
+            # either way, just invisible (owner call 2026-08-24).
+            if delta.get("reasoning"):
+                rsn.append(str(delta["reasoning"]))
+            elif delta.get("reasoning_content"):
+                rsn.append(str(delta["reasoning_content"]))
             if delta.get("content"):
                 text.append(delta["content"])
             for tc in delta.get("tool_calls") or []:
@@ -568,6 +578,18 @@ def _chat_stream_once(base: str, body: dict) -> dict:
     if finish is None and not text and not calls:
         raise urllib.error.URLError("chat stream ended empty, no finish")
     items: list = []
+    if rsn:
+        # Responses-API reasoning item, FIRST (the order the native
+        # OpenAI path uses). codex records it in the rollout jsonl —
+        # ox-alpha's thinking lands in the same transcripts the
+        # operator already reads for codex/claude seats. The round
+        # trip is free: codex replays it in later turns' input, and
+        # `_to_chat` already skips `type == "reasoning"` items, so the
+        # text never flows back upstream and costs nothing.
+        items.append({"type": "reasoning",
+                      "id": "rs_" + uuid.uuid4().hex,
+                      "summary": [{"type": "summary_text",
+                                   "text": "".join(rsn)}]})
     if text:
         items.append({"type": "message", "role": "assistant",
                       "content": [{"type": "output_text",
@@ -585,15 +607,24 @@ def _chat_stream_once(base: str, body: dict) -> dict:
     # the complete response envelope, not just the parts we consume.
     in_t = usage.get("prompt_tokens", usage.get("input_tokens")) or 0
     out_t = usage.get("completion_tokens", usage.get("output_tokens")) or 0
+    usage_out: dict = {"input_tokens": in_t, "output_tokens": out_t,
+                       "total_tokens": usage.get("total_tokens")
+                       or (in_t + out_t)}
+    # Pass the reasoning-token count through when the upstream reports
+    # it (chat dialect: completion_tokens_details.reasoning_tokens) —
+    # codex's token_count accounting reads output_tokens_details, which
+    # sat at 0 while the thinking was being generated and billed.
+    _rt = (usage.get("completion_tokens_details") or {}).get(
+        "reasoning_tokens")
+    if _rt is not None:
+        usage_out["output_tokens_details"] = {"reasoning_tokens": _rt}
     return {"id": "resp_" + uuid.uuid4().hex,
             "object": "response",
             "created_at": int(time.time()),
             "model": chat["model"],
             "status": "completed",
             "output": items,
-            "usage": {"input_tokens": in_t, "output_tokens": out_t,
-                      "total_tokens": usage.get("total_tokens")
-                      or (in_t + out_t)}}
+            "usage": usage_out}
 
 
 def _stream_once(base: str, body: dict) -> dict:
