@@ -1321,6 +1321,63 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor_cloud(workspace: Path) -> int:
+    """`asterism doctor --cloud` body — see `cmd_doctor`'s docstring for
+    scope. Pure verdict-printing: every measurement lives in
+    `cloud_doctor.py` so it can be unit-tested without a real Linux box;
+    this function only prints and tallies. FAIL only counts against the
+    exit code — WARN/SKIP are visible but do not fail the run, matching
+    the desktop doctor's convention."""
+    from . import cloud_doctor as cd
+
+    fails = 0
+
+    def line(status: str, msg: str) -> None:
+        nonlocal fails
+        if status == "FAIL":
+            fails += 1
+        print(f"  [{status:>4}] {msg}")
+
+    def emit(section: str, verdict: "dict[str, str]") -> None:
+        line(verdict["verdict"], f"{section}: {verdict['detail']}")
+
+    print("\n=== OS / architecture ===")
+    emit("os", cd.os_arch())
+
+    print("\n=== CPU / RAM / disk ===")
+    emit("resources", cd.resources(workspace))
+
+    print("\n=== cgroup v2 / memory cap ===")
+    emit("cgroup", cd.cgroup_memory_cap())
+
+    print("\n=== Python / Node ===")
+    emit("python", cd.python_version())
+    emit("node", cd.node_version())
+
+    print("\n=== Provider CLIs (enabled seats only) ===")
+    try:
+        providers = cd.enabled_providers(workspace)
+    except Exception as exc:  # noqa: BLE001 — a config read must not crash doctor
+        line("SKIP", f"could not read enabled providers: {exc}")
+        providers = []
+    for name in providers:
+        emit(name, cd.provider_presence(name))
+
+    print("\n=== Lean toolchain ===")
+    for exe, verdict in cd.lean_toolchain_presence().items():
+        emit(exe, verdict)
+    emit("leantar arch", cd.leantar_status())
+
+    print("\n=== Ports (must be localhost-only) ===")
+    for name, port in sorted(cd.CLOUD_PORTS.items(), key=lambda kv: kv[1]):
+        emit(f"{name} :{port}", cd.port_status(port))
+
+    print()
+    print(f"=== Summary: {fails} FAIL ===" if fails else
+          "=== Summary: all checks passed (some WARN/SKIP OK) ===")
+    return 0 if fails == 0 else 1
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Pre-flight diagnostic. Checks the toolchain (claude / gemini /
     lake), the Asterism.yaml config, every initialized Problem's
@@ -1328,7 +1385,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     Output is icon-prefixed lines (`OK / FAIL / WARN`) the operator —
     or a future Claude session — can scan top to bottom.
 
-    Exits 0 if every check is OK or WARN; 1 if any FAIL fired."""
+    Exits 0 if every check is OK or WARN; 1 if any FAIL fired.
+
+    `--cloud` swaps in a separate, narrower check set (Oracle ARM64
+    readiness — `docs/internal/dev/oracle_arm64_cloud_readiness.md`
+    P0#1/P1#6): OS/arch, CPU/RAM/disk, cgroup v2 visibility, python/
+    node/provider presence, the Lean toolchain + leantar architecture,
+    and the three well-known ports' bind posture. It does not run the
+    desktop checks below (problems/.attempts/log retention are not
+    cloud-readiness questions) and never starts a daemon or the shim."""
+    if getattr(args, "cloud", False):
+        return cmd_doctor_cloud(Path.cwd())
+
     import shutil
     import subprocess
 
@@ -2985,6 +3053,13 @@ def main(argv: list[str] | None = None) -> int:
     p_doctor = sub.add_parser(
         "doctor",
         help="pre-flight: tools / Asterism.yaml / problems / .attempts state",
+    )
+    p_doctor.add_argument(
+        "--cloud", action="store_true",
+        help="Oracle ARM64 cloud readiness checks instead of the desktop "
+             "set: OS/arch, CPU/RAM/disk, cgroup v2 visibility, python/"
+             "node/provider presence, Lean toolchain + leantar arch, "
+             "8642/8765/8898 bind posture",
     )
     p_doctor.set_defaults(func=cmd_doctor)
 

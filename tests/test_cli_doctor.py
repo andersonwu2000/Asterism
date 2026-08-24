@@ -327,6 +327,45 @@ def test_doctor_no_problems_initialized_warns(
     assert "init" in out  # hint message
 
 
+def test_doctor_cloud_runs_without_raising_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`asterism doctor --cloud` (Oracle ARM64 readiness,
+    docs/internal/dev/oracle_arm64_cloud_readiness.md P0#1/P1#6) must run
+    cleanly on THIS box — Windows, no elan/lean/cgroup/real providers —
+    degrading every Linux-only check to SKIP rather than raising. This
+    is the harness the ticket asked for: the real code path, not a
+    reimplementation of it."""
+    monkeypatch.chdir(tmp_path)
+    rc = cmd_doctor(argparse.Namespace(cloud=True))
+    out = capsys.readouterr().out
+    assert rc in (0, 1)
+    for header in ("OS / architecture", "CPU / RAM / disk",
+                   "cgroup v2 / memory cap", "Python / Node",
+                   "Provider CLIs", "Lean toolchain",
+                   "Ports (must be localhost-only)"):
+        assert header in out
+    assert "not-linux" in out  # cgroup check on this Windows box
+    assert "Summary" in out
+
+
+def test_doctor_without_cloud_flag_runs_the_desktop_checks_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A bare Namespace() (no `cloud` attribute at all — every OTHER test
+    in this file constructs one that way) must keep hitting the desktop
+    path via getattr's default, not crash on a missing attribute."""
+    _setup_tools(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    rc = cmd_doctor(argparse.Namespace())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "External tools" in out
+    assert "OS / architecture" not in out
+
+
 def test_doctor_yaml_summary_lists_sections(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
