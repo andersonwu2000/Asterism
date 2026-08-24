@@ -550,3 +550,165 @@ def test_tools_snapshot_names_the_running_call_and_its_age(
     release.set()
     t.join(10)
     assert zen_shim._tools_snapshot()["tools_running"] == []
+
+
+# --------------------------------------------------------------- adaptive gate
+
+def _gate_state():
+    return (zen_shim._CONC_CAP, zen_shim._CONC_FREE,
+            list(zen_shim._CONC_WAITERS), zen_shim._CONC_LAST_SHRINK,
+            zen_shim._CONC_LAST_GROW, zen_shim._CONC_AUTO)
+
+
+def _gate_restore(st) -> None:
+    (zen_shim._CONC_CAP, zen_shim._CONC_FREE, waiters,
+     zen_shim._CONC_LAST_SHRINK, zen_shim._CONC_LAST_GROW,
+     zen_shim._CONC_AUTO) = st[0], st[1], st[2], st[3], st[4], st[5]
+    zen_shim._CONC_WAITERS.clear()
+    zen_shim._CONC_WAITERS.extend(st[2])
+
+
+def test_adaptive_gate_halves_on_concurrency_429_with_floor() -> None:
+    """The upstream's own concurrency verdict is the ONE shrink signal
+    (subscription changes must never need a hand-tuned number,
+    2026-08-24). Multiplicative decrease, never below the floor."""
+    st = _gate_state()
+    try:
+        zen_shim._CONC_AUTO = True
+        zen_shim._CONC_WAITERS.clear()
+        zen_shim._CONC_CAP = 16
+        zen_shim._CONC_FREE = 16
+        zen_shim._conc_note_concurrency_429()
+        assert zen_shim._CONC_CAP == 8
+        assert zen_shim._CONC_FREE == 8          # debt applied symmetrically
+        assert zen_shim._CONC_LAST_SHRINK > 0
+        zen_shim._CONC_CAP = zen_shim._CONC_FLOOR
+        zen_shim._CONC_FREE = zen_shim._CONC_FLOOR
+        zen_shim._conc_note_concurrency_429()
+        assert zen_shim._CONC_CAP == zen_shim._CONC_FLOOR
+    finally:
+        _gate_restore(st)
+
+
+def test_adaptive_gate_shrink_debt_repays_before_waking_the_queue() -> None:
+    """A shrink below the in-flight count must not tear anything down:
+    releases repay the negative balance first, and only then does the
+    queue head get a slot."""
+    import threading as th
+    st = _gate_state()
+    try:
+        zen_shim._CONC_AUTO = True
+        zen_shim._CONC_WAITERS.clear()
+        zen_shim._CONC_CAP = 4
+        zen_shim._CONC_FREE = 0                  # four in flight
+        zen_shim._CONC_LAST_SHRINK = 0.0
+        got: list = []
+
+        def waiter():
+            zen_shim._conc_acquire(None)
+            got.append("ran")
+
+        t = th.Thread(target=waiter, daemon=True)
+        t.start()
+        import time as _t
+        _t.sleep(0.1)
+        zen_shim._conc_note_concurrency_429()    # cap 4→2, free 0→-2
+        assert zen_shim._CONC_CAP == 2
+        assert zen_shim._CONC_FREE == -2
+        zen_shim._conc_release()                 # repay: -1
+        zen_shim._conc_release()                 # repay: 0
+        _t.sleep(0.1)
+        assert not got, "queue must wait until the debt is repaid"
+        zen_shim._conc_release()                 # head-first handoff
+        t.join(timeout=3)
+        assert got == ["ran"]
+    finally:
+        _gate_restore(st)
+
+
+def test_adaptive_gate_grows_only_under_queue_and_clean_window() -> None:
+    """Additive increase needs REAL demand (a waiter in line) and a
+    clean window (no recent shrink, one step per interval). An idle
+    release never probes upward; a fresh shrink pins the cap down."""
+    import threading as th
+    import time as _t
+    st = _gate_state()
+    try:
+        zen_shim._CONC_AUTO = True
+        zen_shim._CONC_WAITERS.clear()
+        zen_shim._CONC_CAP = 1
+        zen_shim._CONC_FREE = 1
+        zen_shim._CONC_LAST_SHRINK = 0.0
+        zen_shim._CONC_LAST_GROW = 0.0           # interval long past
+        zen_shim._conc_acquire(None)             # the one slot is busy
+        zen_shim._conc_release()                 # no waiters -> no grow
+        assert zen_shim._CONC_CAP == 1
+        zen_shim._conc_acquire(None)
+        got: list = []
+
+        def waiter():
+            zen_shim._conc_acquire(None)
+            got.append("ran")
+
+        t = th.Thread(target=waiter, daemon=True)
+        t.start()
+        _t.sleep(0.1)
+        zen_shim._conc_release()                 # queued demand -> +1
+        t.join(timeout=3)
+        assert zen_shim._CONC_CAP == 2
+        assert got == ["ran"]
+        # inside a shrink cooldown the same demand must NOT grow
+        zen_shim._CONC_WAITERS.clear()
+        zen_shim._CONC_FREE = 0
+        zen_shim._CONC_LAST_SHRINK = _t.time()
+        zen_shim._CONC_LAST_GROW = 0.0
+        t2 = th.Thread(target=waiter, daemon=True)
+        t2.start()
+        _t.sleep(0.1)
+        zen_shim._conc_release()
+        t2.join(timeout=3)
+        assert zen_shim._CONC_CAP == 2, "cooldown must hold the cap"
+        zen_shim._conc_release()
+    finally:
+        _gate_restore(st)
+
+
+def test_pinned_gate_never_adapts_and_zero_disables() -> None:
+    """ASTERISM_ZEN_CONCURRENCY set = operator pin: no shrink, no
+    grow — the old semantics survive verbatim, including 0 = no gate."""
+    st = _gate_state()
+    old_conc = zen_shim._CONCURRENCY
+    try:
+        zen_shim._CONC_AUTO = False
+        zen_shim._CONC_WAITERS.clear()
+        zen_shim._CONC_CAP = 5
+        zen_shim._CONC_FREE = 5
+        zen_shim._conc_note_concurrency_429()
+        assert zen_shim._CONC_CAP == 5, "a pinned cap never shrinks"
+        zen_shim._CONCURRENCY = 0
+        assert not zen_shim._conc_enabled()
+        zen_shim._CONCURRENCY = 5
+        assert zen_shim._conc_enabled()
+    finally:
+        zen_shim._CONCURRENCY = old_conc
+        _gate_restore(st)
+
+
+def test_only_primary_tier_concurrency_429_reaches_the_gate() -> None:
+    """Mechanism pin on the source (house style, see the tool-budget
+    pin above): the shrink hook must be keyed on the 429 BODY naming
+    'concurrent' AND must exclude the rescue tier — OpenRouter's 429s
+    say nothing about the Nous account's concurrency."""
+    src = open(zen_shim.__file__, encoding="utf-8").read()
+    assert 'base != ZEN_RESCUE and b"concurrent" in body_head.lower()' in src
+    assert "_conc_note_concurrency_429()" in src
+
+
+def test_port_bind_is_exclusive_only_where_exclusivity_is_real() -> None:
+    """Windows SO_REUSEADDR admits a SECOND live listener (the 08-22
+    double-bind); POSIX's does not — there it only unblocks a restart
+    from a dead process's TIME_WAIT remnants, and hard exclusivity
+    makes a systemd restart strike out on its StartLimit (Oracle
+    boarding, 2026-08-24). The flag must be platform-conditional."""
+    src = open(zen_shim.__file__, encoding="utf-8").read()
+    assert 'allow_reuse_address = (os.name != "nt")' in src

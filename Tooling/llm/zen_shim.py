@@ -206,7 +206,9 @@ def _tools_snapshot() -> dict:
                    for n, s, t in _TOOLS_ACTIVE.values()]
     running.sort(key=lambda r: -r["age_sec"])
     with _CONC_LOCK:
-        conc = {"free": _CONC_FREE, "waiting": len(_CONC_WAITERS)}
+        conc = {"cap": _CONC_CAP, "free": _CONC_FREE,
+                "waiting": len(_CONC_WAITERS),
+                "mode": "auto" if _CONC_AUTO else "pinned"}
     return {"tools_running": running,
             "oldest_tool_age_sec": running[0]["age_sec"] if running else 0,
             "upstream_slots": conc}
@@ -688,9 +690,25 @@ def _pace() -> None:
 #: available credits") while the per-minute headers sat nearly full,
 #: so RPM pacing treats the wrong variable. The semaphore is the
 #: matching choke point: excess requests queue here, orderly, instead
-#: of burning 429 retries upstream. Exact account limit unknown;
-#: 5 held two fleets' worth of traffic under it. 0 disables.
-_CONCURRENCY = int(os.environ.get("ASTERISM_ZEN_CONCURRENCY") or 5)
+#: of burning 429 retries upstream.
+#:
+#: 2026-08-24 (Nous Portal subscription): the account's concurrency
+#: limit is a SUBSCRIPTION property — 5 was the wall before, a 96-way
+#: probe ran clean the day the owner subscribed. A hand-pinned number
+#: drifts the day the plan changes, so the default is ADAPTIVE (AIMD):
+#: halve on the upstream's own concurrency-429 verdict (its body names
+#: the fired limit; window/capacity 429s never shrink), grow by one
+#: only while calls actually queue and the window has been clean.
+#: Set ASTERISM_ZEN_CONCURRENCY to pin the cap by hand (old
+#: semantics; 0 disables the gate entirely).
+_CONC_PIN = (os.environ.get("ASTERISM_ZEN_CONCURRENCY") or "").strip()
+_CONC_AUTO = not _CONC_PIN
+_CONC_FLOOR = 2          # adaptive never starves the fleet below this
+_CONC_CEILING = int(os.environ.get("ASTERISM_ZEN_CONC_CEILING") or 128)
+_CONC_START = 5          # last empirically safe pre-subscription cap
+_CONC_SHRINK_COOLDOWN = 300.0  # no upward probe this long after a shrink
+_CONC_GROW_INTERVAL = 60.0     # at most one +1 per this many seconds
+_CONCURRENCY = int(_CONC_PIN) if _CONC_PIN else _CONC_START
 #: FIFO with DIRECT HANDOFF, not a bare semaphore: the first cut used
 #: `acquire(timeout=5)` polling, and a poller that times out re-joins
 #: at the back — spawns mid-iteration re-acquired instantly and
@@ -699,7 +717,16 @@ _CONCURRENCY = int(os.environ.get("ASTERISM_ZEN_CONCURRENCY") or 5)
 #: operator noticing "no files written", 2026-08-22).
 _CONC_LOCK = threading.Lock()
 _CONC_WAITERS: "collections.deque[threading.Event]" = collections.deque()
-_CONC_FREE = max(_CONCURRENCY, 1)
+_CONC_CAP = max(_CONCURRENCY, 1)
+_CONC_FREE = _CONC_CAP
+_CONC_LAST_SHRINK = 0.0
+#: import-time stamp: the first upward probe waits out one full
+#: interval of REAL gated traffic — a cold process never bursts.
+_CONC_LAST_GROW = time.time()
+
+
+def _conc_enabled() -> bool:
+    return _CONC_AUTO or _CONCURRENCY > 0
 
 
 def _conc_acquire(attempt_dir: "str | None") -> None:
@@ -722,11 +749,49 @@ def _conc_acquire(attempt_dir: "str | None") -> None:
 
 def _conc_release() -> None:
     with _CONC_LOCK:
-        global _CONC_FREE
-        if _CONC_WAITERS:
+        global _CONC_FREE, _CONC_CAP, _CONC_LAST_GROW
+        now = time.time()
+        # Additive increase — only under REAL demand (a queue exists),
+        # never inside a shrink's cooldown, at most one step per
+        # interval. An idle gate never probes upward.
+        if (_CONC_AUTO and _CONC_WAITERS and _CONC_CAP < _CONC_CEILING
+                and now - _CONC_LAST_SHRINK > _CONC_SHRINK_COOLDOWN
+                and now - _CONC_LAST_GROW > _CONC_GROW_INTERVAL):
+            _CONC_CAP += 1
+            _CONC_FREE += 1
+            _CONC_LAST_GROW = now
+            _log(f"[shim]   gate +1 → {_CONC_CAP} "
+                  f"({len(_CONC_WAITERS)} in line, window clean)")
+        if _CONC_FREE < 0:
+            _CONC_FREE += 1  # repay a shrink's debt before anyone runs
+        elif _CONC_WAITERS:
             _CONC_WAITERS.popleft().set()  # the slot passes head-first
         else:
             _CONC_FREE += 1
+        # a grow above freed an EXTRA slot — hand it to the queue too
+        while _CONC_FREE > 0 and _CONC_WAITERS:
+            _CONC_FREE -= 1
+            _CONC_WAITERS.popleft().set()
+
+
+def _conc_note_concurrency_429() -> None:
+    """The upstream's 429 body named CONCURRENCY as the fired limit —
+    the one signal that means OUR cap is too high (window/capacity
+    429s are somebody else's weather and never reach here).
+    Multiplicative decrease; the debt convention (`_CONC_FREE` may go
+    negative) lets in-flight calls finish instead of being torn down."""
+    if not _CONC_AUTO:
+        return
+    with _CONC_LOCK:
+        global _CONC_CAP, _CONC_FREE, _CONC_LAST_SHRINK
+        _CONC_LAST_SHRINK = time.time()
+        new = max(_CONC_FLOOR, _CONC_CAP // 2)
+        if new < _CONC_CAP:
+            delta = _CONC_CAP - new
+            _CONC_CAP = new
+            _CONC_FREE -= delta
+            _log(f"[shim]   gate −{delta} → {_CONC_CAP} "
+                  f"(upstream concurrency 429)")
 
 
 def _touch_heartbeat(attempt_dir: "str | None") -> None:
@@ -773,7 +838,7 @@ def _zen_call(body: dict, attempt_dir: "str | None" = None) -> dict:
             try:
                 if base != ZEN_RESCUE:
                     _pace()
-                    if _CONCURRENCY > 0:
+                    if _conc_enabled():
                         _conc_acquire(attempt_dir)
                         try:
                             return _stream_once(base, body)
@@ -793,6 +858,8 @@ def _zen_call(body: dict, attempt_dir: "str | None" = None) -> dict:
                         pass
                     last = e
                     saw_429 = True
+                    if base != ZEN_RESCUE and b"concurrent" in body_head.lower():
+                        _conc_note_concurrency_429()
                     # The body names WHICH limit fired (concurrency vs
                     # rpm vs tokens) — evidence the 2026-08-22 storm
                     # took a friend-machine probe to recover.
@@ -1415,7 +1482,13 @@ def main() -> int:
         # PORT and silently split the traffic — observed live
         # 2026-08-22 (two listeners, two pacers, the rolling-window
         # budget doubled). A port singleton must refuse, loudly.
-        allow_reuse_address = False
+        # On POSIX the same flag admits NO second live listener — it
+        # only lets a restart rebind over a dead process's TIME_WAIT
+        # remnants, without which a systemd restart strikes out on
+        # its StartLimit before the ~60s remnant clears (Oracle
+        # boarding, 2026-08-24). Exclusive where exclusivity is
+        # real, reusable where it is safe.
+        allow_reuse_address = (os.name != "nt")
 
     _ExclusiveServer(("127.0.0.1", port), Shim).serve_forever()
     return 0
