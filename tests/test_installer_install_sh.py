@@ -95,6 +95,26 @@ def _run(snippet: str, *, env_extra: "dict[str, str] | None" = None,
     env["PY"] = sys.executable
     if env_extra:
         env.update(env_extra)
+    if sys.platform == "win32" and _BASH:
+        # The msys usr\bin\bash.exe honors the caller's env verbatim
+        # (that is why _find_bash picks it over the re-exec wrapper) —
+        # which also means nobody rebuilds PATH for it: on a machine
+        # whose PATH lacks Git's usr\bin, every coreutil the script
+        # touches is `command not found` (dirname/tr went 127 locally,
+        # 2026-08-25; CI was green only because the runner image
+        # carries usr\bin on PATH). Insert bash's own dir AFTER any
+        # test-provided fake-bin prepends (they must keep shadowing)
+        # and BEFORE the inherited tail (System32's find/sort must not
+        # shadow the coreutils install.sh calls).
+        usrbin = str(Path(_BASH).parent)
+        base = os.environ.get("PATH", "")
+        cur = env.get("PATH", "")
+        if usrbin not in cur.split(os.pathsep):
+            if base and cur.endswith(base):
+                head = cur[: len(cur) - len(base)]
+                env["PATH"] = head + usrbin + os.pathsep + base
+            else:
+                env["PATH"] = usrbin + os.pathsep + cur
     full = f'source "{_SCRIPT.as_posix()}"\n{snippet}'
     cmd = [_BASH, "-c", full, "install.sh", *(argv or [])]
     return subprocess.run(
