@@ -80,6 +80,16 @@ def _model_for(base: str, model: "str | None") -> "str | None":
         return {"x-preview-f-free": "stealth/ox-alpha"}.get(model, model)
     return {"stealth/ox-alpha": "x-preview-f-free"}.get(model, model)
 ZEN_EFFORT = os.environ.get("ASTERISM_ZEN_EFFORT", "medium")
+#: Request-local attempt dir for the STREAM layer (heartbeat during
+#: deep-thinking calls) — a ContextVar, not a parameter, so
+#: `_stream_once`'s signature stays what the retry-plan tests
+#: monkeypatch; same isolation idiom as the tool plane's
+#: ATTEMPT_DIR_CONTEXT.
+import contextvars as _contextvars
+_STREAM_ATTEMPT_DIR: "_contextvars.ContextVar[str | None]" = \
+    _contextvars.ContextVar("zen_stream_attempt_dir", default=None)
+#: How often a FLOWING stream touches the heartbeat.
+_STREAM_BEAT_SEC = 20.0
 #: Hard reasoning-token cap, replacing `effort` when set (> 0). Effort
 #: bounds the AVERAGE but not the tail: per-call latency measured
 #: p50=8s p90=25s p99=619s max=1868s (2026-08-24, sylvester_gallai),
@@ -534,7 +544,17 @@ def _to_chat(body: dict) -> dict:
 def _chat_stream_once(base: str, body: dict) -> dict:
     """Streaming /chat/completions call, assembled back into a
     /responses-shaped response object so the shim's main loop stays in
-    one vocabulary."""
+    one vocabulary.
+
+    A flowing stream touches the heartbeat every ~20s (attempt dir via
+    `_STREAM_ATTEMPT_DIR`, keeping the signature the retry-plan tests
+    monkeypatch): deep-thinking calls run 10-31 MINUTES while producing
+    real work (sylvester_gallai 2026-08-24 — a 1868s call landed 3
+    items), and the heartbeat used to move only at iteration
+    boundaries, so one deep think came within 9 minutes of the
+    daemon's 2400s joint-silence kill. Chunks arriving IS liveness; a
+    dead stream still goes silent and the watchdog stays honest."""
+    attempt_dir = _STREAM_ATTEMPT_DIR.get()
     chat = _to_chat(body)
     chat["model"] = _model_for(base, body.get("model"))
     req = urllib.request.Request(
@@ -549,6 +569,7 @@ def _chat_stream_once(base: str, body: dict) -> dict:
     calls: dict = {}
     usage: dict = {}
     finish = None
+    last_beat = time.monotonic()
     # The socket timeout is ALSO the per-read (inter-chunk) limit: a
     # healthy generation streams deltas (reasoning included)
     # continuously, so 300s of silence is a dead stream, not a
@@ -556,6 +577,9 @@ def _chat_stream_once(base: str, body: dict) -> dict:
     # Nous streams under the old 1740s ceiling (2026-08-22).
     with urllib.request.urlopen(req, timeout=300) as r:
         for raw in r:
+            if time.monotonic() - last_beat >= _STREAM_BEAT_SEC:
+                last_beat = time.monotonic()
+                _touch_heartbeat(attempt_dir)
             line = raw.decode("utf-8", "replace").strip()
             if not line.startswith("data:") or line == "data: [DONE]":
                 continue
@@ -894,6 +918,7 @@ def _zen_call(body: dict, attempt_dir: "str | None" = None) -> dict:
     plan again, up to `_429_WAIT_BUDGET` seconds of waiting — then the
     failure propagates and the daemon's retry machinery decides."""
     wait_spent = 0.0
+    _STREAM_ATTEMPT_DIR.set(attempt_dir)
     while True:
         last: Exception | None = None
         saw_429 = False

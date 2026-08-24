@@ -835,3 +835,29 @@ def test_reasoning_pin_prefers_the_hard_cap(monkeypatch) -> None:
     monkeypatch.setattr(zen_shim, "ZEN_REASONING_MAX_TOKENS", 512)
     chat = zen_shim._to_chat({"input": []})
     assert chat["reasoning"] == {"max_tokens": 512}
+
+
+def test_flowing_stream_touches_the_heartbeat(monkeypatch, tmp_path) -> None:
+    """Deep-thinking calls run 10-31 minutes while producing real work
+    (a 1868s call landed 3 items, sylvester_gallai 2026-08-24), and the
+    heartbeat used to move only at iteration boundaries — one deep
+    think came within 9 minutes of the 2400s joint-silence kill.
+    Chunks arriving IS liveness; the stream must beat every ~20s."""
+    sse = (b'data: {"choices":[{"delta":{"reasoning":"a"}}]}\n'
+           b'data: {"choices":[{"delta":{"content":"ok"}}]}\n'
+           b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+           b'"usage":{"prompt_tokens":1,"completion_tokens":1}}\n'
+           b'data: [DONE]\n')
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda req, timeout=0: _FakeResponse(sse, {}))
+    monkeypatch.setitem(zen_shim._KEY_CACHE, "OPENCODE_ZEN_API_KEY", "k")
+    # throttle open: every chunk beats
+    monkeypatch.setattr(zen_shim, "_STREAM_BEAT_SEC", -1.0)
+    tok = zen_shim._STREAM_ATTEMPT_DIR.set(str(tmp_path))
+    try:
+        zen_shim._stream_once("https://opencode.ai/zen/v1",
+                              {"model": "x-preview-f-free", "input": []})
+    finally:
+        zen_shim._STREAM_ATTEMPT_DIR.reset(tok)
+    assert (tmp_path / "_shim_heartbeat").exists(), (
+        "a flowing stream must touch the watchdog's third clock")
