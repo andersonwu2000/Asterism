@@ -1078,9 +1078,10 @@ def test_validate_file_names_a_framework_fault_instead_of_going_mute(
             raise RuntimeError("backend restarting")
 
     ctx = _setup_validate_session(monkeypatch, tmp_path, _Broken())
+    (tmp_path / "x.lean").write_text(
+        "theorem t : True := trivial\n", encoding="utf-8")
     try:
-        out = json.loads(asyncio.run(lsp_gateway.validate_file(
-            "theorem t : True := trivial\n")))
+        out = json.loads(asyncio.run(lsp_gateway.validate_file()))
     finally:
         lsp_gateway._session_ctx.reset(ctx)
         lsp_gateway._state.sessions.pop("tok-A", None)
@@ -1100,9 +1101,10 @@ def test_validate_file_timeout_reports_indeterminate(
     timed_out + an error, even though no error diagnostics arrived."""
     backend = _DiagBackend(wait_raises=TimeoutError("budget"))
     ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
+    (tmp_path / "x.lean").write_text(
+        "theorem t : True := by sorry\n", encoding="utf-8")
     try:
-        out = json.loads(asyncio.run(lsp_gateway.validate_file(
-            "theorem t : True := by sorry\n")))
+        out = json.loads(asyncio.run(lsp_gateway.validate_file()))
     finally:
         lsp_gateway._session_ctx.reset(ctx)
         lsp_gateway._state.sessions.pop("tok-A", None)
@@ -1119,14 +1121,22 @@ def test_validate_file_clean_when_no_diags(
     diagnostics) still returns ok:true with no timed_out marker."""
     backend = _DiagBackend(wait_raises=None, diags=[])
     ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
+    (tmp_path / "x.lean").write_text(
+        "theorem t : True := trivial\n", encoding="utf-8")
     try:
-        out = json.loads(asyncio.run(lsp_gateway.validate_file(
-            "theorem t : True := trivial\n")))
+        out = json.loads(asyncio.run(lsp_gateway.validate_file()))
     finally:
         lsp_gateway._session_ctx.reset(ctx)
         lsp_gateway._state.sessions.pop("tok-A", None)
     assert out["ok"] is True
     assert "timed_out" not in out
+    # Disk-authority additions: the response names the file and the
+    # exact bytes, and the identity record lands beside the target.
+    assert out["file"] == "x.lean"
+    assert len(out["content_sha256"]) == 64
+    rec = json.loads((tmp_path / "_validated.json").read_text(
+        encoding="utf-8"))
+    assert rec["sha256"] == out["content_sha256"] and rec["ok"] is True
 
 
 def test_errors_at_unconverged_says_elaborating_not_clean(
@@ -2691,3 +2701,39 @@ def test_the_commit_gate_names_an_action_the_worker_can_perform():
     msg = src[i:i + 500]
     assert "withdraw_stub" in msg
     assert "delete the file before submitting" not in msg
+
+
+def test_validate_file_refuses_string_content_with_the_way_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Owner ruling 2026-08-24: patch.lean is itself the draft — no
+    drafts stacked on drafts. The string mode let an agent validate an
+    in-memory candidate, never write it back, and honestly report
+    "validated" while the canonical file sat unchanged."""
+    backend = _DiagBackend(wait_raises=None, diags=[])
+    ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
+    try:
+        out = asyncio.run(lsp_gateway.validate_file(
+            "theorem t : True := trivial\n"))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert "`content` is not accepted" in out
+    assert "write" in out.lower() and "validate_file(" in out
+
+
+def test_validate_file_missing_file_teaches_write_first(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    backend = _DiagBackend(wait_raises=None, diags=[])
+    ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
+    try:
+        out = json.loads(asyncio.run(
+            lsp_gateway.validate_file(file="new_ghost.lean")))
+        out2 = json.loads(asyncio.run(
+            lsp_gateway.validate_file(file="../escape.lean")))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert "write it first" in out.get("error", "")
+    assert "must name this session's" in out2.get("error", "")

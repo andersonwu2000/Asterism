@@ -34,6 +34,8 @@ helpers (`_grep_forbidden`, `_attempt_postmortem`, `_spawn_failure`,
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import shutil
 import sqlite3
@@ -1158,16 +1160,55 @@ def _backward_parse_and_commit(
             leading,
         )
 
+    # Validation identity (disk-authority ruling 2026-08-24): the last
+    # validate_file() recorded the sha of the bytes it saw; a commit of
+    # DIFFERENT bytes means the agent edited after its final validation
+    # and the green it reported is about other content. No record = no
+    # gate (the LSP apply_edit/errors_at loop is a legitimate flow).
+    _vrec_path = attempts_dir / "_validated.json"
+    if _vrec_path.is_file():
+        try:
+            _vrec = json.loads(_vrec_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _vrec = {}
+        _want_sha = str(_vrec.get("sha256") or "")
+        _have_sha = hashlib.sha256(
+            main_patch_text.encode("utf-8")).hexdigest()
+        if _want_sha and _want_sha != _have_sha:
+            return _abort(
+                "stale_validation",
+                "patch.lean changed AFTER your last validate_file() — "
+                "the committed bytes were never validated. Run "
+                "validate_file() on the final state (it reads the disk "
+                "file), then finish.",
+                leading,
+            )
+
     if not leading.strip():
-        return _abort(
-            "agent_no_annotation",
-            "patch.lean present but had no comment block before the "
-            "first declaration; replace the `-- STRATEGY:` placeholder "
-            "above the theorem with your rationale (`--` lines or a "
-            "`/- … -/` block; an unreplaced placeholder does not "
-            "count) — it is required for goal annotation propagation.",
-            leading,
-        )
+        if not _is_sorry_stub(main_patch_text):
+            # Proof-first (owner ruling 2026-08-24): a sorry-free body is
+            # a kernel-checkable proof, and a proof is never discarded
+            # over missing metadata. Commit proceeds; the machine note
+            # below becomes the propagated annotation, and the
+            # `[annotation pending]` prefix is the structural marker.
+            leading = ("[annotation pending] proof committed without an "
+                       "agent annotation — the framework keeps a "
+                       "kernel-verified proof over missing metadata.")
+            print(f"[annotation-pending] {goal['slug']} "
+                  f"{sid_token}: complete proof committed without an "
+                  f"agent annotation", flush=True)
+        else:
+            return _abort(
+                "agent_no_annotation",
+                "patch.lean present but had no comment block before the "
+                "first declaration; replace the `-- STRATEGY:` "
+                "placeholder above the theorem with your rationale "
+                "(`--` lines or a `/- … -/` block; an unreplaced "
+                "placeholder does not count) — a decomposition's "
+                "annotation IS its strategy rationale and is required "
+                "for goal annotation propagation.",
+                leading,
+            )
 
     # Signature check applies to both decomp + leaf-bypass paths.
     agent_signature = _normalize_signature(

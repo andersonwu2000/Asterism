@@ -797,14 +797,14 @@ def test_untouched_skeleton_is_empty_output_not_annotation_failure(
         f"an annotation failure; got {r.failure_reason}")
 
 
-def test_unreplaced_placeholder_does_not_count_as_annotation(
+def test_proof_first_keeps_a_complete_proof_over_missing_annotation(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The seeded `-- STRATEGY: replace me` line is missing metadata,
-    not documentation: a real proof body above which only the
-    placeholder stands is `agent_no_annotation`, and the teaching names
-    the placeholder."""
+    """Owner ruling 2026-08-24: a kernel-checkable (sorry-free) proof is
+    never discarded over metadata. A complete body above which only the
+    unreplaced placeholder stands COMMITS, with the `[annotation
+    pending]` machine note as the propagated annotation."""
     gid = _seed_root_goal(tmp_path, conn)
 
     def fake_spawn(**kw):
@@ -823,6 +823,67 @@ def test_unreplaced_placeholder_does_not_count_as_annotation(
         conn, goal_id=gid, workspace=tmp_path,
         intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-placeholder")
+    assert r.outcome == "success", (
+        f"proof-first: a complete proof must commit; got {r.outcome} "
+        f"({r.failure_reason})")
+    assert "[annotation pending]" in (r.proposal_md or "")
+
+
+def test_decomposition_without_annotation_is_still_gated(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proof-first applies to PROOFS. A decomposition (sorry body +
+    stubs) has no proof yet — its annotation IS the strategy rationale,
+    and stays a hard commit condition."""
+    gid = _seed_root_goal(tmp_path, conn)
+
+    def fake_spawn(**kw):
+        attempts = kw["attempts_dir"]
+        (attempts / "new_sub1.lean").write_text(
+            "theorem sub1 : True := by sorry\n", encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    _start_pipeline(conn, "pid-decomp-noanno", gid)
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
+        pipeline_id="pid-decomp-noanno")
     assert r.outcome == "exhausted"
     assert r.failure_reason == "agent_no_annotation"
     assert "placeholder" in (r.failure_detail or "")
+
+
+def test_commit_rejects_bytes_the_last_validate_never_saw(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disk-authority ruling 2026-08-24: `_validated.json` records the
+    sha of the bytes the last validate_file() saw; committing DIFFERENT
+    bytes is `stale_validation` — the reported green was about some
+    other content."""
+    import json as _json
+    gid = _seed_root_goal(tmp_path, conn)
+
+    def fake_spawn(**kw):
+        attempts = kw["attempts_dir"]
+        p = attempts / "patch.lean"
+        text = p.read_text(encoding="utf-8").replace(
+            ":= by sorry", ":= by trivial").replace(
+            "-- STRATEGY: replace me", "-- STRATEGY: closed by trivial")
+        p.write_text(text, encoding="utf-8")
+        (attempts / "_validated.json").write_text(
+            _json.dumps({"sha256": "0" * 64, "ok": True}),
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    _start_pipeline(conn, "pid-stale-validate", gid)
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
+        pipeline_id="pid-stale-validate")
+    assert r.outcome == "exhausted"
+    assert r.failure_reason == "stale_validation"
+    assert "validate_file" in (r.failure_detail or "")

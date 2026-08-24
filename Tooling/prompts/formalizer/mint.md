@@ -11,7 +11,7 @@ Time budget: {timeout_min} minutes.
 Four MCP tools talk to a live Lean server already holding **your `new_forward.lean` sandbox**:
 
 - `mcp__lsp__apply_edit(edits)` — anchored edits, several per call: `[{"replace": "<exact old text>", "with": "<new>"}, {"replace_between": ["<from>", "<to>"], "with": "<new>"}, {"insert_after": "<anchor>", "text": "<new>"}]`. Anchors must be verbatim and unique; if one fails NOTHING is applied and the response says which and how to fix it. No line numbers — the response reports where each edit landed, plus the file’s tail and `scope_balance`. / `goal_at(line, col)` / `errors_at(line=None)` — edit, read a goal, list diagnostics. `apply_edit` already returns diagnostics; use `errors_at` to re-check without editing, or when a response carries `elaborating`.
-- `mcp__lsp__validate_file(content)` — elaborate a standalone candidate; a leading `sorry` is OK.
+- `mcp__lsp__validate_file()` — validate your file from disk (write it first); a leading `sorry` is OK.
 - `inspect([{"grep":"Bar","in":"proofs/*.lean"},{"decl":"foo"}])` — several read questions in one call; `decl` answers from the framework's record. `compute(code)` runs a Python calculation (numpy; no filesystem, no network — and it proves nothing, only the Lean kernel does).
 
 Write your declaration into the namespace body, then validate until only sorry warnings remain.

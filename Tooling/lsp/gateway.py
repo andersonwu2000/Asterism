@@ -2863,12 +2863,16 @@ def _axioms_submission(backend, slot, content: str,
 
 @mcp.tool(structured_output=False)
 @_offload_to_thread
-def validate_file(content: str = "") -> str:
-    """Validate a candidate Lean file (typically a `new_<slug>.lean`
-    sub-goal stub, or the assembled strategy patch). Auto-prepends
-    Mathlib + the problem's Defs imports, pushes the candidate content
-    onto a borrowed slot, reads diagnostics, leaves the slot dirty (next
-    caller will swap content as needed).
+def validate_file(content: str = "", file: str = "") -> str:
+    """Validate this session's file FROM DISK — `validate_file()` reads
+    `patch.lean`, `validate_file(file="new_<slug>.lean")` reads that
+    stub. The disk file is the authority: write first (`apply_edit` /
+    `write_file`), then validate; there is no string mode (what you
+    validate IS what commit reads — the response's `content_sha256`
+    names the exact bytes). Auto-prepends Mathlib + the problem's Defs
+    imports, pushes the file's content onto a borrowed slot, reads
+    diagnostics, leaves the slot dirty (next caller will swap content
+    as needed).
 
     If `content` cites a freshly-declared sibling sub-goal (`new_<slug>.
     lean` in the attempts dir, referenced but not declared here), that
@@ -2911,17 +2915,26 @@ def validate_file(content: str = "") -> str:
     circular_decomposition when the twin is an identical ancestor.
 
     Args:
-      content: Full contents of the candidate file.
+      file: Which file to validate — empty for this session's own
+            target (patch.lean), or a `new_<slug>.lean` beside it.
 
-    Returns: { ok, diagnostics, diagnostic_count[, inlined_siblings],
-               commit_header, submission }.
+    Returns: { ok, file, content_sha256, diagnostics, diagnostic_count
+               [, inlined_siblings], commit_header, submission }.
     """
-    if not (content or "").strip():
+    _recv_ts = _ts_now()
+    if (content or "").strip():
+        # Owner ruling 2026-08-24: patch.lean is itself the draft of the
+        # proofs/ text — no drafts stacked on drafts. The string mode let
+        # an agent validate an in-memory candidate, never write it back,
+        # and honestly report "validated" while the canonical file sat
+        # unchanged (union_closed autopsy).
         return _arg_help(
             "validate_file",
-            "the parameter is `content`, the whole candidate file as "
-            "a string — e.g. validate_file(content=<your patch text>)")
-    _recv_ts = _ts_now()
+            "`content` is not accepted — the DISK file is the authority. "
+            "Write your candidate first (`apply_edit` edits patch.lean "
+            "in place; `write_file` creates a stub), then call "
+            "validate_file() for patch.lean or "
+            'validate_file(file="new_<slug>.lean") for a stub')
     meta = _current_session()
     if meta is None:
         return json.dumps({"error": "no session",
@@ -2933,6 +2946,30 @@ def validate_file(content: str = "") -> str:
     if not meta.problem:
         return json.dumps({"error": "no problem on session metadata",
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
+    _attempts = meta.target_path.parent.resolve()
+    _fname = (file or "").strip() or meta.target_path.name
+    _fpath = (_attempts / _fname).resolve()
+    if (_fpath.parent != _attempts
+            or (_fpath.name != meta.target_path.name
+                and not _fpath.name.startswith("new_"))):
+        return json.dumps({
+            "error": (f"`file` must name this session's "
+                      f"{meta.target_path.name} or a new_<slug>.lean "
+                      f"beside it; got {file!r}"),
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
+    try:
+        content = _fpath.read_text(encoding="utf-8")
+    except OSError as e:
+        return json.dumps({
+            "error": (f"cannot read {_fname} ({e}) — write it first: "
+                      f"`apply_edit` edits patch.lean in place, "
+                      f"`write_file` creates a stub"),
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
+    if not content.strip():
+        return json.dumps({
+            "error": f"{_fname} is empty on disk — write it first",
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
+    _content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
     _hb = _heartbeat_gate(meta, content)
     if _hb is not None:
         return json.dumps(
@@ -2957,7 +2994,7 @@ def validate_file(content: str = "") -> str:
     full_content, line_map, inlined_slugs = _build_compilation_unit(
         content, meta.problem, meta.workspace, meta.target_path.parent,
         extra_opens=_harvest_open_lines(meta.file_content),
-        own_name=meta.target_path.name)
+        own_name=_fpath.name)
 
     t0 = time.perf_counter()
     diags: list = []
@@ -3036,6 +3073,8 @@ def validate_file(content: str = "") -> str:
         # A timeout means we never confirmed the file is clean, so it must
         # not surface as ok:true — report indeterminate (#102).
         "ok": not has_error and not timed_out,
+        "file": _fname,
+        "content_sha256": _content_sha,
         "diagnostic_count": n_diags,
         "diagnostics": formatted,
         "elapsed_s": round(time.perf_counter() - t0, 1),
@@ -3143,6 +3182,17 @@ def validate_file(content: str = "") -> str:
                     "diagnostic_count": len(formatted),
                     "has_error": has_error,
                     "timed_out": timed_out})
+    if _fpath == meta.target_path.resolve():
+        # Identity record for the commit gate: the exact bytes the last
+        # validate saw. Commit compares the file's hash against this —
+        # an edit after the final validate is caught there instead of
+        # sailing through on a stale green (autopsy 2026-08-24).
+        try:
+            (_attempts / "_validated.json").write_text(json.dumps({
+                "sha256": _content_sha, "ok": response["ok"],
+                "at": _ts_now()}), encoding="utf-8")
+        except OSError:
+            pass
     return json.dumps(response, ensure_ascii=False)
 
 

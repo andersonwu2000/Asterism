@@ -255,6 +255,11 @@ REGISTRY: "dict[str, FailureTraits]" = {
     "parse_proposal_fail": _T(),
     "patch_body_contains_sorry": _T(),
     "patch_signature_mismatch": _T(),
+    # patch.lean's bytes at commit differ from the last validate_file()
+    # record — the agent edited after its final validation, so the green
+    # it reported is about some OTHER content (disk-authority ruling,
+    # 2026-08-24). Retryable: the way out is one validate_file() call.
+    "stale_validation": _T(),
     "subgoal_slug_collision": _T(),
 
     # --- librarian chain units (fail-count capped, not goal attempts) ---
