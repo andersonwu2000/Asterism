@@ -80,6 +80,23 @@ def _model_for(base: str, model: "str | None") -> "str | None":
         return {"x-preview-f-free": "stealth/ox-alpha"}.get(model, model)
     return {"stealth/ox-alpha": "x-preview-f-free"}.get(model, model)
 ZEN_EFFORT = os.environ.get("ASTERISM_ZEN_EFFORT", "medium")
+#: Hard reasoning-token cap, replacing `effort` when set (> 0). Effort
+#: bounds the AVERAGE but not the tail: per-call latency measured
+#: p50=8s p90=25s p99=619s max=1868s (2026-08-24, sylvester_gallai),
+#: and the tail alone outlived two 1500s formalizer walls. Nous
+#: honors `reasoning.max_tokens` (probe: effort-high 80s/2900tok vs
+#: max_tokens=2048 33s/1158tok; the two keys 400 together — send one).
+#: OpenCode Zen ignores the field (2026-08-22) — harmless on rescue.
+ZEN_REASONING_MAX_TOKENS = int(
+    os.environ.get("ASTERISM_ZEN_REASONING_MAX_TOKENS") or 0)
+
+
+def _reasoning_pin() -> dict:
+    """The reasoning parameter pinned onto every upstream request —
+    the hard token cap when configured, the effort pin otherwise."""
+    if ZEN_REASONING_MAX_TOKENS > 0:
+        return {"max_tokens": ZEN_REASONING_MAX_TOKENS}
+    return {"effort": ZEN_EFFORT}
 NS = "mcp__asterism_tools"
 LSP_NS = "mcp__lsp"
 GATEWAY_MCP = os.environ.get("ASTERISM_GATEWAY_MCP",
@@ -502,8 +519,7 @@ def _to_chat(body: dict) -> dict:
                          else "user", "content": text})
     _flush_calls()
     chat: dict = {"stream": True, "messages": msgs,
-                  "reasoning": body.get("reasoning")
-                  or {"effort": ZEN_EFFORT}}
+                  "reasoning": body.get("reasoning") or _reasoning_pin()}
     tools = [{"type": "function",
               "function": {"name": t.get("name"),
                            "description": t.get("description", ""),
@@ -1031,7 +1047,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
         # both cure the runaway (measured 2026-08-22: 1000-word essay
         # delivered at both; unbounded = 8000 tokens of reasoning and
         # zero content).
-        body["reasoning"] = {"effort": ZEN_EFFORT}
+        body["reasoning"] = _reasoning_pin()
         # Deterministic channel first: the per-spawn config points codex
         # at `/a/<relpath>/v1` (see _attempt_dir_from_path). The
         # request-text regex stays as fallback (operator overrides

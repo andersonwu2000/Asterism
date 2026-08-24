@@ -819,3 +819,19 @@ def test_tool_loop_harvests_reasoning_every_iteration() -> None:
     assert "turn_reasoning.append((iters, s[\"text\"]))" in src
     assert "_merge_turn_reasoning(turn_reasoning)" in src
     assert 'if it.get("type") != "reasoning"' in src
+
+
+def test_reasoning_pin_prefers_the_hard_cap(monkeypatch) -> None:
+    """Effort bounds the AVERAGE reasoning length but not the tail —
+    per-call latency p99=619s max=1868s outlived two formalizer walls
+    (sylvester_gallai, 2026-08-24). Nous honors reasoning.max_tokens
+    (the keys 400 together, so the cap REPLACES effort); unset, the
+    effort pin stands."""
+    monkeypatch.setattr(zen_shim, "ZEN_REASONING_MAX_TOKENS", 4096)
+    assert zen_shim._reasoning_pin() == {"max_tokens": 4096}
+    monkeypatch.setattr(zen_shim, "ZEN_REASONING_MAX_TOKENS", 0)
+    assert zen_shim._reasoning_pin() == {"effort": zen_shim.ZEN_EFFORT}
+    # the chat translation inherits whatever the pin decided
+    monkeypatch.setattr(zen_shim, "ZEN_REASONING_MAX_TOKENS", 512)
+    chat = zen_shim._to_chat({"input": []})
+    assert chat["reasoning"] == {"max_tokens": 512}
