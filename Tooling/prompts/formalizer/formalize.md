@@ -8,7 +8,7 @@ Time budget: {timeout_min} minutes.
 
 ## Write the proof
 
-apply_edit `patch.lean`'s `:= by sorry` into a tactic block; iterate to 0 errors, 0 sorry. Edit only the body — signature changes are rejected as `patch_signature_mismatch`. The framework auto-prepends `import Mathlib` + `Defs` and auto-appends sub-goal imports.
+apply_edit `patch.lean`'s `:= by sorry` into a tactic block; iterate to 0 errors, 0 sorry. Edit only the body and the annotation block above the theorem — signature changes are rejected as `patch_signature_mismatch`. The framework auto-prepends `import Mathlib` + `Defs` and auto-appends sub-goal imports.
 
 Four MCP tools talk to a live Lean server already holding **your `patch.lean` sandbox**:
 
@@ -69,7 +69,7 @@ Never use any name in FORBIDDEN_LEMMAS.
 
 ## Annotation
 
-Before finishing, add a `--` comment block above the theorem (above or below its `set_option ... in` lines) — first non-blank line is the one-line summary (key lemma family / decomposition shape + why it closes the goal). Fix remaining warnings (e.g. lines >100 chars) while there.
+When the proof stands (0 errors, 0 sorry — warnings don't block the proof loop): replace the `-- STRATEGY: replace me` line above the theorem with your annotation — first non-blank line is the one-line summary (key lemma family / decomposition shape + why it closes the goal). An unreplaced placeholder counts as no annotation. Fix remaining warnings (e.g. lines >100 chars) while there.
 
 ## Decline
 

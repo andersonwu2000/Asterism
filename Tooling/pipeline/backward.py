@@ -1029,6 +1029,7 @@ def _backward_parse_and_commit(
         _slug_from_filename,
         DECLINE_TO_FAILURE_REASON,
     )
+    from ..state.assemble import strip_annotation_placeholder
 
     def _abort(reason: str, detail: str = "",
                proposal_md: str = "") -> "PipelineResult":
@@ -1102,7 +1103,11 @@ def _backward_parse_and_commit(
         except OSError:
             note = ""
         if note:
-            bail_leading = _extract_leading_comments(main_patch_text)
+            # The seeded placeholder is not the agent's comment — strip
+            # it or a bailed skeleton reads as "has leading comments"
+            # and the bail discriminator never fires.
+            bail_leading = strip_annotation_placeholder(
+                _extract_leading_comments(main_patch_text))
             bail_new_subs = _live_stubs(attempts_dir)
             if (not bail_leading.strip()
                     and not bail_new_subs
@@ -1118,7 +1123,12 @@ def _backward_parse_and_commit(
     # strategy's annotation source (later propagates to the parent goal
     # when this strategy wins Verify). `-- decline: <reason>` on the
     # leading block routes through the decline channel.
-    leading = _extract_leading_comments(main_patch_text)
+    # The seed skeleton carries a `-- STRATEGY: replace me` placeholder;
+    # an unreplaced one is missing metadata, not documentation. Strip it
+    # FIRST so every consumer (decline proposal_md, the emptiness gate,
+    # goal-annotation propagation) sees only what the agent wrote.
+    leading = strip_annotation_placeholder(
+        _extract_leading_comments(main_patch_text))
     decline = _extract_decline_reason(leading)
     if decline is not None:
         # Map directive to DB failure_reason. Unknown directive strings
@@ -1134,14 +1144,28 @@ def _backward_parse_and_commit(
             leading,
         )
 
+    # EMPTY OUTPUT before the annotation gate (autopsy 2026-08-24: this
+    # check sat behind it, so a formalizer that produced NOTHING was
+    # booked as an annotation failure — the ~50-count inflation). sorry
+    # body + no sub-goal files + no decline = nothing was delivered.
+    new_subs = _live_stubs(attempts_dir)
+    if not new_subs and _is_sorry_stub(main_patch_text):
+        return _abort(
+            "parse_proposal_fail",
+            "patch=1 new=0 with sorry body and no decline directive; "
+            "need decomposition (new_*.lean), a leaf-style proof, or "
+            "a `-- decline:` directive.",
+            leading,
+        )
+
     if not leading.strip():
         return _abort(
             "agent_no_annotation",
             "patch.lean present but had no comment block before the "
-            "first declaration; write your strategy rationale as `--` "
-            "lines or a `/- … -/` block above the theorem (after the "
-            "imports is fine) — it is required for goal annotation "
-            "propagation.",
+            "first declaration; replace the `-- STRATEGY:` placeholder "
+            "above the theorem with your rationale (`--` lines or a "
+            "`/- … -/` block; an unreplaced placeholder does not "
+            "count) — it is required for goal annotation propagation.",
             leading,
         )
 
@@ -1157,7 +1181,6 @@ def _backward_parse_and_commit(
             leading,
         )
 
-    new_subs = _live_stubs(attempts_dir)
     if not new_subs:
         # Phase 6.5 — Backward leaf-bypass salvage. Mirrors
         # `_try_promote_sorry_free` at the sub-goal level: when the
@@ -1165,17 +1188,9 @@ def _backward_parse_and_commit(
         # body and no decomposition), the framework registers a
         # 0-subgoal strategy rather than thrashing with parse_proposal_
         # fail. Verify housekeeping picks it up next tick (lake build
-        # the patch + promote_to_alias parent → goal proved). If patch
-        # body is `:= by sorry` and there are no subs and no decline
-        # directive, it's truly empty output → real parse_proposal_fail.
-        if _is_sorry_stub(main_patch_text):
-            return _abort(
-                "parse_proposal_fail",
-                "patch=1 new=0 with sorry body and no decline directive; "
-                "need decomposition (new_*.lean), a leaf-style proof, or "
-                "a `-- decline:` directive.",
-                leading,
-            )
+        # the patch + promote_to_alias parent → goal proved). (The
+        # sorry-body empty-output case aborts ABOVE the annotation
+        # gate since 2026-08-24.)
         forbidden = _grep_forbidden(main_patch_text, intent.forbidden_lemmas)
         if forbidden:
             return _abort("forbidden_lemma", forbidden, leading)

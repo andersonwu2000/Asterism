@@ -2303,11 +2303,26 @@ def test_build_compilation_unit_opens_defs_namespace(tmp_path: Path) -> None:
 
 def test_annotation_submission_stub_skip_carries_note() -> None:
     """07-19 x2: a bare `checked: false` on a sorry stub read as
-    "annotation maybe required here too"."""
+    "annotation maybe required here too". Since the 2026-08-24 autopsy
+    the note also warns FORWARD: the final patch will need the
+    placeholder replaced."""
     out = lsp_gateway._annotation_submission(
         "theorem t : True := by sorry\n")
     assert out["checked"] is False
-    assert "stubs need no annotation" in out.get("note", "")
+    assert "no annotation needed while the body is sorry" in out.get(
+        "note", "")
+    assert "FINAL patch" in out.get("note", "")
+
+
+def test_annotation_submission_rejects_the_unreplaced_placeholder() -> None:
+    """An unreplaced `-- STRATEGY: replace me` is missing metadata, not
+    documentation — the submission mirror must refuse it exactly as the
+    commit gate does."""
+    out = lsp_gateway._annotation_submission(
+        "-- STRATEGY: replace me — one-line summary, then why\n"
+        "theorem t : True := by trivial\n")
+    assert out["checked"] is True and out["ok"] is False
+    assert "placeholder" in out.get("note", "")
 
 
 def test_scope_balance_counts_namespace_and_section() -> None:

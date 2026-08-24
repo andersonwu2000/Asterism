@@ -68,6 +68,24 @@ DECL_HEAD_RE = re.compile(
 # protects structured patches from false hits).
 SORRY_STUB_RE = re.compile(r":=[ \t]*by[ \t]+sorry[ \t]*$", re.MULTILINE)
 
+# The strategy skeleton's annotation placeholder (2026-08-24, the
+# annotation-autopsy fix): seeded above the theorem so writing the
+# annotation is a FILL, not an instruction remembered from the prompt's
+# far end. Shared SoT — the skeleton writes it, the commit gate and the
+# gateway's submission mirror both refuse it as an annotation (an
+# unreplaced placeholder is missing metadata, not documentation).
+ANNOTATION_PLACEHOLDER = "-- STRATEGY: replace me"
+ANNOTATION_PLACEHOLDER_LINE = (
+    ANNOTATION_PLACEHOLDER
+    + " — one-line summary, then why it closes the goal")
+
+
+def strip_annotation_placeholder(leading: str) -> str:
+    """Comment block minus placeholder lines — what the AGENT wrote."""
+    return "\n".join(
+        ln for ln in leading.splitlines()
+        if not ln.strip().startswith(ANNOTATION_PLACEHOLDER))
+
 THEOREM_LINE_RE = re.compile(r"(?m)^\s*theorem\s+\S+")
 
 

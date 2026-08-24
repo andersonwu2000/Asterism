@@ -769,3 +769,60 @@ def test_backward_no_subs_with_sorry_body_still_parse_proposal_fail(
     assert r.outcome == "exhausted"
     assert r.failure_reason == "parse_proposal_fail"
     assert "sorry body" in (r.failure_detail or "")
+
+
+def test_untouched_skeleton_is_empty_output_not_annotation_failure(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Autopsy 2026-08-24: the annotation gate sat IN FRONT of the
+    empty-output check, so a formalizer that produced nothing was
+    booked `agent_no_annotation` (~50 inflated counts in one
+    union_closed run). An untouched skeleton — placeholder comment,
+    sorry body, no subs — is empty output."""
+    gid = _seed_root_goal(tmp_path, conn)
+
+    def fake_spawn(**kw):
+        return 0                      # agent writes nothing at all
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    _start_pipeline(conn, "pid-untouched", gid)
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
+        pipeline_id="pid-untouched")
+    assert r.outcome == "exhausted"
+    assert r.failure_reason == "parse_proposal_fail", (
+        "an untouched skeleton must classify as empty output, not as "
+        f"an annotation failure; got {r.failure_reason}")
+
+
+def test_unreplaced_placeholder_does_not_count_as_annotation(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seeded `-- STRATEGY: replace me` line is missing metadata,
+    not documentation: a real proof body above which only the
+    placeholder stands is `agent_no_annotation`, and the teaching names
+    the placeholder."""
+    gid = _seed_root_goal(tmp_path, conn)
+
+    def fake_spawn(**kw):
+        attempts = kw["attempts_dir"]
+        p = attempts / "patch.lean"
+        text = p.read_text(encoding="utf-8")
+        assert "-- STRATEGY: replace me" in text, (
+            "the seed skeleton must carry the annotation placeholder")
+        p.write_text(text.replace(":= by sorry", ":= by trivial"),
+                     encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    _start_pipeline(conn, "pid-placeholder", gid)
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        intent=intent_mod.ProblemIntent(problem="p", charter="True"),
+        pipeline_id="pid-placeholder")
+    assert r.outcome == "exhausted"
+    assert r.failure_reason == "agent_no_annotation"
+    assert "placeholder" in (r.failure_detail or "")

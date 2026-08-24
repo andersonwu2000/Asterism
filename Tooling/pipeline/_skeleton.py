@@ -23,6 +23,7 @@ from ..quality.dedupe import leading_decl_attrs
 # (the gateway's locked-signature submission mirror runs the same
 # comparison — task #5 D-lite).
 from ..state.assemble import (  # noqa: E402
+    ANNOTATION_PLACEHOLDER_LINE,
     DECL_KIND_RE_SRC as _DECL_HEAD_RE,
     normalize_signature,
     signature_prefix,
@@ -160,6 +161,7 @@ def build_strategy_skeleton(
         header + "\n\n"
         f"namespace {namespace}\n\n"
         f"{var_block}"
+        f"{ANNOTATION_PLACEHOLDER_LINE}\n"
         "set_option linter.unusedVariables false in\n"
         f"{mods}{new_sig.rstrip()} := by sorry\n\n"
         f"end {namespace}\n"
@@ -214,6 +216,7 @@ def _skeleton_from_oracle_sig(
     return (
         header + "\n\n"
         f"namespace {namespace}\n\n"
+        f"{ANNOTATION_PLACEHOLDER_LINE}\n"
         "set_option linter.unusedVariables false in\n"
         f"{mods}{kind} {sid_token}{universes} "
         f"{binders_and_type.strip()} := by sorry\n\n"

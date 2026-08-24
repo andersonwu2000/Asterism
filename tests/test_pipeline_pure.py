@@ -1473,3 +1473,22 @@ def test_extract_leading_comments_accepts_block_and_doc_comments() -> None:
     # refusing the truly-absent case)
     assert _extract_leading_comments(
         "import Mathlib\ntheorem t : True := trivial\n").strip() == ""
+
+
+def test_skeleton_seeds_the_annotation_placeholder_and_strip_removes_it():
+    """Autopsy 2026-08-24: writing the annotation is a FILL now, not an
+    instruction remembered from the prompt's far end. Both skeleton
+    arms seed the placeholder; `strip_annotation_placeholder` is what
+    every gate uses to see only the agent's own words."""
+    from Tooling.pipeline import _build_strategy_skeleton
+    from Tooling.state.assemble import (ANNOTATION_PLACEHOLDER,
+                                        strip_annotation_placeholder)
+    parent = ("import Mathlib\n\nnamespace P\n\n"
+              "theorem g_root (n : Nat) : n = n := by sorry\n\nend P\n")
+    sk = _build_strategy_skeleton(
+        parent, parent_slug="g_root", sid_token="s99", namespace="P")
+    assert sk is not None and ANNOTATION_PLACEHOLDER in sk
+    kept = strip_annotation_placeholder(
+        "-- STRATEGY: replace me — one-line summary, then why\n"
+        "-- real rationale line")
+    assert kept.strip() == "-- real rationale line"

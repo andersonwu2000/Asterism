@@ -2521,14 +2521,22 @@ def _annotation_submission(content: str, is_mint: bool = False) -> "dict":
             or _GW_SORRY_STUB_RE.search(content)):
         # Explain the skip (07-19 ×2: agents read a bare
         # `checked: false` on a stub as "annotation maybe required").
+        # The forward warning is deliberate (autopsy 2026-08-24): a
+        # silent skip here let a WIP patch sail to commit and only
+        # then learn the annotation was due.
         return {"checked": False,
-                "note": "stubs need no annotation — whoever proves the "
-                        "sub-goal writes it"}
-    ok = bool(_gw_leading_comments(content).strip())
+                "note": "no annotation needed while the body is sorry "
+                        "(a sub-goal stub never needs one) — the FINAL "
+                        "patch will: replace the `-- STRATEGY:` "
+                        "placeholder when the proof closes"}
+    ok = bool(assemble.strip_annotation_placeholder(
+        _gw_leading_comments(content)).strip())
     return {"checked": True, "ok": ok,
             "note": "" if ok else
-            "FINAL patch only: add a leading -- comment before commit "
-            "(agent_no_annotation). Ignore on exploratory probes."}
+            "FINAL patch only: replace the `-- STRATEGY:` placeholder "
+            "with a leading -- comment before commit "
+            "(agent_no_annotation; the unreplaced placeholder does not "
+            "count). Ignore on exploratory probes."}
 
 
 def _locked_signature_submission(content: str,
