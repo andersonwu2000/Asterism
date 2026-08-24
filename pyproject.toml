@@ -35,6 +35,10 @@ dependencies = [
     "fastapi>=0.115,<1",
     "PyYAML>=6.0,<7",
     "psutil>=7.2,<8",
+    # papers/shelf.py PDF text extraction (lazy import; without it every
+    # paper_fetch of a PDF dies ModuleNotFoundError — the cloud venv
+    # shipped without it, 2026-08-24)
+    "pymupdf>=1.24,<2",
 ]
 
 [project.optional-dependencies]

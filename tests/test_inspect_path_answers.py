@@ -81,3 +81,49 @@ def test_a_genuinely_missing_file_still_says_what_is_there(tmp_path: Path):
 
     assert "nearest existing directory" in out, out
     assert "real.lean" in out, out
+
+
+def test_basename_hint_never_names_a_foreign_attempt(tmp_path: Path,
+                                                     monkeypatch):
+    """Under the shim the tools run in-process, so `cwd` can be the
+    REPO ROOT — and the old rglob walked every attempt from it:
+    `.attempts/` sorts before `Problems/`, so a FOREIGN spawn's TREE.md
+    answered a presearch's bare read (both fleets, 2026-08-24). The
+    walk now prunes `.attempts` (a heavy dir) from broad roots; the
+    spawn's OWN attempt dir is still covered as its own root."""
+    cwd, attempts = _workspace(tmp_path, monkeypatch)
+    foreign = tmp_path / ".attempts" / "aaa-foreign" / "adversary" / "r1"
+    foreign.mkdir(parents=True)
+    (foreign / "TREE.md").write_text("FOREIGN TREE\n", encoding="utf-8")
+    (tmp_path / "Problems" / "P" / "TREE.md").write_text(
+        "MY TREE\n", encoding="utf-8")
+
+    # repo-root cwd (the shim's): the answer must be the problem's
+    # file, never the foreign attempt's — even though the foreign path
+    # sorts first
+    found = wq._find_by_basename("TREE.md", tmp_path)
+    assert found is not None
+    assert "aaa-foreign" not in str(found)
+    assert found == tmp_path / "Problems" / "P" / "TREE.md"
+
+    # the spawn's own attempt dir is still searchable
+    (attempts / "Context.md").write_text("mine\n", encoding="utf-8")
+    own_hit = wq._find_by_basename("Context.md", tmp_path)
+    assert own_hit == attempts / "Context.md"
+
+
+def test_run_queries_cwd_falls_back_to_the_request_context(
+        tmp_path: Path, monkeypatch):
+    """The shim carries the spawn's problem dir per request
+    (TOOL_CWD_CONTEXT via the URL /c/ segment); run_queries must use it
+    when no explicit cwd is passed — Path.cwd() is the SHIM's cwd, not
+    the spawn's."""
+    from Tooling.llm.spawn_guard import TOOL_CWD_CONTEXT
+    cwd, _attempts = _workspace(tmp_path, monkeypatch)
+    (cwd / "TREE.md").write_text("ctx tree\n", encoding="utf-8")
+    token = TOOL_CWD_CONTEXT.set(str(cwd))
+    try:
+        out = wq.run_queries([{"read": "TREE.md"}], per_query_chars=400)
+    finally:
+        TOOL_CWD_CONTEXT.reset(token)
+    assert "ctx tree" in out, out

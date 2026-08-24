@@ -363,18 +363,35 @@ def _find_by_basename(name: str, cwd: Path) -> "Path | None":
     returned whatever sorted first — a SIBLING spawn's file, complete
     and plausible and not this agent's. A hint that points at another
     spawn's state is worse than no hint, so the search stops at this
-    spawn's own two directories."""
+    spawn's own two directories.
+
+    2026-08-24, the same defect through a different door: under the
+    shim the tools run in-process, so `cwd` is the SHIM's cwd — the
+    repo root — and the old `rglob` walked every attempt from it
+    (`.attempts/` sorts before `Problems/`, so a foreign spawn's
+    TREE.md answered a presearch's bare read on both fleets). rglob
+    also bypassed the heavy-dir prune the grep walker has — the
+    28-minute-stall shape. The walk now prunes _SKIP_DIRS and
+    _HEAVY_DIRS from every root; the agent's own attempts dir is
+    still covered because it is its own root."""
     roots = [cwd]
     own = _own_attempt_dir()
     if own is not None:
         roots.append(own)
     for root in roots:
+        hits: "list[Path]" = []
         try:
-            for cand in sorted(root.rglob(name)):
-                if cand.is_file() and not _skipped(cand):
-                    return cand
+            for r, dirs, files in os.walk(root):
+                dirs[:] = sorted(d for d in dirs
+                                 if d not in _SKIP_DIRS
+                                 and d not in _HEAVY_DIRS)
+                if name in files:
+                    hits.append(Path(r) / name)
         except OSError:
             continue
+        for cand in sorted(hits):
+            if cand.is_file() and not _skipped(cand):
+                return cand
     return None
 
 
@@ -1140,6 +1157,14 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
     nobody has measured; no ceiling is applied (`llm/capabilities.
     mcp_result_delivery_chars` owns the numbers).
     """
+    if cwd is None:
+        # The shim runs tools in-process: ITS cwd is the repo root,
+        # not the spawn's problem dir. The request-local context
+        # (URL `/c/` segment) carries the real one; standalone MCP
+        # servers keep the process-cwd route (they inherit the
+        # agent's `-C problem_dir`).
+        from ..llm.spawn_guard import TOOL_CWD_CONTEXT
+        cwd = TOOL_CWD_CONTEXT.get()
     here = Path(cwd or Path.cwd())
     deny = _deny_roots(here)
     if not isinstance(queries, list) or not queries:

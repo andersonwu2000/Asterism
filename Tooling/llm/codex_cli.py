@@ -371,8 +371,24 @@ def _render_config(req: LLMRequest, model: str, effort: str,
                     # (friend-fleet report, 2026-08-23).
                     wall = int(req.timeout_sec)
                     budget = max(60, wall - min(300, max(60, wall // 4)))
+                    # `/c/<problem-rel>` carries the spawn's cwd (its
+                    # problem dir). A standalone MCP server inherits it
+                    # as process cwd, but the shim runs tools
+                    # in-process where cwd is the shim's own — bare
+                    # problem-file reads (TREE.md) missed their first
+                    # root and the basename fallback walked the repo
+                    # into FOREIGN attempts (both fleets, 2026-08-24).
+                    crel = ""
+                    try:
+                        pparts = Path(req.problem_dir).resolve().parts
+                        if "Problems" in pparts:
+                            j = pparts.index("Problems")
+                            crel = "/".join(pparts[j:])
+                    except (TypeError, ValueError, OSError):
+                        pass
+                    cseg = f"/c/{crel}" if crel else ""
                     base = (base[: -len("/v1")]
-                            + f"/a/{rel}/b/{budget}/v1")
+                            + f"/a/{rel}{cseg}/b/{budget}/v1")
         lines += [
             "",
             "[model_providers.zen]",

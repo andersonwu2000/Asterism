@@ -100,6 +100,17 @@ ATTEMPT_DIR_ENV = "ASTERISM_SPAWN_ATTEMPT_DIR"
 ATTEMPT_DIR_CONTEXT: "ContextVar[str | None]" = ContextVar(
     "asterism_attempt_dir", default=None)
 
+#: Request-local tool cwd — the spawn's PROBLEM dir. Standalone MCP
+#: servers inherit it as their process cwd (the agent runs `-C
+#: problem_dir`), but the shim executes tools in-process, where
+#: `Path.cwd()` is the SHIM's cwd — the repo root. Every bare
+#: problem-file read (TREE.md, Defs.lean) then missed its first
+#: resolution root, and the old basename fallback walked the repo into
+#: foreign attempts (both fleets, 2026-08-24). Carried per request via
+#: the config URL's `/c/<problem-rel>` segment.
+TOOL_CWD_CONTEXT: "ContextVar[str | None]" = ContextVar(
+    "asterism_tool_cwd", default=None)
+
 
 def current_attempt_dir() -> "str | None":
     """This request's attempt dir: context first, env fallback."""

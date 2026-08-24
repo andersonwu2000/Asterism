@@ -484,11 +484,36 @@ def test_channel_path_carries_the_turn_time_budget(tmp_path, monkeypatch):
     uuid = "c505e391-1cde-4be4-b3c2-407f89796ef7"
     (tmp_path / ".attempts" / uuid).mkdir(parents=True)
     monkeypatch.setattr(zen_shim, "_REPO", str(tmp_path))
-    d, b = zen_shim._channel_of_path(f"/a/{uuid}/b/1500/v1/responses")
+    d, c, b = zen_shim._channel_of_path(f"/a/{uuid}/b/1500/v1/responses")
     assert d == str(tmp_path / ".attempts" / uuid) and b == 1500
+    assert c is None
     # budget-less URLs (older generations) keep working
-    d2, b2 = zen_shim._channel_of_path(f"/a/{uuid}/v1/responses")
+    d2, c2, b2 = zen_shim._channel_of_path(f"/a/{uuid}/v1/responses")
     assert d2 == d and b2 is None
+
+
+def test_channel_path_carries_the_tool_cwd(tmp_path, monkeypatch):
+    """The shim runs tools in-process, so the spawn's problem dir must
+    ride the URL (`/c/`) — without it bare problem-file reads resolved
+    against the shim's cwd and the basename fallback walked into
+    FOREIGN attempts (both fleets, 2026-08-24)."""
+    uuid = "c505e391-1cde-4be4-b3c2-407f89796ef7"
+    (tmp_path / ".attempts" / uuid / "_presearch").mkdir(parents=True)
+    (tmp_path / "Problems" / "Erdos" / "p143").mkdir(parents=True)
+    monkeypatch.setattr(zen_shim, "_REPO", str(tmp_path))
+    d, c, b = zen_shim._channel_of_path(
+        f"/a/{uuid}/_presearch/c/Problems/Erdos/p143/b/315/v1/responses")
+    assert d == str(tmp_path / ".attempts" / uuid / "_presearch")
+    assert c == str(tmp_path / "Problems" / "Erdos" / "p143")
+    assert b == 315
+    # the cwd segment is FENCED: outside Problems/ it is dropped,
+    # never trusted
+    _, c2, _ = zen_shim._channel_of_path(
+        f"/a/{uuid}/_presearch/c/Tooling/llm/b/315/v1/responses")
+    assert c2 is None
+    _, c3, _ = zen_shim._channel_of_path(
+        f"/a/{uuid}/_presearch/c/Problems/../Tooling/b/315/v1/responses")
+    assert c3 is None
 
 
 def test_lsp_session_rehandshakes_when_the_token_changes(

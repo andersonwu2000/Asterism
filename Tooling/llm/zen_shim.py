@@ -276,21 +276,24 @@ def _tools_snapshot() -> dict:
             "upstream_slots": conc}
 
 
-def _run_tool(name: str, args: dict, attempt_dir: "str | None") -> str:
-    """Execute one in-process tool with REQUEST-LOCAL attempt-dir
-    context. The former shape pinned a process-wide env var under a
-    global lock; one 28-minute grep then starved all twelve spawns'
-    tool calls while heartbeats froze (2026-08-23). The ContextVar
-    isolates concurrent requests without serializing them — deleting
-    the lock alone would have let agents read each other's attempt
-    dirs, which is worse than the stall."""
+def _run_tool(name: str, args: dict, attempt_dir: "str | None",
+              tool_cwd: "str | None" = None) -> str:
+    """Execute one in-process tool with REQUEST-LOCAL attempt-dir and
+    tool-cwd context. The former shape pinned a process-wide env var
+    under a global lock; one 28-minute grep then starved all twelve
+    spawns' tool calls while heartbeats froze (2026-08-23). The
+    ContextVars isolate concurrent requests without serializing them —
+    deleting the lock alone would have let agents read each other's
+    attempt dirs, which is worse than the stall."""
     mod = _tools_module()
     fn = getattr(mod, name, None)
     if fn is None:
         return f"unknown tool {name!r}"
-    from Tooling.llm.spawn_guard import ATTEMPT_DIR_CONTEXT
+    from Tooling.llm.spawn_guard import (ATTEMPT_DIR_CONTEXT,
+                                         TOOL_CWD_CONTEXT)
     tid = threading.get_ident()
     token = ATTEMPT_DIR_CONTEXT.set(attempt_dir or None)
+    cwd_token = TOOL_CWD_CONTEXT.set(tool_cwd or None)
     with _TOOLS_ACTIVE_LOCK:
         _TOOLS_ACTIVE[tid] = (name, json.dumps(args)[:120], time.time())
     try:
@@ -303,6 +306,7 @@ def _run_tool(name: str, args: dict, attempt_dir: "str | None") -> str:
     finally:
         with _TOOLS_ACTIVE_LOCK:
             _TOOLS_ACTIVE.pop(tid, None)
+        TOOL_CWD_CONTEXT.reset(cwd_token)
         ATTEMPT_DIR_CONTEXT.reset(token)
 
 
@@ -444,26 +448,43 @@ def _attempt_dir_from_path(path: str) -> "str | None":
     return _channel_of_path(path)[0]
 
 
-def _channel_of_path(path: str) -> "tuple[str | None, int | None]":
-    """(attempts dir, turn time-budget seconds) named by the URL.
+def _channel_of_path(path: str) \
+        -> "tuple[str | None, str | None, int | None]":
+    """(attempts dir, tool cwd, turn time-budget seconds) from the URL.
 
-    `/a/<relpath>[/b/<sec>]/v1/...` — the optional `/b/` segment is the
+    `/a/<relpath>[/c/<problem-rel>][/b/<sec>]/v1/...` — `/b/` is the
     seat's wall budget minus a wrap-up margin, so the tool loop can
     finalize BEFORE the subprocess wall kills the turn (see codex_cli;
-    the 200-iteration cap alone was unreachable inside a 1800s wall)."""
-    m = re.match(r"^/a/(.+?)(?:/b/(\d+))?/v1(?:/|$)", path or "")
+    the 200-iteration cap alone was unreachable inside a 1800s wall).
+    `/c/` is the spawn's problem dir: standalone MCP servers inherit it
+    as process cwd, but here tools run in-process where cwd is the
+    shim's own — bare problem-file reads then resolved against the
+    repo root and the basename fallback walked into foreign attempts
+    (both fleets, 2026-08-24). Fenced to `Problems/...` under the repo;
+    an old config without the segment just leaves cwd None (the
+    process-cwd fallback, i.e. exactly the old behavior)."""
+    m = re.match(r"^/a/(.+?)(?:/c/(.+?))?(?:/b/(\d+))?/v1(?:/|$)",
+                 path or "")
     if not m:
-        return None, None
-    budget = int(m.group(2)) if m.group(2) else None
+        return None, None, None
+    budget = int(m.group(3)) if m.group(3) else None
     parts = m.group(1).split("/")
     if any(p in ("", ".", "..") for p in parts):
-        return None, None
+        return None, None, None
     cand = os.path.join(_REPO, ".attempts", *parts)
+    cwd = None
+    if m.group(2):
+        cparts = m.group(2).split("/")
+        if (not any(p in ("", ".", "..") for p in cparts)
+                and cparts[0] == "Problems"):
+            c = os.path.join(_REPO, *cparts)
+            if os.path.isdir(c):
+                cwd = c
     # The dispatcher creates the dir before the spawn, so a real
     # channel always names an existing dir; a miss means a stale
     # generation's config (basename-only URLs) — fall back to the
     # request-text archaeology rather than answer confidently wrong.
-    return (cand if os.path.isdir(cand) else None), budget
+    return (cand if os.path.isdir(cand) else None), cwd, budget
 
 
 def _attempt_dir_of(body: dict) -> "str | None":
@@ -906,8 +927,16 @@ def _render_turn_trail(trail: "list[str]") -> "str | None":
     if not trail:
         return None
     lines = [f"{i}. {t}" for i, t in enumerate(trail, 1)]
-    text = ("[tool trail — this turn's executed tool calls, recorded "
-            "by the framework so your next turn remembers them]\n"
+    # "this turn's" read as CURRENT-turn work when the rollout replayed
+    # it into a later session — one forward nearly anchored onto a
+    # prior turn's abandoned edits ("it even recorded a verdict this
+    # session never produced", 2026-08-24). The label now names the
+    # boundary and the authority.
+    text = ("[tool trail — calls an EARLIER turn of this session "
+            "executed, recorded so you keep that experience. The files "
+            "ON DISK are the authority: earlier edits may have been "
+            "rejected or rewritten since — re-read before building on "
+            "them]\n"
             + "\n".join(lines))
     if len(text) > _TRAIL_TOTAL_CHARS:
         head = text[:int(_TRAIL_TOTAL_CHARS * 0.7)]
@@ -1149,7 +1178,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
         # at `/a/<relpath>/v1` (see _attempt_dir_from_path). The
         # request-text regex stays as fallback (operator overrides
         # that bypass the per-spawn config).
-        attempt_dir, turn_budget = _channel_of_path(self.path)
+        attempt_dir, tool_cwd, turn_budget = _channel_of_path(self.path)
         if attempt_dir is None:
             attempt_dir = _attempt_dir_of(body)
         if not isinstance(body.get("input"), list):
@@ -1362,7 +1391,8 @@ class Shim(http.server.BaseHTTPRequestHandler):
                         out = _run_lsp_tool(tool, args, attempt_dir)
                     else:
                         tool = full[len(NS) + 2:]
-                        out = _run_tool(tool, args, attempt_dir)
+                        out = _run_tool(tool, args, attempt_dir,
+                                        tool_cwd)
                     # Name the target and echo the result HEAD: a 99B
                     # success and a 99B refusal were indistinguishable
                     # by size, which cost a whole forensics round on
