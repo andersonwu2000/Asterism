@@ -44,9 +44,10 @@ def test_no_provider_kills_a_spawn_by_the_handle_it_holds() -> None:
             if stripped.startswith("#"):
                 continue
             if "proc.kill()" in stripped:
-                # The one legal site is the fallback INSIDE the tree
-                # kill itself.
-                assert path.name == "claude_cli.py" and i < 130, (
+                # The legal sites are the fallbacks INSIDE the tree
+                # kill machinery itself (`kill_proc_tree` and its POSIX
+                # helper `_kill_proc_group_posix`).
+                assert path.name == "claude_cli.py" and i < 200, (
                     f"{path.name}:{i} kills a spawn by its own handle — "
                     f"on an npm-installed CLI that reaps the `cmd.exe` "
                     f"shim and leaves the agent running. Use "

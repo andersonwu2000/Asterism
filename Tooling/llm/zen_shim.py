@@ -34,8 +34,10 @@ import http.server
 import io
 import json
 import os
+import posixpath
 import re
 import select
+import signal
 import socket
 import sys
 import threading
@@ -110,8 +112,53 @@ def _log(msg: str) -> None:
 # backslash-only pattern silently stopped matching after the upgrade,
 # attempt_dir came back None, every write_file was refused, and the
 # strategist declared its batch committed anyway (g629, 2026-08-22).
+#
+# Two absolute-path shapes, either separator style: `[A-Za-z]:[\\/]`
+# (Windows drive) or a bare leading `/` (POSIX) — this fallback is a
+# haystack scan over free-form request text, not an OS-native parse,
+# so it must recognize whichever OS actually wrote the transcript
+# (Oracle ARM64 readiness P0#4: the dispatcher writes real POSIX
+# `.attempts` paths into the environment context on Linux, and the old
+# Windows-only pattern left `attempt_dir=None` there — same failure
+# mode as the backslash regression above). The trailing group captures
+# nested projection dirs (`<uuid>/adversary/r2`) the same way
+# `_channel_of_path`'s URL channel does.
 _ATTEMPT_RE = re.compile(
-    r"[A-Za-z]:[\\/][^\s'\"]*\.attempts[\\/][0-9a-fA-F-]{36}")
+    r"(?:[A-Za-z]:[\\/]|/)[^\s'\"]*\.attempts[\\/][0-9a-fA-F-]{36}"
+    r"(?:[\\/][A-Za-z0-9_.-]+)*")
+
+
+def _attempts_root_norm() -> str:
+    """This workspace's `.attempts` root, forward-slash normalized.
+    Computed fresh from `_REPO` on every call (not cached at import
+    time) so tests can `monkeypatch.setattr(zen_shim, "_REPO", ...)`
+    the same way `_channel_of_path`'s tests already do — a frozen
+    module-level constant would silently keep validating against the
+    real workspace after that patch."""
+    return posixpath.normpath(
+        os.path.join(_REPO, ".attempts").replace("\\", "/"))
+
+
+def _fence_attempt_candidate(raw: str) -> "str | None":
+    """Verify a regex-matched `.attempts/<uuid>[/...]` path actually
+    resolves inside THIS workspace's `.attempts` tree; return the
+    normalized path, or None to reject it.
+
+    Deliberately does the `..`-collapse and containment check with
+    `posixpath.normpath` on a forward-slash-normalized string rather
+    than `pathlib.Path(raw).resolve()`: the regex now matches BOTH
+    Windows drive paths and POSIX absolute paths regardless of which
+    OS this process runs on, and a platform `Path` parses the "foreign"
+    style as RELATIVE (no drive, or a backslash on POSIX is just a
+    filename character) — silently defeating the fence instead of
+    rejecting it. Loosening the regex must not loosen the read/write
+    fence: a foreign tree or a `..` escape is rejected here even though
+    it would now satisfy the pattern."""
+    norm = posixpath.normpath(raw.replace("\\", "/"))
+    root = _attempts_root_norm()
+    if norm != root and not norm.startswith(root + "/"):
+        return None
+    return norm
 
 
 _KEY_CACHE: "dict[str, str]" = {}
@@ -363,7 +410,15 @@ def _attempt_dir_of(body: dict) -> "str | None":
     hay = json.dumps(body.get("instructions", "")) + json.dumps(
         body.get("input", ""))
     m = _ATTEMPT_RE.search(hay.replace("\\\\", "\\"))
-    return m.group(0) if m else None
+    if not m:
+        return None
+    # The regex alone is not the fence: it now matches any absolute
+    # path shaped like `.../.attempts/<uuid>[/...]`, POSIX or Windows,
+    # so a foreign tree or a `..` escape embedded in agent-controlled
+    # request text (tool output the model quoted back, a pasted error)
+    # must still be rejected here rather than trusted as this spawn's
+    # own attempts dir.
+    return _fence_attempt_candidate(m.group(0))
 
 
 def _dump_4xx(e: "urllib.error.HTTPError", body: dict) -> "urllib.error.HTTPError":
@@ -1130,10 +1185,75 @@ class Shim(http.server.BaseHTTPRequestHandler):
 _PID_FILE = os.path.join(_REPO, ".asterism", "zen_shim.pid")
 _SVC_LOG = os.path.join(_REPO, ".asterism", "logs", "zen_shim.log")
 
+# Windows' `signal` module has no `SIGKILL` attribute — there is no OS
+# equivalent, so CPython omits it on that build. The POSIX kill path
+# below is dead code in production on Windows (gated on `os.name`), but
+# this repo's test suite runs ON Windows and forces the branch via
+# monkeypatch to cover it, so the POSIX signal number (always 9) is
+# pinned here rather than referenced as `signal.SIGKILL` directly.
+_SIGKILL = getattr(signal, "SIGKILL", 9)
+
+
+def _proc_cmdline_mentions(pid: int, needle: str) -> bool:
+    """Best-effort pid-reuse guard for POSIX liveness: True when
+    `/proc/<pid>/cmdline` can't be read at all (not Linux, permission
+    denied, sandboxed) — an unreadable cmdline is "can't tell", and a
+    liveness probe must not false-negative a shim that IS alive just
+    because it can't double-check identity. False only when the file
+    was readable and genuinely does not mention `needle`."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmdline = f.read()
+    except OSError:
+        return True
+    return needle.encode() in cmdline
+
+
+def _pid_alive_posix(pid: int) -> bool:
+    """`os.kill(pid, 0)`: ESRCH (ProcessLookupError) means dead, EPERM
+    (PermissionError) means alive but owned by someone else — still a
+    live pid, which is all liveness means. Followed by a best-effort
+    identity check so a pid recycled by an unrelated process between
+    our pid-file write and this read is not reported as "the shim is
+    still running"."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return _proc_cmdline_mentions(pid, "zen_shim")
+
+
+def _kill_pid_posix(pid: int, grace_sec: float = 3.0) -> None:
+    """SIGTERM, bounded grace wait, then SIGKILL — the POSIX half of
+    `_svc_stop`. Best-effort throughout: the caller only reaches here
+    after `_pid_alive` already confirmed this pid IS the shim, but the
+    process can still exit on its own between that check and this
+    signal, and `os.kill` must not raise into a `stop` command."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        return
+    deadline = time.monotonic() + grace_sec
+    while time.monotonic() < deadline:
+        if not _pid_alive_posix(pid):
+            return
+        time.sleep(0.1)
+    try:
+        os.kill(pid, _SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
 
 def _pid_alive(pid: int) -> bool:
     """tasklist, not kill-0: Git-Bash-style probes cannot see native
-    Windows processes (operator rule 8)."""
+    Windows processes (operator rule 8). POSIX uses the real kill-0
+    probe instead (`_pid_alive_posix`) — Windows has no signal 0."""
+    if os.name != "nt":
+        return _pid_alive_posix(pid)
     import subprocess
     try:
         out = subprocess.run(
@@ -1166,6 +1286,23 @@ def _svc_status(port: int) -> "tuple[int | None, bool]":
     return pid, answering
 
 
+def _detach_popen_kwargs() -> dict:
+    """Platform-specific `subprocess.Popen` kwargs so the shim child
+    survives the launching session. Windows: no session concept — flags
+    that detach it from the console and its own process group.
+    POSIX: `start_new_session=True` (`setsid`) — without it the child
+    inherits the launching shell's session and dies with a SIGHUP when
+    that shell/terminal exits, exactly the "shim died with the
+    operator's session" failure this detached form exists to avoid
+    (2026-08-22, see the comment above `_PID_FILE`)."""
+    import subprocess
+    if os.name == "nt":
+        return {"creationflags":
+                (getattr(subprocess, "DETACHED_PROCESS", 0)
+                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))}
+    return {"start_new_session": True}
+
+
 def _svc_start(port: int) -> int:
     import subprocess
     pid, answering = _svc_status(port)
@@ -1185,12 +1322,11 @@ def _svc_start(port: int) -> int:
         return 1
     os.makedirs(os.path.dirname(_SVC_LOG), exist_ok=True)
     log = open(_SVC_LOG, "ab")
-    flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
-             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     proc = subprocess.Popen(
         [sys.executable, "-m", "Tooling.llm.zen_shim", str(port)],
         cwd=_REPO, stdout=log, stderr=log,
-        stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True)
+        stdin=subprocess.DEVNULL, close_fds=True,
+        **_detach_popen_kwargs())
     with open(_PID_FILE, "w", encoding="ascii") as fh:
         fh.write(str(proc.pid))
     for _ in range(20):
@@ -1205,15 +1341,26 @@ def _svc_start(port: int) -> int:
 
 
 def _svc_stop(port: int) -> int:
-    import subprocess
     pid, answering = _svc_status(port)
     if pid is None:
         print("no live pid on record"
               + (" (but the port answers — a foreign shim?)"
                  if answering else "; nothing to stop"))
+        # A stale pid file (dead pid, or one recycled by an unrelated
+        # process — `_svc_status` only returns a pid that passed
+        # `_pid_alive`'s identity check) must not linger: the next
+        # `start` would read it and report the wrong pid forever.
+        try:
+            os.remove(_PID_FILE)
+        except OSError:
+            pass
         return 0 if not answering else 1
-    subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                   capture_output=True)
+    if os.name == "nt":
+        import subprocess
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                       capture_output=True)
+    else:
+        _kill_pid_posix(pid)
     try:
         os.remove(_PID_FILE)
     except OSError:

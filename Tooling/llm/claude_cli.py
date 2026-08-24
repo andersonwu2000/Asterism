@@ -40,6 +40,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -100,9 +101,79 @@ def untrack_proc(proc: subprocess.Popen) -> None:
         _proc_jobs.pop(id(proc), None)
 
 
+# Windows' `signal` module has no `SIGKILL` attribute at all — there is
+# no OS equivalent, so CPython omits it on that build. The branch below
+# is dead code in production on Windows (gated on `os.name`), but this
+# repo's test suite runs ON Windows and forces the branch via monkeypatch
+# to cover it, so the POSIX signal number (always 9) is pinned here
+# rather than referenced as `signal.SIGKILL` directly.
+_SIGKILL = getattr(signal, "SIGKILL", 9)
+
+# Bounded grace between the POSIX SIGTERM and the SIGKILL escalation.
+# Short on purpose: this runs on watchdog/timeout/shutdown threads that
+# must not block the dispatcher for long, and callers that want a
+# gentler wind-down (e.g. `_watchdog`'s own `proc.terminate()` +
+# `wait(timeout=5)`) already pay that grace BEFORE ever reaching here —
+# this is the last-resort escalation, not the primary wait.
+_POSIX_KILL_GRACE_SEC = 3.0
+
+
+def _kill_proc_group_posix(proc: subprocess.Popen,
+                           grace_sec: float = _POSIX_KILL_GRACE_SEC) -> bool:
+    """POSIX tree-kill: SIGTERM the whole process group (requires the
+    spawn to have been launched with `start_new_session=True`, which
+    makes `proc.pid` the group leader), poll for exit up to
+    `grace_sec`, then SIGKILL the group. Falls back to `proc.kill()`
+    (direct child only) when the group can't be resolved or every
+    signal call fails — e.g. the process already reaped, or it was
+    never given its own session.
+
+    `proc.kill()` alone (the prior behavior) only reaches the direct
+    child; for an npm-installed CLI that child is `node`'s launcher
+    shim with the real agent process below it, so a killed spawn kept
+    reasoning and calling tools for minutes after the framework
+    recorded it dead (see `_proc_jobs` docstring above — the Windows
+    half of the same bug, fixed there via Job Objects)."""
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        pgid = None
+    if pgid is None:
+        try:
+            proc.kill()
+            return True
+        except OSError:
+            return False
+    signaled = False
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+        signaled = True
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    deadline = time.monotonic() + grace_sec
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return True
+        time.sleep(0.1)
+    try:
+        os.killpg(pgid, _SIGKILL)
+        signaled = True
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    if signaled:
+        return True
+    try:
+        proc.kill()
+        return True
+    except OSError:
+        return False
+
+
 def kill_proc_tree(proc: subprocess.Popen) -> bool:
-    """Kill a spawn AND its descendants. Falls back to `proc.kill()`
-    when no job could be created (non-Windows, or the OS refused) —
+    """Kill a spawn AND its descendants: Job Object on Windows,
+    SIGTERM-then-SIGKILL process group on POSIX (`_kill_proc_group_posix`).
+    Falls back to `proc.kill()` when no job could be created (Windows,
+    OS refusal) and off-Windows when the group can't be resolved —
     there the direct child is usually the agent itself.
 
     Returns whether anything was killed: a process that had already
@@ -113,6 +184,8 @@ def kill_proc_tree(proc: subprocess.Popen) -> bool:
         job = _proc_jobs.pop(id(proc), None)
     if job is not None and terminate_job(job):
         return True
+    if os.name != "nt":
+        return _kill_proc_group_posix(proc)
     try:
         proc.kill()
         return True
@@ -1557,6 +1630,13 @@ class ClaudeCliProvider:
         # and `Popen.kill()` reaps only the first. `per_process_mb=None`
         # asks for a reaper, not a memory ceiling.
         job = create_capped_job(None)
+        # POSIX: own session/process group, so `kill_proc_tree` can
+        # `killpg` the whole `cmd.exe`-equivalent shim -> node -> agent
+        # tree instead of `proc.kill()` reaping only the direct child.
+        # Windows keeps the Job Object above — no session kwarg there.
+        popen_kwargs: dict = {}
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True
         try:
             proc = subprocess.Popen(
                 cmd, env=env, cwd=str(req.problem_dir),
@@ -1576,6 +1656,7 @@ class ClaudeCliProvider:
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace",
                 creationflags=no_window_creationflags(),
+                **popen_kwargs,
             )
             assign_to_job(job, proc)
         except OSError as exc:

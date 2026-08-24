@@ -861,6 +861,13 @@ class CodexCliProvider:
         # down; `Popen.kill()` would leave it running (measured
         # 2026-08-15 — see `claude_cli._proc_jobs`).
         job = create_capped_job(None)
+        # POSIX: own session/process group, so `kill_proc_tree` can
+        # `killpg` the whole `cmd.exe`-equivalent shim -> node -> agent
+        # tree instead of `proc.kill()` reaping only the direct child.
+        # Windows keeps the Job Object above — no session kwarg there.
+        popen_kwargs: dict = {}
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True
         try:
             proc = subprocess.Popen(
                 cmd, env=env, cwd=str(req.problem_dir),
@@ -868,6 +875,7 @@ class CodexCliProvider:
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace",
                 creationflags=no_window_creationflags(),
+                **popen_kwargs,
             )
             assign_to_job(job, proc)
         except OSError as exc:
