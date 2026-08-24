@@ -8,10 +8,22 @@
 
 dispatch:
   quota_wait: true
-  pool: 12                    # 2026-08-23 (user): Erdős/zen fleet resumes
-                              # at 12. (08-22 evening interlude: union_closed
-                              # on codex at pool=4 while the ox-alpha hourly
-                              # token wall rested — 10 bricks landed.)
+  ram_budget: "26G"           # 2026-08-25 (owner design): adaptive RAM
+                              # ledger — Lean slots follow
+                              # target_slots(budget − NL reserve), NL
+                              # kinds admit on measured available RAM
+                              # (NL priority; Lean floor = 1 slot).
+                              # Coefficients are live-measured with
+                              # calibration fallbacks. Accepts "26G" or
+                              # "80%". Unset/comment out = legacy
+                              # static `pool` semantics below.
+  pool: 12                    # 2026-08-23 (user): union_closed back on
+                              # codex, pool=8 this round. Erdős/zen
+                              # resume: 12.
+                              # 2026-08-25: with ram_budget set this
+                              # number is dormant (ledger owns both
+                              # pools); it stays as the fallback when
+                              # the budget is unset/unparseable.
                               # Max in-flight pipelines, also = number of
                               # persistent lean workers in the LSP gateway
                               # pool (1:1 binding — every spawn claims one
@@ -102,10 +114,12 @@ formalizer:
   # subscription of its own. luna at `xhigh` does the throughput work;
   # the NL layer takes `sol`. Baseline: provider: claude / model:
   # claude-sonnet-5
-  # 2026-08-22 Erdős free-window fleet: ox-alpha everywhere (user);
-  # resumed 2026-08-23 after the codex/luna union_closed interlude.
-  # union_closed seats: provider: codex / model: gpt-5.6-luna /
-  # reasoning_effort: xhigh
+  # 2026-08-22 Erdős free-window fleet: ox-alpha everywhere (user).
+  # 2026-08-23: union_closed round two on codex/luna. Erdős resume:
+  # provider: zen / model: x-preview-f-free / reasoning_effort: high
+  # 2026-08-25: Erdős five again, OpenCode Zen as the shim's PRIMARY
+  # channel this round (user) — same brain, different gateway; the
+  # cloud fleet stays on Nous for the channel A/B.
   provider: zen
   model: x-preview-f-free
   reasoning_effort: high
@@ -149,13 +163,13 @@ strategist:
   # cannot be built), and this worker has no Read/Grep at all — it
   # reaches every file through the `inspect` MCP tool.
   # Baseline: claude / claude-opus-5.
-  # 2026-08-22 Erdős fleet: zen; resumed 2026-08-23 after the codex/sol
-  # union_closed interlude. union_closed seats: provider: codex /
-  # model: gpt-5.6-sol / reasoning_effort: high
+  # 2026-08-22 Erdős fleet: zen. 2026-08-23: union_closed round two on
+  # codex/sol. Erdős resume: provider: zen / model: x-preview-f-free /
+  # reasoning_effort: high
+  # 2026-08-25: Erdős five on the OpenCode Zen channel (user).
   provider: zen
   model: x-preview-f-free
-  reasoning_effort: high   # user 2026-08-15: sol does not need xhigh to
-                           # hold the NL layer; luna keeps xhigh below.
+  reasoning_effort: high
   # Back on the opus tier 2026-08-06 after the
   # Gemini author hit its ceiling on the open
                                # segment: g382 rev 3 burned all 10 rounds and
@@ -204,10 +218,10 @@ presearch:
   enabled: true                # off → skip pre-search (provers grep on their own)
   # Moves with the formalizer: `quota.BOUND` ties {presearch,
   # formalizer}, so a split pair stops on one seat's window.
-  # 2026-08-22 Erdős/ox-alpha era: presearch rides zen too (user);
-  # resumed 2026-08-23. union_closed seats: provider: codex / model:
-  # gpt-5.6-luna / reasoning_effort: medium (search on a 240s clock —
-  # the codex default xhigh would think the budget away)
+  # 2026-08-22 Erdős/ox-alpha era: presearch rides zen (user).
+  # 2026-08-23: union_closed round two on codex/luna. Erdős resume:
+  # provider: zen / model: x-preview-f-free (no effort key)
+  # 2026-08-25: Erdős five on the OpenCode Zen channel (user).
   provider: zen
   model: x-preview-f-free
   # 2026-08-15: back to sonnet. haiku landed the probe brick but
@@ -270,10 +284,12 @@ adversary:
   # while the claude window rests; the A/B "one NL variable" shape is
   # restored as a side effect. Restore claude with:
   # provider: claude / model: claude-opus-5
-  # 2026-08-22 Erdős fleet: zen; resumed 2026-08-23. union_closed
-  # seats (08-22 evening, user: judge MATCHES the strategist — the
-  # A/B "one NL variable" shape): provider: codex /
-  # model: gpt-5.6-sol / reasoning_effort: high
+  # 2026-08-22 Erdős fleet: zen. 2026-08-23: union_closed round two —
+  # the judge MATCHES the strategist (sol), the 08-22 shape. Erdős
+  # resume: provider: zen / model: x-preview-f-free /
+  # reasoning_effort: high
+  # 2026-08-25: Erdős five on the OpenCode Zen channel (user) — the
+  # judge matches its author again.
   provider: zen
   model: x-preview-f-free
   reasoning_effort: high
