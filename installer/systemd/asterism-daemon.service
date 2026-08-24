@@ -1,0 +1,53 @@
+# Asterism daemon — the dispatcher, run in FOREGROUND for systemd.
+# USER unit (no sudo): install to ~/.config/systemd/user/, then
+#   loginctl enable-linger $USER
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now asterism-daemon
+# Scope lives in ~/Asterism/.asterism/daemon.env (create it):
+#   ASTERISM_SCOPE=Test.%
+# Adjust WorkingDirectory/PATH if the checkout is not ~/Asterism.
+#
+# DESIGN (owner-ruled 2026-08-24, one deliberate deviation — see the
+# boarding doc): the Lean gateway stays a DAEMON-MANAGED child, not
+# its own unit. The daemon kills/relaunches the gateway itself on
+# pool mismatch (a separate systemd unit would fight that), and
+# KillMode=process preserves the Windows semantics: stopping or
+# restarting the daemon leaves the warm gateway running.
+# MemoryMax covers the WHOLE cgroup (daemon + gateway + lean workers
+# + spawns) — the host-protection P0: a runaway Lean worker (102 GB
+# incident, 2026-08-08 class) OOM-kills inside this slice, never the
+# machine. Sized for a 64 GB VM; scale with the box.
+
+[Unit]
+Description=Asterism daemon (dispatcher; manages the Lean gateway)
+After=network-online.target asterism-zen-shim.service
+Wants=asterism-zen-shim.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Asterism
+EnvironmentFile=-%h/Asterism/.asterism/daemon.env
+Environment=PYTHONIOENCODING=utf-8
+Environment=LANG=C.UTF-8
+Environment=LC_ALL=C.UTF-8
+Environment=PATH=%h/.elan/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env python3.12 -m Tooling.core.cli run --scope ${ASTERISM_SCOPE}
+# Graceful stop: write the stop file (drain in-flight), then systemd
+# waits TimeoutStopSec for the main process before SIGTERM/SIGKILL.
+ExecStop=/usr/bin/env python3.12 -m Tooling.core.cli daemon stop
+TimeoutStopSec=1800
+# Only the MAIN process dies on stop/restart — the gateway child and
+# any draining spawn trees survive in the cgroup (Windows-parity).
+KillMode=process
+Restart=on-failure
+RestartSec=10
+# Unlogged provider / missing Lean cache exits early — 3 tries per
+# 10 minutes, then stay down instead of burning quota.
+StartLimitIntervalSec=600
+StartLimitBurst=3
+MemoryAccounting=true
+MemoryHigh=48G
+MemoryMax=52G
+
+[Install]
+WantedBy=default.target
