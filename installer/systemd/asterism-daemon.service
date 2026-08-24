@@ -16,7 +16,11 @@
 # MemoryMax covers the WHOLE cgroup (daemon + gateway + lean workers
 # + spawns) — the host-protection P0: a runaway Lean worker (102 GB
 # incident, 2026-08-08 class) OOM-kills inside this slice, never the
-# machine. Sized for a 64 GB VM; scale with the box.
+# machine. PERCENTAGES of physical RAM (owner call 2026-08-24: the
+# fleet moves between 64 and 128 GB boxes — a hard 52G wastes half of
+# the big one): 85%/75% gives 54G/48G on 64 GB and 109G/96G on 128 GB,
+# always leaving the OS + page cache + SSH reserve the work order
+# asks for. Per-box override: `systemctl --user edit asterism-daemon`.
 
 [Unit]
 Description=Asterism daemon (dispatcher; manages the Lean gateway)
@@ -46,8 +50,8 @@ RestartSec=10
 StartLimitIntervalSec=600
 StartLimitBurst=3
 MemoryAccounting=true
-MemoryHigh=48G
-MemoryMax=52G
+MemoryHigh=75%
+MemoryMax=85%
 
 [Install]
 WantedBy=default.target
