@@ -930,6 +930,33 @@ def _q_decl(q: dict, cwd: Path, deny) -> "list[str]":
                                               flatten=False)
         except Exception:  # noqa: BLE001 — a missing stub falls back
             sig = stmt or ""
+        if target is None:
+            # Second alias shape (~29 reports, 2026-08-24): a proved
+            # goal's file can be a WRAPPER `def slug ... := @…sNNN`
+            # with no `alias_target_id` row — the promote path writes
+            # the pointer without the DB marker. The framework knows
+            # where the target lives (`_strategy_sNNN.lean` beside the
+            # wrapper), so follow the pointer here, disclosed, instead
+            # of shipping a line the reader must chase by hand.
+            m = re.search(r":=\s*@[\w'.]*?\b(s\d+)\b", sig or "")
+            if m:
+                stok = m.group(1)
+                sfile = (ws / lp).parent / f"_strategy_{stok}.lean"
+                try:
+                    stext = _read_text(sfile)
+                except OSError:
+                    stext = ""
+                if stext.strip():
+                    srel = sfile.relative_to(ws).as_posix()
+                    dm = re.search(
+                        r"(?m)^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
+                        r"(?:noncomputable[ \t]+|private[ \t]+)*"
+                        r"(?:theorem|def|instance)[ \t]+" + stok + r"\b",
+                        stext)
+                    body = stext[dm.start():] if dm else stext
+                    out.append(f"    wrapper of @{stok} — showing "
+                               f"{srel}'s declaration:")
+                    sig, lp = body, srel
         sig_lines = (sig or "").strip().splitlines()
         out += [f"    {ln}" for ln in sig_lines[:16]]
         # Truncation is a VIEW, never a loss (framework rule): the old

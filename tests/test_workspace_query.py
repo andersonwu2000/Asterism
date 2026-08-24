@@ -942,3 +942,45 @@ def test_a_broad_walk_prunes_heavy_dirs_unless_aimed_inside(
     out2 = wq.run_queries([{"grep": "theorem", "in": "Papers"}],
                           cwd=tmp_path)
     assert "paper_hit" in out2
+
+
+def test_write_round_trip_is_byte_faithful_for_lean_notation(spawn):
+    """Silent-corruption probe (owner-ordered 2026-08-24): one field
+    report claimed the write path dropped Lean's `\` (set difference),
+    turning `A \ S` into `A  S` with no error. Pin the framework's own
+    chain byte-faithful — backslashes, doubled backslashes, unicode —
+    so if the corruption recurs the culprit is provably upstream (model
+    or transport), not this path."""
+    cwd, mine, theirs = spawn
+    bs = chr(92)  # one real backslash, spelled unambiguously
+    content = ("theorem fiber_diff (A S : Finset ℕ) :\n"
+               f"    (A {bs} S).card ≤ A.card := by\n"
+               f"  -- {bs * 2} doubled must survive too\n"
+               "  exact Finset.card_le_card (Finset.sdiff_subset)\n")
+    out = wq.run_write("new_fiber.lean", content)
+    assert out.startswith("wrote")
+    on_disk = (mine / "new_fiber.lean").read_text(encoding="utf-8")
+    assert on_disk == content
+    assert f"A {bs} S" in on_disk and bs * 2 in on_disk
+
+
+def test_decl_follows_the_wrapper_shape_to_the_strategy_file(
+    ws: Path, here: Path,
+) -> None:
+    """Second alias shape (~29 reports): a proved goal's file can be a
+    `def slug := @…sNNN` wrapper with NO alias_target_id marker. The
+    framework knows the target sits beside it as _strategy_sNNN.lean —
+    follow the pointer, disclosed, instead of shipping the bare pointer
+    line the reader must chase by hand."""
+    _seed_decl(ws, here, slug="wrapped_goal", sig_lines=1)
+    (here / "proofs" / "L_wrapped_goal.lean").write_text(
+        "import Mathlib\n"
+        "def wrapped_goal : True := @Problems.union_closed.s123\n",
+        encoding="utf-8")
+    (here / "proofs" / "_strategy_s123.lean").write_text(
+        "import Mathlib\n-- strategy scratch\n"
+        "theorem s123 : True := trivial\n", encoding="utf-8")
+    out = wq.run_queries([{"decl": "wrapped_goal"}], cwd=here)
+    assert "wrapper of @s123" in out
+    assert "theorem s123 : True := trivial" in out
+    assert "_strategy_s123.lean" in out
