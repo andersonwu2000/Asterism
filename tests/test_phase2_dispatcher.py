@@ -956,14 +956,16 @@ def test_derive_trigger_batch_done_on_stall(
 ) -> None:
     """Phase 6 — `first_launch` is retired. A fresh problem (frozen
     root, nothing dispatchable, no committed Ingest) is structurally
-    STALLED and derives `inject_batch_done` (the "empty batch done"
-    reading) — the only prompt carrying the mandatory-advance rule, so
-    the wake bootstraps the first Inject instead of Noop'ing."""
+    STALLED and derives `stall` (first-class since v43, 2026-08-24 —
+    was conflated with inject_batch_done, leaving the T4 rescue rate
+    grep-only). The wake still reads inject_batch_done.md (the only
+    prompt carrying the mandatory-advance rule), so it bootstraps the
+    first Inject instead of Noop'ing."""
     _insert_problem(conn, name="alpha", bootstrap_done=0)
     _insert_root(conn, "alpha", status="frozen")
 
     trigger, pending = _derive_strategist_trigger(conn, "alpha")
-    assert trigger == "inject_batch_done"
+    assert trigger == "stall"
     assert pending is None
 
 
@@ -971,11 +973,11 @@ def test_derive_trigger_batch_done_on_pure_nl_fresh_problem(
     conn: sqlite3.Connection,
 ) -> None:
     """Pure-NL fresh problem (no root goal at all) is stalled too and
-    derives the same `inject_batch_done` wake."""
+    derives the same `stall` wake."""
     _insert_problem(conn, name="alpha", bootstrap_done=0)
 
     trigger, pending = _derive_strategist_trigger(conn, "alpha")
-    assert trigger == "inject_batch_done"
+    assert trigger == "stall"
     assert pending is None
 
 

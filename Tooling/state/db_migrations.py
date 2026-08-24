@@ -6,6 +6,7 @@ tests (test_db_phase7 / test_phase2_migration) assert the terminal
 user_version."""
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -903,6 +904,19 @@ def apply(conn: sqlite3.Connection) -> None:
         # cannot widen a CHECK in place; rebuild the table.
         _migrate_to_v42(conn)
         conn.execute("PRAGMA user_version = 42")
+        conn.commit()
+    if v < 43:
+        # v43 — strategist_decisions.trigger_kind gains 'stall' (owner
+        # ruling 2026-08-24, reversing the deliberate 2026-07-04
+        # conflation with inject_batch_done): every T4 structural-stall
+        # rescue may mark an upstream anomaly, and the conflation made
+        # the rate invisible to SQL — the '[stall-wake]' log line was
+        # the only record. SQLite cannot widen a CHECK in place;
+        # rebuild from the LIVE table's own DDL (sqlite_master), so the
+        # migration cannot drift from whatever column vintage the
+        # on-disk table carries.
+        _migrate_to_v43(conn)
+        conn.execute("PRAGMA user_version = 43")
         conn.commit()
 
 
@@ -2573,3 +2587,45 @@ def _migrate_to_v42(conn: sqlite3.Connection) -> None:
         # Silent on fresh/empty DBs: cmd_status --json shares stdout.
         print(f"[v42] problem_papers rebuilt with the seat-family origin"
               f" CHECK ({n} binding(s) carried)", flush=True)
+
+
+def _migrate_to_v43(conn: sqlite3.Connection) -> None:
+    """Widen strategist_decisions.trigger_kind CHECK to accept 'stall'.
+
+    Derives the rebuild DDL from the LIVE table's sqlite_master entry
+    instead of re-spelling the schema: this table has been rebuilt
+    several times (v3, ...) and a hand-copied column list here would
+    silently freeze whichever vintage the author looked at. String-
+    widening the CHECK enum in the table's own DDL is vintage-proof."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table'"
+        " AND name = 'strategist_decisions'").fetchone()
+    sql = (row["sql"] or "") if row else ""
+    if not sql or "'stall'" in sql:
+        return  # fresh DB from current SCHEMA already carries it
+    for old, new in (
+        ("'inject_batch_done','audit'", "'inject_batch_done','audit','stall'"),
+        ("'inject_batch_done'", "'inject_batch_done','stall'"),
+    ):
+        if old in sql:
+            new_sql = sql.replace(old, new, 1)
+            break
+    else:
+        raise RuntimeError(
+            "v43: strategist_decisions CHECK enum not found in its DDL — "
+            "refusing to guess; inspect the table's sqlite_master sql")
+    new_sql = re.sub(r"CREATE TABLE\s+\"?strategist_decisions\"?",
+                     "CREATE TABLE _sd_v43", new_sql, count=1)
+    indexes = [r["sql"] for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index'"
+        " AND tbl_name = 'strategist_decisions' AND sql IS NOT NULL")]
+    conn.execute(new_sql)
+    n = conn.execute(
+        "INSERT INTO _sd_v43 SELECT * FROM strategist_decisions").rowcount
+    conn.execute("DROP TABLE strategist_decisions")
+    conn.execute("ALTER TABLE _sd_v43 RENAME TO strategist_decisions")
+    for s in indexes:
+        conn.execute(s)
+    if n:
+        print(f"[v43] strategist_decisions rebuilt with 'stall' in the"
+              f" trigger_kind CHECK ({n} row(s) carried)", flush=True)

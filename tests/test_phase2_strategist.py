@@ -996,8 +996,12 @@ def test_strategist_prompts_cover_all_triggers() -> None:
     in-flight Strategist pipeline with `strategist_schema_invalid`."""
     prompt_dir = PROMPT_DIR / "strategist"
     assert prompt_dir.is_dir(), f"missing {prompt_dir}"
+    # 'stall' deliberately ALIASES inject_batch_done.md (v43 identity
+    # split is for the DB record, not a different conversation) — the
+    # alias map here mirrors run_strategist's prompt resolution.
+    _alias = {"stall": "inject_batch_done"}
     for tk in strategist.TRIGGER_KINDS:
-        p = prompt_dir / f"{tk}.md"
+        p = prompt_dir / f"{_alias.get(tk, tk)}.md"
         assert p.exists(), f"missing prompt file for trigger_kind={tk!r}: {p}"
         text = p.read_text(encoding="utf-8")
         assert text.strip(), f"empty prompt file: {p}"

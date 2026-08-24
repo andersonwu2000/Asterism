@@ -819,3 +819,35 @@ def test_park_with_remaining_route_stays_attempting(
         "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
     ).fetchone()["n"] == 0
     conn.close()
+
+
+def test_stall_trigger_kind_is_batch_done_like_everywhere(
+    tmp_path: Path,
+) -> None:
+    """v43 identity split (owner ruling 2026-08-24): the T4 rescue
+    records `trigger_kind='stall'` so the rescue rate is SQL-visible,
+    but BEHAVES as inject_batch_done — the mandatory-advance gate must
+    fire for it a fortiori (a stall wake IS the stall), and the prompt
+    it reads is inject_batch_done.md (there is no stall.md)."""
+    import json
+    from Tooling.pipeline import strategist
+    conn = _conn(tmp_path)
+    _goal(conn, "done", status="proved")
+    g_sh = _goal(conn, "parked", status="shelved")
+    conn.commit()
+    assert _db.is_problem_stalled(conn, P) is True
+
+    reconfirm = [{"kind": "ConfirmShelve", "target_goal_id": g_sh,
+                  "reason": "still parked"}]
+    ds, _ = strategist.parse_decisions(json.dumps(reconfirm))
+    err = strategist.verify_decisions(
+        ds, conn, problem=P, trigger_kind="stall")
+    assert "changes nothing" in err and "researcher" in err
+
+    assert "stall" in strategist.TRIGGER_KINDS
+    assert strategist.BATCH_DONE_LIKE == {"inject_batch_done", "stall"}
+    # No stall.md exists nor should one: the split is for the DB record.
+    from Tooling.pipeline import PROMPT_DIR
+    assert not (PROMPT_DIR / "strategist" / "stall.md").exists()
+    assert (PROMPT_DIR / "strategist" / "inject_batch_done.md").exists()
+    conn.close()

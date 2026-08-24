@@ -966,7 +966,15 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
                if group_id is not None
                else db.is_problem_stalled(conn, problem))
     if stalled:
-        return ("inject_batch_done", pending_id)
+        # 'stall' is a FIRST-CLASS kind since 2026-08-24 (owner ruling,
+        # reversing the deliberate 2026-07-04 conflation with
+        # inject_batch_done): every T4 rescue may mark an upstream
+        # anomaly — a dead Strategist wake, a relay gap — and the
+        # conflation made the rate invisible to the DB (grep-only via
+        # the '[stall-wake]' log line). The wake BEHAVES as batch-done
+        # everywhere (same prompt, same mandatory-advance gate, same
+        # reopen-promise section); only the recorded identity differs.
+        return ("stall", pending_id)
     return ("routine", pending_id)
 
 

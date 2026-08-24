@@ -1081,7 +1081,10 @@ def _section_pending_reopens(conn: sqlite3.Connection,
       * the now-complete promised batch's Inject decisions + their
         produced goals (so Strategist sees exactly what landed).
     """
-    if trigger_kind != "inject_batch_done":
+    if trigger_kind not in ("inject_batch_done", "stall"):
+        # 'stall' rides along (v43 identity split): T4 rescues used to
+        # BE inject_batch_done wakes, and a stalled group's pending
+        # promises are often exactly what the rescue must adjudicate.
         return []
 
     # Find shelved goals whose PROMISE-BEARING ConfirmShelve was

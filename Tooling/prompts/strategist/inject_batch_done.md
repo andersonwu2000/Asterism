@@ -20,7 +20,6 @@ Tools: `inspect([{"read":"Context.md","sections":["Programme"]},{"decl":"foo"}])
    - Brick landed, need closed → `Inject(target_goal_id, proof=...)` back to the original goal naming which brick to cite
    - Brick landed but need remains → `Inject` a new brick + `ConfirmShelve` to keep parked
    - Brick didn't land / proof direction was wrong → `ConfirmShelve` this goal + `Inject` a reframed angle on its upper goal
-   - Permanently superseded → standalone `ConfirmShelve` (no paired Inject)
    - Work you cannot prove yourself nor pace through AHEAD → `Delegate` (several at a time, never one)
 <!-- #endif -->
 

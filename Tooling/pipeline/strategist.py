@@ -88,7 +88,18 @@ TRIGGER_KINDS: frozenset[str] = frozenset({
     # auditor's belief sweep is now phase 1 of the routine wake).
     "pending_review", "routine",
     "inject_batch_done",
+    # T4 structural-stall rescue (first-class since 2026-08-24, v43 —
+    # was conflated with inject_batch_done, leaving the rescue rate
+    # grep-only). Behaves as inject_batch_done everywhere; only the
+    # recorded identity differs.
+    "stall",
 })
+
+#: A stall wake IS a batch-done wake behaviorally — same prompt, same
+#: mandatory-advance rule, same reopen-promise section. Branch points
+#: test membership here, never `== "inject_batch_done"`, so the split
+#: identity cannot silently drop one of the two.
+BATCH_DONE_LIKE: frozenset[str] = frozenset({"inject_batch_done", "stall"})
 
 # Research mode (research_mode_design.md §1) — the proposal-package
 # gate keys on decision SHAPE: a batch wholly within the exempt kinds
@@ -1206,7 +1217,7 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # currency: `predicted_batch_delta` (transitions §2.3) — a stalled
     # wake with nothing live in flight must move ≥1 state or dispatch
     # ≥1 new piece of work, root or no root.
-    if trigger_kind == "inject_batch_done":
+    if trigger_kind in BATCH_DONE_LIKE:
         try:
             # v35 — ask about THIS group's slice: a sibling group's work
             # is not this Strategist's excuse for a zero-delta batch.
@@ -2346,7 +2357,13 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # (routine / pending_review / inject_batch_done).
     # Loader validates that every TRIGGER_KIND has a corresponding
     # file at startup via test_strategist_prompts_cover_all_triggers.
-    prompt_path = PROMPT_DIR / "strategist" / f"{trigger_kind}.md"
+    # A stall wake reads the batch-done prompt: it carries the
+    # mandatory-advance rule the rescue exists to invoke (there is no
+    # stall.md — the identity split is for the DB record, not for a
+    # different conversation).
+    _prompt_kind = ("inject_batch_done" if trigger_kind == "stall"
+                    else trigger_kind)
+    prompt_path = PROMPT_DIR / "strategist" / f"{_prompt_kind}.md"
     if not prompt_path.exists():
         return PipelineResult(
             outcome="failed",
