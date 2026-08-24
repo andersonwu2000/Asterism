@@ -602,6 +602,12 @@ def _grep_forbidden(text: str, forbidden: list[str]) -> str | None:
 #                         entry_kind switch (legacy too_hard channel).
 #                         failure_reason='agent_declined'.
 DECLINE_UNPROVABLE = "unprovable"
+#: Kernel-certified disproof submission (owner design 2026-08-25): the
+#: agent rewrote patch.lean to PROVE the negation and marks the intent
+#: here. Backward routes it through `_disprove.run_disproof_gate`
+#: BEFORE the generic decline mapping — it is a submission with an
+#: intent marker, not an exit.
+DECLINE_DISPROVE = "disprove"
 DECLINE_RETURN_TO_PARENT = "return_to_parent"
 DECLINE_SHELVE = "shelve"
 DECLINE_NEEDS_DECOMPOSITION = "needs_decomposition"
@@ -617,6 +623,7 @@ DECLINE_RETURN_TO_NL = "return_to_nl"
 # branch downstream).
 DECLINE_DIRECTIVES = frozenset({
     DECLINE_UNPROVABLE,
+    DECLINE_DISPROVE,
     DECLINE_RETURN_TO_PARENT,
     DECLINE_SHELVE,
     DECLINE_NEEDS_DECOMPOSITION,
@@ -626,8 +633,20 @@ DECLINE_DIRECTIVES = frozenset({
 # Map directive → DB failure_reason. Keeps existing enum values for
 # unprovable / needs_decomposition (no schema migration needed); adds
 # two new values for the new directives.
+#
+# `unprovable` NO LONGER maps to agent_infeasible (owner ruling
+# 2026-08-25): that mapping let a bare assertion flip a goal to
+# `disproved` — a hard terminal that also poisons dedupe #112a — and
+# ox-alpha condemned the TRUE kelly_core with it (sylvester_gallai,
+# 2026-08-24; the intake channel demanded a counterexample, the
+# work-turn channel demanded nothing). The ONLY road to
+# agent_infeasible → disproved is now the kernel-certified
+# `-- decline: disprove` gate (`_disprove.run_disproof_gate`);
+# `unprovable` lands as a NON-terminal agent_declined whose detail
+# teaches that road. `disprove` is deliberately absent from this map —
+# backward intercepts it before the generic branch.
 DECLINE_TO_FAILURE_REASON = {
-    DECLINE_UNPROVABLE: "agent_infeasible",
+    DECLINE_UNPROVABLE: "agent_declined",
     DECLINE_RETURN_TO_PARENT: "parent_needs_fix",
     DECLINE_SHELVE: "agent_shelved",
     DECLINE_NEEDS_DECOMPOSITION: "agent_declined",

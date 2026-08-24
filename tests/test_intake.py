@@ -194,10 +194,11 @@ def test_backward_intake_unprovable_maps_to_agent_infeasible(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Task #124: an intake unprovable decline rides the SAME
-    DECLINE_TO_FAILURE_REASON map as the work-turn directive, so cascade
-    sees `agent_infeasible` (→ disproved) — identical semantics, no new
-    mapping arm."""
+    """Task #124 + owner ruling 2026-08-25: an intake unprovable decline
+    rides the SAME DECLINE_TO_FAILURE_REASON map as the work-turn
+    directive — which now lands `agent_declined` (NON-terminal): the
+    claim reaches the Strategist, and disproved is reachable only via
+    the kernel-certified `-- decline: disprove` gate."""
     gid = _seed_root_goal(tmp_path, conn)
     monkeypatch.setattr(
         _intake, "run_intake",
@@ -212,7 +213,7 @@ def test_backward_intake_unprovable_maps_to_agent_infeasible(
         conn, goal_id=gid, workspace=tmp_path,
         intent=intent_mod.ProblemIntent(problem="p", charter="True"),
         pipeline_id="pid-intake-unprovable")
-    assert r.failure_reason == "agent_infeasible"
+    assert r.failure_reason == "agent_declined"
     assert "n=0 breaks the inequality" in (r.failure_detail or "")
 
 

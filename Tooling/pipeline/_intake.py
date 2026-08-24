@@ -6,13 +6,14 @@ sentinel — `{"verdict":"proceed"}` or
 `{"verdict":"decline","reason":<reason>,"note":...}` with reason one of
   * `return_to_nl` — the argument does not settle this assignment;
   * `unprovable` — a concrete instance breaks the statement (task #124,
-    archaeology-backed: all 27 historical disproved goals were killed by
-    a FRESH agent's unprovable decline within 1-3 attempts, never by the
-    parent that transcribed them — the falsity scan belongs at the
-    fresh, zero-sunk-cost turn. Note must carry the counterexample;
-    an empty note fails open to proceed. Maps through the same
-    DECLINE_TO_FAILURE_REASON as the work-turn directive, so the
-    cascade semantics (`agent_infeasible` → disproved) are identical.)
+    archaeology-backed: the falsity scan belongs at the fresh,
+    zero-sunk-cost turn. Note must carry the counterexample; an empty
+    note fails open to proceed. Owner ruling 2026-08-25: the CLAIM is
+    non-terminal — it maps to `agent_declined` like the work-turn
+    directive, and a goal reaches `disproved` only through the
+    kernel-certified `-- decline: disprove` gate
+    (`_disprove.run_disproof_gate`; ox-alpha condemned the TRUE
+    kelly_core with a bare assertion, 2026-08-24).)
 
 Behavior contract (user ruling 2026-07-27 — intake is an ECONOMY gate,
 not a soundness gate; the work-turn `-- decline:` channel remains

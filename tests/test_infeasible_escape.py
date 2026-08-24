@@ -244,7 +244,12 @@ def test_decline_directive_to_failure_reason_mapping() -> None:
         DECLINE_RETURN_TO_PARENT, DECLINE_SHELVE,
         DECLINE_NEEDS_DECOMPOSITION,
     )
-    assert DECLINE_TO_FAILURE_REASON[DECLINE_UNPROVABLE] == "agent_infeasible"
+    # Owner ruling 2026-08-25: a bare falsity CLAIM is non-terminal —
+    # agent_infeasible (→ disproved) is reachable ONLY through the
+    # kernel-certified `-- decline: disprove` gate (a bare assertion
+    # condemned the TRUE kelly_core, sylvester_gallai 2026-08-24).
+    assert DECLINE_TO_FAILURE_REASON[DECLINE_UNPROVABLE] == "agent_declined"
+    assert "agent_infeasible" not in DECLINE_TO_FAILURE_REASON.values()
     assert DECLINE_TO_FAILURE_REASON[DECLINE_RETURN_TO_PARENT] == "parent_needs_fix"
     assert DECLINE_TO_FAILURE_REASON[DECLINE_SHELVE] == "agent_shelved"
     assert DECLINE_TO_FAILURE_REASON[DECLINE_NEEDS_DECOMPOSITION] == "agent_declined"

@@ -24,4 +24,4 @@ or
  "note": "<candidate counterexample: specific values + a one-line check>"}
 ```
 
-If the argument does not settle this goal, decline — don't invent the mathematics and don't route around it. If a concrete instance breaks the statement itself, decline `unprovable` with the counterexample in the note — fresh eyes catch transcription slips the argument layer cannot see. Any other defect → proceed; the work turn carries the full decline vocabulary. The framework runs lemma pre-search after intake; candidates arrive with the work turn.
+If the argument does not settle this goal, decline — don't invent the mathematics and don't route around it. If a concrete instance breaks the statement itself, decline `unprovable` with the counterexample in the note — fresh eyes catch transcription slips the argument layer cannot see. (The claim alone terminates nothing: a goal is only DISPROVED when a work turn proves the negation in Lean via `-- decline: disprove`.) Any other defect → proceed; the work turn carries the full decline vocabulary. The framework runs lemma pre-search after intake; candidates arrive with the work turn.

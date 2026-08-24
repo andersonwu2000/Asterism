@@ -1133,6 +1133,44 @@ def _backward_parse_and_commit(
         _extract_leading_comments(main_patch_text))
     decline = _extract_decline_reason(leading)
     if decline is not None:
+        from . import DECLINE_DISPROVE, DECLINE_UNPROVABLE
+        from ._disprove import run_disproof_gate, teaching as _disproof_teaching
+        _locked_sig = None
+        try:
+            _locked_sig = (attempts_dir / "_locked_signature.txt").read_text(
+                encoding="utf-8")
+        except OSError:
+            pass
+        if decline == DECLINE_DISPROVE:
+            # Kernel-certified disproof (owner design 2026-08-25): a
+            # SUBMISSION with an intent marker, not an exit. Success is
+            # the ONLY road to agent_infeasible → disproved.
+            verdict = run_disproof_gate(
+                workspace=workspace, attempts_dir=attempts_dir,
+                patch_text=main_patch_text, slug=str(goal["slug"]),
+                goal_lean_path=str(goal["lean_path"]),
+                locked_signature=_locked_sig,
+                axiom_whitelist=intent_mod.effective_axioms(
+                    intent, problem=goal["problem"]),
+                problem=str(goal["problem"]))
+            if verdict.ok:
+                print(f"[backward] {goal['slug']}: {verdict.detail}",
+                      flush=True)
+                return _abort("agent_infeasible", verdict.detail, leading)
+            return _abort("agent_declined", verdict.detail, leading)
+        if decline == DECLINE_UNPROVABLE:
+            # A bare falsity CLAIM never terminates a goal any more
+            # (it condemned the true kelly_core, 2026-08-24) — teach
+            # the certified road instead.
+            return _abort(
+                "agent_declined",
+                _disproof_teaching(
+                    _locked_sig,
+                    "a claim of falsity needs a kernel-checked proof of "
+                    "the negation — rewrite patch.lean to prove it and "
+                    "mark the leading block `-- decline: disprove`"),
+                leading,
+            )
         # Map directive to DB failure_reason. Unknown directive strings
         # (typos / partial migration) fall through to agent_declined —
         # cascade_one's generic-failure branch catches them. Backward
