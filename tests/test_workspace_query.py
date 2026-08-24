@@ -924,6 +924,45 @@ def test_grep_scan_budget_stops_early_and_names_the_way_out(
     assert 'after: "' in out and "narrow `in`" in out
 
 
+def test_grep_zero_hit_budget_stop_is_not_a_negative_result(
+    tmp_path, monkeypatch,
+) -> None:
+    """With ZERO hits at the budget stop there was no hit to anchor
+    `after` on, so the note led with "no matches" and offered only
+    "narrow" — agents read it as a negative result and moved on with
+    wrong conclusions (feedback x3, 2026-08-24). The note now leads
+    with UNFINISHED and hands the last-scanned-file anchor; chaining
+    those anchors must eventually reach a late needle."""
+    for n in range(6):
+        body = "filler\n" * 3
+        if n == 4:
+            body += "the_needle_here\n"
+        (tmp_path / f"f{n}.lean").write_text(body, encoding="utf-8")
+    monkeypatch.setattr(wq, "_SCAN_MAX_FILES", 2)
+    import re as _re
+    out = wq.run_queries([{"grep": "the_needle_here", "in": "*.lean"}],
+                         cwd=tmp_path)
+    assert "search UNFINISHED" in out
+    assert "NOT a negative result" in out
+    anchor = _re.search(r'after: "([^"]+)"', out)
+    assert anchor, "zero-hit budget stop must hand a resume anchor"
+    # chain the anchors: monotonic progress, needle reached
+    a, seen = anchor.group(1), set()
+    for _hop in range(6):
+        assert a not in seen, "resume anchor did not advance"
+        seen.add(a)
+        out = wq.run_queries(
+            [{"grep": "the_needle_here", "in": "*.lean", "after": a}],
+            cwd=tmp_path)
+        if "f4.lean:4: the_needle_here" in out:
+            break
+        m = _re.search(r'after: "([^"]+)"', out)
+        assert m, out
+        a = m.group(1)
+    else:
+        raise AssertionError("chained resumes never reached the needle")
+
+
 def test_a_broad_walk_prunes_heavy_dirs_unless_aimed_inside(
     tmp_path,
 ) -> None:

@@ -513,6 +513,12 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
     n_files = read_bytes = 0
     budget_hit = ""
     more = False
+    #: last fully-scanned file — the zero-hit resume anchor: with no
+    #: hit to anchor `after` on, the old note led with "no matches"
+    #: and offered only "narrow", which agents read as a NEGATIVE
+    #: RESULT and moved on with wrong conclusions (feedback x3,
+    #: 2026-08-24).
+    last_scanned: "tuple[str, int]" = ("", 0)
     blocks: "list[tuple[str, int, list[str]]]" = []  # (rel, line, lines)
     for f in files:
         if len(blocks) > want:
@@ -539,6 +545,7 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
         text = _read_text(f)
         read_bytes += len(text)
         lines = text.splitlines()
+        last_scanned = (rel, len(lines))
         for i, line in enumerate(lines):
             if boundary and i + 1 <= skip_line:
                 continue
@@ -565,6 +572,19 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
         base_msg = (f"no more matches past {after}" if after
                     else "no matches")
         if budget_hit:
+            # NOT a negative result — say so first, and hand the
+            # resume anchor (last fully-scanned file) so continuing
+            # the SAME broad search is a reachable action, not just
+            # "narrow".
+            if last_scanned[0]:
+                return [
+                    f"search UNFINISHED — scan budget hit "
+                    f"({budget_hit}) with {base_msg} in the files "
+                    f"scanned so far. This is NOT a negative result. "
+                    f"Continue with no overlap: `after: "
+                    f'"{last_scanned[0]}:{last_scanned[1]}"` (same '
+                    f"query), or narrow `in` to a subdirectory or a "
+                    f"glob."]
             return [base_msg + f" so far — scan budget hit "
                     f"({budget_hit}) before the search finished; "
                     f"narrow `in` to a subdirectory or a glob"]
