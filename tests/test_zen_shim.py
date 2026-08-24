@@ -861,3 +861,37 @@ def test_flowing_stream_touches_the_heartbeat(monkeypatch, tmp_path) -> None:
         zen_shim._STREAM_ATTEMPT_DIR.reset(tok)
     assert (tmp_path / "_shim_heartbeat").exists(), (
         "a flowing stream must touch the watchdog's third clock")
+
+
+def test_turn_trail_renders_bounded_and_absent_when_toolless() -> None:
+    """The rollout is the ONLY thing a resume replays, and it carried
+    no tool history — a retried agent kept its files but lost its
+    EXPERIENCE and re-made last life's mistakes (proven 2026-08-24: a
+    resumed agent hand-recomputed a tool result it could not recall).
+    The trail is a bounded assistant-message work log; no tools, no
+    item."""
+    assert zen_shim._render_turn_trail([]) is None
+    t = zen_shim._render_turn_trail(
+        ['loogle({"query":"Collinear"}) -> no hits',
+         'write_file({"path":"new_x.lean"}) -> wrote 2952 chars'])
+    assert t.startswith("[tool trail")
+    assert "1. loogle" in t and "2. write_file" in t
+    big = zen_shim._render_turn_trail(["inspect(x) -> " + "y" * 200] * 100)
+    assert len(big) <= zen_shim._TRAIL_TOTAL_CHARS + 200
+    assert "middle elided" in big
+
+
+def test_turn_trail_ships_as_a_message_item_never_a_function_call() -> None:
+    """Mechanism pin: a bare function_call in a LIVE response is a
+    PENDING call codex executes — double-running apply_edit corrupts
+    the patch. The trail must enter the output as an assistant message
+    (inert on replay, `_to_chat` carries it verbatim), placed before
+    the final answer."""
+    src = open(zen_shim.__file__, encoding="utf-8").read()
+    assert "_render_turn_trail(turn_trail)" in src
+    assert 'turn_trail.append(f"{tool}({_args_s}) -> {_out_s}")' in src
+    # the insertion site builds a message item, not a function_call
+    i = src.index("trail_text is not None")
+    block = src[i:i + 400]
+    assert '"type": "message"' in block
+    assert '"function_call"' not in block

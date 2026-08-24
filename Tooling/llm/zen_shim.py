@@ -845,6 +845,43 @@ def _conc_release() -> None:
             _CONC_WAITERS.popleft().set()
 
 
+#: Tool-trail bounds. Each line: name(args≤ARG chars) -> result≤RES
+#: chars; the whole trail ≤ TOTAL (head+tail with an elision note).
+#: The trail rides the session history of EVERY later turn, so the cap
+#: is a per-turn context tax, not a display nicety.
+_TRAIL_ARG_CHARS = 160
+_TRAIL_RES_CHARS = 220
+_TRAIL_TOTAL_CHARS = 6000
+
+
+def _render_turn_trail(trail: "list[str]") -> "str | None":
+    """One assistant-message work log for the WHOLE turn.
+
+    The shim internalizes the tool loop, so codex's rollout — the ONLY
+    thing a resume replays — carried no tool history at all: a retried
+    agent kept its files (disk survives) but lost its EXPERIENCE
+    (which loogle names hit, which validate diagnostics fired, which
+    road failed) and re-made last life's mistakes (proven 2026-08-24:
+    a resumed agent could not recall a tool result and hand-recomputed
+    it from the replayed prompt). Emitting the trail as a message item
+    is deliberate: a bare function_call in a LIVE response is a
+    pending call codex would EXECUTE — double-running apply_edit
+    corrupts the patch — while a message replays inert and
+    `_to_chat` already carries assistant messages verbatim."""
+    if not trail:
+        return None
+    lines = [f"{i}. {t}" for i, t in enumerate(trail, 1)]
+    text = ("[tool trail — this turn's executed tool calls, recorded "
+            "by the framework so your next turn remembers them]\n"
+            + "\n".join(lines))
+    if len(text) > _TRAIL_TOTAL_CHARS:
+        head = text[:int(_TRAIL_TOTAL_CHARS * 0.7)]
+        tail = text[-int(_TRAIL_TOTAL_CHARS * 0.25):]
+        text = (head + f"\n… [{len(trail)} calls total; middle elided] …\n"
+                + tail)
+    return text
+
+
 def _merge_turn_reasoning(segs: "list[tuple[int, str]]") -> "dict | None":
     """One reasoning item for the WHOLE codex turn. The shim's tool
     loop consumes intermediate upstream responses — and the tool-call
@@ -1091,6 +1128,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
         lookup_streak = 0
         crawl_nudged = False
         turn_reasoning: "list[tuple[int, str]]" = []
+        turn_trail: "list[str]" = []
         resp: dict = {}
         try:
             while True:
@@ -1254,6 +1292,15 @@ class Shim(http.server.BaseHTTPRequestHandler):
                     _log(f"[shim]   tool {tool}({arg_hint}) "
                           f"{time.time()-t_tool:.1f}s "
                           f"-> {len(out)}B: {out[:70]!r}")
+                    # Session-memory trail (refusals included — a
+                    # remembered refusal is not re-probed next life).
+                    _args_s = (it.get("arguments") or "{}")
+                    if len(_args_s) > _TRAIL_ARG_CHARS:
+                        _args_s = _args_s[:_TRAIL_ARG_CHARS] + "…"
+                    _out_s = out.replace("\n", " ")
+                    if len(_out_s) > _TRAIL_RES_CHARS:
+                        _out_s = _out_s[:_TRAIL_RES_CHARS] + "…"
+                    turn_trail.append(f"{tool}({_args_s}) -> {_out_s}")
                     tool_calls_run += 1
                     body["input"].append({
                         "type": "function_call_output",
@@ -1288,6 +1335,15 @@ class Shim(http.server.BaseHTTPRequestHandler):
         merged_rsn = _merge_turn_reasoning(turn_reasoning)
         if merged_rsn is not None:
             items.insert(0, merged_rsn)
+        trail_text = _render_turn_trail(turn_trail)
+        if trail_text is not None:
+            # BEFORE the final answer: the framework's readers of the
+            # last message (and the human eye) see the answer clean;
+            # a resume replays both as ordinary assistant history.
+            items.insert(1 if merged_rsn is not None else 0,
+                         {"type": "message", "role": "assistant",
+                          "content": [{"type": "output_text",
+                                       "text": trail_text}]})
         usage = resp.get("usage") or {}
         _log(f"[shim] ok {time.time()-t0:.0f}s iters={iters} "
               f"tools={tool_calls_run} items={len(items)} "
