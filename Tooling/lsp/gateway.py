@@ -442,6 +442,94 @@ def _restart_backend(reason: str) -> None:
         _restart_lock.release()
 
 
+#: One targeted rescue per slot per window: a SECOND wedge of the same
+#: slot this soon smells like server state rot, not one runaway
+#: elaboration — that shape escalates to the full restart.
+_WEDGE_TARGETED_HISTORY: "dict[str, float]" = {}
+_WEDGE_REPEAT_WINDOW_SEC = 1800.0
+
+
+def _kill_worker_for_uri(uri: str) -> bool:
+    """Tree-kill the ONE `lean --worker` process serving `uri`.
+
+    The mapping is exact for the same reason `_slot_private_mb`'s is:
+    Lean puts the document URI on the worker's own command line, so
+    nothing depends on process order. Returns whether a worker was
+    actually killed."""
+    try:
+        import psutil
+        me = psutil.Process(os.getpid())
+        killed = False
+        for proc in me.children(recursive=True):
+            try:
+                argv = proc.cmdline()
+            except (psutil.Error, OSError):
+                continue
+            if "--worker" not in argv or uri not in argv:
+                continue
+            for child in proc.children(recursive=True):
+                with contextlib.suppress(Exception):
+                    child.kill()
+            with contextlib.suppress(Exception):
+                proc.kill()
+                killed = True
+        return killed
+    except Exception:  # noqa: BLE001 — the caller escalates instead
+        return False
+
+
+def _recycle_wedged_slot(uri: str) -> bool:
+    """Targeted wedge recovery: kill the one runaway worker and re-warm
+    ITS slot, leaving every other slot's claim intact.
+
+    Scale motive (owner ruling 2026-08-24): 166 whole-pool restarts on
+    record, each stripping EVERY in-flight session of its slot claim
+    plus a cold content re-warm (420 victims at pool 4-12) — at cloud
+    pool sizes one wedge would take ~50 live formalizers' Lean surface
+    down at once. The close/re-open flow is `_recycle_slot_if_heavy`'s,
+    in production since 2026-08-14.
+
+    Returns True when the slot is back in the pool. False hands the
+    wedge to `_restart_backend` — the pre-2026-08-24 behavior, kept as
+    the escalation for every shape this path cannot prove it fixed
+    (repeat wedge of the same slot, claim-lock held by a live request,
+    worker not found, re-open failure)."""
+    now = time.monotonic()
+    last = _WEDGE_TARGETED_HISTORY.get(uri)
+    if last is not None and now - last < _WEDGE_REPEAT_WINDOW_SEC:
+        return False
+    backend = _state.backend
+    slot = next((s for s in _state.workers if s.slot_uri == uri), None)
+    if backend is None or slot is None:
+        return False
+    if not slot.lock.acquire(blocking=False):
+        # A request thread is mid-call on this slot; yanking the worker
+        # under it risks a half-state the full restart already handles.
+        return False
+    try:
+        if not _kill_worker_for_uri(uri):
+            return False
+        try:
+            with contextlib.suppress(Exception):
+                backend.did_close(slot.slot_path)
+            backend.did_open(slot.slot_path, WARMUP_CONTENT)
+            backend.wait_for_file_done(slot.slot_uri, timeout=300)
+        except Exception:  # noqa: BLE001 — escalation handles it
+            return False
+        # Claim cleared: the owning session re-claims on its next call
+        # and pays ONE cold content warm — the price every session paid
+        # under the whole-pool restart, now paid by one.
+        slot.claimed_by = None
+        slot.content_pipeline_id = None
+        _WEDGE_TARGETED_HISTORY[uri] = now
+        print(f"[gateway] wedged worker on slot {slot.slot_id} killed "
+              f"and recycled — every other slot keeps its claim",
+              file=sys.stderr, flush=True)
+        return True
+    finally:
+        slot.lock.release()
+
+
 def _wedge_watchdog_loop() -> None:
     """Replace the backend if any slot's Lean elaborate has been in-flight
     past `_BACKEND_WEDGE_SEC` — a non-terminating elaborate, well beyond
@@ -469,8 +557,10 @@ def _wedge_watchdog_loop() -> None:
                 break
         if wedged is not None:
             nonempty_since.clear()
-            _restart_backend(
-                f"elaborate on {wedged} wedged >{int(_BACKEND_WEDGE_SEC)}s")
+            if not _recycle_wedged_slot(wedged):
+                _restart_backend(
+                    f"elaborate on {wedged} wedged "
+                    f">{int(_BACKEND_WEDGE_SEC)}s")
 
 
 # ─── Slot acquisition (the heart of Phase 2) ─────────────

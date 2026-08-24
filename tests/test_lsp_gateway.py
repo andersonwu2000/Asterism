@@ -2788,3 +2788,85 @@ def test_validate_file_surfaces_sorries_beside_ok_true(
         lsp_gateway._session_ctx.reset(ctx2)
         lsp_gateway._state.sessions.pop("tok-A", None)
     assert "sorries" not in out2 and "sorries_note" not in out2
+
+
+class _WedgeBackend:
+    """Records the recycle flow; injectable failure on re-open."""
+    def __init__(self, *, open_raises=False):
+        self.calls: list = []
+        self._open_raises = open_raises
+    def did_close(self, path):
+        self.calls.append(("close", str(path)))
+    def did_open(self, path, content):
+        if self._open_raises:
+            raise RuntimeError("no server")
+        self.calls.append(("open", str(path), content))
+    def wait_for_file_done(self, uri, timeout=0):
+        self.calls.append(("wait", uri))
+
+
+def _wedge_setup(monkeypatch, *, backend=None, killed=True,
+                 claimed_by="pipe-W"):
+    slot = _make_fake_slot(0, claimed_by=claimed_by,
+                           content_pipeline_id=claimed_by)
+    monkeypatch.setattr(lsp_gateway._state, "workers", [slot])
+    monkeypatch.setattr(lsp_gateway._state, "backend",
+                        backend if backend is not None else _WedgeBackend())
+    monkeypatch.setattr(lsp_gateway, "_kill_worker_for_uri",
+                        lambda uri: killed)
+    lsp_gateway._WEDGE_TARGETED_HISTORY.clear()
+    return slot
+
+
+def test_wedge_recycles_one_slot_instead_of_the_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """166 whole-pool restarts on record, ~2.5 victims each at pool
+    4-12 — at cloud pool sizes one wedge would strip ~50 live
+    formalizers at once (owner ruling 2026-08-24). The targeted path
+    kills the one worker, re-warms its slot, clears only ITS claim."""
+    backend = _WedgeBackend()
+    slot = _wedge_setup(monkeypatch, backend=backend)
+    assert lsp_gateway._recycle_wedged_slot(slot.slot_uri) is True
+    assert slot.claimed_by is None and slot.content_pipeline_id is None
+    kinds = [c[0] for c in backend.calls]
+    assert kinds == ["close", "open", "wait"]
+
+
+def test_wedge_repeat_on_the_same_slot_escalates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second wedge of the same slot inside the window smells like
+    server state rot — hand it to the full restart."""
+    slot = _wedge_setup(monkeypatch)
+    assert lsp_gateway._recycle_wedged_slot(slot.slot_uri) is True
+    slot.claimed_by = "pipe-W2"
+    assert lsp_gateway._recycle_wedged_slot(slot.slot_uri) is False
+    assert slot.claimed_by == "pipe-W2", "escalation must not touch claims"
+
+
+def test_wedge_falls_back_when_the_worker_cannot_be_killed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slot = _wedge_setup(monkeypatch, killed=False)
+    assert lsp_gateway._recycle_wedged_slot(slot.slot_uri) is False
+    assert slot.claimed_by == "pipe-W", "failed rescue must not clear claims"
+
+
+def test_wedge_falls_back_when_reopen_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slot = _wedge_setup(monkeypatch,
+                        backend=_WedgeBackend(open_raises=True))
+    assert lsp_gateway._recycle_wedged_slot(slot.slot_uri) is False
+
+
+def test_wedge_falls_back_when_the_slot_lock_is_held(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slot = _wedge_setup(monkeypatch)
+    slot.lock.acquire()
+    try:
+        assert lsp_gateway._recycle_wedged_slot(slot.slot_uri) is False
+    finally:
+        slot.lock.release()
