@@ -625,8 +625,14 @@ def _write_batches_companion(conn: sqlite3.Connection,
     attribution, the landed signature."""
     if attempts_dir is None:
         return False
+    # Same snapshot-disclosure pattern as CATALOG.md / TREE.md (the one
+    # snapshot file that carried NO stamp — autopsy 2026-08-24).
+    from datetime import datetime, timezone
+    _taken = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
     lines = ["# Completed Inject batches — full proofs and replies",
-             "_Machine-generated per spawn. The inline"
+             f"_Machine-generated per spawn; snapshot taken {_taken} — "
+             "in-flight statuses move while you work (ask the record "
+             "live: `inspect({\"decl\": ...})`). The inline"
              " `## Completed Inject batches` section carries the"
              " scoreboard; the untruncated text lives here._", ""]
     # In-flight batches first, IN FULL (owner ruling 2026-08-22: lazy
@@ -1258,9 +1264,16 @@ def _section_active_goals(conn: sqlite3.Connection,
     # goodwill either way: `quality/dedupe.py` enforces it mechanically
     # at commit, tier-0 and defeq. This section is the courtesy that
     # saves a spawn, not the gate.
+    # The staleness caveat mirrors `## TREE`'s (2026-08-15) — the
+    # 08-15 fix covered one of two isomorphic status lists and the
+    # other became the dominant "surfaces disagree" feedback pair
+    # (~83 entries, autopsy 2026-08-24): statuses here are frozen at
+    # compile time while workers keep landing proofs.
     out = ["## Active goals", "",
-           "_Signatures on demand: `inspect([{\"decl\": \"<slug>\"}])` "
-           "returns the statement, its file and whether it is proved._",
+           "_Statuses frozen at compile time — they move while you "
+           "work. Before deciding anything from one, ask the record "
+           "live: `inspect([{\"decl\": \"<slug>\"}])` (also returns "
+           "the statement and file)._",
            ""]
     for r in rows:
         out.append(

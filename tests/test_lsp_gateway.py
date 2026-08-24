@@ -2748,3 +2748,43 @@ def test_validate_file_missing_file_teaches_write_first(
         lsp_gateway._state.sessions.pop("tok-A", None)
     assert "write it first" in out.get("error", "")
     assert "must name this session's" in out2.get("error", "")
+
+
+def test_validate_file_surfaces_sorries_beside_ok_true(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Owner ruling 2026-08-24: `ok` stays the zero-ERRORS verdict
+    (sorry is warning-severity and stubs legally carry it), but the
+    fact is surfaced beside it — top-level `sorries` with lines, and a
+    note saying what ok does NOT mean. ~20 agents had read a
+    sorry-bearing ok:true as "done"."""
+    diag = {"range": {"start": {"line": 1, "character": 2}},
+            "severity": 2, "message": "declaration uses 'sorry'"}
+    backend = _DiagBackend(wait_raises=None, diags=[diag])
+    ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
+    # Identity compilation unit so the fake diag's line survives the
+    # prefix remap untouched.
+    monkeypatch.setattr(lsp_gateway, "_build_compilation_unit",
+                        lambda content, *a, **kw: (content, None, []))
+    (tmp_path / "x.lean").write_text(
+        "theorem t : True := by sorry\n", encoding="utf-8")
+    try:
+        out = json.loads(asyncio.run(lsp_gateway.validate_file()))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert out["ok"] is True
+    assert out["sorries"] == [
+        {"line": 2, "message": "declaration uses 'sorry'"}]
+    assert "zero ERRORS" in out["sorries_note"]
+
+    backend2 = _DiagBackend(wait_raises=None, diags=[])
+    ctx2 = _setup_validate_session(monkeypatch, tmp_path, backend2)
+    (tmp_path / "x.lean").write_text(
+        "theorem t : True := trivial\n", encoding="utf-8")
+    try:
+        out2 = json.loads(asyncio.run(lsp_gateway.validate_file()))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx2)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert "sorries" not in out2 and "sorries_note" not in out2

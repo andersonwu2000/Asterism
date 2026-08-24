@@ -3094,6 +3094,24 @@ def validate_file(content: str = "", file: str = "") -> str:
         "_server_recv_ts": _recv_ts,
         "_server_send_ts": _ts_now(),
     }
+    # `ok` is the zero-ERRORS verdict and sorry is warning-severity, so
+    # a sorry-bearing unit reads ok:true — legal for stubs and
+    # decomposition patches, but ~20 agents read it as "done" (owner
+    # ruling 2026-08-24: keep the boolean, surface the fact beside it).
+    _sorries = [d for d in formatted
+                if str(d.get("severity")) == "warning"
+                and "sorry" in str(d.get("message", ""))]
+    if _sorries:
+        response["sorries"] = [
+            {"line": d.get("line"), "message": d.get("message"),
+             **({"also_lines": d["also_lines"]}
+                if d.get("also_lines") else {})}
+            for d in _sorries]
+        if response["ok"]:
+            response["sorries_note"] = (
+                "`ok` means zero ERRORS; these sorry warnings remain — "
+                "legal in a stub or decomposition patch, not in a "
+                "finished proof")
     _note_diagnostics(meta, formatted, time.perf_counter() - t0)
     if timed_out:
         response["timed_out"] = True
