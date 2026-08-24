@@ -2901,3 +2901,16 @@ def test_gateway_decline_regex_stays_in_lockstep_with_forward() -> None:
     assert (lsp_gateway._GW_DECLINE_RE.pattern
             == forward._DECLINE_RE.pattern)
     assert (lsp_gateway._GW_DECLINE_RE.flags == forward._DECLINE_RE.flags)
+
+
+def test_gateway_port_claim_is_reuseaddr_on_posix_only() -> None:
+    """_kill_stale_gateway's three-signal death proof shows no LISTENER
+    remains — but on POSIX the dead gateway's TIME_WAIT remnants still
+    block a bare bind for up to ~60s, and the relaunch EADDRINUSE'd
+    twice on boarding day (2026-08-24; same family as the zen shim's
+    rebind). POSIX SO_REUSEADDR admits no second live listener; Windows
+    keeps the bare bind (its REUSEADDR would allow a live double-bind)."""
+    import inspect as _inspect
+    src = _inspect.getsource(lsp_gateway)
+    assert "SO_REUSEADDR" in src
+    assert 'if os.name != "nt":' in src

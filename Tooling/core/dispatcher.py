@@ -2108,6 +2108,19 @@ def run(workspace: Path, *, once: bool = False,
                       f"in-flight worker(s), then handing off to a fresh "
                       f"daemon on current settings", flush=True)
         if drifting and not stopping and not futures:
+            if os.environ.get("INVOCATION_ID"):
+                # Under systemd the unit supervises ONLY the main PID: a
+                # self-spawned successor is an unsupervised orphan, and
+                # its crash is a silent fleet stop (measured 2026-08-24,
+                # Oracle boarding — the successor died on a gateway port
+                # race and nothing restarted anything). Exit non-zero
+                # instead: Restart=on-failure relaunches THIS unit on
+                # current code, supervision intact. 75 = EX_TEMPFAIL.
+                print("[dispatcher] drift handoff under systemd — exiting "
+                      "rc=75 so the unit's Restart relaunches on current "
+                      "code", flush=True)
+                _exit_pool_fast(pool)
+                return 75
             _spawn_handoff_successor(workspace, scope)
             print("[dispatcher] handoff successor spawned (waiting on the "
                   "singleton lock) — exiting cleanly", flush=True)

@@ -26,6 +26,14 @@
 Description=Asterism daemon (dispatcher; manages the Lean gateway)
 After=network-online.target asterism-zen-shim.service
 Wants=asterism-zen-shim.service
+# StartLimit* live in [Unit] — in [Service] this systemd IGNORES them
+# with a journal warning (observed 2026-08-24), leaving Restart
+# unbraked. Unlogged provider / missing Lean cache exits early — 3
+# tries per 10 minutes, then stay down instead of burning quota.
+# (Code-drift handoff exits rc=75 → Restart=on-failure relaunches on
+# current code; deploys are rare enough to never trip this brake.)
+StartLimitIntervalSec=600
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -45,10 +53,6 @@ TimeoutStopSec=1800
 KillMode=process
 Restart=on-failure
 RestartSec=10
-# Unlogged provider / missing Lean cache exits early — 3 tries per
-# 10 minutes, then stay down instead of burning quota.
-StartLimitIntervalSec=600
-StartLimitBurst=3
 MemoryAccounting=true
 MemoryHigh=75%
 MemoryMax=85%

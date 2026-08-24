@@ -4374,6 +4374,18 @@ def main() -> None:
     import socket as _socket
     try:
         http_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        if os.name != "nt":
+            # TIME_WAIT remnants of a just-killed gateway's accepted
+            # connections block a bare bind for up to ~60s on POSIX even
+            # after the listener is provably gone — _kill_stale_gateway's
+            # three-signal proof passed and this bind still EADDRINUSE'd,
+            # twice on boarding day (2026-08-24; same family as the zen
+            # shim's rebind). POSIX SO_REUSEADDR admits no second LIVE
+            # listener, so the port-singleton guarantee is intact where
+            # exclusivity is real; Windows keeps the bare bind (its
+            # REUSEADDR would let a rival bind over a live gateway).
+            http_sock.setsockopt(_socket.SOL_SOCKET,
+                                 _socket.SO_REUSEADDR, 1)
         http_sock.bind(("127.0.0.1", port))
     except OSError as e:
         print(f"[gateway] FATAL: port {port} is already taken ({e}) — "

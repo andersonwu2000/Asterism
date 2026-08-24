@@ -10,6 +10,12 @@
 [Unit]
 Description=Asterism zen shim (port 8898)
 After=network-online.target
+# StartLimit* live in [Unit] — in [Service] this systemd IGNORES them
+# (journal warning, 2026-08-24). A missing key exits at startup
+# (SystemExit in _key_for) — do not burn CPU in a restart loop; 5
+# tries per 5 minutes, then stop.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -20,10 +26,6 @@ Environment=LC_ALL=C.UTF-8
 ExecStart=/usr/bin/env python3.12 -m Tooling.llm.zen_shim 8898
 Restart=on-failure
 RestartSec=5
-# A missing key exits at startup (SystemExit in _key_for) — do not
-# burn CPU in a restart loop; 5 tries per 5 minutes, then stop.
-StartLimitIntervalSec=300
-StartLimitBurst=5
 MemoryAccounting=true
 MemoryMax=2G
 
