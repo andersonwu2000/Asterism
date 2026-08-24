@@ -930,7 +930,18 @@ def _q_decl(q: dict, cwd: Path, deny) -> "list[str]":
                                               flatten=False)
         except Exception:  # noqa: BLE001 — a missing stub falls back
             sig = stmt or ""
-        out += [f"    {ln}" for ln in (sig or "").strip().splitlines()[:16]]
+        sig_lines = (sig or "").strip().splitlines()
+        out += [f"    {ln}" for ln in sig_lines[:16]]
+        # Truncation is a VIEW, never a loss (framework rule): the old
+        # silent `[:16]` cut is the same "stopped mid-definition" failure
+        # the grep path already discloses — ~26 agent reports read a
+        # clipped signature as the WHOLE declaration. Name the count and
+        # the reachable action: the file path is already on the line
+        # above, so `read` + `lines` picks up exactly where this left off.
+        if len(sig_lines) > 16:
+            out.append(
+                f"    … {len(sig_lines) - 16} more line(s) elided — "
+                f'read the rest: {{"read": {lp!r}, "lines": "17-"}}')
     return out
 
 

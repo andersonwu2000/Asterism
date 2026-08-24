@@ -2240,6 +2240,17 @@ def test_apply_edit_reports_the_goal_at_both_ends(
     assert "goal_at_edit_start" in multi
     assert "goal_at_edit_end" in multi
     assert "goal_at_edit_end" not in single
+    # 2026-08-24 fix: ~38 agent reports read a non-empty
+    # `goal_at_edit_end` as "proof incomplete" and burned a turn
+    # cross-checking with validate_file — it is a cursor snapshot at the
+    # edited region's end, not a whole-file verdict. The note rides
+    # alongside the field (only when the field itself is present) and
+    # must name the field it is NOT a verdict on, plus the actual
+    # verdict source.
+    assert multi["goal_at_edit_end_note"] == lsp_gateway._GOAL_AT_EDIT_END_NOTE
+    assert "not a verdict on the whole file" in multi["goal_at_edit_end_note"]
+    assert "diagnostics" in multi["goal_at_edit_end_note"]
+    assert "goal_at_edit_end_note" not in single
 
 
 def test_apply_edit_carries_citation_mirror(

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from Tooling.knowledge import workspace_query as wq
+from Tooling.state import db as _db
 
 
 @pytest.fixture
@@ -150,6 +151,58 @@ def test_decl_degrades_without_a_database(here: Path) -> None:
     agent would read as "that declaration does not exist"."""
     out = wq.run_queries([{"decl": "a_bound"}], cwd=here)
     assert "unavailable" in out or "no declaration named" in out
+
+
+def _seed_decl(ws: Path, here: Path, *, slug: str, sig_lines: int) -> None:
+    """A minimal `asterism.db` + on-disk stub carrying one goal, so
+    `_q_decl` resolves `slug` to a REAL full signature the way
+    `goal_display_signature` reads it (from the stub file, not the
+    stored `statement`) — see the "flattening" note at `_q_decl`'s
+    top. `sig_lines` binder lines put the rendered signature exactly
+    at the size under test."""
+    rel = f"proofs/L_{slug}.lean"
+    binders = "\n".join(f"    (h{i} : True)" for i in range(sig_lines))
+    (here / "proofs" / f"L_{slug}.lean").write_text(
+        f"import Mathlib\ntheorem {slug}\n{binders}\n    : True := by\n"
+        f"  trivial\n", encoding="utf-8")
+    conn = _db.connect(ws / "asterism.db")
+    _db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, created_at, bootstrap_done)"
+        " VALUES (?, ?, 1)", ("union_closed", _db.now()))
+    _db.insert_goal(
+        conn, problem="union_closed", slug=slug,
+        lean_path=f"Problems/Combinatorics/union_closed/{rel}",
+        statement="True", origin="root")
+    conn.close()
+
+
+def test_decl_signature_over_16_lines_names_the_elided_count_and_the_way_back(
+    ws: Path, here: Path,
+) -> None:
+    """The old `splitlines()[:16]` cut carried no note at all — ~26 agent
+    reports of a declaration that "stopped mid-definition" with nothing
+    telling them more existed. Truncation is a VIEW, never a loss: the
+    note must name the count AND a reachable action (the sibling `grep`
+    path already discloses its own cut; `decl` must match it)."""
+    _seed_decl(ws, here, slug="long_sig", sig_lines=20)
+    out = wq.run_queries([{"decl": "long_sig"}], cwd=here)
+    assert "more line(s) elided" in out
+    # The way back must be reachable: `read` + `lines` on the SAME file
+    # path the decl answer already printed, picking up right after the
+    # 16 lines shown.
+    assert '"lines": "17-"' in out
+    assert "L_long_sig.lean" in out
+
+
+def test_decl_signature_at_16_lines_or_fewer_has_no_truncation_note(
+    ws: Path, here: Path,
+) -> None:
+    """A signature that already fits whole must not carry a note about a
+    cut that never happened — that would be its own false signal."""
+    _seed_decl(ws, here, slug="short_sig", sig_lines=1)
+    out = wq.run_queries([{"decl": "short_sig"}], cwd=here)
+    assert "elided" not in out
 
 
 # ── the budget is per query, not per call (2026-08-13 / 08-15) ──────

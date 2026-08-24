@@ -2077,7 +2077,8 @@ def apply_edit(edits: list = None) -> str:
         "post_edit_region": post_edit_region,
         "goal_at_edit_start": goal_text,
         "diagnostics": formatted,
-        **({"goal_at_edit_end": goal_end_text}
+        **({"goal_at_edit_end": goal_end_text,
+            "goal_at_edit_end_note": _GOAL_AT_EDIT_END_NOTE}
            if goal_end_text is not None else {}),
         "diagnostic_count": _n_diags,
         "elapsed_s": round(time.perf_counter() - t0, 1),
@@ -2331,6 +2332,18 @@ _ELABORATING_WARNING = (
     "Lean has NOT finished elaborating this file (120s wait expired) — "
     "the diagnostics here are INCOMPLETE and a count of 0 does NOT mean "
     "the file is clean. Re-run this tool to check again."
+)
+
+# `goal_at_edit_end` is a CURSOR SNAPSHOT at the edited region's end
+# position, not a verdict on the file — ~38 agent reports treated a
+# non-empty goal there as "proof incomplete" and burned a turn
+# cross-checking with validate_file, which already answers that
+# question. Attached as a sibling key (never inline in the value
+# itself) so the field stays machine-parseable while still teaching.
+_GOAL_AT_EDIT_END_NOTE = (
+    "this is the goal state AT THE CURSOR after the edited region, not "
+    "a verdict on the whole file — an open goal here is expected mid-proof. "
+    "Use `diagnostics` (or `validate_file`) to know whether the FILE is done."
 )
 
 
