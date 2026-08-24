@@ -892,6 +892,9 @@ def test_cold_prompt_carries_the_toolface_alignment_note() -> None:
     assert "authoritative toolset" in src
     # the note must be fenced to the non-resume branch
     assert "if not resuming:" in src
+    # 2026-08-24 extension: the code-mode door (`functions.exec` +
+    # ALL_TOOLS) is named so a spawn does not burn a discovery turn.
+    assert "functions.exec" in src and "ALL_TOOLS" in src
 
 
 def test_zen_turn_budget_margin_scales_with_the_wall(tmp_path: Path) -> None:

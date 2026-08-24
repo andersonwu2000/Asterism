@@ -791,11 +791,22 @@ class CodexCliProvider:
             # tool face — 12 self-reports of agents reconciling the two
             # worlds by guesswork. One alignment line, prepended at the
             # adapter so no other provider ever sees it.
+            # Second sentence (user ruling 2026-08-24): codex 0.149's
+            # native path can present the tools through its code-mode
+            # host — a lone `functions.exec` plus an ALL_TOOLS array —
+            # and 16 agents burned a discovery turn per spawn finding
+            # the prompt's tool names inside it. The door cannot be
+            # removed (`code_mode_host = false` does not flatten,
+            # probed); name it instead.
             prompt = (
                 "NOTE: your function list is the complete, "
                 "authoritative toolset for this task — ignore any "
                 "built-in guidance about `apply_patch` or other tools "
-                "not in it.\n\n" + prompt)
+                "not in it. If the list shows only `functions.exec`, "
+                "the prompt's tool names (`inspect`, `write_file`, …) "
+                "are reachable through it (ALL_TOOLS) — same tools, "
+                "different door; don't spend turns rediscovering "
+                "them.\n\n" + prompt)
 
         # The two subcommands take DIFFERENT option sets, and copying
         # the cold flags onto the resume line is not a style choice —
