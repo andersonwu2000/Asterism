@@ -376,10 +376,15 @@ def test_the_concurrency_gate_is_fifo_with_direct_handoff() -> None:
     it up as liveness (2026-08-22). The slot must pass head-first."""
     import threading as th
     import collections as co
-    # isolate module state
-    old = (zen_shim._CONC_FREE, list(zen_shim._CONC_WAITERS))
+    # isolate module state — adaptive growth OFF: >60s after module
+    # import the grow interval has lapsed and a release with waiters
+    # adds a slot, waking BOTH queued threads at once (exactly the
+    # adaptive feature; this test pins the FIFO handoff, not it).
+    old = (zen_shim._CONC_FREE, list(zen_shim._CONC_WAITERS),
+           zen_shim._CONC_AUTO)
     zen_shim._CONC_WAITERS.clear()
     zen_shim._CONC_FREE = 1
+    zen_shim._CONC_AUTO = False
     try:
         zen_shim._conc_acquire(None)          # takes the only slot
         got: list = []
@@ -408,6 +413,7 @@ def test_the_concurrency_gate_is_fifo_with_direct_handoff() -> None:
         zen_shim._conc_release()
     finally:
         zen_shim._CONC_FREE, waiters = old[0], old[1]
+        zen_shim._CONC_AUTO = old[2]
         zen_shim._CONC_WAITERS.clear()
         zen_shim._CONC_WAITERS.extend(waiters)
 

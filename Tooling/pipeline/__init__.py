@@ -639,6 +639,30 @@ DECLINE_TO_FAILURE_REASON = {
 # Cross-pipeline helpers
 # ---------------------------------------------------------------------
 
+def resume_mcp_config(attempts_dir: Path) -> "Path | None":
+    """The SAME MCP config the work spawn used — for every tail turn
+    that resumes its session (postmortem / reflection / feedback).
+
+    codex re-renders config.toml on EVERY spawn from the request's
+    mcp_config_path: a tail turn that omits it re-homes the resumed
+    session onto a TOOLLESS envelope — the parting-note turn had only
+    codex builtins ("my function list only shows update_plan and
+    request_user_input", its own reasoning, 2026-08-24) and 124
+    consecutive codex-path deaths left no `_progress.md` (0/105 local
+    codex era + 0/19 cloud). The feedback tail fixed this for itself
+    and the fix never propagated (rule 4) — this helper is now the one
+    place all three tails get the answer. Prompt-cache identity rides
+    the same file (feedback's two-arm probe: resume WITH the config
+    cached 11,008 of 12,056; without it, 0).
+
+    Whichever file the work spawn wrote is the one that matches:
+    `_mcp_config.json` (gateway + tools) for a formalizer,
+    `_mcp_tools.json` (tools alone) for the Strategist and judge."""
+    return next((p for p in (attempts_dir / "_mcp_config.json",
+                             attempts_dir / "_mcp_tools.json")
+                 if p.is_file()), None)
+
+
 def _attempt_postmortem(*, seat: str, prompt_path: Path,
                         problem_dir: Path, attempts_dir: Path,
                         session_id: str) -> None:
@@ -665,6 +689,7 @@ def _attempt_postmortem(*, seat: str, prompt_path: Path,
             problem_dir=problem_dir,
             attempts_dir=attempts_dir,
             session_id=session_id,
+            mcp_config_path=resume_mcp_config(attempts_dir),
             is_postmortem=True,
         )
     except Exception:  # noqa: BLE001 — postmortem must not block timeout flow

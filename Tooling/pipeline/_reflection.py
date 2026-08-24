@@ -201,12 +201,17 @@ def attempt_reflection(*,
             rendered_path = attempts_dir / _REFLECTION_PROMPT_FILENAME
             rendered_path.write_text(rendered, encoding="utf-8")
 
+            from . import resume_mcp_config
             agent.spawn_llm(
                 kind=seat,
                 prompt_path=rendered_path,
                 problem_dir=problem_dir,
                 attempts_dir=attempts_dir,
                 session_id=sid,
+                # The work spawn's own MCC config — a resume without it
+                # is re-homed onto a toolless envelope on the codex
+                # path (see `pipeline.resume_mcp_config`).
+                mcp_config_path=resume_mcp_config(attempts_dir),
                 # is_postmortem=True borrows the existing "resume + use
                 # prompt_path verbatim, no companion file load" path.
                 is_postmortem=True,

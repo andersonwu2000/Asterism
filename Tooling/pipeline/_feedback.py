@@ -228,9 +228,8 @@ def attempt_feedback(*, kind: str, seat: str, sid: str,
         # unstartable and, with codex's `required = true`, fails this
         # spawn — which degrades to exactly today's outcome for a lost
         # session: no record, and the rc line below says so.
-        mcp = next((p for p in (attempts_dir / "_mcp_config.json",
-                                attempts_dir / "_mcp_tools.json")
-                    if p.is_file()), None)
+        from . import resume_mcp_config
+        mcp = resume_mcp_config(attempts_dir)
         rc = agent.spawn_llm(
             kind=seat, prompt_path=ppath, problem_dir=problem_dir,
             attempts_dir=attempts_dir, session_id=sid,
