@@ -269,7 +269,7 @@ def test_additive_alter_block_is_frozen():
     lowering the pin consciously."""
     import inspect
     from Tooling.state import db_migrations
-    src = inspect.getsource(db_migrations.apply)
+    src = inspect.getsource(db_migrations._apply_locked)
     start = src.index("for col, ddl in (")
     end = src.index("):", start)
     # count DDL strings, not the words (comments inside the block

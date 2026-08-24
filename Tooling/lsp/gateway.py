@@ -4201,6 +4201,45 @@ def _slot_private_mb() -> "dict[int, int | None]":
     return out
 
 
+#: /health used to run the smaps scan INLINE on the event loop: on
+#: Linux `memory_full_info` walks /proc/<pid>/smaps_rollup, and a pool
+#: of 2 GB Lean workers turns one call into seconds — the daemon's 1s
+#: ready-poll then times out, retries, and the loop never drains its
+#: own backlog (gateway pegged at 96% CPU, /health dark, dispatch
+#: frozen 25 minutes; Oracle boarding, 2026-08-24 — Windows psutil is
+#: cheap, which is why the home fleet never saw it). Health reads a
+#: cache a throwaway thread refreshes at most once per TTL; the event
+#: loop never pays for the scan. The recycle path keeps the raw call —
+#: it runs on worker threads and needs a fresh number.
+_SLOT_MB_TTL = 20.0
+_SLOT_MB_CACHE: "dict" = {"at": 0.0, "val": {}, "refreshing": False}
+_SLOT_MB_LOCK = threading.Lock()
+
+
+def _slot_private_mb_cached() -> "dict[int, int | None]":
+    now = time.monotonic()
+    with _SLOT_MB_LOCK:
+        if (now - _SLOT_MB_CACHE["at"] < _SLOT_MB_TTL
+                or _SLOT_MB_CACHE["refreshing"]):
+            return dict(_SLOT_MB_CACHE["val"])
+        _SLOT_MB_CACHE["refreshing"] = True
+
+    def _refresh() -> None:
+        try:
+            val = _slot_private_mb()
+        except Exception:  # noqa: BLE001 — health must answer regardless
+            val = {}
+        with _SLOT_MB_LOCK:
+            _SLOT_MB_CACHE["val"] = val
+            _SLOT_MB_CACHE["at"] = time.monotonic()
+            _SLOT_MB_CACHE["refreshing"] = False
+
+    threading.Thread(target=_refresh, name="slot-mb-refresh",
+                     daemon=True).start()
+    with _SLOT_MB_LOCK:
+        return dict(_SLOT_MB_CACHE["val"])
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request):
     """Liveness check. Reports worker pool status + active sessions
@@ -4259,7 +4298,7 @@ async def health(request: Request):
         # all: a 2.7 GB slot against a 0.67 GB baseline was found by
         # hand-walking the process table, and could only be found that
         # way. None = could not measure this slot.
-        "slot_private_mb": _slot_private_mb(),
+        "slot_private_mb": _slot_private_mb_cached(),
         # PID so a reusing daemon can detect a stale worker-count (≠
         # dispatch.pool) and kill+relaunch this gateway to match the yaml.
         "pid": os.getpid(),

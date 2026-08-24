@@ -2914,3 +2914,39 @@ def test_gateway_port_claim_is_reuseaddr_on_posix_only() -> None:
     src = _inspect.getsource(lsp_gateway)
     assert "SO_REUSEADDR" in src
     assert 'if os.name != "nt":' in src
+
+
+def test_health_reads_slot_memory_from_an_off_loop_cache(monkeypatch) -> None:
+    """/health ran the smaps scan inline on the event loop; a pool of
+    2 GB Lean workers turned one call into seconds, the daemon's 1s
+    ready-poll timed out forever and dispatch froze 25 minutes (Oracle
+    boarding, 2026-08-24). The handler must read the cache, and the
+    cache must refresh OFF the calling thread."""
+    import inspect as _inspect
+    import time as _t
+    src = _inspect.getsource(lsp_gateway.health)
+    assert "_slot_private_mb_cached()" in src
+    assert "_slot_private_mb()" not in src
+    # cached variant: first call kicks a background refresh and returns
+    # immediately with the (stale/empty) snapshot — never scans inline
+    calls: list = []
+
+    def slow_scan():
+        calls.append(1)
+        _t.sleep(0.3)          # a Linux smaps walk is exactly this shape
+        return {1: 42}
+
+    monkeypatch.setattr(lsp_gateway, "_slot_private_mb", slow_scan)
+    lsp_gateway._SLOT_MB_CACHE.update(
+        {"at": 0.0, "val": {}, "refreshing": False})
+    t0 = _t.monotonic()
+    first = lsp_gateway._slot_private_mb_cached()
+    assert _t.monotonic() - t0 < 0.2, "first call must not block on the scan"
+    assert first == {}
+    deadline = _t.monotonic() + 5
+    while _t.monotonic() < deadline:
+        if lsp_gateway._slot_private_mb_cached() == {1: 42}:
+            break
+        _t.sleep(0.05)
+    assert lsp_gateway._slot_private_mb_cached() == {1: 42}
+    assert calls == [1], "fresh cache must be served without a rescan"

@@ -991,3 +991,92 @@ def test_v43_widens_trigger_kind_check_from_the_live_ddl(tmp_path):
         " AND name='idx_sd_problem'").fetchone()
     m._migrate_to_v43(conn)  # idempotent
     conn.close()
+
+
+def test_v43_self_heals_an_interrupted_attempt(tmp_path):
+    """The ladder is not one transaction: a crash mid-v43 leaves the
+    _sd_v43 staging table behind, and the NEXT attempt died on
+    'already exists' (2026-08-24 — the crash that exposed the
+    migration race). The step must drop the orphan and finish."""
+    import sqlite3 as _sqlite3
+    from Tooling.state import db_migrations as m
+    conn = _sqlite3.connect(str(tmp_path / "old.db"))
+    conn.row_factory = _sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE problems (name TEXT PRIMARY KEY);
+        CREATE TABLE strategist_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            problem TEXT NOT NULL REFERENCES problems(name),
+            trigger_kind TEXT NOT NULL CHECK(trigger_kind IN
+                ('first_launch','inject_batch_done')),
+            decision_kind TEXT NOT NULL);
+        CREATE TABLE _sd_v43 (leftover INTEGER);  -- interrupted attempt
+        INSERT INTO problems VALUES ('p');
+        INSERT INTO strategist_decisions
+            (problem, trigger_kind, decision_kind)
+            VALUES ('p', 'inject_batch_done', 'Inject');
+    """)
+    m._migrate_to_v43(conn)
+    conn.execute(
+        "INSERT INTO strategist_decisions"
+        " (problem, trigger_kind, decision_kind)"
+        " VALUES ('p', 'stall', 'Inject')")
+    assert conn.execute(
+        "SELECT count(*) FROM strategist_decisions").fetchone()[0] == 2
+    assert not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='_sd_v43'").fetchone()
+    conn.close()
+
+
+def test_concurrent_migrators_serialize_on_the_file_mutex(tmp_path):
+    """connect() auto-migrates on EVERY stale connection and a daemon
+    boot opens several (main + gateway subprocess): two racers both
+    built _sd_v43 and the loser took the daemon down 4s after start
+    (2026-08-24). apply() must serialize cross-connection; the loser
+    re-reads the bumped version inside the lock and no-ops."""
+    import sqlite3 as _sqlite3
+    import threading as _th
+    from Tooling.state import db, db_migrations as m
+    path = tmp_path / "race.db"
+    seed = _sqlite3.connect(str(path))
+    seed.row_factory = _sqlite3.Row
+    db.init_schema(seed)                      # full current schema (v43)
+    # regress ONLY the v43 surface: old-CHECK strategist_decisions +
+    # user_version 42, so both racers must run the real table rebuild
+    seed.executescript("""
+        DROP TABLE strategist_decisions;
+        CREATE TABLE strategist_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            problem TEXT NOT NULL REFERENCES problems(name),
+            trigger_kind TEXT NOT NULL CHECK(trigger_kind IN
+                ('first_launch','inject_batch_done')),
+            decision_kind TEXT NOT NULL);
+        PRAGMA user_version = 42;
+    """)
+    seed.close()
+
+    started = _th.Barrier(2)
+    errors: list = []
+
+    def migrate():
+        conn = _sqlite3.connect(str(path), timeout=30)
+        conn.row_factory = _sqlite3.Row
+        try:
+            started.wait(timeout=10)
+            m.apply(conn)
+            conn.commit()
+        except Exception as e:  # noqa: BLE001 — the assertion target
+            errors.append(e)
+        finally:
+            conn.close()
+
+    ts = [_th.Thread(target=migrate) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(timeout=120)
+    assert not errors, f"concurrent apply must not race: {errors}"
+    check = _sqlite3.connect(str(path))
+    assert (check.execute("PRAGMA user_version").fetchone()[0]
+            == db._CURRENT_USER_VERSION)
+    check.close()

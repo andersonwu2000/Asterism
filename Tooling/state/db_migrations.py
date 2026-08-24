@@ -6,11 +6,58 @@ tests (test_db_phase7 / test_phase2_migration) assert the terminal
 user_version."""
 from __future__ import annotations
 
+import contextlib
+import os
 import re
 import sqlite3
 from pathlib import Path
 
 from .db import now
+
+
+@contextlib.contextmanager
+def _migration_mutex(conn: sqlite3.Connection):
+    """ONE migrator at a time, cross-process. `connect()` auto-migrates
+    on every stale connection and a daemon boot opens several (main +
+    gateway subprocess + serve): two racers both built `_sd_v43` and
+    the loser took the daemon down 4s after start (2026-08-24, the
+    first live v43 run — WAL does not defend schema-level races, rule
+    3). A sqlite transaction cannot be the mutex here: helpers commit
+    mid-ladder and `executescript` implicitly commits, either of which
+    would silently release it. An OS file lock beside the DB has no
+    such seams. In-memory DBs are single-process; they skip the lock."""
+    row = conn.execute("PRAGMA database_list").fetchone()
+    dbfile = row[2] if row else ""
+    if not dbfile:
+        yield
+        return
+    lock_path = dbfile + ".migrate.lock"
+    f = open(lock_path, "a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            f.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    continue  # LK_LOCK gives up after ~10s; keep waiting
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f, fcntl.LOCK_UN)
+        finally:
+            f.close()
 
 # v21 (frontend charter §5-2) — per-spawn token/turn accounting. Created
 # in the migration chain (fresh DBs start at user_version 0 and run the
@@ -34,6 +81,13 @@ CREATE TABLE IF NOT EXISTS spawn_usage (
 
 def apply(conn: sqlite3.Connection) -> None:
     """Bring an existing DB up to the current schema version."""
+    with _migration_mutex(conn):
+        _apply_locked(conn)
+
+
+def _apply_locked(conn: sqlite3.Connection) -> None:
+    """The ladder proper — every version read happens INSIDE the
+    mutex, so a waiter re-reads the winner's bump and no-ops."""
     # Read the incoming version FIRST: the additive loop below must not
     # resurrect columns a later versioned migration DROPPED (v33 drops
     # goals.entry_kind; the unconditional ALTER re-added it on every
@@ -2597,6 +2651,12 @@ def _migrate_to_v43(conn: sqlite3.Connection) -> None:
     several times (v3, ...) and a hand-copied column list here would
     silently freeze whichever vintage the author looked at. String-
     widening the CHECK enum in the table's own DDL is vintage-proof."""
+    # Self-heal an interrupted prior attempt: the CREATE below commits
+    # piecemeal (this ladder is not one transaction), so a crash
+    # mid-step leaves `_sd_v43` behind and the NEXT attempt died on
+    # "already exists" (2026-08-24, the crash that exposed the
+    # migration race).
+    conn.execute("DROP TABLE IF EXISTS _sd_v43")
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table'"
         " AND name = 'strategist_decisions'").fetchone()
