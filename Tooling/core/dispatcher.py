@@ -2741,9 +2741,14 @@ def run(workspace: Path, *, once: bool = False,
                 _lean_fly = sum(1 for _m in futures.values()
                                 if _m.kind in LEAN_QUEUE_KINDS)
                 _nl_fly = len(futures) - _lean_fly
+                # claimable_only: a popped row keeps its queue row
+                # under lease, so without it every in-flight NL would
+                # be reserved twice — once in the count, once in
+                # _nl_fly (external review 2026-08-25).
                 ledger.tick(
                     nl_demand=db.queue_size(
-                        conn, scope=scope, kinds=NL_QUEUE_KINDS)
+                        conn, scope=scope, kinds=NL_QUEUE_KINDS,
+                        claimable_only=True)
                     + _nl_fly,
                     push=lambda t, f: _gwl.push_warm_target(
                         t, f, workspace=workspace))
@@ -2872,6 +2877,11 @@ def run(workspace: Path, *, once: bool = False,
                 pipeline_id=pipeline_id, kind=kind, target_id=target_id,
                 target_kind=target_kind, decision_id=decision_id,
                 queue_row_id=qid)
+            if ledger is not None and kind not in LEAN_QUEUE_KINDS:
+                # Ledger credit: this spawn's RSS is not in the system
+                # counters yet — debit it so the tight loop cannot
+                # burst past the measured floor.
+                ledger.note_nl_admit()
             # Librarian per-file rows encode `problem\x1ffile` (#92); the
             # \x1f is non-printing, so render it readably in the log.
             _disp_prob, _disp_file = _lib_decode(target_id)

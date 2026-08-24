@@ -439,7 +439,14 @@ def _restart_backend(reason: str) -> None:
             return
         n_res = sum(1 for s in _state.workers
                     if getattr(s, "reserved", False))
-        n = (len(_state.workers) - n_res) or 1
+        # OPEN slots only — the roster remembers every slot the ledger
+        # ever warmed, and re-warming the closed ones here would
+        # resurrect a field the target shrank (external review
+        # 2026-08-25; the converger regrows toward the live target if
+        # it is higher).
+        n = sum(1 for s in _state.workers
+                if not getattr(s, "reserved", False)
+                and not getattr(s, "closed", False)) or 1
         print(f"[gateway] backend restart — {reason} "
               f"({n}+{n_res} slots)",
               file=sys.stderr, flush=True)
@@ -587,7 +594,13 @@ def _borrow_order(workers):
     each group. A claimed slot is reachable only when every unclaimed slot is
     lock-busy — liveness for housekeeping probes when the whole pool is
     registered. Extracted for direct unit-testing of the ordering invariant."""
-    return sorted((s for s in workers if not getattr(s, "reserved", False)),
+    # `closed` slots have no live worker (RAM-ledger shed) — a borrow
+    # would didChange a did_close'd URI. They are also unclaimed, so
+    # without the filter they would be picked FIRST (external review
+    # 2026-08-25: the third acquisition path the claim-site fix missed).
+    return sorted((s for s in workers
+                   if not getattr(s, "reserved", False)
+                   and not getattr(s, "closed", False)),
                   key=lambda s: (s.claimed_by is not None, s.last_used_ts))
 
 
@@ -1007,7 +1020,7 @@ def _shed_slot_if_over_target(slot: WorkerSlot) -> bool:
 
 
 def _kick_warm_converger() -> None:
-    """Start the background warm loop (single-flight)."""
+    """Start the background convergence loop (single-flight)."""
     with _state.sessions_lock:
         if _state.warm_converger_on:
             return
@@ -1017,10 +1030,14 @@ def _kick_warm_converger() -> None:
 
 
 def _warm_converger_run() -> None:
-    """Warm toward the target, one slot at a time. Exits when the
-    target is met, the measured-RAM veto fires, or static mode returns.
-    The dispatcher re-pushes the target on its ledger tick, so an early
-    exit is re-kicked within seconds — no retry loop lives here."""
+    """Converge the open-slot count toward the target, one slot at a
+    time — BOTH directions: warms below it, sheds idle FREE slots above
+    it (a target drop with 20 already-free slots must return their RAM
+    now, not wait for sessions that will never release them — external
+    review 2026-08-25). Busy/claimed slots above target still shed at
+    their own release. Exits when converged, when the measured-RAM veto
+    fires, or in static mode; the dispatcher re-pushes the target on
+    its ledger tick, so an early exit is re-kicked within seconds."""
     try:
         while True:
             target = _state.warm_target
@@ -1031,6 +1048,27 @@ def _warm_converger_run() -> None:
                 # both would mint slot ids from the same (still empty)
                 # roster and race on the same slot files.
                 return
+            with _state.sessions_lock:
+                open_n = _open_pipeline_slots_locked()
+            if open_n > max(1, target):
+                # Downward FIRST, and never vetoed: shedding is how
+                # RAM pressure gets relieved — gating it on available
+                # RAM would deadlock exactly when it matters. The shed
+                # helper re-checks claim/busy/floor under its own
+                # locks; nothing idle left → the release path owns
+                # the rest.
+                shed_any = False
+                for s in list(_state.workers):
+                    if s.reserved or s.closed or s.claimed_by is not None:
+                        continue
+                    if _shed_slot_if_over_target(s):
+                        shed_any = True
+                        break
+                if not shed_any:
+                    return
+                continue
+            # Upward from here — the measured veto applies to WARMS
+            # only.
             floor = _state.warm_min_available_gb
             if floor > 0:
                 try:
@@ -4432,7 +4470,7 @@ async def warm_target(request: Request):
         free_n = sum(1 for s in _state.workers
                      if not s.reserved and not s.closed
                      and s.claimed_by is None)
-    if open_n < target and _state.first_warm_done:
+    if open_n != target and _state.first_warm_done:
         _kick_warm_converger()
     return JSONResponse({"target": target, "open": open_n,
                          "free": free_n,

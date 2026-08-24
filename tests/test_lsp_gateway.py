@@ -2972,15 +2972,18 @@ def _ledger_state(tmp_path):
             self.closed.append(path)
 
     saved = (_state.workers, _state.backend, _state.warm_target,
-             _state.warm_min_available_gb, _state.warm_converger_on)
+             _state.warm_min_available_gb, _state.warm_converger_on,
+             _state.workspace)
     fake = FakeBackend()
     _state.workers = [_mk_slot(i, tmp_path) for i in range(3)]
     _state.backend = fake
     _state.warm_target = None
     _state.warm_converger_on = False
+    _state.workspace = tmp_path
     yield fake
     (_state.workers, _state.backend, _state.warm_target,
-     _state.warm_min_available_gb, _state.warm_converger_on) = saved
+     _state.warm_min_available_gb, _state.warm_converger_on,
+     _state.workspace) = saved
 
 
 def test_shed_is_dormant_in_static_mode(_ledger_state) -> None:
@@ -3066,3 +3069,53 @@ def test_converger_refuses_to_race_the_initial_warm(_ledger_state) -> None:
         assert all(not s.closed for s in _state.workers)
     finally:
         _state.first_warm_done = saved
+
+
+def test_borrow_order_excludes_closed_slots(tmp_path) -> None:
+    """The /verify borrow probe is the third acquisition path — a
+    closed slot is unclaimed, so without the filter it would be picked
+    FIRST and didChanged on a did_close'd URI (external review
+    2026-08-25)."""
+    open_slot = _mk_slot(0, tmp_path)
+    shed_slot = _mk_slot(1, tmp_path, closed=True)
+    order = lsp_gateway._borrow_order([shed_slot, open_slot])
+    assert order == [open_slot]
+
+
+def test_converger_sheds_idle_free_slots_on_target_drop(
+        _ledger_state) -> None:
+    """Target down with slots already free: their RAM must return NOW,
+    not wait for sessions that will never release them (external
+    review 2026-08-25). The floor of one slot still holds."""
+    saved = _state.first_warm_done
+    _state.first_warm_done = True
+    _state.warm_target = 1
+    try:
+        lsp_gateway._warm_converger_run()
+        open_now = [s for s in _state.workers if not s.closed]
+        assert len(open_now) == 1
+        assert len(_ledger_state.closed) == 2
+        assert _state.warm_converger_on is False
+    finally:
+        _state.first_warm_done = saved
+
+
+def test_backend_restart_rewarms_only_open_slots() -> None:
+    """The roster remembers every slot the ledger ever warmed; a wedge
+    restart re-warming them all would resurrect a field the target
+    shrank (external review 2026-08-25)."""
+    import inspect as _inspect
+    src = _inspect.getsource(lsp_gateway._restart_backend)
+    assert 'not getattr(s, "closed", False)' in src
+
+
+def test_ledger_nl_count_excludes_leased_queue_rows() -> None:
+    """pop_queue leases rows (they stay visible); without
+    claimable_only every in-flight NL would be reserved twice — once
+    in the queue count, once in the futures count (external review
+    2026-08-25)."""
+    import inspect as _inspect
+    from Tooling.core import dispatcher as _disp
+    src = _inspect.getsource(_disp.run)
+    seg = src.split("kinds=NL_QUEUE_KINDS", 1)
+    assert len(seg) == 2 and "claimable_only=True" in seg[1][:80]

@@ -183,6 +183,11 @@ class DispatcherLedger:
     "no free slot" contract intact while the pool converges."""
 
     PUSH_INTERVAL_SEC = 15.0
+    #: A fresh spawn's RSS is invisible to the system counters for its
+    #: first seconds; admissions younger than this hold a ledger-side
+    #: credit so a tight pop loop cannot out-run the measurement
+    #: (external review 2026-08-25, P1: burst over-admission).
+    NL_CREDIT_SEC = 60.0
 
     def __init__(self, budget_gb: float, machine_gb: float) -> None:
         self.budget_gb = budget_gb
@@ -192,6 +197,7 @@ class DispatcherLedger:
         self.free_slots = 0
         self.last_target = 0
         self._last_push = 0.0
+        self._nl_admits: "list[float]" = []
 
     def nl_hard_cap(self) -> int:
         """Absolute NL-parallelism backstop — what the budget could
@@ -200,11 +206,23 @@ class DispatcherLedger:
         return max(4, min(96, int(self.budget_gb
                                   / max(0.05, nl_gb_measured()))))
 
+    def note_nl_admit(self) -> None:
+        """Record an NL admission — it debits the credit window until
+        its RSS shows up in the system counters."""
+        self._nl_admits.append(time.monotonic())
+
+    def _pending_nl(self) -> int:
+        cut = time.monotonic() - self.NL_CREDIT_SEC
+        self._nl_admits = [t for t in self._nl_admits if t >= cut]
+        return len(self._nl_admits)
+
     def nl_admissible(self, nl_in_flight: int) -> bool:
         if nl_in_flight >= self.nl_hard_cap():
             return False
-        return available_gb() >= nl_admit_floor_gb(
-            self.budget_gb, self.machine_gb, nl_gb_measured())
+        nl_gb = nl_gb_measured()
+        return (available_gb() - self._pending_nl() * nl_gb
+                >= nl_admit_floor_gb(self.budget_gb, self.machine_gb,
+                                     nl_gb))
 
     def tick(self, *, nl_demand: int, push) -> None:
         """Rate-limited recompute + push. `push(target, min_avail_gb)`
@@ -214,9 +232,15 @@ class DispatcherLedger:
         if now - self._last_push < self.PUSH_INTERVAL_SEC:
             return
         self._last_push = now
+        nl_gb = nl_gb_measured()
+        # A Lean pipeline runs an agent CLI of its own — the effective
+        # per-slot cost is worker heap + that rider (the old static
+        # formula's 0.6+0.35 split, both halves measured now; external
+        # review 2026-08-25: the worker-only coefficient understated
+        # the field and 26G was not a real fleet ceiling).
         target = compute_target_slots(
             budget_gb=self.budget_gb, nl_demand=nl_demand,
-            slot_gb=self.slot_gb, nl_gb=nl_gb_measured())
+            slot_gb=self.slot_gb + nl_gb, nl_gb=nl_gb)
         self.last_target = target
         resp = push(target, max(0.0, self.machine_gb - self.budget_gb))
         if resp:

@@ -119,10 +119,34 @@ def test_ledger_tick_pushes_and_ingests_the_reply(monkeypatch):
                 "slot_private_mb": {"0": 1100, "1": 900, "2": None}}
 
     led.tick(nl_demand=12, push=push)
-    assert pushed["target"] == 24
+    # Effective slot cost = worker heap + the Lean pipeline's own agent
+    # CLI (external review 2026-08-25: the worker-only coefficient
+    # understated the field): floor((28 - 12*0.3 - 1.25) / 1.25) = 18.
+    assert pushed["target"] == 18
     assert pushed["min_avail"] == pytest.approx(4.0)
     assert led.open_slots == 7 and led.free_slots == 3
     assert led.slot_gb == pytest.approx(1000 / 1024)
+
+
+def test_nl_admission_debits_pending_credit(monkeypatch):
+    """A tight pop loop must not out-run the RSS counters: every
+    admission younger than the credit window debits available RAM at
+    the NL coefficient (external review 2026-08-25, P1)."""
+    led = rl.DispatcherLedger(28.0, 32.0)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    monkeypatch.setattr(rl, "available_gb", lambda: 5.4)
+    # floor = (32-28) + 0.3 + 0.25 = 4.55; headroom = 0.85 → 3 admits
+    assert led.nl_admissible(0) is True
+    led.note_nl_admit()
+    assert led.nl_admissible(1) is True
+    led.note_nl_admit()
+    assert led.nl_admissible(2) is True
+    led.note_nl_admit()
+    assert led.nl_admissible(3) is False, \
+        "3 pending x 0.3 GB ate the 0.85 GB headroom"
+    # credits expire once the RSS has had time to show up
+    led._nl_admits = [t - led.NL_CREDIT_SEC - 1 for t in led._nl_admits]
+    assert led.nl_admissible(3) is True
 
 
 def test_ledger_tick_is_rate_limited(monkeypatch):
