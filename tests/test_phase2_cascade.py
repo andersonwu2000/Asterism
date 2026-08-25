@@ -367,6 +367,54 @@ def test_a_citing_consumers_death_does_not_block_reopen(
     assert kind == "dead"
 
 
+def test_shelve_conducts_to_cited_waiters_review(
+    conn: sqlite3.Connection,
+) -> None:
+    """Owner design 2026-08-25 (cited-wait 'align'): shelving a goal
+    that live strategies CITE sends each waiter's own goal back to
+    review IMMEDIATELY — before this, the waiter starved silently
+    until every other sub-goal settled (18 live waiters measured).
+    Minted edges keep the old semantics (downward cascade territory);
+    the citing strategy itself stays 'proposed' so a revival resumes
+    it without ceremony."""
+    from Tooling.state.transitions import (_propagate_shelve,
+                                           _set_goal_terminal_and_propagate)
+    # B: the goal about to be parked; A cites it, C minted it.
+    a = _insert_goal(conn, slug="citer_parent", status="attempting")
+    s_a = _insert_strategy(conn, goal_id=a)
+    # the measured stranded shape: the waiter still has its OWN minted
+    # sub-goal in flight, so nothing settles and nothing ever escalates
+    a_kid = _insert_goal(conn, slug="citer_own_kid", status="open")
+    c = _insert_goal(conn, slug="minter_parent", status="attempting")
+    s_c = _insert_strategy(conn, goal_id=c)
+    b = _insert_goal(conn, slug="shared_dep", status="open")
+    _link(conn, s_a, [a_kid])                  # minted, alive
+    _link(conn, s_a, [b], link_kind="cited")
+    _link(conn, s_c, [b])                      # minted
+
+    # the ConfirmShelve commit pair (every shelve site calls both)
+    _set_goal_terminal_and_propagate(conn, b, "shelved")
+    _propagate_shelve(conn, b)
+
+    ga = conn.execute("SELECT status FROM goals WHERE id=?", (a,)).fetchone()
+    assert ga["status"] == "pending_strategist_review", \
+        "the CITING waiter's goal must return to review at shelve time"
+    sa = conn.execute("SELECT status FROM strategies WHERE id=?",
+                      (s_a,)).fetchone()
+    assert sa["status"] == "proposed", "waiter strategy stays revivable"
+    ev = conn.execute(
+        "SELECT event FROM goal_events WHERE goal_id=?"
+        " ORDER BY id DESC LIMIT 1", (a,)).fetchone()
+    assert ev["event"] == "cited_dependency_parked"
+    # The MINTED parent may also reach review, but through the
+    # pre-existing stall machinery (its only sub-goal settled), never
+    # through this hook — the event tells the two apart.
+    evc = conn.execute(
+        "SELECT event FROM goal_events WHERE goal_id=?"
+        " ORDER BY id DESC LIMIT 1", (c,)).fetchone()
+    assert evc is None or evc["event"] != "cited_dependency_parked"
+
+
 # ---------------------------------------------------------------------
 # Rule 3: _has_dead_strategy_in_chain (auto-detach trigger)
 # ---------------------------------------------------------------------

@@ -310,9 +310,14 @@ def build_projection(*, round_no: int, attempts_dir: Path,
     # then saw `Prop` where the strategist's own CATALOG carried the
     # full def, and prosecuted an honest citation as fabrication for
     # two rounds (cube_e2e 07-29).
-    from ..agent.context import write_catalog_companion
+    from ..agent.context import (write_adjudications_companion,
+                                 write_catalog_companion)
     write_catalog_companion(conn, problem, proj,
                             workspace=attempts_dir.parent.parent)
+    # Ruling history rides the same projection (2026-08-25): a proposal
+    # that re-parks or revives an already-adjudicated goal should be
+    # judged against the recorded rulings, not from memory.
+    write_adjudications_companion(conn, problem, proj)
 
     # Current rev (hoisted above) + the terminal outcomes since it,
     # welded into one file: the outcomes ARE this rev's execution

@@ -1773,3 +1773,102 @@ def test_a_step_with_no_strategy_adds_nothing() -> None:
     assert phase2_context._step_artifact_lines(c, _R(row)) == []
     assert phase2_context._step_artifact_lines(
         c, _R({"produced_goal_id": None})) == []
+
+
+# ---------------------------------------------------------------------
+# Adjudication history (owner design 2026-08-25) — one sentence per
+# ruling inline, full text lazily loaded, cited waiters named.
+# ---------------------------------------------------------------------
+
+def _insert_ruling(conn: sqlite3.Connection, *, target_id: int,
+                   group_id: int, kind: str = "ConfirmShelve",
+                   reason: str = "") -> None:
+    # one top group per problem (partial unique index) — ruling groups
+    # hang under a fixed top so several can coexist
+    conn.execute(
+        "INSERT OR IGNORE INTO groups (id, problem, charter, status,"
+        " created_at, updated_at) VALUES (1, 'p', '', 'active', ?, ?)",
+        (db.now(), db.now()))
+    conn.execute(
+        "INSERT OR IGNORE INTO groups (id, problem, parent_group_id,"
+        " charter, status, created_at, updated_at)"
+        " VALUES (?, 'p', 1, '', 'active', ?, ?)",
+        (group_id, db.now(), db.now()))
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, group_id, target_id, reason,"
+        " payload, created_at, updated_at)"
+        " VALUES ('p', 0, 'pending_review', ?, ?, ?, ?, '{}', ?, ?)",
+        (kind, group_id, target_id, reason, db.now(), db.now()))
+    conn.commit()
+
+
+def test_pending_review_surfaces_adjudication_history(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
+) -> None:
+    """The review roulette (110/210 union_closed goals re-adjudicated
+    by >=2 blind groups): the reviewer gets ONE SENTENCE per past
+    ruling inline (never the full text — owner call), the full rulings
+    in the lazy ADJUDICATIONS.md, and the live citation waiters a park
+    would strand."""
+    _insert_problem(conn)
+    root = _insert_root(conn)
+    long_tail = "The rest of the ruling is a long second sentence " * 20
+    _insert_ruling(conn, target_id=root, group_id=501,
+                   reason="Park until the census lands. " + long_tail)
+    _insert_ruling(conn, target_id=root, group_id=505, kind="Inject")
+    # a live strategy on another goal CITES the reviewed goal
+    other = _insert_root(conn, slug="citer")
+    sid = _insert_strategy(conn, other)
+    conn.execute(
+        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id,"
+        " position, link_kind) VALUES (?, ?, 0, 'cited')", (sid, root))
+    conn.commit()
+
+    attempts_dir = tmp_path / "_attempts_adj"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="pending_review",
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
+        pending_review_id=root,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "### Adjudication history on this goal" in text
+    assert "grp501 parked it: Park until the census lands." in text
+    assert "grp505 re-dispatched it" in text
+    # one sentence only — the long tail must NOT ride THIS section
+    # (other sections, e.g. the recent-decisions self-feedback, have
+    # their own rendering rules)
+    start = text.index("### Adjudication history on this goal")
+    end = text.find("##", start + 4)
+    section = text[start:end if end > 0 else len(text)]
+    assert "long second sentence" not in section
+    assert "ADJUDICATIONS.md" in text
+    # the cited waiter is named, with the conduction consequence
+    assert f"s{sid} under goal {other}" in text
+    # the lazy file carries the FULL ruling
+    adj = (attempts_dir / "ADJUDICATIONS.md").read_text(encoding="utf-8")
+    assert f"## g{root} main" in adj
+    assert "long second sentence" in adj
+
+
+def test_strategist_context_points_at_adjudications(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
+) -> None:
+    """Every strategist wake gets the two-line pointer (and the file)
+    whenever any goal carries a park ruling — parking/reviving without
+    reading the record is the roulette this exists to end."""
+    _insert_problem(conn)
+    g = _insert_root(conn)
+    _insert_ruling(conn, target_id=g, group_id=496, reason="Parked: X.")
+    attempts_dir = tmp_path / "_attempts_ptr"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="routine",
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "## Adjudication history (park rulings)" in text
+    assert (attempts_dir / "ADJUDICATIONS.md").exists()

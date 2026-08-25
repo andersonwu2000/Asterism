@@ -618,6 +618,91 @@ def catalog_companion_path(attempts_dir: Path) -> str:
     return (attempts_dir / CATALOG_COMPANION).as_posix()
 
 
+ADJUDICATIONS_COMPANION = "ADJUDICATIONS.md"
+
+
+def write_adjudications_companion(conn: sqlite3.Connection, problem: str,
+                                  attempts_dir: Path) -> int:
+    """Render the problem's per-goal adjudication history — the lazily
+    loaded layer behind the one-line-per-ruling Context entries (owner
+    design 2026-08-25: never inline the rulings; one sentence says WHAT
+    happened, the file holds WHY).
+
+    Why it exists: 110 of 210 parked goals on union_closed were
+    re-adjudicated by ≥2 DIFFERENT groups — each new reviewer saw only
+    a goal statement, re-ran the whole review, and re-parked with no
+    memory of the last ruling (one goal: six ConfirmShelves by four
+    groups in a day). A recurring park is a recorded decision, not a
+    fresh question. Machine-generated from `strategist_decisions` on
+    every strategist/adversary spawn. Returns the number of goals
+    rendered (0 = no file written)."""
+    rows = list(conn.execute(
+        "SELECT d.id, d.group_id, d.target_id, d.decision_kind,"
+        "       d.reason, d.batch_id, d.created_at, g.slug, g.status"
+        " FROM strategist_decisions d JOIN goals g ON g.id = d.target_id"
+        " WHERE d.problem = ? AND d.target_id IS NOT NULL"
+        "   AND d.decision_kind IN ('ConfirmShelve', 'Inject')"
+        " ORDER BY d.target_id, d.id", (problem,)))
+    by_goal: "dict[int, list]" = {}
+    for r in rows:
+        by_goal.setdefault(int(r["target_id"]), []).append(r)
+    # Only goals that were ever PARKED carry history worth a section —
+    # a plain redispatch Inject on a never-parked goal is routine.
+    by_goal = {g: rs for g, rs in by_goal.items()
+               if any(r["decision_kind"] == "ConfirmShelve" for r in rs)}
+    if not by_goal:
+        return 0
+
+    def _rev_of(batch_id: "str | None") -> "str":
+        if not batch_id:
+            return ""
+        row = conn.execute(
+            "SELECT rev, group_id FROM programme_revisions"
+            " WHERE batch_id = ? ORDER BY id DESC LIMIT 1",
+            (batch_id,)).fetchone()
+        if row is None:
+            return ""
+        return f" [Programme rev {row['rev']}, grp {row['group_id']}]"
+
+    lines = [
+        f"# Adjudication history — {problem} "
+        f"({len(by_goal)} goals with park rulings)",
+        "_Machine-generated from the framework's decision records on"
+        " every spawn. One section per goal that has been parked at"
+        " least once; every ruling's FULL text is here. Before"
+        " re-adjudicating a goal, read its section — a recurring park"
+        " is a recorded decision, and overturning it should answer the"
+        " recorded reason, not rediscover it._",
+        "",
+    ]
+    for gid in sorted(by_goal):
+        rs = by_goal[gid]
+        lines += [f"## g{gid} {rs[0]['slug']}",
+                  f"_current status: {rs[0]['status']}_", ""]
+        for r in rs:
+            ts = str(r["created_at"])[:16]
+            if r["decision_kind"] == "ConfirmShelve":
+                reason = " ".join(str(r["reason"] or "").split())
+                lines.append(f"- {ts} grp{r['group_id']} **ConfirmShelve**"
+                             f"{_rev_of(r['batch_id'])}: "
+                             f"{reason or '(no reason recorded)'}")
+            else:
+                lines.append(f"- {ts} grp{r['group_id']} Inject"
+                             f" (re-dispatched — reopens a parked goal)"
+                             f"{_rev_of(r['batch_id'])}")
+        lines.append("")
+    try:
+        (attempts_dir / ADJUDICATIONS_COMPANION).write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        return 0
+    return len(by_goal)
+
+
+def adjudications_companion_path(attempts_dir: Path) -> str:
+    return (attempts_dir / ADJUDICATIONS_COMPANION).as_posix()
+
+
 def _section_catalog_pointer(conn: sqlite3.Connection, problem: str,
                              attempts_dir: Path) -> list[str]:
     """Backward/Builder surface: two-line pointer only. These workers

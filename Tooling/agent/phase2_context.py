@@ -340,6 +340,66 @@ def _section_pending_review_failure(
     return out
 
 
+def _first_sentence(text: str, cap: int = 110) -> str:
+    t = " ".join((text or "").split())
+    for sep in (". ", "; "):
+        i = t.find(sep)
+        if 0 < i < cap:
+            return t[:i + 1]
+    return t[:cap] + ("…" if len(t) > cap else "")
+
+
+def _section_pending_review_adjudications(
+    conn: sqlite3.Connection, pending_review_id: int,
+    attempts_dir: "Path | None" = None,
+) -> list[str]:
+    """The goal's ruling history, one SENTENCE per ruling (owner call
+    2026-08-25: no ruling text inlined — the full rulings live in the
+    lazily-loaded `ADJUDICATIONS.md`), plus the live citation waiters
+    a park here would strand. Cure for the review roulette: 110 of 210
+    parked union_closed goals were re-adjudicated by ≥2 different
+    groups, each reviewer blind to the last ruling."""
+    from . import context
+    rows = list(conn.execute(
+        "SELECT group_id, decision_kind, reason, created_at"
+        " FROM strategist_decisions"
+        " WHERE target_id = ? AND decision_kind IN"
+        "       ('ConfirmShelve', 'Inject')"
+        " ORDER BY id", (pending_review_id,)))
+    parked = [r for r in rows if r["decision_kind"] == "ConfirmShelve"]
+    waiters = list(conn.execute(
+        "SELECT s.id AS sid, s.goal_id, g.slug FROM strategy_subgoals ss"
+        " JOIN strategies s ON s.id = ss.strategy_id"
+        " JOIN goals g ON g.id = s.goal_id"
+        " WHERE ss.subgoal_id = ? AND ss.link_kind = 'cited'"
+        "   AND s.status = 'proposed'", (pending_review_id,)))
+    if not parked and not waiters:
+        return []
+    out = ["### Adjudication history on this goal", ""]
+    if parked:
+        for r in rows:
+            ts = str(r["created_at"])[:16]
+            if r["decision_kind"] == "ConfirmShelve":
+                out.append(f"- {ts} grp{r['group_id']} parked it: "
+                           f"{_first_sentence(str(r['reason'] or ''))}")
+            else:
+                out.append(f"- {ts} grp{r['group_id']} re-dispatched it")
+        where = (context.adjudications_companion_path(attempts_dir)
+                 if attempts_dir is not None
+                 else context.ADJUDICATIONS_COMPANION)
+        out += ["", f"Full rulings: `{where}` § `g{pending_review_id}` "
+                     "— overturning a park should answer the recorded "
+                     "reason, not rediscover it.", ""]
+    if waiters:
+        out += ["Live strategies CITING this goal (they block at verify "
+                "until it proves; a ConfirmShelve here sends each one's "
+                "own goal back to its group's review):", ""]
+        out += [f"- s{w['sid']} under goal {w['goal_id']} "
+                f"(`{w['slug']}`)" for w in waiters]
+        out.append("")
+    return out
+
+
 def _section_pending_review_strategies(
     conn: sqlite3.Connection, pending_review_id: int,
 ) -> list[str]:
@@ -1684,10 +1744,12 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     # strategies + ancestor chain. Only emitted for pending_review trigger
     # with a real target; T0 / T1 / first_launch skip these sections.
     if trigger_kind == "pending_review" and pending_review_id is not None:
-        section_names += ["review_failure", "review_strategies",
-                          "review_ancestors"]
+        section_names += ["review_failure", "review_adjudications",
+                          "review_strategies", "review_ancestors"]
         sections += [
             _section_pending_review_failure(
+                conn, pending_review_id, attempts_dir),
+            _section_pending_review_adjudications(
                 conn, pending_review_id, attempts_dir),
             _section_pending_review_strategies(conn, pending_review_id),
             _section_pending_review_ancestors(conn, pending_review_id),
@@ -1726,6 +1788,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_failure_replay(conn, problem),
         _section_tree_inline(conn, workspace, problem),
         _section_catalog_index_strategist(conn, problem, attempts_dir),
+        _section_adjudications_pointer(conn, problem, attempts_dir),
         _section_charter(conn, workspace, problem, group_id),
         _section_paper_index_strategist(intent, workspace, conn,
                                         attempts_dir=attempts_dir),
@@ -1974,6 +2037,27 @@ def _section_catalog_index_strategist(conn: sqlite3.Connection,
     out += [f"- `{r['slug']}`" for r in recent]
     out.append("")
     return out
+
+
+def _section_adjudications_pointer(conn: sqlite3.Connection, problem: str,
+                                   attempts_dir: Path) -> list[str]:
+    """Two-line pointer to the machine-generated ruling history (the
+    lazily loaded layer; owner call 2026-08-25 — nothing inlined here
+    beyond the pointer). Written fresh each wake so it never drifts."""
+    from . import context
+    n = context.write_adjudications_companion(conn, problem, attempts_dir)
+    if not n:
+        return []
+    return [
+        "## Adjudication history (park rulings)",
+        f"_{n} goal(s) carry ConfirmShelve rulings — full text in"
+        f" `{context.adjudications_companion_path(attempts_dir)}`"
+        " (read-only, NOT in your cwd; grep by `g<id>` or slug)."
+        " Before parking or reviving a goal, read its section:"
+        " a recurring park is a recorded decision, and overturning it"
+        " should answer the recorded reason._",
+        "",
+    ]
 
 
 def _section_kb_lessons_curation(conn: sqlite3.Connection, problem: str,

@@ -233,6 +233,9 @@ EVENTS: frozenset[str] = frozenset({
     "forward_lemma_proved", "forward_alias_proved", "forward_reuse_revive",
     # strategist
     "strategist_reopen", "strategist_unstall",
+    # cited-wait conduction (owner design 2026-08-25): shelving a goal
+    # returns each CITING strategy's own goal to its group's review.
+    "cited_dependency_parked",
     # discussion groups (v35) — a `Delegate` with a target promotes that
     # goal to the new group's anchor and parks it `attempting`: alive
     # (so the parent's wait is legal) but not dispatchable by BFS.
@@ -1242,6 +1245,48 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
     """
     _inward_kill_strategies(conn, goal_id)
     _maybe_stall_parent_strategies(conn, goal_id)
+    _review_cited_waiters(conn, goal_id)
+
+
+def _review_cited_waiters(conn: sqlite3.Connection, goal_id: int) -> None:
+    """Owner design 2026-08-25 — the shelve conducts along WAIT edges
+    immediately ("align" for citations). A strategy that CITED this
+    goal (link_kind='cited') blocks at verify until it proves; nothing
+    ever dispatches a shelved goal, and `_maybe_stall_parent_strategies`
+    only notices after every OTHER sub-goal settles — so the waiter
+    starved silently, sometimes for days (18 live waiters measured on
+    union_closed, 2026-08-25, incl. two strategies hung on one parked
+    certificate). Each citing strategy's own goal now returns to ITS
+    group's review at shelve time: the owning strategist holds both
+    legal moves — re-plan without the parked prerequisite, or revive
+    it by Inject with the need spelled out. The machine only escalates
+    to review; shelving stays a strategist's verb (no auto-shelve),
+    and the citing strategy stays 'proposed' so a revival resumes it
+    without ceremony."""
+    parked = conn.execute("SELECT status FROM goals WHERE id = ?",
+                          (goal_id,)).fetchone()
+    if parked is None or str(parked["status"]) != "shelved":
+        # Hard terminals (disproved/dead) reach here through the
+        # composite propagators; their citing strategies are
+        # `_kill_upward_chain`'s business — conducting a review first
+        # would race the kill's own cascade.
+        return
+    waiters = conn.execute(
+        "SELECT DISTINCT s.goal_id AS wid FROM strategy_subgoals ss"
+        " JOIN strategies s ON s.id = ss.strategy_id"
+        " WHERE ss.subgoal_id = ? AND ss.link_kind = 'cited'"
+        "   AND s.status = 'proposed'",
+        (goal_id,),
+    ).fetchall()
+    for w in waiters:
+        wid = int(w["wid"])
+        if wid == goal_id:
+            continue
+        row = conn.execute("SELECT status FROM goals WHERE id = ?",
+                           (wid,)).fetchone()
+        if row is not None and str(row["status"]) in ("open", "attempting"):
+            apply_goal_transition(conn, wid, "pending_strategist_review",
+                                  event="cited_dependency_parked")
 
 
 def park_group_anchor(conn: sqlite3.Connection,

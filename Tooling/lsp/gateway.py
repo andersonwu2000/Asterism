@@ -4639,6 +4639,11 @@ async def health(request: Request):
                  if not s.reserved and not s.closed)
     n_interactive = sum(1 for s in _state.workers if s.reserved)
     n_busy = sum(1 for s in _state.workers if s.lock.locked())
+    # claimable slots — same predicate as /warm_target's `free`; the
+    # daemon-status `slots` field reads it here (frontend, 2026-08-25)
+    n_free = sum(1 for s in _state.workers
+                 if not s.reserved and not s.closed
+                 and s.claimed_by is None)
     with _state.counters_lock:
         counters = {
             "n_hot": _state.n_hot,
@@ -4667,6 +4672,7 @@ async def health(request: Request):
         # what the dispatcher's ledger last asked for (None = static
         # mode). The cockpit reads WHICH AXIS binds from these.
         "workers_open": n_open,
+        "workers_free": n_free,
         "warm_target": _state.warm_target,
         **elab_gate_stats(),
         "sessions_active": n_sessions,

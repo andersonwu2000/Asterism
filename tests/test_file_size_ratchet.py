@@ -334,7 +334,9 @@ _WATERMARKS = {
     # and its incident documentation (claimed-counterexample park).
     # 08-25 +5: v44 minted-only hard-terminal walk rationale (cited
     # consumers must not block Reopen on shared goals).
-    "Tooling/state/transitions.py": 1850,
+    # 08-25 +41: cited-wait conduction (`_review_cited_waiters` — a
+    # shelve returns citing waiters to their group's review at once).
+    "Tooling/state/transitions.py": 1895,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.

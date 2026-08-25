@@ -2027,12 +2027,37 @@ def daemon_status(workspace: Path) -> dict:
         # a cold run are Lean warm-up — without this the user stares
         # at dead air (Test.Test3 run, 2026-07-07)
         "gateway": _gateway_phase_safe(workspace),
+        # Lean-field capacity (frontend ask 2026-08-25): {target, open,
+        # free} straight from the gateway's /warm_target — the same
+        # confirmed numbers the DispatcherLedger runs on (this status
+        # runs OUTSIDE the daemon process, so the gateway is the one
+        # shared surface holding the truth). None while no gateway.
+        "slots": _gateway_slots_safe(workspace),
         # how the LAST run ended ({at, rc, error, scope}) — only
         # meaningful while idle; tells "finished" from "crashed", and a
         # BOOTING run's page must not resurface the previous ending
         "last_exit": None if (pid is not None or starting)
         else _read_exit_summary(workspace),
     }
+
+
+def _gateway_slots_safe(workspace: Path) -> "dict | None":
+    """{target, open, free} from the gateway, or None (no gateway /
+    warming / unreachable). Short timeout — this rides every status
+    poll and must never make the UI wait."""
+    import json as _json
+    import urllib.request
+    try:
+        from ..lsp.lifecycle import _gateway_port
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{_gateway_port(workspace)}/health")
+        with urllib.request.urlopen(req, timeout=1.0) as r:
+            h = _json.loads(r.read())
+        return {"target": h.get("warm_target"),
+                "open": h.get("workers_open"),
+                "free": h.get("workers_free")}
+    except Exception:  # noqa: BLE001 — status must not crash
+        return None
 
 
 def _gateway_phase_safe(workspace: Path) -> "str | None":
