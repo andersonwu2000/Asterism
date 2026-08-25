@@ -8,15 +8,21 @@
 
 dispatch:
   quota_wait: true
-  ram_budget: "26G"           # 2026-08-25 (owner design): adaptive RAM
+  ram_budget: "15G"           # 2026-08-25 (owner design): adaptive RAM
                               # ledger — Lean slots follow
                               # target_slots(budget − NL reserve), NL
                               # kinds admit on measured available RAM
                               # (NL priority; Lean floor = 1 slot).
                               # Coefficients are live-measured with
-                              # calibration fallbacks. Accepts "26G" or
+                              # calibration fallbacks. Accepts "15G" or
                               # "80%". Unset/comment out = legacy
                               # static `pool` semantics below.
+                              # 15G (user 2026-08-25): the field width
+                              # IS the codex token burn rate — the
+                              # union_closed seats ride a PAID
+                              # subscription, so the budget paces quota,
+                              # not just RAM. (Was 26G for the free-
+                              # channel Erdős five.)
   pool: 12                    # 2026-08-23 (user): union_closed back on
                               # codex, pool=8 this round. Erdős/zen
                               # resume: 12.
@@ -117,12 +123,12 @@ formalizer:
   # 2026-08-22 Erdős free-window fleet: ox-alpha everywhere (user).
   # 2026-08-23: union_closed round two on codex/luna. Erdős resume:
   # provider: zen / model: x-preview-f-free / reasoning_effort: high
-  # 2026-08-25: Erdős five again, OpenCode Zen as the shim's PRIMARY
-  # channel this round (user) — same brain, different gateway; the
-  # cloud fleet stays on Nous for the channel A/B.
-  provider: zen
-  model: x-preview-f-free
-  reasoning_effort: high
+  # 2026-08-25: Erdős five on OpenCode Zen ran here; the full-Erdős
+  # boarding moved to the 128GB flagship, and this machine goes back
+  # to union_closed on codex (user) — luna keeps the throughput seat.
+  provider: codex
+  model: gpt-5.6-luna
+  reasoning_effort: xhigh
   # 2026-08-13: back off codex after the smoke run. The seat is proven
   # on codex (Test.provider_probe: brick proved, seven-tool roll-call
   # recorded, intake sentinel written) — restore with
@@ -166,10 +172,12 @@ strategist:
   # 2026-08-22 Erdős fleet: zen. 2026-08-23: union_closed round two on
   # codex/sol. Erdős resume: provider: zen / model: x-preview-f-free /
   # reasoning_effort: high
-  # 2026-08-25: Erdős five on the OpenCode Zen channel (user).
-  provider: zen
-  model: x-preview-f-free
-  reasoning_effort: high
+  # 2026-08-25: back to union_closed on codex/sol (user; the Erdős
+  # boarding lives on the flagship now).
+  provider: codex
+  model: gpt-5.6-sol
+  reasoning_effort: high   # user 2026-08-15: sol does not need xhigh to
+                           # hold the NL layer; luna keeps xhigh below.
   # Back on the opus tier 2026-08-06 after the
   # Gemini author hit its ceiling on the open
                                # segment: g382 rev 3 burned all 10 rounds and
@@ -221,9 +229,11 @@ presearch:
   # 2026-08-22 Erdős/ox-alpha era: presearch rides zen (user).
   # 2026-08-23: union_closed round two on codex/luna. Erdős resume:
   # provider: zen / model: x-preview-f-free (no effort key)
-  # 2026-08-25: Erdős five on the OpenCode Zen channel (user).
-  provider: zen
-  model: x-preview-f-free
+  # 2026-08-25: back to union_closed on codex/luna (user).
+  provider: codex
+  model: gpt-5.6-luna
+  reasoning_effort: medium     # search task; the codex default (xhigh)
+                               # would think the budget away
   # 2026-08-15: back to sonnet. haiku landed the probe brick but
   # dropped the brief's secondary written requirements, and on a
   # real board that shows up as commit-gate rework, not as a
@@ -288,10 +298,10 @@ adversary:
   # the judge MATCHES the strategist (sol), the 08-22 shape. Erdős
   # resume: provider: zen / model: x-preview-f-free /
   # reasoning_effort: high
-  # 2026-08-25: Erdős five on the OpenCode Zen channel (user) — the
-  # judge matches its author again.
-  provider: zen
-  model: x-preview-f-free
+  # 2026-08-25: back to union_closed on codex/sol (user) — the judge
+  # matches the strategist, the 08-23 shape.
+  provider: codex
+  model: gpt-5.6-sol
   reasoning_effort: high
   # 2026-08-13: back on fable (user). The 08-12 detour to opus-5 was
   # only because fable's weekly window was spent and the ledger BINDs

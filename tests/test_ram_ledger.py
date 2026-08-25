@@ -85,14 +85,32 @@ def test_slot_gb_readings_mean_and_clamps():
     assert rl.slot_gb_from_readings([9999]) == pytest.approx(1.6)
 
 
-def test_nl_admit_floor_leaves_the_machine_its_share():
-    """budget is a promise about the MACHINE: the floor is what the
-    budget leaves to everyone else, plus the unit about to be spent."""
-    floor = rl.nl_admit_floor_gb(28.0, 32.0, nl_gb=0.3)
-    assert floor == pytest.approx(4.0 + 0.3 + 0.25)
-    # budget == machine → only the unit + lag buffer remains
-    assert rl.nl_admit_floor_gb(32.0, 32.0, nl_gb=0.3) == \
-        pytest.approx(0.55)
+def test_nl_admit_floor_is_absolute_not_machine_minus_budget():
+    """The first cut used `machine - budget` and starved on the
+    operator's own box: co-tenants were USING their share (available
+    6.5 GB vs a 17.3 GB floor) and NL admission would never fire
+    (2026-08-25). The floor is an absolute safety margin; the BUDGET
+    bounds the ledger's own modeled footprint instead."""
+    assert rl.nl_admit_floor_gb(15.0, 32.0, nl_gb=0.3) == \
+        pytest.approx(rl.ABS_AVAILABLE_FLOOR_GB + 0.3)
+    # independent of how much of the machine the budget leaves
+    assert rl.nl_admit_floor_gb(28.0, 32.0, nl_gb=0.3) == \
+        rl.nl_admit_floor_gb(15.0, 32.0, nl_gb=0.3)
+
+
+def test_nl_admission_is_bounded_by_the_modeled_footprint(monkeypatch):
+    """Co-tenant RAM cannot starve us — but the budget still paces us:
+    admission stops when open slots + NL spawns modeled at their
+    coefficients would exceed the budget (the field width IS the token
+    burn rate on paid seats — user 2026-08-25)."""
+    led = rl.DispatcherLedger(15.0, 32.0)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.5)
+    monkeypatch.setattr(rl, "available_gb", lambda: 20.0)
+    led.open_slots = 12
+    led.slot_gb = 1.0
+    # modeled = 12*1.0 + (n+1)*0.5 ≤ 15 → admits through n = 5
+    assert led.nl_admissible(5) is True
+    assert led.nl_admissible(6) is False
 
 
 def test_agent_proc_prefixes_cover_every_provider():
@@ -127,7 +145,7 @@ def test_ledger_tick_pushes_and_ingests_the_reply(monkeypatch):
     # CLI (external review 2026-08-25: the worker-only coefficient
     # understated the field): floor((28 - 12*0.3 - 1.25) / 1.25) = 18.
     assert pushed["target"] == 18
-    assert pushed["min_avail"] == pytest.approx(4.0)
+    assert pushed["min_avail"] == pytest.approx(rl.ABS_AVAILABLE_FLOOR_GB)
     assert led.open_slots == 7 and led.free_slots == 3
     assert led.slot_gb == pytest.approx(1000 / 1024)
 
@@ -138,8 +156,8 @@ def test_nl_admission_debits_pending_credit(monkeypatch):
     the NL coefficient (external review 2026-08-25, P1)."""
     led = rl.DispatcherLedger(28.0, 32.0)
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
-    monkeypatch.setattr(rl, "available_gb", lambda: 5.4)
-    # floor = (32-28) + 0.3 + 0.25 = 4.55; headroom = 0.85 → 3 admits
+    monkeypatch.setattr(rl, "available_gb", lambda: 2.6)
+    # floor = 1.5 + 0.3 = 1.8; headroom = 0.8 → 3 admits
     assert led.nl_admissible(0) is True
     led.note_nl_admit()
     assert led.nl_admissible(1) is True
@@ -147,7 +165,7 @@ def test_nl_admission_debits_pending_credit(monkeypatch):
     assert led.nl_admissible(2) is True
     led.note_nl_admit()
     assert led.nl_admissible(3) is False, \
-        "3 pending x 0.3 GB ate the 0.85 GB headroom"
+        "3 pending x 0.3 GB ate the 0.8 GB headroom"
     # credits expire once the RSS has had time to show up
     led._nl_admits = [t - led.NL_CREDIT_SEC - 1 for t in led._nl_admits]
     assert led.nl_admissible(3) is True

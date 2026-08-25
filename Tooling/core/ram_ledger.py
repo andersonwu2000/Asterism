@@ -117,12 +117,24 @@ def available_gb() -> float:
     return psutil.virtual_memory().available / 2**30
 
 
+#: Absolute available-RAM floor — the last-ditch measured veto. The
+#: first cut used `machine - budget` as the floor ("leave the rest to
+#: others"), and on the operator's own 32GB box the others were USING
+#: their share: available sat at 6.5 GB against a 17.3 GB floor and
+#: NL admission would have starved forever (2026-08-25, first local
+#: ledger run). Co-tenants spending their share must not block OUR
+#: admission while the MODEL says we are inside budget — the budget
+#: bounds the ledger's own usage model; the measured veto only stops
+#: the machine from being squeezed to the edge.
+ABS_AVAILABLE_FLOOR_GB = 1.5
+
+
 def nl_admit_floor_gb(budget_gb: float, machine_gb: float,
                       nl_gb: float = NL_GB_FALLBACK) -> float:
-    """Available-RAM floor below which NL dispatch queues: what the
-    budget leaves to the rest of the machine, plus the unit about to be
-    spent, plus a small buffer against measurement lag."""
-    return max(0.0, machine_gb - budget_gb) + nl_gb + 0.25
+    """The measured floor below which NL dispatch queues — an absolute
+    machine-safety margin plus the unit about to be spent (see
+    ABS_AVAILABLE_FLOOR_GB for why this is NOT `machine - budget`)."""
+    return ABS_AVAILABLE_FLOOR_GB + nl_gb
 
 
 #: Measured-NL-coefficient cache (a psutil process scan is not free;
@@ -221,9 +233,19 @@ class DispatcherLedger:
         return len(self._nl_admits)
 
     def nl_admissible(self, nl_in_flight: int) -> bool:
+        """Admit while the LEDGER MODEL of our own footprint stays
+        inside the budget (open slots at slot cost + NL spawns at NL
+        cost + the one about to start), and the machine keeps its
+        absolute safety margin. The budget bounds US; co-tenants
+        spending their own share cannot starve admission (2026-08-25,
+        first local run)."""
         if nl_in_flight >= self.nl_hard_cap():
             return False
         nl_gb = nl_gb_measured()
+        modeled = (self.open_slots * self.slot_gb
+                   + (nl_in_flight + self._pending_nl() + 1) * nl_gb)
+        if modeled > self.budget_gb:
+            return False
         return (available_gb() - self._pending_nl() * nl_gb
                 >= nl_admit_floor_gb(self.budget_gb, self.machine_gb,
                                      nl_gb))
@@ -246,7 +268,7 @@ class DispatcherLedger:
             budget_gb=self.budget_gb, nl_demand=nl_demand,
             slot_gb=self.slot_gb + nl_gb, nl_gb=nl_gb)
         self.last_target = target
-        resp = push(target, max(0.0, self.machine_gb - self.budget_gb))
+        resp = push(target, ABS_AVAILABLE_FLOOR_GB)
         if resp:
             try:
                 self.open_slots = int(resp.get("open") or 0)
