@@ -745,3 +745,16 @@ def test_unclassified_breaker_limit_is_tighter_than_fast_fail() -> None:
     assert (dispatcher.CONSEC_UNCLASSIFIED_LIMIT
             < dispatcher.CONSEC_SPAWN_FAIL_LIMIT)
     assert "consec_unclassified" in dispatcher.SchedulerState().__dict__
+
+
+def test_elab_queue_credit_reader(tmp_path: Path) -> None:
+    """The wall's credit reader: missing/garbage = 0, value = seconds,
+    never negative (the wall loop itself caps at one extra base wall
+    and uses the delta from spawn start)."""
+    from Tooling.llm import codex_cli
+    assert codex_cli._elab_queue_credit_sec(None) == 0.0
+    assert codex_cli._elab_queue_credit_sec(tmp_path) == 0.0
+    (tmp_path / "_elab_queue_credit").write_text("123.4")
+    assert codex_cli._elab_queue_credit_sec(tmp_path) == 123.4
+    (tmp_path / "_elab_queue_credit").write_text("junk")
+    assert codex_cli._elab_queue_credit_sec(tmp_path) == 0.0

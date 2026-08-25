@@ -171,50 +171,25 @@ def test_nl_admission_debits_pending_credit(monkeypatch):
     assert led.nl_admissible(3) is True
 
 
-def test_cpu_axis_dormant_without_elab_stats(monkeypatch):
-    """An old gateway reports no elab fields — the CPU axis must stay
-    off exactly like static mode (target = RAM target)."""
-    led = rl.DispatcherLedger(28.0, 32.0)
-    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
-    led._last_push = 0.0
-    led.tick(nl_demand=12, push=lambda t, f: {"open": 7, "free": 3})
-    assert led.cpu_cap is None
-    assert led.last_target == 18                 # pure RAM formula
-
-
-def test_cpu_axis_aimd_shrinks_on_congestion_and_regrows(monkeypatch):
-    """External review 2026-08-25: no open-loop session:core ratio —
-    the control signal is the gateway's OWN elaboration queue. AIMD:
-    sustained waiters shrink multiplicatively toward the lane count,
-    quiet ticks regrow additively toward the RAM target; a session cap
-    above the lane count is legitimate (thinking sessions hold no
-    lane)."""
+def test_target_is_ram_only_backpressure_owns_cpu(monkeypatch):
+    """Owner 2026-08-26: the interim AIMD session cap is deleted — the
+    warm pool is RAM's alone (cheap standby), and CPU is governed by
+    the gateway's elaboration gate (tool calls queue; queue time is
+    credited back to the wall). Elab stats in the reply must NOT clamp
+    the pushed target."""
     led = rl.DispatcherLedger(110.0, 125.0)
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
-
-    def tick(reply):
+    for reply in ({"open": 0, "free": 0, "elab_cap": 6,
+                   "elab_waiting": 0},
+                  {"elab_cap": 6, "elab_waiting": 9},
+                  {"elab_cap": 6, "elab_waiting": 9}):
         led._last_push = 0.0
-        led.tick(nl_demand=0, push=lambda t, f: reply)
-
-    # first reply with stats arms the axis at lanes x START_FACTOR
-    tick({"open": 0, "free": 0, "elab_cap": 6, "elab_waiting": 0})
-    assert led.cpu_cap == 6 * rl.CPU_CAP_START_FACTOR       # 18
-    # sustained congestion (>= _SHRINK_AFTER_TICKS) shrinks x0.8
-    tick({"elab_cap": 6, "elab_waiting": 5})
-    tick({"elab_cap": 6, "elab_waiting": 5})
-    assert led.cpu_cap == 14                                 # floor(18*.8)
-    # ...and the pushed target is clamped by it
-    led._last_push = 0.0
-    led.tick(nl_demand=0, push=lambda t, f: None)
-    assert led.last_target == 14
-    # cap never shrinks below the lane count
-    for _ in range(20):
-        tick({"elab_cap": 6, "elab_waiting": 9})
-    assert led.cpu_cap == 6
-    # a quiet queue regrows +1 per _GROW_AFTER_TICKS
-    for _ in range(rl._GROW_AFTER_TICKS):
-        tick({"elab_cap": 6, "elab_waiting": 0})
-    assert led.cpu_cap == 7
+        pushed = {}
+        led.tick(nl_demand=0,
+                 push=lambda t, f: (pushed.setdefault("t", t), reply)[1])
+        # floor((110 - 1.25) / 1.25) = 87 — congestion never shrinks it
+        assert pushed["t"] == 87
+    assert not hasattr(led, "cpu_cap")
 
 
 def test_ledger_tick_is_rate_limited(monkeypatch):

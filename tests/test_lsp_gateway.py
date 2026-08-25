@@ -3190,3 +3190,55 @@ def test_elab_gate_saturation_fails_loud(monkeypatch):
     assert "Retry" in str(ei.value)
     release.set()
     t.join(timeout=5)
+
+
+def test_elab_gate_records_queue_credit(monkeypatch, tmp_path):
+    """Queue time is the machine's, not the agent's (owner 2026-08-26):
+    a gate wait accrues into the attempt dir's credit file, which the
+    provider wall reads back as an extension. Probe metas pointing
+    outside .attempts (verify probes aim at proofs/) write nothing."""
+    import threading as _th
+
+    class _Meta:
+        pass
+
+    att = tmp_path / ".attempts" / "pid-1"
+    att.mkdir(parents=True)
+    meta = _Meta()
+    meta.target_path = att / "patch.lean"
+
+    monkeypatch.setattr(lsp_gateway, "_ELAB_SEM", _th.BoundedSemaphore(1))
+    monkeypatch.setattr(lsp_gateway, "_ELAB_QUEUE_TIMEOUT_SEC", 30.0)
+    entered = _th.Event()
+    release = _th.Event()
+
+    def holder():
+        with lsp_gateway._elab_gate():
+            entered.set()
+            release.wait(timeout=10)
+
+    t = _th.Thread(target=holder)
+    t.start()
+    assert entered.wait(timeout=5)
+
+    got = {}
+
+    def waiter():
+        with lsp_gateway._elab_gate(None, meta):
+            got["in"] = True
+
+    w = _th.Thread(target=waiter)
+    w.start()
+    __import__("time").sleep(0.3)
+    release.set()
+    t.join(timeout=5)
+    w.join(timeout=5)
+    credit = float((att / "_elab_queue_credit").read_text())
+    assert credit >= 0.2, credit
+    # outside-.attempts meta: nothing written
+    meta2 = _Meta()
+    meta2.target_path = tmp_path / "proofs" / "L_x.lean"
+    (tmp_path / "proofs").mkdir()
+    with lsp_gateway._elab_gate(None, meta2):
+        pass
+    assert not (tmp_path / "proofs" / "_elab_queue_credit").exists()

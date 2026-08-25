@@ -302,23 +302,55 @@ def _escort_runaway_permit(slot_uri: str) -> None:
         _release_permit()
 
 
+#: Queue-credit file, written into a pipeline's attempts dir: the
+#: cumulative seconds its tool calls spent WAITING at this gate. The
+#: provider wall reads it and extends by the same amount (capped) —
+#: queue time is machine congestion, not the agent's (owner design
+#: 2026-08-26; agent_timeout ×223 in the 08-25 crush were sessions
+#: burning their wall in exactly these queues).
+ELAB_CREDIT_FILENAME = "_elab_queue_credit"
+_ELAB_CREDIT_LOCK = threading.Lock()
+
+
+def _record_queue_credit(meta, waited_sec: float) -> None:
+    if meta is None or waited_sec < 0.05:
+        return
+    try:
+        d = meta.target_path.parent
+        if ".attempts" not in d.parts:
+            return  # verify probes point at proofs/ — no wall, no file
+        p = d / ELAB_CREDIT_FILENAME
+        with _ELAB_CREDIT_LOCK:
+            try:
+                cur = float(p.read_text(encoding="utf-8").strip() or 0)
+            except (OSError, ValueError):
+                cur = 0.0
+            p.write_text(f"{cur + waited_sec:.1f}", encoding="utf-8")
+    except Exception:  # noqa: BLE001 — credit is best-effort
+        pass
+
+
 @contextlib.contextmanager
-def _elab_gate(slot_uri: "str | None" = None):
+def _elab_gate(slot_uri: "str | None" = None, meta=None):
     """Hold one elaboration ticket for the did_change→wait critical
     section. Acquire AFTER the slot lock (never while queuing for a
     slot — head-of-line blocking), release when the elaboration is
     actually done: if the caller's wait timed out while Lean still
     reports the slot busy, a watcher escorts the permit until
     fileProgress clears. A saturated queue past the timeout fails LOUD
-    with a retryable message instead of burning the caller's wall."""
+    with a retryable message instead of burning the caller's wall.
+    Time spent queuing is credited back to the session's wall via
+    `_record_queue_credit`."""
     global _ELAB_BUSY, _ELAB_WAITING
     with _ELAB_CTR_LOCK:
         _ELAB_WAITING += 1
+    _q0 = time.monotonic()
     try:
         ok = _ELAB_SEM.acquire(timeout=_ELAB_QUEUE_TIMEOUT_SEC)
     finally:
         with _ELAB_CTR_LOCK:
             _ELAB_WAITING -= 1
+        _record_queue_credit(meta, time.monotonic() - _q0)
     if not ok:
         raise RuntimeError(
             f"Lean elaboration queue saturated "
@@ -771,7 +803,7 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
                 if slot.lock.acquire(blocking=False):
                     try:
                         if swap_in:
-                            with _elab_gate(slot.slot_uri):
+                            with _elab_gate(slot.slot_uri, meta):
                                 slot.file_version += 1
                                 backend.clear_diagnostics(slot.slot_uri)
                                 backend.did_change_full(
@@ -891,7 +923,7 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
                         kind = "cold_warmup"
                         with _state.counters_lock:
                             _state.n_cold_warmup += 1
-                        with _elab_gate(my_slot.slot_uri):
+                        with _elab_gate(my_slot.slot_uri, meta):
                             my_slot.file_version += 1
                             backend.clear_diagnostics(my_slot.slot_uri)
                             merged, line_map = _compilation_for(meta)
@@ -2409,7 +2441,7 @@ def apply_edit(edits: list = None) -> str:
     backend = _state.backend
     # apply_edit overwrites slot content anyway → skip swap-in.
     with _acquire_slot(meta, swap_in=False) as (slot, _slot_kind):
-        with _elab_gate(slot.slot_uri):
+        with _elab_gate(slot.slot_uri, meta):
             slot.file_version += 1
             backend.clear_diagnostics(slot.slot_uri)
             merged, line_map = _compilation_for(meta)
@@ -3463,7 +3495,7 @@ def validate_file(content: str = "", file: str = "") -> str:
     # anyone.
     try:
         with _acquire_slot(meta, swap_in=False) as (slot, _slot_kind):
-            with _elab_gate(slot.slot_uri):
+            with _elab_gate(slot.slot_uri, meta):
                 slot.file_version += 1
                 backend.clear_diagnostics(slot.slot_uri)
                 backend.did_change_full(slot.slot_path, full_content,
@@ -3825,7 +3857,7 @@ async def interactive_sync(request: Request):
     converged = False
     try:
         with _acquire_slot(meta, swap_in=False) as (slot, _kind):
-            with _elab_gate(slot.slot_uri):
+            with _elab_gate(slot.slot_uri, meta):
                 slot.file_version += 1
                 backend.clear_diagnostics(slot.slot_uri)
                 merged, _line_map = _compilation_for(meta)
@@ -4274,7 +4306,7 @@ def _verify_session_sync(token: str, content: str, *, write_olean: bool,
         # Claimed mode (borrow=False), swap_in=False: locate the session's own
         # slot, then didChange the candidate ourselves (like validate_file).
         with _acquire_slot(meta, swap_in=False) as (slot, _slot_kind):
-            with _elab_gate(slot.slot_uri):
+            with _elab_gate(slot.slot_uri, meta):
                 slot.file_version += 1
                 backend.clear_diagnostics(slot.slot_uri)
                 backend.did_change_full(slot.slot_path, content,

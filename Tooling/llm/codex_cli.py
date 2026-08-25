@@ -565,6 +565,25 @@ def take_quota_reset() -> "float | None":
     return v
 
 
+#: Mirrors `lsp.gateway.ELAB_CREDIT_FILENAME` (string duplicated on
+#: purpose: the llm layer must not import the gateway module).
+_ELAB_CREDIT_FILENAME = "_elab_queue_credit"
+
+
+def _elab_queue_credit_sec(attempts_dir) -> float:
+    """Cumulative seconds this spawn's tool calls spent queued at the
+    gateway's elaboration gate — written by the gate, read by the wall
+    loop. Missing/unreadable = 0 (no credit)."""
+    if attempts_dir is None:
+        return 0.0
+    try:
+        raw = (Path(attempts_dir) / _ELAB_CREDIT_FILENAME).read_text(
+            encoding="utf-8").strip()
+        return max(0.0, float(raw or 0))
+    except (OSError, ValueError):
+        return 0.0
+
+
 def _read_rate_limits(home: Path) -> "dict | None":
     """This spawn's own quota ledger (DELTA 5).
 
@@ -1005,11 +1024,33 @@ class CodexCliProvider:
             wd.start()
 
         timed_out = False
-        try:
-            proc.wait(timeout=req.timeout_sec)
-        except subprocess.TimeoutExpired:
-            kill_proc_tree(proc)
-            timed_out = True
+        # The wall grows by the session's Lean-queue credit (owner
+        # design 2026-08-26): time a tool call spends QUEUED at the
+        # gateway's elaboration gate is machine congestion, not the
+        # agent's — the gateway accrues it in the attempts dir and the
+        # wall extends by the same amount, capped at one extra base
+        # wall (queue credit can never more than double a spawn; the
+        # 6h lease TTL stays far above). Re-read each poll: credit
+        # accrues WHILE the spawn runs.
+        _wall_t0 = time.monotonic()
+        # Delta from THIS spawn's start — the file accrues across the
+        # attempt's whole life, and an earlier turn's queue time must
+        # not inflate a later turn's wall.
+        _credit0 = _elab_queue_credit_sec(req.attempts_dir)
+        while True:
+            _credit = _elab_queue_credit_sec(req.attempts_dir) - _credit0
+            wall = req.timeout_sec + min(max(0.0, _credit),
+                                         float(req.timeout_sec))
+            remaining = wall - (time.monotonic() - _wall_t0)
+            if remaining <= 0:
+                kill_proc_tree(proc)
+                timed_out = True
+                break
+            try:
+                proc.wait(timeout=min(30.0, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
         for t in readers:
             t.join(timeout=2)
         if wd is not None:
