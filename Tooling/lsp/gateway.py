@@ -2216,6 +2216,20 @@ def _sorry_start_col(meta, line: int) -> "int | None":
 
 mcp = FastMCP("lsp")
 
+# Same class of waste as asterism_tools (see its
+# _drop_empty_capabilities): zero resources/prompts, but FastMCP
+# advertises the capability anyway and clients surface dead discovery
+# tools. Mirrored here rather than imported — the gateway must not
+# pull in the spawn-side tool server module.
+from mcp import types as _mcp_types  # noqa: E402
+
+for _req in (_mcp_types.ListResourcesRequest,
+             _mcp_types.ReadResourceRequest,
+             _mcp_types.ListResourceTemplatesRequest,
+             _mcp_types.ListPromptsRequest,
+             _mcp_types.GetPromptRequest):
+    mcp._mcp_server.request_handlers.pop(_req, None)
+
 
 def _offload_to_thread(fn):
     """Wrap a sync function so it runs in `asyncio.to_thread`.

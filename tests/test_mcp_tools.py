@@ -358,3 +358,21 @@ def test_inspect_reads_the_delivery_ceiling_from_its_env(
     monkeypatch.setenv("ASTERISM_INSPECT_DELIVERY_CHARS", "junk")
     mcp_tools.inspect([{"size": "."}])
     assert seen == [30000, None, None]
+
+
+def test_empty_capabilities_are_not_advertised() -> None:
+    """Zero resources/prompts must mean the capability is ABSENT from
+    initialize — FastMCP advertises them unconditionally and every
+    codex intake burned its first calls discovering the emptiness
+    (`list_mcp_resources` x23, feedback 2026-08-25). Both servers."""
+    from mcp.server.lowlevel.server import NotificationOptions
+    from Tooling.knowledge import mcp_tools
+    caps = mcp_tools.mcp._mcp_server.get_capabilities(
+        NotificationOptions(), {})
+    assert caps.resources is None and caps.prompts is None
+    assert caps.tools is not None
+    import inspect as _inspect
+    from Tooling.lsp import gateway
+    src = _inspect.getsource(gateway)
+    assert "ListResourcesRequest" in src, \
+        "gateway lsp server must mirror the un-advertise block"

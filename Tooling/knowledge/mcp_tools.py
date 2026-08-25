@@ -80,6 +80,26 @@ _GREP_THE_SOURCE = (
 
 mcp = FastMCP("asterism_tools")
 
+# FastMCP registers resource/prompt handlers unconditionally, so the
+# initialize response ADVERTISES capabilities this server has zero of
+# — and every codex intake burned its first calls discovering that
+# (`list_mcp_resources` -> empty, x23 feedback 2026-08-25). Dropping
+# the handlers un-advertises the capability at the source; the client
+# then never surfaces those tools at all.
+from mcp import types as _mcp_types  # noqa: E402
+
+
+def _drop_empty_capabilities(server) -> None:
+    for _req in (_mcp_types.ListResourcesRequest,
+                 _mcp_types.ReadResourceRequest,
+                 _mcp_types.ListResourceTemplatesRequest,
+                 _mcp_types.ListPromptsRequest,
+                 _mcp_types.GetPromptRequest):
+        server._mcp_server.request_handlers.pop(_req, None)
+
+
+_drop_empty_capabilities(mcp)
+
 # ── Seat gate (owner ruling 2026-08-22) ───────────────────────────────
 # The server registers only the seat's declared surface. ASTERISM_SEAT
 # is written into this server's env by the pipeline config writers; the

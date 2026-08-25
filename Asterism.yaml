@@ -8,7 +8,11 @@
 
 dispatch:
   quota_wait: true
-  ram_budget: "15G"           # 2026-08-25 (owner design): adaptive RAM
+  ram_budget: "20G"           # 2026-08-26 owner repin: 15G was priced
+                              # under the optimistic model; the honest
+                              # four-term model needs 20G for the same
+                              # 12-14-slot burn pace.
+                              # 2026-08-25 (owner design): adaptive RAM
                               # ledger — Lean slots follow
                               # target_slots(budget − NL reserve), NL
                               # kinds admit on measured available RAM
