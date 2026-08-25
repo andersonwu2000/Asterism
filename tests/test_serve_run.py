@@ -624,3 +624,42 @@ def test_run_events_empty_workspace_is_not_an_error(
     r = _client(workspace).get("/api/run/events")
     assert r.status_code == 200
     assert r.json()["events"] == []
+
+
+def test_scratch_drafts_identified_by_pipeline_row_not_title(
+    workspace: Path,
+) -> None:
+    """The worker Context.md header became `# <problem> — BRIEF`
+    (2026-08-26) and the title regex silently dropped every mint /
+    direct workarea from the lanes — the Engine Console card fell back
+    to static copy. The dir name IS the pipeline id: the DB row is the
+    signal; the title regex survives only as fallback for dirs the DB
+    does not know."""
+    from Tooling.serve.run import _scratch_drafts
+    conn = _open_db(workspace)
+    _add_problem(conn, "P.x")
+    gid = db.insert_goal(conn, problem="P.x", slug="g",
+                         lean_path="Problems/P.x/proofs/L_g.lean",
+                         statement="T", origin="backward")
+    db.record_pipeline_start(conn, pipeline_id="aaaa-mint", kind="Formalizer",
+                             target_id=str(gid), target_kind="Goal")
+    att = workspace / ".attempts"
+    # 1) mint workarea, BRIEF header, KNOWN to the DB → identified
+    d1 = att / "aaaa-mint"
+    d1.mkdir(parents=True)
+    (d1 / "Context.md").write_text("# P.x — BRIEF\nbody", encoding="utf-8")
+    # 2) unknown dir with the OLD title shape → fallback still works
+    d2 = att / "bbbb-old"
+    d2.mkdir()
+    (d2 / "Context.md").write_text("# Strategist context — P.x\n",
+                                   encoding="utf-8")
+    # 3) unknown dir, BRIEF header → nothing to identify, skipped
+    d3 = att / "cccc-unknown"
+    d3.mkdir()
+    (d3 / "Context.md").write_text("# P.x — BRIEF\n", encoding="utf-8")
+
+    got = {(t[0], t[1], t[3].name) for t in _scratch_drafts(conn, workspace)}
+    assert ("Formalizer", "P.x", "aaaa-mint") in got
+    assert ("Strategist", "P.x", "bbbb-old") in got
+    assert not any(name == "cccc-unknown" for _, _, name in got)
+    conn.close()

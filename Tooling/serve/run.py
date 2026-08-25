@@ -120,17 +120,45 @@ def _pick_group_workarea(conn: sqlite3.Connection, cands: list,
     return cands[0]
 
 
-def _scratch_drafts(workspace: Path) -> "list[tuple[str, str, float, Path, str]]":
-    """(kind, problem, ctx_mtime, dir, stage) for each live agent
-    workarea under `.attempts/`, identified by its Context.md title
-    line. A Forward worker's bricks live ONLY here until they land (no
-    goal row, no lean_path — its lane looked forever idle while the LSP
-    was hard at work; owner, 2026-07-09). Presentation only: a workarea
-    rmtree'd mid-scan just drops out.
+def _pipeline_kind_problem(conn, pipeline_id: str) -> "tuple[str, str] | None":
+    """(kind, problem) for a dispatched pipeline, from the DB — the
+    structured signal (`.attempts/<dir>` IS the pipeline id, and every
+    dispatch has a `pipelines` row since v38)."""
+    try:
+        row = conn.execute(
+            "SELECT kind, target_kind, target_id FROM pipelines"
+            " WHERE id = ?", (pipeline_id,)).fetchone()
+        if row is None:
+            return None
+        tk, tid = str(row["target_kind"]), str(row["target_id"])
+        if tk == "Problem":
+            return str(row["kind"]), tid
+        q = {"Goal": "SELECT problem FROM goals WHERE id = ?",
+             "Group": "SELECT problem FROM groups WHERE id = ?",
+             "Strategy": "SELECT g.problem FROM strategies s"
+                         " JOIN goals g ON g.id = s.goal_id"
+                         " WHERE s.id = ?"}.get(tk)
+        if q is None:
+            return None
+        p = conn.execute(q, (tid,)).fetchone()
+        return (str(row["kind"]), str(p["problem"])) if p else None
+    except sqlite3.OperationalError:
+        return None
 
-    The wake-split `stage` is gone with the split itself (2026-08-11):
-    a strategist wake is one turn, so a workarea has one Context.md and
-    the lane has nothing to disambiguate.
+
+def _scratch_drafts(conn, workspace: Path) -> "list[tuple[str, str, float, Path, str]]":
+    """(kind, problem, ctx_mtime, dir, stage) for each live agent
+    workarea under `.attempts/`. A Forward worker's bricks live ONLY
+    here until they land (no goal row, no lean_path — its lane looked
+    forever idle while the LSP was hard at work; owner, 2026-07-09).
+    Presentation only: a workarea rmtree'd mid-scan just drops out.
+
+    Identified by the DB (dir name = pipeline id), NOT the Context.md
+    title: the title-regex era ended 2026-08-26 when the worker header
+    became `# <problem> — BRIEF` and every mint/direct workarea went
+    silently invisible to the lanes (the frontend's card fell back to
+    static copy) — free text is not a signal, the pipelines table is.
+    The title regex stays as fallback for dirs the DB does not know.
     """
     out: list[tuple[str, str, float, Path, str]] = []
     try:
@@ -142,13 +170,20 @@ def _scratch_drafts(workspace: Path) -> "list[tuple[str, str, float, Path, str]]
             continue
         ctx = d / "Context.md"
         try:
-            with ctx.open(encoding="utf-8", errors="replace") as f:
-                m = _CTX_TITLE_RE.match(f.readline())
-            if m is None:
-                continue
-            out.append((m.group(1), m.group(2), ctx.stat().st_mtime, d, ""))
+            mtime = ctx.stat().st_mtime
         except OSError:
             continue
+        kp = _pipeline_kind_problem(conn, d.name)
+        if kp is None:
+            try:
+                with ctx.open(encoding="utf-8", errors="replace") as f:
+                    m = _CTX_TITLE_RE.match(f.readline())
+            except OSError:
+                continue
+            if m is None:
+                continue
+            kp = (m.group(1), m.group(2))
+        out.append((kp[0], kp[1], mtime, d, ""))
     out.sort(key=lambda t: t[2])
     return out
 
@@ -474,7 +509,7 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
                 # per lane (leased_at order vs workarea age), so two
                 # same-kind lanes on one problem get distinct dirs.
                 if drafts is None:
-                    drafts = _scratch_drafts(workspace)
+                    drafts = _scratch_drafts(conn, workspace)
                 cands = [t for t in drafts
                          if t[0] == lane["kind"]
                          and t[1] == str(r["problem"])]
