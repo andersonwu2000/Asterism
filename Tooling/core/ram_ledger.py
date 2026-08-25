@@ -87,6 +87,30 @@ def slot_recycle_gb() -> float:
         mb = SLOT_RECYCLE_MB_DEFAULT
     return mb / 1024.0
 
+#: Page-cache reserve INSIDE the budget — the mmap'd olean set every
+#: worker faults against (measured 1.8 GiB across 9,074 files,
+#: 2026-08-26) plus workspace file pages. The ledger models PRIVATE
+#: bytes, so without this line the model plans the cache's seats away;
+#: those pages are charged to OUR cgroup, and once a cgroup limit (or
+#: the machine) runs tight they are the only reclaimable thing in a
+#: swapless fleet — the kernel evicts them, every worker refaults
+#: them, and the loop eats all CPU (both 2026-08-26 flagship crushes).
+OLEAN_CACHE_RESERVE_GB = 2.5
+
+
+def cache_reserve_gb() -> float:
+    """The budget's page-cache seat (env `ASTERISM_RAM_CACHE_RESERVE_GB`
+    overrides the measured default)."""
+    import os
+    try:
+        v = float(os.environ.get("ASTERISM_RAM_CACHE_RESERVE_GB", ""))
+        if v >= 0:
+            return v
+    except ValueError:
+        pass
+    return OLEAN_CACHE_RESERVE_GB
+
+
 _BUDGET_RE = re.compile(
     r"^\s*(\d+(?:\.\d+)?)\s*(%|G|GB|GIB)?\s*$", re.IGNORECASE)
 
@@ -111,6 +135,7 @@ def compute_target_slots(*, budget_gb: float, nl_demand: int,
                          slot_gb: "float | None" = None,
                          nl_gb: float = NL_GB_FALLBACK,
                          margin_gb: "float | None" = None,
+                         cache_gb: "float | None" = None,
                          max_slots: int = MAX_SLOTS) -> int:
     """The pure target function. Idempotent — recompute from current
     demand any time; the floor() quantization IS the hysteresis band
@@ -124,8 +149,10 @@ def compute_target_slots(*, budget_gb: float, nl_demand: int,
     the field back from here."""
     if slot_gb is None:
         slot_gb = slot_recycle_gb() + NL_GB_FALLBACK
+    if cache_gb is None:
+        cache_gb = cache_reserve_gb()
     margin = slot_gb if margin_gb is None else margin_gb
-    lean_ram = budget_gb - nl_demand * nl_gb - margin
+    lean_ram = budget_gb - nl_demand * nl_gb - margin - cache_gb
     return max(1, min(max_slots, math.floor(lean_ram / slot_gb)))
 
 
@@ -302,7 +329,8 @@ class DispatcherLedger:
             return False
         nl_gb = nl_gb_measured()
         modeled = (self.open_slots * self.slot_gb
-                   + (nl_in_flight + self._pending_nl() + 1) * nl_gb)
+                   + (nl_in_flight + self._pending_nl() + 1) * nl_gb
+                   + cache_reserve_gb())
         if modeled > self.budget_gb:
             return False
         return (available_gb() - self._pending_nl() * nl_gb

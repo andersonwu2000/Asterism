@@ -14,13 +14,19 @@
 # KillMode=process preserves the Windows semantics: stopping or
 # restarting the daemon leaves the warm gateway running.
 # MemoryMax covers the WHOLE cgroup (daemon + gateway + lean workers
-# + spawns) — the host-protection P0: a runaway Lean worker (102 GB
-# incident, 2026-08-08 class) OOM-kills inside this slice, never the
-# machine. PERCENTAGES of physical RAM (owner call 2026-08-24: the
-# fleet moves between 64 and 128 GB boxes — a hard 52G wastes half of
-# the big one): 85%/75% gives 54G/48G on 64 GB and 109G/96G on 128 GB,
-# always leaving the OS + page cache + SSH reserve the work order
-# asks for. Per-box override: `systemctl --user edit asterism-daemon`.
+# + spawns) — a LIFELINE, not a resource manager (owner ruling
+# 2026-08-26): its only job is that a runaway fleet OOM-kills inside
+# this slice while sshd and systemd stay reachable. Resource
+# management is the RAM ledger's alone (`core/ram_ledger`: the budget
+# models the footprint, the measured available-RAM floor vetoes).
+# MemoryHigh is deliberately ABSENT — it was a second, silent governor
+# that fought the ledger: with no swap, the only reclaimable pages in
+# the cgroup are the mmap'd olean set every worker shares, so crossing
+# memory.high put the kernel in an evict/refault loop against the
+# fleet (load 60 on 8 cores, memory PSI full 88%, twice on
+# 2026-08-26). Keep MemoryMax comfortably ABOVE the ledger budget +
+# its cache reserve; per-box override: `systemctl --user edit
+# asterism-daemon`.
 
 [Unit]
 Description=Asterism daemon (dispatcher; manages the Lean gateway)
@@ -54,8 +60,7 @@ KillMode=process
 Restart=on-failure
 RestartSec=10
 MemoryAccounting=true
-MemoryHigh=75%
-MemoryMax=85%
+MemoryMax=95%
 
 [Install]
 WantedBy=default.target

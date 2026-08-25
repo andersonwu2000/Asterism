@@ -42,7 +42,9 @@ def test_target_slots_owner_worked_example():
     unconditional one-slot margin, ~21 GB of Lean field."""
     t = rl.compute_target_slots(budget_gb=28.0, nl_demand=12,
                                 slot_gb=0.95, nl_gb=0.3)
-    assert t == 24  # floor((28 - 3.6 - 0.95) / 0.95)
+    # floor((28 - 3.6 - 0.95 - cache 2.5) / 0.95) — the cache reserve
+    # is a tenant of the budget (owner ruling 2026-08-26)
+    assert t == 22
 
 
 def test_target_slots_floor_is_one_even_under_nl_flood():
@@ -62,11 +64,11 @@ def test_target_quantization_is_the_hysteresis_band():
     """floor() IS the dead zone: NL demand must move ~slot/nl units
     before the target moves one slot — no event-delta counters to
     drift."""
-    base = rl.compute_target_slots(budget_gb=28.0, nl_demand=12,
+    base = rl.compute_target_slots(budget_gb=28.0, nl_demand=13,
                                    slot_gb=0.95, nl_gb=0.3)
-    assert rl.compute_target_slots(budget_gb=28.0, nl_demand=13,
+    assert rl.compute_target_slots(budget_gb=28.0, nl_demand=14,
                                    slot_gb=0.95, nl_gb=0.3) == base
-    assert rl.compute_target_slots(budget_gb=28.0, nl_demand=16,
+    assert rl.compute_target_slots(budget_gb=28.0, nl_demand=17,
                                    slot_gb=0.95, nl_gb=0.3) < base
 
 
@@ -113,9 +115,9 @@ def test_nl_admission_is_bounded_by_the_modeled_footprint(monkeypatch):
     monkeypatch.setattr(rl, "available_gb", lambda: 20.0)
     led.open_slots = 12
     led.slot_gb = 1.0
-    # modeled = 12*1.0 + (n+1)*0.5 ≤ 15 → admits through n = 5
-    assert led.nl_admissible(5) is True
-    assert led.nl_admissible(6) is False
+    # modeled = 12*1.0 + (n+1)*0.5 + cache 2.5 ≤ 15 → admits n = 0 only
+    assert led.nl_admissible(0) is True
+    assert led.nl_admissible(1) is False
 
 
 def test_agent_proc_prefixes_cover_every_provider():
@@ -153,7 +155,8 @@ def test_ledger_tick_pushes_and_ingests_the_reply(monkeypatch):
     import math
     seed = rl.slot_recycle_gb()
     assert pushed["target"] == math.floor(
-        (28.0 - 3.6 - (seed + 0.3)) / (seed + 0.3))
+        (28.0 - 3.6 - (seed + 0.3) - rl.cache_reserve_gb())
+        / (seed + 0.3))
     assert pushed["min_avail"] == pytest.approx(rl.ABS_AVAILABLE_FLOOR_GB)
     assert led.open_slots == 7 and led.free_slots == 3
     # EMA, not assignment: milliseconds after seeding, one reading must
@@ -174,7 +177,7 @@ def test_slot_price_seeds_pessimistic_and_measures_only_down(monkeypatch):
     import math
     cost = rl.slot_recycle_gb() + rl.NL_GB_FALLBACK
     assert rl.compute_target_slots(budget_gb=110.0, nl_demand=0) == \
-        math.floor((110.0 - cost) / cost)
+        math.floor((110.0 - cost - rl.cache_reserve_gb()) / cost)
 
 
 def test_slot_price_is_an_ema_that_converges_when_aged(monkeypatch):
@@ -237,11 +240,12 @@ def test_target_is_ram_only_backpressure_owns_cpu(monkeypatch):
         pushed = {}
         led.tick(nl_demand=0,
                  push=lambda t, f: (pushed.setdefault("t", t), reply)[1])
-        # floor((110 - cost) / cost) at the pessimistic seed —
+        # floor((110 - cost - cache) / cost) at the pessimistic seed —
         # congestion never shrinks it
         import math
         cost = rl.slot_recycle_gb() + 0.3
-        assert pushed["t"] == math.floor((110.0 - cost) / cost)
+        assert pushed["t"] == math.floor(
+            (110.0 - cost - rl.cache_reserve_gb()) / cost)
     assert not hasattr(led, "cpu_cap")
 
 
@@ -269,6 +273,25 @@ def test_nl_hard_cap_is_a_backstop_not_a_knob(monkeypatch):
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.2)
     assert rl.DispatcherLedger(28.0, 32.0).nl_hard_cap() == 96  # capped
     assert rl.DispatcherLedger(1.0, 32.0).nl_hard_cap() == 5
+
+
+def test_cache_reserve_is_a_budget_tenant(monkeypatch):
+    """The mmap'd olean set (1.8 GiB measured) is charged to OUR
+    cgroup but belongs to no worker's private bytes — without a seat
+    in the model, a swapless fleet evicts/refaults it in a loop (both
+    2026-08-26 crushes). Env override for per-box tuning."""
+    monkeypatch.delenv("ASTERISM_RAM_CACHE_RESERVE_GB", raising=False)
+    assert rl.cache_reserve_gb() == rl.OLEAN_CACHE_RESERVE_GB
+    monkeypatch.setenv("ASTERISM_RAM_CACHE_RESERVE_GB", "4.0")
+    assert rl.cache_reserve_gb() == 4.0
+    monkeypatch.setenv("ASTERISM_RAM_CACHE_RESERVE_GB", "banana")
+    assert rl.cache_reserve_gb() == rl.OLEAN_CACHE_RESERVE_GB
+    # both admission formulas carry it (one fact, both readers)
+    import inspect
+    assert "cache_reserve_gb()" in inspect.getsource(
+        rl.compute_target_slots)
+    assert "cache_reserve_gb()" in inspect.getsource(
+        rl.DispatcherLedger.nl_admissible)
 
 
 # ── partition + queue plumbing ──────────────────────────────────

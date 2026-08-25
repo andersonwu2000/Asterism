@@ -36,8 +36,15 @@ def test_daemon_unit_keeps_the_owner_ruled_shape() -> None:
     text = (UNITS / "asterism-daemon.service").read_text(encoding="utf-8")
     # KillMode=process preserves the warm gateway across restarts
     assert "KillMode=process" in text
-    # memory caps are PERCENTAGES of RAM (owner call 2026-08-24)
-    assert "MemoryMax=85%" in text and "MemoryHigh=75%" in text
+    # MemoryMax is a LIFELINE above the ledger budget, not a resource
+    # manager; MemoryHigh must stay ABSENT — with no swap, its reclaim
+    # loop evicts the shared olean pages every worker refaults (two
+    # flagship crushes, 2026-08-26; owner ruling: the RAM axis has ONE
+    # governor, the ledger)
+    assert "MemoryMax=95%" in text
+    assert not [ln for ln in text.splitlines()
+                if ln.strip().startswith("MemoryHigh")], \
+        "MemoryHigh is a second silent governor — retired 2026-08-26"
     # drift handoff relies on this restart policy (dispatcher rc=75)
     assert "Restart=on-failure" in text
 
