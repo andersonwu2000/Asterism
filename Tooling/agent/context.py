@@ -1352,7 +1352,11 @@ def _section_strategist_directive(conn: sqlite3.Connection,
 #: decision of its own; it inherits the argument its parent was
 #: dispatched under, and the walk goes up through `strategies`, not
 #: through a bare goal-parent chain, so two live strategies on one OR
-#: node never see each other's.
+#: node never see each other's. Only MINTED edges conduct (v44): a
+#: strategy that merely CITES a pre-existing sibling is a consumer of
+#: that goal, not its author — crossing a cited edge handed a whole
+#: subtree the citing goal's redispatch brief (2026-08-25, six intake
+#: mis-aimed declines in three minutes).
 _AUTHORISING_PROOF_SQL = """
 WITH RECURSIVE up(gid, depth) AS (
   VALUES(?, 0)
@@ -1361,6 +1365,7 @@ WITH RECURSIVE up(gid, depth) AS (
     FROM strategy_subgoals ss
     JOIN strategies s ON s.id = ss.strategy_id
     JOIN up ON ss.subgoal_id = up.gid
+   WHERE ss.link_kind = 'minted'
 )
 SELECT d.brief AS proof, d.id AS decision_id FROM up
   JOIN strategist_decisions d

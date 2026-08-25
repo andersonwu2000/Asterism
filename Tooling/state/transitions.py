@@ -959,7 +959,11 @@ def _has_hard_terminal_ancestor(conn: sqlite3.Connection,
     and may even be revived once the ancestor reopens).
 
     Walks UPWARD via strategy_subgoals.subgoal_id = goal_id → parent
-    strategy → strategy.goal_id, recursively.
+    strategy → strategy.goal_id, recursively — MINTED edges only (v44):
+    both rationales above are about the context a goal was CREATED in,
+    and a citing strategy is a consumer, not the creator. Crossing a
+    cited edge would let a consumer's disproved/dead parent block
+    Reopen on an independent shared goal.
     """
     visited: set[int] = set()
     frontier: list[int] = [goal_id]
@@ -969,7 +973,7 @@ def _has_hard_terminal_ancestor(conn: sqlite3.Connection,
             rows = conn.execute(
                 "SELECT s.goal_id FROM strategies s"
                 " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
-                " WHERE ss.subgoal_id = ?",
+                " WHERE ss.subgoal_id = ? AND ss.link_kind = 'minted'",
                 (gid,),
             ).fetchall()
             for r in rows:

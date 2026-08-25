@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 43
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 44
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -369,7 +369,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 43
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 44
     conn.close()
 
 
@@ -509,7 +509,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 43
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 44
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -549,7 +549,7 @@ def test_v28_manifest_history_carryover(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 43
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 44
     rows = conn.execute(
         "SELECT problem, file, sha, body, source FROM user_file_history"
     ).fetchall()
@@ -596,7 +596,7 @@ def test_v29_problem_state_backfill(tmp_path: Path) -> None:
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 43
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 44
     states = {str(r["name"]): str(r["state"]) for r in conn.execute(
         "SELECT name, state FROM problems")}
     assert states == {"p_active": "active", "p_await": "awaiting_human",
@@ -935,7 +935,7 @@ def test_v41_retires_stranded_manifest_amend_rows(tmp_path, monkeypatch):
     from Tooling.state import db_migrations
     db_migrations.apply(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 43
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 44
     rows = {str(r["problem"]): (str(r["outcome"]),
                                 str(r["outcome_detail"] or ""))
             for r in conn.execute(
@@ -999,6 +999,46 @@ def test_v43_widens_trigger_kind_check_from_the_live_ddl(tmp_path):
         "SELECT 1 FROM sqlite_master WHERE type='index'"
         " AND name='idx_sd_problem'").fetchone()
     m._migrate_to_v43(conn)  # idempotent
+    conn.close()
+
+
+def test_v44_link_kind_backfill_classifies_cited_edges(tmp_path):
+    """v44 adds strategy_subgoals.link_kind and backfills structurally:
+    a CITED (reused) sibling predates its strategy row, a MINTED
+    sub-goal is inserted after it. The 2026-08-25 leak shape — a
+    redispatch strategy citing an older sibling — must land 'cited';
+    ordinary decomposition edges stay 'minted'. Idempotent."""
+    import sqlite3 as _sqlite3
+    from Tooling.state import db_migrations as m
+    conn = _sqlite3.connect(str(tmp_path / "old.db"))
+    conn.row_factory = _sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE goals (
+            id INTEGER PRIMARY KEY, created_at TEXT NOT NULL);
+        CREATE TABLE strategies (
+            id INTEGER PRIMARY KEY, created_at TEXT NOT NULL);
+        CREATE TABLE strategy_subgoals (
+            strategy_id INTEGER NOT NULL,
+            subgoal_id  INTEGER NOT NULL,
+            position    INTEGER NOT NULL,
+            PRIMARY KEY (strategy_id, subgoal_id));
+        -- old sibling, minted long before either strategy
+        INSERT INTO goals VALUES (10, '2026-08-23T23:51:00+00:00');
+        -- s1 decomposes: its sub-goal is inserted AFTER the row
+        INSERT INTO strategies VALUES (1, '2026-08-24T13:57:00+00:00');
+        INSERT INTO goals VALUES (11, '2026-08-24T14:28:00+00:00');
+        INSERT INTO strategy_subgoals VALUES (1, 11, 0);
+        -- s2 redispatch cites the OLD sibling (the leak edge)
+        INSERT INTO strategies VALUES (2, '2026-08-25T00:33:00+00:00');
+        INSERT INTO strategy_subgoals VALUES (2, 10, 0);
+    """)
+    m._migrate_to_v44(conn)
+    kinds = {(r["strategy_id"], r["subgoal_id"]): r["link_kind"]
+             for r in conn.execute(
+                 "SELECT strategy_id, subgoal_id, link_kind"
+                 " FROM strategy_subgoals")}
+    assert kinds == {(1, 11): "minted", (2, 10): "cited"}
+    m._migrate_to_v44(conn)  # idempotent — column probe short-circuits
     conn.close()
 
 

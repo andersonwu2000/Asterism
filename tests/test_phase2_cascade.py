@@ -86,12 +86,13 @@ def _insert_strategy(conn: sqlite3.Connection, *, goal_id: int,
 
 
 def _link(conn: sqlite3.Connection, strategy_id: int,
-          subgoal_ids: list[int]) -> None:
+          subgoal_ids: list[int], link_kind: str = "minted") -> None:
     for pos, sg in enumerate(subgoal_ids):
         conn.execute(
-            "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
-            " VALUES (?, ?, ?)",
-            (strategy_id, sg, pos),
+            "INSERT INTO strategy_subgoals"
+            " (strategy_id, subgoal_id, position, link_kind)"
+            " VALUES (?, ?, ?, ?)",
+            (strategy_id, sg, pos, link_kind),
         )
     conn.commit()
 
@@ -334,6 +335,36 @@ def test_shelved_ancestor_not_a_hard_terminal(
     found, kind = _has_hard_terminal_ancestor(conn, sub)
     assert found is False
     assert kind is None
+
+
+def test_a_citing_consumers_death_does_not_block_reopen(
+    conn: sqlite3.Connection,
+) -> None:
+    """v44 — the hard-terminal walk climbs MINTED edges only. A
+    strategy that CITES a pre-existing sibling is a consumer, not the
+    creator: the sibling's statement does not live inside the citing
+    goal's context, so the citing goal going disproved/dead says
+    nothing about the sibling or its subtree. (Same edge-semantics
+    conflation that leaked a redispatch brief sideways, 2026-08-25.)"""
+    # shared's real (minting) parent is alive
+    parent = _insert_goal(conn, slug="real_parent", origin="root")
+    s_mint = _insert_strategy(conn, goal_id=parent)
+    shared = _insert_goal(conn, slug="shared", status="shelved")
+    _link(conn, s_mint, [shared])
+    # a consumer cites shared, then dies hard
+    consumer = _insert_goal(conn, slug="consumer", status="disproved")
+    s_cite = _insert_strategy(conn, goal_id=consumer)
+    _link(conn, s_cite, [shared], link_kind="cited")
+
+    found, kind = _has_hard_terminal_ancestor(conn, shared)
+    assert found is False
+    assert kind is None
+    # …while a hard-terminal MINTING parent still blocks as before.
+    conn.execute("UPDATE goals SET status='dead' WHERE id=?", (parent,))
+    conn.commit()
+    found, kind = _has_hard_terminal_ancestor(conn, shared)
+    assert found is True
+    assert kind == "dead"
 
 
 # ---------------------------------------------------------------------

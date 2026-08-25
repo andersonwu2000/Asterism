@@ -1458,7 +1458,8 @@ def _backward_parse_and_commit(
                       f"({cur['slug']}) shelved → open", flush=True)
         for pos, auto_gid in enumerate(sorted(auto_link_ids)):
             db.link_subgoal(conn, strategy_id=strategy_id,
-                            subgoal_id=auto_gid, position=pos)
+                            subgoal_id=auto_gid, position=pos,
+                            link_kind="cited")
         scratch_rel = scratch_dest.relative_to(workspace).as_posix()
         db.update_strategy_scratch_path(conn, strategy_id, scratch_rel)
         conn.execute("UPDATE strategies SET proposal_md = ? WHERE id = ?",
@@ -2303,7 +2304,8 @@ def _backward_parse_and_commit(
         next_pos = len(linked_ids)
         for offset, auto_gid in enumerate(sorted(auto_link_ids)):
             db.link_subgoal(conn, strategy_id=strategy_id,
-                            subgoal_id=auto_gid, position=next_pos + offset)
+                            subgoal_id=auto_gid, position=next_pos + offset,
+                            link_kind="cited")
 
         scratch_rel = scratch_dest.relative_to(workspace).as_posix()
         db.update_strategy_scratch_path(conn, strategy_id, scratch_rel)

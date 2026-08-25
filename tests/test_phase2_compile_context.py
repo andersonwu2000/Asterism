@@ -325,6 +325,44 @@ def test_sibling_strategies_never_see_each_others_argument(
     assert "ROUTE B" not in text
 
 
+def test_a_cited_siblings_subtree_never_inherits_the_citing_brief(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """v44 — the incident shape (2026-08-25): a redispatch Backward on
+    goal A cites the pre-existing sibling B as a wait edge; A's brief
+    literally says 'work goal A'. The walk crossing that cited edge
+    handed B's whole subtree A's brief, and every dispatch there died
+    at intake as mis-aimed (six declines in three minutes). Cited edges
+    must not conduct — B's subtree keeps its own line's argument."""
+    # B's real line: root r (authorised) → minted B → minted kid_b.
+    # B itself has no decision — the incident's shape exactly.
+    r = _insert_root(conn)
+    _decision_for_goal(conn, r, "B'S PARENT LINE: the census argument")
+    b = _subgoal_of(conn, r, "b")
+    kid_b = _subgoal_of(conn, b, "kid_b")
+    # A: a NEWER authorised goal whose redispatch strategy cites B.
+    # Both briefs sit at the same walk depth from kid_b; the tie-break
+    # (d.id DESC) picks A's — unless the cited edge is pruned.
+    a = db.insert_goal(conn, problem="p", slug="a",
+                       lean_path="Problems/p/proofs/L_a.lean",
+                       statement="T", origin="backward")
+    _decision_for_goal(conn, a, "WORK GOAL A ONLY: the codec identities")
+    sid_a = int(conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, status, created_by,"
+        " created_at) VALUES (?, 'Problems/p/proofs/_strategy_cite.lean',"
+        " 'proposed', 'backward', ?)", (a, db.now())).lastrowid)
+    db.link_subgoal(conn, strategy_id=sid_a, subgoal_id=b, position=0,
+                    link_kind="cited")
+
+    attempts_dir = _make_attempts_dir(workspace)
+    compile_context(conn, goal=db.get_goal(conn, kid_b),
+                    intent=_fake_intent(), attempts_dir=attempts_dir,
+                    kind="backward", decision_id=None)
+    text = _read_context(attempts_dir)
+    assert "B'S PARENT LINE" in text
+    assert "WORK GOAL A ONLY" not in text
+
+
 def _pass_programme(conn: sqlite3.Connection, proof: str) -> None:
     from Tooling.state import programme
     programme.record_pass(

@@ -394,10 +394,22 @@ CREATE TABLE IF NOT EXISTS strategies (
     created_at   TEXT NOT NULL
 );
 
+-- link_kind (v44): edge provenance. 'minted' = the strategy CREATED this
+-- sub-goal (authorship — the sub-goal exists to serve that strategy's
+-- argument); 'cited' = the strategy REUSES a pre-existing sibling (a
+-- dependency/wait edge — the sub-goal has its own life). Readers that
+-- reason about creation context (brief inheritance, hard-terminal Reopen
+-- walks) must traverse 'minted' edges only; readers that reason about
+-- dependency (verify-wait, prune retention, cycle detection, shelve
+-- cascade) traverse both. Conflating the two leaked a redispatch brief
+-- into a cited sibling's whole subtree (2026-08-25, six intake declines
+-- in three minutes).
 CREATE TABLE IF NOT EXISTS strategy_subgoals (
     strategy_id INTEGER NOT NULL REFERENCES strategies(id),
     subgoal_id  INTEGER NOT NULL REFERENCES goals(id),
     position    INTEGER NOT NULL,
+    link_kind   TEXT NOT NULL DEFAULT 'minted'
+                    CHECK(link_kind IN ('minted','cited')),
     PRIMARY KEY (strategy_id, subgoal_id)
 );
 
@@ -834,7 +846,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 43
+_CURRENT_USER_VERSION = 44
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -2962,11 +2974,17 @@ def mark_other_strategies_superseded(conn: sqlite3.Connection, *,
 
 
 def link_subgoal(conn: sqlite3.Connection, *, strategy_id: int,
-                 subgoal_id: int, position: int) -> None:
+                 subgoal_id: int, position: int,
+                 link_kind: str = "minted") -> None:
+    """`link_kind='minted'` for sub-goals this strategy created;
+    `'cited'` for pre-existing siblings it reuses (auto-link / cite-wait
+    edges). See the strategy_subgoals DDL comment for which readers
+    traverse which."""
     conn.execute(
-        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
-        " VALUES (?, ?, ?)",
-        (strategy_id, subgoal_id, position),
+        "INSERT INTO strategy_subgoals"
+        " (strategy_id, subgoal_id, position, link_kind)"
+        " VALUES (?, ?, ?, ?)",
+        (strategy_id, subgoal_id, position, link_kind),
     )
     conn.commit()
 

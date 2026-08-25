@@ -972,6 +972,17 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         _migrate_to_v43(conn)
         conn.execute("PRAGMA user_version = 43")
         conn.commit()
+    if v < 44:
+        # v44 — strategy_subgoals.link_kind: 'minted' (the strategy
+        # created this sub-goal — authorship) vs 'cited' (it reuses a
+        # pre-existing sibling — dependency/wait edge). The brief-
+        # inheritance walk treated every edge as authorship and leaked
+        # a redispatch brief sideways into a cited sibling's whole
+        # subtree (2026-08-25: six intake mis-aimed declines in three
+        # minutes on union_closed). Additive column; backfill below.
+        _migrate_to_v44(conn)
+        conn.execute("PRAGMA user_version = 44")
+        conn.commit()
 
 
 def _migrate_to_v41(conn: sqlite3.Connection) -> None:
@@ -2700,3 +2711,32 @@ def _migrate_to_v43(conn: sqlite3.Connection) -> None:
                   f" trigger_kind CHECK ({n} row(s) carried)", flush=True)
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_v44(conn: sqlite3.Connection) -> None:
+    """strategy_subgoals.link_kind — edge provenance (minted vs cited).
+
+    Additive ADD COLUMN (no rebuild). Backfill classifies existing
+    edges structurally: a strategy can only CITE a goal that already
+    existed before the strategy row itself, while a MINTED sub-goal is
+    inserted at commit, after its strategy row — so
+    `goal.created_at < strategy.created_at` identifies cited edges.
+    Ties (same-instant timestamps cannot occur across the two inserts,
+    but defend anyway) default to 'minted', which is the pre-v44
+    behaviour for every reader."""
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(strategy_subgoals)")}
+    if "link_kind" in cols:
+        return  # fresh DB from current SCHEMA already carries it
+    conn.execute(
+        "ALTER TABLE strategy_subgoals ADD COLUMN link_kind TEXT NOT NULL"
+        " DEFAULT 'minted' CHECK(link_kind IN ('minted','cited'))")
+    n = conn.execute(
+        "UPDATE strategy_subgoals SET link_kind = 'cited'"
+        " WHERE EXISTS (SELECT 1 FROM strategies s, goals g"
+        "                WHERE s.id = strategy_subgoals.strategy_id"
+        "                  AND g.id = strategy_subgoals.subgoal_id"
+        "                  AND g.created_at < s.created_at)").rowcount
+    if n:
+        print(f"[v44] strategy_subgoals.link_kind backfilled: {n} cited"
+              f" edge(s) reclassified (rest minted)", flush=True)

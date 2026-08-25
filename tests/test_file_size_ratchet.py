@@ -332,7 +332,9 @@ _WATERMARKS = {
     # 2026-08-17. Conscious bump.
     # 08-18 +15: the recovery event labels + the disproved revival edge
     # and its incident documentation (claimed-counterexample park).
-    "Tooling/state/transitions.py": 1845,  # +dead-attempt detail handover (2026-08-22)
+    # 08-25 +5: v44 minted-only hard-terminal walk rationale (cited
+    # consumers must not block Reopen on shared goals).
+    "Tooling/state/transitions.py": 1850,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.
@@ -446,7 +448,10 @@ _WATERMARKS = {
     # 3855→3870 (2026-08-19): v40 Manifest retirement — `problems` DDL
     # loses manifest_path / gains user_word, and the SCHEMA comments
     # explaining the DB-resident intent pair. Conscious bump.
-    "Tooling/state/db.py": 3880,  # v42 CHECK comment
+    # 3880→3900 (2026-08-25): v44 strategy_subgoals.link_kind — DDL
+    # provenance comment (which readers traverse which edge kind) +
+    # link_subgoal param. Conscious bump.
+    "Tooling/state/db.py": 3900,
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,
@@ -477,7 +482,10 @@ _WATERMARKS = {
     # legacy Manifest.md, problem_settings seeding, manifest_path DROP).
     # The chain grows by one block per schema version by design.
     # Conscious bump.
-    "Tooling/state/db_migrations.py": 2710,  # +migration file-mutex & v43 self-heal (2026-08-24) — conscious bump; prior: +v43 stall rebuild
+    # 2710→2750 (2026-08-25): +v44 link_kind block (grows by one block
+    # per schema version by design). Prior: +migration file-mutex & v43
+    # self-heal (2026-08-24); +v43 stall rebuild.
+    "Tooling/state/db_migrations.py": 2750,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

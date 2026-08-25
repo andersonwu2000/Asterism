@@ -277,7 +277,10 @@ def next_rev_number(conn: sqlite3.Connection, problem: str,
 #: Nearest authorising ancestor, self first. The goal tree has no
 #: parent column — an edge is `strategies.goal_id → strategy_subgoals
 #: → subgoal_id` — so walking up is a recursive join over the link
-#: table (`idx_ssg_subgoal` covers the step).
+#: table (`idx_ssg_subgoal` covers the step). Only MINTED edges conduct
+#: (v44): a strategy that CITES a pre-existing sibling did not author
+#: it, so its batch's revision must not stamp the cited subtree (same
+#: leak as the brief walk in `agent/context.py`, 2026-08-25).
 _AUTHORISING_REV_SQL = """
 WITH RECURSIVE up(gid, depth) AS (
   VALUES(?, 0)
@@ -286,6 +289,7 @@ WITH RECURSIVE up(gid, depth) AS (
     FROM strategy_subgoals ss
     JOIN strategies s ON s.id = ss.strategy_id
     JOIN up ON ss.subgoal_id = up.gid
+   WHERE ss.link_kind = 'minted'
 )
 SELECT pr.* FROM up
   JOIN strategist_decisions d
