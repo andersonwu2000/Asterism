@@ -230,6 +230,89 @@ def test_zen_call_dead_parachute_returns_to_primary(
     assert calls[3] == zen_shim.ZEN_RESCUE and calls[5] == zen_shim.ZEN
 
 
+def test_stream_heartbeat_only_on_meaningful_payload(
+        monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Keep-alive pings must NOT feed the liveness clock: an upstream
+    empty-stream carousel serves nothing but pings, and the any-line
+    beat kept five strategists' heartbeats fresh for 2h21m so the
+    watchdog's 2400s silent-kill — their only exit — never fired
+    (2026-08-25). Only reasoning/content/tool_calls/finish/usage beat."""
+    monkeypatch.setattr(zen_shim, "_STREAM_BEAT_SEC", 0.0)
+    touches: list = []
+    monkeypatch.setattr(zen_shim, "_touch_heartbeat",
+                        lambda d: touches.append(d))
+    monkeypatch.setitem(zen_shim._KEY_CACHE, "OPENCODE_ZEN_API_KEY", "k")
+    token = zen_shim._STREAM_ATTEMPT_DIR.set(str(tmp_path))
+    try:
+        # keep-alives + empty deltas only → zero beats, ends empty
+        sse = (b': ping\n'
+               b'data: {"choices":[{"delta":{}}]}\n'
+               b': ping\n')
+        _patch_urlopen(monkeypatch, sse, {})
+        with pytest.raises(urllib.error.URLError):
+            zen_shim._chat_stream_once("https://opencode.ai/zen/v1",
+                                       {"model": "x-preview-f-free",
+                                        "input": []})
+        assert touches == [], "keep-alives beat the heart — carousel-blind"
+        # a real content delta beats
+        sse2 = (b'data: {"choices":[{"delta":{"content":"hi"}}]}\n'
+                b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n')
+        _patch_urlopen(monkeypatch, sse2, {})
+        zen_shim._chat_stream_once("https://opencode.ai/zen/v1",
+                                   {"model": "x-preview-f-free",
+                                    "input": []})
+        assert touches, "meaningful payload must beat"
+    finally:
+        zen_shim._STREAM_ATTEMPT_DIR.reset(token)
+
+
+def test_zen_call_empty_ladder_streak_arms_fast_fail(
+        monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Granularity pin: WITHIN a call the full plan keeps walking
+    (peak-hour Zen answers empty stochastically — the ladder is the
+    cure, 2026-08-22), but whole ladders exhausting empty back-to-back
+    are a deterministic carousel (5×2h21m, 2026-08-25): after two the
+    next call fails on its FIRST empty, and one success re-disarms."""
+    calls: list[str] = []
+
+    def empty_stream(base, body):
+        calls.append(base)
+        raise urllib.error.URLError("chat stream ended empty, no finish")
+
+    monkeypatch.setattr(zen_shim, "_stream_once", empty_stream)
+    monkeypatch.setattr(zen_shim.time, "sleep", lambda s: None)
+    monkeypatch.setattr(zen_shim, "_EMPTY_STREAKS", {})
+    att = str(tmp_path)
+    plan = len(zen_shim._UPSTREAM_PLAN)
+    for _ in range(2):                       # two full all-empty ladders
+        calls.clear()
+        with pytest.raises(urllib.error.URLError):
+            zen_shim._zen_call({"model": "x-preview-f-free",
+                                "input": []}, att)
+        assert len(calls) == plan, "pre-streak: the whole plan walks"
+    calls.clear()
+    with pytest.raises(urllib.error.URLError):
+        zen_shim._zen_call({"model": "x-preview-f-free", "input": []}, att)
+    assert len(calls) == 1, "fast-fail mode: first empty propagates"
+    # a successful stream resets the streak and disarms fast-fail
+    monkeypatch.setattr(zen_shim, "_stream_once",
+                        lambda base, body: {"output": ["ok"], "usage": {}})
+    assert zen_shim._zen_call({"model": "x-preview-f-free",
+                               "input": []}, att)["output"] == ["ok"]
+    monkeypatch.setattr(zen_shim, "_stream_once", empty_stream)
+    calls.clear()
+    with pytest.raises(urllib.error.URLError):
+        zen_shim._zen_call({"model": "x-preview-f-free", "input": []}, att)
+    assert len(calls) == plan, "streak reset — full ladder again"
+    # anonymous calls (no attempt_dir) never enter fast-fail mode
+    monkeypatch.setattr(zen_shim, "_EMPTY_STREAKS",
+                        {None: 99, "-": 99})
+    calls.clear()
+    with pytest.raises(urllib.error.URLError):
+        zen_shim._zen_call({"model": "x-preview-f-free", "input": []})
+    assert len(calls) == plan
+
+
 def test_attempt_dir_from_path_carries_nested_projection_dirs(
         tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The URL segment is a PATH under .attempts, not a bare uuid:

@@ -652,9 +652,6 @@ def _chat_stream_once(base: str, body: dict) -> dict:
     # Nous streams under the old 1740s ceiling (2026-08-22).
     with urllib.request.urlopen(req, timeout=300) as r:
         for raw in r:
-            if time.monotonic() - last_beat >= _STREAM_BEAT_SEC:
-                last_beat = time.monotonic()
-                _touch_heartbeat(attempt_dir)
             line = raw.decode("utf-8", "replace").strip()
             if not line.startswith("data:") or line == "data: [DONE]":
                 continue
@@ -666,6 +663,20 @@ def _chat_stream_once(base: str, body: dict) -> dict:
                 usage = d["usage"]
             ch = (d.get("choices") or [{}])[0]
             delta = ch.get("delta") or {}
+            # Heartbeat only on MEANINGFUL payload. It used to fire on
+            # ANY received line — SSE keep-alive pings included — and
+            # keep-alives are exactly what an upstream empty-stream
+            # carousel serves: five launch-wave strategists cycled
+            # zero-output streams for 2h21m with fresh heartbeats the
+            # whole way, so the watchdog's 2400s silent-kill (their one
+            # exit) never fired (2026-08-25). Liveness = the model is
+            # SAYING something, not the socket carrying bytes.
+            if ((delta.get("reasoning") or delta.get("reasoning_content")
+                 or delta.get("content") or delta.get("tool_calls")
+                 or ch.get("finish_reason") or d.get("usage"))
+                    and time.monotonic() - last_beat >= _STREAM_BEAT_SEC):
+                last_beat = time.monotonic()
+                _touch_heartbeat(attempt_dir)
             # The upstream streams the thinking phase alongside the
             # answer (`delta.reasoning`, OpenRouter dialect; some
             # providers spell it `reasoning_content`). Dropping it made
@@ -894,8 +905,8 @@ def _conc_acquire(attempt_dir: "str | None") -> None:
         waited += 5
         _touch_heartbeat(attempt_dir)
         if waited % 60 == 0:
-            _log(f"[shim]   queue: {waited}s waiting for a "
-                  f"concurrency slot ({len(_CONC_WAITERS)} in line)")
+            _log(f"[shim] {_att_tag(attempt_dir)} queue: {waited}s waiting "
+                  f"for a concurrency slot ({len(_CONC_WAITERS)} in line)")
 
 
 def _conc_release() -> None:
@@ -1031,6 +1042,30 @@ _429_WAIT_BUDGET = int(os.environ.get("ASTERISM_ZEN_429_BUDGET") or 600)
 _UPSTREAM_PLAN = (ZEN, ZEN, ZEN, ZEN_RESCUE, ZEN, ZEN, ZEN, ZEN_RESCUE,
                   ZEN, ZEN)
 
+#: Consecutive LADDER-EXHAUSTING empty-stream failures per attempt,
+#: across calls. Granularity matters: WITHIN a call the full plan must
+#: keep walking (peak-hour Zen answers empty stochastically — 22 hits
+#: in 15 fleet-minutes, 2026-08-22 — and the long ladder is the cure),
+#: but the codex client re-POSTs a failed request indefinitely, so
+#: when whole ladders exhaust empty back-to-back the request is in a
+#: deterministic carousel, not weather (five strategists cycled it for
+#: 2h21m, 2026-08-25). After _EMPTY_STREAK_FAST_FAIL exhausted
+#: ladders, the next calls fail on their FIRST empty stream — cheap
+#: 502s to the client while the starved heartbeat lets the daemon's
+#: 2400s watchdog reap and re-dispatch. Any successful stream resets.
+#: Tracked only when the call carries an attempt_dir (anonymous calls
+#: share no meaningful identity).
+_EMPTY_STREAK_LOCK = threading.Lock()
+_EMPTY_STREAKS: "dict[str, int]" = {}
+_EMPTY_STREAK_FAST_FAIL = 2
+
+
+def _att_tag(attempt_dir: "str | None") -> str:
+    """Short attempt id for log attribution — the 2026-08-25 carousel
+    hunt took a dozen forensic steps because retry lines were
+    anonymous; with the tag it is one grep."""
+    return os.path.basename(attempt_dir)[:8] if attempt_dir else "-"
+
 
 def _zen_call(body: dict, attempt_dir: "str | None" = None) -> dict:
     """Streaming POST walking `_UPSTREAM_PLAN`: transient failures
@@ -1044,6 +1079,30 @@ def _zen_call(body: dict, attempt_dir: "str | None" = None) -> dict:
     failure propagates and the daemon's retry machinery decides."""
     wait_spent = 0.0
     _STREAM_ATTEMPT_DIR.set(attempt_dir)
+    att = _att_tag(attempt_dir)
+    streak_key = attempt_dir  # None → streak tracking off
+    if streak_key is not None:
+        with _EMPTY_STREAK_LOCK:
+            fast_fail = (_EMPTY_STREAKS.get(streak_key, 0)
+                         >= _EMPTY_STREAK_FAST_FAIL)
+    else:
+        fast_fail = False
+
+    def _stream_and_reset(base: str) -> dict:
+        out = _stream_once(base, body)
+        if streak_key is not None:
+            with _EMPTY_STREAK_LOCK:
+                _EMPTY_STREAKS.pop(streak_key, None)
+        return out
+
+    def _note_ladder_empty() -> int:
+        if streak_key is None:
+            return 0
+        with _EMPTY_STREAK_LOCK:
+            _EMPTY_STREAKS[streak_key] = \
+                _EMPTY_STREAKS.get(streak_key, 0) + 1
+            return _EMPTY_STREAKS[streak_key]
+
     while True:
         last: Exception | None = None
         saw_429 = False
@@ -1055,10 +1114,10 @@ def _zen_call(body: dict, attempt_dir: "str | None" = None) -> dict:
                     if _conc_enabled():
                         _conc_acquire(attempt_dir)
                         try:
-                            return _stream_once(base, body)
+                            return _stream_and_reset(base)
                         finally:
                             _conc_release()
-                return _stream_once(base, body)
+                return _stream_and_reset(base)
             except urllib.error.HTTPError as e:
                 if e.code == 429:
                     hdrs = getattr(e, "headers", None) or {}
@@ -1077,7 +1136,7 @@ def _zen_call(body: dict, attempt_dir: "str | None" = None) -> dict:
                     # The body names WHICH limit fired (concurrency vs
                     # rpm vs tokens) — evidence the 2026-08-22 storm
                     # took a friend-machine probe to recover.
-                    _log(f"[shim]   "
+                    _log(f"[shim] {att} "
                           f"{('rescue' if base == ZEN_RESCUE else 'primary')}"
                           f" 429 — next slot "
                           f"({body_head.decode('utf-8', 'replace')})")
@@ -1088,20 +1147,32 @@ def _zen_call(body: dict, attempt_dir: "str | None" = None) -> dict:
                     last = e
             except (urllib.error.URLError, TimeoutError, OSError) as e:
                 last = e
+                if fast_fail and "ended empty" in str(e):
+                    n = _note_ladder_empty()
+                    _log(f"[shim] {att} empty-stream carousel (streak "
+                          f"{n}) — failing fast; the caller's watchdog "
+                          f"owns this now")
+                    raise
             if i == len(_UPSTREAM_PLAN) - 1:
                 break
             wait = min(5 * (i + 1), 20)
-            _log(f"[shim]   retry {i+1}/{len(_UPSTREAM_PLAN)-1} in {wait}s "
-                  f"({last})")
+            _log(f"[shim] {att} retry {i+1}/{len(_UPSTREAM_PLAN)-1} "
+                  f"in {wait}s ({last})")
             time.sleep(wait)
         if saw_429 and wait_spent < _429_WAIT_BUDGET:
             wait = float(min(max(retry_after or 0, 30), 120))
             wait_spent += wait
-            _log(f"[shim]   throttled through the whole plan — waiting "
+            _log(f"[shim] {att} throttled through the whole plan — waiting "
                   f"{wait:.0f}s for the window "
                   f"({wait_spent:.0f}s/{_429_WAIT_BUDGET}s of 429 budget)")
             time.sleep(wait)
             continue
+        if last is not None and "ended empty" in str(last):
+            n = _note_ladder_empty()
+            if n:
+                _log(f"[shim] {att} ladder exhausted all-empty "
+                      f"(streak {n}/{_EMPTY_STREAK_FAST_FAIL} before "
+                      f"fast-fail mode)")
         raise last if isinstance(last, Exception) else RuntimeError("no upstream")
 
 
