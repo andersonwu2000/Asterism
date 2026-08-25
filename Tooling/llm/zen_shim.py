@@ -784,7 +784,12 @@ def _stream_once(base: str, body: dict) -> dict:
 #: 50 req/min rolling). Paced at 40 to leave margin for the request the
 #: window counts that we do not see (a second machine on the same key
 #: produced an 864-retry storm, 2026-08-22). 0 disables.
-_RPM = int(os.environ.get("ASTERISM_ZEN_RPM") or 40)
+# .env-backed like the channel choice: 40 was calibrated for a
+# 12-spawn fleet; the flagship's 46 concurrent wakes pinned the whole
+# fleet at exactly the pacer ceiling (fleet-wide 42 iters/min measured,
+# ~1 call/session/min — nobody could finish a first draft; predicted in
+# the nl_pool design discussion and then not applied, 2026-08-25).
+_RPM = int(_cfg("ASTERISM_ZEN_RPM", "40"))
 _PACE_LOCK = threading.Lock()
 _PACE_STAMPS: "collections.deque[float]" = collections.deque()
 
