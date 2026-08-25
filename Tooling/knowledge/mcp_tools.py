@@ -175,21 +175,42 @@ def loogle(pattern: str = "", query: str = "",
 
 
 @_seat_tool(structured_output=False)
-def validate_json(text: str = "") -> str:
-    """Check that `text` parses as JSON before you emit it.
+def validate_json(text: str = "", file: str = "") -> str:
+    """Check your JSON hand-in (decision.json / verdict.json).
+
+    Prefer `file`: name the file you wrote (bare name or the absolute
+    path your prompt gave you) and the bytes ON DISK are validated —
+    the same disk-is-authority rule as `validate_file`: what you
+    validate IS what the framework will read. `text` validates a
+    pasted string instead; long payloads mangled by tool-call escaping
+    made it report offsets that do not exist in the real file
+    (adversary feedback, 2026-08-25).
 
     Returns `OK: <n> top-level key(s)` or the parser's own message with
     the line and column. Read-only — it tells you nothing about whether
     the framework will ACCEPT the decision, only that it can be read.
     """
     import json as _json
-    if not (text or "").strip():
+    if (file or "").strip():
+        from . import workspace_query
+        content, err = workspace_query.read_own_file(file)
+        if content is None:
+            return f"validate_json: {err}"
+        src = content
+    elif (text or "").strip():
+        src = text
+    else:
         return _ARG_HELP.format(
             tool="validate_json",
-            hint='the parameter is `text`, a string — e.g. '
-                 'validate_json(text=\'{"a": 1}\')')
+            hint='pass `file` (preferred — validates the DISK file, '
+                 'e.g. validate_json(file="verdict.json")) or `text` '
+                 '(a pasted string)')
     try:
-        obj = _json.loads(text)
+        # strict=False mirrors every framework parser of agent JSON
+        # (decision / verdict / librarian): raw control characters
+        # inside strings are accepted, so this probe cannot call
+        # INVALID what the hand-in parser would take (p324 class).
+        obj = _json.loads(src, strict=False)
     except ValueError as e:
         return f"INVALID: {e}"
     if isinstance(obj, dict):

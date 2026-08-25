@@ -489,6 +489,33 @@ def run_write(spec: str, content: str) -> str:
             + (" (replaced the previous version)" if replaced else ""))
 
 
+def read_own_file(spec: str) -> "tuple[str | None, str]":
+    """(content, err) — read a file inside THIS spawn's attempts dir.
+
+    Same resolution and authority as `run_write` (bare name or absolute
+    path, both must land inside the spawn's own attempts dir). Exists
+    for disk-is-authority validators (`validate_json(file=...)`): what
+    gets validated must be the bytes actually being handed in, not a
+    paste that survived tool-call escaping."""
+    own = _own_attempt_dir()
+    if own is None:
+        return None, ("no attempts directory is declared here — "
+                      "this works only inside a framework spawn")
+    p = Path(spec)
+    target = p if p.is_absolute() else own / spec
+    try:
+        target.resolve().relative_to(own.resolve())
+    except (ValueError, OSError):
+        return None, (f"only your attempts directory is readable this "
+                      f"way — name it as {(own / p.name).as_posix()}")
+    if not target.is_file():
+        return None, f"no file at {target.as_posix()} — write it first"
+    try:
+        return target.read_text(encoding="utf-8"), ""
+    except OSError as exc:
+        return None, f"could not read {target.as_posix()}: {exc}"
+
+
 # ------------------------------------------------------------ queries
 
 def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":

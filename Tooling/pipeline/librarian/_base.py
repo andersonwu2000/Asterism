@@ -34,7 +34,10 @@ def _load_json(json_text: str):
                  if not ln.strip().startswith("```")]
         text = "\n".join(lines)
     try:
-        return json.loads(text), ""
+        # strict=False: agent-written JSON routinely carries raw control
+        # chars inside strings (p324 class, 2026-08-25) — mirror
+        # strategist.parse_decisions. Structural damage still fails.
+        return json.loads(text, strict=False), ""
     except json.JSONDecodeError as e:
         return None, f"invalid JSON: {e}"
 

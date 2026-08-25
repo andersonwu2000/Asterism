@@ -385,7 +385,11 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
     synthesized legacy keys (`verdict` / `criticisms` / `reservations`)
     plus the raw `criteria`, or (None, err) on a malformed file."""
     try:
-        v = json.loads(text)
+        # strict=False admits raw control characters inside string
+        # values — the same class that killed a strategist wake over
+        # one literal newline (p324, 2026-08-25; parse_decisions got
+        # the same treatment). Structural damage still fails.
+        v = json.loads(text, strict=False)
     except ValueError as e:
         return None, f"verdict.json is not valid JSON: {e}"
     if not isinstance(v, dict):

@@ -242,6 +242,24 @@ def length_warning(sections: dict[str, str],
             f"⚠ PROPOSAL LENGTH WARNING: {d} chars total (threshold "
             f"{DOC_WARN_CHARS}). Distill the settled — a closed line "
             "collapses to its conclusion.")
+    # Doomed-route warning, same surface as the length warnings (owner
+    # call 2026-08-25): union_closed shipped TEN passed revisions
+    # planning `native_decide` routes — every resulting brick died at
+    # the commit axiom gate, and only the dying worker ever saw that
+    # message, so the NL layer kept re-planning the route. The judge
+    # reads this line in the projection; a proposal that keeps the
+    # step is rebuttable on it alone.
+    hay = body if body is not None else "\n".join(sections.values())
+    if "native_decide" in hay:
+        warns.append(
+            "⚠ NATIVE_DECIDE WARNING: this proposal plans a "
+            "`native_decide` route. `native_decide` proves via the "
+            "`Lean.ofReduceBool` axiom, which is NOT on the axiom "
+            "whitelist — the commit gate rejects every such brick "
+            "UNCONDITIONALLY, so the batch as planned cannot land. "
+            "Re-plan the finite check as kernel `decide` (keep the "
+            "instance small enough to reduce) or as a structural "
+            "proof.")
     return "\n".join(warns) if warns else None
 
 

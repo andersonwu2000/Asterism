@@ -115,6 +115,23 @@ def test_length_warning_thresholds():
     assert warn and "PROPOSAL LENGTH WARNING" in warn
 
 
+def test_native_decide_route_warns_the_judge():
+    """Owner call 2026-08-25: union_closed shipped TEN passed revisions
+    planning `native_decide` routes; every brick died at the commit
+    axiom gate, and only the dying worker saw the gate's teaching — the
+    NL layer kept re-planning. The warning rides the same surface as
+    the length warnings, so the judge reads it in the projection and
+    can rebut the route before a wake is spent on it."""
+    body = _body(proof="the filter is empty by native_decide")
+    sections, _ = programme.parse_proposal(body)
+    warn = programme.length_warning(sections, body)
+    assert warn and "NATIVE_DECIDE WARNING" in warn
+    assert "ofReduceBool" in warn
+    # clean proposals stay warning-free
+    ok, _ = programme.parse_proposal(_body())
+    assert programme.length_warning(ok) is None
+
+
 # ---------------------------------------------------------------- store
 
 def test_rev_chain_and_rejection_rows(tmp_path):

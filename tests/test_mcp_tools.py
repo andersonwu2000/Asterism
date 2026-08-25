@@ -67,6 +67,32 @@ def test_validate_json_covers_the_most_used_shell_call() -> None:
     assert bad.startswith("INVALID:") and "line" in bad
 
 
+def test_validate_json_file_mode_reads_the_disk(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disk is the authority (same rule as validate_file, owner call
+    2026-08-25): long payloads pasted through tool-call escaping made
+    the text mode report offsets that do not exist in the real file —
+    `file` validates the bytes actually being handed in. Control chars
+    inside strings pass, mirroring every framework parser of agent
+    JSON (p324 class); structural damage still fails."""
+    from Tooling.knowledge import mcp_tools, workspace_query
+
+    monkeypatch.setattr(workspace_query, "_own_attempt_dir",
+                        lambda: tmp_path)
+    (tmp_path / "verdict.json").write_text(
+        '{"criteria": {"1": "clear", "2": "clear", "3": "clear",'
+        ' "4": "clear", "5": "line\none"}}', encoding="utf-8")
+    out = mcp_tools.validate_json(file="verdict.json")
+    assert out.startswith("OK"), out
+    (tmp_path / "cut.json").write_text('{"a": ', encoding="utf-8")
+    assert mcp_tools.validate_json(file="cut.json").startswith("INVALID")
+    missing = mcp_tools.validate_json(file="nope.json")
+    assert "no file at" in missing and "write it first" in missing
+    outside = mcp_tools.validate_json(file="../elsewhere.json")
+    assert "only your attempts directory" in outside
+
+
 def test_loogle_tool_reports_failure_instead_of_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
