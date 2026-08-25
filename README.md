@@ -1,6 +1,56 @@
 # Asterism
 
-<!-- Add your project overview here. -->
+Asterism is an autonomous theorem-proving framework for Lean 4. You state a
+problem in natural language; a fleet of LLM agents decomposes it, argues about
+it, writes and critiques proofs — and nothing counts as proved until the Lean
+kernel says so. Trust lives in the kernel, never in a model.
+
+## How it works
+
+Proof search is abstracted into BFS over an AND/OR graph:
+
+```
+Goal      = OR  : any one Strategy succeeds → Goal succeeds
+Strategy  = AND : all sub-Goals succeed → Strategy succeeds
+```
+
+Leaf goals are closed directly by an LLM writing tactics; non-leaf goals are
+decomposed into strategies. Four worker roles drive the loop:
+
+- **Formalizer** — the sole proving worker: triages intake, proves leaves,
+  splits goals, mints toolkit lemmas.
+- **Strategist** — plans at the problem level: proposes decision batches as
+  written research proposals, judged round-by-round by an isolated
+  **Adversary** before anything commits.
+- **Scholar** — fetches and indexes papers into a citable shelf.
+- **Librarian** — harvests proved results through a five-stage chain into a
+  growing Library whose entries must re-pass every gate.
+
+Soundness is the one non-negotiable: `proved` is only marked after the proof's
+axiom set is verified against a whitelist; deduplication goes through Lean
+kernel probes; and harvested results pass per-declaration axiom gates again
+after every high-risk rewrite. A human signs off before anything enters the
+Library. The full design lives in [docs/architecture.md](docs/architecture.md).
+
+## Results
+
+All completions below are kernel-checked (`#print axioms` clean — no
+`sorryAx`). The model column records the seat lineup active during each run;
+the framework is model-agnostic.
+
+| Result | Scope | Completed | Models |
+|---|---|---|---|
+| miniF2F | 244 imported statements: **235 proved**, 9 shown false as transcribed (see errata note) | May 11–17, 2026 | Claude Opus · Sonnet |
+| Residue theorem | complex analysis, single problem | May 21, 2026 | Claude Opus · Sonnet |
+| Jordan normal form | linear algebra, single problem | May 31, 2026 | Claude Opus 4.8 |
+| Stokes' theorem | 19-lemma program incl. integration on currents | Jun 10 – Jul 1, 2026 | Opus 4.8 workers · Fable-5 strategist |
+
+> **miniF2F errata note.** The remaining 9 statements are not open failures:
+> each was identified as a transcription bug in the upstream benchmark and
+> refuted with a standalone kernel-verified counterexample (no prior issue or
+> PR existed on any upstream repo). See
+> [docs/errata/minif2f/README.md](docs/errata/minif2f/README.md) — all nine
+> disproofs re-verify with `lake env lean`.
 
 ## Install
 
@@ -24,12 +74,53 @@
    http://127.0.0.1:8641/ in your browser.)
 
 Re-running the exe is always safe; if anything is missing or broken it
-reopens the setup page, and finished parts are skipped. (`Asterism.exe`
-is a ~5 KB stub compiled from `installer/AsterismLauncher.cs` by
-`installer/build-stub.ps1`, using the C# compiler every Windows ships.)
+reopens the setup page, and finished parts are skipped.
 
 **macOS / Linux:** `bash installer/install.sh`, then `asterism serve`
 and open http://127.0.0.1:8642.
+
+## Quick start
+
+<!-- TODO: screenshot / GIF of the web console -->
+
+1. `asterism serve` and open the console.
+2. Create a problem from a name and a natural-language description.
+3. Press Run on its page.
+4. Watch the run strip name the phase while the constellation draws
+   the proof's shape.
+5. When the inbox lights up, review and sign off.
+
+## The web console
+
+One serve process per workspace; the whole lifecycle runs in the browser.
+A live run strip names the phase and each agent's unit; the constellation
+draws the proof's true shape — root-grown work above a horizon, forward work
+beneath it with citation threads crossing where it is used. Papers live on a
+shelf you can bind citations from; the Library page draws the harvested
+corpus as one searchable sky. An inbox collects everything that needs a
+human, with age escalation on blocking requests. The UI is read-only against
+the engine database; every action goes through the same chokepoints as the CLI.
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — roles, state, invariants
+- [Data flow](docs/data-flow.md) — one dispatcher tick, pipeline by pipeline
+- [Failure modes](docs/failure_modes.md) — the outcome × transition vocabulary
+- [Notes & devlog](https://andersonwu2000.github.io/asterism-notes/) —
+  longer write-ups live here
+
+## Development
+
+```
+pip install -e ".[dev]"
+cd web && npm install && npm run build && cd ..
+lake exe cache get        # Mathlib olean cache
+asterism serve            # http://127.0.0.1:8642
+```
+
+- Tests: `pytest` (parallel via xdist by default; `-n0` for serial debugging)
+- Web smoke suite: `cd web && npm run smoke` (Playwright against a live serve)
+- CI runs the lint + full suite blocking on both Windows and Ubuntu
 
 ## Uninstall
 
@@ -43,189 +134,7 @@ other software on your machine may now use; remove them the standard
 way (Settings → Apps, or delete `.elan`) only if you're sure nothing
 else needs them.
 
-<details>
-<summary>Manual install (developers)</summary>
+## License
 
-```
-pip install -e .
-cd web && npm install && npm run build && cd ..
-lake exe cache get        # Mathlib olean cache
-asterism serve            # http://127.0.0.1:8642
-```
-</details>
-
-## Web UI
-
-One serve process per workspace. The whole lifecycle runs in the
-browser: create a problem from a name and a natural-language
-description (optionally grounded in shelf papers and engine
-constraints), press Run on its page (the engine works one problem at
-a time), and watch the sky: a live run strip names the phase and each
-agent's unit, and the constellation draws the proof's true shape —
-root-grown work above a horizon, other forward work beneath it with
-citation threads crossing where it is used; while anything is live
-the unproved stars carry the light. Machine settings live in the DB
-behind the Manifest tab's controls (Manifest.md stays human prose,
-hot-reloaded). The Papers page is the shelf: add PDFs by path, read
-the original in place, bind citations. The Library page draws the
-harvested corpus as one sky — searchable, and each star copies its
-citation. The inbox collects everything that needs a human, with age
-escalation on blocking requests. The engine page carries truthful
-status (warm-up phase, last-exit verdict), model selects and knobs,
-weighted-burn usage, and a developer-log fold. The UI is read-only
-against the engine database; every action goes through the same
-chokepoints as the CLI.
-
-`cd web && npm run smoke` runs the Playwright smoke suite against a
-live serve.
-
-<!-- ASTERISM-PROGRESS:BEGIN -->
-## Progress Log
-
-### 2026-08-22
-- Wired in a new language-model provider through a local proxy, spending much of the day hardening it against rate limits, timeouts, and response-format quirks, with automatic failover between upstream services.
-- Added a benchmark corpus of 46 Erdős problems drawn from a formal-conjectures collection and enlarged the prover fleet to work on them.
-- Improved run reliability, teaching the watchdog to tell a busy prover from a hung one and folding in a batch of small verified fixes from the day's test sweeps.
-- Polished the web dashboard, including paper organization, per-prover run pages, and clearer quota and account displays.
-
-### 2026-08-19
-- Moved each problem's statement and goal description out of a per-problem text file and into the system's database, updating the web console, test suite, data seeds, and documentation to match.
-- Redesigned how proof tasks are delegated to sub-workers: delegations now carry a structured charter with an explicit rationale, can be issued in batches, always branch out into parallel subtasks rather than chaining, and the resulting task tree is capped at two levels deep.
-- Fixed a bug where finished proof goals could still be assigned new work.
-
-### 2026-08-18
-- Fixed how claimed disproofs are handled: a reported counterexample is now set aside for verification instead of being treated as a final verdict.
-- Reduced the amount of text agents load into their working context, by deferring rarely-needed records and refusing oversized file reads in favor of a file outline.
-- Fixed a crash-recovery bug that reactivated problems which had been deliberately set aside, and added several small safeguards including early warnings when a proof depends on extra axioms.
-- Refined the written guidance given to agents, clarifying that subtasks handed to helpers are open discussions around a theme rather than single questions expecting a finished answer.
-
-### 2026-08-17
-- Fixed bookkeeping bugs in how the system avoids duplicating work, including a truncated type-signature bug and a rule change so results claimed by one search branch remain reusable by others.
-- Repaired a batch of edge-case bugs in proof verification and file editing, several of them exposed by an acceptance-testing pass.
-- Let spawned worker agents write their output files directly to the server instead of through the sandbox, and updated their instructions to say exactly where outputs should go.
-
-### 2026-08-16
-- fix(spawn): never inherit stdin — a nested spawn was blocking on the MCP server's own pipe
-- fix(recovery): bring pre-cascade trees under the law at startup
-- fix(groups): a retired charter retires the work it delegated
-- fix: four defects three independent verifiers found in today's fixes
-- fix(context): say WHOSE dispatch state each panel describes
-- fix(inspect): stop sending every reply twice, and name the deferred query in a form that can be resent
-- fix(inspect): a bare filename resolves to THIS spawn's attempt, not whichever sorted first
-- fix(strategist): a same-batch mark counts toward its Ingest — the exit catch-22 closes
-- feat(delegate): the brief is a research proposal — and the experiment quota retires
-
-### 2026-08-15
-- Fixed several cost-accounting bugs so compute spending is now attributed to the right agent and the right call, including cases where a cancelled subprocess kept running or was wrongly charged.
-- Made the shared progress report live-first, leading with current counts and a status breakdown of all lemmas before the full proof tree.
-- Improved how agents read documents and receive feedback: large files can be read section by section, mistyped paths come back with a working correction, and all edit rejections are reported at once.
-- Fixed reliability bugs in process handling and editor synchronization that could lose logs, stall proof checking, or make running work look lost.
-
-### 2026-08-14
-- Revised the instructions given to the AI agents in several places, resolving contradictory definitions, removing examples of an obsolete workflow, and adding explicit descriptions of failure patterns that superficially resemble progress.
-- Made the system that farms work out to language-model backends more robust, so it now restarts bloated idle workers, recovers automatically when a backend dies, trusts the provider's own quota reports over local estimates, and checks capacity before launching new jobs.
-- Added interface and installer options for choosing which AI model and account each worker uses, including support for a fourth account provider.
-- Fixed several bugs in the tests and maintenance tooling, including tests that depended on the local machine, a cleanup audit that missed some leftover files, and a health check that misreported a probe that had never run as a failure.
-
-### 2026-08-13
-- Integrated a second language-model provider into the proving pipeline and fixed several faults uncovered during its first full run.
-- Sharpened the adversarial verification rules so that a claimed record is only overturned by an actual proof, with separate checks for necessity and sufficiency.
-- Repaired the resource-budgeting safeguards after three of them failed on the same afternoon, and made fallback accounting report itself explicitly.
-- Cleaned up internal bookkeeping by deduplicating configuration tables, unifying job dispatch, and tightening tests around prompts and result inspection.
-
-### 2026-08-12
-- Fixed a batch of reliability problems in the service that coordinates automated proof attempts, including misattributed errors, mishandled worker sessions, and unresponsive workers now being followed up rather than written off.
-- Repaired the sandboxed calculator, which had been rejecting valid mathematical expressions and hiding its own startup failures.
-- Cleaned up record-keeping so each proof attempt is logged exactly once, failures are classified correctly, and completed steps report what they produced rather than only how they exited.
-- Added a way to retract placeholder proofs flagged by pre-commit checks, moved public documentation to English, and fixed a continuous-integration configuration issue.
-
-### 2026-08-11
-- Improved the briefings handed to the automated prover agents, clarifying time limits, where searches may look, what a hand-off must include, and which tools are actually available to use.
-- Held the agent that judges proof attempts to the same standards as the one that writes them, and gave reviews enough time that their supporting evidence is no longer cut short.
-- Simplified the planning agent's decision loop, folding the step that declares a result ready into its main mathematical reasoning turn.
-- Made project metadata get written once at creation so it cannot silently go stale, and let each group of problems carry its own conventions, inherited once from its parent.
-
-### 2026-08-10
-- Replaced the proving agents' general shell access with purpose-built tools — file inspection, content-anchored edits, and a network-isolated calculator — that give instructive feedback instead of raw errors.
-- Tightened data boundaries, so each model provider now declares what it enforces and what it may read, with tests guarding the operator's own data as well as outside access.
-- Made verification more honest, with proof-file checks now reporting whether a passing result covers the real build and machine crashes no longer counted as mathematical failures.
-- Improved day-to-day operation with a clean shutdown command, clearer progress and blocker reporting in the web console, and an installer that adapts setup to the user's account and provider.
-
-### 2026-08-07
-- Rebuilt the web interface around the proof attempt itself: each branch is now labelled by the claim it was asked to prove, the search tree and its running log sit on one page, and settings moved to a page of their own.
-- Added per-model usage accounting, so runs sharing a rate limit now pause together rather than one at a time.
-- Began recording every change in a goal's status along with the event that caused it.
-- Tightened what the language models are given and report back: evidence is no longer truncated mid-way, the lemma catalogue cites names that can actually be invoked, and edits report the exact line range they touched.
-
-### 2026-08-06
-- Broadened access to the literature: more open-access archives can now be fetched, the per-search result cap rose from 5 to 20, and papers can be pulled during a proof attempt rather than only in a separate setup step.
-- The reviewing stage now reads fetched papers and completed proofs directly in place, retiring the size-capped staging copy that previously stood between them.
-- Tightened acceptance: the reviewer can no longer pass its first criterion on an unsupported "looks fine", a run whose scope matches no known problem is refused outright, and a disproof mode used exactly once in the project's history was removed.
-- Fixed bookkeeping bugs where a waiting sub-task let its parent proceed early, retrieved material was attached to the wrong revision of its goal, and two display glitches in the web view.
-
-### 2026-08-04
-- Fixed a task-queue bug in which an automatic retry after an infrastructure failure inserted a corrupted entry that silently stalled two provers, and added a recovery sweep to eliminate that whole class of failures.
-- Made a failing prover's own last note part of the failure record that later attempts on the same problem get to see.
-- Added safeguards against accumulated project notes degrading: warnings when shared documents grow too long, and deduplication of the lessons database.
-
-### 2026-08-03
-- Split the planning agent's periodic review into two passes — one for administrative housekeeping and one for actual mathematical reasoning — and made the administrative pass visible in the monitoring console.
-- Paused a waiting goal's time budget while its subgoals are being worked on, so parent goals no longer expire during delegated work.
-- Fixed the system to report library-search results accurately to the prover, and added recovery options for stalled proof attempts.
-- Reorganized the prompt materials into a structured research-mission format with a shared conventions section, and let a finished subproblem's summary flow back to its parent on demand.
-
-### 2026-08-02
-- Designed and introduced a tree structure for organizing the collaborative discussion groups that work on a proof, then closed eleven gaps an independent review found and folded the design into the documentation.
-- Extended the web interface so a proof attempt's argument can be read live while it is still running, following the new group structure.
-- Fixed an assortment of smaller bugs in prompt wording, database schema, and run bookkeeping, including pinning each worker to the exact revision that authorized its goal.
-- Repaired seven tests that had silently become unable to fail and added coverage for a tie-breaking edge case.
-
-### 2026-08-01
-- Fixed a bug where the root goal of a frozen proof attempt was not recognized as ready for dispatch, and made sure the adversarial reviewer now receives the full context document when judging results.
-- Gave each spawned language-model agent its own restricted set of permissions, realized as an isolated per-agent environment.
-- Updated the web interface so a running proof task displays its actual working text instead of a placeholder.
-- Simplified the artifact-integrity audit by removing two redundant checksum layers while keeping the cross-check against the repository.
-
-### 2026-07-31
-- Reworked the example material in the agents' prompts so it teaches the general shape of a decision rather than reciting fixes for specific past problems.
-- Fixed two validation bugs: restored a broken checker in the adversarial-critique step and made its critiques more complete, and closed a flaw where a JSON-format check could silently modify the data it inspected.
-- Changed agents to invoke their tools directly instead of going through a shell, removing a fragile layer of indirection.
-
-### 2026-07-30
-- Added a soundness gate that blocks code-execution tricks in metaprogramming on every path a proof can be elaborated, closing a potential route to unsound proofs.
-- Integrated a new subscription-based provider giving access to Google's Gemini models, and fixed credential handling that could silently fall back to the wrong account.
-- Fixed several scheduling and reliability bugs, including agents being woken or reviewed prematurely and false alarms triggered by unrelated concurrent work.
-- Removed dead code and obsolete internal terminology from an earlier design, and rewrote the architecture documentation to match the current system.
-
-### 2026-07-29
-- Fixed several bugs in the automated proof-review judge, including one that fed it degraded views of nested problems and a display bug that showed rejected proofs as passing.
-- Rewrote and tightened the instructions guiding the proof-writing agents, adding explicit length limits on proof documents and clearer rules for when a one-line proof summary suffices.
-- Reworked the rules for when agents may cite external lemmas, basing permission on the structure of the goal rather than a simple count, and removed outdated citation restrictions.
-- Added a falsity check at problem intake so statements suspected to be unprovable are declined upfront.
-
-### 2026-07-27
-- Merged the three separate agents that translate informal mathematics into Lean into a single worker that proceeds through staged steps, and drafted a new set of prompts for it that is awaiting review before being switched on.
-- Fixed a batch of bugs in that translation component, found through a systematic code review and a follow-up cleanup sweep, including a resource leak and stale-metadata issues.
-- Corrected the verification safeguard so it checks that a theorem's statement is unchanged rather than comparing raw file contents, which had flagged harmless formatting edits.
-- Updated the framework's configuration to a newer generation of language models, based on results from a hand-off experiment.
-
-### 2026-07-26
-- Reworked the automated critique step so proposed proofs are judged against each evaluation criterion separately, with the overall accept-or-reject decision now derived from those per-criterion verdicts.
-- Shifted the proving pipeline to be natural-language-first: only fully argued informal proofs are handed off, and the proof-writing agents now formalize that argued proof into Lean rather than starting from scratch.
-- Fixed a scheduling bug where internal timers were refreshed on every task instead of once per batch, eliminating a steady stream of unnecessary wake-ups.
-
-### 2026-07-25
-- Tightened the instructions given to the proving agents: proof-writing is now scoped to the current batch of steps, a step with unresolved gaps waits for a later batch, and several prompt files were corrected and trimmed.
-- Required that informal natural-language proof sketches be argued to full logical closure, and made a mismatch between a formal step and its informal justification a documented failure mode that is escalated for review.
-- Improved reliability by retrying transient network failures during rate-limit checks, and folded a separate periodic audit pass into the routine planning cycle.
-- Updated the web dashboard to render agents' written reasoning as formatted prose with mathematical notation.
-
-### 2026-07-24
-- Tightened the reviewing agent's rules so a proof step can only be rejected with an explicit counter-argument, never demoted on a mere reservation.
-- Clarified the division of labor for proof gaps: the proving agent must close its own gaps rather than hand them off, with formalization reserved for steps already settled.
-- Landed a batch of small robustness fixes, including hard failures on bad configuration, earlier recovery from exhausted API quotas, and UTC-based log file naming.
-
-<!-- ASTERISM-PROGRESS:END -->
-
-
-
+Released under the [MIT License](LICENSE). Benchmark-derived problem data under
+`Problems/` and `Benchmarks/` remains subject to its upstream licenses.
