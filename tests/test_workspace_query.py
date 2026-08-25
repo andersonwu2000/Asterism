@@ -121,6 +121,49 @@ def test_paths_come_back_with_forward_slashes(here: Path) -> None:
     assert "\\" not in out
 
 
+def test_find_distinguishes_empty_scope_and_miss(here: Path) -> None:
+    """A bare "no matches" conflated three worlds (feedback ×28,
+    2026-08-25): a clean miss must name what IS there, an empty dir
+    must say it's empty, and scope-filtered entries must read as a
+    boundary — an adversary once judged a retargeting dispute assuming
+    "absent" when the truth was "fenced"."""
+    # clean miss: dir exists, pattern matches nothing → list contents
+    out = wq.run_queries([{"find": "*.xyz", "in": "proofs"}], cwd=here)
+    assert "no matches for" in out
+    assert "holds:" in out and "L_a.lean" in out
+    # empty directory says so
+    (here / "emptydir").mkdir()
+    out2 = wq.run_queries([{"find": "*.lean", "in": "emptydir"}], cwd=here)
+    assert "(empty directory)" in out2
+    # scope boundary is named, not silent emptiness
+    (here / "fenced" / ".asterism").mkdir(parents=True)
+    (here / "fenced" / ".asterism" / "a.lean").write_text(
+        "x", encoding="utf-8")
+    out3 = wq.run_queries([{"find": "**/*.lean", "in": "fenced"}], cwd=here)
+    assert "scope boundary" in out3
+    assert "NOT an empty directory" in out3
+
+
+def test_reading_a_directory_lists_its_own_contents(here: Path) -> None:
+    """Reading `proofs/` as a file used to answer with the PARENT
+    listing, so "empty dir" vs "wrong path" cost an extra probe
+    (feedback, 2026-08-25)."""
+    out = wq.run_queries([{"read": "proofs"}], cwd=here)
+    assert "IS a directory" in out
+    assert "L_a.lean" in out
+
+
+def test_path_miss_names_the_resolution_base(here: Path) -> None:
+    """Agents guessed for a dozen calls which base relative paths
+    resolve against (repo root? problem dir? attempts dir?) because
+    the miss message never said (feedback ×27, 2026-08-25)."""
+    out = wq.run_queries([{"grep": "x", "in": "nope/*.lean"}], cwd=here)
+    assert "relative paths resolve against" in out
+    assert str(here) in out
+    out2 = wq.run_queries([{"find": "*.lean", "in": "nope"}], cwd=here)
+    assert "relative paths resolve against" in out2
+
+
 def test_line_ranges_are_numbered(here: Path) -> None:
     out = wq.run_queries([{"read": "Manifest.md", "lines": "2-3"}], cwd=here)
     assert "2  line2" in out and "3  line3" in out

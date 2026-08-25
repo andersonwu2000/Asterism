@@ -1511,7 +1511,15 @@ def _section_tree_inline(conn: sqlite3.Connection,
         "SELECT slug, status, attempts FROM goals WHERE problem = ?"
         " ORDER BY id", (problem,)).fetchall()
     if not rows:
-        return ["## TREE", "", "(no goals yet)", ""]
+        # Goal rows are written at COMMIT, so a brick in flight when
+        # this snapshot compiles is invisible here yet answers a live
+        # `decl` query minutes later — an agent read that mismatch as
+        # the summary lying to it (feedback, 2026-08-25). Say what the
+        # emptiness means and where the live answer is.
+        return ["## TREE", "",
+                "(no goals recorded when this snapshot compiled — "
+                "dispatches in flight land at commit; `inspect` "
+                "`decl`/`find` answer live)", ""]
     counts: dict[str, int] = {}
     for r in rows:
         counts[str(r["status"])] = counts.get(str(r["status"]), 0) + 1

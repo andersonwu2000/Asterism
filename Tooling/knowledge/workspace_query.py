@@ -401,6 +401,18 @@ def _nearest_existing(p: Path, cwd: "Path | None" = None) -> str:
     Before this, a mistyped path cost a whole round-trip: the agent got
     "no such file" and spent its next turn on `ls` to find out what was
     actually there. Answer both at once."""
+    if p.is_dir():
+        # Reading a directory as a file used to answer with the PARENT
+        # listing, so telling "empty dir" from "wrong path" cost an
+        # extra probe (feedback, 2026-08-25). The path exists — list
+        # its own contents.
+        try:
+            names = sorted(x.name + ("/" if x.is_dir() else "")
+                           for x in p.iterdir())[:20]
+        except OSError:
+            names = []
+        listing = ", ".join(names) if names else "(empty)"
+        return f"that path IS a directory — it holds: {listing}"
     if cwd is not None:
         found = _find_by_basename(p.name, cwd)
         if found is not None:
@@ -493,7 +505,9 @@ def _q_grep(q: dict, cwd: Path, deny) -> "list[str]":
         grant = _lake_grant(_resolve(where, cwd).resolve())
         if isinstance(grant, str):
             return [grant]
-        return [f"nothing to search at {where!r}; {_nearest_existing(cwd / where, cwd)}"]
+        return [f"nothing to search at {where!r}; "
+                f"{_nearest_existing(cwd / where, cwd)}"
+                f" (relative paths resolve against {cwd})"]
     # `after: "<file>:<line>"` resumes a capped search past its last
     # delivered hit — the old truncation note said only "narrow", which
     # names no reachable action when the query is already as narrow as
@@ -843,15 +857,35 @@ def _q_find(q: dict, cwd: Path, deny) -> "list[str]":
         base, pattern = (p.parent.resolve() if p.parent != p
                          else base), p.name
     if not base.is_dir():
-        return [f"no directory at {base}; {_nearest_existing(base)}"]
+        return [f"no directory at {base}; {_nearest_existing(base)}"
+                f" (relative paths resolve against {cwd})"]
     grant = _lake_grant(base)
     if isinstance(grant, str):
         return [grant]
-    out = [_rel(p, cwd) for p in sorted(base.rglob(pattern))
+    matched = sorted(base.rglob(pattern))
+    out = [_rel(p, cwd) for p in matched
            if not _skipped(p, allow_lake=grant)
            and _denied(p, deny) is None]
     if not out:
-        return ["no matches"]
+        # A bare "no matches" conflated three different worlds and the
+        # reader could not tell which one it was in (adversaries judged
+        # retargeting disputes "without the very files the rules call
+        # decisive" — feedback ×28, 2026-08-25): scope-filtered is a
+        # boundary, not absence; a clean miss names what IS there.
+        if matched:
+            return [f"{len(matched)} entr"
+                    f"{'y matches' if len(matched) == 1 else 'ies match'}"
+                    f" under {base} but none are within your read scope"
+                    f" (framework-internal or fenced) — a scope"
+                    f" boundary, NOT an empty directory"]
+        try:
+            names = sorted(x.name + ("/" if x.is_dir() else "")
+                           for x in base.iterdir())[:20]
+        except OSError:
+            names = []
+        holds = ", ".join(names) if names else "(empty directory)"
+        return [f"no matches for {pattern!r} — {base} exists and"
+                f" holds: {holds}"]
     kept, note = _cap(out, q.get("max", DEFAULT_MAX), "")
     return kept + ([note] if note else [])
 

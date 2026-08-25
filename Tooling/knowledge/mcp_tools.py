@@ -254,6 +254,8 @@ def inspect(queries: list = None) -> str:
     content UNDECORATED (no line numbers, no banners) — use it whenever
     the text will be written back or validated (`write_file`,
     `validate_json`, `validate_file`), so nothing needs hand-stripping.
+    A `raw` read must be the ONLY query in its call: its answer is
+    byte-faithful content with no labels, so it cannot share a reply.
 
     `decl` answers from the framework's own record — the statement, the
     file and whether it is proved — so use it instead of grepping for a
