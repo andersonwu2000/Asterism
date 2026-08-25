@@ -51,12 +51,16 @@ SLOT_GB_FALLBACK = 0.95
 NL_GB_FALLBACK = 0.2
 
 #: Bounds for the measured slot coefficient — a reading outside these
-#: is a measurement artifact, not a new truth about the library: below
-#: ~0.6 GB the pool simply has not elaborated yet (planning on the
-#: idle baseline would over-commit the moment real work lands), and a
-#: steady state above ~1.6 GB cannot exist because the recycle policy
-#: (`gateway.slot_recycle_mb`, 1500 MB) closes any idle slot past it.
-_SLOT_GB_MIN, _SLOT_GB_MAX = 0.6, 1.6
+#: is a measurement artifact, not a new truth about the library. The
+#: FLOOR is the calibration average itself: a fresh pool reads its
+#: idle baseline (~0.6 GB) and planning on that over-commits the
+#: moment real work lands — the flagship's first boot clamped to 0.6
+#: and inflated the target straight into the MAX_SLOTS cap
+#: (2026-08-25). Measured values may only SHRINK the field, never
+#: promise more than the calibrated working average. The ceiling holds
+#: because the recycle policy (`gateway.slot_recycle_mb`, 1500 MB)
+#: closes any idle slot past it — no steady state exists above.
+_SLOT_GB_MIN, _SLOT_GB_MAX = SLOT_GB_FALLBACK, 1.6
 
 _BUDGET_RE = re.compile(
     r"^\s*(\d+(?:\.\d+)?)\s*(%|G|GB|GIB)?\s*$", re.IGNORECASE)

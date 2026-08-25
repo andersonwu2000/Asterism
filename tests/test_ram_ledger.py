@@ -75,9 +75,13 @@ def test_target_quantization_is_the_hysteresis_band():
 def test_slot_gb_readings_mean_and_clamps():
     assert rl.slot_gb_from_readings([]) == rl.SLOT_GB_FALLBACK
     assert rl.slot_gb_from_readings([None, None]) == rl.SLOT_GB_FALLBACK
-    assert rl.slot_gb_from_readings([1024, 1024]) == pytest.approx(1.0)
-    # artifact filters: idle baseline below, recycle-capped above
-    assert rl.slot_gb_from_readings([100]) == pytest.approx(0.6)
+    assert rl.slot_gb_from_readings([1200, 1200]) == pytest.approx(
+        1200 / 1024)
+    # artifact filters: an idle-baseline pool must not PROMISE a bigger
+    # field than the calibrated working average (the flagship's first
+    # boot clamped to 0.6 and hit the MAX_SLOTS cap, 2026-08-25);
+    # recycle-capped above.
+    assert rl.slot_gb_from_readings([100]) == rl.SLOT_GB_FALLBACK
     assert rl.slot_gb_from_readings([9999]) == pytest.approx(1.6)
 
 
