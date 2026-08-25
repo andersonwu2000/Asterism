@@ -57,10 +57,35 @@ NL_GB_FALLBACK = 0.2
 #: moment real work lands — the flagship's first boot clamped to 0.6
 #: and inflated the target straight into the MAX_SLOTS cap
 #: (2026-08-25). Measured values may only SHRINK the field, never
-#: promise more than the calibrated working average. The ceiling holds
-#: because the recycle policy (`gateway.slot_recycle_mb`, 1500 MB)
-#: closes any idle slot past it — no steady state exists above.
-_SLOT_GB_MIN, _SLOT_GB_MAX = SLOT_GB_FALLBACK, 1.6
+#: promise more than the calibrated working average. The CEILING is
+#: the recycle threshold itself (`slot_recycle_gb`) — the framework's
+#: own declaration of how fat a slot may get before its worker is
+#: restarted, so pricing at it is the honest worst case and the two
+#: knobs move together (owner ruling 2026-08-26; the previous
+#: hand-pinned 1.6 was a second home for the same fact).
+_SLOT_GB_MIN = SLOT_GB_FALLBACK
+
+#: Default for `gateway.slot_recycle_mb` — the gateway imports THIS
+#: value so the threshold and the price ceiling share one home.
+SLOT_RECYCLE_MB_DEFAULT = 1500
+
+
+def slot_recycle_gb() -> float:
+    """The recycle threshold in GB — the ledger's pessimistic per-slot
+    price ceiling. Reads the same config/env the gateway's recycle
+    policy reads; a disabled recycle (<= 0) keeps the default so the
+    ledger never prices a slot at zero."""
+    mb = SLOT_RECYCLE_MB_DEFAULT
+    try:
+        from . import config as _cfg
+        mb = int(_cfg.get("gateway.slot_recycle_mb",
+                          default=SLOT_RECYCLE_MB_DEFAULT,
+                          env_var="ASTERISM_SLOT_RECYCLE_MB", cast=int))
+    except Exception:  # noqa: BLE001 — pricing must not halt a tick
+        pass
+    if mb <= 0:
+        mb = SLOT_RECYCLE_MB_DEFAULT
+    return mb / 1024.0
 
 _BUDGET_RE = re.compile(
     r"^\s*(\d+(?:\.\d+)?)\s*(%|G|GB|GIB)?\s*$", re.IGNORECASE)
@@ -83,14 +108,22 @@ def parse_budget(spec: "str | None", total_gb: float) -> "float | None":
 
 
 def compute_target_slots(*, budget_gb: float, nl_demand: int,
-                         slot_gb: float = SLOT_GB_FALLBACK,
+                         slot_gb: "float | None" = None,
                          nl_gb: float = NL_GB_FALLBACK,
                          margin_gb: "float | None" = None,
                          max_slots: int = MAX_SLOTS) -> int:
     """The pure target function. Idempotent — recompute from current
     demand any time; the floor() quantization IS the hysteresis band
     (NL demand must move ~slot_gb/nl_gb before the target moves one
-    slot), so no event-delta counters exist to drift."""
+    slot), so no event-delta counters exist to drift.
+
+    No measurement in hand -> price PESSIMISTICALLY at the recycle
+    ceiling plus the NL rider (owner ruling 2026-08-26): the optimistic
+    fallback made every launch over-warm a pool it un-warmed 15 minutes
+    later, one 126s cold warm-up at a time. Measurements may only grow
+    the field back from here."""
+    if slot_gb is None:
+        slot_gb = slot_recycle_gb() + NL_GB_FALLBACK
     margin = slot_gb if margin_gb is None else margin_gb
     lean_ram = budget_gb - nl_demand * nl_gb - margin
     return max(1, min(max_slots, math.floor(lean_ram / slot_gb)))
@@ -103,7 +136,8 @@ def slot_gb_from_readings(readings_mb: "list[int | None]") -> float:
     vals = [mb for mb in readings_mb if mb]
     if not vals:
         return SLOT_GB_FALLBACK
-    return max(_SLOT_GB_MIN, min(_SLOT_GB_MAX,
+    ceiling = max(_SLOT_GB_MIN, slot_recycle_gb())
+    return max(_SLOT_GB_MIN, min(ceiling,
                                  sum(vals) / len(vals) / 1024.0))
 
 
@@ -212,6 +246,15 @@ class DispatcherLedger:
     "no free slot" contract intact while the pool converges."""
 
     PUSH_INTERVAL_SEC = 15.0
+    #: Time constant for the slot-price EMA (owner call 2026-08-26,
+    #: "幾小時的時間窗"): the instantaneous fleet mean rides the
+    #: busy/idle mix (one slot reads 0.5 GB fresh and 3 GB
+    #: mid-elaboration), and feeding that raw into the target turned
+    #: composition noise into shed/warm churn. The price starts at the
+    #: pessimistic ceiling and drifts toward the measured mean over
+    #: hours; the clamp bounds it to [fallback, recycle ceiling]
+    #: either way.
+    SLOT_GB_EMA_TAU_SEC = 7200.0
     #: A fresh spawn's RSS is invisible to the system counters for its
     #: first seconds; admissions younger than this hold a ledger-side
     #: credit so a tight pop loop cannot out-run the measurement
@@ -221,11 +264,14 @@ class DispatcherLedger:
     def __init__(self, budget_gb: float, machine_gb: float) -> None:
         self.budget_gb = budget_gb
         self.machine_gb = machine_gb
-        self.slot_gb = SLOT_GB_FALLBACK
+        # Pessimistic seed — the price only comes DOWN as measurements
+        # arrive (see SLOT_GB_EMA_TAU_SEC).
+        self.slot_gb = slot_recycle_gb()
         self.open_slots = 0
         self.free_slots = 0
         self.last_target = 0
         self._last_push = 0.0
+        self._slot_gb_at = time.monotonic()
         self._nl_admits: "list[float]" = []
 
     def nl_hard_cap(self) -> int:
@@ -291,9 +337,16 @@ class DispatcherLedger:
             except (TypeError, ValueError):
                 pass
             readings = resp.get("slot_private_mb")
-            if isinstance(readings, dict) and readings:
-                self.slot_gb = slot_gb_from_readings(
-                    list(readings.values()))
+            # An all-None reading set is "nothing measured", not "the
+            # pool is free" — it must not drag the price toward the
+            # fallback.
+            if isinstance(readings, dict) \
+                    and any(v for v in readings.values()):
+                measured = slot_gb_from_readings(list(readings.values()))
+                dt = max(0.0, now - self._slot_gb_at)
+                self._slot_gb_at = now
+                alpha = min(1.0, dt / self.SLOT_GB_EMA_TAU_SEC)
+                self.slot_gb += alpha * (measured - self.slot_gb)
 
 
 def env_budget_spec(workspace=None) -> "str | None":

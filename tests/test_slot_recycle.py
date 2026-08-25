@@ -157,6 +157,55 @@ def test_a_failed_recycle_still_leaves_the_slot_open(gw, monkeypatch,
     assert "recycle FAILED" in capsys.readouterr().err
 
 
+def test_recycle_waits_for_the_worker_death_between_close_and_open(
+        gw, monkeypatch):
+    """didClose is a notification — a didOpen that lands before the old
+    worker dies makes the server keep the same process and heap. 308 of
+    315 historical recycles were exactly that no-op ("recycled in 0.0s —
+    5831 MB -> 5831 MB", 2026-08-26): the wait IS the fix."""
+    called: list = []
+    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 2600})
+    monkeypatch.setattr(gw, "_await_worker_exit",
+                        lambda *_a, **_k: called.append("await") or True)
+    monkeypatch.setattr(gw._state, "backend",
+                        types.SimpleNamespace(
+                            did_close=lambda *_a: called.append("close"),
+                            did_open=lambda *_a: called.append("open"),
+                            wait_for_file_done=lambda *_a, **_k: None))
+    gw._recycle_slot_if_heavy(_slot(gw))
+    assert called[:3] == ["close", "await", "open"]
+
+
+def test_a_surviving_worker_is_hard_killed_never_reattached(
+        gw, monkeypatch, capsys):
+    """A reattach would keep the old heap and log a recycle that never
+    happened. The escalation is the wedge path's proven kill."""
+    called: list = []
+    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 2600})
+    monkeypatch.setattr(gw, "_await_worker_exit", lambda *_a, **_k: False)
+    monkeypatch.setattr(gw, "_kill_worker_for_uri",
+                        lambda *_a: called.append("kill") or True)
+    monkeypatch.setattr(gw._state, "backend",
+                        types.SimpleNamespace(
+                            did_close=lambda *_a: called.append("close"),
+                            did_open=lambda *_a: called.append("open"),
+                            wait_for_file_done=lambda *_a, **_k: None))
+    gw._recycle_slot_if_heavy(_slot(gw))
+    assert called[:3] == ["close", "kill", "open"]
+    assert "hard-killed" in capsys.readouterr().err
+
+
+def test_await_worker_exit_semantics(gw, monkeypatch):
+    """No worker found -> gone (True, fast). A live process -> False
+    once the wait expires (the caller escalates)."""
+    monkeypatch.setattr(gw, "_worker_pid_for_uri", lambda _u: None)
+    assert gw._await_worker_exit("file:///s0.lean", timeout=0.2) is True
+    import os as _os
+    monkeypatch.setattr(gw, "_worker_pid_for_uri",
+                        lambda _u: _os.getpid())   # provably alive
+    assert gw._await_worker_exit("file:///s0.lean", timeout=0.4) is False
+
+
 def test_the_reading_is_private_bytes_not_working_set():
     """Working set counts the shared mathlib mmap once per process:
     measured 2026-08-14, five workers reported 17.93 GB of working set

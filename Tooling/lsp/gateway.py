@@ -1038,7 +1038,74 @@ def _register_session_internal(
 #: `decide`-heavy 634 family reached 2.58 GB in ~36 minutes and then sat
 #: flat. 1500 sits above every observed baseline and below every
 #: observed fat slot.
-SLOT_RECYCLE_MB_DEFAULT = 1500
+# One home for the threshold: the RAM ledger prices slots at this same
+# ceiling (`ram_ledger.slot_recycle_gb`), so the two knobs move
+# together.
+from ..core.ram_ledger import SLOT_RECYCLE_MB_DEFAULT  # noqa: E402
+
+
+def _worker_pid_for_uri(slot_uri: str) -> "int | None":
+    """PID of the live `--worker` process serving this slot URI, or
+    None. The mapping is exact for the same reason `_slot_private_mb`'s
+    is: Lean puts the document URI on the worker's own command line."""
+    try:
+        import psutil
+        me = psutil.Process(os.getpid())
+        for proc in me.children(recursive=True):
+            try:
+                argv = proc.cmdline()
+            except (psutil.Error, OSError):
+                continue
+            if "--worker" in argv and slot_uri in argv:
+                return proc.pid
+    except Exception:  # noqa: BLE001 — a probe, never a failure source
+        pass
+    return None
+
+
+WORKER_EXIT_WAIT_SEC = 15.0
+
+
+def _await_worker_exit(slot_uri: str,
+                       timeout: float = WORKER_EXIT_WAIT_SEC) -> bool:
+    """After a didClose, wait for the slot's worker process to actually
+    die before reopening the document.
+
+    didClose is a NOTIFICATION — the worker's death is asynchronous,
+    and a didOpen for the same URI that lands first makes the server
+    keep the same process and therefore the same heap. That race made
+    the recycle a no-op 308 times out of 315 ("recycled in 0.0s —
+    5831 MB -> 5831 MB"; measured 2026-08-26): the 1500 MB policy
+    existed only on paper while slots grew to 3-5.8 GB, and on the
+    128 GB fleet the fattened pool evicted the shared mathlib page
+    cache into a refault storm (load 60 on 8 cores, memory PSI full
+    83%).
+
+    True = the worker is gone (also when none was found: already dead,
+    or unmeasurable — reopening is the only move either way). False =
+    it survived the wait; the caller escalates (hard kill) before the
+    reopen — a reattach would keep the old heap and lie about it.
+    """
+    try:
+        import psutil
+    except Exception:  # noqa: BLE001 — no instrument, no wait
+        return True
+    pid = _worker_pid_for_uri(slot_uri)
+    if pid is None:
+        return True
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            proc = psutil.Process(pid)
+            if not proc.is_running() \
+                    or proc.status() == psutil.STATUS_ZOMBIE:
+                return True
+        except psutil.NoSuchProcess:
+            return True
+        except (psutil.Error, OSError):
+            return True
+        time.sleep(0.2)
+    return False
 
 
 def _recycle_slot_if_heavy(slot: "WorkerSlot") -> None:
@@ -1094,6 +1161,16 @@ def _recycle_slot_if_heavy(slot: "WorkerSlot") -> None:
         t0 = time.perf_counter()
         try:
             _state.backend.did_close(slot.slot_path)
+            # The whole point is a FRESH worker — see _await_worker_exit
+            # for the race that made this a silent no-op for months.
+            # Escalation is the wedge path's proven kill: a reattach
+            # would keep the old heap and lie about it.
+            if not _await_worker_exit(slot.slot_uri):
+                _kill_worker_for_uri(slot.slot_uri)
+                print(f"[gateway] slot {slot.slot_id} recycle: worker "
+                      f"survived didClose for {WORKER_EXIT_WAIT_SEC:.0f}s "
+                      f"— hard-killed before the reopen",
+                      file=sys.stderr, flush=True)
             _state.backend.did_open(slot.slot_path, WARMUP_CONTENT)
             _state.backend.wait_for_file_done(slot.slot_uri, timeout=300)
             after = _slot_private_mb().get(slot.slot_id)
@@ -1256,6 +1333,11 @@ def _warm_converger_run() -> None:
                 t0 = time.perf_counter()
                 slot.slot_path.parent.mkdir(parents=True, exist_ok=True)
                 slot.slot_path.write_text(WARMUP_CONTENT, encoding="utf-8")
+                # No _await_worker_exit here ON PURPOSE: reattaching a
+                # shed-but-not-yet-dead worker (a 0.0s "warm") CANCELS
+                # the shed cheaply, and the slot is counted as open
+                # again either way. Only the recycle needs the death —
+                # its point is the fresh heap.
                 _state.backend.did_open(slot.slot_path, WARMUP_CONTENT)
                 _state.backend.wait_for_file_done(slot.slot_uri,
                                                   timeout=300)

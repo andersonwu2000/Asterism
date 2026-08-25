@@ -82,7 +82,12 @@ def test_slot_gb_readings_mean_and_clamps():
     # boot clamped to 0.6 and hit the MAX_SLOTS cap, 2026-08-25);
     # recycle-capped above.
     assert rl.slot_gb_from_readings([100]) == rl.SLOT_GB_FALLBACK
-    assert rl.slot_gb_from_readings([9999]) == pytest.approx(1.6)
+    # the ceiling IS the recycle threshold — one fact, one home (owner
+    # ruling 2026-08-26): raising the recycle knob moves pricing with it
+    assert rl.slot_gb_from_readings([9999]) == pytest.approx(
+        rl.slot_recycle_gb())
+    assert rl.slot_recycle_gb() == pytest.approx(
+        rl.SLOT_RECYCLE_MB_DEFAULT / 1024)
 
 
 def test_nl_admit_floor_is_absolute_not_machine_minus_budget():
@@ -142,12 +147,57 @@ def test_ledger_tick_pushes_and_ingests_the_reply(monkeypatch):
 
     led.tick(nl_demand=12, push=push)
     # Effective slot cost = worker heap + the Lean pipeline's own agent
-    # CLI (external review 2026-08-25: the worker-only coefficient
-    # understated the field): floor((28 - 12*0.3 - 1.25) / 1.25) = 18.
-    assert pushed["target"] == 18
+    # CLI (external review 2026-08-25) — priced at the PESSIMISTIC seed
+    # on a fresh ledger: floor((28 - 12*0.3 - cost) / cost) with
+    # cost = recycle ceiling + 0.3.
+    import math
+    seed = rl.slot_recycle_gb()
+    assert pushed["target"] == math.floor(
+        (28.0 - 3.6 - (seed + 0.3)) / (seed + 0.3))
     assert pushed["min_avail"] == pytest.approx(rl.ABS_AVAILABLE_FLOOR_GB)
     assert led.open_slots == 7 and led.free_slots == 3
+    # EMA, not assignment: milliseconds after seeding, one reading must
+    # barely move the price (the raw fleet mean rides the busy/idle mix)
+    assert led.slot_gb == pytest.approx(seed, abs=0.01)
+    assert led.slot_gb <= seed
+
+
+def test_slot_price_seeds_pessimistic_and_measures_only_down(monkeypatch):
+    """Owner ruling 2026-08-26: the optimistic 0.95 seed made every
+    launch over-warm a pool it un-warmed 15 minutes later (local boot:
+    target 14 -> 7, one 126s warm shed on arrival). The price starts at
+    the recycle ceiling; measurements may only pull it down from
+    there."""
+    assert rl.DispatcherLedger(28.0, 32.0).slot_gb == pytest.approx(
+        rl.slot_recycle_gb())
+    # the default pricing of the pure function is the same worst case
+    import math
+    cost = rl.slot_recycle_gb() + rl.NL_GB_FALLBACK
+    assert rl.compute_target_slots(budget_gb=110.0, nl_demand=0) == \
+        math.floor((110.0 - cost) / cost)
+
+
+def test_slot_price_is_an_ema_that_converges_when_aged(monkeypatch):
+    """The same reading applied after a full time constant has elapsed
+    lands on the measured mean — the window forgets, it does not pin."""
+    led = rl.DispatcherLedger(28.0, 32.0)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    led._slot_gb_at -= led.SLOT_GB_EMA_TAU_SEC   # pretend hours passed
+    led.tick(nl_demand=0, push=lambda t, f: {
+        "open": 2, "free": 1, "slot_private_mb": {"0": 1100, "1": 900}})
     assert led.slot_gb == pytest.approx(1000 / 1024)
+
+
+def test_all_none_readings_do_not_move_the_price(monkeypatch):
+    """"Nothing measured" is not "the pool is thin" — an unmeasurable
+    reply must not drag the price toward the fallback."""
+    led = rl.DispatcherLedger(28.0, 32.0)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    led._slot_gb_at -= led.SLOT_GB_EMA_TAU_SEC
+    before = led.slot_gb
+    led.tick(nl_demand=0, push=lambda t, f: {
+        "open": 2, "free": 1, "slot_private_mb": {"0": None, "1": None}})
+    assert led.slot_gb == before
 
 
 def test_nl_admission_debits_pending_credit(monkeypatch):
@@ -187,8 +237,11 @@ def test_target_is_ram_only_backpressure_owns_cpu(monkeypatch):
         pushed = {}
         led.tick(nl_demand=0,
                  push=lambda t, f: (pushed.setdefault("t", t), reply)[1])
-        # floor((110 - 1.25) / 1.25) = 87 — congestion never shrinks it
-        assert pushed["t"] == 87
+        # floor((110 - cost) / cost) at the pessimistic seed —
+        # congestion never shrinks it
+        import math
+        cost = rl.slot_recycle_gb() + 0.3
+        assert pushed["t"] == math.floor((110.0 - cost) / cost)
     assert not hasattr(led, "cpu_cap")
 
 
