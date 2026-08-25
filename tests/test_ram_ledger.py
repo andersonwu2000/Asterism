@@ -171,6 +171,52 @@ def test_nl_admission_debits_pending_credit(monkeypatch):
     assert led.nl_admissible(3) is True
 
 
+def test_cpu_axis_dormant_without_elab_stats(monkeypatch):
+    """An old gateway reports no elab fields — the CPU axis must stay
+    off exactly like static mode (target = RAM target)."""
+    led = rl.DispatcherLedger(28.0, 32.0)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    led._last_push = 0.0
+    led.tick(nl_demand=12, push=lambda t, f: {"open": 7, "free": 3})
+    assert led.cpu_cap is None
+    assert led.last_target == 18                 # pure RAM formula
+
+
+def test_cpu_axis_aimd_shrinks_on_congestion_and_regrows(monkeypatch):
+    """External review 2026-08-25: no open-loop session:core ratio —
+    the control signal is the gateway's OWN elaboration queue. AIMD:
+    sustained waiters shrink multiplicatively toward the lane count,
+    quiet ticks regrow additively toward the RAM target; a session cap
+    above the lane count is legitimate (thinking sessions hold no
+    lane)."""
+    led = rl.DispatcherLedger(110.0, 125.0)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+
+    def tick(reply):
+        led._last_push = 0.0
+        led.tick(nl_demand=0, push=lambda t, f: reply)
+
+    # first reply with stats arms the axis at lanes x START_FACTOR
+    tick({"open": 0, "free": 0, "elab_cap": 6, "elab_waiting": 0})
+    assert led.cpu_cap == 6 * rl.CPU_CAP_START_FACTOR       # 18
+    # sustained congestion (>= _SHRINK_AFTER_TICKS) shrinks x0.8
+    tick({"elab_cap": 6, "elab_waiting": 5})
+    tick({"elab_cap": 6, "elab_waiting": 5})
+    assert led.cpu_cap == 14                                 # floor(18*.8)
+    # ...and the pushed target is clamped by it
+    led._last_push = 0.0
+    led.tick(nl_demand=0, push=lambda t, f: None)
+    assert led.last_target == 14
+    # cap never shrinks below the lane count
+    for _ in range(20):
+        tick({"elab_cap": 6, "elab_waiting": 9})
+    assert led.cpu_cap == 6
+    # a quiet queue regrows +1 per _GROW_AFTER_TICKS
+    for _ in range(rl._GROW_AFTER_TICKS):
+        tick({"elab_cap": 6, "elab_waiting": 0})
+    assert led.cpu_cap == 7
+
+
 def test_ledger_tick_is_rate_limited(monkeypatch):
     led = rl.DispatcherLedger(28.0, 32.0)
     # A loaded parallel test run can stall >15s between the two calls

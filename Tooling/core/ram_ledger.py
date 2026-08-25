@@ -189,6 +189,33 @@ def nl_gb_measured() -> float:
     return val
 
 
+# ─── CPU axis: closed loop on the elaboration queue (2026-08-25) ────
+#
+# The RAM budget sized the Lean field for the machine's MEMORY; on the
+# flagship (8 OCPU / 128 GB) the binding resource inverted: a 110 GB
+# budget promised ~99 slots, ~93 concurrent sessions drove load to 41
+# on 8 cores, 30s MCP handshakes starved, and the dispatcher's
+# unclassified breaker halted the fleet. Idle warm slots cost ~0 CPU
+# (measured: 100 slots, 0.30 cores) — SESSIONS cost, and only while
+# elaborating.
+#
+# No open-loop coefficient (external review 2026-08-25: the load-41 /
+# 93-session back-solve is not evidence — load average counts
+# uninterruptible sleep, and sessions think off-CPU, so the session:
+# lane ratio cannot be pinned from one spike). The control signal is
+# the gateway's OWN congestion instrument: the elaboration-gate queue
+# (`elab_waiting` / `elab_cap` in the /warm_target reply). AIMD:
+# sustained waiters shrink the cap multiplicatively toward the lane
+# count; a quiet queue grows it additively toward the RAM target. The
+# session cap is legitimately ABOVE the lane count (thinking sessions
+# don't hold a lane) — the loop finds each machine's own multiple.
+CPU_CAP_START_FACTOR = 3          # first cap = lanes x this, then AIMD
+CPU_CAP_SHRINK = 0.8              # multiplicative decrease
+_CONGESTED_WAITERS = 2            # queue depth that counts as pressure
+_SHRINK_AFTER_TICKS = 2           # sustained pressure, not one blip
+_GROW_AFTER_TICKS = 8             # quiet ticks (~2 min) per +1
+
+
 class DispatcherLedger:
     """Dispatcher-side ledger state + the rate-limited tick.
 
@@ -214,6 +241,44 @@ class DispatcherLedger:
         self.last_target = 0
         self._last_push = 0.0
         self._nl_admits: "list[float]" = []
+        # CPU-axis AIMD state (2026-08-25): None until the gateway's
+        # first reply carrying elab stats (older gateways report none —
+        # the axis stays dormant, exactly like static mode).
+        self.cpu_cap: "int | None" = None
+        self._elab_lanes = 0
+        self._pressure_ticks = 0
+        self._quiet_ticks = 0
+
+    def _cpu_cap_update(self, resp: "dict", ram_target: int) -> None:
+        """AIMD on the gateway's elaboration-queue congestion."""
+        try:
+            lanes = int(resp.get("elab_cap") or 0)
+            waiting = int(resp.get("elab_waiting") or 0)
+        except (TypeError, ValueError):
+            return
+        if lanes <= 0:
+            return
+        self._elab_lanes = lanes
+        if self.cpu_cap is None:
+            self.cpu_cap = lanes * CPU_CAP_START_FACTOR
+        if waiting >= _CONGESTED_WAITERS:
+            self._pressure_ticks += 1
+            self._quiet_ticks = 0
+            if self._pressure_ticks >= _SHRINK_AFTER_TICKS:
+                self._pressure_ticks = 0
+                self.cpu_cap = max(lanes,
+                                   math.floor(self.cpu_cap
+                                              * CPU_CAP_SHRINK))
+        elif waiting == 0:
+            self._pressure_ticks = 0
+            self._quiet_ticks += 1
+            if (self._quiet_ticks >= _GROW_AFTER_TICKS
+                    and self.cpu_cap < ram_target):
+                self._quiet_ticks = 0
+                self.cpu_cap += 1
+        else:
+            self._pressure_ticks = 0
+            self._quiet_ticks = 0
 
     def nl_hard_cap(self) -> int:
         """Absolute NL-parallelism backstop — what the budget could
@@ -264,9 +329,14 @@ class DispatcherLedger:
         # formula's 0.6+0.35 split, both halves measured now; external
         # review 2026-08-25: the worker-only coefficient understated
         # the field and 26G was not a real fleet ceiling).
-        target = compute_target_slots(
+        ram_target = compute_target_slots(
             budget_gb=self.budget_gb, nl_demand=nl_demand,
             slot_gb=self.slot_gb + nl_gb, nl_gb=nl_gb)
+        # Each machine's binding axis decides (2026-08-25): RAM sizes
+        # the field for memory, the CPU-axis AIMD for what the cores
+        # are actually serving without congestion.
+        target = ram_target if self.cpu_cap is None \
+            else min(ram_target, self.cpu_cap)
         self.last_target = target
         resp = push(target, ABS_AVAILABLE_FLOOR_GB)
         if resp:
@@ -279,6 +349,7 @@ class DispatcherLedger:
             if isinstance(readings, dict) and readings:
                 self.slot_gb = slot_gb_from_readings(
                     list(readings.values()))
+            self._cpu_cap_update(resp, ram_target)
 
 
 def env_budget_spec(workspace=None) -> "str | None":

@@ -161,6 +161,17 @@ REGISTRY: "dict[str, FailureTraits]" = {
     # counting it toward the breaker.
     "provider_network": _T("provider_infra", agent_visible=False,
                            cooldown_scope="target"),
+    # The spawn's stderr names a LOCAL-overload failure: the machine
+    # itself could not serve the spawn's startup in time (MCP server
+    # handshake past codex's 30s limit, local route timeouts). Named
+    # 2026-08-25: a CPU-oversubscription spike (load 41 on 8 cores —
+    # ~100 Lean elaborations at once) produced 50+ bare-rc=1 deaths in
+    # an hour, five landed consecutively, and the unclassified breaker
+    # halted dispatch for a cause the stderr had named all along (the
+    # exact 08-18 provider_network lesson, one resource over). Same
+    # no-charge traits; a named reason never feeds the breaker.
+    "local_overload": _T("provider_infra", agent_visible=False,
+                         cooldown_scope="target"),
 
     # --- pipeline-level infra (clean declines / framework self-reject) --
     "strategist_noop": _T("pipeline_infra"),
@@ -381,6 +392,26 @@ def is_network_failure(stderr: "str | None") -> bool:
         return False
     low = stderr.lower()
     return any(m in low for m in _NETWORK_STDERR_MARKERS)
+
+
+#: Local-overload prose in a dead spawn's stderr — the machine, not the
+#: provider or the network: codex's fixed 30s MCP handshake budget blown
+#: by a CPU-starved tools/LSP server, and its local route timeouts.
+_LOCAL_OVERLOAD_STDERR_MARKERS: "tuple[str, ...]" = (
+    "timed out handshaking with mcp server",
+    "route-aware request timed out",
+)
+
+
+def is_local_overload_failure(stderr: "str | None") -> bool:
+    """True iff a spawn's stderr says the LOCAL machine failed to serve
+    the spawn's startup in time — the classification hook for
+    `local_overload` (2026-08-25). Checked after `is_network_failure`;
+    stderr is the only evidence read."""
+    if not stderr:
+        return False
+    low = stderr.lower()
+    return any(m in low for m in _LOCAL_OVERLOAD_STDERR_MARKERS)
 
 
 def rc_to_reason(rc: int, *, rc_contract: "str | None" = None) -> str:

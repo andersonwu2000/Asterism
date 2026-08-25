@@ -48,6 +48,10 @@ def test_provider_infra_set_pinned():
         # 08-08: an rc nobody has classified yet. Unknown ⇒ not charged
         # to the goal; repetition escalates to the operator.
         "unclassified_spawn_failure",
+        # 08-25: the MACHINE could not serve the spawn's startup (MCP
+        # handshake past codex's 30s under a CPU-oversubscription
+        # spike) — named so it cools instead of feeding the breaker.
+        "local_overload",
     }
 
 
@@ -81,6 +85,8 @@ def test_non_agent_set_pinned():
         "unclassified_spawn_failure",
         # 08-18: a dead NIC teaches the agent nothing either.
         "provider_network",
+        # 08-25: an overloaded machine teaches it nothing too.
+        "local_overload",
         # A provider config error teaches the agent nothing — the fix is
         # an operator edit to the CLI's permission/model settings.
         "provider_misconfigured",
@@ -99,6 +105,8 @@ def test_target_cooldown_set_pinned():
         "spawn_fast_fail", "missing_dep", "gateway_unreachable",
         "transient_timeout", "strategist_proposal_rejected",
         "system_killed", "unclassified_spawn_failure",
+        # 08-25: one beat while the machine sheds its overload.
+        "local_overload",
         # 08-18: one beat before the same target re-fires while the
         # network-park probe decides.
         "provider_network",

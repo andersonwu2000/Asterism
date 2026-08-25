@@ -214,6 +214,24 @@ def test_spawn_failure_names_a_network_death(tmp_path: Path) -> None:
     assert reason == "provider_network"
 
 
+def test_spawn_failure_names_a_local_overload_death(tmp_path: Path) -> None:
+    """stderr naming codex's 30s MCP handshake timeout → the MACHINE
+    was too loaded to serve the spawn's startup (2026-08-25: a load-41
+    CPU spike produced 50+ bare-rc=1 deaths and five consecutive ones
+    tripped the unclassified breaker into a fleet halt, for a cause the
+    stderr named all along — the 08-18 network lesson, one resource
+    over). Named ⇒ never feeds the breaker; duration is irrelevant."""
+    (tmp_path / "_spawn.stderr").write_text(
+        "ERROR codex_core::session: Failed to create session: required "
+        "MCP servers failed to initialize: asterism_tools: timed out "
+        "handshaking with MCP server after 29.99s", encoding="utf-8")
+    for dur in (2.0, 97.0):
+        reason, detail = _pipeline._spawn_failure(
+            rc=1, attempts_dir=tmp_path, spawn_dur=dur)
+        assert reason == "local_overload"
+        assert "not charged" in detail
+
+
 def test_spawn_timeout_outranks_the_network_prose(tmp_path: Path) -> None:
     """rc=124 is the framework's own SIGKILL — unambiguous, and it wins
     over any stderr prose (a timed-out worker may well have logged a

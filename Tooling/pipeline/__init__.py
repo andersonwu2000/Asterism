@@ -391,6 +391,17 @@ def _spawn_failure(rc: int, attempts_dir: Path, spawn_dur: float,
                 f"not charged; the daemon probes connectivity and parks "
                 f"until it returns)")
         reason = "provider_network"
+    elif _failures.is_local_overload_failure(stderr_tail):
+        # The MACHINE could not serve the spawn's startup (MCP
+        # handshake > codex's fixed 30s, local route timeout) — a
+        # CPU-oversubscription symptom, not the agent's and not the
+        # provider's. Named so it cools instead of feeding the
+        # unclassified breaker (2026-08-25: 50+ of these in one load-41
+        # hour, five consecutive, dispatch halted).
+        base = (f"agent rc={rc} (local overload in {spawn_dur:.0f}s — "
+                f"the machine could not serve the spawn's handshake in "
+                f"time; not charged)")
+        reason = "local_overload"
     elif spawn_dur < SPAWN_FAST_FAIL_SEC:
         # Duration evidence, not rc evidence — so it survives an
         # `uninformative` / `undeclared` rc contract unchanged: a

@@ -497,6 +497,9 @@ _INFRA_DISCARD_CHANNELS = frozenset({
     # 08-18: a dead network refuted nothing either — the daemon parks
     # behind a connectivity probe (`core/network_wait`).
     "provider_network",
+    # 08-25: an overloaded machine (handshake starved by a CPU spike)
+    # refuted nothing either.
+    "local_overload",
     # 08-12: the gateway answered its own 5xx mid-verify (a slot that
     # went away). A lost slot is not a counter-argument, and
     # `framework_verify_error` joins it for the same reason even though

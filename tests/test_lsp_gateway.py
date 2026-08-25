@@ -3119,3 +3119,74 @@ def test_ledger_nl_count_excludes_leased_queue_rows() -> None:
     src = _inspect.getsource(_disp.run)
     seg = src.split("kinds=NL_QUEUE_KINDS", 1)
     assert len(seg) == 2 and "claimable_only=True" in seg[1][:80]
+
+
+# ─── elaboration CPU gate (owner call 2026-08-25) ───────────────────
+
+def test_elab_gate_bounds_concurrency_and_counts(monkeypatch):
+    """The gate converts CPU thrash into an orderly queue: at most
+    `_ELAB_CONCURRENCY` holders, waiters visible on the stats surface
+    (the cockpit's binding-axis signal)."""
+    import threading as _th
+    monkeypatch.setattr(lsp_gateway, "_ELAB_SEM",
+                        _th.BoundedSemaphore(1))
+    monkeypatch.setattr(lsp_gateway, "_ELAB_QUEUE_TIMEOUT_SEC", 30.0)
+    entered = _th.Event()
+    release = _th.Event()
+    seen = {}
+
+    def holder():
+        with lsp_gateway._elab_gate():
+            entered.set()
+            release.wait(timeout=10)
+
+    t = _th.Thread(target=holder)
+    t.start()
+    assert entered.wait(timeout=5)
+    seen["busy"] = lsp_gateway.elab_gate_stats()["elab_busy"]
+
+    def waiter():
+        with lsp_gateway._elab_gate():
+            pass
+
+    w = _th.Thread(target=waiter)
+    w.start()
+    for _ in range(100):
+        if lsp_gateway.elab_gate_stats()["elab_waiting"] == 1:
+            break
+        __import__("time").sleep(0.02)
+    seen["waiting"] = lsp_gateway.elab_gate_stats()["elab_waiting"]
+    release.set()
+    t.join(timeout=5)
+    w.join(timeout=5)
+    assert seen["busy"] == 1
+    assert seen["waiting"] == 1
+    after = lsp_gateway.elab_gate_stats()
+    assert after["elab_busy"] == 0 and after["elab_waiting"] == 0
+
+
+def test_elab_gate_saturation_fails_loud(monkeypatch):
+    """A queue past the timeout raises a retryable teaching message
+    instead of silently spending the caller's outer wall."""
+    import threading as _th
+    monkeypatch.setattr(lsp_gateway, "_ELAB_SEM",
+                        _th.BoundedSemaphore(1))
+    monkeypatch.setattr(lsp_gateway, "_ELAB_QUEUE_TIMEOUT_SEC", 0.05)
+    release = _th.Event()
+    entered = _th.Event()
+
+    def holder():
+        with lsp_gateway._elab_gate():
+            entered.set()
+            release.wait(timeout=10)
+
+    t = _th.Thread(target=holder)
+    t.start()
+    assert entered.wait(timeout=5)
+    with pytest.raises(RuntimeError) as ei:
+        with lsp_gateway._elab_gate():
+            pass
+    assert "saturated" in str(ei.value)
+    assert "Retry" in str(ei.value)
+    release.set()
+    t.join(timeout=5)
