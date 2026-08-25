@@ -360,12 +360,24 @@ export default function Board() {
           noun anywhere near it (owner, 2026-08-26) — a number nobody
           could name. What survives is the one count that asks for
           something. */}
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <h1 className="font-display text-[22px] font-medium text-ink">Problems</h1>
-        <div className="relative">
+      {/* three cells, not a flex row: the filter is centred on the PAGE,
+          which only holds if the side cells are equal tracks — in a
+          flex row it would drift with the title's width. */}
+      <div className="mb-4 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+        <div className="flex items-baseline gap-3">
+          <h1 className="font-display text-[22px] font-medium text-ink">Problems</h1>
+          {attention > 0 && (
+            <span className="tnum text-xs font-medium text-warn">
+              {attention} need{attention === 1 ? 's' : ''} input
+            </span>
+          )}
+        </div>
+        {/* min-w-0 + max-w-full: on a narrow window the box gives way
+            instead of shoving New problem off the line */}
+        <div className="relative min-w-0">
           <input
             ref={filterRef}
-            className="w-64 rounded-lg border border-edge bg-surface py-1.5 pr-8 pl-2.5 text-xs text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
+            className="w-72 max-w-full rounded-lg border border-edge bg-surface py-1.5 pr-10 pl-2.5 text-xs text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
             placeholder="filter problems…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -376,19 +388,22 @@ export default function Board() {
               }
             }}
           />
-          <kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded-md border border-edge bg-surface-2 px-1.5 text-[10px] text-ink-faint">
-            /
-          </kbd>
+          {/* one slot, two jobs: the shortcut while the box is empty,
+              the size of the result while it is not — a count parked
+              outside the box would push it off centre as you type */}
+          {filtering ? (
+            <span className="tnum pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-[10px] text-ink-faint">
+              {sorted.length}
+            </span>
+          ) : (
+            <kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded-md border border-edge bg-surface-2 px-1.5 text-[10px] text-ink-faint">
+              /
+            </kbd>
+          )}
         </div>
-        {filtering && <span className="tnum text-xs text-ink-faint">{sorted.length} shown</span>}
-        {attention > 0 && (
-          <span className="tnum text-xs font-medium text-warn">
-            {attention} need{attention === 1 ? 's' : ''} input
-          </span>
-        )}
         <Link
           to="/new"
-          className="ml-auto rounded-lg bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
+          className="justify-self-end rounded-lg bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
         >
           New problem
         </Link>
