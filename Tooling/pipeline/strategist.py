@@ -2473,9 +2473,39 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
 
     decisions, parse_err, missing = _read_and_parse()
     if missing:
+        # One corrective turn before the wake dies for want of a file.
+        # Two shapes end a session with zero output while the WORK is
+        # all there: the model narrates its decision in prose instead
+        # of calling write_file, and OpenCode occasionally ends a
+        # healthy stream early with a near-empty final that the tool
+        # loop accepts as the answer (5/46 wakes on the flagship's
+        # first generations, 2026-08-25 — each death threw away 20+
+        # minutes of research). Resuming the SAME session costs one
+        # cheap turn and keeps everything it learned; a second miss
+        # still dies as agent_no_output below.
+        print(f"[strategist] {problem}: {missing} — one corrective "
+              f"resume turn", flush=True)
+        rc_fix = agent.spawn_llm(
+            kind="strategist", prompt_path=prompt_path,
+            problem_dir=problem_dir, attempts_dir=attempts_dir,
+            session_id=sid, is_retry=True,
+            retry_context=(
+                "Your turn ended but decision.json was NOT written — "
+                "the research is only real once it lands on disk. "
+                "Write decision.json NOW with write_file (and "
+                "proposal.md if your batch carries one). If your last "
+                "message was cut off, reconstruct the decision from "
+                "your notes above."),
+            timeout_sec=strategist_timeout,
+            mcp_config_path=tools_cfg,
+        )
+        _persist_plan(problem_dir, attempts_dir, group_id)
+        if rc_fix == 0:
+            decisions, parse_err, missing = _read_and_parse()
+    if missing:
         return PipelineResult(
             outcome="failed", failure_reason="agent_no_output",
-            failure_detail=missing,
+            failure_detail=missing + " (after one corrective turn)",
         )
     if decisions is None:
         return PipelineResult(

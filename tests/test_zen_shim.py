@@ -405,6 +405,23 @@ def test_lookup_crawl_nudge_rearms_every_streak_window() -> None:
     assert "has_lsp = any(t.startswith(LSP_NS" in src    # seat signal
 
 
+def test_key_pool_rotates_round_robin(monkeypatch: pytest.MonkeyPatch):
+    """A comma-separated key value is a POOL: successive requests
+    rotate keys, spreading streams across per-key admission ceilings
+    (~46-48 streams per OpenCode key, measured 2026-08-25: key B ran
+    clean at full speed while key A was saturated)."""
+    monkeypatch.setitem(zen_shim._KEY_CACHE, "OPENCODE_ZEN_API_KEY",
+                        "keyA, keyB ,keyC")
+    zen_shim._KEY_RR.pop("OPENCODE_ZEN_API_KEY", None)
+    got = [zen_shim._key_for("https://opencode.ai/zen/v1")
+           for _ in range(4)]
+    assert got == ["keyA", "keyB", "keyC", "keyA"]
+    # single-key values pass through untouched
+    monkeypatch.setitem(zen_shim._KEY_CACHE, "NOUS_API_KEY", "solo")
+    assert zen_shim._key_for(
+        "https://inference-api.nousresearch.com/v1") == "solo"
+
+
 def test_channel_choice_reads_env_then_dotenv_then_default(
         tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The upstream choice used to live only in the launching shell's

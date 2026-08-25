@@ -184,11 +184,14 @@ def test_run_strategist_no_output(
     workspace: Path, conn: sqlite3.Connection,
     mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Agent rc=0 but no decision.json → agent_no_output."""
+    """Agent rc=0 but no decision.json → ONE corrective resume turn,
+    then agent_no_output when the file is still missing."""
     _insert_root(conn)
+    calls: list[dict] = []
 
     def fake_spawn(**kw):
-        return 0  # no file dropped
+        calls.append(kw)
+        return 0  # no file dropped, either turn
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = strategist.run_strategist(
@@ -197,6 +200,39 @@ def test_run_strategist_no_output(
     )
     assert r.outcome == "failed"
     assert r.failure_reason == "agent_no_output"
+    assert len(calls) == 2, "exactly one corrective turn, then die"
+    assert calls[1]["is_retry"] is True
+    assert "decision.json" in calls[1]["retry_context"]
+    assert calls[0]["session_id"] == calls[1]["session_id"]
+
+
+def test_run_strategist_no_output_corrective_turn_recovers(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session that ended without writing (prose-narrated decision,
+    or an upstream stream cut short with a near-empty final — 5/46
+    flagship wakes, 2026-08-25) keeps its research: the corrective
+    resume turn writes the file and the wake proceeds."""
+    _insert_root(conn)
+    calls: list[dict] = []
+
+    def fake_spawn(**kw):
+        calls.append(kw)
+        if len(calls) == 2:
+            (kw["attempts_dir"] / "decision.json").write_text(
+                json.dumps({"kind": "Noop", "reason": "recovered"}),
+                encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="routine", tick=4,
+        workspace=workspace, intent=mfst,
+        pipeline_id="test-strat-fix-1",
+    )
+    assert r.failure_reason == "strategist_noop"  # the success path here
+    assert len(calls) == 2
 
 
 def test_run_strategist_quota_exhausted_rc(

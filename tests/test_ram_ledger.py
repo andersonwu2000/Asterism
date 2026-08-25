@@ -173,6 +173,10 @@ def test_nl_admission_debits_pending_credit(monkeypatch):
 
 def test_ledger_tick_is_rate_limited(monkeypatch):
     led = rl.DispatcherLedger(28.0, 32.0)
+    # A loaded parallel test run can stall >15s between the two calls
+    # (measured flake, 2026-08-25) — the interval under test must not
+    # race the wall clock.
+    led.PUSH_INTERVAL_SEC = 3600.0
     calls = []
     led.tick(nl_demand=0, push=lambda t, f: calls.append(t) or None)
     led.tick(nl_demand=0, push=lambda t, f: calls.append(t) or None)

@@ -227,11 +227,17 @@ _KEY_CACHE: "dict[str, str]" = {}
 
 
 def _key_for(base: str) -> str:
+    """A comma-separated value is a KEY POOL: requests rotate
+    round-robin across the keys, spreading concurrent streams across
+    per-key admission ceilings (measured 2026-08-25: ~46-48 streams
+    per OpenCode key, and key B ran clean at full speed while key A
+    was saturated — the ceiling is per-key, so a pool multiplies the
+    fleet's stream budget)."""
     name = ("NOUS_API_KEY" if "nousresearch" in base
             else "OPENROUTER_API_KEY" if "openrouter" in base
             else "OPENCODE_ZEN_API_KEY")
     if name in _KEY_CACHE:
-        return _KEY_CACHE[name]
+        return _rotate_key(name, _KEY_CACHE[name])
     k = os.environ.get(name, "")
     if not k:
         env = os.path.join(_REPO, ".env")
@@ -245,7 +251,20 @@ def _key_for(base: str) -> str:
     if not k:
         raise SystemExit(f"no {name} (env or .env)")
     _KEY_CACHE[name] = k
-    return k
+    return _rotate_key(name, k)
+
+
+_KEY_RR: dict = {}
+_KEY_RR_LOCK = threading.Lock()
+
+
+def _rotate_key(name: str, k: str) -> str:
+    if "," not in k:
+        return k
+    keys = [p.strip() for p in k.split(",") if p.strip()]
+    with _KEY_RR_LOCK:
+        _KEY_RR[name] = (_KEY_RR.get(name, -1) + 1) % len(keys)
+        return keys[_KEY_RR[name]]
 
 
 def _tools_module():
