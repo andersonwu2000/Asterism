@@ -1283,6 +1283,10 @@ def _section_pending_reopens(conn: sqlite3.Connection,
     return out
 
 
+#: Freshness floor for the inline Active-goals tail (newest by id).
+_ACTIVE_GOALS_TAIL_N = 15
+
+
 def _section_active_goals(conn: sqlite3.Connection,
                           workspace: Path,
                           problem: str) -> list[str]:
@@ -1329,13 +1333,33 @@ def _section_active_goals(conn: sqlite3.Connection,
     # other became the dominant "surfaces disagree" feedback pair
     # (~83 entries, autopsy 2026-08-24): statuses here are frozen at
     # compile time while workers keep landing proofs.
+    counts: "dict[str, int]" = {}
+    for r in rows:
+        counts[str(r["status"])] = counts.get(str(r["status"]), 0) + 1
+    count_line = " / ".join(f"{n} {s}" for s, n in
+                            sorted(counts.items(), key=lambda kv: -kv[1]))
     out = ["## Active goals", "",
+           f"**{len(rows)} alive** — {count_line}",
+           "",
            "_Statuses frozen at compile time — they move while you "
            "work. Before deciding anything from one, ask the record "
            "live: `inspect([{\"decl\": \"<slug>\"}])` (also returns "
            "the statement and file)._",
            ""]
-    for r in rows:
+    # Index eager was right (2026-08-10); FULL roster inline was not
+    # (user backlog item d, 2026-08-26): on a mature problem this was
+    # ~80 lines re-sent on EVERY loop step, while the same roster —
+    # with full signatures — is machine-written into CATALOG.md's
+    # `## Alive goals` beside this Context each wake. Freshness floor
+    # stays inline (the newest goals are the ones a stale plan note
+    # contradicts); the rest is one grep away, and dedupe at commit is
+    # the real gate either way.
+    tail = sorted(rows, key=lambda r: int(r["id"]))[-_ACTIVE_GOALS_TAIL_N:]
+    if len(rows) > len(tail):
+        out.append(f"_The {len(tail)} newest (full roster with "
+                   f"signatures: `CATALOG.md` § `Alive goals`, beside "
+                   f"this file — grep it by slug):_")
+    for r in tail:
         out.append(
             f"- [{r['id']}] depth={r['depth']} "
             f"{r['status']:25s} attempts={r['attempts']}"
@@ -1596,22 +1620,13 @@ def _section_tree_inline(conn: sqlite3.Connection,
         f"**Counters:** {count_line}",
         "",
     ]
-    # ALIVE only (2026-08-18 context diet): the 07-13 design listed
-    # every non-proved goal on the premise that exceptions are a
-    # handful; a mature descent tree grew that list back to 164 rows /
-    # 9KB, of which the 132 shelved/disproved/dead are a strictly worse
-    # copy of TREE.md's by-status sections (same list, no ancestor
-    # paths). The decision-relevant rows are the live ones.
-    alive = [r for r in rows if str(r["status"]) in (
-        "open", "attempting", "pending_strategist_review", "frozen")]
-    if alive:
-        out.append("_Live non-proved goals (parked/dead ones are in "
-                   "the counters above and listed in the full tree):_")
-        for r in alive:
-            att = (f", attempts={r['attempts']}"
-                   if r["attempts"] else "")
-            out.append(f"- `{r['slug']}`  ({r['status']}{att})")
-        out.append("")
+    # The alive roster left this section on 2026-08-26 (user backlog
+    # item d): it was byte-for-byte isomorphic to `## Active goals`
+    # right below — two copies of the same list, re-sent every loop
+    # step, and the 08-24 autopsy's dominant "surfaces disagree"
+    # feedback pair (~83 entries) was exactly these twins drifting
+    # apart mid-wake. One roster lives in `## Active goals`; this
+    # section keeps the counters and the file pointer.
     # Pointer wording 2026-08-15: the old promise ("dead-branch
     # forensics, OR-alternative history") was measured against every
     # TREE.md read on union_closed and found unused — a dead `via sNN`

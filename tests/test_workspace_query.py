@@ -1066,3 +1066,30 @@ def test_decl_follows_the_wrapper_shape_to_the_strategy_file(
     assert "wrapper of @s123" in out
     assert "theorem s123 : True := trivial" in out
     assert "_strategy_s123.lean" in out
+
+
+def test_section_reads_are_size_tiered(here: Path) -> None:
+    """User backlog item c (2026-08-26): <=budget full, <=2x budget
+    truncate+resume, >2x budget refuse-as-roster with grep/decl/lines
+    teaching — pure size rule, no filename sniffing (TREE.md's 141KB
+    `## Lemmas` was the motivating giant)."""
+    body = ["# Doc"]
+    body += ["## Small", "tiny line"]
+    body += ["## Medium"] + [f"{i:04d} medium filler line" for i in range(700)]
+    body += ["## Huge"] + [f"{i:05d} huge roster entry line" for i in range(1500)]
+    (here / "Doc.md").write_text("\n".join(body), encoding="utf-8")
+
+    out = wq.run_queries([{"read": "Doc.md", "sections": ["Small"]}],
+                         cwd=here)
+    assert "tiny line" in out and "truncated" not in out
+
+    out2 = wq.run_queries([{"read": "Doc.md", "sections": ["Medium"]}],
+                          cwd=here)
+    assert "truncated at" in out2
+    assert "Continue from line" in out2
+
+    out3 = wq.run_queries([{"read": "Doc.md", "sections": ["Huge"]}],
+                          cwd=here)
+    assert "roster" in out3
+    assert '"grep"' in out3 and '"decl"' in out3
+    assert "huge roster entry" not in out3, "refusal must not leak content"

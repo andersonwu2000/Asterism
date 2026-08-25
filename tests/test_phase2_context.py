@@ -1244,7 +1244,9 @@ def test_tree_inline_keeps_pure_nl_forest(
     lines = phase2_context._section_tree_inline(conn, workspace, "p")
     text = "\n".join(lines)
     assert "(TREE.md not yet generated)" not in text
-    assert "brick_a" in text
+    # the roster moved to `## Active goals` (backlog item d, 2026-08-26)
+    # — the forest surfaces through the counters here
+    assert "1 open" in text
 
 
 def test_tree_inline_lists_only_live_goals(
@@ -1267,12 +1269,16 @@ def test_tree_inline_lists_only_live_goals(
                        origin="forward", status=status)
     text = "\n".join(
         phase2_context._section_tree_inline(conn, workspace, "p"))
-    for s in ("g_open", "g_att", "g_rev"):
-        assert f"`{s}`" in text, s
-    for s in ("g_shelved", "g_dis", "g_dead", "g_proved"):
+    # Backlog item d (2026-08-26): the alive roster left this section
+    # entirely — it was the byte-isomorphic twin of `## Active goals`
+    # (the 08-24 autopsy's dominant "surfaces disagree" pair). Counters
+    # keep the census; the pointer names the lazy home; NO slugs here.
+    for s in ("g_open", "g_att", "g_rev",
+              "g_shelved", "g_dis", "g_dead", "g_proved"):
         assert f"`{s}`" not in text, s
     assert "1 shelved" in text and "1 disproved" in text, (
         "the counters must keep the full census")
+    assert "1 open" in text
     assert "## Shelved" in text, "the pointer must name the lazy home"
 
 
@@ -1872,3 +1878,38 @@ def test_strategist_context_points_at_adjudications(
     text = out.read_text(encoding="utf-8")
     assert "## Adjudication history (park rulings)" in text
     assert (attempts_dir / "ADJUDICATIONS.md").exists()
+
+
+def test_active_goals_roster_is_bounded_with_catalog_pointer(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
+) -> None:
+    """User backlog item d (2026-08-26): the full alive roster left the
+    per-turn context — counts + the newest tail stay inline, the rest
+    lives in CATALOG.md's `## Alive goals` (machine-written beside the
+    Context every wake). Small problems keep the full list; the twin
+    roster in `## TREE` is gone (the 08-24 autopsy's dominant
+    'surfaces disagree' pair)."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    for i in range(40):
+        db.insert_goal(conn, problem="p", slug=f"g{i:03d}",
+                       lean_path=f"P/g{i:03d}.lean", statement="T",
+                       origin="backward")
+    attempts_dir = tmp_path / "_attempts_ag"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="routine",
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "## Active goals" in text
+    assert "41 alive" in text
+    assert "`g039`" in text                      # newest tail inline
+    assert "`g000`" not in text                  # old bulk is lazy
+    assert "Alive goals" in text and "CATALOG.md" in text
+    # the TREE section keeps counters + pointer, no twin roster
+    start = text.index("## TREE")
+    tree = text[start:text.index("##", start + 4)]
+    assert "Counters:" in tree
+    assert "`g039`" not in tree

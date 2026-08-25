@@ -1112,6 +1112,23 @@ def _resume_hint(text: str, kept: str, q: dict) -> str:
     return f"Continue from line {last + 1} with `lines`."
 
 
+def _big_section_refusal(q: dict, size: int, budget: int) -> str:
+    """A section past 2x the budget is a ROSTER — uniform entries the
+    reader wants ONE of, not a document to page through. Name the ways
+    a roster is actually used (grep by name inside the file, `decl`
+    for the live record, a `lines` window) instead of delivering the
+    first twelfth and a dozen resume hops."""
+    secs = ", ".join(str(s) for s in (q.get("sections") or []))
+    rounds = (size + budget - 1) // budget
+    return (f"section(s) [{secs}] total {size:,} chars — {rounds}x the "
+            f"{budget:,}-char reply budget. A section this size is a "
+            f"roster: grep it for the entry you want "
+            f'({{"grep": "<name>", "in": {str(q.get("read"))!r}}}), ask '
+            f'the live record ({{"decl": "<slug>"}}), or open an exact '
+            f'window with `lines`. Paging the whole section would cost '
+            f"~{rounds} calls and is almost never the question.")
+
+
 #: A refusal may inline the outline only when the outline itself is
 #: small — the 2026-08-15 roster ruling stands (on the 654-section
 #: catalog the inlined listing was itself a 12KB cap-hit).
@@ -1312,6 +1329,18 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
                             # with the map, never clip (2026-08-18).
                             text = _whole_read_refusal(
                                 q, here, deny, len(text), per_query_chars)
+                        elif (key == "read" and q.get("sections")
+                              and len(text) > 2 * per_query_chars):
+                            # A section MORE than twice the budget is a
+                            # roster, not a reading (user backlog item
+                            # c, 2026-08-26: TREE.md's `## Lemmas` on a
+                            # mature problem is 141KB — paging it costs
+                            # ~12 calls and teaches nothing). Refuse
+                            # with the ways a roster is actually used.
+                            # Size-tiered on purpose: no filename
+                            # sniffing, so it covers every future giant.
+                            text = _big_section_refusal(
+                                q, len(text), per_query_chars)
                         else:
                             kept = text[:per_query_chars]
                             text = (kept + f"\n… [{n}] truncated at "
