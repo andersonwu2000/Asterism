@@ -62,9 +62,6 @@ _ext/
 # Local translated-prompt drafts; not committed (see 608bbc5 prior revert)
 Tooling/prompts_zhtw_ref/
 
-# Demo runtime artifacts written by demo/watcher.py
-demo/active/
-
 # Internal-only reference docs (handoff state, strategy, operator runbook)
 docs/internal/
 
@@ -118,10 +115,6 @@ Problems/Geometry/stokes_theorem/stokes_theorem_reference.lean
 Problems/Geometry/stokes_theorem/stokes_theorem_witnesses.lean
 Problems/Topology/mayer_vietoris/Root (1).lean
 Problems/residue_thm/Residue.lean
-
-# Undecided subproject — may be deleted; do not track for now (user
-# call 2026-07-05).
-blueprint/
 
 # e2e session logs (the *_run.log pattern above missed the _err twin).
 *_err.log

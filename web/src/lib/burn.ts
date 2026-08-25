@@ -1,7 +1,8 @@
 import type { ConfigSetting, UsageKind } from './types'
 
-/** Per-model price weights, top-model output ≡ 1 unit (demo/watcher.py
- * lineage — the owner's quota-burn axis: on a subscription, quota is
+/** Per-model price weights, top-model output ≡ 1 unit (inherited from
+ * the retired demo watcher, deleted 2026-08-26 — the owner's
+ * quota-burn axis: on a subscription, quota is
  * metered roughly by backend cost, so weighted units beat raw token
  * counts). Unknown models assume Sonnet tier — never under-count a
  * release this table hasn't met. */

@@ -1,0 +1,105 @@
+% Asterism Library blueprint — Residue Theorem.
+%
+% Statements, `\lean` links and `\uses` edges are transcribed from
+%   Library/Analysis/ResidueTheorem/*.lean
+% which is machine-formalized by Asterism (every node is proven, hence `\leanok`).
+% The `\uses` edges mirror the actual Lean `import`s and proof terms.
+
+\section{The Residue Theorem}
+
+This section records the residue theorem as machine-formalized by Asterism and harvested into
+\texttt{Library.Analysis.ResidueTheorem}. Every node below is fully formalized (\leanok, drawn
+green in the dependency graph). The edges are not invented for exposition: each
+\texttt{\textbackslash uses} corresponds to a Lean \texttt{import} and a use site in the proof
+term of the harvested declaration.
+
+\begin{definition}[Winding number]
+  \label{def:winding}
+  \lean{Complex.windingNumber}
+  \leanok
+  For a $C^1$ closed path $\gamma : [0,1] \to \mathbb{C}$ and a point $a$ off its image, the
+  \emph{winding number} $n(\gamma, a) \in \mathbb{Z}$ is the unique integer with
+  \[ \int_0^1 \frac{\gamma'(t)}{\gamma(t) - a}\, dt = 2\pi i\, n(\gamma, a), \]
+  and $0$ outside that regime (a total junk value).
+\end{definition}
+
+\begin{definition}[Residue]
+  \label{def:residue}
+  \lean{Complex.residue}
+  \leanok
+  For $f$ analytic on a punctured ball $B(z_0, R) \setminus \{z_0\}$, the \emph{residue} is
+  $\operatorname{res}(f, z_0) = \frac{1}{2\pi i} \oint_{C(z_0, R/2)} f$, and $0$ off the
+  regime.
+\end{definition}
+
+\begin{lemma}[Winding-number integral]
+  \label{lem:winding-formula}
+  \lean{Library.Analysis.ResidueTheorem.WindingNumberFormula.winding_integral_formula}
+  \leanok
+  \uses{def:winding}
+  For a closed $C^1$ path $\gamma$ avoiding $a$,
+  \[ \int_0^1 \frac{\gamma'(t)}{\gamma(t)-a}\,dt = 2\pi i\, n(\gamma, a). \]
+\end{lemma}
+
+\begin{lemma}[Principal part as residue times winding integral]
+  \label{lem:path-residue}
+  \lean{Library.Analysis.ResidueTheorem.PrimitiveSubtraction.path_int_eq_residue_times_winding_int}
+  \leanok
+  \uses{def:residue}
+  If $P$ is analytic on $\mathbb{C} \setminus \{a\}$ with $P \to 0$ at infinity and $\gamma$ is
+  a closed $C^1$ path avoiding $a$, then
+  \[ \int_0^1 P(\gamma t)\,\gamma'(t)\, dt
+       = \operatorname{res}(P, a) \int_0^1 \frac{\gamma'(t)}{\gamma(t)-a}\,dt. \]
+\end{lemma}
+
+\begin{lemma}[Single-pole contour integral]
+  \label{lem:single-pole}
+  \lean{Library.Analysis.ResidueTheorem.ResidueFormula.integral_principal_part_eq_winding_mul_residue}
+  \leanok
+  \uses{def:winding,def:residue}
+  Under the hypotheses of Lemma~\ref{lem:path-residue},
+  \[ \int_0^1 P(\gamma t)\,\gamma'(t)\, dt = 2\pi i\, \big(n(\gamma, a)\, \operatorname{res}(P, a)\big). \]
+\end{lemma}
+\begin{proof}
+  \leanok
+  \uses{lem:winding-formula,lem:path-residue}
+  Rewrite the integral with Lemma~\ref{lem:path-residue}, then replace the winding-number
+  integral using Lemma~\ref{lem:winding-formula} and rearrange.
+\end{proof}
+
+\begin{lemma}[Analytic remainder integrates to zero]
+  \label{lem:remainder-zero}
+  \lean{Library.Analysis.ResidueTheorem.PathIntegralZero.analytic_remainder_path_integral_zero}
+  \leanok
+  If $g$ is analytic on a simply connected open $U \subseteq \mathbb{C}$ and $\gamma$ is a
+  closed $C^1$ path with image in $U$, then $\int_0^1 g(\gamma t)\,\gamma'(t)\,dt = 0$.
+\end{lemma}
+
+\begin{lemma}[Principal-part decomposition]
+  \label{lem:decomp}
+  \lean{Library.Analysis.ResidueTheorem.PathIntegralDecomp.analytic_remainder_principal_part_decomp}
+  \leanok
+  \uses{def:residue}
+  If $f$ is analytic on $U \setminus T$ ($U$ open, $T$ finite), then $f = g + \sum_{a \in T} P_a$
+  with $g$ analytic on $U$, each $P_a$ analytic on $\mathbb{C} \setminus \{a\}$ and tending to
+  $0$ at infinity, $\operatorname{res}(P_a, a) = \operatorname{res}(f, a)$, and the contour
+  integral splitting accordingly.
+\end{lemma}
+
+\begin{theorem}[Residue theorem]
+  \label{thm:residue}
+  \lean{Library.Analysis.ResidueTheorem.ResidueFormula.residue_theorem}
+  \leanok
+  \uses{def:winding,def:residue}
+  Let $U \subseteq \mathbb{C}$ be open and simply connected, $T \subseteq U$ finite, and $f$
+  analytic on $U \setminus T$. For any closed $C^1$ path $\gamma$ with image in $U \setminus T$,
+  \[ \int_0^1 f(\gamma t)\,\gamma'(t)\, dt = 2\pi i \sum_{a \in T} n(\gamma, a)\, \operatorname{res}(f, a). \]
+\end{theorem}
+\begin{proof}
+  \leanok
+  \uses{lem:single-pole,lem:remainder-zero,lem:decomp}
+  Decompose $f = g + \sum_a P_a$ via Lemma~\ref{lem:decomp}. The remainder $g$ contributes $0$
+  by Lemma~\ref{lem:remainder-zero}; each principal part $P_a$ contributes
+  $2\pi i\, n(\gamma, a)\, \operatorname{res}(P_a, a)$ by Lemma~\ref{lem:single-pole}, and
+  $\operatorname{res}(P_a, a) = \operatorname{res}(f, a)$. Summing over $a \in T$ gives the result.
+\end{proof}

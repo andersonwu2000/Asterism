@@ -8,7 +8,7 @@
 # package skeleton (lakefile + Asterism/ server source + toolchain
 # pins), pyproject, README.
 # What does NOT ship: dev workspace content - Problems/, Library/,
-# tests/, docs/, Benchmarks/, demo/, _spike/, .github/. A fresh
+# tests/, docs/, Benchmarks/, _spike/, .github/. A fresh
 # machine grows its own; every consumer of these dirs mkdirs on
 # demand (Library glob is declared harmless-when-empty in
 # lakefile.lean; regress.py mkdirs Benchmarks).
@@ -40,7 +40,7 @@ Remove-Item $archive
 
 Write-Host '[2/4] Dropping dev-workspace content...'
 $exclude = @('Problems', 'Library', 'tests', 'docs', 'Benchmarks',
-             'demo', '_spike', '.github')
+             '_spike', '.github')
 foreach ($d in $exclude) {
     $p = Join-Path $stage $d
     if (Test-Path $p) { Remove-Item -Recurse -Force $p }

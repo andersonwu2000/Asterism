@@ -400,7 +400,8 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
     # daemon means a worker is on it right now — the constellation
     # pulses that star. A dead owner's lease is residue, not a worker.
     # `workers` is the same truth as a roster ("what is each agent
-    # doing"), the cockpit's run-strip data (demo/ stats panel lineage).
+    # doing"), the cockpit's run-strip data (it inherited the shape of
+    # the retired demo/ stats panel, deleted 2026-08-26).
     inflight_goals: set[int] = set()
     workers: list[dict] = []
     live_pid = _live_daemon_pid(daemon)
