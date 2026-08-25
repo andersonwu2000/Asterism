@@ -14,74 +14,36 @@ import type { BoardProblem, BoardResponse, Meta } from '../lib/types'
  * instead of 250 identical pills.
  */
 
+/* The progress column carries ONE figure (owner, 2026-08-26). It used
+ * to carry three — a bar, an open count, a fraction — and two of them
+ * came and went row by row: the bar hid on finished campaigns, the
+ * open count on everything settled, so the column drew a different
+ * shape every few rows and the eye had nothing to follow. The two that
+ * left were also the two that said what the fraction already says
+ * (composition, and the size the denominator states outright); the one
+ * fact only they carried — the shelved/dead residue, which the reader
+ * would otherwise have to subtract — moves into the row's tooltip,
+ * where a rarely-asked question belongs. */
 function GoalCounts({ p }: { p: BoardProblem }) {
   if (p.goals.total === 0 || (p.goals.open === 0 && p.goals.proved === 0))
     return null // nothing started — silence, not a dash
-  // the NUMBERS never yield: shrink-0 here makes the decorative bar
-  // (the other flex sibling) compress instead — a tight column used to
-  // truncate the fraction itself ('173/…', audit 2026-07-11)
+  const rest = Math.max(0, p.goals.total - p.goals.proved - p.goals.open)
   return (
-    <span className="tnum shrink-0 text-xs whitespace-nowrap">
-      {p.goals.open > 0 && <span className="text-ink">{p.goals.open} open · </span>}
-      <span className="text-ink-faint">
-        {/* name the unit — "36/43" of WHAT was the first-time reader's
-            first question (the bar's tooltip answered it; the visible
-            text should too) */}
-        {p.goals.proved}/{p.goals.total} proved
-      </span>
+    <span
+      className="tnum text-xs whitespace-nowrap text-ink-dim"
+      title={`${p.goals.proved} proved · ${p.goals.open} open${
+        rest > 0 ? ` · ${rest} shelved/dead` : ''
+      } of ${p.goals.total} goals`}
+    >
+      {/* name the unit — "36/43" of WHAT was the first-time reader's
+          first question */}
+      {p.goals.proved}/{p.goals.total} proved
     </span>
   )
 }
 
-/** Two honest channels: width ∝ √total (a 240-goal campaign should not
- * look like a 3-goal toy) and fill = composition, with the settled-but-
- * unproved remainder (shelved/dead) drawn as labeled grey ink instead
- * of masquerading as "unfinished". */
-function ProgressBar({
-  proved,
-  open,
-  total,
-}: {
-  proved: number
-  open: number
-  total: number
-}) {
-  if (total === 0 || (proved === 0 && open === 0)) return null
-  const w = Math.round(Math.min(128, Math.max(36, Math.sqrt(total) * 10)))
-  const rest = Math.max(0, total - proved - open)
-  return (
-    <div
-      className="flex h-1 overflow-hidden rounded-full bg-wash-3"
-      style={{ width: w }}
-      title={`${proved} proved · ${open} open${rest > 0 ? ` · ${rest} shelved/dead` : ''} of ${total}`}
-    >
-      <div
-        className="h-full bg-starlight/80 transition-[width] duration-700"
-        style={{ width: `${(proved / total) * 100}%` }}
-      />
-      <div
-        className="h-full bg-accent/50 transition-[width] duration-700"
-        style={{ width: `${(open / total) * 100}%` }}
-      />
-      <div className="h-full bg-ink-faint/30" style={{ width: `${(rest / total) * 100}%` }} />
-    </div>
-  )
-}
-
-/** Quiet text status for settled rows — the pill treatment is reserved
- * for states that ask something of the reader. */
-// The settled norm gets the FAINTEST word, not blankness: cold-eye
-// reviewers read the empty ingested cell as missing data — ambiguity
-// is noise too. Pills stay reserved for states that ask something.
-const SETTLED_LABEL: Record<string, string> = {
-  bridged: 'in Library ◆',
-  ingested: 'complete',
-  idle: 'not started',
-}
-
 function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stripPrefix?: string }) {
   const needsAction = p.status === 'awaiting_human' || p.status === 'signoff_pending'
-  const settled = p.status === 'ingested' || p.status === 'bridged' || p.status === 'idle'
   // inside an expanded cluster the group header already carries the
   // namespace — repeating it every dense row is noise
   const shown =
@@ -122,39 +84,20 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
           )}
         </span>
       </td>
+      {/* one vocabulary, one dot grid — the settled states used to speak
+          bare text here while the rest wore chips, which is the seam
+          the reader saw. StatusBadge owns every word now. */}
       <td className="pr-4">
         {needsAction ? (
           <Link to="/inbox" onClick={(e) => e.stopPropagation()} title="Open in inbox">
-            <StatusBadge status={p.status} />
+            <StatusBadge status={p.status} flush />
           </Link>
-        ) : settled ? (
-          SETTLED_LABEL[p.status] ? (
-            <span
-              className={`text-[11px] ${p.status === 'bridged' ? 'text-star/70' : 'text-ink-faint'}`}
-              title={
-                p.status === 'bridged'
-                  ? 'merged into the Library (engine term: bridged)'
-                  : p.status === 'ingested'
-                    ? 'proved and signed off — awaiting Library curation'
-                    : 'not started yet'
-              }
-            >
-              {SETTLED_LABEL[p.status]}
-            </span>
-          ) : null
         ) : (
           <StatusBadge status={p.status} />
         )}
       </td>
-      <td className="pr-3">
-        <span className="flex items-center justify-end gap-2.5">
-          {/* a FULL bar carries nothing the N/N doesn't — bars are for
-              campaigns still in motion */}
-          {!(p.goals.total > 0 && p.goals.open === 0 && p.goals.proved === p.goals.total) && (
-            <ProgressBar proved={p.goals.proved} open={p.goals.open} total={p.goals.total} />
-          )}
-          <GoalCounts p={p} />
-        </span>
+      <td className="pr-3 text-right">
+        <GoalCounts p={p} />
       </td>
     </tr>
   )
@@ -259,14 +202,27 @@ function ClusterRow({
           <span className="tnum text-[11px] text-ink-faint">{c.items.length} problems</span>
         </button>
       </td>
+      {/* a cluster's status speaks the row grammar too — same dot, same
+          word, a count in front of it (the diamond was a third mark for
+          a fact the starlight dot already carries) */}
       <td className="pr-4">
         {c.bridged > 0 && (
-          <span className="tnum text-[11px] text-star/70">{c.bridged} in Library ◆</span>
+          <span
+            className="inline-flex items-center gap-1.5 text-[11px] whitespace-nowrap text-ink-dim"
+            title={`${c.bridged} of these are merged into the Library (engine term: bridged)`}
+          >
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-starlight" />
+            <span className="tnum">{c.bridged} in Library</span>
+          </span>
         )}
       </td>
       <td className="pr-3 text-right">
-        {/* the professor's unit is PROBLEMS, not the engine's goal sum */}
-        <span className="tnum text-xs whitespace-nowrap text-ink-faint">
+        {/* the professor's unit is PROBLEMS, not the engine's goal sum —
+            same column, same right edge, and the tooltip says which */}
+        <span
+          className="tnum text-xs whitespace-nowrap text-ink-dim"
+          title="problems signed off or merged into the Library — the rows above count goals, this one counts problems"
+        >
           {c.items.filter((p) => p.status === 'ingested' || p.status === 'bridged').length}
           /{c.items.length} done
         </span>
@@ -398,31 +354,14 @@ export default function Board() {
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-6">
-      <div className="mb-4 flex items-end justify-between">
-        <div className="flex items-baseline gap-3">
-          <h1 className="font-display text-[22px] font-medium text-ink">Problems</h1>
-          <span className="tnum text-xs text-ink-faint">
-            {problems.length}
-            {attention > 0 && (
-              <span className="ml-2 font-medium text-warn">
-                · {attention} need{attention === 1 ? 's' : ''} input
-              </span>
-            )}
-          </span>
-        </div>
-        <Link
-          to="/new"
-          className="rounded-lg bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
-        >
-          New problem
-        </Link>
-      </div>
-      {error && (
-        <div className="mb-3 rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
-          Live update failed ({error.message}) — showing last known state.
-        </div>
-      )}
-      <div className="mb-3 flex items-center gap-2">
+      {/* one header line: the title, the thing you do to the list, and
+          the thing you do next to it. The filter used to sit on its own
+          row below, and the count beside the title said "373" with no
+          noun anywhere near it (owner, 2026-08-26) — a number nobody
+          could name. What survives is the one count that asks for
+          something. */}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <h1 className="font-display text-[22px] font-medium text-ink">Problems</h1>
         <div className="relative">
           <input
             ref={filterRef}
@@ -441,8 +380,24 @@ export default function Board() {
             /
           </kbd>
         </div>
-        {filtering && <span className="text-xs text-ink-faint">{sorted.length} shown</span>}
+        {filtering && <span className="tnum text-xs text-ink-faint">{sorted.length} shown</span>}
+        {attention > 0 && (
+          <span className="tnum text-xs font-medium text-warn">
+            {attention} need{attention === 1 ? 's' : ''} input
+          </span>
+        )}
+        <Link
+          to="/new"
+          className="ml-auto rounded-lg bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
+        >
+          New problem
+        </Link>
       </div>
+      {error && (
+        <div className="mb-3 rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+          Live update failed ({error.message}) — showing last known state.
+        </div>
+      )}
       {/* table-fixed + truncating name cell: long mono names must not
           push the quantities off a laptop screen (main clips overflow) */}
       {(
@@ -454,8 +409,11 @@ export default function Board() {
           <thead className="sticky top-0 z-10">
             <tr className="border-b border-edge text-xs text-ink-faint">
               <th className="bg-bg py-2 pr-4 pl-3 font-medium">problem</th>
-              <th className="w-[120px] bg-bg py-2 pr-4 font-medium">status</th>
-              <th className="w-[230px] bg-bg py-2 pr-3 text-right font-medium">progress</th>
+              {/* both right columns are sized to their own content —
+                  status to the widest mark ("needs sign-off"), progress
+                  to the widest fraction — so neither can drift */}
+              <th className="w-[132px] bg-bg py-2 pr-4 font-medium">status</th>
+              <th className="w-[128px] bg-bg py-2 pr-3 text-right font-medium">progress</th>
             </tr>
           </thead>
           {filtering ? (

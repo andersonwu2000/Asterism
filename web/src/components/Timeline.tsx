@@ -16,9 +16,10 @@ import type { TimelineEvent, TimelineGroup } from '../lib/types'
  *     that identifies the event, and the identifying token is the
  *     brick's name.
  *   · Because every row NAMES an object, the log can be followed by
- *     object: one click and you read a single brick's whole life
- *     (asked → attempt 2 → proved), which is the reading the old
- *     decision-only timeline could not do at all.
+ *     object: the name click opens the star on the map (the side
+ *     panel reads the goal's history there), and one click further —
+ *     the row's expansion — filters the log to that brick's whole
+ *     life (asked → attempt 2 → proved).
  *   · Outcomes are events. 52 of union_closed's 54 goals reached
  *     proved and not one of those landings used to appear here.
  */
@@ -34,84 +35,12 @@ const DAY_FMT = new Intl.DateTimeFormat('en-US', {
   month: 'short', day: 'numeric', year: 'numeric',
 })
 
-/** Lenses, not per-verb chips: eleven verbs would be eleven chips, and
- * the questions a reader actually arrives with are three. */
-const LENSES: { key: string; label: string; kinds: string[]; title: string }[] = [
-  {
-    key: 'landed',
-    label: 'landings',
-    kinds: ['proved', 'disproved', 'deliverable', 'ingested'],
-    title: 'what the machine finished',
-  },
-  {
-    key: 'stuck',
-    label: 'setbacks',
-    kinds: ['failed', 'hiccup', 'shelved', 'dead', 'asked_you'],
-    title: 'where it lost time',
-  },
-  {
-    key: 'argument',
-    label: 'argument',
-    kinds: [
-      'rev', 'proposal', 'handed_off', 'handed_back', 'closed_group',
-      'directive', 'held', 'paper',
-    ],
-    title: 'the Programme, the discussion groups, and the sources',
-  },
-]
-
-/* A brick is settled once it lands, is set aside, or dies. Anything
- * with attempts and no settling AFTER them is still in the way — the
- * blocker. Derived from the log rather than passed in, so the run-wide
- * view (several problems at once) gets it on the same terms. */
-const SETTLING = new Set(['proved', 'shelved', 'disproved', 'dead'])
-
-export interface Blocker {
-  /** the goal in the way */
-  label: string
-  /** how many failures the ENGINE FILED against it. Deliberately not
-   * "attempts": `goals.attempts` is a different number and disagrees in
-   * both directions (measured on union_closed — 10 vs 6 filed, 4 vs 6),
-   * because one spawn can file two records and some attempts burn the
-   * counter without filing any. This counts what the log holds. */
-  failures: number
-  /** newest failure, for the settled-after comparison */
-  at: string
-}
-
-export function topBlocker(events: TimelineEvent[]): Blocker | null {
-  const failed = new Map<string, Blocker>()
-  const settled = new Map<string, string>()
-  for (const e of events) {
-    if (e.kind === 'failed') {
-      const cur = failed.get(e.label)
-      if (!cur) failed.set(e.label, { label: e.label, failures: 1, at: e.at })
-      else {
-        cur.failures += 1
-        if (e.at > cur.at) cur.at = e.at
-      }
-    } else if (SETTLING.has(e.kind)) {
-      const cur = settled.get(e.label)
-      if (!cur || e.at > cur) settled.set(e.label, e.at)
-    }
-  }
-  let best: Blocker | null = null
-  for (const [label, b] of failed) {
-    // a goal that was proved, reopened and failed again is in the way
-    // once more: compare the newest failure against the newest settling
-    // rather than asking merely whether it ever settled
-    const s = settled.get(label)
-    if (s && s > b.at) continue
-    if (!best || b.failures > best.failures) best = b
-  }
-  return best
-}
-
-/* An infra death cost no attempt, and a rejected proposal is a round
- * of editing rather than a change to the record — both are true
- * history and neither is news, so they stay off the default read and
- * come back with one click. */
-const QUIET_KINDS = new Set(['hiccup', 'proposal'])
+/* Infra deaths and rejected proposals used to be held back behind a
+ * "+N quiet" link. The link went with the chips (owner, 2026-08-26) —
+ * and holding rows back with no way to ask for them is the one thing a
+ * log may not do, so they simply render. They already recede on their
+ * own: both verbs are residue ink in EVENT_CLS, which is how a log is
+ * supposed to quiet something. */
 
 /** What "follow this object" follows. Usually the label IS the object,
  * but a revision row is labelled with that revision's own title, so
@@ -173,7 +102,7 @@ function Row({
   /** the run view merges several problems; say which */
   showProblem: boolean
   onFollow: (f: Follow) => void
-  onOpenGoal?: (id: number) => void
+  onOpenGoal?: (id: number, problem: string | null) => void
   onOpenProgramme?: () => void
 }) {
   const [open, setOpen] = useState(false)
@@ -228,16 +157,23 @@ function Row({
             title={
               e.object_kind === 'unbuilt'
                 ? `${e.label} — asked for; no such brick exists yet. Click to follow it.`
-                : `${e.label} — click to follow it through the log`
+                : e.object_kind === 'goal' && e.goal_id !== null && onOpenGoal
+                  ? `${e.label} — click to open it on the map`
+                  : `${e.label} — click to follow it through the log`
             }
             onClick={(ev) => {
               ev.stopPropagation()
-              onFollow(followFor(e))
+              /* the map IS the goal's history now (the side panel reads
+                 it out) — the name goes there; following the log moved
+                 one click down, into the expansion (owner, 2026-08-24) */
+              if (e.goal_id !== null && onOpenGoal) onOpenGoal(e.goal_id, e.problem ?? null)
+              else onFollow(followFor(e))
             }}
             onKeyDown={(ev) => {
               if (ev.key === 'Enter') {
                 ev.stopPropagation()
-                onFollow(followFor(e))
+                if (e.goal_id !== null && onOpenGoal) onOpenGoal(e.goal_id, e.problem ?? null)
+                else onFollow(followFor(e))
               }
             }}
           >
@@ -286,9 +222,10 @@ function Row({
             {e.goal_id !== null && onOpenGoal && (
               <button
                 className="text-ink-faint underline decoration-edge-strong underline-offset-2 hover:text-ink"
-                onClick={() => onOpenGoal(e.goal_id as number)}
+                title="one click and you read this brick's whole life right here"
+                onClick={() => onFollow(followFor(e))}
               >
-                open on the map
+                follow through the log
               </button>
             )}
             {e.object_kind === 'programme' && onOpenProgramme && (
@@ -322,7 +259,10 @@ export default function Timeline({
   /** name the problem on each row — only the run view needs it, and
    * only when the run holds more than one */
   showProblem?: boolean
-  onSelectGoal?: (id: number) => void
+  /** where clicking a goal's name lands: the star map (the side panel
+   * carries the history). The run view navigates to the problem's own
+   * page — the second argument says which. */
+  onSelectGoal?: (id: number, problem: string | null) => void
   onOpenProgramme?: () => void
 }) {
   const { data, error, loading } = usePoll<{
@@ -332,13 +272,21 @@ export default function Timeline({
     problems?: string[]
     truncated?: number
   }>(path, pollMs, { keepPrevious: true })
-  const [lens, setLens] = useState<string | null>(null)
-  const [quiet, setQuiet] = useState(false)
   const [follow, setFollow] = useState<Follow | null>(null)
 
-  const all = useMemo(() => data?.events ?? [], [data])
+  // dispatch rows for bricks that don't exist (kind 'asked', no goal):
+  // the backend's label falls back to the problem name — identical on
+  // every row — and there is no goal to open or follow. They fail the
+  // log's one law, so they never render; asked rows for bricks that DO
+  // exist carry a name and a goal id and stay (owner, 2026-08-24)
+  const all = useMemo(
+    () =>
+      (data?.events ?? []).filter(
+        (e) => !(e.kind === 'asked' && e.goal_id === null),
+      ),
+    [data],
+  )
   const since = data?.log_since ?? null
-  const blocker = useMemo(() => topBlocker(all), [all])
   // one group is the ordinary case and reads exactly as it did before
   // groups existed — the argument is named only where there is a
   // choice of arguments to name (v35's standing law)
@@ -356,55 +304,21 @@ export default function Timeline({
   if (all.length === 0)
     return <div className="px-4 py-8 text-center text-xs text-ink-faint">Nothing has happened yet.</div>
 
-  const lensKinds = LENSES.find((l) => l.key === lens)?.kinds
   const shown = all.filter((e) => {
     if (follow !== null) return followMatches(follow, e)
-    if (lensKinds) return lensKinds.includes(e.kind)
-    return quiet || !QUIET_KINDS.has(e.kind)
+    // dispatch-start rows ('asked for') complete a brick's life when
+    // you FOLLOW it, but in the stream they double every attempt —
+    // the failed/proved rows already mark what happened (owner,
+    // 2026-08-25). Reachable through the expansion's follow link.
+    return e.kind !== 'asked'
   })
-  const quietHidden = follow === null && !lensKinds && !quiet
-    ? all.filter((e) => QUIET_KINDS.has(e.kind)).length
-    : 0
-
-  const chip = (key: string | null, label: string, count: number, title?: string) => (
-    <button
-      key={key ?? 'all'}
-      className={`rounded-full border px-2 py-0.5 text-[11px] ${
-        lens === key
-          ? 'border-star/60 bg-star/10 text-star'
-          : 'border-edge text-ink-faint hover:text-ink'
-      }`}
-      onClick={() => setLens(lens === key ? null : key)}
-      title={title}
-    >
-      {label} <span className="tnum">{count}</span>
-    </button>
-  )
 
   return (
     <div className="flex flex-col">
-      {/* where the machine is burning attempts. It lived in the problem
-          header until 2026-08-09; it belongs next to its own evidence,
-          and one click IS that evidence. */}
-      {follow === null && blocker && (
-        <div className="mb-2 flex items-baseline gap-2 px-2 text-[11px]">
-          <span className="text-ink-faint">most failures</span>
-          <button
-            className="cursor-pointer font-mono text-[12px] text-ink-dim underline decoration-ink-faint/50 underline-offset-2 hover:text-ink"
-            title="read what happened on each attempt"
-            onClick={() => setFollow({ kind: 'goal', label: blocker.label })}
-          >
-            {blocker.label}
-          </button>
-          <span
-            className="tnum text-ink-faint"
-            title="failures the engine filed against it, with a reason each — not the goal's attempt counter, which is a different number"
-          >
-            {blocker.failures} recorded failure{blocker.failures === 1 ? '' : 's'}
-          </span>
-        </div>
-      )}
-      {follow !== null ? (
+      {/* nothing sits above the log any more — no lens chips, no held-
+          back count. When you are following one object, that state has
+          to be visible and reversible, so THAT line stays. */}
+      {follow !== null && (
         <div className="mb-2 flex items-center gap-3 px-2">
           <span className="text-[11px] text-ink-faint">following</span>
           <span
@@ -421,23 +335,6 @@ export default function Timeline({
           >
             clear
           </button>
-        </div>
-      ) : (
-        <div className="mb-2 flex flex-wrap items-center gap-1.5 px-2">
-          {chip(null, 'all', all.length - quietHidden)}
-          {LENSES.map((l) => {
-            const n = all.filter((e) => l.kinds.includes(e.kind)).length
-            return n > 0 ? chip(l.key, l.label, n, l.title) : null
-          })}
-          {quietHidden > 0 && (
-            <button
-              className="text-[11px] text-ink-faint underline decoration-edge-strong underline-offset-2 hover:text-ink"
-              onClick={() => setQuiet(true)}
-              title="infrastructure deaths that cost no attempt, and revision proposals the reviewer rejected"
-            >
-              +{quietHidden} quiet
-            </button>
-          )}
         </div>
       )}
       {shown.length === 0 && (

@@ -426,14 +426,22 @@ function DeleteProblem({ problem }: { problem: string }) {
   )
 }
 
-export default function Problem({ name }: { name: string }) {
+export default function Problem({
+  name,
+  initialGoal = null,
+}: {
+  name: string
+  /** deep link: a goal id to select on the stars tab (run timeline
+   * name clicks land here) */
+  initialGoal?: number | null
+}) {
   const { data, error, loading } = usePoll<ProblemDetail>(
     `/api/problems/${encodeURIComponent(name)}`,
   )
   const { data: daemon } = usePoll<DaemonStatus>('/api/daemon', 3000)
   const [tab, setTab] = useState<Tab>('stars')
   const [intentDirty, setIntentDirty] = useState(false)
-  const [selectedGoal, setSelectedGoal] = useState<number | null>(null)
+  const [selectedGoal, setSelectedGoal] = useState<number | null>(initialGoal)
   // stars lit by hovering a route in the goal panel (owner: the text
   // and the map must point at each other)
   const [routeHover, setRouteHover] = useState<number[] | null>(null)
@@ -511,26 +519,17 @@ export default function Problem({ name }: { name: string }) {
           </div>
           <div className="flex items-center gap-4">
             <RunControl problem={data.name} />
-            {data.goals.length > 0 && (
-              <div
-                className="flex h-[3px] w-28 overflow-hidden rounded-full bg-surface-3"
-                title={`${proved} proved of ${data.goals.length} goals (bright = proved, mid = in progress)`}
-              >
-                <div
-                  className="h-full bg-starlight/80 transition-[width] duration-700"
-                  style={{ width: `${(proved / data.goals.length) * 100}%` }}
-                />
-                <div
-                  className="h-full bg-accent/50 transition-[width] duration-700"
-                  style={{
-                    width: `${(data.goals.filter((g) => g.status === 'open' || g.status === 'attempting').length / data.goals.length) * 100}%`,
-                  }}
-                />
-              </div>
-            )}
+            {/* the meter that used to sit here drew the fraction beside
+                it a second time — same two numbers, less precisely, and
+                the reader had to be told which grey meant what. Its one
+                distinct fact (the live/settled split) is in the tooltip
+                (owner, 2026-08-26: "光條不好懂"). */}
             <div
               className="tnum text-xs text-ink-faint"
               title={[
+                `${proved} proved · ${
+                  data.goals.filter((g) => g.status === 'open' || g.status === 'attempting').length
+                } still open of ${data.goals.length} goals`,
                 data.ingested_at && `ingested ${relTime(data.ingested_at)}`,
                 data.library_bridged_at && `bridged ${relTime(data.library_bridged_at)}`,
               ]

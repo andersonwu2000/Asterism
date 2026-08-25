@@ -235,12 +235,13 @@ export default function Papers() {
   const hasFiles = (e: React.DragEvent) => e.dataTransfer.types.includes('Files')
 
   const papers = data?.papers ?? []
-  // the shelf arranged by who each paper serves; `pick` narrows to one
-  // group ('' = the unregistered pile), the chips above are the menu
+  // the shelf arranged by who each paper serves. The chip menu that
+  // filtered these went out with the timeline's (owner, 2026-08-26):
+  // the section headers already say which problem a paper is registered
+  // under, and that was the question — a second control that answers it
+  // again is furniture, and the browser's own find is a better filter
+  // than a row of pills.
   const groups = shelfGroups(papers)
-  const [pick, setPick] = useState<string | null>(null)
-  const shown =
-    pick === null ? groups : groups.filter((g) => (g.problem ?? '') === pick)
   return (
     <div
       className="relative min-h-full"
@@ -343,43 +344,6 @@ export default function Papers() {
         </EmptyState>
       ) : (
         <>
-        {/* the menu the pile grew to need: one chip per problem the
-            shelf serves. Hidden while everything is one group — a
-            single-problem shelf reads as it always did */}
-        {groups.length > 1 && (
-          <div className="mb-3 flex flex-wrap items-center gap-1.5">
-            <button
-              className={`rounded-full border px-2 py-0.5 text-[11px] ${
-                pick === null
-                  ? 'border-star/60 bg-star/10 text-star'
-                  : 'border-edge text-ink-faint hover:text-ink'
-              }`}
-              onClick={() => setPick(null)}
-            >
-              all <span className="tnum">{papers.length}</span>
-            </button>
-            {groups.map((g) => (
-              <button
-                key={g.problem ?? ''}
-                className={`rounded-full border px-2 py-0.5 text-[11px] ${
-                  pick === (g.problem ?? '')
-                    ? 'border-star/60 bg-star/10 text-star'
-                    : 'border-edge text-ink-faint hover:text-ink'
-                }`}
-                title={
-                  g.problem ??
-                  'registered under no problem — uploaded and never bound, or its problem was reset and the binding went with it'
-                }
-                onClick={() =>
-                  setPick(pick === (g.problem ?? '') ? null : (g.problem ?? ''))
-                }
-              >
-                {g.problem ? (g.problem.split('.').pop() ?? g.problem) : 'unregistered'}{' '}
-                <span className="tnum">{g.papers.length}</span>
-              </button>
-            ))}
-          </div>
-        )}
         <table className="w-full table-fixed border-collapse text-left">
           <thead>
             <tr className="border-b border-edge text-xs text-ink-faint">
@@ -396,10 +360,11 @@ export default function Papers() {
             </tr>
           </thead>
           <tbody>
-            {shown.map((g) => (
+            {groups.map((g) => (
               <Fragment key={g.problem ?? ''}>
                 {/* section header only when there is a second section
-                    to tell apart — same law as the chips */}
+                    to tell apart: a single-problem shelf reads as it
+                    always did */}
                 {groups.length > 1 && (
                   <tr>
                     <td

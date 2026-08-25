@@ -19,8 +19,8 @@ import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
 import StrategyPanel from '../components/StrategyPanel'
 import LogTail from '../components/LogTail'
-import type {
-  Meta, ConfigSetting, ProblemDetail, RunStatus, RunWorker } from '../lib/types'
+import { LeanProbe } from '../components/LeanProbe'
+import type { Meta, ProblemDetail, RunStatus, RunWorker } from '../lib/types'
 
 /*
  * Run — mission control. The one page that answers "what is the
@@ -210,6 +210,10 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
   // the lane's OWN problem outranks the console's lens — a pattern
   // scope runs agents across several problems at once
   const laneProblem = w.problem ?? problem
+  // "run a snapshot": the tail as it stood at press time, copied into
+  // the reader's Lean slot as an interactive probe — the cursor shows
+  // the goal at any line while the agent keeps writing the original
+  const [probe, setProbe] = useState<{ seed: string; seq: number } | null>(null)
   return (
     <div className="rounded-xl border border-edge bg-surface p-3">
       <div className="flex items-baseline gap-2.5">
@@ -304,9 +308,38 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
               {renderProse(stableMdTail(w.file.tail, w.file.size), { mode: 'document' })}
             </div>
           ) : (
-            <pre className="mt-1.5 max-h-96 overflow-y-auto rounded-lg border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
-              <Lean code={w.file.tail} />
-            </pre>
+            <>
+              {laneProblem && (
+                <div className="mt-1 flex justify-end">
+                  <button
+                    className="text-[10px] text-ink-faint underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"
+                    title="copy the patch as it stands into the reader's Lean slot — the cursor then shows the goal at any line; edits land in the copy, never in the agent's file"
+                    onClick={() =>
+                      setProbe((p) => ({
+                        seed: `namespace Problems.${laneProblem}\n${w.file!.tail}\nend Problems.${laneProblem}`,
+                        seq: (p?.seq ?? 0) + 1,
+                      }))
+                    }
+                  >
+                    run a snapshot
+                  </button>
+                </div>
+              )}
+              <pre className="max-h-96 overflow-y-auto rounded-lg border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
+                <Lean code={w.file.tail} />
+              </pre>
+              {/* the snapshot probe (Library's own block): interactive,
+                  cursor-goal, editable — the copy is the reader's; the
+                  agent's file streams on above, untouched */}
+              {probe && laneProblem && (
+                <LeanProbe
+                  key={probe.seq}
+                  seed={probe.seed}
+                  module={`Problems.${laneProblem}.Defs`}
+                  onClose={() => setProbe(null)}
+                />
+              )}
+            </>
           )}
         </details>
       ) : (
@@ -389,7 +422,20 @@ export function QuotaMeter({
   )
 }
 
-export default function Run() {
+export interface SkyJump {
+  id: number
+  problem: string
+  /** grows per click so the same goal can be jumped twice */
+  seq: number
+}
+
+export default function Run({
+  focus = null,
+}: {
+  /** a timeline name click asking the console's sky to select a node;
+   * a goal outside the focused problem deep-links to its own page */
+  focus?: SkyJump | null
+}) {
   // lens pick: a pattern scope runs several problems in one daemon —
   // the raw scope ("PutnamCmp.%") used to reach the UI as a problem
   // name, 404 the detail fetch and blank the sky (owner, 2026-07-19).
@@ -399,7 +445,6 @@ export default function Run() {
     lens ? `/api/run?problem=${encodeURIComponent(lens)}` : '/api/run',
     2000,
   )
-  const { data: cfg } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
   // which backend each seat rides — the quota strip must NAME whose
   // window it shows and stay silent about accounts nothing spends
   // (owner 2026-08-22: a zen fleet ran under an unlabeled Claude meter)
@@ -421,6 +466,39 @@ export default function Run() {
     setSelGoal(null)
     setSelStrategy(null)
   }, [focusProblem])
+  // timeline → sky umbilical: consume each jump once (seq guards the
+  // detail polls from re-scrolling every tick). A goal in THIS sky is
+  // selected in place; anything else lives on its problem's page.
+  const jumpedRef = useRef<number>(-1)
+  // a jump whose problem is under the run but not focused: the console
+  // re-lenses onto it, and the selection lands when that sky arrives
+  const [pendingJump, setPendingJump] = useState<number | null>(null)
+  useEffect(() => {
+    if (!focus || jumpedRef.current === focus.seq) return
+    // the run status itself may still be loading — deciding "not in
+    // this sky" before it lands threw every jump off the page
+    if (data === null) return
+    if (detail === null && focusProblem !== null) return // detail still loading
+    jumpedRef.current = focus.seq
+    const here = detail?.goals.some((g) => g.id === focus.id) ?? false
+    if (here) {
+      setSelGoal(focus.id)
+      setSelStrategy(null)
+      skyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    } else if ((data.problems ?? []).includes(focus.problem)) {
+      setLens(focus.problem)
+      setPendingJump(focus.id)
+    } else {
+      navigate(`/problems/${encodeURIComponent(focus.problem)}/g/${focus.id}`)
+    }
+  }, [focus, detail, focusProblem, data])
+  useEffect(() => {
+    if (pendingJump === null || detail === null) return
+    if (!detail.goals.some((g) => g.id === pendingJump)) return
+    setSelGoal(pendingJump)
+    setPendingJump(null)
+    skyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [pendingJump, detail])
   // lane ↔ star umbilical: hovering an agent's lane lights the star
   // it is working (design round — the lanes and the sky were two
   // disconnected worlds)
@@ -678,14 +756,11 @@ export default function Run() {
         </div>
       )}
 
+      {/* figures, no meter: the bar that led this line drew proved/total
+          a second time, three words to its right (owner, 2026-08-26 —
+          same call as the board and the problem header) */}
       {g && g.total > 0 && (
         <div className="mt-4 flex items-center gap-3">
-          <div className="h-1 max-w-md flex-1 overflow-hidden rounded-full bg-surface-2">
-            <div
-              className="h-full bg-starlight/70 transition-[width] duration-700"
-              style={{ width: `${(g.proved / g.total) * 100}%` }}
-            />
-          </div>
           <span className="tnum text-xs text-ink-dim">
             {g.proved}/{g.total} proved
           </span>
@@ -776,30 +851,44 @@ export default function Run() {
 
       {running && (
         <section className="mt-7">
-          {/* the pool IS the machine's width: dispatch.pool slots,
-              each busy (a lane) or free (a dashed vacancy) — parallel
-              capacity readable at a glance (owner's ask) */}
+          {/* the pool follows the RAM ledger (dispatch.ram_budget):
+              target_slots moves with the NL reserve, so the yaml
+              `dispatch.pool` number is a fallback, not the truth. The
+              daemon reads the gateway's live counts into d.slots —
+              with it the strip shows the real berths again (lanes,
+              receipts, free vacancies ≤ target); without it (gateway
+              not answering) only the busy lanes are claimed. */}
           {(() => {
-            const pool =
-              Number(cfg?.settings.find((s) => s.key === 'dispatch.pool')?.resolved ?? 0) || 0
-            const slotCount = Math.max(pool, workers.length)
-            const freeHint =
-              d.gateway === 'warming'
-                ? 'free — agents spawn once the toolchain is hot'
-                : 'free — waiting for work'
+            const st = d.slots
+            const target = st?.target ?? 0
+            // receipts borrow berths first; vacancies fill what's left.
+            // max(0) everywhere: the two polls can momentarily disagree
+            const ghostsShown = st
+              ? Math.min(
+                  ghostsRef.current.length,
+                  Math.max(0, target - workers.length),
+                )
+              : 0
+            const free = st
+              ? Math.max(0, Math.min(st.free, target - workers.length - ghostsShown))
+              : 0
             return (
               <>
                 <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
                   slots
-                  {slotCount > 0 && (
+                  {(workers.length > 0 || st) && (
                     <span className="tnum ml-2 font-normal tracking-normal normal-case text-ink-faint/80">
-                      {workers.length}/{slotCount} busy
+                      {st
+                        ? `${workers.length}/${target} busy · ${free} free`
+                        : `${workers.length} busy`}
                     </span>
                   )}
                 </div>
-                {slotCount === 0 ? (
+                {workers.length === 0 && free === 0 ? (
                   <div className="text-xs text-ink-faint">
-                    none this instant — between batches
+                    {d.gateway === 'warming'
+                      ? 'none yet — agents spawn once the toolchain is hot'
+                      : 'none this instant — between batches'}
                   </div>
                 ) : (
                   <div className="grid gap-3 lg:grid-cols-2">
@@ -821,13 +910,12 @@ export default function Run() {
                         </div>
                       )
                     })}
-                    {/* receipts occupy the slots they just vacated —
-                        never MORE cells than dispatch.pool (owner:
-                        slot=4 means the grid tops out at 4) */}
+                    {/* receipts: what just landed, for half a minute —
+                        they borrow the berths their lanes vacated */}
                     {(ghostsRef.current = ghostsRef.current.filter(
                       (g) => g.until > Date.now(),
                     ))
-                      .slice(0, Math.max(0, slotCount - workers.length))
+                      .slice(0, ghostsShown)
                       .map((g) => {
                       const goal = detail?.goals.find((x) => x.slug === g.slug)
                       const held = g.leased_at
@@ -868,26 +956,18 @@ export default function Run() {
                         </div>
                       )
                     })}
-                    {/* one card PER free slot — a slot is a fixed berth
-                        (owner, 2026-07-14: collapsing them broke the
-                        spatial metaphor); quieter ink than the working
-                        lanes so the vacancies never compete */}
-                    {(() => {
-                      const ghostsShown = Math.min(
-                        ghostsRef.current.length,
-                        Math.max(0, slotCount - workers.length),
-                      )
-                      const free = slotCount - workers.length - ghostsShown
-                      return Array.from({ length: Math.max(0, free) }).map((_, i) => (
-                        <div
-                          key={`free${i}`}
-                          className="flex min-h-24 items-center justify-center rounded-xl border border-dashed border-edge/60 text-[11px] text-ink-faint/70"
-                          title="an open slot for one more agent (engine setting: dispatch.pool)"
-                        >
-                          {freeHint}
-                        </div>
-                      ))
-                    })()}
+                    {/* free berths — quieter ink than the working lanes
+                        so the vacancies never compete; a berth is a real
+                        count again (the gateway's own free figure) */}
+                    {Array.from({ length: free }).map((_, i) => (
+                      <div
+                        key={`free${i}`}
+                        className="flex min-h-24 items-center justify-center rounded-xl border border-dashed border-edge/60 text-[11px] text-ink-faint/70"
+                        title="an open berth — the RAM ledger's current target has room for one more agent"
+                      >
+                        free — waiting for work
+                      </div>
+                    ))}
                   </div>
                 )}
               </>

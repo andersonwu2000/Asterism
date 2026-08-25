@@ -115,25 +115,37 @@ export function Select({
   )
 }
 
-/** Problem status → dot + label chip. One visual language for every
- * state; awaiting_human is the single loud exception (it's the one
- * state that is strictly the human's move). */
-/* One attention system (design review): amber = the human's move
- * (needs input / sign-off), red = broken or destructive only. */
-const STATUS_CHIP: Record<ProblemStatus, { label: string; cls: string; dot: string }> = {
-  proving: { label: 'proving', cls: 'text-accent bg-accent/10', dot: 'bg-accent animate-pulse' },
-  paused: { label: 'paused', cls: 'text-ink-dim bg-wash-2', dot: 'bg-ink-dim' },
-  awaiting_human: { label: 'needs input', cls: 'bg-warn text-bg font-semibold', dot: 'bg-bg' },
-  stalled: { label: 'stalled', cls: 'text-danger bg-danger/10', dot: 'bg-danger' },
-  idle: { label: 'idle', cls: 'text-ink-faint', dot: 'bg-ink-faint/60' },
-  signoff_pending: { label: 'sign-off', cls: 'text-warn bg-warn/15', dot: 'bg-warn' },
-  ingested: { label: 'complete', cls: 'text-ok bg-ok/10', dot: 'bg-ok' },
-  bridged: {
-    label: 'in Library',
-    cls: 'text-ink-dim border border-edge-strong',
-    dot: 'bg-starlight',
-  },
+/** Problem status → one mark: a state dot + a word, at one size, on
+ * one baseline. Brightness and motion carry the state; SHAPE carries
+ * exactly one thing — the filled pill means "this row is your move",
+ * and nothing else may wear it. Every other status is a plain word, so
+ * a board of settled rows reads as one quiet column.
+ *
+ * The rule used to be written down ("pills reserved for states that
+ * ask something") and contradicted in the same file: paused, proving,
+ * complete and in-Library all wore chips too, and the Board answered
+ * by inventing a SECOND vocabulary of bare text for the settled three.
+ * Three treatments in one column is what the reader actually saw
+ * (owner, 2026-08-26). One rule, applied here, is the fix — the Board
+ * no longer overrides anything. */
+const STATUS_MARK: Record<ProblemStatus, { label: string; ink: string; dot: string }> = {
+  proving: { label: 'proving', ink: 'text-ink', dot: 'bg-accent animate-pulse' },
+  paused: { label: 'paused', ink: 'text-ink-dim', dot: 'bg-ink-dim' },
+  stalled: { label: 'stalled', ink: 'text-danger font-medium', dot: 'bg-danger' },
+  // the two the human owns — both wear the pill, and their labels
+  // rhyme so the class reads before the word does
+  awaiting_human: { label: 'needs input', ink: '', dot: '' },
+  signoff_pending: { label: 'needs sign-off', ink: '', dot: '' },
+  ingested: { label: 'complete', ink: 'text-ink-faint', dot: 'bg-ink-faint/60' },
+  bridged: { label: 'in Library', ink: 'text-ink-dim', dot: 'bg-starlight' },
+  idle: { label: 'not started', ink: 'text-ink-faint', dot: 'bg-ink-faint/40' },
 }
+
+/** The states that are strictly the human's move — the pill's sole
+ * owners. Brightness cannot separate them from live work in an
+ * achromatic palette (warn and ink are two greys apart), so inversion
+ * does it: DESIGN.md's fifth axis, spent once. */
+const YOUR_MOVE: ProblemStatus[] = ['awaiting_human', 'signoff_pending']
 
 const STATUS_HINT: Record<ProblemStatus, string> = {
   proving: 'the engine is working on it right now',
@@ -146,16 +158,37 @@ const STATUS_HINT: Record<ProblemStatus, string> = {
   bridged: 'merged into the Library (engine term: bridged)',
 }
 
-export function StatusBadge({ status }: { status: ProblemStatus }) {
+export function StatusBadge({
+  status,
+  flush,
+}: {
+  status: ProblemStatus
+  /** pull the pill's own padding back out, so its dot sits on the same
+   * vertical line as every plain mark's dot — a status COLUMN wants one
+   * dot grid, a header next to a title does not. */
+  flush?: boolean
+}) {
   // Unknown status must degrade to the quietest claim, never the
   // loudest — "proving" asserts live work the server didn't claim.
-  const c = STATUS_CHIP[status] ?? STATUS_CHIP.idle
+  const c = STATUS_MARK[status] ?? STATUS_MARK.idle
+  if (YOUR_MOVE.includes(status))
+    return (
+      <span
+        title={STATUS_HINT[status]}
+        className={`inline-flex items-center gap-1.5 rounded-full bg-warn px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap text-bg ${
+          flush ? '-ml-2' : ''
+        }`}
+      >
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-bg" />
+        {c.label}
+      </span>
+    )
   return (
     <span
       title={STATUS_HINT[status]}
-      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium whitespace-nowrap ${c.cls}`}
+      className={`inline-flex items-center gap-1.5 text-[11px] whitespace-nowrap ${c.ink}`}
     >
-      <span className={`h-1.5 w-1.5 rounded-full ${c.dot}`} />
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${c.dot}`} />
       {c.label}
     </span>
   )
