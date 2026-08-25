@@ -42,9 +42,10 @@ def test_target_slots_owner_worked_example():
     unconditional one-slot margin, ~21 GB of Lean field."""
     t = rl.compute_target_slots(budget_gb=28.0, nl_demand=12,
                                 slot_gb=0.95, nl_gb=0.3)
-    # floor((28 - 3.6 - 0.95 - cache 2.5) / 0.95) — the cache reserve
-    # is a tenant of the budget (owner ruling 2026-08-26)
-    assert t == 22
+    # floor((28 - 3.6 - 0.95 - cache 5 - base 3) / 0.95) — the
+    # four-term model: fixed base + per-slot + per-NL + file working
+    # set, every byte in exactly one term (owner-accepted 2026-08-26)
+    assert t == 16
 
 
 def test_target_slots_floor_is_one_even_under_nl_flood():
@@ -98,8 +99,13 @@ def test_nl_admit_floor_is_absolute_not_machine_minus_budget():
     6.5 GB vs a 17.3 GB floor) and NL admission would never fire
     (2026-08-25). The floor is an absolute safety margin; the BUDGET
     bounds the ledger's own modeled footprint instead."""
+    # machine-scaled since 2026-08-26 (the 1.5 GB absolute floor was
+    # sized for a 32 GB box; on 125 GB the cache thrashed long before
+    # it and strategists dispatched straight into the crush)
     assert rl.nl_admit_floor_gb(15.0, 32.0, nl_gb=0.3) == \
-        pytest.approx(rl.ABS_AVAILABLE_FLOOR_GB + 0.3)
+        pytest.approx(rl.pressure_low_gb(32.0) + 0.3)
+    assert rl.nl_admit_floor_gb(110.0, 125.0, nl_gb=0.3) == \
+        pytest.approx(0.06 * 125.0 + 0.3)
     # independent of how much of the machine the budget leaves
     assert rl.nl_admit_floor_gb(28.0, 32.0, nl_gb=0.3) == \
         rl.nl_admit_floor_gb(15.0, 32.0, nl_gb=0.3)
@@ -110,14 +116,15 @@ def test_nl_admission_is_bounded_by_the_modeled_footprint(monkeypatch):
     admission stops when open slots + NL spawns modeled at their
     coefficients would exceed the budget (the field width IS the token
     burn rate on paid seats — user 2026-08-25)."""
-    led = rl.DispatcherLedger(15.0, 32.0)
+    led = rl.DispatcherLedger(28.0, 32.0)
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.5)
     monkeypatch.setattr(rl, "available_gb", lambda: 20.0)
     led.open_slots = 12
     led.slot_gb = 1.0
-    # modeled = 12*1.0 + (n+1)*0.5 + cache 2.5 ≤ 15 → admits n = 0 only
-    assert led.nl_admissible(0) is True
-    assert led.nl_admissible(1) is False
+    # modeled = 12*1.0 + (n+1)*0.5 + cache 5 + base 3 ≤ 28
+    # → (n+1)*0.5 ≤ 8 → admits through n = 15 (equality admits)
+    assert led.nl_admissible(15) is True
+    assert led.nl_admissible(16) is False
 
 
 def test_agent_proc_prefixes_cover_every_provider():
@@ -136,9 +143,17 @@ def test_agent_proc_prefixes_cover_every_provider():
 
 # ── DispatcherLedger ────────────────────────────────────────────
 
+def _quiet_pressure(monkeypatch):
+    """Pin the measured-pressure axes calm so tick tests stay about
+    the model (the pressure feedback has its own tests)."""
+    monkeypatch.setattr(rl, "framework_current_gb", lambda: None)
+    monkeypatch.setattr(rl, "available_gb", lambda: 50.0)
+
+
 def test_ledger_tick_pushes_and_ingests_the_reply(monkeypatch):
     led = rl.DispatcherLedger(28.0, 32.0)
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    _quiet_pressure(monkeypatch)
     pushed = {}
 
     def push(target, min_avail):
@@ -155,8 +170,8 @@ def test_ledger_tick_pushes_and_ingests_the_reply(monkeypatch):
     import math
     seed = rl.slot_recycle_gb()
     assert pushed["target"] == math.floor(
-        (28.0 - 3.6 - (seed + 0.3) - rl.cache_reserve_gb())
-        / (seed + 0.3))
+        (28.0 - 3.6 - (seed + 0.3) - rl.cache_reserve_gb()
+         - rl.base_reserve_gb()) / (seed + 0.3))
     assert pushed["min_avail"] == pytest.approx(rl.ABS_AVAILABLE_FLOOR_GB)
     assert led.open_slots == 7 and led.free_slots == 3
     # EMA, not assignment: milliseconds after seeding, one reading must
@@ -177,7 +192,8 @@ def test_slot_price_seeds_pessimistic_and_measures_only_down(monkeypatch):
     import math
     cost = rl.slot_recycle_gb() + rl.NL_GB_FALLBACK
     assert rl.compute_target_slots(budget_gb=110.0, nl_demand=0) == \
-        math.floor((110.0 - cost - rl.cache_reserve_gb()) / cost)
+        math.floor((110.0 - cost - rl.cache_reserve_gb()
+                    - rl.base_reserve_gb()) / cost)
 
 
 def test_slot_price_is_an_ema_that_converges_when_aged(monkeypatch):
@@ -185,6 +201,7 @@ def test_slot_price_is_an_ema_that_converges_when_aged(monkeypatch):
     lands on the measured mean — the window forgets, it does not pin."""
     led = rl.DispatcherLedger(28.0, 32.0)
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    _quiet_pressure(monkeypatch)
     led._slot_gb_at -= led.SLOT_GB_EMA_TAU_SEC   # pretend hours passed
     led.tick(nl_demand=0, push=lambda t, f: {
         "open": 2, "free": 1, "slot_private_mb": {"0": 1100, "1": 900}})
@@ -196,6 +213,7 @@ def test_all_none_readings_do_not_move_the_price(monkeypatch):
     reply must not drag the price toward the fallback."""
     led = rl.DispatcherLedger(28.0, 32.0)
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    _quiet_pressure(monkeypatch)
     led._slot_gb_at -= led.SLOT_GB_EMA_TAU_SEC
     before = led.slot_gb
     led.tick(nl_demand=0, push=lambda t, f: {
@@ -209,8 +227,8 @@ def test_nl_admission_debits_pending_credit(monkeypatch):
     the NL coefficient (external review 2026-08-25, P1)."""
     led = rl.DispatcherLedger(28.0, 32.0)
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
-    monkeypatch.setattr(rl, "available_gb", lambda: 2.6)
-    # floor = 1.5 + 0.3 = 1.8; headroom = 0.8 → 3 admits
+    monkeypatch.setattr(rl, "available_gb", lambda: 4.5)
+    # floor = pressure_low(32)=3.5 + 0.3 = 3.8; headroom 0.7 → 3 admits
     assert led.nl_admissible(0) is True
     led.note_nl_admit()
     assert led.nl_admissible(1) is True
@@ -218,7 +236,7 @@ def test_nl_admission_debits_pending_credit(monkeypatch):
     assert led.nl_admissible(2) is True
     led.note_nl_admit()
     assert led.nl_admissible(3) is False, \
-        "3 pending x 0.3 GB ate the 0.8 GB headroom"
+        "3 pending x 0.3 GB ate the 0.7 GB headroom"
     # credits expire once the RSS has had time to show up
     led._nl_admits = [t - led.NL_CREDIT_SEC - 1 for t in led._nl_admits]
     assert led.nl_admissible(3) is True
@@ -232,6 +250,7 @@ def test_target_is_ram_only_backpressure_owns_cpu(monkeypatch):
     the pushed target."""
     led = rl.DispatcherLedger(110.0, 125.0)
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    _quiet_pressure(monkeypatch)
     for reply in ({"open": 0, "free": 0, "elab_cap": 6,
                    "elab_waiting": 0},
                   {"elab_cap": 6, "elab_waiting": 9},
@@ -245,11 +264,13 @@ def test_target_is_ram_only_backpressure_owns_cpu(monkeypatch):
         import math
         cost = rl.slot_recycle_gb() + 0.3
         assert pushed["t"] == math.floor(
-            (110.0 - cost - rl.cache_reserve_gb()) / cost)
+            (110.0 - cost - rl.cache_reserve_gb()
+             - rl.base_reserve_gb()) / cost)
     assert not hasattr(led, "cpu_cap")
 
 
 def test_ledger_tick_is_rate_limited(monkeypatch):
+    _quiet_pressure(monkeypatch)
     led = rl.DispatcherLedger(28.0, 32.0)
     # A loaded parallel test run can stall >15s between the two calls
     # (measured flake, 2026-08-25) — the interval under test must not
@@ -261,7 +282,8 @@ def test_ledger_tick_is_rate_limited(monkeypatch):
     assert len(calls) == 1, "second tick inside the interval must not push"
 
 
-def test_ledger_unreachable_gateway_keeps_last_counts():
+def test_ledger_unreachable_gateway_keeps_last_counts(monkeypatch):
+    _quiet_pressure(monkeypatch)
     led = rl.DispatcherLedger(28.0, 32.0)
     led.open_slots = 9
     led._last_push = 0.0
@@ -292,6 +314,76 @@ def test_cache_reserve_is_a_budget_tenant(monkeypatch):
         rl.compute_target_slots)
     assert "cache_reserve_gb()" in inspect.getsource(
         rl.DispatcherLedger.nl_admissible)
+
+
+# ── measured-pressure feedback ──────────────────────────────────
+
+def _tick(led, push=None):
+    led._last_push = 0.0
+    out = {}
+    led.tick(nl_demand=0,
+             push=push or (lambda t, f: (out.setdefault("t", t),
+                                         None)[1]))
+    return out.get("t")
+
+
+def test_pressure_pauses_dispatch_and_trims_the_target(monkeypatch):
+    """The owner-spotted hole: strategists kept dispatching while the
+    cgroup brushed MemoryMax. The cgroup's true footprint inside the
+    headroom -> dispatch pauses and the pushed target drops so
+    releases shed."""
+    led = rl.DispatcherLedger(110.0, 125.0)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    monkeypatch.setattr(rl, "framework_current_gb", lambda: 105.0)
+    monkeypatch.setattr(rl, "available_gb", lambda: 50.0)
+    calm_target = None
+    t1 = _tick(led)
+    assert led.dispatch_paused is True
+    assert led.nl_admissible(0) is False, "paused must stop NL too"
+    t2 = _tick(led)
+    assert t2 < t1, "cuts accumulate while hot"
+
+
+def test_pressure_available_axis_trips_alone(monkeypatch):
+    """Off-cgroup platforms (Windows local) keep the machine-scaled
+    available watermark as their pressure signal."""
+    led = rl.DispatcherLedger(110.0, 125.0)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    monkeypatch.setattr(rl, "framework_current_gb", lambda: None)
+    monkeypatch.setattr(rl, "available_gb",
+                        lambda: rl.pressure_low_gb(125.0) - 1.0)
+    _tick(led)
+    assert led.dispatch_paused is True
+
+
+def test_pressure_hysteresis_holds_then_releases(monkeypatch):
+    """Between the bands the state HOLDS (a 5 GB/min wave must not
+    flap the pause); past the calm band cuts release one per tick."""
+    led = rl.DispatcherLedger(110.0, 125.0)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    monkeypatch.setattr(rl, "available_gb", lambda: 50.0)
+    cur = {"v": 105.0}
+    monkeypatch.setattr(rl, "framework_current_gb", lambda: cur["v"])
+    _tick(led)
+    assert led.dispatch_paused is True
+    cut_hot = led._pressure_cut
+    cur["v"] = 100.0            # inside the band: 98 < 100 < 102
+    _tick(led)
+    assert led.dispatch_paused is True and led._pressure_cut == cut_hot
+    cur["v"] = 90.0             # calm: below 110 - 8 - 4
+    _tick(led)
+    assert led.dispatch_paused is False
+    assert led._pressure_cut == cut_hot - 1, "release is one per tick"
+
+
+def test_slot_reading_includes_page_tables():
+    """~180 MB of VmPTE per worker (13.3 GB across 77, census
+    2026-08-26) dies with the worker — it belongs in the per-slot
+    price, not in a fixed reserve."""
+    import inspect
+    from Tooling.lsp import gateway
+    src = inspect.getsource(gateway._slot_private_mb)
+    assert "_vm_pte_bytes" in src
 
 
 # ── partition + queue plumbing ──────────────────────────────────

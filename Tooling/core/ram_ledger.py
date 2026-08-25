@@ -87,15 +87,36 @@ def slot_recycle_gb() -> float:
         mb = SLOT_RECYCLE_MB_DEFAULT
     return mb / 1024.0
 
-#: Page-cache reserve INSIDE the budget — the mmap'd olean set every
-#: worker faults against (measured 1.8 GiB across 9,074 files,
-#: 2026-08-26) plus workspace file pages. The ledger models PRIVATE
-#: bytes, so without this line the model plans the cache's seats away;
-#: those pages are charged to OUR cgroup, and once a cgroup limit (or
-#: the machine) runs tight they are the only reclaimable thing in a
-#: swapless fleet — the kernel evicts them, every worker refaults
-#: them, and the loop eats all CPU (both 2026-08-26 flagship crushes).
-OLEAN_CACHE_RESERVE_GB = 2.5
+#: File working set INSIDE the budget — the mmap'd olean set every
+#: worker faults against (1.8 GiB across 9,074 files) plus workspace
+#: file pages; the fleet's cgroup weighed file=5.1 GB under load
+#: (census 2026-08-26). The ledger models PRIVATE bytes, so without
+#: this line the model plans the cache's seats away; those pages are
+#: charged to OUR cgroup, and once a cgroup limit (or the machine)
+#: runs tight they are the only reclaimable thing in a swapless fleet
+#: — the kernel evicts them, every worker refaults them, and the loop
+#: eats all CPU (both 2026-08-26 flagship crushes).
+OLEAN_CACHE_RESERVE_GB = 5.0
+
+#: The framework's own base footprint — daemon + gateway + shim +
+#: serve pythons (1.2 GB) and kernel slab (1.3 GB), both measured
+#: 2026-08-26 under load. The four-term model (fixed base + per-slot
+#: marginal + per-NL marginal + file working set) keeps every byte in
+#: exactly one term — the double-counting review's shape.
+BASE_RESERVE_GB = 3.0
+
+
+def base_reserve_gb() -> float:
+    """The fixed-base seat (env `ASTERISM_RAM_BASE_RESERVE_GB`
+    overrides)."""
+    import os
+    try:
+        v = float(os.environ.get("ASTERISM_RAM_BASE_RESERVE_GB", ""))
+        if v >= 0:
+            return v
+    except ValueError:
+        pass
+    return BASE_RESERVE_GB
 
 
 def cache_reserve_gb() -> float:
@@ -152,7 +173,8 @@ def compute_target_slots(*, budget_gb: float, nl_demand: int,
     if cache_gb is None:
         cache_gb = cache_reserve_gb()
     margin = slot_gb if margin_gb is None else margin_gb
-    lean_ram = budget_gb - nl_demand * nl_gb - margin - cache_gb
+    lean_ram = (budget_gb - nl_demand * nl_gb - margin - cache_gb
+                - base_reserve_gb())
     return max(1, min(max_slots, math.floor(lean_ram / slot_gb)))
 
 
@@ -190,12 +212,51 @@ def available_gb() -> float:
 ABS_AVAILABLE_FLOOR_GB = 1.5
 
 
+def pressure_low_gb(machine_gb: float) -> float:
+    """Below this measured available-RAM line the fleet is squeezing
+    the machine — dispatch pauses and the tick trims the slot target
+    (sheds land at release). Machine-scaled (owner-confirmed hole,
+    2026-08-26): the old absolute 1.5 GB floor was sized for a 32 GB
+    co-tenant box; on 125 GB the page cache thrashes long before it,
+    so strategists kept dispatching straight into the crush."""
+    return max(ABS_AVAILABLE_FLOOR_GB + 2.0, 0.06 * machine_gb)
+
+
+def pressure_high_gb(machine_gb: float) -> float:
+    """Above this line pressure trims release, one per tick — the gap
+    to `pressure_low_gb` is the hysteresis band that keeps a 5 GB/min
+    inflation wave (measured) from oscillating the feedback."""
+    return pressure_low_gb(machine_gb) + 4.0
+
+
+def framework_current_gb() -> "float | None":
+    """The daemon unit cgroup's `memory.current` — the framework's
+    TRUE total footprint (heap + page tables + slab + file pages),
+    kept by the kernel for free. This is the honest side of every
+    model-vs-reality gap at once: the census that found the model
+    saying 110 while the cgroup weighed 117.5 (2026-08-26) is exactly
+    this number. None off-Linux or outside a cgroup (Windows local:
+    the modeled footprint + available floor remain the only guards)."""
+    try:
+        with open("/proc/self/cgroup", "r", encoding="utf-8") as fh:
+            first = fh.read().strip().splitlines()[0]
+        rel = first.split("::", 1)[1] if "::" in first else ""
+        if not rel:
+            return None
+        with open(f"/sys/fs/cgroup{rel}/memory.current", "r",
+                  encoding="utf-8") as fh:
+            return int(fh.read().strip()) / 2**30
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def nl_admit_floor_gb(budget_gb: float, machine_gb: float,
                       nl_gb: float = NL_GB_FALLBACK) -> float:
-    """The measured floor below which NL dispatch queues — an absolute
-    machine-safety margin plus the unit about to be spent (see
+    """The measured floor below which NL dispatch queues — the
+    machine-scaled pressure line plus the unit about to be spent
+    (same signal the dispatch pause and the target trim consume; see
     ABS_AVAILABLE_FLOOR_GB for why this is NOT `machine - budget`)."""
-    return ABS_AVAILABLE_FLOOR_GB + nl_gb
+    return pressure_low_gb(machine_gb) + nl_gb
 
 
 #: Measured-NL-coefficient cache (a psutil process scan is not free;
@@ -287,6 +348,15 @@ class DispatcherLedger:
     #: credit so a tight pop loop cannot out-run the measurement
     #: (external review 2026-08-25, P1: burst over-admission).
     NL_CREDIT_SEC = 60.0
+    #: Pause dispatch when the cgroup's true footprint climbs within
+    #: this headroom of the budget — at the measured 5.4 GB/min
+    #: inflation rate (per-worker heap 0.45 -> 2.2 GB per elaboration
+    #: pass, 6 lanes) 8 GB buys the pause 90+ seconds of lead.
+    PRESSURE_HEADROOM_GB = 8.0
+    #: Extra calm required before the pause lifts / trims release
+    #: (hysteresis on the cgroup axis; the available axis has its own
+    #: band in pressure_low/high_gb).
+    PRESSURE_RELEASE_SLACK_GB = 4.0
 
     def __init__(self, budget_gb: float, machine_gb: float) -> None:
         self.budget_gb = budget_gb
@@ -300,6 +370,12 @@ class DispatcherLedger:
         self._last_push = 0.0
         self._slot_gb_at = time.monotonic()
         self._nl_admits: "list[float]" = []
+        #: Measured-pressure feedback (owner-approved 2026-08-26): the
+        #: model PLANS the target, the measured axes VETO it. `paused`
+        #: stops ALL dispatch; the cut trims the pushed target so
+        #: releases shed instead of re-claiming.
+        self.dispatch_paused = False
+        self._pressure_cut = 0
 
     def nl_hard_cap(self) -> int:
         """Absolute NL-parallelism backstop — what the budget could
@@ -327,15 +403,58 @@ class DispatcherLedger:
         first local run)."""
         if nl_in_flight >= self.nl_hard_cap():
             return False
+        if self.dispatch_paused:
+            return False
         nl_gb = nl_gb_measured()
         modeled = (self.open_slots * self.slot_gb
                    + (nl_in_flight + self._pending_nl() + 1) * nl_gb
-                   + cache_reserve_gb())
+                   + cache_reserve_gb() + base_reserve_gb())
         if modeled > self.budget_gb:
             return False
         return (available_gb() - self._pending_nl() * nl_gb
                 >= nl_admit_floor_gb(self.budget_gb, self.machine_gb,
                                      nl_gb))
+
+    def _apply_pressure(self, target: int, cost_gb: float) -> int:
+        """Measured feedback on the planned target — the missing half
+        of "the ledger PLANS; a measured veto DECIDES" (owner-spotted
+        hole 2026-08-26: strategists kept dispatching while the cgroup
+        brushed MemoryMax). Two live axes, either one trips the pause:
+        the unit cgroup's true footprint against the budget, and the
+        machine's available RAM against the scaled watermark. Trims
+        accumulate ~2 GB per tick while hot (releases shed toward the
+        cut target), release one step per calm tick — asymmetric on
+        purpose, an inflation wave moves at 5+ GB/min."""
+        cur = framework_current_gb()
+        avail = available_gb()
+        hot = ((cur is not None
+                and cur > self.budget_gb - self.PRESSURE_HEADROOM_GB)
+               or avail < pressure_low_gb(self.machine_gb))
+        calm = ((cur is None
+                 or cur < (self.budget_gb - self.PRESSURE_HEADROOM_GB
+                           - self.PRESSURE_RELEASE_SLACK_GB))
+                and avail > pressure_high_gb(self.machine_gb))
+        if hot:
+            step = max(1, math.ceil(2.0 / max(0.1, cost_gb)))
+            self._pressure_cut = min(max(0, target - 1),
+                                     self._pressure_cut + step)
+            if not self.dispatch_paused:
+                print(f"[ledger] measured pressure — dispatch PAUSED "
+                      f"(cgroup {cur if cur is None else round(cur, 1)}G"
+                      f" vs budget {self.budget_gb:.0f}G, available "
+                      f"{avail:.1f}G); target trimmed by "
+                      f"{self._pressure_cut}", flush=True)
+            self.dispatch_paused = True
+        elif calm:
+            if self._pressure_cut > 0:
+                self._pressure_cut -= 1
+            if self.dispatch_paused:
+                print(f"[ledger] pressure cleared — dispatch resumes "
+                      f"(available {avail:.1f}G); {self._pressure_cut} "
+                      f"trim(s) still releasing", flush=True)
+            self.dispatch_paused = False
+        # between the bands: hold state (hysteresis)
+        return max(1, target - self._pressure_cut)
 
     def tick(self, *, nl_demand: int, push) -> None:
         """Rate-limited recompute + push. `push(target, min_avail_gb)`
@@ -356,6 +475,7 @@ class DispatcherLedger:
         target = compute_target_slots(
             budget_gb=self.budget_gb, nl_demand=nl_demand,
             slot_gb=self.slot_gb + nl_gb, nl_gb=nl_gb)
+        target = self._apply_pressure(target, self.slot_gb + nl_gb)
         self.last_target = target
         resp = push(target, ABS_AVAILABLE_FLOOR_GB)
         if resp:

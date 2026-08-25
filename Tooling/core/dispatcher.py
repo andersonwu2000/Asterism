@@ -2752,6 +2752,12 @@ def run(workspace: Path, *, once: bool = False,
                     + _nl_fly,
                     push=lambda t, f: _gwl.push_warm_target(
                         t, f, workspace=workspace))
+                if ledger.dispatch_paused:
+                    # Measured pressure (cgroup footprint or available
+                    # RAM): NOTHING dispatches into a squeeze — in-
+                    # flight work keeps its seats, releases shed
+                    # (owner-spotted hole 2026-08-26).
+                    break
                 _lean_ok = (gateway_warm["ready"]
                             and _lean_fly < ledger.open_slots)
                 _nl_ok = ledger.nl_admissible(_nl_fly)

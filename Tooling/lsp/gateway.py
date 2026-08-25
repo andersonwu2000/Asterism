@@ -4583,6 +4583,18 @@ async def compute_endpoint(request: Request):
                          "seconds": res.seconds, "killed": res.killed})
 
 
+def _vm_pte_bytes(pid: int) -> int:
+    """VmPTE of one process, in bytes (0 where /proc is absent)."""
+    try:
+        with open(f"/proc/{pid}/status", "rb") as fh:
+            for ln in fh:
+                if ln.startswith(b"VmPTE:"):
+                    return int(ln.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
 def _slot_private_mb() -> "dict[int, int | None]":
     """slot_id -> the worker's PRIVATE bytes, in MB. None = not measured.
 
@@ -4630,7 +4642,14 @@ def _slot_private_mb() -> "dict[int, int | None]":
                     priv = proc.memory_full_info().uss
                 except (psutil.Error, OSError):
                     continue
-            by_uri[uri] = int(priv)
+            # Page tables are per-worker weight the heap numbers miss:
+            # Lean's sparse mappings cost ~180 MB of VmPTE per worker
+            # (census 2026-08-26: 13.3 GB across 77 workers — the
+            # fleet's second-largest tenant). They die with the worker,
+            # so both the recycle threshold and the ledger's slot price
+            # honestly include them. /proc is Linux-only; Windows
+            # reports heap alone as before.
+            by_uri[uri] = int(priv) + _vm_pte_bytes(proc.pid)
         for slot in _state.workers:
             hit = by_uri.get(slot.slot_uri)
             if hit is not None:
