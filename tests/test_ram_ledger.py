@@ -41,11 +41,14 @@ def test_target_slots_owner_worked_example():
     demand: 12 queued+in-flight NL at 0.3 GB → 6.6 GB reserve incl. the
     unconditional one-slot margin, ~21 GB of Lean field."""
     t = rl.compute_target_slots(budget_gb=28.0, nl_demand=12,
-                                slot_gb=0.95, nl_gb=0.3)
-    # floor((28 - 3.6 - 0.95 - cache 5 - base 3) / 0.95) — the
+                                slot_gb=0.95, nl_gb=0.3,
+                                machine_gb=32.0)
+    # floor((28 - 3.6 - 0.95 - cache 2 - base 1) / 0.95) — the
     # four-term model: fixed base + per-slot + per-NL + file working
-    # set, every byte in exactly one term (owner-accepted 2026-08-26)
-    assert t == 16
+    # set, every byte in exactly one term (owner-accepted 2026-08-26);
+    # reserves scale with the machine (the flagship constants shipped
+    # unscaled strangled the 32 GB box to 3 slots, 2026-08-26)
+    assert t == 21
 
 
 def test_target_slots_floor_is_one_even_under_nl_flood():
@@ -65,12 +68,15 @@ def test_target_quantization_is_the_hysteresis_band():
     """floor() IS the dead zone: NL demand must move ~slot/nl units
     before the target moves one slot — no event-delta counters to
     drift."""
-    base = rl.compute_target_slots(budget_gb=28.0, nl_demand=13,
-                                   slot_gb=0.95, nl_gb=0.3)
-    assert rl.compute_target_slots(budget_gb=28.0, nl_demand=14,
-                                   slot_gb=0.95, nl_gb=0.3) == base
-    assert rl.compute_target_slots(budget_gb=28.0, nl_demand=17,
-                                   slot_gb=0.95, nl_gb=0.3) < base
+    base = rl.compute_target_slots(budget_gb=28.0, nl_demand=14,
+                                   slot_gb=0.95, nl_gb=0.3,
+                                   machine_gb=32.0)
+    assert rl.compute_target_slots(budget_gb=28.0, nl_demand=15,
+                                   slot_gb=0.95, nl_gb=0.3,
+                                   machine_gb=32.0) == base
+    assert rl.compute_target_slots(budget_gb=28.0, nl_demand=18,
+                                   slot_gb=0.95, nl_gb=0.3,
+                                   machine_gb=32.0) < base
 
 
 # ── measured coefficients ───────────────────────────────────────
@@ -121,10 +127,10 @@ def test_nl_admission_is_bounded_by_the_modeled_footprint(monkeypatch):
     monkeypatch.setattr(rl, "available_gb", lambda: 20.0)
     led.open_slots = 12
     led.slot_gb = 1.0
-    # modeled = 12*1.0 + (n+1)*0.5 + cache 5 + base 3 ≤ 28
-    # → (n+1)*0.5 ≤ 8 → admits through n = 15 (equality admits)
-    assert led.nl_admissible(15) is True
-    assert led.nl_admissible(16) is False
+    # modeled = 12*1.0 + (n+1)*0.5 + cache 2 + base 1 ≤ 28
+    # → (n+1)*0.5 ≤ 13 → admits through n = 25 (equality admits)
+    assert led.nl_admissible(25) is True
+    assert led.nl_admissible(26) is False
 
 
 def test_agent_proc_prefixes_cover_every_provider():
@@ -170,8 +176,8 @@ def test_ledger_tick_pushes_and_ingests_the_reply(monkeypatch):
     import math
     seed = rl.slot_recycle_gb()
     assert pushed["target"] == math.floor(
-        (28.0 - 3.6 - (seed + 0.3) - rl.cache_reserve_gb()
-         - rl.base_reserve_gb()) / (seed + 0.3))
+        (28.0 - 3.6 - (seed + 0.3) - rl.cache_reserve_gb(32.0)
+         - rl.base_reserve_gb(32.0)) / (seed + 0.3))
     assert pushed["min_avail"] == pytest.approx(rl.ABS_AVAILABLE_FLOOR_GB)
     assert led.open_slots == 7 and led.free_slots == 3
     # EMA, not assignment: milliseconds after seeding, one reading must
@@ -191,9 +197,10 @@ def test_slot_price_seeds_pessimistic_and_measures_only_down(monkeypatch):
     # the default pricing of the pure function is the same worst case
     import math
     cost = rl.slot_recycle_gb() + rl.NL_GB_FALLBACK
-    assert rl.compute_target_slots(budget_gb=110.0, nl_demand=0) == \
-        math.floor((110.0 - cost - rl.cache_reserve_gb()
-                    - rl.base_reserve_gb()) / cost)
+    assert rl.compute_target_slots(budget_gb=110.0, nl_demand=0,
+                                   machine_gb=125.0) == \
+        math.floor((110.0 - cost - rl.cache_reserve_gb(125.0)
+                    - rl.base_reserve_gb(125.0)) / cost)
 
 
 def test_slot_price_is_an_ema_that_converges_when_aged(monkeypatch):
@@ -264,8 +271,8 @@ def test_target_is_ram_only_backpressure_owns_cpu(monkeypatch):
         import math
         cost = rl.slot_recycle_gb() + 0.3
         assert pushed["t"] == math.floor(
-            (110.0 - cost - rl.cache_reserve_gb()
-             - rl.base_reserve_gb()) / cost)
+            (110.0 - cost - rl.cache_reserve_gb(125.0)
+             - rl.base_reserve_gb(125.0)) / cost)
     assert not hasattr(led, "cpu_cap")
 
 
@@ -303,17 +310,22 @@ def test_cache_reserve_is_a_budget_tenant(monkeypatch):
     in the model, a swapless fleet evicts/refaults it in a loop (both
     2026-08-26 crushes). Env override for per-box tuning."""
     monkeypatch.delenv("ASTERISM_RAM_CACHE_RESERVE_GB", raising=False)
-    assert rl.cache_reserve_gb() == rl.OLEAN_CACHE_RESERVE_GB
+    monkeypatch.delenv("ASTERISM_RAM_BASE_RESERVE_GB", raising=False)
+    # machine-scaled with floors: flagship census at 125 GiB, olean
+    # floor on small boxes
+    assert rl.cache_reserve_gb(125.0) == pytest.approx(5.0)
+    assert rl.cache_reserve_gb(32.0) == pytest.approx(2.0)
+    assert rl.base_reserve_gb(125.0) == pytest.approx(3.0)
+    assert rl.base_reserve_gb(32.0) == pytest.approx(1.0)
     monkeypatch.setenv("ASTERISM_RAM_CACHE_RESERVE_GB", "4.0")
-    assert rl.cache_reserve_gb() == 4.0
+    assert rl.cache_reserve_gb(125.0) == 4.0, "env override is absolute"
     monkeypatch.setenv("ASTERISM_RAM_CACHE_RESERVE_GB", "banana")
-    assert rl.cache_reserve_gb() == rl.OLEAN_CACHE_RESERVE_GB
-    # both admission formulas carry it (one fact, both readers)
+    assert rl.cache_reserve_gb(32.0) == pytest.approx(2.0)
+    # both admission formulas carry both reserves (one fact per term)
     import inspect
-    assert "cache_reserve_gb()" in inspect.getsource(
-        rl.compute_target_slots)
-    assert "cache_reserve_gb()" in inspect.getsource(
-        rl.DispatcherLedger.nl_admissible)
+    for fn in (rl.compute_target_slots, rl.DispatcherLedger.nl_admissible):
+        src = inspect.getsource(fn)
+        assert "cache_reserve_gb(" in src and "base_reserve_gb(" in src
 
 
 # ── measured-pressure feedback ──────────────────────────────────

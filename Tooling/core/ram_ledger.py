@@ -96,19 +96,25 @@ def slot_recycle_gb() -> float:
 #: runs tight they are the only reclaimable thing in a swapless fleet
 #: — the kernel evicts them, every worker refaults them, and the loop
 #: eats all CPU (both 2026-08-26 flagship crushes).
-OLEAN_CACHE_RESERVE_GB = 5.0
+#: Machine-scaled: the two calibration points are the 125.6 GiB
+#: flagship census (file=5.1 GB under a 77-worker fleet) and the 32 GB
+#: local box (olean 1.8 GiB + a small workspace set ≈ 2 GB). Shipping
+#: the flagship constant unscaled strangled the local field to 3
+#: slots (2026-08-26).
+_CACHE_FLOOR_GB, _CACHE_FRACTION = 2.0, 0.04
 
 #: The framework's own base footprint — daemon + gateway + shim +
-#: serve pythons (1.2 GB) and kernel slab (1.3 GB), both measured
-#: 2026-08-26 under load. The four-term model (fixed base + per-slot
-#: marginal + per-NL marginal + file working set) keeps every byte in
-#: exactly one term — the double-counting review's shape.
-BASE_RESERVE_GB = 3.0
+#: serve pythons (1.2 GB) and kernel slab (1.3 GB), measured on the
+#: 125.6 GiB flagship under load; both shrink with fleet size, so the
+#: seat is machine-scaled with a floor. The four-term model (fixed
+#: base + per-slot marginal + per-NL marginal + file working set)
+#: keeps every byte in exactly one term.
+_BASE_FLOOR_GB, _BASE_FRACTION = 1.0, 0.024
 
 
-def base_reserve_gb() -> float:
+def base_reserve_gb(machine_gb: "float | None" = None) -> float:
     """The fixed-base seat (env `ASTERISM_RAM_BASE_RESERVE_GB`
-    overrides)."""
+    overrides with an absolute value)."""
     import os
     try:
         v = float(os.environ.get("ASTERISM_RAM_BASE_RESERVE_GB", ""))
@@ -116,12 +122,13 @@ def base_reserve_gb() -> float:
             return v
     except ValueError:
         pass
-    return BASE_RESERVE_GB
+    m = total_gb() if machine_gb is None else machine_gb
+    return max(_BASE_FLOOR_GB, _BASE_FRACTION * m)
 
 
-def cache_reserve_gb() -> float:
+def cache_reserve_gb(machine_gb: "float | None" = None) -> float:
     """The budget's page-cache seat (env `ASTERISM_RAM_CACHE_RESERVE_GB`
-    overrides the measured default)."""
+    overrides with an absolute value)."""
     import os
     try:
         v = float(os.environ.get("ASTERISM_RAM_CACHE_RESERVE_GB", ""))
@@ -129,7 +136,8 @@ def cache_reserve_gb() -> float:
             return v
     except ValueError:
         pass
-    return OLEAN_CACHE_RESERVE_GB
+    m = total_gb() if machine_gb is None else machine_gb
+    return max(_CACHE_FLOOR_GB, _CACHE_FRACTION * m)
 
 
 _BUDGET_RE = re.compile(
@@ -157,6 +165,7 @@ def compute_target_slots(*, budget_gb: float, nl_demand: int,
                          nl_gb: float = NL_GB_FALLBACK,
                          margin_gb: "float | None" = None,
                          cache_gb: "float | None" = None,
+                         machine_gb: "float | None" = None,
                          max_slots: int = MAX_SLOTS) -> int:
     """The pure target function. Idempotent — recompute from current
     demand any time; the floor() quantization IS the hysteresis band
@@ -171,10 +180,10 @@ def compute_target_slots(*, budget_gb: float, nl_demand: int,
     if slot_gb is None:
         slot_gb = slot_recycle_gb() + NL_GB_FALLBACK
     if cache_gb is None:
-        cache_gb = cache_reserve_gb()
+        cache_gb = cache_reserve_gb(machine_gb)
     margin = slot_gb if margin_gb is None else margin_gb
     lean_ram = (budget_gb - nl_demand * nl_gb - margin - cache_gb
-                - base_reserve_gb())
+                - base_reserve_gb(machine_gb))
     return max(1, min(max_slots, math.floor(lean_ram / slot_gb)))
 
 
@@ -408,7 +417,8 @@ class DispatcherLedger:
         nl_gb = nl_gb_measured()
         modeled = (self.open_slots * self.slot_gb
                    + (nl_in_flight + self._pending_nl() + 1) * nl_gb
-                   + cache_reserve_gb() + base_reserve_gb())
+                   + cache_reserve_gb(self.machine_gb)
+                   + base_reserve_gb(self.machine_gb))
         if modeled > self.budget_gb:
             return False
         return (available_gb() - self._pending_nl() * nl_gb
@@ -474,7 +484,8 @@ class DispatcherLedger:
         # is cheap standby, CPU is the elaboration gate's business.
         target = compute_target_slots(
             budget_gb=self.budget_gb, nl_demand=nl_demand,
-            slot_gb=self.slot_gb + nl_gb, nl_gb=nl_gb)
+            slot_gb=self.slot_gb + nl_gb, nl_gb=nl_gb,
+            machine_gb=self.machine_gb)
         target = self._apply_pressure(target, self.slot_gb + nl_gb)
         self.last_target = target
         resp = push(target, ABS_AVAILABLE_FLOOR_GB)
