@@ -70,12 +70,13 @@ export function LeanProbe({
   seed,
   onClose,
 }: {
-  fq: string
+  /** the declaration the probe defaults to when no `seed` is given */
+  fq?: string
   module?: string
   seed?: string
   onClose?: () => void
 }) {
-  const [code, setCode] = useState(seed ?? `#print axioms ${fq}`)
+  const [code, setCode] = useState(seed ?? (fq ? `#print axioms ${fq}` : ''))
   const [cursor, setCursor] = useState<LeanCursor | null>(null)
   // the reader's Lean runs on ONE reserved slot; this block only holds
   // it while it's the surface the user is in (claimed on focus / open).

@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { usePoll } from '../lib/api'
-import { Link } from '../lib/router'
-import RunConsole, { CycleLine } from './Run'
+import { Link, navigate } from '../lib/router'
+import RunConsole, { CycleLine, type SkyJump } from './Run'
 import { SettingsTab, UsageTab } from './Telemetry'
 import IntentEditor from '../components/IntentEditor'
 import ProgrammeView from '../components/ProgrammeView'
@@ -275,11 +275,15 @@ export default function Engine({ tab }: { tab: EngineTab }) {
   // which fleet problem the run-scoped faces are pinned to (null =
   // follow the run). Lifted here so a tab switch keeps the pin.
   const [fleetPick, setFleetPick] = useState<string | null>(null)
+  // a timeline name click asking the console's sky to select a node —
+  // the jump rides OUT the tab switch (unmount) as a prop, and the
+  // console's own sky consumes it (owner, 2026-08-24)
+  const [skyJump, setSkyJump] = useState<SkyJump | null>(null)
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
       <h1 className="font-display text-[22px] font-medium text-ink">Engine</h1>
       <TabNav className="mt-3" tabs={TABS} active={tab} />
-      {tab === 'console' && <RunConsole />}
+      {tab === 'console' && <RunConsole focus={skyJump} />}
       {tab === 'intent' && <SteerIntent pick={fleetPick} onPick={setFleetPick} />}
       {tab === 'programme' && (
         <RunProgramme fleetPick={fleetPick} onFleetPick={setFleetPick} />
@@ -292,7 +296,24 @@ export default function Engine({ tab }: { tab: EngineTab }) {
            a document does not live in an instrument's footer (owner,
            2026-08-07). */
         <div className="mt-5">
-          <Timeline path="/api/run/events" pollMs={10000} showProblem />
+          <Timeline
+            path="/api/run/events"
+            pollMs={10000}
+            showProblem
+            /* the console's sky IS the Engine's star map: stay on this
+               page, switch to it, select the node there. A goal outside
+               the focused problem deep-links to its own page (the
+               console decides — it knows what the sky holds). */
+            onSelectGoal={(id, problem) => {
+              if (problem)
+                setSkyJump((j) => ({
+                  id,
+                  problem,
+                  seq: (j?.seq ?? 0) + 1,
+                }))
+              navigate('/engine') // the console tab hosts the sky
+            }}
+          />
         </div>
       )}
       {tab === 'settings' && (

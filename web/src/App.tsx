@@ -471,7 +471,23 @@ function Shell() {
           ) : section === 'telemetry' ? (
             <Engine tab="usage" />
           ) : section === 'problems' && route.segments[1] ? (
-            <Problem name={route.segments[1]} />
+            // /g/<id> = deep link straight to a star (the run timeline's
+            // name clicks land here); key forces a fresh mount so the
+            // jump applies even arriving from another problem's page
+            <Problem
+              key={
+                route.segments[1] +
+                (route.segments[2] === 'g' && route.segments[3]
+                  ? `:${route.segments[3]}`
+                  : '')
+              }
+              name={route.segments[1]}
+              initialGoal={
+                route.segments[2] === 'g' && route.segments[3]
+                  ? Number(route.segments[3])
+                  : null
+              }
+            />
           ) : (
             <Board />
           )}

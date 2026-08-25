@@ -128,8 +128,10 @@ function nodeStyle(
     case 'proved':
       return hasLive
         ? {
-            fill: 'color-mix(in srgb, var(--color-starlight) 45%, var(--color-bg))',
-            stroke: 'color-mix(in srgb, var(--color-starlight) 45%, var(--color-bg))',
+            // 55% mix: the settled mass stays clearly ABOVE the shelved
+            // mid ink — at 45% the two collided (owner, 2026-08-24)
+            fill: 'color-mix(in srgb, var(--color-starlight) 55%, var(--color-bg))',
+            stroke: 'color-mix(in srgb, var(--color-starlight) 55%, var(--color-bg))',
             glow: false,
             opacity: 0.9,
           }
@@ -146,13 +148,21 @@ function nodeStyle(
       // seven unproved stars outshine the hundred proved ones
       return { fill: 'var(--color-star)', stroke: 'var(--color-starlight)', glow: true, opacity: 1 }
     case 'frozen':
-      return { fill: 'transparent', stroke: 'var(--color-ink-faint)', glow: false, opacity: 0.8 }
+      // parks exactly like shelved (owner, 2026-08-24): same story in
+      // the engine, same readable-but-receded ink on the sky
+      return { fill: 'var(--color-ink-dim)', stroke: 'var(--color-ink-dim)', glow: false, opacity: 0.45 }
     case 'pending_strategist_review':
       return { fill: 'transparent', stroke: 'var(--color-warn)', glow: true, opacity: 1 }
     case 'shelved':
-      return { fill: 'var(--color-ink-faint)', stroke: 'var(--color-ink-faint)', glow: false, opacity: 0.45 }
+      // parked, not buried (owner, 2026-08-24): readable, but a clear
+      // step under the proved mass (which rides the 55% mix while live)
+      return { fill: 'var(--color-ink-dim)', stroke: 'var(--color-ink-dim)', glow: false, opacity: 0.45 }
     case 'disproved':
-      return { fill: 'var(--color-danger)', stroke: 'var(--color-danger)', glow: false, opacity: 0.8 }
+      // refuted (owner, 2026-08-24): a HOLLOW shell at residue weight —
+      // the question closed without light coming home, so it never
+      // glows in any sky. Faint ink only: a bright outline would
+      // masquerade as a sign-off ring.
+      return { fill: 'transparent', stroke: 'var(--color-ink-faint)', glow: false, opacity: 0.55 }
     case 'dead':
     default:
       return { fill: 'var(--color-edge-strong)', stroke: 'var(--color-edge-strong)', glow: false, opacity: 0.35 }
@@ -185,8 +195,12 @@ function edgeStroke(
   if (kind === 'alias') return 'var(--color-accent)'
   if (kind === 'citation') return 'var(--color-starlight)'
   if (kind === 'anchor' || status === 'succeeded') return 'var(--color-starlight)'
-  if (status === 'dead' || status === 'superseded') return 'var(--color-edge)'
-  return 'var(--color-edge-strong)'
+  // routes speak in THREE voices (owner, 2026-08-24): active ink-dim /
+  // succeeded starlight / everything else ink-faint. The old edge
+  // tokens are rgba whites (7-15% alpha) — stacked under strokeOpacity
+  // they netted ~2% and the dependency tree vanished
+  if (status === 'dead' || status === 'superseded') return 'var(--color-ink-faint)'
+  return 'var(--color-ink-dim)'
 }
 
 export default function Constellation({
@@ -804,7 +818,9 @@ export default function Constellation({
     let open = false
     let working = false
     let proved = false
+    let disproved = false
     let shelved = false
+    let frozen = false
     let dead = false
     let attempts = false
     let root = false
@@ -818,7 +834,9 @@ export default function Constellation({
       if (live) open = true
       if (engineWorking && (g.status === 'attempting' || g.in_flight)) working = true
       if (g.status === 'proved') proved = true
+      if (g.status === 'disproved') disproved = true
       if (g.status === 'shelved') shelved = true
+      if (g.status === 'frozen') frozen = true
       if (g.status === 'dead') dead = true
       if (live && g.attempts > 0) attempts = true
       if (g.origin === 'root') root = true
@@ -829,7 +847,9 @@ export default function Constellation({
       open,
       working,
       proved,
+      disproved,
       shelved,
+      frozen,
       dead,
       attempts,
       root,
@@ -844,7 +864,9 @@ export default function Constellation({
     present.open ||
     present.working ||
     present.proved ||
+    present.disproved ||
     present.shelved ||
+    present.frozen ||
     present.dead ||
     present.attempts
   const legendMarks = present.root || present.claim || present.anchor
@@ -962,14 +984,14 @@ export default function Constellation({
           const lineFade = Math.min(1, Math.max(0.4, 480 / span))
           const baseOpacity =
             (dead
-              ? 0.18
+              ? 0.4
               : e.kind === 'alias'
                 ? 0.5
                 : e.kind === 'anchor'
                   ? 0.3
                   : e.strategyStatus === 'succeeded'
                     ? 0.38
-                    : 0.55) * lineFade
+                    : 0.7) * lineFade
           // past the long-haul boundary (same 480 as the fade — one
           // concept, one number) a straight hierarchy edge reads as a
           // stray WIRE (the owner circled one); a bow reads as a
@@ -1021,7 +1043,7 @@ export default function Constellation({
           if (!parent) return null
           const dead = isDead(b.status)
           const stroke = edgeStroke(b.status, 'strategy')
-          const opacity = dead ? 0.18 : b.status === 'succeeded' ? 0.38 : 0.55
+          const opacity = dead ? 0.4 : b.status === 'succeeded' ? 0.38 : 0.7
           // the ink law applies to hyperedge limbs too: a branch whose
           // child lives under a DIFFERENT primary parent can span half
           // the sky (jordan's chain fan was all bundle branches);
@@ -1783,17 +1805,38 @@ export default function Constellation({
           }
         >
           <svg width="13" height="13" viewBox="-5 -5 10 10">
-            <circle r="3" fill="var(--color-starlight)" opacity={hasLive ? 0.5 : 1} />
+            <circle r="3" fill="var(--color-starlight)" opacity={hasLive ? 0.6 : 1} />
           </svg>
           proved
         </span>
         )}
-        {present.shelved && (
-<span className="flex items-center gap-1" title="set aside after repeated failed attempts">
+        {present.disproved && (
+<span className="flex items-center gap-1" title="refuted — the statement is false; a closed question keeps no light">
           <svg width="13" height="13" viewBox="-5 -5 10 10">
-            <circle r="3" fill="var(--color-ink-faint)" opacity="0.6" />
+            <circle r="3" fill="none" stroke="var(--color-ink-faint)" strokeWidth="1.2" opacity="0.7" />
           </svg>
-          shelved
+          disproved
+        </span>
+        )}
+        {(present.shelved || present.frozen) && (
+<span
+  className="flex items-center gap-1"
+  title={
+    present.shelved && present.frozen
+      ? 'set aside after repeated failed attempts · frozen parks the same way'
+      : present.frozen
+        ? 'held out of play — drawn exactly like a shelved star'
+        : 'set aside after repeated failed attempts'
+  }
+>
+          <svg width="13" height="13" viewBox="-5 -5 10 10">
+            <circle r="3" fill="var(--color-ink-dim)" opacity="0.6" />
+          </svg>
+          {present.shelved && present.frozen
+            ? 'shelved · frozen'
+            : present.frozen
+              ? 'frozen'
+              : 'shelved'}
         </span>
         )}
         {present.dead && (

@@ -1,9 +1,11 @@
 import { expect, test } from '@playwright/test'
 
 /*
- * Read-only smoke over a live workspace. Assumes at least one problem
- * exists (any real Asterism workspace); individual assertions degrade
- * gracefully on emptier workspaces where noted.
+ * Read-only smoke over ANY workspace state — a fresh reset, an idle
+ * engine, or a mid-run live one. Assertions never bind to specific
+ * problems, counts, or engine state: they check structure (a row or
+ * its empty state, a label that renders either way) and skip
+ * gracefully where population is genuinely required.
  */
 
 test('board renders problems with status chips', async ({ page }) => {
@@ -26,7 +28,10 @@ test('board filter narrows the list', async ({ page }) => {
   test.skip(!populated, 'needs a populated workspace')
   const total = await rows.count()
   test.skip(total < 2, 'needs a populated workspace')
-  const firstName = (await rows.first().locator('td').first().innerText()).trim()
+  // the name LINK is the cell's only name-only node: while the engine
+  // works, the same cell also carries an in-flight badge, and reading
+  // the whole cell filtered on two lines at once (zero matches)
+  const firstName = (await rows.first().locator('a').first().innerText()).trim()
   await page.getByPlaceholder('filter problems…').fill(firstName)
   await expect
     .poll(async () => rows.count())
@@ -61,10 +66,12 @@ test('problem detail: four tabs, constellation svg has stars', async ({ page }) 
 test('inbox renders sections or empty state', async ({ page }) => {
   await page.goto('/#/inbox')
   await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible()
+  // .first() AFTER the or(): a non-empty inbox renders both section
+  // labels, and first().or(...) tripped strict mode on exactly that
   const anySection = page
     .getByText(/amend requests|ingest sign-offs/i)
-    .first()
     .or(page.getByText('Nothing needs you right now'))
+    .first()
   await expect(anySection).toBeVisible()
 })
 
@@ -75,24 +82,31 @@ test('library atlas renders constellations or empty state', async ({ page }) => 
   await expect(sky).toBeVisible()
 })
 
-test('settings: knobs + log + usage ledger (telemetry route redirects)', async ({ page }) => {
-  await page.goto('/#/telemetry') // legacy route still lands here
+test('settings screen renders', async ({ page }) => {
+  // the console's own settings (accounts, appearance) live here; the
+  // engine's knobs are #/engine/settings
+  await page.goto('/#/settings')
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
-  // the usage window label is daemon-truthful: "this run" only while
-  // one runs; the smoke workspace is idle → all time
-  for (const label of ['settings', 'usage — all time']) {
-    await expect(page.getByText(label, { exact: true })).toBeVisible()
-  }
-  // the summary row nests the label beside its chevron — substring match
-  await expect(page.getByText('developer log')).toBeVisible()
 })
 
-test('run console: phase heading + burn + guidance, idle or live', async ({ page }) => {
+test('telemetry legacy route lands on the usage ledger', async ({ page }) => {
+  await page.goto('/#/telemetry')
+  // the label is daemon-truthful and always renders: "this run" while
+  // one runs, "all time" otherwise — never bind to which one
+  await expect(page.getByText(/usage — (all time|this run)/)).toBeVisible()
+})
+
+test('run console: phase heading + guidance, idle or live', async ({ page }) => {
   await page.goto('/#/run')
   await expect(
-    page.getByRole('heading', { name: /Idle|Proving|Planning|Warming up|Harvesting|Stopping/ }),
+    page.getByRole('heading', {
+      name: /Idle|Starting|Proving|Planning|Warming up|Harvesting|Stopping/,
+    }),
   ).toBeVisible()
-  await expect(page.getByText('burn', { exact: true })).toBeVisible()
+  // burn figures moved to the Usage tab (owner, 2026-07-18); the quota
+  // meter's caption is the console's stable floor — one of the two
+  // wordings renders whether or not a seat rides the meter right now
+  await expect(page.getByText(/claude plan|plan usage/)).toBeVisible()
 })
 
 test('papers shelf renders rows or empty state', async ({ page }) => {

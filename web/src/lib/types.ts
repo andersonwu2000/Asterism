@@ -523,6 +523,10 @@ export interface DaemonStatus {
   /** Lean toolchain phase: 'warming' (cold start, minutes), 'ready',
    * or null (no gateway) — names the dead-air minutes after Run */
   gateway: 'warming' | 'ready' | null
+  /** the RAM ledger's live pool (dispatch.ram_budget): target moves
+   * with the NL reserve; open/free are the gateway's confirmed counts.
+   * null = the gateway isn't answering (stopped or warming). */
+  slots: { target: number; open: number; free: number } | null
   /** how the LAST run ended; null while running or before any run.
    * rc=0 clean finish · rc>0 crash (error says why) · rc=null forced */
   last_exit: {

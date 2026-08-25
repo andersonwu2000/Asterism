@@ -87,10 +87,34 @@ the ladder via `::picker(select)` where supported.
   and unringed, and the panel calls them *delivered* — the sky is
   always complete, so the fix is to mark them honestly, never to hide
   them.
+- Routes (hierarchy lines, not alias/citation arcs) speak in **three
+  voices** (2026-08-24): active = ink-dim, succeeded = starlight,
+  everything else (dead/superseded) = ink-faint. Never paint a route
+  with the rgba `--color-edge{,-strong}` tokens — their built-in alpha
+  stacks under strokeOpacity and the line vanishes.
 - State is brightness: while work is live the unproved stars carry the
   light and the proved mass recedes; a finished sky flips back to
   trophy. Writing-now = the star itself blinks.
-- Dead/shelved = very faint residue, never hidden. **The sky is always
+- The console lane's expanded tail carries a **run a snapshot** action
+  (2026-08-25): pressing it copies the tail as it stood into the
+  reader's reserved Lean slot as an interactive probe — cursor shows
+  the goal at any line, edits land in the copy and never in the
+  agent's file, and the tail above keeps streaming while the agent
+  writes. The copy re-wraps the goal's namespace (the tail arrives
+  prelude-stripped); header `open` loss is repairable in the copy by
+  adding the open.
+- Refuted stars are **hollow at residue weight** (2026-08-24): the
+  question closed without light coming home, so a disproof never glows
+  in any sky. Faint ink keeps its outline from masquerading as a
+  sign-off ring. (Filled still means truth came home; hollow-in-the-
+  sky means refuted — the Programme-tree "hollow = nothing did" lives
+  outside the sky.)
+- Frozen parks exactly like shelved: same readable mid ink, one legend
+  row between them (2026-08-24).
+- Shelved is **parked, not buried** (2026-08-24): mid ink, one step
+  under the proved mass — shelved is not a terminal state, so its
+  trees stay readable. Dead alone is the very faint residue, never
+  hidden. **The sky is always
   complete** — ink inversion is the only focus mechanism; no hide/
   filter toggles.
 - **Settled things recede; they are never struck through.** The same
@@ -133,9 +157,15 @@ reader can act on — a goal slug, the Programme, a group, a paper.
   the one token that identifies the event. Briefs live in the
   expansion.
 - **Because every row names an object, the log can be followed by
-  object** — one click filters to a single thing's whole life. That
-  reading is the point of the shape; a row that names nothing breaks
-  it.
+  object** — the name click opens that star on the map (the side
+  panel carries the history; the run view walks to the problem's own
+  page), and the row's expansion offers *follow through the log* for
+  the single object's whole life. A row that names nothing breaks the
+  shape and does not render at all: mint requests for bricks that
+  don't exist yet are dropped, not queued behind a "quiet" toggle
+  (2026-08-24). Dispatch starts ("asked for") live in the follow view
+  only — in the stream they double every attempt whose outcome already
+  has a row (2026-08-25).
 - **Outcomes are events too.** A log of what was *decided* without
   what *became of it* answers none of the questions a reader arrives
   with (`Timeline` showed 0 of 52 landings before this rule).
