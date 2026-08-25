@@ -242,7 +242,13 @@ def parse_decisions(json_text: str) -> tuple[list[Decision] | None, str]:
     (None, error_message) on any malformed item.
     """
     try:
-        obj = json.loads(json_text)
+        # strict=False admits raw control characters INSIDE string
+        # values (a literal newline in a reason field) — and nothing
+        # else. Models emit these routinely; the meaning is exactly the
+        # escaped form, and dying for one cost a 10-minute research
+        # wake (p324, 2026-08-25). Structural damage (truncation,
+        # trailing garbage) still fails below.
+        obj = json.loads(json_text, strict=False)
     except (json.JSONDecodeError, TypeError) as e:
         return None, f"not valid JSON: {e}"
     if isinstance(obj, dict):
@@ -2429,9 +2435,11 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # Adversary, unified into one N-round revision loop on the same
     # strategist session (research_mode_design.md §3). Mechanical
     # verify errors and Adversary rebuttals SHARE the round counter
-    # (v14 ruling). Parse failures are still NOT retried: a malformed
-    # decision.json usually means session-level breakage (no clean
-    # recovery from re-prompting).
+    # (v14 ruling). Parse failures get the same single corrective turn
+    # as a missing file (2026-08-25 reversal of "malformed means
+    # session-level breakage": p324's session was healthy — 10 minutes
+    # of research on disk, one malformed decision.json — and died for
+    # want of one "rewrite it" turn).
     max_rounds = config.get(
         "strategist.verify_retry", default=6,
         env_var="ASTERISM_STRATEGIST_VERIFY_RETRY", cast=int,
@@ -2472,30 +2480,37 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
         return ds, perr, ""
 
     decisions, parse_err, missing = _read_and_parse()
-    if missing:
-        # One corrective turn before the wake dies for want of a file.
-        # Two shapes end a session with zero output while the WORK is
-        # all there: the model narrates its decision in prose instead
-        # of calling write_file, and OpenCode occasionally ends a
-        # healthy stream early with a near-empty final that the tool
-        # loop accepts as the answer (5/46 wakes on the flagship's
+    if missing or decisions is None:
+        # One corrective turn before the wake dies at the file stage.
+        # Three shapes end a session with the WORK all there but no
+        # usable decision.json: the model narrates its decision in
+        # prose instead of calling write_file, OpenCode occasionally
+        # ends a healthy stream early with a near-empty final that the
+        # tool loop accepts as the answer (5/46 wakes on the flagship's
         # first generations, 2026-08-25 — each death threw away 20+
-        # minutes of research). Resuming the SAME session costs one
-        # cheap turn and keeps everything it learned; a second miss
-        # still dies as agent_no_output below.
-        print(f"[strategist] {problem}: {missing} — one corrective "
+        # minutes of research), and the file lands malformed past what
+        # the lenient parse absorbs (p324, same day). Resuming the SAME
+        # session costs one cheap turn and keeps everything it learned;
+        # a second miss still dies below.
+        _defect = missing or f"decision.json does not parse ({parse_err})"
+        print(f"[strategist] {problem}: {_defect} — one corrective "
               f"resume turn", flush=True)
         rc_fix = agent.spawn_llm(
             kind="strategist", prompt_path=prompt_path,
             problem_dir=problem_dir, attempts_dir=attempts_dir,
             session_id=sid, is_retry=True,
             retry_context=(
-                "Your turn ended but decision.json was NOT written — "
-                "the research is only real once it lands on disk. "
-                "Write decision.json NOW with write_file (and "
-                "proposal.md if your batch carries one). If your last "
-                "message was cut off, reconstruct the decision from "
-                "your notes above."),
+                ("Your turn ended but decision.json was NOT written — "
+                 "the research is only real once it lands on disk. "
+                 "Write decision.json NOW with write_file (and "
+                 "proposal.md if your batch carries one). If your last "
+                 "message was cut off, reconstruct the decision from "
+                 "your notes above.")
+                if missing else
+                (f"Your decision.json is not valid JSON — {parse_err}. "
+                 "Rewrite the ENTIRE file NOW with write_file as one "
+                 "valid JSON array of decision objects; keep the same "
+                 "decisions, fix only the syntax.")),
             timeout_sec=strategist_timeout,
             mcp_config_path=tools_cfg,
         )
@@ -2511,7 +2526,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
         return PipelineResult(
             outcome="failed",
             failure_reason="strategist_schema_invalid",
-            failure_detail=f"parse: {parse_err}",
+            failure_detail=f"parse: {parse_err} (after one corrective turn)",
         )
 
     from ..state import programme as _programme

@@ -235,6 +235,52 @@ def test_run_strategist_no_output_corrective_turn_recovers(
     assert len(calls) == 2
 
 
+def test_parse_decisions_tolerates_raw_control_chars_in_strings() -> None:
+    """Models emit literal newlines/tabs inside JSON string values;
+    strict parsing killed a healthy 10-minute research wake over one
+    (p324, 2026-08-25). Lenient INSIDE strings only — structural
+    damage (truncation) still fails."""
+    ds, err = strategist.parse_decisions(
+        '[{"kind": "Noop", "reason": "line one\ntwo\ttabbed"}]')
+    assert err == "" and ds is not None and len(ds) == 1
+    ds2, err2 = strategist.parse_decisions(
+        '[{"kind": "Noop", "reason": "cut off mid-strin')
+    assert ds2 is None and "not valid JSON" in err2
+
+
+def test_run_strategist_malformed_json_corrective_turn_recovers(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A structurally malformed decision.json gets the same single
+    corrective resume turn as a missing one (p324's death shape,
+    2026-08-25): the session is healthy, the research is on disk —
+    one 'rewrite it' turn saves the wake."""
+    _insert_root(conn)
+    calls: list[dict] = []
+
+    def fake_spawn(**kw):
+        calls.append(kw)
+        p = kw["attempts_dir"] / "decision.json"
+        if len(calls) == 1:
+            p.write_text('[{"kind": "Noop", "reason": "cut', "utf-8")
+        else:
+            p.write_text(json.dumps({"kind": "Noop", "reason": "fixed"}),
+                         encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="routine", tick=4,
+        workspace=workspace, intent=mfst,
+        pipeline_id="test-strat-fix-2",
+    )
+    assert r.failure_reason == "strategist_noop"  # recovered
+    assert len(calls) == 2
+    assert calls[1]["is_retry"] is True
+    assert "not valid JSON" in calls[1]["retry_context"]
+
+
 def test_run_strategist_quota_exhausted_rc(
     workspace: Path, conn: sqlite3.Connection,
     mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
@@ -333,13 +379,14 @@ def test_run_strategist_verify_retry_both_fail(
     assert "first-attempt" in r.failure_detail
 
 
-def test_run_strategist_parse_fail_is_not_retried(
+def test_run_strategist_parse_fail_gets_one_corrective_turn_then_dies(
     workspace: Path, conn: sqlite3.Connection,
     mfst: intent_mod.ProblemIntent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Parse failure (malformed JSON) skips the retry path — session
-    breakage usually doesn't recover from one more shot at the same
-    prompt, so we don't burn the call."""
+    """Parse failure gets exactly ONE corrective resume turn (2026-08-25
+    reversal of the no-retry policy — p324's session was healthy and a
+    'rewrite it' turn would have saved the wake); a second malformed
+    file still dies as strategist_schema_invalid, never a loop."""
     _insert_root(conn)
     calls: list[dict] = []
 
@@ -355,7 +402,9 @@ def test_run_strategist_parse_fail_is_not_retried(
         workspace=workspace, intent=mfst, pipeline_id="test-strat-retry-3",
     )
     assert r.failure_reason == "strategist_schema_invalid"
-    assert len(calls) == 1  # no retry on parse fail
+    assert "after one corrective turn" in (r.failure_detail or "")
+    assert len(calls) == 2  # exactly one corrective turn, then die
+    assert calls[1]["is_retry"] is True
 
 
 def test_run_strategist_verify_retry_disabled_via_env(
