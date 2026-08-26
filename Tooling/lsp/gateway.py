@@ -108,6 +108,17 @@ class WorkerSlot:
     # skipped by every claim. The warm-target converger re-opens it —
     # or extends the roster — when the target rises.
     closed: bool = False
+    # Mid-lease rewarm (owner design 2026-08-26): a worker that grew
+    # far past the recycle threshold DURING a lease is restarted in the
+    # background right after a tool call returns (the agent is
+    # thinking; the rebuild overlaps that window). True while the
+    # background rewarm holds the slot; acquires slide their deadline
+    # and the wait is credited to the session's wall.
+    rewarming: bool = False
+    # Cooldown stamp — a genuinely heavy content re-inflates right
+    # back, and re-warming it in a loop would burn elab lanes for
+    # nothing.
+    rewarmed_at: float = 0.0
 
 
 # ─── Session metadata ────────────────────────────────────────
@@ -907,8 +918,15 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
         )
 
     deadline = time.monotonic() + 120.0
+    _rewarm_wait_t0: "float | None" = None
     while time.monotonic() < deadline:
         if my_slot.lock.acquire(blocking=False):
+            if _rewarm_wait_t0 is not None:
+                # The slot was mid-rewarm when this call arrived — the
+                # queue time is the framework's, not the agent's (same
+                # contract as the elab gate's credit).
+                _record_queue_credit(
+                    meta, time.monotonic() - _rewarm_wait_t0)
             try:
                 if swap_in:
                     if my_slot.content_pipeline_id == meta.pipeline_id:
@@ -948,9 +966,21 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
                 yield (my_slot, kind)
                 my_slot.last_used_ts = time.time()
                 meta.last_active = time.monotonic()
+                # The tool's result is computed and about to return —
+                # the one provably-idle moment (owner design
+                # 2026-08-26): weigh the worker, restart it in the
+                # background if it grew far past the recycle line.
+                _maybe_kick_midlease_rewarm(my_slot, meta)
                 return
             finally:
                 my_slot.lock.release()
+        if my_slot.rewarming:
+            # A background rewarm holds the slot — slide the deadline
+            # (the rewarm clears the flag in its own finally, so this
+            # cannot slide forever) and start the credit clock.
+            if _rewarm_wait_t0 is None:
+                _rewarm_wait_t0 = time.monotonic()
+            deadline = max(deadline, time.monotonic() + 120.0)
         # Slot is locked by a concurrent tool op from this same pipeline
         # (single-threaded spawn ⇒ this should be rare and brief).
         with _state.counters_lock:
@@ -1245,6 +1275,125 @@ def _shed_slot_if_over_target(slot: WorkerSlot) -> bool:
             return False
     finally:
         slot.lock.release()
+
+
+#: Mid-lease rewarm threshold = this factor x the recycle threshold.
+#: Sized to target RESIDUE, not live sets: the heaviest measured
+#: single-content live set is ~2.2 GB (a decide-heavy certificate), so
+#: below ~3x the 1500 MB recycle line a restart would rebuild roughly
+#: what it freed. Above it the weight is dominated by dead heap from
+#: PREVIOUS contents (measured 2026-08-26: a 4.2 GB worker holding a
+#: one-line warmup document; a 13.7 GB worker — impossible as one
+#: elaboration under the 8 GB job cap).
+_MIDLEASE_REWARM_FACTOR = 3.0
+_MIDLEASE_COOLDOWN_SEC = 300.0
+
+
+def _midlease_rewarm_mb() -> int:
+    """Absolute env override, else factor x the recycle threshold."""
+    import os as _os
+    try:
+        v = int(_os.environ.get("ASTERISM_MIDLEASE_REWARM_MB", ""))
+        if v > 0:
+            return v
+    except ValueError:
+        pass
+    cap_mb = SLOT_RECYCLE_MB_DEFAULT
+    try:
+        from ..core import config as _cfg
+        cap_mb = int(_cfg.get("gateway.slot_recycle_mb",
+                              default=SLOT_RECYCLE_MB_DEFAULT,
+                              env_var="ASTERISM_SLOT_RECYCLE_MB", cast=int))
+    except Exception:  # noqa: BLE001 — policy knob must not break tools
+        pass
+    return int(max(1, cap_mb) * _MIDLEASE_REWARM_FACTOR)
+
+
+def _maybe_kick_midlease_rewarm(slot: WorkerSlot, meta) -> None:
+    """Owner design 2026-08-26 ("tool 已算好返回結果時偵測 slot 大小,
+    太肥就重暖放回代碼"): called right after a tool call returns its
+    result — the one moment the worker is provably idle and the agent
+    is about to think for minutes, so the restart overlaps a window
+    where nobody is waiting. Recycle-at-release cannot reach a fat
+    worker mid-lease; this can, and it reuses recycle's proven kill
+    (`_await_worker_exit` + hard kill — a reattach would keep the old
+    heap)."""
+    if meta is None or _state.backend is None:
+        return
+    if slot.rewarming or slot.closed or slot.reserved:
+        return
+    if time.monotonic() - slot.rewarmed_at < _MIDLEASE_COOLDOWN_SEC:
+        return
+    mb = _slot_private_mb_cached().get(slot.slot_id)
+    if mb is None or mb < _midlease_rewarm_mb():
+        return
+    slot.rewarming = True
+    threading.Thread(target=_midlease_rewarm_run, args=(slot, meta, mb),
+                     name=f"midlease-rewarm-{slot.slot_id}",
+                     daemon=True).start()
+
+
+def _midlease_rewarm_run(slot: WorkerSlot, meta, before_mb: int) -> None:
+    """Background half: restart the fat worker and put the session's
+    content back (fresh didOpen carries the merged compilation unit, so
+    base import + content elaborate in one pass, under the elab gate —
+    it is real work). Holds slot.lock throughout; an early tool call
+    queues on the lock and `_acquire_slot` credits the wait."""
+    t0 = time.perf_counter()
+    try:
+        if not slot.lock.acquire(timeout=60):
+            return                    # agent came back instantly; skip
+        try:
+            with _state.sessions_lock:
+                if slot.claimed_by != meta.pipeline_id or slot.closed:
+                    return
+            backend = _state.backend
+            if backend is None:
+                return
+            # Compute the restore content BEFORE touching the worker —
+            # a failure here must leave the old worker running.
+            merged, line_map = _compilation_for(meta)
+            backend.did_close(slot.slot_path)
+            if not _await_worker_exit(slot.slot_uri):
+                _kill_worker_for_uri(slot.slot_uri)
+            try:
+                with _elab_gate(slot.slot_uri, None):
+                    slot.slot_path.write_text(merged, encoding="utf-8")
+                    backend.did_open(slot.slot_path, merged)
+                    try:
+                        backend.wait_for_file_done(slot.slot_uri,
+                                                   timeout=600)
+                    except (TimeoutError, RuntimeError):
+                        pass
+                slot.file_version = 1
+                slot.line_map = line_map
+                slot.content_pipeline_id = meta.pipeline_id
+            except Exception:  # noqa: BLE001 — never brick the slot
+                # Emergency reopen: a closed document would fail every
+                # subsequent didChange. Warmup content, owner reloads
+                # on its next acquire (the cold_warmup path).
+                try:
+                    backend.did_open(slot.slot_path, WARMUP_CONTENT)
+                    slot.file_version = 1
+                    slot.content_pipeline_id = None
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
+            after = _slot_private_mb().get(slot.slot_id)
+            print(f"[gateway] slot {slot.slot_id} mid-lease rewarm in "
+                  f"{time.perf_counter() - t0:.1f}s — {before_mb} MB -> "
+                  f"{after if after is not None else '?'} MB (content "
+                  f"restored for {meta.pipeline_id[:8]})",
+                  file=sys.stderr, flush=True)
+        finally:
+            slot.lock.release()
+    except Exception as exc:  # noqa: BLE001 — housekeeping never raises
+        print(f"[gateway] mid-lease rewarm of slot {slot.slot_id} FAILED "
+              f"({type(exc).__name__}: {exc}) — worker state restored "
+              f"best-effort; cooldown applies", file=sys.stderr, flush=True)
+    finally:
+        slot.rewarmed_at = time.monotonic()
+        slot.rewarming = False
 
 
 def _kick_warm_converger() -> None:

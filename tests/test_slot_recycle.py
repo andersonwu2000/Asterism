@@ -206,6 +206,122 @@ def test_await_worker_exit_semantics(gw, monkeypatch):
     assert gw._await_worker_exit("file:///s0.lean", timeout=0.4) is False
 
 
+def test_midlease_threshold_targets_residue_not_live_sets(gw, monkeypatch):
+    """3x the recycle line: the heaviest measured single-content live
+    set is ~2.2 GB, so restarting below ~4.5 GB rebuilds what it just
+    freed. Env override is absolute."""
+    monkeypatch.delenv("ASTERISM_MIDLEASE_REWARM_MB", raising=False)
+    assert gw._midlease_rewarm_mb() == int(
+        gw.SLOT_RECYCLE_MB_DEFAULT * gw._MIDLEASE_REWARM_FACTOR)
+    monkeypatch.setenv("ASTERISM_MIDLEASE_REWARM_MB", "6000")
+    assert gw._midlease_rewarm_mb() == 6000
+
+
+def test_midlease_kick_guards(gw, monkeypatch):
+    """No probe metas, no cooldown violations, no double-flight — and a
+    fat idle slot after a tool return DOES kick the background
+    thread."""
+    import time as _time
+    started: list = []
+    monkeypatch.setattr(gw.threading, "Thread",
+                        lambda **kw: types.SimpleNamespace(
+                            start=lambda: started.append(kw["name"])))
+    monkeypatch.setattr(gw, "_slot_private_mb_cached", lambda: {0: 9999})
+    monkeypatch.setattr(gw._state, "backend", object())
+    meta = types.SimpleNamespace(pipeline_id="p1")
+    s = _slot(gw, claimed="p1")
+    gw._maybe_kick_midlease_rewarm(s, None)          # borrow: never
+    assert not started
+    s.rewarming = True
+    gw._maybe_kick_midlease_rewarm(s, meta)          # single-flight
+    assert not started
+    s.rewarming = False
+    s.rewarmed_at = _time.monotonic()
+    gw._maybe_kick_midlease_rewarm(s, meta)          # cooldown
+    assert not started
+    s.rewarmed_at = 0.0
+    monkeypatch.setattr(gw, "_slot_private_mb_cached", lambda: {0: 900})
+    gw._maybe_kick_midlease_rewarm(s, meta)          # thin: no
+    assert not started and s.rewarming is False
+    monkeypatch.setattr(gw, "_slot_private_mb_cached", lambda: {0: 9999})
+    gw._maybe_kick_midlease_rewarm(s, meta)          # fat idle: KICK
+    assert started and s.rewarming is True
+
+
+def test_midlease_rewarm_restores_content_after_a_real_death(
+        gw, monkeypatch, capsys):
+    """Order is the contract: content computed BEFORE the close (a
+    failure must leave the old worker running), then close -> await
+    death (hard kill on survival) -> fresh didOpen with the session's
+    merged unit."""
+    called: list = []
+    meta = types.SimpleNamespace(pipeline_id="p1")
+    monkeypatch.setattr(gw, "_compilation_for",
+                        lambda m: (called.append("content") or
+                                   ("MERGED", [None, 1])))
+    monkeypatch.setattr(gw, "_await_worker_exit",
+                        lambda *_a, **_k: called.append("await") or False)
+    monkeypatch.setattr(gw, "_kill_worker_for_uri",
+                        lambda *_a: called.append("kill") or True)
+    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 500})
+    monkeypatch.setattr(gw._state, "backend",
+                        types.SimpleNamespace(
+                            did_close=lambda *_a: called.append("close"),
+                            did_open=lambda _p, txt: called.append(
+                                ("open", txt)),
+                            wait_for_file_done=lambda *_a, **_k: None))
+    s = _slot(gw, claimed="p1")
+    s.rewarming = True
+    import tempfile
+    from pathlib import Path
+    s.slot_path = Path(tempfile.mkdtemp()) / "s0.lean"
+    gw._midlease_rewarm_run(s, meta, 9999)
+    assert called == ["content", "close", "await", "kill",
+                      ("open", "MERGED")]
+    assert s.content_pipeline_id == "p1" and s.rewarming is False
+    assert "mid-lease rewarm" in capsys.readouterr().err
+
+
+def test_midlease_rewarm_failure_reopens_warmup_never_bricks(
+        gw, monkeypatch, capsys):
+    opens: list = []
+    meta = types.SimpleNamespace(pipeline_id="p1")
+    monkeypatch.setattr(gw, "_compilation_for",
+                        lambda m: ("MERGED", [None]))
+    monkeypatch.setattr(gw, "_await_worker_exit", lambda *_a, **_k: True)
+    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 500})
+
+    def open_boom(_p, txt):
+        opens.append(txt)
+        if txt == "MERGED":
+            raise RuntimeError("elab node fell over")
+
+    monkeypatch.setattr(gw._state, "backend",
+                        types.SimpleNamespace(
+                            did_close=lambda *_a: None,
+                            did_open=open_boom,
+                            wait_for_file_done=lambda *_a, **_k: None))
+    s = _slot(gw, claimed="p1")
+    s.rewarming = True
+    import tempfile
+    from pathlib import Path
+    s.slot_path = Path(tempfile.mkdtemp()) / "s0.lean"
+    gw._midlease_rewarm_run(s, meta, 9999)          # must not raise
+    assert opens == ["MERGED", gw.WARMUP_CONTENT]
+    assert s.content_pipeline_id is None and s.rewarming is False
+    assert "FAILED" in capsys.readouterr().err
+
+
+def test_acquire_slides_and_credits_while_rewarming(gw):
+    """The blocked caller's wait is the framework's, not the agent's —
+    same contract as the elab gate (source pin: the acquire loop must
+    slide its deadline on `rewarming` and record the credit)."""
+    import inspect
+    src = inspect.getsource(gw._acquire_slot)
+    assert "rewarming" in src and "_record_queue_credit" in src
+    assert "_maybe_kick_midlease_rewarm" in src
+
+
 def test_the_reading_is_private_bytes_not_working_set():
     """Working set counts the shared mathlib mmap once per process:
     measured 2026-08-14, five workers reported 17.93 GB of working set
