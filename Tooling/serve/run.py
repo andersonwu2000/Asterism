@@ -206,6 +206,49 @@ def reset_quota_memo() -> None:
     """Flush the meters (account switch: the old account's numbers
     must not linger for the memo's lifetime)."""
     _quota_memo.update(at=0.0, value=None, ttl=0.0, last_good=None)
+    _log_quota_memo.update(at=0.0, value=[])
+
+
+#: The OTHER kind of meter: providers with no endpoint to ask, read back
+#: off the ledger they wrote themselves (`usage_from_session_log`).
+#: Memoized harder than claude's — the reading only changes when a spawn
+#: finishes a turn, and finding it walks the preserved rollouts.
+_log_quota_memo: "dict[str, object]" = {"at": 0.0, "value": []}
+
+
+def log_quota(workspace: "Path | str") -> "list[dict]":
+    """Session-log meters, in the console's wire shape (epochs become
+    ISO, as the endpoint's already are).
+
+    Every entry carries `measured_at`, and the console is required to
+    show it: this is the last reading a spawn left behind, not a live
+    one, and the two are the same number with different meanings."""
+    now = time.monotonic()
+    if now - float(_log_quota_memo["at"]) < 45.0:  # type: ignore[arg-type]
+        return _log_quota_memo["value"]  # type: ignore[return-value]
+    rows: "list[dict]" = []
+    try:
+        for row in usage_quota.session_log_usage(workspace):
+            rows.append({
+                "provider": row["provider"],
+                "plan": row.get("plan"),
+                "reached": row.get("reached"),
+                "measured_at": _iso(row.get("measured_at")),
+                "windows": [{"minutes": w.get("minutes"),
+                             "utilization": w.get("utilization"),
+                             "resets_at": _iso(w.get("resets_at"))}
+                            for w in row.get("windows") or []],
+            })
+    except Exception:  # noqa: BLE001 — a meter is garnish, never a failure
+        rows = []
+    _log_quota_memo.update(at=now, value=rows)
+    return rows
+
+
+def _iso(epoch: "object") -> "str | None":
+    if not isinstance(epoch, (int, float)):
+        return None
+    return datetime.fromtimestamp(float(epoch), timezone.utc).isoformat()
 
 
 def _fetch_oauth_usage() -> "dict | None":
@@ -383,6 +426,7 @@ def run_status(conn: sqlite3.Connection, workspace: Path,
         "burn_run": None,
         "burn_5h": None,
         "quota": quota(),
+        "quota_logged": log_quota(workspace),
         "recent": [],
     }
 
@@ -604,7 +648,9 @@ def register(app, workspace: Path, ro) -> None:  # noqa: ANN001 — FastAPI app
         if not (workspace / "asterism.db").exists():
             return {"daemon": d, "problem": None, "problems": [],
                     "goals": None, "workers": [], "burn_run": None,
-                    "burn_5h": None, "quota": quota(), "recent": []}
+                    "burn_5h": None, "quota": quota(),
+                    "quota_logged": log_quota(workspace),
+                    "recent": []}
         with ro(workspace) as conn:
             return run_status(conn, workspace, d, focus_override=problem)
 

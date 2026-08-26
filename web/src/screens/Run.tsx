@@ -6,13 +6,13 @@ import {
   onGoalOpen,
   takePendingGoalOpen,
 } from '../lib/goalFocus'
-import { duration } from '../lib/format'
+import { duration, relTime } from '../lib/format'
 import { goalStatusLabel } from '../lib/vocab'
 import { Lean } from '../lib/lean'
 import { splitSignature } from '../lib/leanSig'
 import { renderInline, renderProse } from '../lib/prose'
 import { scopedRows } from '../lib/quota'
-import { providerLabel } from '../lib/vocab'
+import { providerLabel, windowLabel } from '../lib/vocab'
 import { Link, navigate } from '../lib/router'
 import { Button } from '../components/ui'
 import Constellation from '../components/Constellation'
@@ -985,35 +985,48 @@ export default function Run({
           meta === null
             ? null
             : (seated.find((p) => p.name === 'claude')?.seats ?? []).map((x) => x.seat)
-        const others = seated.filter((p) => p.name !== 'claude')
+        // the ledger-writing backends (codex): a meter only while that
+        // backend is SEATED, exactly claude's rule — a reading from
+        // yesterday's run is not this run's instrument
+        const logged = (data.quota_logged ?? []).filter((l) =>
+          seated.some((p) => p.name === l.provider),
+        )
+        const others = seated.filter(
+          (p) => p.name !== 'claude' && !logged.some((l) => l.provider === p.name),
+        )
         const showMeter = data.quota && (claudeSeats === null || claudeSeats.length > 0)
-        if (!showMeter && others.length === 0 && (claudeSeats?.length ?? 0) === 0) return null
+        if (
+          !showMeter &&
+          others.length === 0 &&
+          logged.length === 0 &&
+          (claudeSeats?.length ?? 0) === 0
+        )
+          return null
         return (
         <section className="mt-7">
           {/* the gloss and the switch-account move both moved to the
               console's own Settings page (owner, 2026-08-07): here the
-              meters are what you watch while it burns, and a label is
-              enough — but the label must SAY WHOSE window this is:
-              an unlabeled meter under a zen fleet read as the run's
-              own quota when nothing on screen was spending Claude */}
+              meters are what you watch while it burns. One heading over
+              all of them, each block naming WHOSE window it is — an
+              unlabeled meter under a zen fleet read as the run's own
+              quota when nothing on screen was spending Claude, and the
+              cure does not scale by promoting one vendor to the
+              heading (owner, 2026-08-26: codex reads the same). */}
           <div className="mb-3 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
-            {showMeter ? (
-              <span title="engine term: quota windows — usage read live from your Claude subscription. Shown while any seat rides it.">
-                claude plan
-                {claudeSeats !== null && claudeSeats.length > 0 && (
-                  <span className="ml-2 font-normal tracking-normal normal-case">
-                    · {claudeSeats.join(' · ')}
-                  </span>
-                )}
-              </span>
-            ) : (
-              <span title="what each seated backend lets this console know about its remaining allowance">
-                plan usage
-              </span>
-            )}
+            <span title="what each seated backend lets this console know about its remaining allowance">
+              plan usage
+            </span>
           </div>
           {!showMeter ? null : (
           <div className="flex max-w-xl flex-col gap-2">
+            <div className="text-[11px] text-ink-dim">
+              <span title="read live from your Claude subscription's own usage endpoint">
+                {providerLabel('claude')}
+              </span>
+              {claudeSeats !== null && claudeSeats.length > 0 && (
+                <span className="text-ink-faint"> · {claudeSeats.join(' · ')}</span>
+              )}
+            </div>
             {(
               [
                 ['5-hour window', data.quota!.five_hour],
@@ -1051,10 +1064,49 @@ export default function Run({
             ))}
           </div>
           )}
-          {/* the other seated backends: none of them can be ASKED
-              before spending (usage_endpoint is claude's alone), so
-              the honest row is who rides them and why no meter —
-              silence here read as "no other account is being spent" */}
+          {/* the ledger meters. Same component, same scale, one line of
+              difference that decides how the number is read: nobody
+              ASKED this backend anything — it is the reading its last
+              agent left in its own rollout, so the age travels with it
+              and the number does not move while the engine is idle. */}
+          {logged.map((l) => {
+            const provSeats = (seated.find((p) => p.name === l.provider)?.seats ?? []).map(
+              (x) => x.seat,
+            )
+            return (
+              <div key={l.provider} className={`flex max-w-xl flex-col gap-2 ${showMeter ? 'mt-4' : ''}`}>
+                <div className="text-[11px] text-ink-dim">
+                  {providerLabel(l.provider)}
+                  {provSeats.length > 0 && (
+                    <span className="text-ink-faint"> · {provSeats.join(' · ')}</span>
+                  )}
+                  {l.plan && <span className="text-ink-faint"> · {l.plan} plan</span>}
+                </div>
+                {l.windows.map((w) => (
+                  <QuotaMeter
+                    key={w.minutes ?? 'w'}
+                    label={windowLabel(w.minutes)}
+                    pct={w.utilization}
+                    resetsAt={w.resets_at}
+                  />
+                ))}
+                <div className="text-[11px] text-ink-faint">
+                  <span title="this backend has no usage endpoint to ask — it writes its own quota reading into each agent's session log, so the meter moves when an agent finishes a turn and stands still while the engine is idle">
+                    {l.measured_at
+                      ? `as its last agent measured it, ${relTime(l.measured_at)}`
+                      : 'as its last agent measured it'}
+                  </span>
+                  {l.reached && (
+                    <span className="text-warn"> · the window is spent ({l.reached})</span>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+          {/* the remaining seated backends: nothing to ask and nothing
+              written down, so the honest row is who rides them and why
+              no meter — silence here read as "no other account is being
+              spent" */}
           {(others.length > 0 || (!showMeter && (claudeSeats?.length ?? 0) > 0)) && (
             <div className="mt-2 flex max-w-xl flex-col gap-1">
               {/* claude seated but its endpoint is not answering right

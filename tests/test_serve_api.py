@@ -1977,3 +1977,140 @@ def test_shutdown_console_only_touches_nothing_else(
     assert r.status_code == 200
     assert r.json()["stopped"] == ["console"]
     assert calls == ["exit"]
+
+
+# ---------------------------------------------------------------------
+# the second kind of meter: a backend with no endpoint, read back off
+# the ledger it writes itself (codex, 2026-08-26)
+# ---------------------------------------------------------------------
+
+def _rollout(workspace: Path, name: str, *, primary: dict | None,
+             secondary: dict | None = None, plan: str = "pro",
+             reached: object = None) -> Path:
+    """A codex rollout as the CLI leaves it: the quota reading rides a
+    `token_count` event, and there is other traffic around it."""
+    d = workspace / ".asterism" / "codex_sessions" / name
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"rollout-{name}.jsonl"
+    lines = [json.dumps({"payload": {"type": "item.completed", "text": "x"}})]
+    if primary is not None:
+        lines.append(json.dumps({"payload": {
+            "type": "token_count",
+            "rate_limits": {"limit_id": "codex", "plan_type": plan,
+                            "primary": primary, "secondary": secondary,
+                            "rate_limit_reached_type": reached}}}))
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+def test_session_log_quota_names_windows_by_their_own_length(
+        workspace: Path) -> None:
+    """codex reports one weekly window on some accounts and 5-hour +
+    weekly on others (both measured in one workspace, 2026-08-26), so
+    a window is named by `window_minutes`, never by its position."""
+    from Tooling.serve.run import log_quota, reset_quota_memo
+    reset_quota_memo()
+    _rollout(workspace, "s1",
+             primary={"used_percent": 12.0, "window_minutes": 300,
+                      "resets_at": 1788272023},
+             secondary={"used_percent": 8.0, "window_minutes": 10080,
+                        "resets_at": 1788472023})
+    rows = log_quota(workspace)
+    assert [r["provider"] for r in rows] == ["codex"]
+    assert [(w["minutes"], w["utilization"]) for w in rows[0]["windows"]] == [
+        (300, 12.0), (10080, 8.0)]
+    assert rows[0]["plan"] == "pro"
+    # the age travels with the reading — a meter nobody asked for must
+    # never be published as a live one
+    assert rows[0]["measured_at"] is not None
+    assert rows[0]["windows"][0]["resets_at"].startswith("2026-")
+
+
+def test_session_log_quota_takes_the_newest_reading(workspace: Path) -> None:
+    """Newest rollout wins, and one that carries no reading (a spawn
+    that died before its first turn) does not blank the meter."""
+    import os
+    import time
+    from Tooling.serve.run import log_quota, reset_quota_memo
+    old = _rollout(workspace, "old",
+                   primary={"used_percent": 3.0, "window_minutes": 10080,
+                            "resets_at": 1788272023})
+    new = _rollout(workspace, "new",
+                   primary={"used_percent": 41.0, "window_minutes": 10080,
+                            "resets_at": 1788272023})
+    empty = _rollout(workspace, "empty", primary=None)
+    now = time.time()
+    os.utime(old, (now - 300, now - 300))
+    os.utime(new, (now - 60, now - 60))
+    os.utime(empty, (now, now))       # newest, and it says nothing
+    reset_quota_memo()
+    rows = log_quota(workspace)
+    assert rows[0]["windows"][0]["utilization"] == 41.0
+    reset_quota_memo()
+
+
+def test_run_payload_carries_the_logged_meter(workspace: Path) -> None:
+    _open_db(workspace).close()
+    from Tooling.serve.run import reset_quota_memo
+    _rollout(workspace, "s1",
+             primary={"used_percent": 8.0, "window_minutes": 10080,
+                      "resets_at": 1788272023})
+    reset_quota_memo()
+    d = _client(workspace).get("/api/run").json()
+    assert d["quota_logged"][0]["provider"] == "codex"
+    reset_quota_memo()
+
+
+# ---------------------------------------------------------------------
+# the account switch, for whoever declares one
+# ---------------------------------------------------------------------
+
+def test_provider_rows_offer_the_switch_by_declaration(
+        workspace: Path) -> None:
+    """claude and codex both declare a console sign-in; the API-key and
+    borrowed-session backends declare none, and must not grow a button
+    that would sign into an account they do not use."""
+    rows = {p["name"]: p for p in
+            _client(workspace).get("/api/meta").json()["providers"]}
+    assert rows["claude"]["can_login"] and rows["claude"]["can_logout"]
+    assert rows["codex"]["can_login"] and rows["codex"]["can_logout"]
+    # zen rides codex's binary and inherits its declaration wholesale —
+    # the fields it must NOT inherit are its credential ones
+    assert not rows["zen"]["can_login"]
+    assert not rows["zen"]["can_logout"]
+    assert not rows["antigravity"]["can_login"]
+
+
+def test_provider_logout_retires_the_declared_file(
+        workspace: Path, monkeypatch, tmp_path: Path) -> None:
+    """Sign-out renames under a timestamp — never deletes: a switch the
+    owner cannot undo by hand is the wrong default for a quota move."""
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    creds = home / ".codex" / "auth.json"
+    creds.write_text('{"tokens": {}}', encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    c = _client(workspace)
+    assert c.post("/api/providers/codex/logout").json()["logged_out"] is True
+    assert not creds.exists()
+    assert [p.name for p in (home / ".codex").iterdir()][0].startswith(
+        "auth.json.bak-")
+    # idempotent: a second press says so instead of erroring
+    assert c.post("/api/providers/codex/logout").json()["logged_out"] is False
+
+
+def test_provider_login_is_declared_not_named(
+        workspace: Path, monkeypatch) -> None:
+    """The argv comes from the declaration, and a backend that declares
+    none is refused rather than guessed at."""
+    import Tooling.serve.app as _app
+    spawned: "list[tuple[str, tuple]]" = []
+    monkeypatch.setattr(_app, "spawn_cli_login",
+                        lambda exe, argv: spawned.append((exe, argv)))
+    import shutil as _sh
+    monkeypatch.setattr(_sh, "which", lambda n: r"C:\fake\codex.exe")
+    c = _client(workspace)
+    assert c.post("/api/providers/codex/login").json()["opened"] is True
+    assert spawned and spawned[0][1] == ("login",)
+    assert c.post("/api/providers/zen/login").status_code == 409
+    assert c.post("/api/providers/nope/login").status_code == 404

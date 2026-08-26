@@ -406,6 +406,22 @@ class ProviderCapabilities:
     #: answer — the honest readiness check where `auth_state` is opaque.
     #: Costs a round-trip, no tokens. `()` = none known.
     readiness_argv: "tuple[str, ...]" = ()
+    #: argv that opens the provider's OWN sign-in flow, for a console
+    #: offering the owner a mid-run ACCOUNT SWITCH (the quota move: sign
+    #: in as the other account, the next spawn spends that window).
+    #: Declared rather than written into serve because every vendor
+    #: spells it differently — claude `auth login --claudeai`, codex
+    #: `login` — and a console that hard-codes one grows a branch per
+    #: backend. `()` = the console must not offer a button.
+    login_argv: "tuple[str, ...]" = ()
+    #: Where the local session lives, relative to the user's home. Two
+    #: things follow from a declared path and neither needs a
+    #: subprocess: "signed in" is `is_file()`, and signing OUT is
+    #: retiring the file under a timestamp — reversible by hand, which a
+    #: vendor's own `logout` is not. None = not a readable file here
+    #: (macOS claude keeps it in the Keychain, so serve owns that one
+    #: platform-specific answer in `serve/app._creds_path`).
+    credentials_file: "str | None" = None
     notes: str = ""
 
     @property
@@ -481,6 +497,12 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         auth_state=AUTH_STATE_READABLE,
         # None needed: the credential file IS the answer, for free.
         readiness_argv=(),
+        login_argv=("auth", "login", "--claudeai"),
+        # NOT declared on purpose: the path is platform-specific (the
+        # Keychain on macOS), and serve's `_creds_path` already owns
+        # that answer — a second, simpler copy here would be wrong on
+        # exactly the platform the first one exists for.
+        credentials_file=None,
         notes=("usage endpoint = the subscription usage API read by "
                "core/usage_quota; stream = stream-json + partial "
                "messages, the watchdog's only sampling surface"),
@@ -732,6 +754,15 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         # 2026-08-12), which is what makes the per-spawn envelope cheap.
         auth_state=AUTH_STATE_READABLE,
         readiness_argv=("login", "status"),
+        # `codex login` opens the ChatGPT OAuth page and finishes by
+        # itself, exactly like claude's — which is what lets the console
+        # offer the same mid-run account switch for both (2026-08-26).
+        login_argv=("login",),
+        # Same file the per-spawn envelope copies. Declaring it buys the
+        # accounts panel a free "signed in" and a reversible sign-out;
+        # `codex logout` exists but DELETES, and a switch the owner
+        # cannot undo by hand is the wrong default for a quota move.
+        credentials_file=".codex/auth.json",
         notes=("capability surface is a per-spawn CODEX_HOME + "
                "config.toml; `[features]` is the tool gate, not "
                "`[tools]`; a worker with the shell off has NO file-read "
@@ -747,6 +778,18 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
 CAPABILITIES["zen"] = _dc_replace(
     CAPABILITIES["codex"], name="zen", api_host="openrouter.ai",
     states_quota_reset=False,
+    # ...and it does not write the ledger EITHER, which is a separate
+    # fact from the reset epoch and was inherited as True by accident
+    # until the console went looking for it (2026-08-26). Two reasons,
+    # and either alone is enough: no `rate_limits` event has ever been
+    # observed on this leg, and zen's rollouts land in the SAME
+    # `.asterism/codex_sessions/` tree as codex's (one binary, one
+    # transcript dir) — so a reader that trusted this flag would
+    # attribute codex's account reading to zen's key. Measured on
+    # 2026-08-26: 400 consecutive rollouts, every rate_limits event
+    # carrying `limit_id: codex*` and `plan_type: pro`, i.e. the
+    # ChatGPT account, never the OpenRouter one.
+    usage_from_session_log=False,
     # The runtime SHAPE is codex's (same binary through the local
     # shim), but install and auth are NOT: there is no `zen`
     # executable (the codex binary carries the seat), and the
@@ -756,7 +799,15 @@ CAPABILITIES["zen"] = _dc_replace(
     install_method=INSTALL_NOT_NEEDED,
     install_command=None,
     auth_flow=AUTH_API_KEY,
-    env_key="OPENROUTER_API_KEY")
+    env_key="OPENROUTER_API_KEY",
+    # …and therefore NOTHING to sign into: `codex login` would
+    # authenticate the ChatGPT account this seat never uses, and
+    # `~/.codex/auth.json` is not zen's credential. Both inherited as
+    # codex's until the console started reading them (2026-08-26) —
+    # the standing hazard of `_dc_replace`: every field not overridden
+    # is a claim this provider is making about itself.
+    login_argv=(),
+    credentials_file=None)
 
 
 #: config spellings -> canonical name (mirrors `llm.get_provider`).

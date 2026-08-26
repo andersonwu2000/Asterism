@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
-import { logout, switchAccount } from '../lib/claudeAuth'
+import { signOut, switchAccount } from '../lib/providerAuth'
+import { relTime } from '../lib/format'
 import { currentTheme, setTheme } from '../lib/theme'
 import type { Theme } from '../lib/theme'
 import { Button } from '../components/ui'
 import { QuotaMeter } from './Run'
 import { scopedRows } from '../lib/quota'
-import { PROVIDER_LABEL } from '../lib/vocab'
+import { PROVIDER_LABEL, windowLabel } from '../lib/vocab'
 import type { Meta, ProviderRow, RunStatus } from '../lib/types'
 import type { ShutdownPreview } from '../lib/types'
 import { markStopped } from '../lib/shutdown'
@@ -43,9 +44,11 @@ function Label({ children }: { children: React.ReactNode }) {
  * There used to be a hand-written component per vendor. Codex made it
  * three (2026-08-14) and the fourth would have wanted a fourth — which
  * is the branch-per-backend `llm/capabilities.py` exists to stop,
- * wearing copy instead of code. What stays vendor-specific is only
- * what genuinely is: claude keeps switch/sign-out because it is the
- * one whose session is a file we can retire.
+ * wearing copy instead of code. Nothing here is vendor-specific any
+ * more: the switch/sign-out pair follows `can_login`/`can_logout`,
+ * which say what the backend declared about its own sign-in — claude
+ * and codex both answer yes (2026-08-26), and the row that reads
+ * "claude only" was already wrong the day codex landed.
  *
  * The status word follows `auth_state`, and the tri-state matters:
  * `readable` can say signed in or not; `opaque` cannot say either, so
@@ -121,25 +124,30 @@ function Account({ p, onChanged }: { p: ProviderRow; onChanged: () => void }) {
           <span className={`h-2 w-2 rounded-full ${dot}`} aria-hidden />
           <span className="text-xs text-ink">{line}</span>
           <span className="ml-auto flex items-center gap-2">
-            {p.name === 'claude' && p.installed && (
-              <>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  disabled={busy}
-                  onClick={() => void run(switchAccount)}
-                >
-                  Switch account
-                </Button>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  disabled={busy}
-                  onClick={() => void run(logout)}
-                >
-                  Sign out
-                </Button>
-              </>
+            {/* the account switch, offered to whoever DECLARES one —
+                claude was the only vendor with these two buttons until
+                codex turned out to make the same move (2026-08-26) */}
+            {p.can_login && p.installed && (
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={busy}
+                title={`opens ${label}'s own browser sign-in — signing in as another account is the switch`}
+                onClick={() => void run(() => switchAccount(p.name))}
+              >
+                Switch account
+              </Button>
+            )}
+            {p.can_logout && p.installed && signedIn !== false && (
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={busy}
+                title="retires the local session file under a timestamp — reversible by hand, and running agents keep the session they already hold"
+                onClick={() => void run(() => signOut(p.name))}
+              >
+                Sign out
+              </Button>
             )}
             {p.can_probe && p.installed && !keyed && (
               /* the honest check where no file states the answer: make
@@ -204,15 +212,23 @@ function Account({ p, onChanged }: { p: ProviderRow; onChanged: () => void }) {
   )
 }
 
-/** The allowance itself, read live from the account's own usage — the
- * same meters the run console shows while you watch it burn. */
+/** The allowance itself — the same meters the run console shows while
+ * you watch it burn, under the account framing instead of the run's.
+ * Two sources, and the page says which: claude's is read live from its
+ * usage endpoint, codex's is the reading its last agent wrote into its
+ * own session log (2026-08-26). */
 function Allowance() {
   const { data } = usePoll<RunStatus>('/api/run', 30000)
   const q = data?.quota
-  if (!q) return null
+  const logged = data?.quota_logged ?? []
+  if (!q && logged.length === 0) return null
   return (
     <Row>
       <Label>allowance</Label>
+      {logged.length > 0 && q && (
+        <div className="mb-1.5 text-[11px] text-ink-dim">{PROVIDER_LABEL.claude}</div>
+      )}
+      {q && (
       <div className="flex max-w-xl flex-col gap-2">
         {q.five_hour && (
           <QuotaMeter
@@ -244,6 +260,33 @@ function Allowance() {
           />
         ))}
       </div>
+      )}
+      {logged.map((l) => (
+        <div key={l.provider} className={`flex max-w-xl flex-col gap-2 ${q ? 'mt-4' : ''}`}>
+          <div className="text-[11px] text-ink-dim">
+            {PROVIDER_LABEL[l.provider] ?? l.provider}
+            {l.plan && <span className="text-ink-faint"> · {l.plan} plan</span>}
+          </div>
+          {l.windows.map((w) => (
+            <QuotaMeter
+              key={w.minutes ?? 'w'}
+              label={windowLabel(w.minutes)}
+              pct={w.utilization}
+              resetsAt={w.resets_at}
+            />
+          ))}
+          <div className="text-[11px] text-ink-faint">
+            <span title="this backend has no usage endpoint to ask — it writes its own quota reading into each agent's session log, so the figure moves when an agent finishes a turn and stands still while the engine is idle">
+              {l.measured_at
+                ? `as its last agent measured it, ${relTime(l.measured_at)}`
+                : 'as its last agent measured it'}
+            </span>
+            {l.reached && (
+              <span className="text-warn"> · the window is spent ({l.reached})</span>
+            )}
+          </div>
+        </div>
+      ))}
     </Row>
   )
 }

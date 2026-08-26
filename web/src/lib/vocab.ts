@@ -308,3 +308,18 @@ export const PROVIDER_LABEL: Record<string, string> = {
 export function providerLabel(name: string): string {
   return PROVIDER_LABEL[name] ?? name
 }
+
+/** A quota window named by its own length. The backends report minutes
+ * and they do not report the same ones — claude: 5 hours + week; codex:
+ * a week, or 5 hours + week depending on the account (both shapes
+ * measured in one workspace, 2026-08-26). Naming by position is how a
+ * weekly window ends up labelled "5-hour". */
+export function windowLabel(minutes: number | null): string {
+  if (minutes === null) return 'window'
+  if (minutes % 10080 === 0)
+    return minutes === 10080 ? 'week' : `${minutes / 10080} weeks`
+  if (minutes % 1440 === 0)
+    return minutes === 1440 ? 'day' : `${minutes / 1440}-day window`
+  if (minutes % 60 === 0) return `${minutes / 60}-hour window`
+  return `${minutes}-minute window`
+}

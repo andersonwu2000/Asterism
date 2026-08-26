@@ -384,6 +384,23 @@ export interface QuotaWindow {
   resets_at: string | null
 }
 
+/** The OTHER kind of meter: a backend with no endpoint to ask, read
+ * back off the ledger it writes itself (codex appends `rate_limits` to
+ * its rollout once per turn). Same numbers, different epistemics — this
+ * is the last reading a spawn LEFT BEHIND, so `measured_at` travels
+ * with it and the UI must show it: nothing here moves while the engine
+ * is idle, and a meter that hides that is claiming to be live. */
+export interface LoggedQuota {
+  provider: string
+  plan: string | null
+  /** the provider's own word for "this window is spent", or null */
+  reached: string | null
+  measured_at: string | null
+  /** keyed by their own length — codex reports one weekly window on
+   * some accounts and 5-hour + weekly on others */
+  windows: { minutes: number | null; utilization: number; resets_at: string | null }[]
+}
+
 export interface RunStatus {
   daemon: DaemonStatus
   problem: string | null
@@ -400,6 +417,9 @@ export interface RunStatus {
     seven_day: QuotaWindow | null
     scoped: { name: string; percent: number; resets_at: string | null; is_active: boolean }[]
   } | null
+  /** one per backend that keeps its own usage ledger (empty when none
+   * has spent anything this window) */
+  quota_logged?: LoggedQuota[]
   recent: { kind: string; outcome: string; at: string }[]
 }
 
@@ -595,8 +615,13 @@ export interface ProviderRow {
   auth_state: 'readable' | 'opaque' | 'undeclared' | string
   /** it declares a way to ask whether the account works */
   can_probe: boolean
+  /** it declares a sign-in flow of its own the console can open — the
+   * mid-run account switch (claude, codex) */
+  can_login: boolean
+  /** its session is a file this console can retire (reversibly) */
+  can_logout: boolean
   seats: { seat: string; model: string | null }[]
-  /** claude only: its session is a file, so it can say */
+  /** present when the session is a readable file (claude, codex) */
   logged_in?: boolean
   subscription?: string | null
   /** antigravity only: which credential wins, and nothing errors when

@@ -613,6 +613,61 @@ def _read_rate_limits(home: Path) -> "dict | None":
     return limits
 
 
+def latest_rate_limits(workspace: "Path | str") -> "dict | None":
+    """The newest quota reading ANY codex spawn in this workspace left
+    behind — `_read_rate_limits`' workspace-wide twin, for a reader that
+    is not inside a spawn (the console).
+
+    Same material, different question. DELTA 5 says there is nothing to
+    ASK: the reading exists only because a spawn already spent something
+    and codex wrote `rate_limits` into its rollout. So the freshest
+    truth available from outside is the last `token_count` event of the
+    newest preserved rollout, and it comes with an AGE, which the caller
+    must carry to the reader: "8% of the weekly window" measured four
+    minutes ago and four hours ago are different claims, and a meter
+    that hides which one it is showing is the same lie as a live meter
+    that silently freezes.
+
+    Tail-read, newest first, a handful of files deep: a rollout is a
+    whole transcript (MBs), the last event is at its end, and the newest
+    file can legitimately hold none (a spawn that died before its first
+    turn). Returns {"limits": <the rate_limits payload>,
+    "measured_at": <epoch>} or None."""
+    root = Path(workspace) / ".asterism" / _TRANSCRIPT_DIRNAME
+    try:
+        files = sorted(root.rglob("rollout-*.jsonl"),
+                       key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return None
+    for path in reversed(files[-8:]):
+        try:
+            limits = None
+            for line in _tail_lines(path):
+                if '"rate_limits"' not in line:
+                    continue
+                payload = (json.loads(line).get("payload") or {})
+                if payload.get("type") == "token_count":
+                    limits = payload.get("rate_limits") or limits
+            if limits:
+                return {"limits": limits, "measured_at": path.stat().st_mtime}
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _tail_lines(path: Path, limit: int = 262_144) -> "list[str]":
+    """The last `limit` bytes as whole lines (a truncated first line is
+    dropped, never handed to a parser)."""
+    with path.open("rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        fh.seek(max(0, size - limit))
+        blob = fh.read()
+    if size > limit:
+        _, _, blob = blob.partition(b"\n")
+    return blob.decode("utf-8", "replace").splitlines()
+
+
 def _note_quota(limits: "dict | None") -> bool:
     """Record the reset epoch and say whether the window is spent."""
     if not limits:

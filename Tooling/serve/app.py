@@ -182,18 +182,27 @@ def spawn_claude_login() -> None:
     """Hand off to Claude Code's OWN browser login. `claude auth login`
     opens the user's browser straight to the Anthropic OAuth page and
     finishes through a localhost callback - the user clicks Authorize
-    and is done, no `/login` slash-command to know or type. The console
-    we spawn is a transient launcher: it closes itself the instant
-    `claude` exits, and is visible only as the safety net for Claude
-    Code's code-paste fallback (rare - browser can't reach the callback
-    on WSL/SSH/blocked ports). We never touch the OAuth secrets; the
-    whole flow is Claude Code's. Module-level so the setup wizard's
-    one-click flow can trigger it the moment the CLI lands. Raises
-    OSError when no console can be spawned on this platform."""
+    and is done, no `/login` slash-command to know or type. Module-level
+    so the setup wizard's one-click flow can trigger it the moment the
+    CLI lands, and so a test can replace the whole handoff."""
+    spawn_cli_login(claude_exe() or "claude", ("auth", "login", "--claudeai"))
+
+
+def spawn_cli_login(exe: str, argv: "tuple[str, ...]") -> None:
+    """Open a provider's OWN sign-in flow in a terminal of its own.
+
+    The console we spawn is a transient launcher: it closes itself the
+    instant the CLI exits, and is visible only as the safety net for the
+    code-paste fallback (rare - the browser cannot reach the callback on
+    WSL/SSH/blocked ports). We never touch the OAuth secrets; the whole
+    flow belongs to the vendor, which is also why the argv is DECLARED
+    (`capabilities.login_argv`) rather than written here: claude signs
+    in with `auth login --claudeai`, codex with `login`, and the next
+    backend will do it its own way again. Raises OSError when no console
+    can be spawned on this platform."""
     import subprocess
     import sys
-    exe = claude_exe() or "claude"
-    args = ["auth", "login", "--claudeai"]
+    args = list(argv)
     if sys.platform == "win32":
         if exe.lower().endswith((".cmd", ".bat")):
             # a batch shim must go through cmd; /c (not /k) so the
@@ -424,6 +433,29 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
             pass
         return False
 
+    def _provider_exe(name: str, cap) -> "str | None":  # noqa: ANN001
+        """This machine's binary for a declared backend, or None.
+
+        Resolution order is the DECLARATION's, not a guess: the two
+        backends with their own resolver (install homes the PATH may not
+        carry yet) get it, then `exe_name` — zen rides codex's binary —
+        then "nothing to install" (an HTTP provider has no binary and
+        saying 'not installed' about one would be a lie), then the CLI
+        named after the provider.
+        """
+        if name == "claude":
+            return claude_exe()
+        if name == "antigravity":
+            from ..llm.antigravity_cli import resolve_agy_executable
+            return resolve_agy_executable()
+        import shutil
+        from ..llm import capabilities as _caps
+        if cap.exe_name is not None:
+            return shutil.which(cap.exe_name)
+        if cap.install_method == _caps.INSTALL_NOT_NEEDED:
+            return ""
+        return shutil.which(name)
+
     def _provider_rows() -> "list[dict]":
         """One row per DECLARED backend: what it is, and what this
         machine has of it.
@@ -444,38 +476,24 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         rows: "list[dict]" = []
         for name in sorted(_caps.CAPABILITIES):
             cap = _caps.capabilities_for(name)
-            exe = None
+            exe = _provider_exe(name, cap)
             extra: dict = {}
             if name == "claude":
-                exe = claude_exe()
                 st = _claude_status()
                 extra = {"logged_in": st["logged_in"],
                          "subscription": st["subscription"]}
             elif name == "antigravity":
-                from ..llm.antigravity_cli import (agy_identity,
-                                                   resolve_agy_executable)
-                exe = resolve_agy_executable()
+                from ..llm.antigravity_cli import agy_identity
                 verdict, path = agy_identity()
                 extra = {"identity": verdict,
                          "identity_path": str(path) if path else None}
-            elif cap.exe_name is not None:
-                # the DECLARED binary — zen rides codex's, so installed
-                # means "the carrier is here", never a `zen` that will
-                # not exist. Checked before install_method: a provider
-                # can have nothing of its own to install and still
-                # depend on a binary being present.
-                import shutil
-                exe = shutil.which(cap.exe_name)
-            elif cap.install_method == _caps.INSTALL_NOT_NEEDED:
-                # reached over HTTP — there is no binary to find, and
-                # saying "not installed" about one would be a lie
-                exe = ""
-            else:
-                # the provider ships a CLI named after itself — codex
-                # ships `codex`. Anything else declares exe_name (branch
-                # above); the installer bridge follows the same rule.
-                import shutil
-                exe = shutil.which(name)
+            elif cap.credentials_file:
+                # a DECLARED session file answers "signed in" for free,
+                # the same way claude's does — no subprocess, no probe
+                # (codex, 2026-08-26). Absent stays absent: a provider
+                # that declares nothing reports nothing, and the panel
+                # renders unknown as unknown rather than as a nag.
+                extra["logged_in"] = (Path.home() / cap.credentials_file).is_file()
             seats = []
             for seat in _cfg.UI_SEATS:
                 try:
@@ -503,6 +521,11 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                 "auth_flow": cap.auth_flow,
                 "auth_state": cap.auth_state,
                 "can_probe": bool(cap.readiness_argv),
+                # the account-switch pair, declared: sign-in opens the
+                # vendor's own flow, sign-out retires a session file
+                # this console can name
+                "can_login": bool(cap.login_argv),
+                "can_logout": _creds_for(name, cap) is not None,
                 "seats": seats,
                 **extra,
             })
@@ -645,50 +668,93 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
         return {"ok": False,
                 "detail": (r.stderr or r.stdout or "").strip()[:300]}
 
-    @app.post("/api/claude/logout")
-    def claude_logout() -> dict:
-        """Log out locally: the credentials file IS the local session,
-        so logging out = retiring it (a timestamped backup, never a
-        delete — reversible by hand). Claude Code asks for a fresh
-        login on its next start; running agents keep the session they
-        already hold, NEW agent spawns use whatever is logged in next.
-        This is the owner's mid-run account switch (quota reset)."""
-        creds = _creds_path()
+    def _creds_for(name: str, cap) -> "Path | None":  # noqa: ANN001
+        """The provider's local session file. claude's answer is serve's
+        own (platform-specific, see `_creds_path`); everyone else
+        declares a path under the home directory or has none."""
+        if name == "claude":
+            return _creds_path()
+        return (Path.home() / cap.credentials_file
+                if cap.credentials_file else None)
+
+    @app.post("/api/providers/{name}/logout")
+    def provider_logout(name: str) -> dict:
+        """Sign out locally: the credentials file IS the local session,
+        so signing out = retiring it (a timestamped backup, never a
+        delete — reversible by hand, which the vendors' own `logout`
+        commands are not). The CLI asks for a fresh login on its next
+        start; running agents keep the session they already hold, NEW
+        spawns use whatever is signed in next. This is the owner's
+        mid-run account switch (quota reset), and it is the same move
+        for every backend that keeps its session in a file."""
+        from ..llm import capabilities as _caps
+        if name not in _caps.CAPABILITIES:
+            raise HTTPException(status_code=404, detail=f"no such backend: {name}")
+        cap = _caps.capabilities_for(name)
+        creds = _creds_for(name, cap)
+        if creds is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{name} keeps no local session file this console can "
+                       f"retire — sign out with its own CLI")
         if not creds.exists():
             return {"logged_out": False, "detail": "already logged out"}
         stamp = datetime_now_compact()
-        creds.rename(creds.with_name(f".credentials.json.bak-{stamp}"))
+        creds.rename(creds.with_name(f"{creds.name}.bak-{stamp}"))
         # the quota memo still holds the OLD account's meters for up
         # to 2 minutes — flush so the switch is visible immediately
         from .run import reset_quota_memo
         reset_quota_memo()
         return {"logged_out": True}
 
-    @app.post("/api/claude/login")
-    def claude_login() -> dict:
-        """Open Claude Code's own browser login (see
-        spawn_claude_login). This is ALSO the account switch: signing
-        in as another account overwrites the session, so switching
-        needs no prior logout - if the user cancels, the current
-        session is untouched. The UI polls /api/meta until the account
-        flips. Best-effort per platform; on failure the caller shows
-        the manual command."""
-        if claude_exe() is None:
+    @app.post("/api/providers/{name}/login")
+    def provider_login(name: str) -> dict:
+        """Open the provider's OWN browser sign-in. This is ALSO the
+        account switch: signing in as another account overwrites the
+        session, so switching needs no prior sign-out — if the user
+        cancels, the current session is untouched. The UI polls
+        /api/meta until the account flips. Best-effort per platform; on
+        failure the caller shows the manual command."""
+        from ..llm import capabilities as _caps
+        if name not in _caps.CAPABILITIES:
+            raise HTTPException(status_code=404, detail=f"no such backend: {name}")
+        cap = _caps.capabilities_for(name)
+        if not cap.login_argv:
             raise HTTPException(
                 status_code=409,
-                detail="claude CLI is not installed — finish the setup"
-                       " wizard (#/setup) first")
+                detail=f"{name} declares no console sign-in — its credential "
+                       f"is set up outside this page")
+        exe = _provider_exe(name, cap)
+        if not exe:
+            raise HTTPException(
+                status_code=409,
+                detail=f"the {name} CLI is not installed — finish the setup"
+                       f" wizard (#/setup) first")
+        manual = " ".join([name, *cap.login_argv])
         try:
-            spawn_claude_login()
+            if name == "claude":
+                spawn_claude_login()  # the seam tests replace
+            else:
+                spawn_cli_login(exe, cap.login_argv)
         except OSError as e:
-            return {"opened": False, "manual": "claude auth login",
-                    "detail": str(e)}
+            return {"opened": False, "manual": manual, "detail": str(e)}
         # a switch changes which account's meters are live - drop the
         # memo so the new account's plan windows show without the
         # 2-minute wait
         from .run import reset_quota_memo
         reset_quota_memo()
         return {"opened": True}
+
+    # claude's own routes, kept because the console and the setup wizard
+    # already call them: one implementation, two names (2026-08-26 —
+    # they were the implementation until codex asked for the same move).
+    @app.post("/api/claude/logout")
+    def claude_logout() -> dict:
+        return provider_logout("claude")
+
+    @app.post("/api/claude/login")
+    def claude_login() -> dict:
+        return provider_login("claude")
 
     # -- reads ----------------------------------------------------------
 
