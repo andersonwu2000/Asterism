@@ -83,7 +83,8 @@ def write_tools_mcp_config(attempts_dir: Path, workspace: Path,
 def _write_mcp_config(attempts_dir: Path, workspace: Path,
                       target: Path, *,
                       pipeline_id: str, problem: str,
-                      kind: "str | None" = None) -> Path:
+                      kind: "str | None" = None,
+                      goal_id: "int | None" = None) -> Path:
     """Generate the MCP config JSON claude CLI uses to connect to the
     long-living gateway. One HTTP MCP server per daemon; spawns
     connect over HTTP with a session token in the
@@ -141,6 +142,9 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
         # Pipeline kind — lets the gateway's submission mirror give
         # pipeline-accurate verdicts (e.g. non-proved citation severity).
         "kind": kind,
+        # Goal identity — lets validate's parity probe run commit's
+        # strict-ancestor cycle predicate (2026-08-26).
+        "goal_id": goal_id,
     }).encode("utf-8")
     req = _u.Request(base + "/register", data=register_body,
                      headers={"Content-Type": "application/json"},

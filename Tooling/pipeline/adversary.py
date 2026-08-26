@@ -516,11 +516,30 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
     # The builder knows exactly what it wrote — say so.
     present = sorted(p.name for p in proj.iterdir()
                      if p.is_file() and not p.name.startswith("_"))
+    # External paths the prompt names get the same courtesy (x62
+    # feedback 2026-08-25: judges burned probe rounds discovering
+    # whether the workspace side of the layout exists at all).
+    _ext_lines = []
+    for label, path in (("proofs dir", proofs_dir),
+                        ("papers dir", papers_dir)):
+        if path.is_dir():
+            n_files = sum(1 for _ in path.iterdir())
+            _ext_lines.append(f"- {label} `{path.as_posix()}`: "
+                              f"exists, {n_files} entries")
+        else:
+            _ext_lines.append(f"- {label} `{path.as_posix()}`: "
+                              f"DOES NOT EXIST — do not probe it")
+    for name in ("Root.lean", "Defs.lean"):
+        p = problem_dir / name
+        _ext_lines.append(
+            f"- `{p.as_posix()}`: "
+            + ("exists" if p.is_file() else "DOES NOT EXIST"))
     manifest = ("\n\n## This round's dossier — actually present\n"
                 + ", ".join(f"`{n}`" for n in present)
                 + "\n(a dossier file from the list above that is not "
                   "named here does not exist this round — do not probe "
-                  "for it)\n")
+                  "for it)\n\nWorkspace paths the prompt references:\n"
+                + "\n".join(_ext_lines) + "\n")
     prompt_path.write_text(
         prompt_src.read_text(encoding="utf-8")
         .replace(PROOFS_DIR_PLACEHOLDER, proofs_dir.as_posix())

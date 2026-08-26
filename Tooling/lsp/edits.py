@@ -155,6 +155,12 @@ def _closest_region(content: str, needle: str) -> "str | None":
     if at == -1:
         return None
     lo = origin[at]
+    # Back to the start of the line: the error text tells the agent
+    # "indentation is part of the anchor", so the VERBATIM quote it
+    # offers must CARRY the leading indentation — it used to start at
+    # the first non-whitespace character, and copying it verbatim
+    # failed exactly as instructed (~35 reports, 2026-08-26).
+    lo = content.rfind("\n", 0, lo) + 1
     hi = origin[min(at + len(target), len(origin)) - 1] + 1
     return content[lo:hi][:CLOSEST_CONTEXT_CHARS]
 

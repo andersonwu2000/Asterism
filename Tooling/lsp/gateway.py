@@ -166,6 +166,13 @@ class SessionMetadata:
     # 2026-07-09/10, ~32 reports). `_resync_buffer_from_disk` compares
     # and invalidates the slot on change.
     stub_fingerprint: tuple = ()
+    # The session's goal identity (register payload `goal_id`, threaded
+    # from run_lsp_edit_loop 2026-08-26) — lets validate's parity probe
+    # run the SAME strict-ancestor cycle predicate commit runs, so
+    # "citation ok" can no longer precede a commit-time circularity
+    # reject (feedback x2). Optional: older clients get no cycle check,
+    # never an error.
+    goal_id: "int | None" = None
     # --- heartbeat-budget gate (2026-08-12) -------------------------
     #: A heartbeat timeout has been reported to this agent at least once.
     hb_saw_timeout: bool = False
@@ -1076,6 +1083,7 @@ def _register_session_internal(
     log_path: Path | None,
     kind: str | None = None,
     interactive: bool = False,
+    goal_id: "int | None" = None,
 ) -> tuple[str, str | None]:
     """Stash session metadata AND eagerly claim a worker slot
     (#118, 1:1 binding). The claim is registered by setting
@@ -1099,6 +1107,7 @@ def _register_session_internal(
         problem=problem,
         workspace=workspace.resolve(),
         log_path=log_path.resolve() if log_path else None,
+        goal_id=goal_id,
         file_content=content,
         kind=kind,
     )
@@ -2202,7 +2211,7 @@ def _proved_sibling_import_lines(
 
 def _parity_for(
     content: str, problem: str, workspace: "Path", inlined_slugs: "list[str]",
-    header: "dict",
+    header: "dict", goal_id: "int | None" = None,
 ) -> "dict":
     """Does the sandbox's verdict cover what the real build will see?
 
@@ -2234,7 +2243,16 @@ def _parity_for(
     that can act on it."""
     if not inlined_slugs:
         return {"state": "exact", "note": "no siblings inlined"}
-    imports = " ".join(header.get("imports") or ())
+    # EXACT module identity, never substring: `"L_foo" in imports` (a
+    # space-joined string) matched `L_foobar`'s import and marked an
+    # unproved sibling proved (feedback 2026-08-25, soundness-adjacent
+    # missignal — the kernel gates still held, the AGENT was misled).
+    import_names = set(header.get("imports") or ())
+
+    def _import_covers(slug: str) -> bool:
+        mod = f"L_{slug}"
+        return any(imp == mod or imp.endswith(f".{mod}")
+                   for imp in import_names)
     proved: "list[str]" = []
     conditional: "list[str]" = []
     unresolved: "list[str]" = []
@@ -2260,12 +2278,31 @@ def _parity_for(
             proved.append(slug)
         elif st is not None:
             conditional.append(slug)
-        elif f"L_{slug}" in imports:
+        elif _import_covers(slug):
             proved.append(slug)
         else:
             unresolved.append(slug)
+    # Commit's strict-ancestor cycle predicate, mirrored (2026-08-26,
+    # feedback x2: validate said "citation ok", commit rejected the
+    # circularity). Same walk, same SQL home (`db.strict_ancestor_ids`).
+    cycle_slugs: "list[str]" = []
+    if goal_id is not None and db_path.exists():
+        try:
+            conn = db.connect(db_path)
+            try:
+                anc = db.strict_ancestor_ids(conn, int(goal_id))
+                for slug in inlined_slugs:
+                    row = conn.execute(
+                        "SELECT id FROM goals WHERE problem = ? "
+                        "AND slug = ?", (problem, slug)).fetchone()
+                    if row is not None and int(row[0]) in anc:
+                        cycle_slugs.append(slug)
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 — parity must never break validate
+            cycle_slugs = []
     if unresolved:
-        return {
+        out = {
             "state": "unresolved",
             "framework_parity_error": sorted(unresolved),
             "note": ("the probe resolved these through an inlined stub, but "
@@ -2273,8 +2310,8 @@ def _parity_for(
                      "goals — your mathematics was not judged against what "
                      "will be built. Report this; it is not your error."),
         }
-    if conditional:
-        return {
+    elif conditional:
+        out = {
             "state": "conditional",
             "depends_on": sorted(conditional),
             "note": ("elaborated against the DECLARED signature of these "
@@ -2282,7 +2319,16 @@ def _parity_for(
                      "they become. A clean result here is conditional on "
                      "them proving as declared."),
         }
-    return {"state": "exact", "proved_siblings": sorted(proved)}
+    else:
+        out = {"state": "exact", "proved_siblings": sorted(proved)}
+    if cycle_slugs:
+        out["ancestor_cycle"] = sorted(cycle_slugs)
+        out["ancestor_cycle_note"] = (
+            "commit WILL reject this: the cited sibling(s) above are "
+            "strict ANCESTORS of your goal — the ancestor depends on "
+            "your goal, so citing it is circular. Prove the goal without "
+            "them, or decompose into genuinely new sub-goals.")
+    return out
 
 
 def _build_compilation_unit(
@@ -3985,7 +4031,7 @@ def validate_file(content: str = "", file: str = "") -> str:
     # exactly that reading for a week, 37 reports).
     response["parity"] = _parity_for(
         content, meta.problem, meta.workspace, inlined_slugs,
-        response["commit_header"])
+        response["commit_header"], goal_id=meta.goal_id)
     # Submission mirror (#8 / P2): the commit-time citation + annotation gates,
     # surfaced here so a clean Lean elaboration that would still be bounced at
     # commit is flagged pre-commit. Separate from `diagnostics` (Lean) so the
@@ -4082,6 +4128,10 @@ async def register(request: Request):
                             status_code=400)
     log_path = data.get("log_path")
     kind = data.get("kind")
+    try:
+        _goal_id = int(data["goal_id"]) if data.get("goal_id") else None
+    except (TypeError, ValueError):
+        _goal_id = None
     token, err = _register_session_internal(
         pipeline_id=str(data["pipeline_id"]),
         target_path=Path(data["target_path"]),
@@ -4089,6 +4139,7 @@ async def register(request: Request):
         workspace=Path(data["workspace"]),
         log_path=Path(log_path) if log_path else None,
         kind=str(kind) if kind else None,
+        goal_id=_goal_id,
     )
     if err:
         return JSONResponse({"error": err}, status_code=500)

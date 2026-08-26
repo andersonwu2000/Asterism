@@ -359,8 +359,12 @@ def test_problem_detail_shape(workspace: Path) -> None:
     lemma = next(g for g in d["goals"] if g["slug"] == "lemma_a")
     assert lemma["dead_attempts"] == 1
     assert d["strategies"][0]["goal_id"] == gid
+    # link_kind joined the PAYLOAD on 2026-08-26 (the column is v44):
+    # the sky cannot tell a decomposition from a reuse without it, and
+    # was drawing every reuse as a branch.
     assert d["strategy_edges"][0] == {
-        "strategy_id": sid, "subgoal_id": sub, "position": 0}
+        "strategy_id": sid, "subgoal_id": sub, "position": 0,
+        "link_kind": "minted"}
     assert d["decisions"][0]["decision_kind"] == "Noop"
     assert d["proof_files"] == ["main.lean"]
 
@@ -373,6 +377,70 @@ def test_problem_detail_shape(workspace: Path) -> None:
     assert g["proof_text"] is None
 
     assert c.get("/api/problems/nope").status_code == 404
+
+
+def test_cited_subgoal_is_a_reuse_not_a_branch(workspace: Path) -> None:
+    """v44 `link_kind` reaches the read side (2026-08-26).
+
+    A strategy's subgoal list holds two different things: goals the
+    route CREATED (`minted`) and goals it merely reaches for
+    (`cited`). Flattened, a lemma seven routes cite grew seven
+    decomposition limbs on the sky and was dragged below all seven
+    citers by the layering pass — and the route panel credited each
+    citer with subgoals it never made. Worse, the group-attribution
+    walk treated a citer as the lemma's PARENT, so a reused goal could
+    inherit the wrong discussion group.
+    """
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    gid = db.insert_goal(conn, problem="p", slug="main",
+                         lean_path="Problems/p/proofs/main.lean",
+                         statement="True", origin="root")
+    minted = db.insert_goal(conn, problem="p", slug="lemma_minted",
+                            lean_path="Problems/p/proofs/lemma_minted.lean",
+                            statement="1 = 1", origin="backward")
+    other = db.insert_goal(conn, problem="p", slug="other",
+                           lean_path="Problems/p/proofs/other.lean",
+                           statement="2 = 2", origin="backward")
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, status, created_by,"
+        " created_at) VALUES (?, 'x', 'proposed', 'test', ?)", (gid, ts))
+    s_mint = int(cur.lastrowid)
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, status, created_by,"
+        " created_at) VALUES (?, 'y', 'proposed', 'test', ?)", (other, ts))
+    s_cite = int(cur.lastrowid)
+    db.link_subgoal(conn, strategy_id=s_mint, subgoal_id=minted,
+                    position=0)
+    db.link_subgoal(conn, strategy_id=s_mint, subgoal_id=other,
+                    position=1)
+    # `other`'s route does not decompose: it reaches for the lemma the
+    # first route minted
+    db.link_subgoal(conn, strategy_id=s_cite, subgoal_id=minted,
+                    position=0, link_kind="cited")
+    conn.commit()
+    conn.close()
+
+    c = _client(workspace)
+    d = c.get("/api/problems/p").json()
+    kinds = {(e["strategy_id"], e["subgoal_id"]): e["link_kind"]
+             for e in d["strategy_edges"]}
+    assert kinds[(s_mint, minted)] == "minted"
+    assert kinds[(s_cite, minted)] == "cited"
+
+    # the citing route's own record names the reuse as a reuse
+    sd = c.get(f"/api/problems/p/strategies/{s_cite}").json()
+    assert [(x["slug"], x["reused"]) for x in sd["subgoals"]] == [
+        ("lemma_minted", True)]
+    # and the minting route does not call its own children reused
+    sm = c.get(f"/api/problems/p/strategies/{s_mint}").json()
+    assert all(not x["reused"] for x in sm["subgoals"])
+
+    # the goal panel's route list, same distinction
+    g = c.get(f"/api/problems/p/goals/{other}").json()
+    route = next(s for s in g["strategies"] if s["id"] == s_cite)
+    assert [x["reused"] for x in route["subgoals"]] == [True]
     assert c.get("/api/problems/p/goals/99999").status_code == 404
 
 

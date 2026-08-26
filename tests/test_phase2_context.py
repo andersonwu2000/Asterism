@@ -1957,3 +1957,15 @@ def test_active_goals_roster_is_bounded_with_catalog_pointer(
     tree = text[start:text.index("##", start + 4)]
     assert "Counters:" in tree
     assert "`g039`" not in tree
+
+
+def test_adversary_manifest_probes_external_paths() -> None:
+    """x62 feedback (2026-08-25): judges burned probe rounds
+    discovering whether workspace-side paths the prompt names exist.
+    The dossier manifest now answers existence for proofs/papers dirs
+    and Root/Defs before the first tool call."""
+    import inspect
+    from Tooling.pipeline import adversary
+    src = inspect.getsource(adversary)
+    assert "Workspace paths the prompt references" in src
+    assert "DOES NOT EXIST" in src

@@ -176,27 +176,13 @@ def _strict_ancestor_slugs(conn, goal_id: int) -> "dict[str, str]":
 
 
 def _strict_ancestor_ids(conn, goal_id: int) -> "set[int]":
-    """Goal ids of every STRICT ancestor of `goal_id` (same walk as
-    `_strict_ancestor_slugs`, id form). Used by the ancestor-link guard:
-    linking an ancestor as a sub-goal closes a strategy-level cycle —
-    every strategy on the loop waits for the next and none can ever
-    complete (PutnamCmp a5 live deadlock, 2026-07-19). Content guards
-    (restatement / defeq) never see this: the statements all differ;
-    only the graph knows."""
-    rows = conn.execute(
-        "WITH RECURSIVE ancestors(id) AS ("
-        "  SELECT s.goal_id FROM strategies s"
-        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
-        "    WHERE ss.subgoal_id = ?"
-        "  UNION"
-        "  SELECT s.goal_id FROM strategies s"
-        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
-        "    JOIN ancestors a ON a.id = ss.subgoal_id"
-        ") "
-        "SELECT id FROM ancestors",
-        (goal_id,),
-    ).fetchall()
-    return {int(r["id"]) for r in rows} - {int(goal_id)}
+    """Goal ids of every STRICT ancestor of `goal_id`. The walk moved
+    to `db.strict_ancestor_ids` (2026-08-26) so validate's parity
+    mirror runs the SAME predicate — this wrapper keeps the local
+    call sites unchanged. Used by the ancestor-link guard: linking an
+    ancestor as a sub-goal closes a strategy-level cycle (PutnamCmp a5
+    live deadlock, 2026-07-19); only the graph knows."""
+    return db.strict_ancestor_ids(conn, goal_id)
 
 
 def _cited_dependency_guards(

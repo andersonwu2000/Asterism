@@ -3332,6 +3332,29 @@ def queue_count(conn: sqlite3.Connection, *, target_id: str, kind: str) -> int:
     return int(row["n"])
 
 
+def strict_ancestor_ids(conn: sqlite3.Connection,
+                        goal_id: int) -> "set[int]":
+    """Goal ids of every STRICT ancestor of `goal_id` via the
+    strategy_subgoals graph. ONE home (2026-08-26): backward's
+    ancestor-link guard and validate's parity cycle mirror both call
+    this, so "citation ok" and "commit rejects the circularity" can
+    never disagree about what an ancestor is."""
+    rows = conn.execute(
+        "WITH RECURSIVE ancestors(id) AS ("
+        "  SELECT s.goal_id FROM strategies s"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    WHERE ss.subgoal_id = ?"
+        "  UNION"
+        "  SELECT s.goal_id FROM strategies s"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    JOIN ancestors a ON a.id = ss.subgoal_id"
+        ") "
+        "SELECT id FROM ancestors",
+        (goal_id,),
+    ).fetchall()
+    return {int(r["id"]) for r in rows} - {int(goal_id)}
+
+
 def queue_size(conn: sqlite3.Connection, *,
                scope: "str | None" = None,
                claimable_only: bool = False,

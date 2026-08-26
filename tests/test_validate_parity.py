@@ -100,3 +100,45 @@ def test_parity_never_breaks_validate(tmp_path: Path) -> None:
     can fail the thing it guards is worse than no guard."""
     out = gw._parity_for("x", "T.p", tmp_path, ["whatever"], {"imports": []})
     assert out["state"] in ("exact", "conditional", "unresolved")
+
+
+def test_import_match_is_exact_module_identity_never_substring(
+        ws: Path) -> None:
+    """`"L_foo" in imports` (a joined string) matched `L_foobar`'s
+    import and marked an unproved sibling proved (feedback 2026-08-25,
+    soundness-adjacent missignal). Exact name or dotted suffix only."""
+    header = {"imports": ["Problems.T.p.proofs.L_foobar"]}
+    out = gw._parity_for("x", "T.p", ws, ["foo"], header)
+    assert out["state"] == "unresolved", \
+        "a substring of another module's name is not a covering import"
+    out2 = gw._parity_for("x", "T.p", ws, ["foobar"], header)
+    assert out2["state"] == "exact" and out2["proved_siblings"] == ["foobar"]
+
+
+def test_parity_mirrors_commits_ancestor_cycle_predicate(ws: Path) -> None:
+    """Feedback x2: validate said "citation ok", commit rejected the
+    circularity. With the session's goal_id threaded in, the SAME
+    `db.strict_ancestor_ids` walk runs here and names the cycle before
+    the agent builds on it."""
+    from Tooling.state import db
+    c = db.connect(ws / "asterism.db")
+    db.init_schema(c)
+    c.execute("INSERT INTO problems (name, created_at)"
+              " VALUES ('T.p', 't')")
+    root = db.insert_goal(c, problem="T.p", slug="root",
+                          lean_path="P/root.lean", statement="R",
+                          origin="root", depth=0)
+    kid = db.insert_goal(c, problem="T.p", slug="kid",
+                         lean_path="P/kid.lean", statement="K",
+                         origin="backward", depth=1)
+    sid = db.insert_strategy(c, goal_id=root, proposal_md="s",
+                         lean_path="P/s.lean", created_by="test")
+    db.link_subgoal(c, strategy_id=sid, subgoal_id=kid, position=0)
+    c.commit(); c.close()
+    out = gw._parity_for("x", "T.p", ws, ["root"], {"imports": []},
+                         goal_id=kid)
+    assert out.get("ancestor_cycle") == ["root"]
+    assert "circular" in out["ancestor_cycle_note"]
+    # no goal identity (old client) -> no cycle check, never an error
+    out2 = gw._parity_for("x", "T.p", ws, ["root"], {"imports": []})
+    assert "ancestor_cycle" not in out2

@@ -453,7 +453,7 @@ _WATERMARKS = {
     # 3880→3900 (2026-08-25): v44 strategy_subgoals.link_kind — DDL
     # provenance comment (which readers traverse which edge kind) +
     # link_subgoal param. Conscious bump.
-    "Tooling/state/db.py": 3900,
+    "Tooling/state/db.py": 3930,  # +23 2026-08-26 strict_ancestor_ids home
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,

@@ -121,6 +121,18 @@ def test_a_whitespace_only_mismatch_returns_the_verbatim_text() -> None:
     assert ei.value.extra["closest_region"].strip().startswith("theorem a_bound")
 
 
+def test_the_verbatim_quote_carries_the_leading_indentation() -> None:
+    """The error text says indentation is part of the anchor — so the
+    quote it offers must START at the line's first column. It used to
+    start at the first non-whitespace character, and copying it
+    verbatim failed exactly as instructed (~35 reports, 2026-08-26)."""
+    with pytest.raises(E.EditError) as ei:
+        E.resolve(FILE, [{"replace": "norm_num  ", "with": "simp",
+                          "after": "theorem b_bound"}])
+    region = ei.value.extra["closest_region"]
+    assert region.startswith("  norm_num"), region
+
+
 def test_one_bad_edit_fails_the_whole_batch() -> None:
     """All-or-nothing. A partial batch would leave the agent unable to
     say which of two files it is now editing — the exact state-tracking
