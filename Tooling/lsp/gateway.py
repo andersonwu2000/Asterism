@@ -115,6 +115,18 @@ class WorkerSlot:
     # background rewarm holds the slot; acquires slide their deadline
     # and the wait is credited to the session's wall.
     rewarming: bool = False
+    # Freeze (owner design 2026-08-26, the fleet-level pressure
+    # answer): over-budget -> the fattest idle worker is KILLED but
+    # its session and claim survive; a tool call arriving meanwhile
+    # queues on the slot (sliding deadline, wall credit — the CPU
+    # gate's contract). When pressure clears, the thaw rebuilds the
+    # worker from the session's own content and the queued call runs.
+    # A suspend, not a kill: the cliff mechanisms stay as backstops.
+    frozen: bool = False
+    frozen_at: float = 0.0
+    # Set while an acquire is queued on this frozen slot — the thaw
+    # loop serves these sessions first.
+    thaw_waiting: bool = False
     # Short cooldown stamp — bridges the reading cache's TTL right
     # after a rewarm (the stale fat reading must not re-trigger).
     rewarmed_at: float = 0.0
@@ -240,6 +252,10 @@ class GatewayState:
     #: Measured veto the dispatcher sends with the target: never start
     #: a warm when the machine's available RAM (GB) is below this.
     warm_min_available_gb: float = 0.0
+    #: The RAM budget (owner .env), stashed at launch for the freezer
+    #: (owner design 2026-08-26): the gateway needs the same number the
+    #: dispatcher's ledger plans with. None = no budget (freeze off).
+    ram_budget_gb: "float | None" = None
     #: Single-flight latch for the background converger thread.
     warm_converger_on: bool = False
 
@@ -715,6 +731,12 @@ def _weight_watchdog_run() -> None:
             print(f"[gateway] weight watchdog scan failed "
                   f"({type(exc).__name__}: {exc})", file=sys.stderr,
                   flush=True)
+        try:
+            _freeze_tick()
+        except Exception as exc:  # noqa: BLE001 — the watchdog survives
+            print(f"[gateway] freeze tick failed "
+                  f"({type(exc).__name__}: {exc})", file=sys.stderr,
+                  flush=True)
 
 
 def _kill_worker_for_uri(uri: str) -> bool:
@@ -897,6 +919,8 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
         deadline = time.monotonic() + 120.0
         while time.monotonic() < deadline:
             for slot in _borrow_order(_state.workers):
+                if slot.frozen:
+                    continue    # no worker behind it — thaw's business
                 if slot.lock.acquire(blocking=False):
                     try:
                         if swap_in:
@@ -970,6 +994,7 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
         with _state.sessions_lock:
             free = next((s for s in _state.workers
                          if s.claimed_by is None and not s.closed
+                         and not s.frozen
                          and s.reserved == want_reserved), None)
             if free is not None:
                 free.claimed_by = meta.pipeline_id
@@ -1007,6 +1032,29 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
     _rewarm_wait_t0: "float | None" = None
     while time.monotonic() < deadline:
         if my_slot.lock.acquire(blocking=False):
+            if my_slot.frozen:
+                # No worker behind this slot — queue for the thaw (the
+                # freeze contract: the wait is the framework's, credited
+                # to the wall, bounded so a thaw that never comes errors
+                # out loud instead of holding the session hostage).
+                my_slot.thaw_waiting = True
+                my_slot.lock.release()
+                if _rewarm_wait_t0 is None:
+                    _rewarm_wait_t0 = time.monotonic()
+                elif time.monotonic() - _rewarm_wait_t0 \
+                        > _FROZEN_WAIT_MAX_SEC:
+                    _record_queue_credit(
+                        meta, time.monotonic() - _rewarm_wait_t0)
+                    raise RuntimeError(
+                        "slot frozen under sustained RAM pressure for "
+                        "30+ minutes — the machine cannot serve Lean "
+                        "right now. Retry this call; if it repeats, "
+                        "report it as framework feedback.")
+                deadline = max(deadline, time.monotonic() + 120.0)
+                with _state.counters_lock:
+                    _state.n_busy_polls += 1
+                time.sleep(0.5)
+                continue
             if _rewarm_wait_t0 is not None:
                 # The slot was mid-rewarm when this call arrived — the
                 # queue time is the framework's, not the agent's (same
@@ -1060,10 +1108,13 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
                 return
             finally:
                 my_slot.lock.release()
-        if my_slot.rewarming:
-            # A background rewarm holds the slot — slide the deadline
-            # (the rewarm clears the flag in its own finally, so this
-            # cannot slide forever) and start the credit clock.
+        if my_slot.rewarming or my_slot.frozen:
+            # A background rewarm/thaw holds the slot — slide the
+            # deadline (both clear their flag in their own finally, and
+            # the frozen branch above bounds the total wait) and start
+            # the credit clock.
+            if my_slot.frozen:
+                my_slot.thaw_waiting = True
             if _rewarm_wait_t0 is None:
                 _rewarm_wait_t0 = time.monotonic()
             deadline = max(deadline, time.monotonic() + 120.0)
@@ -1120,6 +1171,7 @@ def _register_session_internal(
         free_slot = next(
             (s for s in _state.workers
              if s.claimed_by is None and not s.closed
+             and not s.frozen
              and s.reserved == interactive), None,
         )
         if free_slot is None:
@@ -1419,7 +1471,7 @@ def _maybe_kick_midlease_rewarm(slot: WorkerSlot, meta) -> None:
     later calls is residue. See `WorkerSlot.content_baseline_mb`."""
     if meta is None or _state.backend is None:
         return
-    if slot.rewarming or slot.closed or slot.reserved:
+    if slot.rewarming or slot.closed or slot.reserved or slot.frozen:
         return
     if time.monotonic() - slot.rewarmed_at < _MIDLEASE_COOLDOWN_SEC:
         return
@@ -1441,6 +1493,46 @@ def _maybe_kick_midlease_rewarm(slot: WorkerSlot, meta) -> None:
                      daemon=True).start()
 
 
+def _rebuild_worker(slot: WorkerSlot, meta) -> "int | None":
+    """Kill-then-fresh-didOpen with the session's merged unit — the
+    shared core of the mid-lease rewarm and the freeze thaw. Caller
+    holds slot.lock. Content is computed BEFORE the close (a failure
+    must leave whatever worker exists running); a failed reopen falls
+    back to warmup so the slot is never bricked, then re-raises.
+    Returns the fresh weight reading and resets the residue baseline."""
+    backend = _state.backend
+    merged, line_map = _compilation_for(meta)
+    with contextlib.suppress(Exception):
+        backend.did_close(slot.slot_path)
+    if not _await_worker_exit(slot.slot_uri):
+        _kill_worker_for_uri(slot.slot_uri)
+    try:
+        with _elab_gate(slot.slot_uri, None):
+            slot.slot_path.write_text(merged, encoding="utf-8")
+            backend.did_open(slot.slot_path, merged)
+            try:
+                backend.wait_for_file_done(slot.slot_uri, timeout=600)
+            except (TimeoutError, RuntimeError):
+                pass
+        slot.file_version = 1
+        slot.line_map = line_map
+        slot.content_pipeline_id = meta.pipeline_id
+    except Exception:  # noqa: BLE001 — never brick the slot
+        try:
+            backend.did_open(slot.slot_path, WARMUP_CONTENT)
+            slot.file_version = 1
+            slot.content_pipeline_id = None
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+    after = _slot_private_mb().get(slot.slot_id)
+    # The fresh worker's weight with this content = the new baseline
+    # (anti-churn: the next residue delta starts from here).
+    slot.content_baseline_mb = after
+    slot.baseline_for = slot.content_pipeline_id
+    return after
+
+
 def _midlease_rewarm_run(slot: WorkerSlot, meta, before_mb: int) -> None:
     """Background half: restart the fat worker and put the session's
     content back (fresh didOpen carries the merged compilation unit, so
@@ -1458,42 +1550,7 @@ def _midlease_rewarm_run(slot: WorkerSlot, meta, before_mb: int) -> None:
             backend = _state.backend
             if backend is None:
                 return
-            # Compute the restore content BEFORE touching the worker —
-            # a failure here must leave the old worker running.
-            merged, line_map = _compilation_for(meta)
-            backend.did_close(slot.slot_path)
-            if not _await_worker_exit(slot.slot_uri):
-                _kill_worker_for_uri(slot.slot_uri)
-            try:
-                with _elab_gate(slot.slot_uri, None):
-                    slot.slot_path.write_text(merged, encoding="utf-8")
-                    backend.did_open(slot.slot_path, merged)
-                    try:
-                        backend.wait_for_file_done(slot.slot_uri,
-                                                   timeout=600)
-                    except (TimeoutError, RuntimeError):
-                        pass
-                slot.file_version = 1
-                slot.line_map = line_map
-                slot.content_pipeline_id = meta.pipeline_id
-            except Exception:  # noqa: BLE001 — never brick the slot
-                # Emergency reopen: a closed document would fail every
-                # subsequent didChange. Warmup content, owner reloads
-                # on its next acquire (the cold_warmup path).
-                try:
-                    backend.did_open(slot.slot_path, WARMUP_CONTENT)
-                    slot.file_version = 1
-                    slot.content_pipeline_id = None
-                except Exception:  # noqa: BLE001
-                    pass
-                raise
-            after = _slot_private_mb().get(slot.slot_id)
-            # The fresh worker's weight with this content = the new
-            # baseline (the anti-churn mechanism: the next delta starts
-            # from here, so a content that re-inflates to its own need
-            # can never re-trigger).
-            slot.content_baseline_mb = after
-            slot.baseline_for = slot.content_pipeline_id
+            after = _rebuild_worker(slot, meta)
             print(f"[gateway] slot {slot.slot_id} mid-lease rewarm in "
                   f"{time.perf_counter() - t0:.1f}s — {before_mb} MB -> "
                   f"{after if after is not None else '?'} MB (content "
@@ -1508,6 +1565,147 @@ def _midlease_rewarm_run(slot: WorkerSlot, meta, before_mb: int) -> None:
     finally:
         slot.rewarmed_at = time.monotonic()
         slot.rewarming = False
+
+
+#: Freeze/thaw hysteresis (owner design 2026-08-26): freezing starts
+#: the moment the cgroup's true footprint crosses the BUDGET itself
+#: (the pause line 8G below it already stopped reinforcements); thaw
+#: resumes one slot per scan once comfortably back under. Busy workers
+#: are only frozen under deep overshoot — killing mid-elaboration
+#: costs the in-flight call, the same price the weight cap charges.
+_FREEZE_THAW_SLACK_GB = 6.0
+_FREEZE_BUSY_ESCALATION_GB = 4.0
+#: Absolute bound on how long one tool call may queue on a frozen
+#: slot before it errors out loud — a thaw that never comes must not
+#: hold a session hostage silently.
+_FROZEN_WAIT_MAX_SEC = 1800.0
+
+
+def _unfrozen_open_count() -> int:
+    return sum(1 for s in _state.workers
+               if not s.reserved and not s.closed and not s.frozen)
+
+
+def _freeze_slot(slot: WorkerSlot, mb: int, busy: bool) -> bool:
+    """Kill the worker, keep the session and its claim. Idle slots
+    freeze under their lock; a busy escalation kills mid-elaboration
+    (the in-flight call fails)."""
+    backend = _state.backend
+    if backend is None:
+        return False
+    if busy:
+        slot.frozen = True
+        slot.frozen_at = time.monotonic()
+        _kill_worker_for_uri(slot.slot_uri)
+        with contextlib.suppress(Exception):
+            backend.did_close(slot.slot_path)
+        print(f"[gateway] slot {slot.slot_id} FROZEN mid-elaboration — "
+              f"{mb} MB returned to the machine; the in-flight call "
+              f"fails, the session survives and thaws when pressure "
+              f"clears", file=sys.stderr, flush=True)
+        return True
+    if not slot.lock.acquire(blocking=False):
+        return False
+    try:
+        if slot.closed or slot.frozen:
+            return False
+        slot.frozen = True
+        slot.frozen_at = time.monotonic()
+        with contextlib.suppress(Exception):
+            backend.did_close(slot.slot_path)
+        if not _await_worker_exit(slot.slot_uri):
+            _kill_worker_for_uri(slot.slot_uri)
+        print(f"[gateway] slot {slot.slot_id} FROZEN — {mb} MB returned "
+              f"to the machine; its session keeps the claim, tool calls "
+              f"queue with wall credit until the thaw",
+              file=sys.stderr, flush=True)
+        return True
+    finally:
+        slot.lock.release()
+
+
+def _thaw_slot(slot: WorkerSlot) -> None:
+    """Rebuild the frozen slot's worker from its session's own content
+    (the rewarm core). A session released mid-freeze thaws to warmup —
+    the normal claim paths own it from there."""
+    if not slot.lock.acquire(timeout=10):
+        return
+    try:
+        if not slot.frozen:
+            return
+        meta = None
+        with _state.sessions_lock:
+            for m in _state.sessions.values():
+                if m.pipeline_id == slot.claimed_by:
+                    meta = m
+                    break
+        t0 = time.perf_counter()
+        if meta is None:
+            with contextlib.suppress(Exception):
+                _state.backend.did_open(slot.slot_path, WARMUP_CONTENT)
+            slot.file_version = 1
+            slot.content_pipeline_id = None
+            slot.frozen = False
+            return
+        try:
+            after = _rebuild_worker(slot, meta)
+            slot.frozen = False
+            print(f"[gateway] slot {slot.slot_id} THAWED in "
+                  f"{time.perf_counter() - t0:.1f}s — content restored "
+                  f"for {meta.pipeline_id[:8]} at "
+                  f"{after if after is not None else '?'} MB",
+                  file=sys.stderr, flush=True)
+        except Exception as exc:  # noqa: BLE001 — warmup fallback landed
+            slot.frozen = False
+            print(f"[gateway] thaw of slot {slot.slot_id} FAILED "
+                  f"({type(exc).__name__}: {exc}) — reopened on warmup; "
+                  f"the owner reloads on its next call",
+                  file=sys.stderr, flush=True)
+    finally:
+        slot.thaw_waiting = False
+        slot.lock.release()
+
+
+def _freeze_tick() -> int:
+    """One scan of the fleet-level pressure answer: over budget ->
+    freeze the fattest idle workers until the estimate is back under;
+    comfortably under -> thaw one (waiters first, then oldest)."""
+    budget = _state.ram_budget_gb
+    if budget is None or _state.backend is None \
+            or not _state.first_warm_done:
+        return 0
+    from ..core import ram_ledger as _rl
+    cur = _rl.framework_current_gb()
+    if cur is None:
+        return 0
+    acted = 0
+    if cur > budget:
+        readings = _slot_private_mb_cached()
+        est = cur
+        for s in sorted(
+                (s for s in list(_state.workers)
+                 if not s.reserved and not s.closed and not s.frozen
+                 and not s.rewarming),
+                key=lambda s: readings.get(s.slot_id) or 0,
+                reverse=True):
+            if est <= budget or _unfrozen_open_count() <= 1:
+                break
+            mb = readings.get(s.slot_id) or 0
+            if mb <= 0:
+                continue
+            busy = s.lock.locked()
+            if busy and est <= budget + _FREEZE_BUSY_ESCALATION_GB:
+                continue
+            if _freeze_slot(s, mb, busy):
+                est -= mb / 1024.0
+                acted += 1
+    elif cur < budget - _FREEZE_THAW_SLACK_GB:
+        frozen = [s for s in list(_state.workers) if s.frozen]
+        if frozen:
+            frozen.sort(key=lambda s: (not s.thaw_waiting, s.frozen_at))
+            _thaw_slot(frozen[0])
+            acted += 1
+    return acted
 
 
 def _kick_warm_converger() -> None:
@@ -1661,7 +1859,11 @@ def _release_session_internal(token: str) -> None:
     # (RAM back to the NL side) — recycling it would re-warm a worker
     # we are about to kill.
     if freed is not None:
-        if not _shed_slot_if_over_target(freed):
+        if freed.frozen:
+            # No worker behind a frozen slot — nothing to shed or
+            # recycle; the thaw loop reopens it (meta gone -> warmup).
+            pass
+        elif not _shed_slot_if_over_target(freed):
             _recycle_slot_if_heavy(freed)
 
 
@@ -5101,6 +5303,7 @@ async def health(request: Request):
                  if not s.reserved and not s.closed)
     n_interactive = sum(1 for s in _state.workers if s.reserved)
     n_busy = sum(1 for s in _state.workers if s.lock.locked())
+    n_frozen = sum(1 for s in _state.workers if s.frozen)
     # claimable slots — same predicate as /warm_target's `free`; the
     # daemon-status `slots` field reads it here (frontend, 2026-08-25)
     n_free = sum(1 for s in _state.workers
@@ -5129,6 +5332,7 @@ async def health(request: Request):
                                else n_workers),
         "workers_interactive": n_interactive,
         "workers_busy": n_busy,
+        "workers_frozen": n_frozen,
         # RAM-ledger surface (owner design 2026-08-25): open = slots
         # with a live worker (closed ones freed their RAM); target =
         # what the dispatcher's ledger last asked for (None = static
@@ -5224,6 +5428,7 @@ def main() -> None:
                                       _rl.total_gb())
     except Exception:  # noqa: BLE001 — the ledger must not stop launch
         _budget_gb = None
+    _state.ram_budget_gb = _budget_gb   # the freezer reads this
     if _budget_gb is not None:
         _target0 = _rl.compute_target_slots(budget_gb=_budget_gb,
                                             nl_demand=0)
