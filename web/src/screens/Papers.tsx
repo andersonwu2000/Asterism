@@ -85,7 +85,11 @@ function ShelfRow({ p, onChanged }: { p: PaperShelfItem; onChanged: () => void }
               <Link
                 to={`/papers/${encodeURIComponent(p.id)}`}
                 className={`block truncate text-[13px] text-ink transition-colors hover:text-starlight ${p.title ? '' : 'font-mono'}`}
-                title={`read it — ${p.source_name} · ${sizeLabel(p)}`}
+                title={`read it — ${p.source_name} · ${sizeLabel(p)}${
+                  p.has_map && p.map_stale
+                    ? ' · page index stale (rebuild: CLI paper-index)'
+                    : ''
+                }`}
               >
                 {p.title ?? p.source_name}
               </Link>
@@ -134,24 +138,6 @@ function ShelfRow({ p, onChanged }: { p: PaperShelfItem; onChanged: () => void }
             </span>
           )}
         </td>
-        <td className="pr-4">
-          {p.has_map && !p.map_stale && (
-            <span
-              className="text-[11px] text-ink-faint"
-              title="a page-level index lets agents jump straight to the relevant pages"
-            >
-              indexed
-            </span>
-          )}
-          {p.has_map && p.map_stale && (
-            <span
-              className="text-[11px] text-warn"
-              title="re-extracted since the index was built — rebuild via CLI paper-index"
-            >
-              index stale
-            </span>
-          )}
-        </td>
         <td className="pr-3 text-right whitespace-nowrap">
           <a
             href={`/api/papers/${encodeURIComponent(p.id)}/file`}
@@ -172,7 +158,7 @@ function ShelfRow({ p, onChanged }: { p: PaperShelfItem; onChanged: () => void }
       </tr>
       {err && (
         <tr className="border-b border-edge/60">
-          <td colSpan={6} className="py-1.5 pr-3 pl-3 text-right text-[11px] text-danger">
+          <td colSpan={3} className="py-1.5 pr-3 pl-3 text-right text-[11px] text-danger">
             {err}
           </td>
         </tr>
@@ -351,11 +337,11 @@ export default function Papers() {
               {/* size dropped (owner: low-value column) — it lives in
                   the row's hover title now */}
               <th className="w-[220px] py-2 pr-4 font-medium">registered under</th>
-              <th className="w-[90px] py-2 pr-4 font-medium">
-                <span title="a page-level index lets agents jump straight to the relevant pages">
-                  index
-                </span>
-              </th>
+              {/* index dropped (owner, 2026-08-26: nothing the reader
+                  can act on) — the engine builds the page map for its
+                  own agents, and the one case worth knowing about, a
+                  map gone stale, rides the row's hover title like
+                  `size` before it */}
               <th className="w-[160px] py-2 pr-3 text-right font-medium"> </th>
             </tr>
           </thead>
@@ -368,7 +354,7 @@ export default function Papers() {
                 {groups.length > 1 && (
                   <tr>
                     <td
-                      colSpan={4}
+                      colSpan={3}
                       className="pt-4 pb-1 pl-3 text-[10px] font-medium tracking-widest text-ink-faint/70 uppercase"
                     >
                       {g.problem ? (
