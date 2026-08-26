@@ -1286,6 +1286,11 @@ def _section_pending_reopens(conn: sqlite3.Connection,
 #: Freshness floor for the inline Active-goals tail (newest by id).
 _ACTIVE_GOALS_TAIL_N = 15
 
+#: Full review dossiers inlined per wake; the rest get one line + the
+#: lazy companions (a wake with many waiting goals must still fit the
+#: window — 能懶載入的東西不需要 cap 的例外是「必須全文的」前幾個).
+_REVIEW_DOSSIER_CAP = 3
+
 
 def _section_active_goals(conn: sqlite3.Connection,
                           workspace: Path,
@@ -1756,19 +1761,45 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_user_word_strategist(intent),
     ]
     # T2 review_context (Phase 2 §2.2) — failure brief + existing
-    # strategies + ancestor chain. Only emitted for pending_review trigger
-    # with a real target; T0 / T1 / first_launch skip these sections.
-    if trigger_kind == "pending_review" and pending_review_id is not None:
-        section_names += ["review_failure", "review_adjudications",
-                          "review_strategies", "review_ancestors"]
+    # strategies + ancestor chain. Un-gated from the pending_review
+    # trigger (owner design 2026-08-26, wake merge): the
+    # review-discharge rule already FORCES every non-routine wake to
+    # rule on pending-review goals, and a batch_done wake was ruling
+    # blind — obligated without the dossier. Every non-routine wake now
+    # carries the dossier for every waiting goal, full for the first
+    # few, one line + the lazy companions beyond (context diet).
+    review_ids: "list[int]" = []
+    if trigger_kind != "routine":
+        review_ids = [int(r["id"]) for r in conn.execute(
+            "SELECT id FROM goals WHERE problem = ?"
+            "  AND status = 'pending_strategist_review' ORDER BY id",
+            (problem,))]
+    if pending_review_id is not None:
+        # The wake's own target leads, whatever the ordering says.
+        review_ids = ([pending_review_id]
+                      + [i for i in review_ids if i != pending_review_id])
+    for rid in review_ids[:_REVIEW_DOSSIER_CAP]:
+        section_names += [f"review_failure_g{rid}",
+                          f"review_adjudications_g{rid}",
+                          f"review_strategies_g{rid}",
+                          f"review_ancestors_g{rid}"]
         sections += [
-            _section_pending_review_failure(
-                conn, pending_review_id, attempts_dir),
+            _section_pending_review_failure(conn, rid, attempts_dir),
             _section_pending_review_adjudications(
-                conn, pending_review_id, attempts_dir),
-            _section_pending_review_strategies(conn, pending_review_id),
-            _section_pending_review_ancestors(conn, pending_review_id),
+                conn, rid, attempts_dir),
+            _section_pending_review_strategies(conn, rid),
+            _section_pending_review_ancestors(conn, rid),
         ]
+    if len(review_ids) > _REVIEW_DOSSIER_CAP:
+        rest = review_ids[_REVIEW_DOSSIER_CAP:]
+        section_names.append("review_overflow")
+        sections.append(
+            ["## More goals awaiting your review", ""]
+            + [f"- g{rid} — dossier not inlined; adjudication history "
+               f"in ADJUDICATIONS.md, statement via inspect decl"
+               for rid in rest]
+            + ["", "Every goal above ALSO waits on your verdict in "
+               "this same wake.", ""])
     # Phase 2.5 — surface unack Inject batches on every trigger when
     # any exist (not gated on trigger_kind='inject_batch_done'). See
     # `_section_inject_batch_outcomes` docstring for the race rationale.

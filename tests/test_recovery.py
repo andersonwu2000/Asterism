@@ -1,5 +1,35 @@
 
 
+def test_startup_sweeps_fossil_rows_for_deleted_problems(tmp_path):
+    """A queue row whose problem no longer exists is undispatchable
+    under EVERY scope forever, yet still pollutes unscoped queue
+    readings (2026-08-26 census: Test.* smoke rows queued since July).
+    Scope-blind sweep, unleased only; rows for LIVE problems — even
+    out-of-scope paused ones — survive."""
+    from Tooling.state import db as _db, recovery
+    conn = _db.connect(tmp_path / "f.db")
+    _db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, created_at) VALUES ('P','t')")
+    _db.enqueue(conn, kind="Strategist", target_id="1", problem="P",
+                target_kind="Group")
+    _db.enqueue(conn, kind="Strategist", target_id="Test.gone",
+                problem="Test.gone", target_kind="Problem")
+    _db.enqueue(conn, kind="Strategist", target_id="Test.leased",
+                problem="Test.leased", target_kind="Problem")
+    conn.execute("UPDATE queue SET owner_pid = 424242 "
+                 "WHERE problem = 'Test.leased'")
+    conn.commit()
+
+    # scoped to another problem: the fossil sweep must still run
+    recovery.recover_at_startup(conn, workspace=None, scope="Q.%")
+
+    left = {r["problem"] for r in conn.execute(
+        "SELECT problem FROM queue")}
+    assert "Test.gone" not in left, "fossil for a deleted problem stayed"
+    assert "P" in left, "a live problem's row must survive a foreign scope"
+    assert "Test.leased" in left, "never yank a leased row, fossil or not"
+
+
 def test_startup_closes_sub_projects_orphaned_before_the_cascade(tmp_path):
     """`groups.set_status` cascades downward from 2026-08-16, so no NEW
     orphan can appear — but every tree built before it carries them, and

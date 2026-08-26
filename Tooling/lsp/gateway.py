@@ -1505,10 +1505,20 @@ def _warm_converger_run() -> None:
                 # helper re-checks claim/busy/floor under its own
                 # locks; nothing idle left → the release path owns
                 # the rest.
+                # Shed the FATTEST free slot first (owner call
+                # 2026-08-26): once a slot is free its residual content
+                # has no owner — the only asset every candidate shares
+                # is the warm base import — so the re-warm price is
+                # identical whichever dies, and the fat one returns the
+                # most RAM per kill.
+                _readings = _slot_private_mb_cached()
                 shed_any = False
-                for s in list(_state.workers):
-                    if s.reserved or s.closed or s.claimed_by is not None:
-                        continue
+                for s in sorted(
+                        (s for s in list(_state.workers)
+                         if not s.reserved and not s.closed
+                         and s.claimed_by is None),
+                        key=lambda s: _readings.get(s.slot_id) or 0,
+                        reverse=True):
                     if _shed_slot_if_over_target(s):
                         shed_any = True
                         break

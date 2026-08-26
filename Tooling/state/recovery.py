@@ -151,6 +151,18 @@ def recover_at_startup(conn: sqlite3.Connection,
         print(f"[dispatcher] recovery: swept {poison} POISON queue "
               f"row(s) with an empty problem — see the 2026-08-03 "
               f"stall post-mortem", flush=True)
+    # Fossil rows next, also scope-blind and for the same reason: a row
+    # whose PROBLEM no longer exists (deleted/reset corpora) is
+    # undispatchable under every scope forever, yet still counts in
+    # every unscoped queue reading (2026-08-26 census: Test.* smoke
+    # rows from July still queued). Unleased only — never yank a live
+    # lease, however unlikely.
+    fossils = conn.execute(
+        "DELETE FROM queue WHERE owner_pid IS NULL AND problem NOT IN"
+        " (SELECT name FROM problems)").rowcount
+    if fossils:
+        print(f"[dispatcher] recovery: swept {fossils} fossil queue "
+              f"row(s) whose problem no longer exists", flush=True)
     _scope_sql = "" if scope is None else " AND problem LIKE ?"
     _scope_args: tuple = () if scope is None else (scope,)
     queue_cleared = conn.execute(

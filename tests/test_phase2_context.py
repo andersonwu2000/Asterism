@@ -93,6 +93,50 @@ def _insert_dead_attempt(conn: sqlite3.Connection, *, target_id: int,
 # Pending-review enrichment — the take-5 SG bug surface
 # ---------------------------------------------------------------------
 
+def test_batch_done_wake_carries_the_review_dossiers(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: intent_mod.ProblemIntent, tmp_path: Path,
+) -> None:
+    """Owner design 2026-08-26 (wake merge): the review-discharge rule
+    already FORCES a batch_done wake to rule on pending-review goals —
+    it was ruling BLIND (the dossier was gated on the pending_review
+    trigger). Every non-routine wake now carries every waiting goal's
+    dossier, capped, with one-liners + lazy pointers beyond the cap;
+    the routine survey stays dossier-free."""
+    _insert_problem(conn)
+    ids = []
+    for i in range(_ctx_cap() + 2):
+        gid = _insert_root(conn, slug=f"rev_{i}")
+        conn.execute("UPDATE goals SET status='pending_strategist_review'"
+                     " WHERE id=?", (gid,))
+        ids.append(gid)
+    conn.commit()
+    attempts_dir = tmp_path / "_attempts_bd"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="inject_batch_done",
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
+    )
+    text = out.read_text(encoding="utf-8")
+    for i in range(_ctx_cap()):
+        assert f"rev_{i}" in text, f"dossier for goal #{i} missing"
+    assert "More goals awaiting your review" in text
+    for gid in ids[_ctx_cap():]:
+        assert f"g{gid}" in text, "overflow one-liner missing"
+    # the routine survey is exempt from the discharge rule and from
+    # the dossiers alike
+    out2 = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="routine",
+        attempts_dir=attempts_dir, workspace=workspace, intent=mfst,
+    )
+    assert "More goals awaiting your review" not in out2.read_text(
+        encoding="utf-8")
+
+
+def _ctx_cap() -> int:
+    return phase2_context._REVIEW_DOSSIER_CAP
+
+
 def test_pending_review_surfaces_backward_shelve_proposal(
     workspace: Path, conn: sqlite3.Connection,
     mfst: intent_mod.ProblemIntent, tmp_path: Path,

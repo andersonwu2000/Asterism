@@ -449,10 +449,10 @@ class DispatcherLedger:
             self._pressure_cut = min(max(0, target - 1),
                                      self._pressure_cut + step)
             if not self.dispatch_paused:
+                cur_s = "n/a" if cur is None else f"{cur:.1f}G"
                 print(f"[ledger] measured pressure — dispatch PAUSED "
-                      f"(cgroup {cur if cur is None else round(cur, 1)}G"
-                      f" vs budget {self.budget_gb:.0f}G, available "
-                      f"{avail:.1f}G); target trimmed by "
+                      f"(cgroup {cur_s} vs budget {self.budget_gb:.0f}G, "
+                      f"available {avail:.1f}G); target trimmed by "
                       f"{self._pressure_cut}", flush=True)
             self.dispatch_paused = True
         elif calm:
