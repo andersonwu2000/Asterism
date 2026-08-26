@@ -5,6 +5,7 @@ import type { Goal, Strategy, StrategyEdge } from './types'
 import residueFixture from './__fixtures__/residue_thm.json'
 import jordanFixture from './__fixtures__/jordan.json'
 import a5CmpFixture from './__fixtures__/a5_cmp.json'
+import stokesFixture from './__fixtures__/stokes.json'
 
 /*
  * Layout laws — the invariants the sky engine must hold on ANY input.
@@ -34,6 +35,14 @@ const FIXTURES: Record<string, Fixture> = {
   // ring, the x pass averaged over nothing, and the sky rendered
   // blank (owner report). The layout must survive ANY db state.
   a5_cmp: a5CmpFixture as unknown as Fixture,
+  // the hub shape (2026-08-26): stokes' `smul_form` is a SINGLETON
+  // that 100 of the 370 proof files import. It is why the engine used
+  // to carry two hub tiers; the tiers are gone and the shape is not,
+  // so it stays as a fixture — the laws below must hold for a star a
+  // quarter of the sky reaches for, with no rule cut to its measure.
+  // Frozen AFTER v44 link_kind reached the payload, so it also pins
+  // the reuse-vs-decomposition split the other three predate.
+  stokes: stokesFixture as unknown as Fixture,
 }
 
 function run(f: Fixture): ConstellationLayout {
@@ -244,6 +253,37 @@ describe('layout edge cases', () => {
       v.nodes.find((n) => n.goal.id === id)!.y
     expect(y(cited, 3)).toBe(y(bare, 3))
     expect(y(cited, 3)).toBe(y(cited, 2))
+  })
+
+  /*
+   * The retired hub tiers (owner, 2026-08-26: "no more ultra-hub
+   * distinction — return it to a normal node"). A singleton a quarter
+   * of the sky cites used to leave the shared beds for a component of
+   * its own, then get a band spliced in for itself alone, plate-
+   * centred, with its starburst exempted from the crossing objective.
+   * Two tiers, one witness, and the reason they existed was that its
+   * 100 threads used to be drawn as solid starlight — indistinguishable
+   * from structure, so a sun in a shelf read as a tangle. Cross-links
+   * dot now. What must still hold is only what holds for everyone.
+   */
+  it('gives a star a quarter of the sky cites no rule of its own', () => {
+    const f = FIXTURES.stokes
+    const v = run(f)
+    const deg = new Map<number, number>()
+    for (const e of v.edges) {
+      if (e.kind !== 'citation' && e.kind !== 'alias') continue
+      deg.set(e.from, (deg.get(e.from) ?? 0) + 1)
+      deg.set(e.to, (deg.get(e.to) ?? 0) + 1)
+    }
+    const [hubId, hubDeg] = [...deg].sort((a, b) => b[1] - a[1])[0]
+    expect(hubDeg).toBeGreaterThanOrEqual(f.goals.length * 0.25)
+    const hub = v.nodes.find((n) => n.goal.id === hubId)!
+    // it shares a row like anything else — no band reserved for it
+    expect(
+      v.nodes.filter((n) => Math.abs(n.y - hub.y) < 1).length,
+    ).toBeGreaterThan(1)
+    // and it is still ON the plate, which is the law that DID matter
+    checkLaws(v, f)
   })
 
   it('reads a pre-v44 edge (no link_kind) as minted', () => {

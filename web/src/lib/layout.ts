@@ -689,28 +689,23 @@ export function layoutConstellation(
     })
     slot += 0.6
   }
-  // Universal hubs leave the beds: a singleton cited by a large share
-  // of the sky (stokes' smul_form: 110 threads) locked inside a shared
-  // bed can never sit where its readers are — as its own component the
-  // band optimiser puts it at its citers' centre of mass, and the
-  // starburst reads as a sun instead of a corner mystery.
-  const hubThreshold = Math.max(12, Math.round(goals.length * 0.08))
-  const isHub = (id: number) =>
-    (citPartner.get(id)?.length ?? 0) >= hubThreshold
-  const hubComps: Comp[] = []
-  const ultraHubs = new Set<number>()
-  for (const id of singletonIds) {
-    if (!isHub(id)) continue
-    xSlot.set(id, slot)
-    layer.set(id, 0)
-    const comp: Comp = { members: [id], start: slot, end: slot, depth: 0 }
-    treeInfos.push(comp)
-    hubComps.push(comp)
-    slot += 1.6
-  }
-  const mainSingles = singletonIds.filter((id) => mainish(id) && !isHub(id))
+  // A heavily-cited singleton is an ordinary singleton (owner,
+  // 2026-08-26). It used to be two extra tiers — a "hub" that left the
+  // shared beds for a component of its own, and above it an
+  // "ultra-hub" (a quarter of the sky citing it) that got a band
+  // spliced in for itself alone, plate-centred, with its starburst
+  // exempted from the crossing objective. Stokes' `smul_form` was the
+  // only witness the tiers ever had, and the reason they existed was
+  // that its 100 threads used to look like structure: solid starlight,
+  // indistinguishable from a decomposition limb, so a sun buried in a
+  // shelf read as a tangle. Now cross-links are dotted and read as a
+  // weave, and a weave needs no orbit of its own. Measured cost of the
+  // removal on stokes: the sun sits ~700px off its citers' x centre
+  // instead of ~40; measured gain: ~9% fewer crossings, one band and
+  // ~200px of height back, and one fewer special case in the engine.
+  const mainSingles = singletonIds.filter((id) => mainish(id))
   const linkedSingles = singletonIds.filter(
-    (id) => !mainish(id) && citPartner.has(id) && !isHub(id),
+    (id) => !mainish(id) && citPartner.has(id),
   )
   const partnerMean = (id: number) => {
     const xs = (citPartner.get(id) ?? [])
@@ -843,43 +838,6 @@ export function layoutConstellation(
     pack(linked)
     pack(unlinkedTrees)
   }
-  // A hub's own band must follow its READERS: FFDH files a depth-0
-  // component at the region's tail, parking the most-cited star at the
-  // bottom while its 110 citers live near the horizon — the starburst
-  // crossed the whole sky (the crossing metric caught this: +54).
-  // Re-seat each hub in the band nearest its citers' mean, clamped to
-  // its own region; the optimiser then centres its x.
-  for (const comp of hubComps) {
-    const id = comp.members[0]
-    const cs = (citPartner.get(id) ?? [])
-      .map((p) => bandOfNode.get(p))
-      .filter((b): b is number => b !== undefined)
-    if (cs.length === 0) continue
-    const mean = cs.reduce((a, b) => a + b, 0) / cs.length
-    const lo = isMain(comp) ? 0 : (horizonBand ?? 0)
-    const ultra = (citPartner.get(id)?.length ?? 0) >= goals.length * 0.25
-    // seat by the citers' mean — for the sun this is only a SEED (its
-    // real centring is the pixel-space pass after the vertical reorder)
-    const target = Math.max(lo, Math.min(band, Math.round(mean)))
-    if (ultra) {
-      ultraHubs.add(id)
-      // an ultra-hub (a quarter of the sky cites it) gets a thin band
-      // of its OWN: alone in the band, the optimiser can put it exactly
-      // at its citers' centre of mass — the sun earns its own orbit
-      // instead of squeezing into whichever shelf had room
-      for (const [nid, b] of bandOfNode) {
-        if (b >= target) bandOfNode.set(nid, b + 1)
-      }
-      bandDepth.splice(target, 0, 0)
-      if (horizonBand !== null && horizonBand >= target) horizonBand += 1
-      band += 1
-      bandOfNode.set(id, target)
-    } else {
-      bandOfNode.set(id, target)
-      bandDepth[target] = Math.max(bandDepth[target] ?? 0, 0)
-    }
-  }
-
   // ---- band composition -----------------------------------------------
   // Band MEMBERSHIP stays FFDH's (depth homogeneity = vertical
   // economy); every horizontal decision inside a band belongs to one
@@ -924,9 +882,6 @@ export function layoutConstellation(
     for (let sweep = 0; sweep < 2; sweep++) {
       for (const trees of bandTrees.values()) {
         if (trees.length === 0) continue
-        // an ultra-hub band stays PLATE-CENTRED (owner: the sun reads
-        // best in the middle, even at some crossing cost)
-        if (trees.length === 1 && ultraHubs.has(trees[0].members[0])) continue
         // desired shift per tree = the mean signed offset of its
         // cross-link partners (the least-squares optimum for a rigid
         // move); weight = link count
@@ -1105,52 +1060,6 @@ export function layoutConstellation(
     )
   }
 
-  // The sun's centring is a PIXEL-space invariant, enforced last
-  // (owner: 偏上). Index-middle splicing missed twice over: band
-  // heights vary, so counting bands is not centring, and the vertical
-  // reorder ran later and moved the band anyway. Once every other
-  // vertical decision is final, re-seat each ultra-hub band where its
-  // centre lands nearest its region's pixel middle.
-  for (const id of ultraHubs) {
-    const nB = bandDepth.length
-    const s = bandOfNode.get(id)
-    if (s === undefined || nB < 3) continue
-    const hb = horizonBand ?? nB
-    const inMain = s < hb
-    const r0 = inMain ? 0 : hb
-    const r1 = inMain ? hb : nB
-    const hOf = (b: number) => (bandDepth[b] ?? 0) + 1.7
-    const rest: number[] = []
-    for (let b = r0; b < r1; b++) if (b !== s) rest.push(hOf(b))
-    const total = rest.reduce((a, x) => a + x, 0) + hOf(s)
-    const kMin = inMain && r0 === 0 ? 1 : 0 // the root band keeps the top
-    let bestK = kMin
-    let bestD = Infinity
-    let cum = 0
-    for (let k = 0; k <= rest.length; k++) {
-      if (k >= kMin) {
-        const off = Math.abs(cum + hOf(s) / 2 - total / 2)
-        if (off < bestD) {
-          bestD = off
-          bestK = k
-        }
-      }
-      if (k < rest.length) cum += rest[k]
-    }
-    const target = r0 + bestK
-    if (target === s) continue
-    const order: number[] = []
-    for (let b = 0; b < nB; b++) if (b !== s) order.push(b)
-    order.splice(target, 0, s)
-    const posOf = new Map<number, number>()
-    order.forEach((b, i) => posOf.set(b, i))
-    for (const [nid, b] of bandOfNode) bandOfNode.set(nid, posOf.get(b) ?? b)
-    const newDepth: number[] = []
-    for (let b = 0; b < nB; b++) newDepth[posOf.get(b)!] = bandDepth[b]
-    bandDepth.length = 0
-    bandDepth.push(...newDepth)
-  }
-
   // Vertical base of each band = cumulative depth of the bands above;
   // the horizon band gets extra air so the rule reads as a boundary.
   const bandYBase: number[] = []
@@ -1326,8 +1235,8 @@ export function layoutConstellation(
   // junction contiguity blindly traded 4 same-parent crossings for 28
   // cross-tree ones on residue. So the final pass optimises the real
   // objective — the weighted crossing count the sky is judged by
-  // (bright×bright 1, bright×faint 0.2, faint×faint 0.05, ultra-hub
-  // starburst excluded), the same law as scripts/sky-crossings.mjs.
+  // (bright×bright 1, bright×faint 0.2, faint×faint 0.05), the same
+  // law as scripts/sky-crossings.mjs.
   // Bounded discrete moves on the final geometry — mirror a tree, swap
   // two band-adjacent trees — accepted only on strict improvement,
   // evaluated incrementally (only segments touching moved nodes are
@@ -1423,28 +1332,21 @@ export function layoutConstellation(
       }
       finish(s)
     }
-    // segments touching an ultra-hub weigh 0 in the objective (the
-    // sun's starburst is a design choice) — never build them at all
     const bundled = new Set<number>()
     for (const g of groups) {
-      const hubP = ultraHubs.has(g.parent)
-      const gSegs: Seg[] = []
-      if (!hubP) {
+      const gSegs: Seg[] = [{
+        x1: 0, y1: 0,
+        x2: px.get(g.parent)!, y2: pyOf.get(g.parent)!,
+        bxLo: 0, bxHi: 0, byLo: 0, byHi: 0,
+        bright: false, cite: false, mark: 0, len: 0, grp: g, end: g.parent,
+      }]
+      for (const c of g.children) {
         gSegs.push({
           x1: 0, y1: 0,
-          x2: px.get(g.parent)!, y2: pyOf.get(g.parent)!,
+          x2: px.get(c)!, y2: pyOf.get(c)!,
           bxLo: 0, bxHi: 0, byLo: 0, byHi: 0,
-          bright: false, cite: false, mark: 0, len: 0, grp: g, end: g.parent,
+          bright: false, cite: false, mark: 0, len: 0, grp: g, end: c,
         })
-        for (const c of g.children) {
-          if (ultraHubs.has(c)) continue
-          gSegs.push({
-            x1: 0, y1: 0,
-            x2: px.get(c)!, y2: pyOf.get(c)!,
-            bxLo: 0, bxHi: 0, byLo: 0, byHi: 0,
-            bright: false, cite: false, mark: 0, len: 0, grp: g, end: c,
-          })
-        }
       }
       if (gSegs.length === 0) continue
       segs.push(...gSegs)
@@ -1469,7 +1371,6 @@ export function layoutConstellation(
     }
     for (const e of edges) {
       if (e.kind === 'strategy' && bundled.has(e.strategyId)) continue
-      if (ultraHubs.has(e.from) || ultraHubs.has(e.to)) continue
       const a = px.get(e.from)
       const b = px.get(e.to)
       if (a === undefined || b === undefined) continue

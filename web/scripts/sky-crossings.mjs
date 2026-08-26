@@ -9,9 +9,12 @@
 //   bb   bright x bright  (weight 1)    — structural edges at full ink
 //   bf   bright x faint   (weight 0.2)
 //   ff   faint  x faint   (weight 0.05) — citations + faded long hauls
-//   hub  anything touching an ultra-hub (citation degree >= 25% of
-//        goals) — EXCLUDED from the score: the plate-centred sun's
-//        starburst is a design choice, not a layout error (owner)
+//
+// There used to be a fourth bucket excluding everything that touched an
+// ultra-hub, because the plate-centred sun's starburst was a deliberate
+// choice rather than a layout error. The owner retired that tier on
+// 2026-08-26, so the exemption goes with it — the instrument must not
+// keep hiding crossings the engine no longer chooses to make.
 //
 // Compare scores before/after a layout change; bb is the number that
 // must not grow.
@@ -42,39 +45,25 @@ const DEFAULT_PROBLEMS = [
 
 function metric(d, lay) {
   const pos = new Map(lay.nodes.map((n) => [n.goal.id, n]))
-  const deg = new Map()
-  for (const e of d.citation_edges) {
-    deg.set(e.from, (deg.get(e.from) ?? 0) + 1)
-    deg.set(e.to, (deg.get(e.to) ?? 0) + 1)
-  }
-  const ultra = new Set(
-    [...deg].filter(([, n]) => n >= d.goals.length * 0.25).map(([id]) => id),
-  )
   const segs = []
-  const push = (a, b, bright, hub) =>
-    segs.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, bright, hub })
+  const push = (a, b, bright) =>
+    segs.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, bright })
   for (const e of lay.edges) {
     const a = pos.get(e.from)
     const b = pos.get(e.to)
     if (!a || !b) continue
     const span = Math.hypot(b.x - a.x, b.y - a.y)
-    push(a, b, e.kind !== 'citation' && span <= 480, ultra.has(e.from) || ultra.has(e.to))
+    push(a, b, e.kind !== 'citation' && span <= 480)
   }
   for (const bu of lay.bundles) {
     const p = pos.get(bu.parentId)
-    const hubP = ultra.has(bu.parentId)
     if (p) {
-      push(p, bu.junction, Math.hypot(bu.junction.x - p.x, bu.junction.y - p.y) <= 480, hubP)
+      push(p, bu.junction, Math.hypot(bu.junction.x - p.x, bu.junction.y - p.y) <= 480)
     }
     for (const cid of bu.children) {
       const c = pos.get(cid)
       if (c) {
-        push(
-          bu.junction,
-          c,
-          Math.hypot(c.x - bu.junction.x, c.y - bu.junction.y) <= 480,
-          hubP || ultra.has(cid),
-        )
+        push(bu.junction, c, Math.hypot(c.x - bu.junction.x, c.y - bu.junction.y) <= 480)
       }
     }
   }
@@ -83,14 +72,13 @@ function metric(d, lay) {
   // units of 1000px ("kilopixels of excess bright rope")
   let len = 0
   for (const s of segs) {
-    if (!s.bright || s.hub) continue
+    if (!s.bright) continue
     len += Math.max(0, Math.hypot(s.x2 - s.x1, s.y2 - s.y1) - 150)
   }
   len = Math.round(len / 100) / 10
   let bb = 0
   let bf = 0
   let ff = 0
-  let hub = 0
   const inter = (s, t) => {
     const dd = (ax, ay, bx, by, cx, cy) => (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
     const eq = (x1, y1, x2, y2) => Math.abs(x1 - x2) < 1e-6 && Math.abs(y1 - y2) < 1e-6
@@ -114,13 +102,12 @@ function metric(d, lay) {
   for (let i = 0; i < segs.length; i++) {
     for (let j = i + 1; j < segs.length; j++) {
       if (!inter(segs[i], segs[j])) continue
-      if (segs[i].hub || segs[j].hub) hub++
-      else if (segs[i].bright && segs[j].bright) bb++
+      if (segs[i].bright && segs[j].bright) bb++
       else if (segs[i].bright || segs[j].bright) bf++
       else ff++
     }
   }
-  return { bb, bf, ff, hub, len, score: Math.round((bb + bf * 0.2 + ff * 0.05) * 10) / 10 }
+  return { bb, bf, ff, len, score: Math.round((bb + bf * 0.2 + ff * 0.05) * 10) / 10 }
 }
 
 const problems = process.argv.slice(2).length > 0 ? process.argv.slice(2) : DEFAULT_PROBLEMS
