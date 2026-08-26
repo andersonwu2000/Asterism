@@ -61,6 +61,14 @@ Restart=on-failure
 RestartSec=10
 MemoryAccounting=true
 MemoryMax=95%
+# One worker over the lifeline must not sink the ship (owner order
+# 2026-08-26: four OOM fleet-restarts in four hours). The kernel kills
+# the biggest process in the cgroup (a fat lean worker); with the
+# default OOMPolicy=stop systemd then declared the UNIT failed and
+# took the daemon — and the whole fleet — down with it. `continue`
+# matches the Windows Job-cap semantics: the one victim dies, the
+# fleet lives, the weight watchdog and pressure gate do the rest.
+OOMPolicy=continue
 
 [Install]
 WantedBy=default.target

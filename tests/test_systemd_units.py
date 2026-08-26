@@ -42,6 +42,9 @@ def test_daemon_unit_keeps_the_owner_ruled_shape() -> None:
     # flagship crushes, 2026-08-26; owner ruling: the RAM axis has ONE
     # governor, the ledger)
     assert "MemoryMax=95%" in text
+    # one OOM victim must not sink the unit (4 fleet-restarts/4h,
+    # 2026-08-26) — the lifeline kills a worker, never the daemon
+    assert "OOMPolicy=continue" in text
     assert not [ln for ln in text.splitlines()
                 if ln.strip().startswith("MemoryHigh")], \
         "MemoryHigh is a second silent governor — retired 2026-08-26"
