@@ -2741,15 +2741,14 @@ def run(workspace: Path, *, once: bool = False,
                 _lean_fly = sum(1 for _m in futures.values()
                                 if _m.kind in LEAN_QUEUE_KINDS)
                 _nl_fly = len(futures) - _lean_fly
-                # claimable_only: a popped row keeps its queue row
-                # under lease, so without it every in-flight NL would
-                # be reserved twice — once in the count, once in
-                # _nl_fly (external review 2026-08-25).
+                # Demand over forecast (owner ruling 2026-08-26): the
+                # target reserves for IN-FLIGHT NL only — queue length
+                # never predicted simultaneous NL (admission is paced),
+                # so the queued-wakes reserve paid throughput for a
+                # forecast wrong in both directions. A blocked wake
+                # yields a slot instead (request_nl_yield below).
                 ledger.tick(
-                    nl_demand=db.queue_size(
-                        conn, scope=scope, kinds=NL_QUEUE_KINDS,
-                        claimable_only=True)
-                    + _nl_fly,
+                    nl_demand=_nl_fly,
                     push=lambda t, f: _gwl.push_warm_target(
                         t, f, workspace=workspace))
                 if ledger.dispatch_paused:
@@ -2761,6 +2760,12 @@ def run(workspace: Path, *, once: bool = False,
                 _lean_ok = (gateway_warm["ready"]
                             and _lean_fly < ledger.open_slots)
                 _nl_ok = ledger.nl_admissible(_nl_fly)
+                if (not _nl_ok and ledger.nl_blocked_by_budget
+                        and ledger.free_slots > 0
+                        and db.queue_size(
+                            conn, scope=scope, kinds=NL_QUEUE_KINDS,
+                            claimable_only=True) > 0):
+                    ledger.request_nl_yield()
                 if not (_lean_ok or _nl_ok):
                     break
                 _exclude = (LEAN_QUEUE_KINDS if not _lean_ok

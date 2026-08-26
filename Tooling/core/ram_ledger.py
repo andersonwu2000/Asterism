@@ -12,12 +12,19 @@ The ledger replaces the single number with a RAM budget:
     target_slots = clamp(floor((budget - NL_reserve) / slot_gb),
                          1, MAX_SLOTS)
 
-* NL demand counts QUEUED wakes, not all existing groups (owner ruling:
-  a queued wake is imminent demand and its admission is what the
-  reserve is for; a dormant group between wakes holds zero RAM).
-* NL has PRIORITY over the Lean field (owner ruling): a wake surge may
-  legitimately shrink target_slots — claimed slots are never revoked,
-  the shrink lands at release time, and the floor of 1 slot is the only
+* NL demand counts IN-FLIGHT spawns only (owner ruling 2026-08-26,
+  superseding the 08-25 queued-wakes reserve): the queue length never
+  predicts simultaneous NL (admission is paced), so the forecast was
+  wrong in both directions — reserving seats for 25 wakes that never
+  fly together, or zero while a wake is seconds away. Demand is
+  OBSERVED instead: when an NL admission is blocked by the modeled
+  budget while free slots exist, the tick yields one slot (shed the
+  fattest free one) and the wake lands a tick later. Forecast stays
+  where its criterion holds (the warm pool itself: provisioning
+  latency ~150s is the expensive side there).
+* NL has PRIORITY over the Lean field (owner ruling): the yield above
+  IS that priority — claimed slots are never revoked, the shrink lands
+  at shed/release time, and the floor of 1 slot is the only
   anti-starvation guarantee the Lean side keeps.
 * The ledger PLANS; a measured veto DECIDES: every admission and every
   warm-up also checks the machine's actually-available RAM, so a
@@ -385,6 +392,16 @@ class DispatcherLedger:
         #: releases shed instead of re-claiming.
         self.dispatch_paused = False
         self._pressure_cut = 0
+        #: Demand-driven NL yield (owner design 2026-08-26): grows one
+        #: slot per tick while an NL admission is budget-blocked with
+        #: free slots standing, decays one per calm tick. The pushed
+        #: target carries it, the converger sheds the fattest free
+        #: slot, the wake lands a tick later.
+        self._nl_yield = 0
+        self._nl_yield_req = False
+        #: Set by nl_admissible: the last refusal was the modeled
+        #: budget (yieldable), not the hard cap / measured floor.
+        self.nl_blocked_by_budget = False
 
     def nl_hard_cap(self) -> int:
         """Absolute NL-parallelism backstop — what the budget could
@@ -410,9 +427,10 @@ class DispatcherLedger:
         absolute safety margin. The budget bounds US; co-tenants
         spending their own share cannot starve admission (2026-08-25,
         first local run)."""
-        if nl_in_flight >= self.nl_hard_cap():
-            return False
+        self.nl_blocked_by_budget = False
         if self.dispatch_paused:
+            return False
+        if nl_in_flight >= self.nl_hard_cap():
             return False
         nl_gb = nl_gb_measured()
         modeled = (self.open_slots * self.slot_gb
@@ -420,6 +438,9 @@ class DispatcherLedger:
                    + cache_reserve_gb(self.machine_gb)
                    + base_reserve_gb(self.machine_gb))
         if modeled > self.budget_gb:
+            # The one refusal a slot yield can fix (demand-driven
+            # priority, owner design 2026-08-26).
+            self.nl_blocked_by_budget = True
             return False
         return (available_gb() - self._pending_nl() * nl_gb
                 >= nl_admit_floor_gb(self.budget_gb, self.machine_gb,
@@ -466,6 +487,26 @@ class DispatcherLedger:
         # between the bands: hold state (hysteresis)
         return max(1, target - self._pressure_cut)
 
+    def request_nl_yield(self) -> None:
+        """Dispatcher-side signal: an NL admission is blocked by the
+        modeled budget while free slots stand — yield one. Consumed by
+        the next tick; must be re-requested while the block persists
+        (a passed wave decays the yield one slot per tick)."""
+        self._nl_yield_req = True
+
+    def _apply_nl_yield(self, target: int) -> int:
+        if self._nl_yield_req:
+            self._nl_yield_req = False
+            if self._nl_yield < max(0, target - 1):
+                self._nl_yield += 1
+                print(f"[ledger] NL yield — a queued wake is budget-"
+                      f"blocked with free slots standing; target gives "
+                      f"up {self._nl_yield} slot(s) (the fattest free "
+                      f"one sheds)", flush=True)
+        elif self._nl_yield > 0:
+            self._nl_yield -= 1
+        return max(1, target - self._nl_yield)
+
     def tick(self, *, nl_demand: int, push) -> None:
         """Rate-limited recompute + push. `push(target, min_avail_gb)`
         -> the gateway's reply dict or None (unreachable: keep last
@@ -487,6 +528,7 @@ class DispatcherLedger:
             slot_gb=self.slot_gb + nl_gb, nl_gb=nl_gb,
             machine_gb=self.machine_gb)
         target = self._apply_pressure(target, self.slot_gb + nl_gb)
+        target = self._apply_nl_yield(target)
         self.last_target = target
         resp = push(target, ABS_AVAILABLE_FLOOR_GB)
         if resp:

@@ -3337,8 +3337,10 @@ def queue_size(conn: sqlite3.Connection, *,
                claimable_only: bool = False,
                kinds: "tuple[str, ...] | None" = None) -> int:
     """Queue row count, optionally scoped / unleased-only / kind-set
-    (the RAM ledger sizes its NL reserve from queued NL wakes — they
-    are imminent demand, owner design 2026-08-25). Non-destructive —
+    (the RAM ledger's yield path asks it "is an NL wake actually
+    waiting" — the queued-wakes RESERVE it once sized is retired,
+    owner ruling 2026-08-26: demand observed beats demand forecast).
+    Non-destructive —
     the dispatcher's `--once` empty check uses `claimable_only=True`
     instead of a probing pop (the old pop-to-test-emptiness silently
     discarded a row when every popped row had been skipped)."""

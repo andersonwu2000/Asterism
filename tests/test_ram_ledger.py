@@ -398,6 +398,52 @@ def test_slot_reading_includes_page_tables():
     assert "_vm_pte_bytes" in src
 
 
+def test_nl_yield_demand_driven_priority(monkeypatch):
+    """Owner ruling 2026-08-26 (forecast -> demand): a budget-blocked
+    NL admission with free slots standing yields ONE slot per tick —
+    re-requested while the block persists, decayed one per calm tick,
+    never below the 1-slot floor."""
+    led = rl.DispatcherLedger(28.0, 32.0)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    _quiet_pressure(monkeypatch)
+    led.open_slots = 25
+    led.slot_gb = 1.0
+    # modeled = 25 + 0.3 + cache 2 + base 1 = 28.3 > 28 -> blocked,
+    # and by the BUDGET branch
+    assert led.nl_admissible(0) is False
+    assert led.nl_blocked_by_budget is True
+    led.request_nl_yield()
+    t1 = _tick(led)
+    led.request_nl_yield()
+    t2 = _tick(led)
+    assert t2 == t1 - 1, "each blocked tick yields one more slot"
+    t3 = _tick(led)          # no request: the wave passed
+    assert t3 == t2 + 1, "calm ticks give the yield back"
+
+
+def test_nl_yield_only_answers_the_budget_branch(monkeypatch):
+    """The hard cap and the measured floor are not yieldable — shedding
+    a slot fixes neither, so they must not set the flag."""
+    led = rl.DispatcherLedger(28.0, 32.0)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    monkeypatch.setattr(rl, "available_gb", lambda: 1.0)  # under floor
+    led.open_slots = 2
+    led.slot_gb = 1.0
+    assert led.nl_admissible(0) is False
+    assert led.nl_blocked_by_budget is False
+
+
+def test_dispatcher_reserves_for_inflight_nl_only():
+    """Source pin: the tick's nl_demand is _nl_fly alone — the
+    queued-wakes forecast reserve is retired; queue_size survives only
+    inside the yield request gate."""
+    import inspect
+    from Tooling.core import dispatcher
+    src = inspect.getsource(dispatcher)
+    assert "nl_demand=_nl_fly," in src
+    assert "request_nl_yield" in src
+
+
 # ── partition + queue plumbing ──────────────────────────────────
 
 def test_partition_has_no_overlap():
