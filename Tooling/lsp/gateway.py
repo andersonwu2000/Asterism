@@ -630,6 +630,77 @@ def _restart_backend(reason: str) -> None:
 _WEDGE_TARGETED_HISTORY: "dict[str, float]" = {}
 _WEDGE_REPEAT_WINDOW_SEC = 1800.0
 
+#: Cross-platform worker weight cap (owner order 2026-08-26, "先 A"):
+#: the 8 GB job cap is a Windows Job Object — "Soft: None off-Windows"
+#: — so on the Linux fleet nothing stopped a kernel-`decide` monster
+#: from committing 27 GB mid-elaboration (Erdos p10, a 200-element
+#: checksum table under maxHeartbeats 4M; the 08-08 class reached
+#: 102 GB). This watchdog enforces the SAME `gateway.lean_memory_cap_mb`
+#: knob by reading the same per-slot instrument and killing the one
+#: over-cap worker — the elaboration fails, exactly what the Job
+#: Object does on Windows. The close→reopen(warmup) that follows
+#: breaks the lean server's own crash-respawn loop (it would relaunch
+#: the same content and balloon again); the session's next acquire
+#: reloads its content through the normal cold path.
+_WEIGHT_KILL_HISTORY: "dict[str, float]" = {}
+_WEIGHT_KILL_COOLDOWN_SEC = 180.0
+_WEIGHT_WATCH_INTERVAL_SEC = 20.0
+
+
+def _weight_kill_over_cap() -> int:
+    """One scan: kill every worker whose private+PTE reading exceeds
+    the cap. Returns the number killed (for tests and the log)."""
+    backend = _state.backend
+    if backend is None or not _state.first_warm_done:
+        return 0
+    cap_mb = SLOT_RECYCLE_MB_DEFAULT * 5  # unreachable fallback
+    try:
+        from ..core import config as _cfg
+        cap_mb = int(_cfg.get("gateway.lean_memory_cap_mb", default=8192,
+                              env_var="ASTERISM_LEAN_MEMORY_CAP_MB",
+                              cast=int))
+    except Exception:  # noqa: BLE001 — a config hiccup must not kill
+        return 0
+    if cap_mb <= 0:
+        return 0
+    killed = 0
+    now = time.monotonic()
+    readings = _slot_private_mb_cached()
+    for slot in list(_state.workers):
+        if slot.closed:
+            continue
+        mb = readings.get(slot.slot_id)
+        if mb is None or mb <= cap_mb:
+            continue
+        last = _WEIGHT_KILL_HISTORY.get(slot.slot_uri)
+        if last is not None and now - last < _WEIGHT_KILL_COOLDOWN_SEC:
+            continue
+        _WEIGHT_KILL_HISTORY[slot.slot_uri] = now
+        print(f"[gateway] slot {slot.slot_id} worker over the memory cap "
+              f"— {mb} MB > {cap_mb} MB — killed mid-elaboration (the "
+              f"in-flight call fails, same semantics as the Windows job "
+              f"cap). Its document reopens on warmup content.",
+              file=sys.stderr, flush=True)
+        _kill_worker_for_uri(slot.slot_uri)
+        with contextlib.suppress(Exception):
+            backend.did_close(slot.slot_path)
+        with contextlib.suppress(Exception):
+            backend.did_open(slot.slot_path, WARMUP_CONTENT)
+        slot.content_pipeline_id = None
+        killed += 1
+    return killed
+
+
+def _weight_watchdog_run() -> None:
+    while True:
+        time.sleep(_WEIGHT_WATCH_INTERVAL_SEC)
+        try:
+            _weight_kill_over_cap()
+        except Exception as exc:  # noqa: BLE001 — the watchdog survives
+            print(f"[gateway] weight watchdog scan failed "
+                  f"({type(exc).__name__}: {exc})", file=sys.stderr,
+                  flush=True)
+
 
 def _kill_worker_for_uri(uri: str) -> bool:
     """Tree-kill the ONE `lean --worker` process serving `uri`.
@@ -5148,6 +5219,10 @@ def main() -> None:
     threading.Thread(target=_start_workers,
                      args=(workspace, w_count, n_interactive),
                      daemon=True).start()
+    # Cross-platform memory-cap enforcement (the Windows Job Object
+    # does not exist off-Windows; see _weight_kill_over_cap).
+    threading.Thread(target=_weight_watchdog_run,
+                     name="weight-watchdog", daemon=True).start()
     # Stale-claim sweep: reclaims gateway slots whose /release was
     # dropped (urlopen failure during teardown, worker crash before
     # AttemptsContext.__exit__, etc.). Cheap when nothing is stale.

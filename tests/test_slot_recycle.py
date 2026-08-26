@@ -322,6 +322,52 @@ def test_acquire_slides_and_credits_while_rewarming(gw):
     assert "_maybe_kick_midlease_rewarm" in src
 
 
+def _weight_env(gw, monkeypatch, readings):
+    called: list = []
+    monkeypatch.setattr(gw, "_slot_private_mb_cached", lambda: readings)
+    monkeypatch.setattr(gw, "_kill_worker_for_uri",
+                        lambda uri: called.append(("kill", uri)) or True)
+    monkeypatch.setattr(gw._state, "backend",
+                        types.SimpleNamespace(
+                            did_close=lambda *_a: called.append("close"),
+                            did_open=lambda _p, txt: called.append(
+                                ("open", txt))))
+    monkeypatch.setattr(gw._state, "first_warm_done", True)
+    gw._WEIGHT_KILL_HISTORY.clear()
+    return called
+
+
+def test_weight_cap_kills_the_one_over_cap_worker(gw, monkeypatch):
+    """The Windows job cap is 'Soft: None off-Windows' — a 27 GB
+    kernel-decide monster ran uncapped on the Linux fleet (Erdos p10,
+    2026-08-26). Same knob, same semantics, every platform: over the
+    cap -> that worker dies mid-elaboration, its doc reopens on warmup
+    (breaking the server's crash-respawn loop), the session reloads
+    its content through the normal cold path."""
+    called = _weight_env(gw, monkeypatch, {0: 27210, 1: 700})
+    s0, s1 = _slot(gw, 0, "file:///s0.lean", claimed="p1"), \
+        _slot(gw, 1, "file:///s1.lean", claimed="p2")
+    s0.content_pipeline_id = "p1"
+    monkeypatch.setattr(gw._state, "workers", [s0, s1])
+    assert gw._weight_kill_over_cap() == 1
+    assert called == [("kill", "file:///s0.lean"), "close",
+                      ("open", gw.WARMUP_CONTENT)]
+    assert s0.content_pipeline_id is None
+    assert s1.claimed_by == "p2", "the under-cap neighbour is untouched"
+
+
+def test_weight_cap_respects_cooldown_and_disable(gw, monkeypatch):
+    called = _weight_env(gw, monkeypatch, {0: 27210})
+    s0 = _slot(gw, 0, "file:///s0.lean", claimed="p1")
+    monkeypatch.setattr(gw._state, "workers", [s0])
+    assert gw._weight_kill_over_cap() == 1
+    assert gw._weight_kill_over_cap() == 0, \
+        "cooldown: the respawned worker needs time before re-judgment"
+    monkeypatch.setenv("ASTERISM_LEAN_MEMORY_CAP_MB", "0")
+    gw._WEIGHT_KILL_HISTORY.clear()
+    assert gw._weight_kill_over_cap() == 0, "cap<=0 disables the guard"
+
+
 def test_the_reading_is_private_bytes_not_working_set():
     """Working set counts the shared mathlib mmap once per process:
     measured 2026-08-14, five workers reported 17.93 GB of working set
