@@ -69,9 +69,11 @@ export function charterTitle(g: Group): string {
 /** How loudly a row should read.
  *
  * The sky's law, applied to the tree: light belongs to what is still
- * alive, and what is settled RECEDES (`Constellation.nodeStyle` — a
- * proved star dims to 45% while anything is live, shelved sits at
- * 0.45 opacity). Nothing there is struck through, and nothing here
+ * alive, and what is settled RECEDES (`lib/sky.nodeStyle` — a proved
+ * star dims to a 55% mix while anything is live). The filled/hollow
+ * split below is the SAME law the sky speaks since 2026-08-26, not a
+ * parallel one: a body is a place light came home, a shell is a place
+ * it did not. Nothing there is struck through, and nothing here
  * should be either: this UI already spends `line-through` on deleted
  * text in a diff, so striking a delivered group would say it was
  * retracted when it succeeded (owner, 2026-08-07).

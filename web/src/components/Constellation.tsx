@@ -4,7 +4,15 @@ import { CameraControls, useSkyCamera } from '../lib/camera'
 import { splitSignature } from '../lib/leanSig'
 import { layoutConstellation } from '../lib/layout'
 import { Lean } from '../lib/lean'
-import { citePath } from '../lib/sky'
+import {
+  ALIAS_DASH,
+  CITE_DASH,
+  citeInk,
+  citePath,
+  edgeStroke,
+  nodeStyle,
+  radius,
+} from '../lib/sky'
 import { DEF_KINDS, goalStatusLabel } from '../lib/vocab'
 import type { ConstellationLayout, LayoutNode } from '../lib/layout'
 
@@ -103,105 +111,12 @@ interface Props {
   highlightIds?: number[] | null
 }
 
-/** Residual struggle heat: a proved star that burned failed attempts
- * keeps a warm cast — "where the machine fought" stays on the map for
- * the reviewer hunting fragile spots. */
-function provedFill(dead: number): string {
-  if (dead <= 0) return 'var(--color-starlight)'
-  // achromatic struggle residue: fought-over stars are duller, not warm
-  const dull = dead <= 2 ? 22 : dead <= 5 ? 40 : 55
-  return `color-mix(in srgb, var(--color-starlight) ${100 - dull}%, var(--color-ink-faint))`
-}
-
-/** status → { fill, stroke, glow } for the star dot.
+/* The star marks, the size hierarchy and the line inks live in
+ * `lib/sky.ts` — shared with the Library's module map, and the only
+ * place the sky's ink law can be tested (`sky.test.ts`).
  *
- * INK INVERSION (cold-eye review): a status instrument must answer
- * "where is it stuck" in one glance. While ANYTHING is still live,
- * the unproved few are the brightest objects in the sky and the
- * proved mass recedes to memory; only a FINISHED problem lets the
- * proved stars shine (the sky becomes the trophy it earned). */
-function nodeStyle(
-  g: Goal,
-  hasLive: boolean,
-): { fill: string; stroke: string; glow: boolean; opacity: number } {
-  switch (g.status) {
-    case 'proved':
-      return hasLive
-        ? {
-            // 55% mix: the settled mass stays clearly ABOVE the shelved
-            // mid ink — at 45% the two collided (owner, 2026-08-24)
-            fill: 'color-mix(in srgb, var(--color-starlight) 55%, var(--color-bg))',
-            stroke: 'color-mix(in srgb, var(--color-starlight) 55%, var(--color-bg))',
-            glow: false,
-            opacity: 0.9,
-          }
-        : {
-            fill: provedFill(g.dead_attempts),
-            stroke: provedFill(g.dead_attempts),
-            glow: true,
-            opacity: 1,
-          }
-    case 'attempting':
-      return { fill: 'var(--color-starlight)', stroke: 'var(--color-starlight)', glow: true, opacity: 1 }
-    case 'open':
-      // the live frontier owns the light: filled bright + glow, so the
-      // seven unproved stars outshine the hundred proved ones
-      return { fill: 'var(--color-star)', stroke: 'var(--color-starlight)', glow: true, opacity: 1 }
-    case 'frozen':
-      // parks exactly like shelved (owner, 2026-08-24): same story in
-      // the engine, same readable-but-receded ink on the sky
-      return { fill: 'var(--color-ink-dim)', stroke: 'var(--color-ink-dim)', glow: false, opacity: 0.45 }
-    case 'pending_strategist_review':
-      return { fill: 'transparent', stroke: 'var(--color-warn)', glow: true, opacity: 1 }
-    case 'shelved':
-      // parked, not buried (owner, 2026-08-24): readable, but a clear
-      // step under the proved mass (which rides the 55% mix while live)
-      return { fill: 'var(--color-ink-dim)', stroke: 'var(--color-ink-dim)', glow: false, opacity: 0.45 }
-    case 'disproved':
-      // refuted (owner, 2026-08-24): a HOLLOW shell at residue weight —
-      // the question closed without light coming home, so it never
-      // glows in any sky. Faint ink only: a bright outline would
-      // masquerade as a sign-off ring.
-      return { fill: 'transparent', stroke: 'var(--color-ink-faint)', glow: false, opacity: 0.55 }
-    case 'dead':
-    default:
-      return { fill: 'var(--color-edge-strong)', stroke: 'var(--color-edge-strong)', glow: false, opacity: 0.35 }
-  }
-}
-
-/** Size hierarchy = what the human must know (owner: anchor + claim
- * are the only nodes the user NEEDS): root and claims largest, def
- * anchors next, supporting Props recede. */
-function radius(g: Goal): number {
-  if (g.origin === 'root') return 9
-  // "bigger = more important", applied to the two kinds of promise: a
-  // claim YOU sign outranks a brick a sub-group delivered to the group
-  // above it. Both are landmarks; only one is yours.
-  if (g.human_facing_claim) return 8.5
-  if (g.is_deliverable) return 7
-  if (DEF_KINDS.has(g.kind)) return 6.5
-  return 4.5
-}
-
-/** def-like kinds — the vouchable meaning-bearers (anchor+claim §4) */
-
-/* Root goals are just the brightest star: larger radius + a soft halo
+ * Root goals are just the brightest star: larger radius + a soft halo
  * ring. No glyph shapes (owner's call — spikes and sparks both out). */
-
-function edgeStroke(
-  status: Strategy['status'],
-  kind: 'strategy' | 'alias' | 'anchor' | 'citation',
-): string {
-  if (kind === 'alias') return 'var(--color-accent)'
-  if (kind === 'citation') return 'var(--color-starlight)'
-  if (kind === 'anchor' || status === 'succeeded') return 'var(--color-starlight)'
-  // routes speak in THREE voices (owner, 2026-08-24): active ink-dim /
-  // succeeded starlight / everything else ink-faint. The old edge
-  // tokens are rgba whites (7-15% alpha) — stacked under strokeOpacity
-  // they netted ~2% and the dependency tree vanished
-  if (status === 'dead' || status === 'superseded') return 'var(--color-ink-faint)'
-  return 'var(--color-ink-dim)'
-}
 
 export default function Constellation({
   goals,
@@ -684,13 +599,13 @@ export default function Constellation({
   const isDead = (s: string) => s === 'dead' || s === 'superseded'
   const visibleEdges = layout.edges
   const visibleBundles = layout.bundles
-  // density-stepped: a handful of citations read at 0.22; a hundred
-  // would wash the sky at that weight
+  // density-stepped: a handful of threads read at full weave ink; a
+  // hundred would wash the sky there (lib/sky.citeInk)
   const citeCount = useMemo(
     () => layout.edges.filter((e) => e.kind === 'citation').length,
     [layout],
   )
-  const citeOpacity = citeCount > 80 ? 0.08 : citeCount > 30 ? 0.13 : 0.22
+  const citeOpacity = citeInk(citeCount)
   // hover/selection focus: point at a star with citation threads and
   // its threads carry the light while the rest of the web recedes —
   // "where is this actually used" answered in place (cold-eye backlog).
@@ -937,10 +852,11 @@ export default function Constellation({
             }
           }
           if (e.kind === 'citation') {
-            // Citations bow sideways as quiet threads: parallel long
-            // straights merge into fog on cite-heavy skies (sphere:
-            // 100+ edges); a bow separates neighbours, and opacity
-            // steps down with density so the trees stay in front.
+            // Citations bow sideways as quiet DOTTED threads: the bow
+            // separates parallel neighbours on cite-heavy skies
+            // (sphere: 100+ edges) and the dots say "not part of the
+            // tree" — a bow alone never could, because a route longer
+            // than 480 bows through this very same curve.
             const touched =
               citeFocusId !== null && (e.from === citeFocusId || e.to === citeFocusId)
             // a marked arc stops at the star's rim so the chevron's
@@ -963,11 +879,14 @@ export default function Constellation({
                 markerEnd={touched ? 'url(#cite-arrow)' : undefined}
                 stroke={edgeStroke(e.strategyStatus, e.kind)}
                 strokeWidth={touched ? 1.4 : 1}
+                // the dots stay dots under focus: a mark that changes
+                // KIND when you point at it stops being a vocabulary
+                strokeDasharray={CITE_DASH}
                 strokeOpacity={
                   touched
-                    ? Math.max(0.55, citeOpacity * fade)
+                    ? Math.max(0.75, citeOpacity * fade)
                     : citeFocusId !== null
-                      ? 0.04
+                      ? 0.07
                       : citeOpacity * fade
                 }
                 vectorEffect="non-scaling-stroke"
@@ -1006,7 +925,7 @@ export default function Constellation({
                 stroke={edgeStroke(e.strategyStatus, e.kind)}
                 strokeWidth={e.strategyStatus === 'succeeded' ? 1.2 : 1}
                 strokeOpacity={baseOpacity}
-                strokeDasharray={e.kind === 'alias' ? '4 4' : undefined}
+                strokeDasharray={e.kind === 'alias' ? ALIAS_DASH : undefined}
                 vectorEffect="non-scaling-stroke"
               />
             )
@@ -1022,7 +941,7 @@ export default function Constellation({
               stroke={edgeStroke(e.strategyStatus, e.kind)}
               strokeWidth={e.strategyStatus === 'succeeded' ? 1.2 : 1}
               strokeOpacity={baseOpacity}
-              strokeDasharray={e.kind === 'alias' ? '4 4' : undefined}
+              strokeDasharray={e.kind === 'alias' ? ALIAS_DASH : undefined}
               vectorEffect="non-scaling-stroke"
             />
           )
@@ -1823,14 +1742,14 @@ export default function Constellation({
   className="flex items-center gap-1"
   title={
     present.shelved && present.frozen
-      ? 'set aside after repeated failed attempts · frozen parks the same way'
+      ? 'set aside after repeated failed attempts — a shell: nothing stands here yet · frozen parks the same way'
       : present.frozen
         ? 'held out of play — drawn exactly like a shelved star'
-        : 'set aside after repeated failed attempts'
+        : 'set aside after repeated failed attempts — a shell: nothing stands here yet'
   }
 >
           <svg width="13" height="13" viewBox="-5 -5 10 10">
-            <circle r="3" fill="var(--color-ink-dim)" opacity="0.6" />
+            <circle r="3" fill="none" stroke="var(--color-ink-dim)" strokeWidth="1.2" opacity="0.85" />
           </svg>
           {present.shelved && present.frozen
             ? 'shelved · frozen'
@@ -1840,9 +1759,9 @@ export default function Constellation({
         </span>
         )}
         {present.dead && (
-<span className="flex items-center gap-1" title="an abandoned path (edges hidden behind “show dead paths”)">
+<span className="flex items-center gap-1" title="an abandoned path — the faintest shell, kept on the map as residue and never hidden">
           <svg width="13" height="13" viewBox="-5 -5 10 10">
-            <circle r="2.6" fill="var(--color-edge-strong)" opacity="0.55" />
+            <circle r="2.8" fill="none" stroke="var(--color-ink-faint)" strokeWidth="1" opacity="0.6" />
           </svg>
           dead
         </span>
@@ -1924,9 +1843,9 @@ export default function Constellation({
         </span>
         )}
         {present.cites && (
-<span className="flex items-center gap-1" title="one proof imports another — the lemma is used there">
+<span className="flex items-center gap-1" title="one proof imports another — the lemma is used there. Dotted, like every cross-link: solid lines are the machine's own decomposition">
           <svg width="18" height="13" viewBox="0 0 14 10">
-            <line x1="1" y1="8" x2="13" y2="2" stroke="var(--color-starlight)" strokeWidth="1" opacity="0.45" />
+            <line x1="1" y1="8" x2="13" y2="2" stroke="var(--color-starlight)" strokeWidth="1" strokeDasharray="1.6 1.8" opacity="0.7" />
           </svg>
           cites
         </span>

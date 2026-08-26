@@ -87,6 +87,34 @@ the ladder via `::picker(select)` where supported.
   and unringed, and the panel calls them *delivered* — the sky is
   always complete, so the fix is to mark them honestly, never to hide
   them.
+- **A body is a place light is coming or came home; a shell is a place
+  it is not** (2026-08-26). Filled = proved (arrived) or live (on its
+  way). Hollow = parked (shelved / frozen), refuted (disproved),
+  abandoned (dead) — plus one glowing shell, a goal waiting on the
+  strategist: the light stopped and a decision is the only thing
+  missing. The Programme's discussion tree already spoke this
+  ("delivered = filled, nothing came home = hollow"); it is now one
+  law on both surfaces instead of two.
+  **No status pair may be separated by brightness alone** — the
+  invariant lives in `src/lib/sky.test.ts`, not in this paragraph.
+  Shelved and proved were, and twice the answer was to nudge the mix
+  (45% → 55%, 2026-08-24) with the owner still unable to read them
+  apart: measured L\* 53.0 vs 33.8, two same-size grey discs ~5px
+  across beside a frontier at 96 that flattens everything under it.
+  Brightness had no headroom either way — proved may not brighten
+  (ink inversion) and shelved may not dim (parked, not buried) — so
+  the answer had to be a different KIND of mark.
+- **Solid = the machine's own decomposition; broken = a cross-link**
+  (2026-08-26). Routes and anchor edges are solid; a citation dots, an
+  alias dashes. `layout.ts` has always sorted them that way (hierarchy
+  is walked, alias/citation are skipped) — until this date the ink did
+  not say so, and since a route longer than 480 bows through the very
+  same `citePath` a citation does, the only thing telling a
+  decomposition from an import was an opacity that was simultaneously
+  encoding density and span. Three facts, one channel, read as one
+  tangle. Dotting also spends ~a third of a solid line's ink, so the
+  weave runs ~1.6× the old weights: half the fog, twice the peak — one
+  thread traceable where a hundred used to be a single wash.
 - Routes (hierarchy lines, not alias/citation arcs) speak in **three
   voices** (2026-08-24): active = ink-dim, succeeded = starlight,
   everything else (dead/superseded) = ink-faint. Never paint a route
@@ -103,18 +131,19 @@ the ladder via `::picker(select)` where supported.
   writes. The copy re-wraps the goal's namespace (the tail arrives
   prelude-stripped); header `open` loss is repairable in the copy by
   adding the open.
-- Refuted stars are **hollow at residue weight** (2026-08-24): the
+- Refuted stars are **shells at residue weight** (2026-08-24): the
   question closed without light coming home, so a disproof never glows
-  in any sky. Faint ink keeps its outline from masquerading as a
-  sign-off ring. (Filled still means truth came home; hollow-in-the-
-  sky means refuted — the Programme-tree "hollow = nothing did" lives
-  outside the sky.)
-- Frozen parks exactly like shelved: same readable mid ink, one legend
-  row between them (2026-08-24).
-- Shelved is **parked, not buried** (2026-08-24): mid ink, one step
-  under the proved mass — shelved is not a terminal state, so its
-  trees stay readable. Dead alone is the very faint residue, never
-  hidden. **The sky is always
+  in any sky. Faint ink keeps the outline from masquerading as a
+  sign-off ring (the ring is always the OUTER, concentric one).
+- Frozen parks exactly like shelved: same shell, same mid ink, one
+  legend row between them (2026-08-24).
+- Shelved is **parked, not buried** (2026-08-24): a shell at mid ink —
+  shelved is not a terminal state, so its trees stay readable. Ordered
+  among the shells by how open the question still is: parked >
+  refuted > abandoned. A shell spends less ink than a disc, so a state
+  turning hollow raises its opacity to stay exactly as present at far
+  zoom (shelved 0.45 → 0.65) — and gains the shape besides. Dead alone
+  is the very faint residue, never hidden. **The sky is always
   complete** — ink inversion is the only focus mechanism; no hide/
   filter toggles.
 - **Settled things recede; they are never struck through.** The same

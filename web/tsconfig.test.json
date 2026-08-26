@@ -1,0 +1,19 @@
+{
+  /* The tests' own project.
+   *
+   * A test may read a source file off disk — `sky.test.ts` resolves the
+   * palette out of `index.css` rather than restating it, so the ink law
+   * breaks the day someone retunes a token. That needs `node` types,
+   * and the APP must never have them: browser code reaching for `fs`
+   * should not typecheck. Two projects, two type walls. (Vite's `?raw`
+   * is not the way round it — vitest stubs every `.css` id to an empty
+   * string unless CSS processing is turned on for the whole suite.)
+   */
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "types": ["vite/client", "node"]
+  },
+  "include": ["src/**/*.test.ts", "src/**/*.test.tsx"],
+  "exclude": []
+}

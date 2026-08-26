@@ -7,7 +7,7 @@ import { Lean } from '../lib/lean'
 import { renderInline } from '../lib/prose'
 import { LeanProbe } from '../components/LeanProbe'
 import { CameraControls, useSkyCamera } from '../lib/camera'
-import { citePath } from '../lib/sky'
+import { CITE_DASH, citePath } from '../lib/sky'
 import { DEF_KINDS } from '../lib/vocab'
 import { layoutConstellation } from '../lib/layout'
 import type { Goal, LibraryChapter, LibraryChapterDecl, LibraryChapterFile } from '../lib/types'
@@ -409,10 +409,20 @@ function ModuleMap({
             const b = layout.pos.get(f.path)
             if (!a || !b) return null
             const lit = hover === f.path || hover === imp
-            const opacity = hover === null ? 0.3 : lit ? 0.65 : 0.08
+            // ~1.6x the solid weights these replace: dotting spends a
+            // third of a solid line's ink, so this is less total fog
+            // for a far more traceable single thread (lib/sky.citeInk)
+            const opacity = hover === null ? 0.48 : lit ? 0.9 : 0.13
             const span = Math.abs(b.y - a.y)
             // an edge that skips layers bows around the rows between,
             // instead of drawing through their stars
+            // an import IS a citation, so it wears the sky's citation
+            // mark: dotted, because a cross-link is never solid
+            // (lib/sky, 2026-08-26). No non-scaling-stroke on this map
+            // — width and dashes both ride 1/k by hand.
+            const dash = CITE_DASH.split(' ')
+              .map((n) => Number(n) / k)
+              .join(' ')
             if (span > 130) {
               // the problem sky's bow, verbatim (index parity
               // separates parallel threads)
@@ -423,6 +433,7 @@ function ModuleMap({
                   fill="none"
                   stroke="var(--color-starlight)"
                   strokeWidth={1 / k}
+                  strokeDasharray={dash}
                   strokeOpacity={opacity}
                 />
               )
@@ -436,6 +447,7 @@ function ModuleMap({
                 y2={b.y}
                 stroke="var(--color-starlight)"
                 strokeWidth={1 / k}
+                strokeDasharray={dash}
                 strokeOpacity={opacity}
               />
             )
