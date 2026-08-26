@@ -19,6 +19,30 @@ from ..state import db, transitions
 
 
 # ---------------------------------------------------------------------
+# strategy_subgoals.link_kind (v44) — 'minted' if the strategy CREATED
+# the sub-goal, 'cited' if it only reuses one that already existed.
+#
+# The engine has read this since v44 (state/programme.py, agent/
+# context.py, state/transitions.py all filter on it) and the read side
+# did not, so every consumer here treated a reuse as parenthood. On
+# union_closed's `fin4_union_closed_d_trace_type_catalog` that is seven
+# separate routes citing one lemma: seven solid limbs fanning across
+# the sky, and the lemma itself dragged below all seven citers by the
+# layering pass. The layout engine's own comment already forbade it
+# for proof-file citations — "never hierarchy, a heavily cited def
+# would otherwise drag half the sky under itself" — the data just was
+# not reaching it.
+#
+# One expression, so a pre-v44 database (older workspace, restored
+# backup) reads as all-minted instead of raising.
+# ---------------------------------------------------------------------
+
+def _link_kind_expr(conn: sqlite3.Connection) -> str:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(strategy_subgoals)")}
+    return "link_kind" if "link_kind" in cols else "'minted'"
+
+
+# ---------------------------------------------------------------------
 # Status chip — one derivation, shared by board and problem detail.
 # Precedence: blocked-on-human first (red/yellow), then terminal states,
 # then the structural stall signal, else proving.
@@ -353,7 +377,12 @@ def _goal_docs(conn: sqlite3.Connection, problem: str) -> "dict[int, str]":
             " FROM strategy_subgoals sg"
             " JOIN goals g ON g.id = sg.subgoal_id"
             " JOIN strategies s ON s.id = sg.strategy_id"
-            " WHERE g.problem = ?", (problem,)):
+            # a goal's birth annotation comes from the proposal that
+            # MINTED it; a later route that merely cites it has its own
+            # comment block for its own purposes, and whichever row the
+            # scan happened to reach first was winning
+            f" WHERE g.problem = ? AND {_link_kind_expr(conn)} = 'minted'",
+            (problem,)):
         by_strategy.setdefault(int(r["sid"]), []).append(r)
     for rows in by_strategy.values():
         md = rows[0]["md"] or ""
@@ -503,13 +532,22 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
     strat_ids = {s["id"] for s in strategies}
     edges = []
     for e in conn.execute(
-            "SELECT strategy_id, subgoal_id, position FROM strategy_subgoals"
+            "SELECT strategy_id, subgoal_id, position,"
+            f" {_link_kind_expr(conn)} AS link_kind FROM strategy_subgoals"
             " ORDER BY strategy_id, position"):
         if int(e["strategy_id"]) in strat_ids:
             edges.append({
                 "strategy_id": int(e["strategy_id"]),
                 "subgoal_id": int(e["subgoal_id"]),
                 "position": int(e["position"]),
+                # v44 provenance, and the sky cannot draw the tree
+                # without it: 'minted' = this strategy CREATED the
+                # sub-goal (a decomposition branch), 'cited' = it
+                # merely reuses one that already existed (a
+                # cross-link). Flattened, seven routes reusing one
+                # lemma drew seven limbs across the sky AND dragged
+                # the lemma under all of them.
+                "link_kind": str(e["link_kind"]),
             })
 
     decisions = []
@@ -1132,7 +1170,12 @@ def _goal_arguments(conn: sqlite3.Connection, problem: str,
     for r in conn.execute(
             "SELECT e.subgoal_id AS sub, s.goal_id AS parent"
             "  FROM strategy_subgoals e JOIN strategies s"
-            "    ON s.id = e.strategy_id"):
+            "    ON s.id = e.strategy_id"
+            # only the strategy that MINTED it is its parent — a route
+            # that cites a lemma does not adopt it into its group
+            # (state/programme.py:310 and state/transitions.py:979 have
+            # always read it this way)
+            f" WHERE {_link_kind_expr(conn)} = 'minted'"):
         if int(r["sub"]) in ids and int(r["parent"]) in ids:
             parent[int(r["sub"])] = int(r["parent"])
     for gid in ids - set(arg):
@@ -1628,13 +1671,18 @@ def goal_detail(conn: sqlite3.Connection, problem: str,
     # children and lights their stars on hover
     subgoals_of: dict[int, list[dict]] = {}
     for r in conn.execute(
-            "SELECT ss.strategy_id AS sid, g2.id AS gid, g2.slug AS slug"
+            "SELECT ss.strategy_id AS sid, g2.id AS gid, g2.slug AS slug,"
+            f" {_link_kind_expr(conn)} AS link_kind"
             " FROM strategy_subgoals ss"
             " JOIN strategies s ON s.id = ss.strategy_id"
             " JOIN goals g2 ON g2.id = ss.subgoal_id"
             " WHERE s.goal_id = ? ORDER BY g2.id", (goal_id,)):
+        # a route's inputs include lemmas it did not create; the panel
+        # lists them all and says which is which, rather than claiming
+        # the route decomposed into eight things it merely reuses
         subgoals_of.setdefault(int(r["sid"]), []).append(
-            {"id": int(r["gid"]), "slug": str(r["slug"])})
+            {"id": int(r["gid"]), "slug": str(r["slug"]),
+             "reused": str(r["link_kind"]) == "cited"})
     strategies = [{
         "id": int(r["id"]),
         "status": str(r["status"]),
@@ -1692,8 +1740,10 @@ def strategy_detail(conn: sqlite3.Connection, problem: str,
         "slug": str(r["slug"]),
         "status": str(r["status"]),
         "position": int(r["position"]),
+        "reused": str(r["link_kind"]) == "cited",
     } for r in conn.execute(
-        "SELECT g.id, g.slug, g.status, ss.position"
+        "SELECT g.id, g.slug, g.status, ss.position,"
+        f" {_link_kind_expr(conn)} AS link_kind"
         " FROM strategy_subgoals ss JOIN goals g ON g.id = ss.subgoal_id"
         " WHERE ss.strategy_id = ? ORDER BY ss.position",
         (strategy_id,))]

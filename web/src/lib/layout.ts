@@ -91,9 +91,21 @@ export function layoutConstellation(
   const stratById = new Map(strategies.map((s) => [s.id, s]))
 
   const edges: LayoutEdge[] = []
+  // A route's REUSE of an existing lemma is not a decomposition branch
+  // (v44 `link_kind`): it is exactly the cross-link the citation pass
+  // below already knows how to draw, so it waits and goes through
+  // there — after hierarchy and aliases have claimed their pairs.
+  const reused: { from: number; to: number; sid: number; status: Strategy['status'] }[] = []
   for (const e of strategyEdges) {
     const s = stratById.get(e.strategy_id)
     if (!s || !byId.has(s.goal_id) || !byId.has(e.subgoal_id)) continue
+    if (e.link_kind === 'cited') {
+      // citation direction, same as a file import: FROM the lemma being
+      // reused TO the goal reaching for it, so the focus arrow points
+      // where knowledge flows in
+      reused.push({ from: e.subgoal_id, to: s.goal_id, sid: s.id, status: s.status })
+      continue
+    }
     edges.push({
       from: s.goal_id,
       to: e.subgoal_id,
@@ -140,9 +152,24 @@ export function layoutConstellation(
       })
     }
   }
-  // Proof-file citations: the DAG's cross-links (a lemma two nodes
-  // cite is drawn once, with two lines). Never hierarchy — a heavily
-  // cited def would otherwise drag half the sky under itself.
+  // Cross-links: proof-file citations, and the routes that reuse a
+  // lemma rather than mint one (a lemma two nodes reach for is drawn
+  // once per reacher). Never hierarchy — a heavily cited def would
+  // otherwise drag half the sky under itself, which is precisely what
+  // the reuse links were doing before v44's `link_kind` reached here.
+  // Reuse keeps its real strategy id: the thread belongs to a route
+  // the reader can open, unlike a bare file import (-3).
+  for (const e of reused) {
+    if (pairSeen(e.from, e.to)) continue
+    seenPairs.add(`${e.from}>${e.to}`)
+    edges.push({
+      from: e.from,
+      to: e.to,
+      strategyId: e.sid,
+      strategyStatus: e.status,
+      kind: 'citation',
+    })
+  }
   for (const e of citationEdges) {
     if (!byId.has(e.from) || !byId.has(e.to)) continue
     if (pairSeen(e.from, e.to)) continue

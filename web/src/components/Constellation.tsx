@@ -172,7 +172,8 @@ export default function Constellation({
     for (const g of goals)
       mix(`${g.id}:${g.status}:${g.attempts}:${g.dead_attempts}:${g.in_flight ? 1 : 0}:${g.is_deliverable ? 1 : 0}:${g.human_facing_claim ? 1 : 0};`)
     for (const s of strategies) mix(`${s.id}:${s.status};`)
-    for (const e of strategyEdges) mix(`${e.strategy_id}>${e.subgoal_id}:${e.position};`)
+    for (const e of strategyEdges)
+      mix(`${e.strategy_id}>${e.subgoal_id}:${e.position}:${e.link_kind ?? 'minted'};`)
     for (const e of anchorEdges) mix(`${e.from}>${e.to};`)
     for (const e of citationEdges) mix(`${e.from}>${e.to};`)
     return `${goals.length}|${strategies.length}|${strategyEdges.length}|${anchorEdges.length}|${citationEdges.length}#${a}`
@@ -1742,14 +1743,14 @@ export default function Constellation({
   className="flex items-center gap-1"
   title={
     present.shelved && present.frozen
-      ? 'set aside after repeated failed attempts — a shell: nothing stands here yet · frozen parks the same way'
+      ? 'set aside after repeated failed attempts — parked, not closed · frozen parks the same way'
       : present.frozen
         ? 'held out of play — drawn exactly like a shelved star'
-        : 'set aside after repeated failed attempts — a shell: nothing stands here yet'
+        : 'set aside after repeated failed attempts — parked, not closed'
   }
 >
           <svg width="13" height="13" viewBox="-5 -5 10 10">
-            <circle r="3" fill="none" stroke="var(--color-ink-dim)" strokeWidth="1.2" opacity="0.85" />
+            <circle r="3" fill="var(--color-ink-faint)" opacity="0.75" />
           </svg>
           {present.shelved && present.frozen
             ? 'shelved · frozen'

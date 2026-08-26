@@ -80,6 +80,13 @@ export interface StrategyEdge {
   strategy_id: number
   subgoal_id: number
   position: number
+  /** v44 provenance. 'minted' = this strategy CREATED the sub-goal, so
+   * the edge is a decomposition branch and belongs to the tree.
+   * 'cited' = it only reuses a goal that already existed, which is a
+   * cross-link — drawing it as a limb fans one lemma out to every
+   * route that mentions it AND drags the lemma below all of them.
+   * Absent on a pre-v44 database; read as 'minted'. */
+  link_kind?: 'minted' | 'cited'
 }
 
 export interface Decision {
@@ -261,7 +268,9 @@ export interface GoalDetail extends Omit<Goal, 'dead_attempts'> {
     created_by: string
     subgoal_count: number
     /** the route's children, named — absent on a pre-upgrade serve */
-    subgoals?: { id: number; slug: string }[]
+    /** `reused` = the route did not create this one, it reaches for a
+     * goal that already existed (v44 `link_kind='cited'`) */
+    subgoals?: { id: number; slug: string; reused?: boolean }[]
   }[]
 }
 

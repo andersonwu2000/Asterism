@@ -16,7 +16,15 @@ interface StrategyDetail {
   proposal_md: string
   created_by: string
   created_at: string
-  subgoals: { id: number; slug: string; status: string; position: number }[]
+  /** `reused` = already existed; this route reaches for it rather
+   * than having created it (v44 `link_kind='cited'`) */
+  subgoals: {
+    id: number
+    slug: string
+    status: string
+    position: number
+    reused?: boolean
+  }[]
   dead_attempts: {
     id: number
     pipeline_id: string
@@ -91,7 +99,18 @@ export default function StrategyPanel({
                 by {data.created_by} · {relTime(data.created_at)}
               </span>
             </div>
-            <SectionLabel>subgoals ({data.subgoals.length})</SectionLabel>
+            {/* a route that mints nothing and combines four existing
+                lemmas is a real route — but the header may not call
+                them its subgoals (v44 link_kind) */}
+            <SectionLabel>
+              {(() => {
+                const minted = data.subgoals.filter((x) => !x.reused).length
+                const cited = data.subgoals.length - minted
+                if (cited === 0) return `subgoals (${minted})`
+                if (minted === 0) return `reuses (${cited})`
+                return `subgoals (${minted}) · reuses (${cited})`
+              })()}
+            </SectionLabel>
             <div className="mb-4 flex flex-col gap-0.5">
               {data.subgoals.map((sg) => (
                 <button
@@ -99,8 +118,13 @@ export default function StrategyPanel({
                   className="flex items-baseline justify-between rounded-md px-2 py-1 text-left hover:bg-surface-2"
                   onClick={() => onSelectGoal(sg.id)}
                 >
-                  <span className="font-mono text-xs text-ink">{sg.slug}</span>
-                  <span className={`text-[11px] ${GOAL_STATUS_CLS[sg.status] ?? 'text-ink-dim'}`}>
+                  <span className="min-w-0 truncate font-mono text-xs text-ink">
+                    {sg.slug}
+                    {sg.reused && (
+                      <span className="text-ink-faint"> · reused</span>
+                    )}
+                  </span>
+                  <span className={`shrink-0 pl-2 text-[11px] ${GOAL_STATUS_CLS[sg.status] ?? 'text-ink-dim'}`}>
                     {goalStatusLabel(sg.status)}
                   </span>
                 </button>

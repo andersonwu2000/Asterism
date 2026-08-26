@@ -87,23 +87,23 @@ the ladder via `::picker(select)` where supported.
   and unringed, and the panel calls them *delivered* — the sky is
   always complete, so the fix is to mark them honestly, never to hide
   them.
-- **A body is a place light is coming or came home; a shell is a place
-  it is not** (2026-08-26). Filled = proved (arrived) or live (on its
-  way). Hollow = parked (shelved / frozen), refuted (disproved),
-  abandoned (dead) — plus one glowing shell, a goal waiting on the
-  strategist: the light stopped and a decision is the only thing
-  missing. The Programme's discussion tree already spoke this
-  ("delivered = filled, nothing came home = hollow"); it is now one
-  law on both surfaces instead of two.
-  **No status pair may be separated by brightness alone** — the
-  invariant lives in `src/lib/sky.test.ts`, not in this paragraph.
-  Shelved and proved were, and twice the answer was to nudge the mix
-  (45% → 55%, 2026-08-24) with the owner still unable to read them
-  apart: measured L\* 53.0 vs 33.8, two same-size grey discs ~5px
-  across beside a frontier at 96 that flattens everything under it.
-  Brightness had no headroom either way — proved may not brighten
-  (ink inversion) and shelved may not dim (parked, not buried) — so
-  the answer had to be a different KIND of mark.
+- **A shell is a question closed with no light** (2026-08-26): refuted
+  (disproved) or abandoned (dead). Everything still capable of coming
+  home is a disc — proved (it did), live (it might), shelved and
+  frozen (parked is not closed). One shell glows: a goal waiting on
+  the strategist, where the light stopped and a decision is all that's
+  missing. Hollow was tried for shelved the same day and the owner
+  turned it down — *"shelved shouldn't go hollow, just make it
+  darker."*
+- **A brightness gap is a MEASURED distance, not a number that looked
+  bigger in the diff** — the floor lives in `src/lib/sky.test.ts`,
+  which resolves the palette out of `index.css` and composites each
+  mark on the ground. Shelved and proved drifted together twice
+  (45% → 55%, 2026-08-24) and the owner still read them as one dot at
+  L\* 53.0 vs 33.8 — two same-size discs ~5px across beside a frontier
+  at 96 that flattens everything under them. The room can only come
+  from below, since proved may not brighten (ink inversion): shelved
+  now sits at residue ink, L\* 23.8, 29.2 under the proved mass.
 - **Solid = the machine's own decomposition; broken = a cross-link**
   (2026-08-26). Routes and anchor edges are solid; a citation dots, an
   alias dashes. `layout.ts` has always sorted them that way (hierarchy
@@ -135,17 +135,15 @@ the ladder via `::picker(select)` where supported.
   question closed without light coming home, so a disproof never glows
   in any sky. Faint ink keeps the outline from masquerading as a
   sign-off ring (the ring is always the OUTER, concentric one).
-- Frozen parks exactly like shelved: same shell, same mid ink, one
-  legend row between them (2026-08-24).
-- Shelved is **parked, not buried** (2026-08-24): a shell at mid ink —
-  shelved is not a terminal state, so its trees stay readable. Ordered
-  among the shells by how open the question still is: parked >
-  refuted > abandoned. A shell spends less ink than a disc, so a state
-  turning hollow raises its opacity to stay exactly as present at far
-  zoom (shelved 0.45 → 0.65) — and gains the shape besides. Dead alone
-  is the very faint residue, never hidden. **The sky is always
-  complete** — ink inversion is the only focus mechanism; no hide/
-  filter toggles.
+- Frozen parks exactly like shelved: same disc, same ink, one legend
+  row between them (2026-08-24).
+- Shelved is **parked, not buried**: not a terminal state, so its trees
+  stay readable — but the gap from proved comes out of ITS side, so
+  "readable" is now a floor with a number on it (clearly above the
+  abandoned residue, `sky.test.ts`), not a feeling. Dead alone is the
+  very faint residue, and it is still never hidden. **The sky is
+  always complete** — ink inversion is the only focus mechanism; no
+  hide/filter toggles.
 - **Settled things recede; they are never struck through.** The same
   law outside the sky (the Programme's discussion tree): a finished
   branch dims, a filled glyph says work came home and a hollow one

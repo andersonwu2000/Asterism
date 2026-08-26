@@ -47,27 +47,27 @@ export function citePath(
 
 /* ---- star marks ----------------------------------------------------
  *
- * BODY vs SHELL is the sky's second state axis. A filled star is a
- * place light is coming or came home — live (on its way) or proved
- * (arrived). A shell is a place the light is NOT coming: parked
- * (shelved / frozen), refuted (disproved), abandoned (dead). One
- * exception, and it earns its keep: a goal waiting on the strategist
- * is a GLOWING shell — the light stopped, and the decision to relight
- * it is the only thing missing.
+ * BODY vs SHELL: a shell is a question CLOSED with no light — refuted
+ * (disproved) or abandoned (dead). Everything still capable of coming
+ * home is a disc: proved (it did), live (it might), shelved and frozen
+ * (parked, and parked is not closed). One shell glows, and it earns
+ * it: a goal waiting on the strategist, where the light stopped and a
+ * decision is the only thing missing.
  *
- * Until 2026-08-26 shelved and proved differed by BRIGHTNESS ALONE,
- * and the owner read them as the same dot twice. Measured on
- * union_closed: proved L* 53.0, shelved L* 33.8 — two same-size grey
- * discs about five pixels across, sitting beside a live frontier at
- * L* 96 that flattens everything under it. Brightness had no headroom
- * left in either direction: proved may not brighten (the ink
- * inversion hands the light to the unproved while work is live) and
- * shelved may not dim (parked, not buried). A third pass at the same
- * knob would have been the fix that keeps not fixing it, so the
- * second axis is a different KIND of mark — and the Programme's
- * discussion tree had already been speaking exactly this one
- * ("delivered = filled, nothing came home = hollow", groupTree.ts).
- * One law on two surfaces now, instead of two laws.
+ * Shelved and proved are separated by BRIGHTNESS, and the gap is the
+ * whole point. Measured on union_closed the day the owner said they
+ * read as one dot: proved L* 53.0, shelved 33.8 — two same-size grey
+ * discs about five pixels across, beside a live frontier at L* 96
+ * that flattens everything under it. 19.2 apart is not a gap. The
+ * room had to come from somewhere, because proved may not brighten
+ * (the ink inversion hands the light to the unproved while work is
+ * live), so it comes from below: shelved drops to residue ink, L*
+ * 23.8, 29.2 under the proved mass. `sky.test.ts` holds the floor —
+ * an axis nobody measures is an axis that drifts back.
+ *
+ * (A shell for shelved was tried the same day and the owner turned it
+ * down — "just make it darker". The hollow mark stays what it was
+ * before: closed, not parked.)
  */
 
 export interface StarMark {
@@ -124,13 +124,16 @@ export function nodeStyle(g: Goal, hasLive: boolean): StarMark {
       return { fill: 'transparent', stroke: 'var(--color-warn)', glow: true, opacity: 1 }
     case 'frozen':
     case 'shelved':
-      // parked, not buried (owner, 2026-08-24) — a SHELL at mid ink.
-      // 0.65 (was 0.45 when it was a disc) pays back the ink an
-      // outline loses to its hole, so a far-zoom shelved star is
-      // exactly as present as it was while a near one is unmistakable.
-      // frozen parks identically (owner, same day): same story in the
-      // engine, same mark on the sky.
-      return { fill: 'transparent', stroke: 'var(--color-ink-dim)', glow: false, opacity: 0.65 }
+      // A DISC, and dark (owner, 2026-08-26, overruling the shell this
+      // briefly wore): "shelved shouldn't go hollow, just make it
+      // darker." So the separation from proved comes back to
+      // brightness — and this time it has to be a real gap, not the
+      // 19.2 the eye kept losing: residue ink at 0.5 lands on L* 23.8,
+      // 29.2 under the proved mass. Which means the reach for room is
+      // downward, into the space 08-24's "parked, not buried" was
+      // holding open; the trees stay readable, they just sit lower.
+      // frozen parks identically (owner, 08-24).
+      return { fill: 'var(--color-ink-faint)', stroke: 'var(--color-ink-faint)', glow: false, opacity: 0.5 }
     case 'disproved':
       // refuted (owner, 2026-08-24): a shell at residue weight — the
       // question closed without light coming home, so it never glows

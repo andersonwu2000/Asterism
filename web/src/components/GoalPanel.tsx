@@ -283,6 +283,14 @@ export default function GoalPanel({
                     .filter((s) => s.subgoal_count > 0)
                     .map((s) => {
                       const subs = s.subgoals ?? []
+                      // a route's children and a route's INPUTS are not
+                      // the same list: `reused` ones already existed and
+                      // this route only reaches for them (v44 link_kind).
+                      // Counting them as subgoals credited routes with
+                      // decompositions they never made — s25803 read as
+                      // "8 subgoals" having minted none of them.
+                      const minted = subs.filter((x) => !x.reused).length
+                      const cited = subs.length - minted
                       const multi = subs.length > 1
                       const unfolded = openRoutes.has(s.id)
                       const statusCls =
@@ -335,11 +343,23 @@ export default function GoalPanel({
                             >
                               <span className="text-ink-faint">s{s.id}</span>
                               {subs.length === 1 && (
-                                <span className="text-ink"> · {subs[0].slug}</span>
+                                <span className="text-ink">
+                                  {' '}· {subs[0].slug}
+                                  {subs[0].reused && (
+                                    <span className="text-ink-faint"> · reused</span>
+                                  )}
+                                </span>
                               )}
                               {multi && (
                                 <span className="text-ink-dim">
-                                  {' '}· {subs.length} subgoals
+                                  {minted > 0 && (
+                                    <>
+                                      {' '}· {minted} subgoal{minted === 1 ? '' : 's'}
+                                    </>
+                                  )}
+                                  {cited > 0 && (
+                                    <span className="text-ink-faint"> · {cited} reused</span>
+                                  )}
                                 </span>
                               )}
                               {subs.length === 0 && (
@@ -362,9 +382,16 @@ export default function GoalPanel({
                                   onMouseEnter={() => onHoverGoals?.([x.id])}
                                   onMouseLeave={() => onHoverGoals?.(null)}
                                   onClick={() => onSelectGoal?.(x.id)}
-                                  title="open this subgoal"
+                                  title={
+                                    x.reused
+                                      ? 'this route reaches for a goal that already existed — it did not create it'
+                                      : 'open this subgoal'
+                                  }
                                 >
                                   {x.slug}
+                                  {x.reused && (
+                                    <span className="text-ink-faint"> · reused</span>
+                                  )}
                                 </button>
                               ))}
                             </div>

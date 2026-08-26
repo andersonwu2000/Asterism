@@ -186,4 +186,74 @@ describe('layout edge cases', () => {
     const v = layoutConstellation(goals, [], [])
     expect(v.nodes.length).toBe(2)
   })
+
+  /*
+   * v44 `link_kind`. On union_closed's fin4_..._d_trace_type_catalog,
+   * SEVEN routes cite one lemma (#8781) and mint nothing: drawn as
+   * decomposition, that lemma grew seven solid limbs fanning across
+   * the sky AND got shoved below every citer by the layering pass —
+   * exactly the failure the citation loop's own comment forbids ("a
+   * heavily cited def would otherwise drag half the sky under
+   * itself"). The engine has filtered on link_kind since v44; only the
+   * read side was flattening it.
+   */
+  it('a reused lemma is a cross-link, not a branch of the route that cites it', () => {
+    const goals = [goal(1, { origin: 'root' }), goal(2), goal(3)]
+    const strategies = [
+      { id: 10, goal_id: 1, status: 'proposed' },
+      { id: 11, goal_id: 2, status: 'proposed' },
+    ] as Strategy[]
+    const edges = [
+      { strategy_id: 10, subgoal_id: 2, link_kind: 'minted' },
+      { strategy_id: 10, subgoal_id: 3, link_kind: 'minted' },
+      // route 11 hangs off goal 2 and only REUSES goal 3
+      { strategy_id: 11, subgoal_id: 3, link_kind: 'cited' },
+    ] as StrategyEdge[]
+    const v = layoutConstellation(goals, strategies, edges)
+    const reuse = v.edges.filter((e) => e.from === 3 && e.to === 2)
+    expect(reuse.length).toBe(1)
+    expect(reuse[0].kind).toBe('citation')
+    // ...and it keeps the route's own id, so the thread is openable
+    expect(reuse[0].strategyId).toBe(11)
+    // the citing route contributes no bundle: it minted nothing
+    expect(v.bundles.map((b) => b.strategyId)).toEqual([10])
+  })
+
+  it('does not push a reused lemma below the routes that reach for it', () => {
+    // the layering pass walks hierarchy only; a cited link must not
+    // add a parent, or one lemma sinks under every citer
+    const goals = [goal(1, { origin: 'root' }), goal(2), goal(3), goal(4)]
+    const strategies = [
+      { id: 10, goal_id: 1, status: 'proposed' },
+      { id: 11, goal_id: 2, status: 'proposed' },
+      { id: 12, goal_id: 4, status: 'proposed' },
+    ] as Strategy[]
+    const cited = layoutConstellation(goals, strategies, [
+      { strategy_id: 10, subgoal_id: 2, link_kind: 'minted' },
+      { strategy_id: 10, subgoal_id: 3, link_kind: 'minted' },
+      { strategy_id: 10, subgoal_id: 4, link_kind: 'minted' },
+      { strategy_id: 11, subgoal_id: 3, link_kind: 'cited' },
+      { strategy_id: 12, subgoal_id: 3, link_kind: 'cited' },
+    ] as StrategyEdge[])
+    const bare = layoutConstellation(goals, strategies, [
+      { strategy_id: 10, subgoal_id: 2, link_kind: 'minted' },
+      { strategy_id: 10, subgoal_id: 3, link_kind: 'minted' },
+      { strategy_id: 10, subgoal_id: 4, link_kind: 'minted' },
+    ] as StrategyEdge[])
+    const y = (v: ConstellationLayout, id: number) =>
+      v.nodes.find((n) => n.goal.id === id)!.y
+    expect(y(cited, 3)).toBe(y(bare, 3))
+    expect(y(cited, 3)).toBe(y(cited, 2))
+  })
+
+  it('reads a pre-v44 edge (no link_kind) as minted', () => {
+    const goals = [goal(1, { origin: 'root' }), goal(2), goal(3)]
+    const strategies = [{ id: 10, goal_id: 1, status: 'proposed' }] as Strategy[]
+    const v = layoutConstellation(goals, strategies, [
+      { strategy_id: 10, subgoal_id: 2 },
+      { strategy_id: 10, subgoal_id: 3 },
+    ] as StrategyEdge[])
+    expect(v.bundles.length).toBe(1)
+    expect(v.edges.every((e) => e.kind === 'strategy')).toBe(true)
+  })
 })

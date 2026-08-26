@@ -14,14 +14,18 @@ import type { Goal, GoalStatus } from './types'
 /*
  * The sky's ink law, made mechanical.
  *
- * Twice now the owner has read shelved and proved as the same dot, and
- * twice the answer was "nudge the brightness" — 45% -> 55% on
- * 2026-08-24, and still not enough. The reason is measurable: the two
- * were separated on ONE axis, in a range where that axis has no
- * headroom left (proved may not brighten while work is live, shelved
- * may not dim below "parked, not buried"). So the law is no longer a
- * paragraph to remember. It is this file: a status that carries a
- * proof and one that does not may never differ by brightness alone.
+ * Twice the owner read shelved and proved as the same dot, and twice
+ * the answer was "nudge the brightness" — 45% -> 55% on 2026-08-24,
+ * and still not enough. Eyeballing a ratio is what kept failing, so
+ * the law stopped being a paragraph to remember: a status that carries
+ * a proof and one that does not may never differ by brightness alone,
+ * and "differ" is a MEASURED distance on the ground the sky is painted
+ * on, not a number that looked bigger in a diff.
+ *
+ * The axis stayed brightness by the owner's call (2026-08-26: shelved
+ * gets darker, not hollow), which is exactly why the floor below has
+ * to be mechanical — the same knob that drifted here twice is still
+ * the one holding the two apart.
  */
 
 // The palette is READ, not restated: a test that hardcodes #f4f5f8
@@ -170,12 +174,16 @@ describe('star marks', () => {
     }
   })
 
-  it('draws a body only where light is coming or came home', () => {
+  it('draws a shell only where the question closed with no light', () => {
     for (const hasLive of [true, false]) {
       expect(isBody(nodeStyle(goal('proved'), hasLive).fill)).toBe(true)
       expect(isBody(nodeStyle(goal('open'), hasLive).fill)).toBe(true)
       expect(isBody(nodeStyle(goal('attempting'), hasLive).fill)).toBe(true)
-      for (const s of ['shelved', 'frozen', 'disproved', 'dead'] as const) {
+      // parked is not closed (owner, 2026-08-26): shelved and frozen
+      // stay discs and buy their distance in brightness instead
+      expect(isBody(nodeStyle(goal('shelved'), hasLive).fill)).toBe(true)
+      expect(isBody(nodeStyle(goal('frozen'), hasLive).fill)).toBe(true)
+      for (const s of ['disproved', 'dead'] as const) {
         expect(
           isBody(nodeStyle(goal(s), hasLive).fill),
           `${s} must be a shell`,
@@ -188,15 +196,28 @@ describe('star marks', () => {
     expect(nodeStyle(goal('frozen'), true)).toEqual(nodeStyle(goal('shelved'), true))
   })
 
-  it('orders the shells by how open the question still is', () => {
-    // parked > refuted > abandoned: shelved can be picked up again,
-    // disproved is an answer, dead is residue
+  it('keeps dead the floor of the sky', () => {
+    // abandoned is the faintest thing drawn — residue, and still never
+    // hidden (the sky is always complete)
     const L = (s: GoalStatus): number => {
       const m = nodeStyle(goal(s), true)
       return lightness(m.stroke, m.opacity)
     }
-    expect(L('shelved')).toBeGreaterThan(L('disproved'))
-    expect(L('disproved')).toBeGreaterThan(L('dead'))
+    for (const s of ALL) {
+      if (s === 'dead') continue
+      expect(L('dead'), `dead must sit under ${s}`).toBeLessThan(L(s))
+    }
+  })
+
+  it('keeps shelved readable — parked, not buried', () => {
+    // the gap from proved comes out of shelved's side, so this is the
+    // floor that stops "darker" from sliding into "gone": it stays
+    // clearly above the abandoned residue
+    const L = (s: GoalStatus): number => {
+      const m = nodeStyle(goal(s), true)
+      return lightness(m.stroke, m.opacity)
+    }
+    expect(L('shelved')).toBeGreaterThan(L('dead') + 6)
   })
 
   it('lets a refuted star glow in no sky', () => {
