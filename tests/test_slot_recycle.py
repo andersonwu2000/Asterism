@@ -206,21 +206,46 @@ def test_await_worker_exit_semantics(gw, monkeypatch):
     assert gw._await_worker_exit("file:///s0.lean", timeout=0.4) is False
 
 
-def test_midlease_threshold_targets_residue_not_live_sets(gw, monkeypatch):
-    """3x the recycle line: the heaviest measured single-content live
-    set is ~2.2 GB, so restarting below ~4.5 GB rebuilds what it just
-    freed. Env override is absolute."""
-    monkeypatch.delenv("ASTERISM_MIDLEASE_REWARM_MB", raising=False)
-    assert gw._midlease_rewarm_mb() == int(
-        gw.SLOT_RECYCLE_MB_DEFAULT * gw._MIDLEASE_REWARM_FACTOR)
-    monkeypatch.setenv("ASTERISM_MIDLEASE_REWARM_MB", "6000")
-    assert gw._midlease_rewarm_mb() == 6000
+def test_midlease_residue_is_baseline_relative(gw, monkeypatch):
+    """Owner insight 2026-08-26: fat is classified by WHEN it grew.
+    The first return after a content lands MEASURES (never judges);
+    growth beyond that baseline is residue; a monster whose baseline
+    IS 5 GB can never churn the rewarm loop the absolute threshold
+    churned (600s-wall pin, 2026-08-26)."""
+    started: list = []
+    reading = {"mb": 5000}
+    monkeypatch.setattr(gw.threading, "Thread",
+                        lambda **kw: types.SimpleNamespace(
+                            start=lambda: started.append(kw["name"])))
+    monkeypatch.setattr(gw, "_slot_private_mb_cached",
+                        lambda: {0: reading["mb"]})
+    monkeypatch.setattr(gw._state, "backend", object())
+    meta = types.SimpleNamespace(pipeline_id="p1")
+    s = _slot(gw, claimed="p1")
+    s.content_pipeline_id = "p1"
+    gw._maybe_kick_midlease_rewarm(s, meta)      # first sight: baseline
+    assert s.content_baseline_mb == 5000 and not started
+    reading["mb"] = 5100                          # monster stays monster
+    gw._maybe_kick_midlease_rewarm(s, meta)
+    assert not started, "own-need weight must never trigger"
+    reading["mb"] = 5000 + gw._midlease_residue_mb() + 1   # real residue
+    gw._maybe_kick_midlease_rewarm(s, meta)
+    assert started and s.rewarming is True
+    # the allowance derives from the recycle knob (one fact, one home)
+    assert gw._midlease_residue_mb() == int(
+        gw.SLOT_RECYCLE_MB_DEFAULT * gw._MIDLEASE_RESIDUE_FACTOR)
+    # content change resets the judgment to a fresh measurement
+    started.clear()
+    s.rewarming = False
+    s.content_pipeline_id = "p2"
+    meta2 = types.SimpleNamespace(pipeline_id="p2")
+    gw._maybe_kick_midlease_rewarm(s, meta2)
+    assert not started and s.content_baseline_mb == reading["mb"]
+    assert s.baseline_for == "p2"
 
 
 def test_midlease_kick_guards(gw, monkeypatch):
-    """No probe metas, no cooldown violations, no double-flight — and a
-    fat idle slot after a tool return DOES kick the background
-    thread."""
+    """No probe metas, no cooldown violations, no double-flight."""
     import time as _time
     started: list = []
     monkeypatch.setattr(gw.threading, "Thread",
@@ -230,6 +255,8 @@ def test_midlease_kick_guards(gw, monkeypatch):
     monkeypatch.setattr(gw._state, "backend", object())
     meta = types.SimpleNamespace(pipeline_id="p1")
     s = _slot(gw, claimed="p1")
+    s.content_pipeline_id = "p1"
+    s.content_baseline_mb, s.baseline_for = 400, "p1"   # residue: 9599
     gw._maybe_kick_midlease_rewarm(s, None)          # borrow: never
     assert not started
     s.rewarming = True
@@ -240,11 +267,7 @@ def test_midlease_kick_guards(gw, monkeypatch):
     gw._maybe_kick_midlease_rewarm(s, meta)          # cooldown
     assert not started
     s.rewarmed_at = 0.0
-    monkeypatch.setattr(gw, "_slot_private_mb_cached", lambda: {0: 900})
-    gw._maybe_kick_midlease_rewarm(s, meta)          # thin: no
-    assert not started and s.rewarming is False
-    monkeypatch.setattr(gw, "_slot_private_mb_cached", lambda: {0: 9999})
-    gw._maybe_kick_midlease_rewarm(s, meta)          # fat idle: KICK
+    gw._maybe_kick_midlease_rewarm(s, meta)          # residue: KICK
     assert started and s.rewarming is True
 
 
@@ -279,6 +302,8 @@ def test_midlease_rewarm_restores_content_after_a_real_death(
     assert called == ["content", "close", "await", "kill",
                       ("open", "MERGED")]
     assert s.content_pipeline_id == "p1" and s.rewarming is False
+    assert s.content_baseline_mb == 500 and s.baseline_for == "p1", \
+        "the fresh weight must become the new baseline (anti-churn)"
     assert "mid-lease rewarm" in capsys.readouterr().err
 
 

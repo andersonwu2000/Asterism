@@ -109,16 +109,24 @@ class WorkerSlot:
     # or extends the roster — when the target rises.
     closed: bool = False
     # Mid-lease rewarm (owner design 2026-08-26): a worker that grew
-    # far past the recycle threshold DURING a lease is restarted in the
-    # background right after a tool call returns (the agent is
+    # far past its content's own need DURING a lease is restarted in
+    # the background right after a tool call returns (the agent is
     # thinking; the rebuild overlaps that window). True while the
     # background rewarm holds the slot; acquires slide their deadline
     # and the wait is credited to the session's wall.
     rewarming: bool = False
-    # Cooldown stamp — a genuinely heavy content re-inflates right
-    # back, and re-warming it in a loop would burn elab lanes for
-    # nothing.
+    # Short cooldown stamp — bridges the reading cache's TTL right
+    # after a rewarm (the stale fat reading must not re-trigger).
     rewarmed_at: float = 0.0
+    # The content's OWN weight (owner insight 2026-08-26): fat that was
+    # there the first time this content ran is the content's need; only
+    # growth BEYOND it across later calls is residue worth a restart.
+    # Measured at the first tool return after the content lands and
+    # re-measured fresh after every rewarm; reset when the content
+    # changes hands. Absolute thresholds judged the monster certs by
+    # their (legitimate) size and churned — the delta cannot.
+    content_baseline_mb: "int | None" = None
+    baseline_for: "str | None" = None
 
 
 # ─── Session metadata ────────────────────────────────────────
@@ -1348,23 +1356,29 @@ def _shed_slot_if_over_target(slot: WorkerSlot) -> bool:
         slot.lock.release()
 
 
-#: Mid-lease rewarm threshold = this factor x the recycle threshold.
-#: Sized to target RESIDUE, not live sets: the heaviest measured
-#: single-content live set is ~2.2 GB (a decide-heavy certificate), so
-#: below ~3x the 1500 MB recycle line a restart would rebuild roughly
-#: what it freed. Above it the weight is dominated by dead heap from
-#: PREVIOUS contents (measured 2026-08-26: a 4.2 GB worker holding a
-#: one-line warmup document; a 13.7 GB worker — impossible as one
-#: elaboration under the 8 GB job cap).
-_MIDLEASE_REWARM_FACTOR = 3.0
-_MIDLEASE_COOLDOWN_SEC = 300.0
+#: Residue allowance factor: rewarm when the worker sits MORE than
+#: this many recycle-thresholds above its content's own measured need
+#: (the baseline). Derived, not pinned (one fact, one home): the
+#: recycle threshold is the framework's declared "dead heap worth a
+#: FREE restart at release"; a mid-lease restart can block a tool
+#: call, so it demands twice the loot. Absolute thresholds judged the
+#: union_closed decide-monsters by their legitimate 5 GB size and
+#: churned a rewarm loop on them (one pass hit the 600s elab wall and
+#: pinned the slot for 10 minutes, 2026-08-26); the baseline delta
+#: cannot make that mistake.
+_MIDLEASE_RESIDUE_FACTOR = 2.0
+#: Short — only bridges the reading cache's TTL after a rewarm so the
+#: stale fat reading cannot re-trigger before the fresh baseline is
+#: visible (the baseline reset is the real anti-churn mechanism).
+_MIDLEASE_COOLDOWN_SEC = 60.0
 
 
-def _midlease_rewarm_mb() -> int:
-    """Absolute env override, else factor x the recycle threshold."""
+def _midlease_residue_mb() -> int:
+    """Env absolute override, else factor x the recycle threshold
+    (same knob the release-time recycle and the ledger price read)."""
     import os as _os
     try:
-        v = int(_os.environ.get("ASTERISM_MIDLEASE_REWARM_MB", ""))
+        v = int(_os.environ.get("ASTERISM_MIDLEASE_RESIDUE_MB", ""))
         if v > 0:
             return v
     except ValueError:
@@ -1377,7 +1391,7 @@ def _midlease_rewarm_mb() -> int:
                               env_var="ASTERISM_SLOT_RECYCLE_MB", cast=int))
     except Exception:  # noqa: BLE001 — policy knob must not break tools
         pass
-    return int(max(1, cap_mb) * _MIDLEASE_REWARM_FACTOR)
+    return int(max(1, cap_mb) * _MIDLEASE_RESIDUE_FACTOR)
 
 
 def _maybe_kick_midlease_rewarm(slot: WorkerSlot, meta) -> None:
@@ -1388,7 +1402,12 @@ def _maybe_kick_midlease_rewarm(slot: WorkerSlot, meta) -> None:
     where nobody is waiting. Recycle-at-release cannot reach a fat
     worker mid-lease; this can, and it reuses recycle's proven kill
     (`_await_worker_exit` + hard kill — a reattach would keep the old
-    heap)."""
+    heap).
+
+    The judgment is BASELINE-RELATIVE (owner insight 2026-08-26: fat
+    is classified by WHEN it grew): weight at the content's first
+    return is the content's own need; only growth beyond it across
+    later calls is residue. See `WorkerSlot.content_baseline_mb`."""
     if meta is None or _state.backend is None:
         return
     if slot.rewarming or slot.closed or slot.reserved:
@@ -1396,7 +1415,16 @@ def _maybe_kick_midlease_rewarm(slot: WorkerSlot, meta) -> None:
     if time.monotonic() - slot.rewarmed_at < _MIDLEASE_COOLDOWN_SEC:
         return
     mb = _slot_private_mb_cached().get(slot.slot_id)
-    if mb is None or mb < _midlease_rewarm_mb():
+    if mb is None:
+        return
+    if slot.baseline_for != slot.content_pipeline_id \
+            or slot.content_baseline_mb is None:
+        # First return since this content landed: this weight IS the
+        # content's own need. Measure, never judge.
+        slot.content_baseline_mb = mb
+        slot.baseline_for = slot.content_pipeline_id
+        return
+    if mb - slot.content_baseline_mb < _midlease_residue_mb():
         return
     slot.rewarming = True
     threading.Thread(target=_midlease_rewarm_run, args=(slot, meta, mb),
@@ -1451,10 +1479,16 @@ def _midlease_rewarm_run(slot: WorkerSlot, meta, before_mb: int) -> None:
                     pass
                 raise
             after = _slot_private_mb().get(slot.slot_id)
+            # The fresh worker's weight with this content = the new
+            # baseline (the anti-churn mechanism: the next delta starts
+            # from here, so a content that re-inflates to its own need
+            # can never re-trigger).
+            slot.content_baseline_mb = after
+            slot.baseline_for = slot.content_pipeline_id
             print(f"[gateway] slot {slot.slot_id} mid-lease rewarm in "
                   f"{time.perf_counter() - t0:.1f}s — {before_mb} MB -> "
                   f"{after if after is not None else '?'} MB (content "
-                  f"restored for {meta.pipeline_id[:8]})",
+                  f"restored for {meta.pipeline_id[:8]}; baseline reset)",
                   file=sys.stderr, flush=True)
         finally:
             slot.lock.release()
