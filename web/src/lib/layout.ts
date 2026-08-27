@@ -800,20 +800,31 @@ function packOnce(
   // clothesline — grid them into compact beds instead. Main-ish ones
   // (detached seeds, bare claims) bed in region 0; citation-linked
   // ones bed in region 1 ordered under their citers.
+  //
+  // HALF a cell each way, not a whole one (owner, looking at
+  // union_closed: "the singleton placement has room, and it is good
+  // value"). A lone star has no children to make room for and no
+  // descent to leave air under, yet each was taking a full tree cell:
+  // 698 of them on that sky became beds covering 9% of a plate they
+  // also made 23% bigger — the largest thing on the page and the one
+  // carrying the least information. Half-pitch is the tightest the
+  // sky's own de-overlap law allows (min gap X_GAP/2) and takes a bed
+  // to a QUARTER of its area.
+  const SINGLE_PITCH = 0.5
   const gridComp = (ids: number[]) => {
     if (ids.length === 0) return
-    const perRow = Math.max(3, Math.ceil(Math.sqrt(ids.length * 2.2)))
+    const perRow = Math.max(3, Math.ceil(Math.sqrt(ids.length * 2.2) / SINGLE_PITCH))
     const start = slot
     ids.forEach((id, i) => {
-      xSlot.set(id, start + (i % perRow))
-      layer.set(id, Math.floor(i / perRow))
+      xSlot.set(id, start + (i % perRow) * SINGLE_PITCH)
+      layer.set(id, Math.floor(i / perRow) * SINGLE_PITCH)
     })
-    slot = start + Math.min(ids.length, perRow)
+    slot = start + Math.min(ids.length, perRow) * SINGLE_PITCH
     treeInfos.push({
       members: ids,
       start,
       end: slot - 1,
-      depth: Math.floor((ids.length - 1) / perRow),
+      depth: Math.floor((ids.length - 1) / perRow) * SINGLE_PITCH,
     })
     slot += 0.6
   }
@@ -1174,17 +1185,26 @@ function packOnce(
   // Truly unlinked forward work: a compact grid block, last.
   const singles = unlinkedSingles
   if (singles.length > 0) {
-    const perRow = Math.max(4, Math.ceil(Math.sqrt(singles.length * 2.6)))
+    // the bed pitch, and a row length that follows the width the trees
+    // already settled on — the block stops setting the plate's width
+    // and becomes a strip under it
+    let treeMax = 0
+    const lone0 = new Set(singletonIds)
+    for (const [id, v] of localSlot) if (!lone0.has(id)) treeMax = Math.max(treeMax, v)
+    const perRow =
+      treeMax > 0
+        ? Math.max(4, Math.floor(treeMax / SINGLE_PITCH) + 1)
+        : Math.max(4, Math.ceil(Math.sqrt(singles.length * 2.6) / SINGLE_PITCH))
     const sBand = bandUsed > 0 ? band + 1 : band
     if (horizonBand === null) horizonBand = sBand
     singles.forEach((id, i) => {
       bandOfNode.set(id, sBand)
-      localSlot.set(id, i % perRow)
-      layer.set(id, Math.floor(i / perRow))
+      localSlot.set(id, (i % perRow) * SINGLE_PITCH)
+      layer.set(id, Math.floor(i / perRow) * SINGLE_PITCH)
     })
     bandDepth[sBand] = Math.max(
       bandDepth[sBand] ?? 0,
-      Math.floor((singles.length - 1) / perRow),
+      Math.floor((singles.length - 1) / perRow) * SINGLE_PITCH,
     )
   }
 
@@ -1245,8 +1265,13 @@ function packOnce(
   // assign/pass-2/band-optimiser moves are rigid or deliberate, so the
   // relative offsets here are the intended family shapes
   const designSlot = new Map(localSlot)
+  // A lone star sits the sweeps out: they exist to align a node with
+  // its parent and its children, and it has neither — the only thing
+  // the unit de-overlap would do to a bed is push it back to full
+  // pitch, undoing the packing above.
+  const loneSet = new Set(singletonIds)
   for (const ids of rows.values()) {
-    solveRow(ids, (id) => localSlot.get(id)!, () => 1)
+    solveRow(ids.filter((id) => !loneSet.has(id)), (id) => localSlot.get(id)!, () => 1)
   }
   // ---- alignment sweeps (owner: optimise the ARRANGEMENT, not the
   // aftermath). The one-shot de-overlap displaces each row's nodes by
@@ -1263,8 +1288,9 @@ function packOnce(
     const rowsOrdered = [...rows.entries()]
       .map(([k, ids]) => {
         const [b, l] = k.split(':').map(Number)
-        return { y: (bandYBase[b] ?? 0) + l, ids }
+        return { y: (bandYBase[b] ?? 0) + l, ids: ids.filter((id) => !loneSet.has(id)) }
       })
+      .filter((r) => r.ids.length > 0)
       .sort((a, b) => a.y - b.y)
     const TETHER = 0.15
     // desire = follow the relative offset the ARRANGEMENT designed,

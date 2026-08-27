@@ -115,9 +115,45 @@ function metric(d, lay) {
   return { bb, bf, ff, len, score: bb }
 }
 
+// PLACEMENT, which is what the sky is judged on now that the arcs are
+// dotted: how big the plate is, whether it takes the page's shape, and
+// how much of it one block of unlinked singletons is eating. `blk` is
+// that block's share of the plate area — a slab is the shape a reader
+// notices first and the one carrying the least information.
+function plate(lay) {
+  const w = Math.round(lay.width)
+  const h = Math.round(lay.height)
+  // A LONE STAR is one no route reaches: no hierarchy edge, no bundle.
+  // They are bedded in grids, and those beds are the biggest and least
+  // informative thing on a big plate — `bed` is the share of the plate
+  // their bounding boxes cover. The first version of this read
+  // `singlesBlock`, which is only the UNLINKED handful, and reported 0
+  // on the very sky whose beds fill a quarter of the page.
+  const tied = new Set()
+  for (const e of lay.edges) {
+    if (e.kind === 'citation' || e.kind === 'alias') continue
+    tied.add(e.from)
+    tied.add(e.to)
+  }
+  for (const b of lay.bundles) {
+    tied.add(b.parentId)
+    for (const c of b.children) tied.add(c)
+  }
+  const lone = lay.nodes.filter((n) => !tied.has(n.goal.id))
+  let bed = 0
+  if (lone.length > 1) {
+    const xs = lone.map((n) => n.x)
+    const ys = lone.map((n) => n.y)
+    const a = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys))
+    bed = Math.round((a / (w * h)) * 100)
+  }
+  return { w, h, ratio: Math.round((w / h) * 100) / 100, lone: lone.length, bedPct: bed }
+}
+
 const problems = process.argv.slice(2).length > 0 ? process.argv.slice(2) : DEFAULT_PROBLEMS
 for (const p of problems) {
   const d = await fetch(`${SERVE}/api/problems/${encodeURIComponent(p)}`).then((r) => r.json())
-  const lay = layoutConstellation(d.goals, d.strategies, d.strategy_edges, d.anchor_edges, d.citation_edges)
-  console.log(p.padEnd(42), JSON.stringify(metric(d, lay)))
+  const aspect = Number(process.env.SKY_ASPECT ?? 16 / 9)
+  const lay = layoutConstellation(d.goals, d.strategies, d.strategy_edges, d.anchor_edges, d.citation_edges, aspect)
+  console.log(p.padEnd(42), JSON.stringify({ ...metric(d, lay), ...plate(lay) }))
 }

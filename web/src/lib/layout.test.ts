@@ -476,3 +476,66 @@ describe('the plate takes the shape it is asked for', () => {
     }
   })
 })
+
+/*
+ * Lone stars — the ones no route reaches — are bedded in grids, and on
+ * a big sky those beds are the largest thing on the plate and the one
+ * carrying the least information (union_closed: 698 of them covering
+ * 9% of the page, and making the page 23% bigger). A lone star has no
+ * children to make room for and no descent to leave air under, so it
+ * gets HALF a cell each way — the tightest the de-overlap law allows.
+ */
+describe('a lone star gets half a cell, not a whole one', () => {
+  const lone = (n: number) =>
+    Array.from({ length: n }, (_, i) => goal(i + 1, { origin: 'forward' }))
+
+  it('beds them at half pitch, in both directions', () => {
+    const v = layoutConstellation(lone(40), [], [])
+    expect(v.nodes.length).toBe(40)
+    const rows = new Map<number, number[]>()
+    for (const n of v.nodes) rows.set(n.y, [...(rows.get(n.y) ?? []), n.x])
+    const gaps: number[] = []
+    for (const xs of rows.values()) {
+      xs.sort((a, b) => a - b)
+      for (let i = 1; i < xs.length; i++) gaps.push(xs[i] - xs[i - 1])
+    }
+    expect(gaps.length).toBeGreaterThan(0)
+    // every neighbour a half cell apart — and never TIGHTER than the
+    // sky's own minimum, which is what makes half the floor
+    for (const g of gaps) expect(g).toBeCloseTo(X_GAP / 2, 6)
+    const ys = [...rows.keys()].sort((a, b) => a - b)
+    expect(ys.length).toBeGreaterThan(1)
+    for (let i = 1; i < ys.length; i++) expect(ys[i] - ys[i - 1]).toBeCloseTo(60, 6)
+  })
+
+  it('a bed survives the alignment sweeps', () => {
+    // the sweeps' unit de-overlap would push a bed back to full pitch;
+    // a lone star has no family for them to align it with, so it sits
+    // them out. A tree in the same sky must still be swept.
+    const goals = [
+      goal(900, { origin: 'root' }),
+      goal(901),
+      goal(902),
+      ...lone(30),
+    ]
+    const v = layoutConstellation(
+      goals,
+      [{ id: 10, goal_id: 900, status: 'proposed' }] as Strategy[],
+      [
+        { strategy_id: 10, subgoal_id: 901 },
+        { strategy_id: 10, subgoal_id: 902 },
+      ] as StrategyEdge[],
+    )
+    const byId = new Map(v.nodes.map((n) => [n.goal.id, n]))
+    const bedded = [...Array(30).keys()].map((i) => byId.get(i + 1)!).filter(Boolean)
+    const rows = new Map<number, number[]>()
+    for (const n of bedded) rows.set(n.y, [...(rows.get(n.y) ?? []), n.x])
+    let half = 0
+    for (const xs of rows.values()) {
+      xs.sort((a, b) => a - b)
+      for (let i = 1; i < xs.length; i++)
+        if (Math.abs(xs[i] - xs[i - 1] - X_GAP / 2) < 1e-6) half++
+    }
+    expect(half, 'the bed was shoved back to full pitch').toBeGreaterThan(0)
+  })
+})
