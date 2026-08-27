@@ -206,3 +206,47 @@ test('new-problem: Defs and Root wear the shared Lean block', async ({ page }) =
   // nothing to report yet, so no InfoView and no orphaned goal panel
   await expect(page.getByText('goal at cursor')).toHaveCount(0)
 })
+
+test('constellation: the first view IS the fit', async ({ page }) => {
+  // The plate is laid out at a default aspect, measured against the
+  // page, and re-laid out at the real one — and the camera went on
+  // framing the first of those two until `fit` was pressed, so opening
+  // a sky and pressing fit gave two different pictures (owner,
+  // 2026-08-27).
+  await page.goto('/')
+  const firstRow = page.locator('tbody tr[data-kind="problem"]').first()
+  const populated = await firstRow
+    .waitFor({ timeout: 5000 })
+    .then(() => true)
+    .catch(() => false)
+  test.skip(!populated, 'empty workspace')
+  await firstRow.locator('td').first().click()
+  const cam = page.locator('main svg.constellation > g[transform]').first()
+  await cam.waitFor({ timeout: 10000 })
+
+  // let the opening settle (the camera glides), then read it
+  const settled = async () => {
+    let prev = ''
+    for (let i = 0; i < 30; i++) {
+      const t = (await cam.getAttribute('transform')) ?? ''
+      if (t !== '' && t === prev) return t
+      prev = t
+      await page.waitForTimeout(120)
+    }
+    return prev
+  }
+  const opened = await settled()
+  expect(opened).not.toBe('')
+
+  await page.getByRole('button', { name: 'fit', exact: true }).click()
+  const fitted = await settled()
+
+  // same camera, to the pixel the renderer rounds to
+  const nums = (t: string) => (t.match(/-?\d+(\.\d+)?/g) ?? []).map(Number)
+  const a = nums(opened)
+  const b = nums(fitted)
+  expect(a.length, `unreadable transform ${opened}`).toBeGreaterThan(0)
+  expect(b.length).toBe(a.length)
+  for (let i = 0; i < a.length; i++)
+    expect(Math.abs(a[i] - b[i]), `opened ${opened} vs fitted ${fitted}`).toBeLessThan(1)
+})

@@ -355,8 +355,10 @@ export default function Constellation({
   const containerRef = cam.containerRef
   // Tell the packer the shape of the page it is packing into. Declared
   // as state far above so the layout memo can read it; measured here,
-  // where the container exists.
-  useEffect(() => {
+  // where the container exists. BEFORE paint (`useLayoutEffect`): the
+  // first measurement changes the plate, and a plate that changes
+  // after paint is one the reader watches jump.
+  useLayoutEffect(() => {
     const el = containerRef.current
     if (!el) return
     const read = () => {
