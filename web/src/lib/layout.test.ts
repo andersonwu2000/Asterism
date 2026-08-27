@@ -415,3 +415,43 @@ describe('the blink follows the work, not the status', () => {
     }
   })
 })
+
+/*
+ * The plate aims at the page it is drawn on (owner, 2026-08-27): the
+ * band packer used to target a hard-coded 16:9, so a wide window kept
+ * the sky in a fixed block with dead page either side of it.
+ */
+describe('the plate takes the shape it is asked for', () => {
+  const at = (f: Fixture, aspect: number) =>
+    layoutConstellation(
+      f.goals, f.strategies, f.strategy_edges, f.anchor_edges, f.citation_edges, aspect)
+
+  it('packs wider when told the page is wider', () => {
+    let widened = 0
+    for (const [name, f] of Object.entries(FIXTURES)) {
+      const narrow = at(f, 1)
+      const wide = at(f, 3)
+      const rn = narrow.width / narrow.height
+      const rw = wide.width / wide.height
+      // never NARROWER for a wider page…
+      expect(rw, `${name}: ${rn.toFixed(2)} -> ${rw.toFixed(2)}`).toBeGreaterThanOrEqual(rn)
+      if (rw > rn) widened++
+      // …and a legal sky at either end
+      checkLaws(narrow, f)
+      checkLaws(wide, f)
+    }
+    // a5_cmp is 36 goals: its band hits the 16-slot floor at every
+    // aspect, so it CANNOT widen — which is correct, and why this is
+    // counted rather than demanded of each
+    expect(widened, 'no fixture widened at all').toBeGreaterThan(0)
+  })
+
+  it('leaves the old 16:9 as the default, so an unaware caller is unmoved', () => {
+    for (const f of Object.values(FIXTURES)) {
+      const def = run(f)
+      const same = at(f, 16 / 9)
+      expect(same.width).toBe(def.width)
+      expect(same.height).toBe(def.height)
+    }
+  })
+})

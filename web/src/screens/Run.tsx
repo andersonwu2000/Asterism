@@ -1042,8 +1042,13 @@ export default function Run({
               plan usage
             </span>
           </div>
+          {/* Two seated backends read SIDE BY SIDE (owner, 2026-08-27):
+              stacked, each one column wide, the second sat below a
+              screenful of empty right-hand page. One block still takes
+              its own max-w-xl; a third wraps. */}
+          <div className="flex flex-wrap items-start gap-x-10 gap-y-5">
           {!showMeter ? null : (
-          <div className="flex max-w-xl flex-col gap-2">
+          <div className="flex min-w-[17rem] max-w-xl flex-1 basis-0 flex-col gap-2">
             <div className="text-[11px] text-ink-dim">
               <span title="read live from your Claude subscription's own usage endpoint">
                 {providerLabel('claude')}
@@ -1099,7 +1104,10 @@ export default function Run({
               (x) => x.seat,
             )
             return (
-              <div key={l.provider} className={`flex max-w-xl flex-col gap-2 ${showMeter ? 'mt-4' : ''}`}>
+              <div
+                key={l.provider}
+                className="flex min-w-[17rem] max-w-xl flex-1 basis-0 flex-col gap-2"
+              >
                 <div className="text-[11px] text-ink-dim">
                   {providerLabel(l.provider)}
                   {provSeats.length > 0 && (
@@ -1128,6 +1136,7 @@ export default function Run({
               </div>
             )
           })}
+          </div>
           {/* the remaining seated backends: nothing to ask and nothing
               written down, so the honest row is who rides them and why
               no meter — silence here read as "no other account is being

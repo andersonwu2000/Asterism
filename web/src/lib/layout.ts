@@ -154,6 +154,13 @@ export function layoutConstellation(
   strategyEdges: StrategyEdge[],
   anchorEdges: AnchorEdge[] = [],
   citationEdges: CitationEdge[] = [],
+  /** The plate's target width:height. It used to be a hard-coded 16:9,
+   * which is why the sky sat in a fixed-aspect block with dead page on
+   * either side of it (owner, 2026-08-27) — the band packer aims at
+   * this, so on a wide window it should be told the window's shape.
+   * Callers pass a QUANTIZED value: this run costs ~0.5s at 500 stars
+   * and must not re-run per pixel of a drag. */
+  aspect = 16 / 9,
 ): ConstellationLayout {
   const byId = new Map(goals.map((g) => [g.id, g]))
   const stratById = new Map(strategies.map((s) => [s.id, s]))
@@ -866,14 +873,14 @@ export function layoutConstellation(
   // ---- Band packing (the region break forces a new band) -------------
   // Band width from ACTUAL cell area, not worst-case depth: a shallow
   // 300-tree forest sized by its one deep tree became a 5:1 ribbon
-  // (residue_thm). Aim ≈16:9: W² = (16/9)·(Y/X)·area.
+  // (residue_thm). Aim at `aspect`: W² = aspect·(Y/X)·area.
   const cellArea = treeInfos.reduce(
     (a, t) => a + (t.end - t.start + 1) * (t.depth + 1.7),
     0,
   )
   const targetBand = Math.max(
     16,
-    Math.ceil(Math.sqrt(cellArea * (16 / 9) * (Y_GAP / X_GAP))),
+    Math.ceil(Math.sqrt(cellArea * aspect * (Y_GAP / X_GAP))),
   )
   const bandOfNode = new Map<number, number>()
   const localSlot = new Map<number, number>()

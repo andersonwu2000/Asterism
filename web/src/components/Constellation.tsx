@@ -154,6 +154,13 @@ export default function Constellation({
   const problemKey = goals.length > 0 ? goals[0].lean_path.split('/')[1] : ''
   const sceneKey = problemKey
 
+  // The plate aims at the WINDOW's shape, not a fixed 16:9 (owner,
+  // 2026-08-27: the sky sat in a fixed-aspect block with dead page on
+  // either side). Quantized to quarter-steps and clamped: the layout
+  // engine costs ~0.5s at 500 stars and must not re-run per pixel of a
+  // drag, and a freakish ratio would pack a ribbon.
+  const [plateAspect, setPlateAspect] = useState(16 / 9)
+
   // Layout is keyed on CONTENT, not poll identity: every 2s poll hands
   // back fresh arrays, and re-running the ~0.5s layout engine per tick
   // during a live run was pure waste (the sky rarely changes shape).
@@ -176,8 +183,8 @@ export default function Constellation({
       mix(`${e.strategy_id}>${e.subgoal_id}:${e.position}:${e.link_kind ?? 'minted'};`)
     for (const e of anchorEdges) mix(`${e.from}>${e.to};`)
     for (const e of citationEdges) mix(`${e.from}>${e.to};`)
-    return `${goals.length}|${strategies.length}|${strategyEdges.length}|${anchorEdges.length}|${citationEdges.length}#${a}`
-  }, [goals, strategies, strategyEdges, anchorEdges, citationEdges])
+    return `${goals.length}|${strategies.length}|${strategyEdges.length}|${anchorEdges.length}|${citationEdges.length}@${plateAspect}#${a}`
+  }, [goals, strategies, strategyEdges, anchorEdges, citationEdges, plateAspect])
   const layout = useMemo(() => {
     // Module-level LRU, not a per-mount ref: navigating Board → Problem
     // → Board → Problem re-paid the full engine run (0.5s at 500 stars,
@@ -191,7 +198,8 @@ export default function Constellation({
       layoutLRU.set(layoutSig, hit) // refresh recency
       return hit
     }
-    const v = layoutConstellation(goals, strategies, strategyEdges, anchorEdges, citationEdges)
+    const v = layoutConstellation(
+      goals, strategies, strategyEdges, anchorEdges, citationEdges, plateAspect)
     layoutLRU.set(layoutSig, v)
     if (layoutLRU.size > LAYOUT_LRU_MAX) {
       const oldest = layoutLRU.keys().next().value
@@ -345,6 +353,25 @@ export default function Constellation({
     },
   )
   const containerRef = cam.containerRef
+  // Tell the packer the shape of the page it is packing into. Declared
+  // as state far above so the layout memo can read it; measured here,
+  // where the container exists.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const read = () => {
+      const { width, height } = el.getBoundingClientRect()
+      if (width <= 0 || height <= 0) return
+      // quarter-steps, and never a ribbon: 0.5s of layout is too much
+      // to spend on a pixel of drag, and an extreme ratio packs one
+      const q = Math.min(4, Math.max(1, Math.round((width / height) * 4) / 4))
+      setPlateAspect((prev) => (prev === q ? prev : q))
+    }
+    read()
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [containerRef])
   const [hovered, setHovered] = useState<LayoutNode | null>(null)
   // the glide animator (an effect) needs the CURRENT selection, not
   // the one its closure captured at layout-change time
