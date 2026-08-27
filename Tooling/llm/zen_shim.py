@@ -604,6 +604,11 @@ def _to_chat(body: dict) -> dict:
                          else "user", "content": text})
     _flush_calls()
     chat: dict = {"stream": True, "messages": msgs,
+                  # Spec-strict upstreams stream NO usage chunk unless
+                  # asked for one (OpenAI `stream_options`) — the whole
+                  # call then books as 0 in / 0 out. Upstreams that
+                  # predate the field ignore unknown request keys.
+                  "stream_options": {"include_usage": True},
                   "reasoning": body.get("reasoning") or _reasoning_pin()}
     tools = [{"type": "function",
               "function": {"name": t.get("name"),
@@ -744,6 +749,22 @@ def _chat_stream_once(base: str, body: dict) -> dict:
         "reasoning_tokens")
     if _rt is not None:
         usage_out["output_tokens_details"] = {"reasoning_tokens": _rt}
+    # Same passthrough for the cached-prompt share. Chat dialects spell
+    # it prompt_tokens_details.cached_tokens (OpenAI) or
+    # prompt_cache_hit_tokens (DeepSeek); codex deserializes only the
+    # Responses-API spelling input_tokens_details.cached_tokens and
+    # re-emits it as token_count.cached_input_tokens, which is the sole
+    # field stream_parser feeds into spawn_usage.cache_read_tokens.
+    # Dropping it here made the zen channel cache-blind: 5,616 spawns
+    # recorded cache_read=0 against a Portal bill that was 78% cached
+    # (2026-08-27). Like prompt_tokens, the cached share stays INSIDE
+    # input_tokens — codex subtracts it downstream.
+    _ptd = usage.get("prompt_tokens_details")
+    _cached = _ptd.get("cached_tokens") if isinstance(_ptd, dict) else None
+    if _cached is None:
+        _cached = usage.get("prompt_cache_hit_tokens")
+    if _cached is not None:
+        usage_out["input_tokens_details"] = {"cached_tokens": int(_cached)}
     return {"id": "resp_" + uuid.uuid4().hex,
             "object": "response",
             "created_at": int(time.time()),
@@ -1067,6 +1088,28 @@ def _att_tag(attempt_dir: "str | None") -> str:
     return os.path.basename(attempt_dir)[:8] if attempt_dir else "-"
 
 
+def _sum_usage(agg: dict, usage: "dict | None") -> None:
+    """Accumulate one upstream call's usage into the turn's running
+    total. The shim loop consumes N upstream calls per codex turn and
+    forwards ONE response, so forwarding the last call's usage booked
+    1 call in N — the zen channel's "severe under-report" (2026-08-27:
+    a Portal bill spawn_usage could not see). Chat resends the whole
+    history every call, so the sum IS the provider's billing truth —
+    the overlap is billed, not double-counted."""
+    if not isinstance(usage, dict) or not usage:
+        return
+    for k in ("input_tokens", "output_tokens", "total_tokens"):
+        agg[k] = int(agg.get(k) or 0) + int(usage.get(k) or 0)
+    cached = (usage.get("input_tokens_details") or {}).get("cached_tokens")
+    if cached is not None:
+        d = agg.setdefault("input_tokens_details", {"cached_tokens": 0})
+        d["cached_tokens"] += int(cached)
+    rsn = (usage.get("output_tokens_details") or {}).get("reasoning_tokens")
+    if rsn is not None:
+        d = agg.setdefault("output_tokens_details", {"reasoning_tokens": 0})
+        d["reasoning_tokens"] += int(rsn)
+
+
 def _zen_call(body: dict, attempt_dir: "str | None" = None) -> dict:
     """Streaming POST walking `_UPSTREAM_PLAN`: transient failures
     (5xx / transport / empty stream / EITHER tier's 429) step to the
@@ -1288,6 +1331,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
         lookup_streak = 0
         turn_reasoning: "list[tuple[int, str]]" = []
         turn_trail: "list[str]" = []
+        turn_usage: dict = {}
         resp: dict = {}
         try:
             while True:
@@ -1297,6 +1341,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
                     return
                 t_call = time.time()
                 resp = _zen_call(body, attempt_dir)
+                _sum_usage(turn_usage, resp.get("usage"))
                 items = resp.get("output") or []
                 if not items:
                     # Degenerate empty response (no output array at
@@ -1310,6 +1355,7 @@ class Shim(http.server.BaseHTTPRequestHandler):
                         _log(f"[shim]   empty response — retry "
                               f"{extra+1}/2")
                         resp = _zen_call(body, attempt_dir)
+                        _sum_usage(turn_usage, resp.get("usage"))
                         items = resp.get("output") or []
                         if items:
                             break
@@ -1550,10 +1596,20 @@ class Shim(http.server.BaseHTTPRequestHandler):
                          {"type": "message", "role": "assistant",
                           "content": [{"type": "output_text",
                                        "text": trail_text}]})
+        if turn_usage:
+            # The turn's bill is the whole loop's sum (`_sum_usage`),
+            # not the final call's slice — install it in the response
+            # codex actually reads.
+            resp["usage"] = dict(turn_usage)
         usage = resp.get("usage") or {}
+        # in/cached/out on the ok-line is the reconciliation instrument
+        # against the provider's own portal bill — keep all three.
+        _cread = (usage.get("input_tokens_details") or {}).get(
+            "cached_tokens")
         _log(f"[shim] ok {time.time()-t0:.0f}s iters={iters} "
               f"tools={tool_calls_run} items={len(items)} "
-              f"usage={usage.get('output_tokens')}out")
+              f"usage={usage.get('input_tokens')}in/{_cread}cached/"
+              f"{usage.get('output_tokens')}out")
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")

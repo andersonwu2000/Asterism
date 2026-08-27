@@ -9,6 +9,7 @@ because a `Content-Type` lookup missed uvicorn's lowercase
 from __future__ import annotations
 
 import io
+import json
 import urllib.request
 
 import pytest
@@ -941,6 +942,85 @@ def test_zen_leg_surfaces_reasoning_as_a_responses_item(
         {"model": "x-preview-f-free", "input": []})
     assert out2["output"][0]["type"] == "message"
     assert "output_tokens_details" not in out2["usage"]
+
+
+def test_zen_leg_carries_the_cached_prompt_share(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The chat->responses usage synth used to drop the upstream's
+    cached-tokens field, and codex's token_count is the ONLY path into
+    spawn_usage.cache_read_tokens — 5,616 zen spawns booked cache_read=0
+    against a Portal bill that was 78% cached (2026-08-27). The shim
+    must ask for stream usage (spec-strict upstreams send none
+    unrequested) and forward the cached share in the one spelling codex
+    deserializes: input_tokens_details.cached_tokens."""
+    captured: dict = {}
+
+    def serve(sse: bytes):
+        def fake_urlopen(req, timeout=0):
+            captured["body"] = json.loads(req.data)
+            return _FakeResponse(sse, {})
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    monkeypatch.setitem(zen_shim._KEY_CACHE, "OPENCODE_ZEN_API_KEY", "k")
+    # OpenAI chat spelling: prompt_tokens_details.cached_tokens
+    serve(b'data: {"choices":[{"delta":{"content":"a"}}]}\n'
+          b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+          b'"usage":{"prompt_tokens":100,"completion_tokens":3,'
+          b'"prompt_tokens_details":{"cached_tokens":78}}}\n'
+          b'data: [DONE]\n')
+    out = zen_shim._stream_once(
+        "https://opencode.ai/zen/v1",
+        {"model": "x-preview-f-free", "input": []})
+    assert captured["body"]["stream_options"] == {"include_usage": True}
+    assert out["usage"]["input_tokens_details"] == {"cached_tokens": 78}
+    # cached stays INSIDE input_tokens (codex subtracts downstream)
+    assert out["usage"]["input_tokens"] == 100
+    # DeepSeek spelling: prompt_cache_hit_tokens
+    serve(b'data: {"choices":[{"delta":{"content":"a"}}]}\n'
+          b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+          b'"usage":{"prompt_tokens":10,"completion_tokens":1,'
+          b'"prompt_cache_hit_tokens":9}}\n'
+          b'data: [DONE]\n')
+    out = zen_shim._stream_once(
+        "https://opencode.ai/zen/v1",
+        {"model": "x-preview-f-free", "input": []})
+    assert out["usage"]["input_tokens_details"] == {"cached_tokens": 9}
+    # no cached field streamed -> no synthetic zero
+    serve(b'data: {"choices":[{"delta":{"content":"a"}}]}\n'
+          b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+          b'"usage":{"prompt_tokens":10,"completion_tokens":1}}\n'
+          b'data: [DONE]\n')
+    out = zen_shim._stream_once(
+        "https://opencode.ai/zen/v1",
+        {"model": "x-preview-f-free", "input": []})
+    assert "input_tokens_details" not in out["usage"]
+
+
+def test_turn_usage_sums_every_upstream_call() -> None:
+    """One codex turn = N upstream calls but ONE forwarded response;
+    forwarding the last call's usage booked 1 call in N — the zen
+    channel's "severe under-report" (2026-08-27). The turn total must
+    be the sum, cached and reasoning shares included."""
+    agg: dict = {}
+    zen_shim._sum_usage(agg, {
+        "input_tokens": 100, "output_tokens": 10, "total_tokens": 110,
+        "input_tokens_details": {"cached_tokens": 80},
+        "output_tokens_details": {"reasoning_tokens": 6}})
+    zen_shim._sum_usage(agg, {
+        "input_tokens": 150, "output_tokens": 5, "total_tokens": 155,
+        "input_tokens_details": {"cached_tokens": 140}})
+    zen_shim._sum_usage(agg, None)
+    zen_shim._sum_usage(agg, {})
+    assert agg == {"input_tokens": 250, "output_tokens": 15,
+                   "total_tokens": 265,
+                   "input_tokens_details": {"cached_tokens": 220},
+                   "output_tokens_details": {"reasoning_tokens": 6}}
+    # Mechanism pin on the handler source (house style): every
+    # _zen_call site feeds the sum, and the synthesis installs the
+    # total in the response codex actually reads.
+    src = open(zen_shim.__file__, encoding="utf-8").read()
+    assert src.count('_sum_usage(turn_usage, resp.get("usage"))') == 2
+    assert 'resp["usage"] = dict(turn_usage)' in src
 
 
 def test_replayed_reasoning_items_never_flow_back_upstream(
