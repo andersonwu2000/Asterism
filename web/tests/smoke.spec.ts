@@ -184,3 +184,25 @@ test('new-problem: the shelf is a window, not a wall', async ({ page }) => {
   await chip.first().click()
   await expect(chip).toHaveCount(0)
 })
+
+test('new-problem: Defs and Root wear the shared Lean block', async ({ page }) => {
+  // They had grown their own arrangement — a bare editor per box and
+  // ONE goal panel below both — and a first fix only imitated the
+  // probe's shape instead of using it (68a344a3, reverted). Both now
+  // render `LeanBlock`, the same component the chapter and console
+  // probes do. Safe against a live engine: with both boxes empty the
+  // session stays disabled, so no Lean slot is claimed.
+  await page.goto('/#/new')
+  await page.getByRole('button', { name: /pin exact Lean/ }).click()
+  const boxes = page.locator('textarea[placeholder*="namespace Problems."]')
+  await expect(boxes).toHaveCount(2)
+  // the block's frame is the container rung over the wash ground —
+  // the editor is frameless inside it, never bare on the page
+  for (let i = 0; i < 2; i++) {
+    await expect(
+      boxes.nth(i).locator('xpath=ancestor::div[contains(@class,"bg-wash")][1]'),
+    ).toHaveCount(1)
+  }
+  // nothing to report yet, so no InfoView and no orphaned goal panel
+  await expect(page.getByText('goal at cursor')).toHaveCount(0)
+})
