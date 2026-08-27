@@ -6,18 +6,23 @@
 // layout.ts via esbuild, runs it against real problem data, and counts
 // pairwise edge crossings in four buckets:
 //
-//   bb   bright x bright  (weight 1)    — structural edges at full ink
-//   bf   bright x faint   (weight 0.2)
-//   ff   faint  x faint   (weight 0.05) — citations + faded long hauls
+//   bb   SOLID x SOLID  — the score. One route crossing another.
+//   bf   solid x dotted  — reported, NOT scored
+//   ff   dotted x dotted — reported, NOT scored
 //
-// There used to be a fourth bucket excluding everything that touched an
-// ultra-hub, because the plate-centred sun's starburst was a deliberate
-// choice rather than a layout error. The owner retired that tier on
-// 2026-08-26, so the exemption goes with it — the instrument must not
-// keep hiding crossings the engine no longer chooses to make.
+// The weights were 1 / 0.2 / 0.05, and on a real sky the two dotted
+// buckets WERE the score: stokes measured bb 1, bf 287, ff 1681, so
+// 99% of what the engine optimised was a crossing involving a citation
+// arc. Those arcs became dotted (`CITE_DASH`) and the eye separates
+// them by texture rather than by position — the ruler was measuring a
+// problem the ink had already solved, at ~370ms of the layout's ~380
+// (owner, 2026-08-27: "stop using that ruler"). What dashes do NOT
+// disambiguate is one solid route crossing another, and that is what
+// is scored now. bf/ff stay VISIBLE because a number nobody scores is
+// still evidence — but they buy nothing and cost nothing.
 //
-// Compare scores before/after a layout change; bb is the number that
-// must not grow.
+// Compare before/after a layout change; bb is the number that must
+// not grow.
 import { execSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { mkdtempSync } from 'node:fs'
@@ -107,7 +112,7 @@ function metric(d, lay) {
       else ff++
     }
   }
-  return { bb, bf, ff, len, score: Math.round((bb + bf * 0.2 + ff * 0.05) * 10) / 10 }
+  return { bb, bf, ff, len, score: bb }
 }
 
 const problems = process.argv.slice(2).length > 0 ? process.argv.slice(2) : DEFAULT_PROBLEMS

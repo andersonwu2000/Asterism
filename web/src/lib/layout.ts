@@ -81,6 +81,58 @@ export const Y_GAP = 120
 const PAD = 60
 
 /**
+ * Lay the sky out to fit the page it is drawn on.
+ *
+ * TWO PHASES, and the split is the whole point (owner, 2026-08-27).
+ * Measured on the fixtures: everything that decides the plate's SHAPE
+ * — the tidy tree, the band packing, the alignment sweeps — costs 2-6
+ * ms at 500 stars. The crossing polish that follows costs ~370 ms. The
+ * shape is therefore free to search and the polish is not, so the
+ * shape is searched and the polish is paid once, at the end, on the
+ * shape that won.
+ *
+ * Why search at all: `targetBand` is derived from cell AREA as though
+ * bands packed solid, and FFDH leaves real gaps, so a single pass
+ * lands well short of what it aimed at (asking 2.75 returned 1.96 on
+ * residue_thm, 1.58 on jordan). Aiming, measuring and re-aiming twice
+ * more closes most of that — at a cost of ~12 ms.
+ */
+export function layoutConstellation(
+  goals: Goal[],
+  strategies: Strategy[],
+  strategyEdges: StrategyEdge[],
+  anchorEdges: AnchorEdge[] = [],
+  citationEdges: CitationEdge[] = [],
+  aspect = 16 / 9,
+): ConstellationLayout {
+  const shape = (a: number) =>
+    packOnce(goals, strategies, strategyEdges, anchorEdges, citationEdges, a, false)
+  const miss = (v: ConstellationLayout) => {
+    const got = v.width / v.height
+    return Number.isFinite(got) && got > 0 ? Math.abs(Math.log(got / aspect)) : Infinity
+  }
+  let target = aspect
+  let bestTarget = aspect
+  let bestMiss = Infinity
+  // three aims is where the returns stop: a sky whose widest tree is
+  // wider than the whole band CANNOT reach the page's ratio, and the
+  // loop must land on the best reachable shape rather than chase one
+  for (let i = 0; i < 3; i++) {
+    const v = shape(target)
+    const m = miss(v)
+    if (m < bestMiss) {
+      bestMiss = m
+      bestTarget = target
+    }
+    const got = v.width / v.height
+    if (!Number.isFinite(got) || got <= 0 || m < 0.08) break
+    target = Math.min(24, Math.max(0.5, target * (aspect / got)))
+  }
+  return packOnce(
+    goals, strategies, strategyEdges, anchorEdges, citationEdges, bestTarget, true)
+}
+
+/**
  * The stars a blink belongs on: work DISPATCHED right now, plus every
  * star it hangs under.
  *
@@ -148,7 +200,7 @@ export function liveWorkIds(
   return hot
 }
 
-export function layoutConstellation(
+function packOnce(
   goals: Goal[],
   strategies: Strategy[],
   strategyEdges: StrategyEdge[],
@@ -161,6 +213,7 @@ export function layoutConstellation(
    * Callers pass a QUANTIZED value: this run costs ~0.5s at 500 stars
    * and must not re-run per pixel of a drag. */
   aspect = 16 / 9,
+  refine = true,
 ): ConstellationLayout {
   const byId = new Map(goals.map((g) => [g.id, g]))
   const stratById = new Map(strategies.map((s) => [s.id, s]))
@@ -1316,7 +1369,7 @@ export function layoutConstellation(
   // two band-adjacent trees — accepted only on strict improvement,
   // evaluated incrementally (only segments touching moved nodes are
   // retested). Deterministic: fixed proposal order, exact arithmetic.
-  if (goals.length <= 600) {
+  if (refine && goals.length <= 600) {
     const px = new Map<number, number>()
     const pyOf = new Map<number, number>()
     for (const n of nodes) {
@@ -1512,7 +1565,16 @@ export function layoutConstellation(
     const pairW = (s: Seg, t: Seg): number => {
       if (s.bxHi < t.bxLo || t.bxHi < s.bxLo || s.byHi < t.byLo || t.byHi < s.byLo) return 0
       if (!inter(s, t)) return 0
-      return s.bright && t.bright ? 1 : s.bright || t.bright ? 0.2 : 0.05
+      // SOLID x SOLID only (owner, 2026-08-27). The old ruler charged
+      // 0.2 for bright x faint and 0.05 for faint x faint, and on a
+      // real sky those two buckets ARE the score — stokes measured
+      // bb 1, bf 287, ff 1681, so 99% of what the engine optimised was
+      // crossings involving a citation arc. Those arcs became DOTTED
+      // (`CITE_DASH`), and the eye now separates them by texture, not
+      // by position: the ruler was measuring a problem the ink had
+      // already solved. What dashes do NOT disambiguate is one solid
+      // route crossing another, which is what is left here.
+      return s.bright && t.bright ? 1 : 0
     }
     const affectedOf = (ids: number[]): Seg[] => {
       const set = new Set<Seg>()

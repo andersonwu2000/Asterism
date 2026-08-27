@@ -454,4 +454,25 @@ describe('the plate takes the shape it is asked for', () => {
       expect(same.height).toBe(def.height)
     }
   })
+
+  it('lands near the page it is aiming at, where the sky can reach it', () => {
+    // The packer only AIMS — `targetBand` assumes bands pack solid and
+    // FFDH leaves gaps, so ONE aim lands well short (2.75 returned 1.96
+    // on residue_thm, 1.92 on stokes). The shape search re-aims twice
+    // more, which costs ~12ms because the shape phase is cheap; the
+    // crossing polish is paid once, afterwards, on the shape that won.
+    //
+    // Only the skies that CAN reach these ratios: jordan tops out at
+    // 1.87 and a5_cmp (36 goals) sits on the 16-slot band floor at
+    // every aspect. A ceiling is not a miss.
+    for (const name of ['residue_thm', 'stokes']) {
+      for (const target of [2.25, 2.75]) {
+        const f = FIXTURES[name]
+        const v = at(f, target)
+        const got = v.width / v.height
+        const miss = Math.abs(Math.log(got / target))
+        expect(miss, `${name} @${target}: landed ${got.toFixed(2)}`).toBeLessThan(0.3)
+      }
+    }
+  })
 })
