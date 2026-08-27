@@ -63,44 +63,6 @@ export function DiagList({ diags }: { diags: EvalDiag[] }) {
   )
 }
 
-/**
- * The one InfoView under a Lean block: the engine's word, the goal at
- * the caret, then diagnostics. Shared by the chapter/console probes
- * and the New page's Defs/Root boxes, so every Lean surface in the app
- * reads the same (owner, 2026-08-27 — the New page had grown its own
- * arrangement: a status line at the top, a bare DiagList per editor,
- * and a goal panel far below the box whose caret it was reporting).
- * Renders nothing when there is nothing to say.
- */
-export function LeanInfo({
-  status = '',
-  goal = null,
-  caret = null,
-  diags,
-}: {
-  status?: string
-  goal?: string | null
-  /** where the goal was read, when a surface holds more than one box */
-  caret?: string | null
-  diags: EvalDiag[]
-}) {
-  if (status === '' && goal === null && diags.length === 0) return null
-  return (
-    <div className="mt-1.5 rounded-lg border border-edge px-3 py-2">
-      {status !== '' && <div className="text-[11px] text-ink-faint">{status}</div>}
-      {goal !== null && (
-        <pre className="overflow-x-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink">
-          <span className="mr-2 text-[10px] tracking-widest text-ink-faint uppercase">
-            goal{caret ? ` ${caret}` : ''}
-          </span>
-          {goal}
-        </pre>
-      )}
-      <DiagList diags={diags} />
-    </div>
-  )
-}
-
 /** One live probe block under a chapter declaration. */
 export function LeanProbe({
   fq,
@@ -163,8 +125,9 @@ export function LeanProbe({
     cursor && s.goal && s.goal !== 'no goals' && !s.goal.startsWith('<no goals')
       ? s.goal.replace(/^```lean\n?/, '').replace(/\n?```\s*$/, '')
       : null
-  // two frames: the editor, and ONE InfoView below it — the same pair
-  // the New page's Defs/Root boxes wear
+  // two frames, like Defs/Root: the editor, and ONE InfoView below
+  // (goal at cursor on top, messages/output under it)
+  const hasInfo = status !== '' || goalText != null || diags.length > 0
   return (
     <div className={className}>
       <div className="rounded-lg border border-edge bg-wash">
@@ -188,7 +151,20 @@ export function LeanProbe({
           </div>
         )}
       </div>
-      <LeanInfo status={status} goal={goalText} diags={diags} />
+      {hasInfo && (
+        <div className="mt-1.5 rounded-lg border border-edge px-3 py-2">
+          {status !== '' && <div className="text-[11px] text-ink-faint">{status}</div>}
+          {goalText && (
+            <pre className="overflow-x-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink">
+              <span className="mr-2 text-[10px] tracking-widest text-ink-faint uppercase">
+                goal
+              </span>
+              {goalText}
+            </pre>
+          )}
+          <DiagList diags={diags} />
+        </div>
+      )}
     </div>
   )
 }

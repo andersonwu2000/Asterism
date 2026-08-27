@@ -3,7 +3,7 @@ import { apiGet, apiPost } from '../lib/api'
 import { navigate } from '../lib/router'
 import { Button } from '../components/ui'
 import ListField from '../components/ListField'
-import { DiagList, LeanInfo, countErrors } from '../components/LeanProbe'
+import { DiagList, countErrors } from '../components/LeanProbe'
 import { useLeanSession, type LeanCursor } from '../lib/leanSession'
 import { claimLeanSlot, releaseLeanSlot, useLeanSlotActive } from '../lib/leanSlot'
 import { LeanEditor } from '../components/LeanEditor'
@@ -144,34 +144,6 @@ export default function New() {
             : check.detail
               ? `engine error: ${check.detail}`
               : null
-
-  // What ONE box has to say — its own diagnostics, and (only while the
-  // caret is in it) the goal there. Same shape as a probe block: the
-  // goal reads inside the box it belongs to, never in a panel below
-  // the box after it (owner, 2026-08-27).
-  const partInfo = (part: 'defs' | 'root') => {
-    const mine = cursor?.part === part
-    const g = check.goal
-    const goal =
-      mine && !engineWord && g && g !== 'no goals' && !g.startsWith('<no goals')
-        ? g.replace(/^```lean\n?/, '').replace(/\n?```\s*$/, '')
-        : null
-    const status = !mine
-      ? ''
-      : engineWord
-        ? engineWord
-        : goal
-          ? (check.note ?? '')
-          : g
-            ? 'no goals here — the caret is outside an open `by` proof'
-            : ''
-    return {
-      diags: check.parts[part] ?? [],
-      goal,
-      status,
-      caret: mine && cursor ? `L${cursor.line}` : null,
-    }
-  }
 
   const nameOk = NAME_RE.test(name)
   // concrete reason, live as the user types (or after a blur): silent
@@ -336,63 +308,69 @@ export default function New() {
         <div className="mb-3 flex flex-col gap-3">
           <div className="min-h-4 text-[11px] text-ink-faint">{checkWord}</div>
           {check.preamble.length > 0 && <DiagList diags={check.preamble} />}
-          {/* Defs and Root each wear the probe's pair — one framed
-              editor, one InfoView under it — so the Lean surfaces on
-              the New page, the chapter and the console read alike. */}
-          {(
-            [
-              {
-                id: 'defs' as const,
-                value: defs,
-                set: setDefs,
-                caption: (
-                  <>
-                    Defs.lean — your own definitions; the engine must use these, never
-                    re-derive them.
-                  </>
-                ),
-                placeholder: `import Mathlib\n\nnamespace Problems.${name || '<name>'}\n\n-- your definitions\n\nend Problems.${name || '<name>'}`,
-              },
-              {
-                id: 'root' as const,
-                value: root,
-                set: setRoot,
-                caption: (
-                  <>
-                    Root.lean — pins the exact statement that must be proved before the
-                    problem can finish (shape:{' '}
-                    <span className="font-mono">theorem main : &lt;stmt&gt; := by sorry</span>
-                    ).
-                  </>
-                ),
-                placeholder: `import Mathlib\nimport Problems.${name || '<name>'}.Defs\n\nnamespace Problems.${name || '<name>'}\n\ntheorem main : <statement> := by sorry\n\nend Problems.${name || '<name>'}`,
-              },
-            ] as const
-          ).map((box) => {
-            const info = partInfo(box.id)
-            return (
-              <div key={box.id}>
-                <div className="mb-1 text-[11px] text-ink-faint">{box.caption}</div>
-                <div className="rounded-lg border border-edge bg-wash">
-                  <LeanEditor
-                    value={box.value}
-                    onChange={box.set}
-                    onCaret={(pos) => setCursor({ part: box.id, ...pos })}
-                    onFocus={() => claimLeanSlot(slotId)}
-                    placeholder={box.placeholder}
-                    heightClass="min-h-40 h-auto max-h-[28rem] field-sizing-content"
-                    frameless
-                  />
-                </div>
-                <LeanInfo
-                  status={info.status}
-                  goal={info.goal}
-                  caret={info.caret}
-                  diags={info.diags}
-                />
+          <div>
+            <div className="mb-1 text-[11px] text-ink-faint">
+              Defs.lean — your own definitions; the engine must use these, never re-derive them.
+            </div>
+            <LeanEditor
+              value={defs}
+              onChange={setDefs}
+              onCaret={(pos) => setCursor({ part: 'defs', ...pos })}
+              onFocus={() => claimLeanSlot(slotId)}
+              placeholder={`import Mathlib\n\nnamespace Problems.${name || '<name>'}\n\n-- your definitions\n\nend Problems.${name || '<name>'}`}
+            />
+            <DiagList diags={check.parts.defs ?? []} />
+          </div>
+          <div>
+            <div className="mb-1 text-[11px] text-ink-faint">
+              Root.lean — pins the exact statement that must be proved before the problem can
+              finish (shape: <span className="font-mono">theorem main : &lt;stmt&gt; := by sorry</span>).
+            </div>
+            <LeanEditor
+              value={root}
+              onChange={setRoot}
+              onCaret={(pos) => setCursor({ part: 'root', ...pos })}
+              onFocus={() => claimLeanSlot(slotId)}
+              placeholder={`import Mathlib\nimport Problems.${name || '<name>'}.Defs\n\nnamespace Problems.${name || '<name>'}\n\ntheorem main : <statement> := by sorry\n\nend Problems.${name || '<name>'}`}
+            />
+            <DiagList diags={check.parts.root ?? []} />
+          </div>
+          {check.phase !== 'idle' && (
+            <div className="rounded-lg border border-edge bg-wash">
+              <div className="flex items-baseline gap-2 border-b border-edge px-3 py-1.5">
+                <span className="text-[10px] tracking-widest text-ink-faint uppercase">
+                  goal at cursor
+                </span>
+                {cursor && (
+                  <span className="font-mono text-[10px] text-ink-faint">
+                    {cursor.part} L{cursor.line}
+                  </span>
+                )}
               </div>
-            )
-          })}
+              <pre className="max-h-56 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
+                {engineWord ? (
+                  <span className="text-ink-dim">{engineWord}</span>
+                ) : !cursor ? (
+                  <span className="text-ink-faint">
+                    — place the cursor inside a `by` proof to see its goal
+                  </span>
+                ) : check.goal && check.goal !== 'no goals' && !check.goal.startsWith('<no goals') ? (
+                  check.goal.replace(/^```lean\n?/, '').replace(/\n?```\s*$/, '')
+                ) : (
+                  <span className="text-ink-faint">
+                    {check.goal
+                      ? 'no goals — outside an open proof, or the proof is complete here'
+                      : '— place the cursor inside a `by` proof to see its goal'}
+                  </span>
+                )}
+              </pre>
+              {check.note && !engineWord && (
+                <div className="border-t border-edge px-3 py-1.5 text-[10px] text-ink-faint">
+                  {check.note}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

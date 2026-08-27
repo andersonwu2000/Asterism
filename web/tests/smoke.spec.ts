@@ -184,22 +184,3 @@ test('new-problem: the shelf is a window, not a wall', async ({ page }) => {
   await chip.first().click()
   await expect(chip).toHaveCount(0)
 })
-
-test('new-problem: Defs and Root wear the probe frame', async ({ page }) => {
-  // The two Lean boxes had grown their own arrangement — a bare editor
-  // per box and one goal panel below BOTH of them. They read like a
-  // probe now (owner, 2026-08-27). Safe to open: with both boxes empty
-  // the session stays disabled, so no Lean slot is claimed.
-  await page.goto('/#/new')
-  await page.getByRole('button', { name: /pin exact Lean/ }).click()
-  const boxes = page.locator('textarea[placeholder*="namespace Problems."]')
-  await expect(boxes).toHaveCount(2)
-  // each box sits inside the PROBE's frame (`bg-wash`), frameless
-  // itself — not bare on the page wearing the editor's own chrome
-  for (let i = 0; i < 2; i++) {
-    const framed = boxes.nth(i).locator('xpath=ancestor::div[contains(@class,"bg-wash")][1]')
-    await expect(framed).toHaveCount(1)
-  }
-  // nothing to say yet, so nothing is said — no empty goal panel
-  await expect(page.getByText('goal at cursor')).toHaveCount(0)
-})
