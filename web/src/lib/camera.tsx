@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 /*
  * The sky camera, shared. The problem sky (Constellation.tsx) set the
@@ -90,11 +90,35 @@ export function useSkyCamera(
     setView(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetKey])
-  useEffect(() => {
-    if (view !== null) return
+  // ONE owner for the fit. A camera is fitted when there is no view to
+  // show, and RE-fitted when the PLATE changed size under a camera the
+  // reader has not touched: the engine console's sky is live, so its
+  // plate is re-laid as goals land and a camera fitted to the plate of
+  // ten seconds ago is not the fit any more (owner, 2026-08-27).
+  //
+  // Those were two effects for a day, and the second one PARKED the
+  // camera. Both wrote `view` in one commit; `setView(null)` ran last;
+  // React compared null to null, bailed out of the re-render, and the
+  // fit effect — keyed on `view` — never ran again. `viewRef` still
+  // held the right fit, which is exactly why a nudge of a drag "fixed"
+  // it: the drag published the ref. On a 1900x1000 page union_closed
+  // opened at scale(1) — an 11x zoom on a sky whose fit is 0.07 — and
+  // stayed there. One effect cannot race itself.
+  //
+  // LAYOUT effect, not a passive one: `view === null` renders the sky
+  // at k = 1, and on a big plate that fallback frame is a full paint of
+  // every element at 1:1 before the fit lands. Fitting before paint
+  // means the frame is never shown — the rule the aspect measurement in
+  // Constellation.tsx already follows.
+  const fittedFor = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    const size = `${contentW}x${contentH}`
+    const plateChanged = fittedFor.current !== size && !userAdjusted.current
+    if (view !== null && !plateChanged) return
     if (contentW <= 0 || contentH <= 0) return
     const fit = computeFitRef.current()
     if (!fit) return
+    fittedFor.current = size
     fitKRef.current = fit.k
     viewRef.current = fit
     setFitK(fit.k)
@@ -107,24 +131,6 @@ export function useSkyCamera(
   // (latent in the pre-hook copy; caught in review, 2026-07-09). The
   // first fit proves the container exists, so re-running on that
   // transition attaches exactly once per appearance.
-  // A PLATE that changes size re-fits — on the same terms as a
-  // container resize, and only for a camera the reader has not
-  // touched. The engine console is where this bites: the sky is live,
-  // so the plate is re-laid as goals land, and a camera fitted to the
-  // plate of ten seconds ago is not the fit any more. Measured there:
-  // the view sat at k=0.05801 indefinitely while `fit` gave 0.05932
-  // (owner, 2026-08-27). `userAdjusted` is what keeps this from
-  // fighting a reader who has zoomed — the rule this file already had
-  // for resizes, applied to the other way a plate can change.
-  const sizeKey = `${contentW}x${contentH}`
-  const lastSize = useRef(sizeKey)
-  useEffect(() => {
-    if (lastSize.current === sizeKey) return
-    lastSize.current = sizeKey
-    if (userAdjusted.current) return
-    setView(null)
-  }, [sizeKey])
-
   const attached = view !== null
   // window/panel resize re-fits ONLY untouched views (fighting an
   // explicit zoom is worse than letting it drift off-centre). With a

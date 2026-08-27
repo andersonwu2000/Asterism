@@ -251,6 +251,71 @@ test('constellation: the first view IS the fit', async ({ page }) => {
     expect(Math.abs(a[i] - b[i]), `opened ${opened} vs fitted ${fitted}`).toBeLessThan(1)
 })
 
+test('constellation: a resize refits, and a drag never rescales', async ({ page, request }) => {
+  // Un-maximising the window parked the sky at scale(1) — an 11x zoom
+  // on union_closed, whose fit is 0.07 — and it stayed there until the
+  // reader nudged it (owner, 2026-08-27: 取消最大化就會變這樣然後停住,
+  // 稍微拖動一下就會恢復 fit 的大小). Two effects wrote the camera in
+  // one commit, `setView(null)` ran last, and React's null-to-null
+  // bail-out meant the refit never ran again. `viewRef` still held the
+  // true fit, so the FIRST DRAG published it — which is the tell this
+  // test reads: a pan must move the sky and never rescale it.
+  //
+  // It takes a sky whose PLATE answers the page's shape, so the target
+  // is the biggest one this workspace has; a small graph packs the same
+  // at every aspect and never enters the race.
+  const list = await request.get('/api/problems')
+  const rows: { name: string; goals: { total: number } }[] = list.ok()
+    ? ((await list.json()).problems ?? [])
+    : []
+  const biggest = rows.sort((a, b) => (b.goals?.total ?? 0) - (a.goals?.total ?? 0))[0]
+  test.skip(
+    !biggest || (biggest.goals?.total ?? 0) < 200,
+    'needs a sky whose plate answers the page shape',
+  )
+
+  await page.setViewportSize({ width: 1900, height: 1000 })
+  await page.goto(`/#/problems/${encodeURIComponent(biggest.name)}`)
+  const cam = page.locator('main svg.constellation > g[transform]').first()
+  await cam.waitFor({ timeout: 20000 })
+  const settled = async () => {
+    let prev = ''
+    for (let i = 0; i < 40; i++) {
+      const t = (await cam.getAttribute('transform')) ?? ''
+      if (t !== '' && t === prev) return t
+      prev = t
+      await page.waitForTimeout(120)
+    }
+    return prev
+  }
+  await settled()
+
+  await page.setViewportSize({ width: 1200, height: 700 })
+  const resized = await settled()
+  // `view === null` renders the sky on the no-camera fallback; a sky
+  // that settles there settled on nothing
+  expect(resized, 'parked on the no-camera fallback').not.toBe('translate(0,0) scale(1)')
+  // the smaller page gets its OWN fit, not the one it was carrying
+  await page.getByRole('button', { name: 'fit', exact: true }).click()
+  const fitted = await settled()
+  expect(resized, `resized ${resized} vs fitted ${fitted}`).toBe(fitted)
+
+  const scaleOf = (t: string) => Number(/scale\(([-\d.eE]+)\)/.exec(t)?.[1] ?? NaN)
+  const sky = await page.locator('main svg.constellation').first().boundingBox()
+  const cx = Math.round((sky?.x ?? 0) + (sky?.width ?? 0) / 2)
+  const cy = Math.round((sky?.y ?? 0) + (sky?.height ?? 0) / 2)
+  await page.mouse.move(cx, cy)
+  await page.mouse.down()
+  await page.mouse.move(cx + 24, cy + 18, { steps: 4 })
+  await page.mouse.up()
+  const dragged = await settled()
+  expect(scaleOf(dragged), `fitted ${fitted} then dragged ${dragged}`).toBeCloseTo(
+    scaleOf(fitted),
+    6,
+  )
+  expect(dragged, 'the drag moved nothing').not.toBe(fitted)
+})
+
 test('engine console: the sky opens on its fit, and stays put', async ({ page }) => {
   // The console is where "opened != fitted" actually bit: its sky is
   // LIVE, so the plate is re-laid as goals land, and a camera fitted
