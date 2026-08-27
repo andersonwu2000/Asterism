@@ -2010,6 +2010,7 @@ def daemon_status(workspace: Path) -> dict:
                 code_stale = born_fp != code_fingerprint()
         except OSError:
             code_stale = False
+    gw_phase, gw_slots = _gateway_status_once(workspace)
     return {
         "running": pid is not None,
         # the boot window between daemon_start and the child's lock claim
@@ -2026,13 +2027,13 @@ def daemon_status(workspace: Path) -> dict:
         # gateway phase ('warming'/'ready'/None): the first minutes of
         # a cold run are Lean warm-up — without this the user stares
         # at dead air (Test.Test3 run, 2026-07-07)
-        "gateway": _gateway_phase_safe(workspace),
+        "gateway": gw_phase,
         # Lean-field capacity (frontend ask 2026-08-25): {target, open,
-        # free} straight from the gateway's /warm_target — the same
-        # confirmed numbers the DispatcherLedger runs on (this status
-        # runs OUTSIDE the daemon process, so the gateway is the one
-        # shared surface holding the truth). None while no gateway.
-        "slots": _gateway_slots_safe(workspace),
+        # free} from the same single /health round-trip as the phase —
+        # the old phase/slots pair re-asked the same URL back to back,
+        # doubling status load on a queue that was already drowning
+        # (frontend finding, flagship 2026-08-27). None while no gateway.
+        "slots": gw_slots,
         # how the LAST run ended ({at, rc, error, scope}) — only
         # meaningful while idle; tells "finished" from "crashed", and a
         # BOOTING run's page must not resurface the previous ending
@@ -2041,31 +2042,34 @@ def daemon_status(workspace: Path) -> dict:
     }
 
 
-def _gateway_slots_safe(workspace: Path) -> "dict | None":
-    """{target, open, free} from the gateway, or None (no gateway /
-    warming / unreachable). Short timeout — this rides every status
-    poll and must never make the UI wait."""
+def _gateway_status_once(workspace: Path) -> "tuple[str | None, dict | None]":
+    """(phase, slots) from ONE /health round-trip. The old helper pair
+    asked the same URL twice per status poll (phase, then slots) —
+    pure double load, and on the saturated flagship it fed the very
+    accept backlog the status was trying to observe (frontend finding,
+    2026-08-27). Short timeout — this rides every status poll and must
+    never make the UI wait."""
     import json as _json
     import urllib.request
+    h = None
     try:
         from ..lsp.lifecycle import _gateway_port
         req = urllib.request.Request(
             f"http://127.0.0.1:{_gateway_port(workspace)}/health")
         with urllib.request.urlopen(req, timeout=1.0) as r:
             h = _json.loads(r.read())
-        return {"target": h.get("warm_target"),
-                "open": h.get("workers_open"),
-                "free": h.get("workers_free")}
     except Exception:  # noqa: BLE001 — status must not crash
-        return None
-
-
-def _gateway_phase_safe(workspace: Path) -> "str | None":
+        h = None
+    if h is not None and h.get("backend_ready"):
+        return "ready", {"target": h.get("warm_target"),
+                         "open": h.get("workers_open"),
+                         "free": h.get("workers_free")}
     try:
-        from ..lsp.lifecycle import gateway_phase
-        return gateway_phase(workspace)
+        from ..lsp.lifecycle import warming_pid
+        phase = "warming" if warming_pid(workspace) is not None else None
     except Exception:  # noqa: BLE001 — status must not crash
-        return None
+        phase = None
+    return phase, None
 
 
 def daemon_start(workspace: Path, *, scope: "str | None" = None,

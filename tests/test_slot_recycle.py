@@ -350,6 +350,10 @@ def test_acquire_slides_and_credits_while_rewarming(gw):
 def _weight_env(gw, monkeypatch, readings):
     called: list = []
     monkeypatch.setattr(gw, "_slot_private_mb_cached", lambda: readings)
+    # the knife re-weighs its candidate fresh (2026-08-27); the fixture
+    # scale agrees with the cache unless a test says otherwise
+    monkeypatch.setattr(gw, "_slot_private_mb_fresh",
+                        lambda s: readings.get(s.slot_id))
     monkeypatch.setattr(gw, "_kill_worker_for_uri",
                         lambda uri: called.append(("kill", uri)) or True)
     monkeypatch.setattr(gw._state, "backend",

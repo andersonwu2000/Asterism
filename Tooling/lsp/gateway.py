@@ -676,6 +676,156 @@ _WEDGE_REPEAT_WINDOW_SEC = 1800.0
 _WEIGHT_KILL_HISTORY: "dict[str, float]" = {}
 _WEIGHT_KILL_COOLDOWN_SEC = 180.0
 _WEIGHT_WATCH_INTERVAL_SEC = 20.0
+#: Governor pass cadence. The pressure outlet re-measures every pass;
+#: the weight scan and freeze tick keep their 20 s cadence by running
+#: every (interval / this) passes.
+_GOVERNOR_INTERVAL_SEC = 5.0
+
+#: Serialized pressure-release outlet (owner design 2026-08-27). While
+#: the measured axes read hot, ONE free worker dies per governor pass —
+#: the currently-fattest, re-weighed fresh at the kill decision — and
+#: its death is confirmed before the next pass's fresh reading decides
+#: again. Each kill raises this debt; the effective warm allowance is
+#: `warm_target - debt`, so the converger cannot re-warm what the
+#: outlet just shed. Calm passes forgive one debt step at a time, gated
+#: on the pool having converged to the current allowance (the previous
+#: warm landed). This replaces the ledger's open-loop integrator, which
+#: wound up on release lag: 27 pause/clear cycles and 579 sheds / 597
+#: warms in 7 h on the 32 GB co-tenant box (measured 2026-08-27) —
+#: many "warms" mere reattaches of not-yet-dead workers, so the RAM
+#: never even returned.
+_PRESSURE_DEBT_LOCK = threading.Lock()
+_PRESSURE_DEBT = 0
+
+
+def _pressure_debt() -> int:
+    with _PRESSURE_DEBT_LOCK:
+        return _PRESSURE_DEBT
+
+
+def _effective_target() -> "int | None":
+    """The warm allowance after the pressure outlet's debt. Every
+    consumer of `_state.warm_target` that sizes the pool must read
+    THIS — a raw read would re-warm the outlet's kills while hot."""
+    target = _state.warm_target
+    if target is None:
+        return None
+    return max(1, target - _pressure_debt())
+
+
+def _machine_gb() -> float:
+    try:
+        import psutil
+        return psutil.virtual_memory().total / (1024 ** 3)
+    except Exception:  # noqa: BLE001 — scaling fallback
+        return 32.0
+
+
+def _slot_private_mb_fresh(slot: "WorkerSlot") -> "int | None":
+    """ONE slot, measured NOW — the kill-decision reading. The TTL
+    cache lags a full pool scan behind; at 5 GB/min inflation a stale
+    reading is tens of GB wrong (a 36 GB worker slid past the 8 GB cap
+    on the flagship, 2026-08-26). A candidate about to die is weighed
+    fresh; everyone else stays on the cache."""
+    try:
+        import psutil
+        pid = _worker_pid_for_uri(slot.slot_uri)
+        if pid is None:
+            return None
+        proc = psutil.Process(pid)
+        mem = proc.memory_info()
+        priv = getattr(mem, "private", None)
+        if priv is None:
+            priv = proc.memory_full_info().uss
+        return (int(priv) + _vm_pte_bytes(pid)) // (1024 * 1024)
+    except Exception:  # noqa: BLE001 — unmeasurable is not zero
+        return None
+
+
+def _pressure_outlet_step() -> bool:
+    """One measured step of the serialized release outlet. Hot: kill
+    exactly one free worker (fresh-weighed fattest), confirm the death,
+    raise the debt. Calm: forgive one debt step once the pool has
+    converged to the current allowance. Between the bands: hold.
+    Returns whether it acted (tests key on this)."""
+    global _PRESSURE_DEBT
+    budget = _state.ram_budget_gb
+    if budget is None or _state.backend is None \
+            or not _state.first_warm_done or _state.warm_target is None:
+        return False
+    from ..core import ram_ledger as rl
+    cur = rl.framework_current_gb()
+    avail = rl.available_gb()
+    machine = _machine_gb()
+    headroom = rl.DispatcherLedger.PRESSURE_HEADROOM_GB
+    slack = rl.DispatcherLedger.PRESSURE_RELEASE_SLACK_GB
+    hot = ((cur is not None and cur > budget - headroom)
+           or avail < rl.pressure_low_gb(machine))
+    calm = ((cur is None or cur < budget - headroom - slack)
+            and avail > rl.pressure_high_gb(machine))
+    if hot:
+        readings = _slot_private_mb_cached()
+        candidates = sorted(
+            (s for s in list(_state.workers)
+             if not s.reserved and not s.closed and not s.frozen
+             and not s.rewarming and s.claimed_by is None),
+            key=lambda s: readings.get(s.slot_id) or 0, reverse=True)
+        # Re-pick AND re-weigh: the cached order nominates, a fresh
+        # reading of the top few elects (owner point: the queue is a
+        # policy, not a frozen list).
+        best, best_mb = None, -1
+        for s in candidates[:3]:
+            mb = _slot_private_mb_fresh(s)
+            if mb is not None and mb > best_mb:
+                best, best_mb = s, mb
+        if best is None and candidates:
+            best, best_mb = candidates[0], readings.get(
+                candidates[0].slot_id) or 0
+        if best is None:
+            return False        # nothing free: admission pause +
+        slot = best             # release-time sheds own the rest
+        if not slot.lock.acquire(blocking=False):
+            return False        # got busy since the pick: next pass
+        try:
+            with _state.sessions_lock:
+                if slot.claimed_by is not None or slot.closed \
+                        or slot.frozen:
+                    return False
+                if _open_pipeline_slots_locked() <= 1:
+                    return False    # anti-starvation floor
+                slot.closed = True
+            try:
+                _state.backend.did_close(slot.slot_path)
+            except Exception:  # noqa: BLE001 — the kill below settles it
+                pass
+            if not _await_worker_exit(slot.slot_uri):
+                _kill_worker_for_uri(slot.slot_uri)
+            with _PRESSURE_DEBT_LOCK:
+                _PRESSURE_DEBT += 1
+                debt = _PRESSURE_DEBT
+            cur_s = "n/a" if cur is None else f"{cur:.1f}G"
+            print(f"[gateway] pressure shed — slot {slot.slot_id} "
+                  f"({best_mb} MB fresh) killed and confirmed dead "
+                  f"(available {avail:.1f}G, cgroup {cur_s}); outlet "
+                  f"debt {debt}", file=sys.stderr, flush=True)
+            return True
+        finally:
+            slot.lock.release()
+    if calm and _pressure_debt() > 0:
+        target = _effective_target()
+        with _state.sessions_lock:
+            converged = (target is not None
+                         and _open_pipeline_slots_locked() >= target)
+        if converged:
+            with _PRESSURE_DEBT_LOCK:
+                _PRESSURE_DEBT = max(0, _PRESSURE_DEBT - 1)
+                debt = _PRESSURE_DEBT
+            print(f"[gateway] pressure debt forgiven — one step "
+                  f"(available {avail:.1f}G, {debt} remaining); the "
+                  f"converger may warm one", file=sys.stderr, flush=True)
+            _kick_warm_converger()
+            return True
+    return False
 
 
 def _weight_kill_over_cap() -> int:
@@ -706,6 +856,18 @@ def _weight_kill_over_cap() -> int:
         last = _WEIGHT_KILL_HISTORY.get(slot.slot_uri)
         if last is not None and now - last < _WEIGHT_KILL_COOLDOWN_SEC:
             continue
+        # The cache nominates, a fresh reading convicts: the TTL scan
+        # lags, and killing on a stale number executes the wrong worker
+        # (or misses the right one — a 36 GB monster slid past this cap
+        # on stale readings, flagship 2026-08-26).
+        fresh = _slot_private_mb_fresh(slot)
+        if fresh is None or fresh <= cap_mb:
+            print(f"[gateway] slot {slot.slot_id} spared by the fresh "
+                  f"reading — cache said {mb} MB, the scale says "
+                  f"{fresh} MB (cap {cap_mb} MB)",
+                  file=sys.stderr, flush=True)
+            continue
+        mb = fresh
         _WEIGHT_KILL_HISTORY[slot.slot_uri] = now
         print(f"[gateway] slot {slot.slot_id} worker over the memory cap "
               f"— {mb} MB > {cap_mb} MB — killed mid-elaboration (the "
@@ -723,8 +885,32 @@ def _weight_kill_over_cap() -> int:
 
 
 def _weight_watchdog_run() -> None:
+    """The governor thread: every pass runs one pressure-outlet step
+    (measure → at most one kill or one forgiveness → measure again next
+    pass) and refreshes the /health snapshot; the weight scan and the
+    freeze tick keep their slower cadence. One thread on purpose — all
+    the shrink surgery leaves from a single outlet, so the knives never
+    race each other on stale readings."""
+    passes_per_scan = max(1, int(_WEIGHT_WATCH_INTERVAL_SEC
+                                 / _GOVERNOR_INTERVAL_SEC))
+    n = 0
     while True:
-        time.sleep(_WEIGHT_WATCH_INTERVAL_SEC)
+        time.sleep(_GOVERNOR_INTERVAL_SEC)
+        n += 1
+        try:
+            _pressure_outlet_step()
+        except Exception as exc:  # noqa: BLE001 — the governor survives
+            print(f"[gateway] pressure outlet step failed "
+                  f"({type(exc).__name__}: {exc})", file=sys.stderr,
+                  flush=True)
+        try:
+            _refresh_health_snapshot()
+        except Exception as exc:  # noqa: BLE001 — the governor survives
+            print(f"[gateway] health snapshot refresh failed "
+                  f"({type(exc).__name__}: {exc})", file=sys.stderr,
+                  flush=True)
+        if n % passes_per_scan:
+            continue
         try:
             _weight_kill_over_cap()
         except Exception as exc:  # noqa: BLE001 — the watchdog survives
@@ -1388,7 +1574,7 @@ def _shed_slot_if_over_target(slot: WorkerSlot) -> bool:
     NL side. Returns whether the slot was shed. The floor of one open
     slot is the Lean side's anti-starvation guarantee (owner ruling:
     NL has priority, but never to zero)."""
-    target = _state.warm_target
+    target = _effective_target()
     if target is None or _state.backend is None:
         return False
     if not slot.lock.acquire(blocking=False):
@@ -1729,7 +1915,7 @@ def _warm_converger_run() -> None:
     its ledger tick, so an early exit is re-kicked within seconds."""
     try:
         while True:
-            target = _state.warm_target
+            target = _effective_target()
             if target is None or _state.backend is None \
                     or _state.workspace is None \
                     or not _state.first_warm_done:
@@ -5292,6 +5478,22 @@ async def health(request: Request):
         return JSONResponse(
             {"warming": True, "backend_ready": False, "pid": os.getpid(),
              "error": WARMING_MSG}, status_code=503)
+    # Snapshot fast-path (owner approval 2026-08-27): the governor
+    # thread rebuilds the payload every pass, so a /health under a
+    # saturated accept queue costs the event loop a dict lookup, not a
+    # pool walk — status polling stops feeding the very backlog it is
+    # trying to observe (flagship: accept queue 157 deep at 83% CPU).
+    with _HEALTH_SNAPSHOT_LOCK:
+        snap_at = _HEALTH_SNAPSHOT["at"]
+        snap = _HEALTH_SNAPSHOT["val"]
+    age = time.monotonic() - snap_at
+    if snap is not None and age < 3 * _GOVERNOR_INTERVAL_SEC:
+        return JSONResponse({**snap, "snapshot_age_s": round(age, 1)})
+    # Governor hiccup: compute inline rather than serve a dead reading.
+    return JSONResponse({**_health_payload(), "snapshot_age_s": 0.0})
+
+
+def _health_payload() -> dict:
     backend_ok = _state.backend is not None and bool(_state.workers)
     with _state.sessions_lock:
         n_sessions = len(_state.sessions)
@@ -5321,7 +5523,7 @@ async def health(request: Request):
     counters["hot_rate"] = (
         counters["n_hot"] / total_acq if total_acq else None
     )
-    return JSONResponse({
+    return {
         "backend_ready": backend_ok,
         "workers_total": n_workers,
         # The pre-RAM-clamp dispatch.pool this process launched under —
@@ -5340,6 +5542,9 @@ async def health(request: Request):
         "workers_open": n_open,
         "workers_free": n_free,
         "warm_target": _state.warm_target,
+        # The serialized outlet's open kills: effective allowance =
+        # warm_target - this (0 = no pressure episode in flight).
+        "pressure_debt": _pressure_debt(),
         **elab_gate_stats(),
         "sessions_active": n_sessions,
         "init_error": _state.init_error,
@@ -5356,7 +5561,25 @@ async def health(request: Request):
         # Source fingerprint at THIS process's start — the reuse gate
         # relaunches on drift (version-skew guard).
         "code_fingerprint": _CODE_FINGERPRINT,
-    })
+    }
+
+
+#: /health snapshot, rebuilt by the governor thread every pass. The
+#: payload walk is cheap, but under a saturated accept queue every
+#: cycle the event loop does NOT spend is a cycle it can spend
+#: accepting — and the double-fetching status pollers were feeding the
+#: very backlog they measured (frontend finding, 2026-08-27).
+_HEALTH_SNAPSHOT_LOCK = threading.Lock()
+_HEALTH_SNAPSHOT: "dict" = {"at": 0.0, "val": None}
+
+
+def _refresh_health_snapshot() -> None:
+    if not _state.first_warm_done:
+        return
+    val = _health_payload()
+    with _HEALTH_SNAPSHOT_LOCK:
+        _HEALTH_SNAPSHOT["val"] = val
+        _HEALTH_SNAPSHOT["at"] = time.monotonic()
 
 
 # ─── Session header → contextvar middleware ──────────────

@@ -339,21 +339,22 @@ def _tick(led, push=None):
     return out.get("t")
 
 
-def test_pressure_pauses_dispatch_and_trims_the_target(monkeypatch):
-    """The owner-spotted hole: strategists kept dispatching while the
-    cgroup brushed MemoryMax. The cgroup's true footprint inside the
-    headroom -> dispatch pauses and the pushed target drops so
-    releases shed."""
+def test_pressure_pauses_dispatch_but_leaves_the_target(monkeypatch):
+    """The admission brake after the outlet redesign (owner design
+    2026-08-27): hot pauses dispatch — and does NOTHING to the target.
+    The old integrator (2 GB per hot tick, −1 per calm tick) wound up
+    on release lag and oscillated the 32 GB co-tenant box (579 sheds /
+    597 warms in 7 h); physical shrink now lives in the gateway's
+    serialized outlet, one measured kill at a time."""
     led = rl.DispatcherLedger(110.0, 125.0)
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
     monkeypatch.setattr(rl, "framework_current_gb", lambda: 105.0)
     monkeypatch.setattr(rl, "available_gb", lambda: 50.0)
-    calm_target = None
     t1 = _tick(led)
     assert led.dispatch_paused is True
     assert led.nl_admissible(0) is False, "paused must stop NL too"
     t2 = _tick(led)
-    assert t2 < t1, "cuts accumulate while hot"
+    assert t2 == t1, "the ledger stops reinforcements; it no longer cuts"
 
 
 def test_pressure_available_axis_trips_alone(monkeypatch):
@@ -370,7 +371,7 @@ def test_pressure_available_axis_trips_alone(monkeypatch):
 
 def test_pressure_hysteresis_holds_then_releases(monkeypatch):
     """Between the bands the state HOLDS (a 5 GB/min wave must not
-    flap the pause); past the calm band cuts release one per tick."""
+    flap the pause); past the calm band the pause lifts."""
     led = rl.DispatcherLedger(110.0, 125.0)
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
     monkeypatch.setattr(rl, "available_gb", lambda: 50.0)
@@ -378,14 +379,12 @@ def test_pressure_hysteresis_holds_then_releases(monkeypatch):
     monkeypatch.setattr(rl, "framework_current_gb", lambda: cur["v"])
     _tick(led)
     assert led.dispatch_paused is True
-    cut_hot = led._pressure_cut
     cur["v"] = 100.0            # inside the band: 98 < 100 < 102
     _tick(led)
-    assert led.dispatch_paused is True and led._pressure_cut == cut_hot
+    assert led.dispatch_paused is True, "the band holds the pause"
     cur["v"] = 90.0             # calm: below 110 - 8 - 4
     _tick(led)
     assert led.dispatch_paused is False
-    assert led._pressure_cut == cut_hot - 1, "release is one per tick"
 
 
 def test_slot_reading_includes_page_tables():

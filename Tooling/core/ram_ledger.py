@@ -230,8 +230,8 @@ ABS_AVAILABLE_FLOOR_GB = 1.5
 
 def pressure_low_gb(machine_gb: float) -> float:
     """Below this measured available-RAM line the fleet is squeezing
-    the machine — dispatch pauses and the tick trims the slot target
-    (sheds land at release). Machine-scaled (owner-confirmed hole,
+    the machine — dispatch pauses and the gateway's pressure outlet
+    starts its measured kills. Machine-scaled (owner-confirmed hole,
     2026-08-26): the old absolute 1.5 GB floor was sized for a 32 GB
     co-tenant box; on 125 GB the page cache thrashes long before it,
     so strategists kept dispatching straight into the crush."""
@@ -239,9 +239,10 @@ def pressure_low_gb(machine_gb: float) -> float:
 
 
 def pressure_high_gb(machine_gb: float) -> float:
-    """Above this line pressure trims release, one per tick — the gap
-    to `pressure_low_gb` is the hysteresis band that keeps a 5 GB/min
-    inflation wave (measured) from oscillating the feedback."""
+    """Above this line the pause lifts and the outlet forgives debt,
+    one measured step at a time — the gap to `pressure_low_gb` is the
+    hysteresis band that keeps a 5 GB/min inflation wave (measured)
+    from oscillating the feedback."""
     return pressure_low_gb(machine_gb) + 4.0
 
 
@@ -270,7 +271,7 @@ def nl_admit_floor_gb(budget_gb: float, machine_gb: float,
                       nl_gb: float = NL_GB_FALLBACK) -> float:
     """The measured floor below which NL dispatch queues — the
     machine-scaled pressure line plus the unit about to be spent
-    (same signal the dispatch pause and the target trim consume; see
+    (same signal the dispatch pause and the pressure outlet consume; see
     ABS_AVAILABLE_FLOOR_GB for why this is NOT `machine - budget`)."""
     return pressure_low_gb(machine_gb) + nl_gb
 
@@ -369,7 +370,7 @@ class DispatcherLedger:
     #: inflation rate (per-worker heap 0.45 -> 2.2 GB per elaboration
     #: pass, 6 lanes) 8 GB buys the pause 90+ seconds of lead.
     PRESSURE_HEADROOM_GB = 8.0
-    #: Extra calm required before the pause lifts / trims release
+    #: Extra calm required before the pause lifts / debt forgives
     #: (hysteresis on the cgroup axis; the available axis has its own
     #: band in pressure_low/high_gb).
     PRESSURE_RELEASE_SLACK_GB = 4.0
@@ -391,7 +392,6 @@ class DispatcherLedger:
         #: stops ALL dispatch; the cut trims the pushed target so
         #: releases shed instead of re-claiming.
         self.dispatch_paused = False
-        self._pressure_cut = 0
         #: Demand-driven NL yield (owner design 2026-08-26): grows one
         #: slot per tick while an NL admission is budget-blocked with
         #: free slots standing, decays one per calm tick. The pushed
@@ -446,16 +446,22 @@ class DispatcherLedger:
                 >= nl_admit_floor_gb(self.budget_gb, self.machine_gb,
                                      nl_gb))
 
-    def _apply_pressure(self, target: int, cost_gb: float) -> int:
-        """Measured feedback on the planned target — the missing half
-        of "the ledger PLANS; a measured veto DECIDES" (owner-spotted
-        hole 2026-08-26: strategists kept dispatching while the cgroup
-        brushed MemoryMax). Two live axes, either one trips the pause:
-        the unit cgroup's true footprint against the budget, and the
-        machine's available RAM against the scaled watermark. Trims
-        accumulate ~2 GB per tick while hot (releases shed toward the
-        cut target), release one step per calm tick — asymmetric on
-        purpose, an inflation wave moves at 5+ GB/min."""
+    def _apply_pressure(self, target: int) -> int:
+        """Measured admission brake — hot pauses dispatch, calm resumes
+        it, the band between holds (hysteresis). Two live axes, either
+        one trips: the unit cgroup's true footprint against the budget,
+        and the machine's available RAM against the scaled watermark.
+
+        This USED to also trim the target ~2 GB per hot tick with a
+        1-per-calm-tick drain — an open-loop integrator that wound up
+        on a shared 32 GB desktop (27 pause/clear cycles, 579 sheds /
+        597 warms in 7 h, measured 2026-08-27): release lags kept the
+        hot reading true for several ticks, each added another step,
+        and the residue carried into the next episode. Physical shrink
+        now lives in the gateway's serialized pressure outlet (owner
+        design 2026-08-27: one measured kill at a time, the previous
+        death confirmed before the next reading decides) — the ledger
+        only stops reinforcements."""
         cur = framework_current_gb()
         avail = available_gb()
         hot = ((cur is not None
@@ -466,26 +472,20 @@ class DispatcherLedger:
                            - self.PRESSURE_RELEASE_SLACK_GB))
                 and avail > pressure_high_gb(self.machine_gb))
         if hot:
-            step = max(1, math.ceil(2.0 / max(0.1, cost_gb)))
-            self._pressure_cut = min(max(0, target - 1),
-                                     self._pressure_cut + step)
             if not self.dispatch_paused:
                 cur_s = "n/a" if cur is None else f"{cur:.1f}G"
                 print(f"[ledger] measured pressure — dispatch PAUSED "
                       f"(cgroup {cur_s} vs budget {self.budget_gb:.0f}G, "
-                      f"available {avail:.1f}G); target trimmed by "
-                      f"{self._pressure_cut}", flush=True)
+                      f"available {avail:.1f}G); the gateway outlet "
+                      f"sheds one measured kill at a time", flush=True)
             self.dispatch_paused = True
         elif calm:
-            if self._pressure_cut > 0:
-                self._pressure_cut -= 1
             if self.dispatch_paused:
                 print(f"[ledger] pressure cleared — dispatch resumes "
-                      f"(available {avail:.1f}G); {self._pressure_cut} "
-                      f"trim(s) still releasing", flush=True)
+                      f"(available {avail:.1f}G)", flush=True)
             self.dispatch_paused = False
         # between the bands: hold state (hysteresis)
-        return max(1, target - self._pressure_cut)
+        return target
 
     def request_nl_yield(self) -> None:
         """Dispatcher-side signal: an NL admission is blocked by the
@@ -527,7 +527,7 @@ class DispatcherLedger:
             budget_gb=self.budget_gb, nl_demand=nl_demand,
             slot_gb=self.slot_gb + nl_gb, nl_gb=nl_gb,
             machine_gb=self.machine_gb)
-        target = self._apply_pressure(target, self.slot_gb + nl_gb)
+        target = self._apply_pressure(target)
         target = self._apply_nl_yield(target)
         self.last_target = target
         resp = push(target, ABS_AVAILABLE_FLOOR_GB)

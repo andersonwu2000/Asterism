@@ -236,6 +236,28 @@ def _ping_health(timeout: float = 2.0) -> dict | None:
         return None
 
 
+#: How long the reuse gate keeps asking an OCCUPIED port for its
+#: /health JSON before failing loudly. Generous on purpose: the answer
+#: decides between reuse and a fingerprint relaunch, and the only
+#: alternative to waiting is guessing.
+_OCCUPIED_HEALTH_PATIENCE_SEC = 120.0
+
+
+def _port_occupied(timeout: float = 1.0) -> bool:
+    """Raw TCP truth: someone holds the gateway port right now. A
+    saturated gateway can be MINUTES late to answer /health while very
+    much alive (flagship 2026-08-26: accept queue 157 deep at 83% CPU,
+    73 warm workers) — so connect-success alone must veto spawning a
+    rival; only the JSON may authorize anything further."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", _gateway_port()),
+                                      timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def push_warm_target(target: int, min_available_gb: float,
                      workspace: "Path | None" = None,
                      timeout: float = 5.0) -> dict | None:
@@ -630,6 +652,28 @@ def start_gateway(workspace: Path,
         # rival: two gateways racing one port means the loser discovers
         # the collision only AFTER its own multi-minute warm.
         pre = _wait_for_starting_gateway(workspace, budget=ready_timeout)
+    if pre is None and _port_occupied():
+        # The port is HELD but /health gave no JSON inside the short
+        # probes: a busy gateway, not an absent one. Ask patiently —
+        # and if the answer never comes, fail LOUD rather than spawn a
+        # rival that loses the port-bind race after warming (or worse,
+        # kill a healthy 70-worker pool on a guess).
+        deadline = time.monotonic() + _OCCUPIED_HEALTH_PATIENCE_SEC
+        print(f"[gateway] port {_gateway_port()} is occupied but "
+              f"/health is late — waiting up to "
+              f"{_OCCUPIED_HEALTH_PATIENCE_SEC:.0f}s for its answer "
+              f"instead of spawning a rival", flush=True)
+        while pre is None and time.monotonic() < deadline:
+            time.sleep(2.0)
+            pre = _ping_health(timeout=10.0)
+        if pre is None:
+            raise RuntimeError(
+                f"gateway port {_gateway_port()} is occupied but gave "
+                f"no /health JSON within "
+                f"{_OCCUPIED_HEALTH_PATIENCE_SEC:.0f}s — refusing to "
+                f"spawn a rival gateway. Inspect the holder (ss -ltnp "
+                f"/ Get-NetTCPConnection) and either wait it out or "
+                f"kill that process, then retry.")
     if pre is not None:
         if pre.get("backend_ready"):
             want = _desired_pool(workspace)
