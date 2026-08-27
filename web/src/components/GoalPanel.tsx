@@ -14,6 +14,7 @@ import {
 } from '../lib/vocab'
 import { SectionLabel } from './ui'
 import type { DeadAttempt, GoalDetail } from '../lib/types'
+import { frameClass } from '../lib/textFrame'
 
 /** Right-hand drill-down for a selected goal: the declaration source
  * as written (`name : statement := proof`, import prelude stripped),
@@ -34,7 +35,7 @@ function Attempt({ a }: { a: DeadAttempt }) {
       {open && (
         <div className="border-t border-edge px-3 py-2">
           {a.failure_detail && (
-            <pre className="mb-2 font-mono text-[11px] leading-snug whitespace-pre-wrap text-ink-dim">
+            <pre className={frameClass({ frame: false, lead: 'quote', className: 'mb-2' })}>
               {a.failure_detail}
             </pre>
           )}
@@ -247,12 +248,12 @@ export default function GoalPanel({
                         </span>
                         context · {cut} line{cut === 1 ? '' : 's'}
                       </summary>
-                      <pre className="mt-1 font-mono text-[11px] leading-snug break-words whitespace-pre-wrap text-ink-faint">
+                      <pre className={frameClass({ frame: false, lead: 'quote', tone: 'faint', className: 'mt-1' })}>
                         <Lean code={preamble} />
                       </pre>
                     </details>
                   )}
-                  <pre className="mb-3 font-mono text-xs leading-snug break-words whitespace-pre-wrap text-ink">
+                  <pre className={frameClass({ frame: false, lead: 'quote', tone: 'ink', size: 'md', className: 'mb-3' })}>
                     <Lean code={body} />
                   </pre>
                 </>

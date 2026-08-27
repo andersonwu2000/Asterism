@@ -10,6 +10,7 @@ import type {
   ReviewResponse,
 } from '../lib/types'
 import { relTime } from '../lib/format'
+import { frameClass } from '../lib/textFrame'
 
 /** Ingest sign-off review: the anchor closure of each deliverable,
  * rendered as an expandable tree (charter §3.2). Data = the Ingest-time
@@ -41,7 +42,7 @@ function PaperPane({ pid, anchor }: { pid: string; anchor: string }) {
           anchor not found — showing the document head for orientation
         </div>
       )}
-      <pre className="max-h-72 overflow-auto text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
+      <pre className={frameClass({ frame: false, mono: false, cap: 'md' })}>
         {data.content}
       </pre>
     </div>
@@ -78,7 +79,7 @@ function VouchRow({
         {goal && <span className="text-[10px] text-ink-faint">{goal.kind}</span>}
       </div>
       {text && (
-        <pre className="mt-1 ml-1 border-l border-edge pl-2 font-mono text-[11px] leading-snug break-words whitespace-pre-wrap text-ink-dim">
+        <pre className={frameClass({ frame: false, lead: 'quote', className: 'mt-1 ml-1 border-l border-edge pl-2' })}>
           <Lean code={text} />
         </pre>
       )}
@@ -145,7 +146,7 @@ function Deliverable({
       {/* the statement is the thing being vouched for — it reads
           WITHOUT a click (owner: put what must be read on the sheet) */}
       {(d.signature ?? resolve(d.fq)?.statement) && (
-        <pre className="border-t border-edge/60 px-3 py-2 font-mono text-[11px] leading-snug break-words whitespace-pre-wrap text-ink-dim">
+        <pre className={frameClass({ frame: false, lead: 'quote', className: 'border-t border-edge/60 px-3 py-2' })}>
           <Lean code={(d.signature ?? resolve(d.fq)?.statement) as string} />
         </pre>
       )}

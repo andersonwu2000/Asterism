@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { Lean } from '../lib/lean'
 import { renderProse } from '../lib/prose'
+import { frameClass } from '../lib/textFrame'
 
 /** Read-only proofs/ + input-file viewer. Lean highlighting comes
  * from the shared tokenizer in lib/lean; .md files render through the
@@ -65,7 +66,7 @@ export default function FileViewer({
         {data &&
           data.path === selected &&
           (selected.endsWith('.lean') ? (
-            <pre className="font-mono text-xs leading-relaxed whitespace-pre text-ink-dim">
+            <pre className={frameClass({ frame: false, size: 'md', wrap: false })}>
               <Lean code={data.content} />
             </pre>
           ) : selected.endsWith('.md') ? (
@@ -73,7 +74,7 @@ export default function FileViewer({
               {renderProse(data.content, { mode: 'document', frontmatter: true })}
             </div>
           ) : (
-            <pre className="font-mono text-xs leading-relaxed whitespace-pre text-ink-dim">
+            <pre className={frameClass({ frame: false, size: 'md', wrap: false })}>
               {data.content}
             </pre>
           ))}

@@ -3,6 +3,7 @@ import { Lean } from '../lib/lean'
 import { LeanEditor } from './LeanEditor'
 import { useLeanSession, type LeanCursor } from '../lib/leanSession'
 import { claimLeanSlot, releaseLeanSlot, useLeanSlotActive } from '../lib/leanSlot'
+import { frameClass } from '../lib/textFrame'
 
 /*
  * Runnable Lean blocks, ONE mechanism everywhere: the interactive
@@ -53,7 +54,7 @@ export function DiagList({ diags }: { diags: EvalDiag[] }) {
         ) : (
           <pre
             key={i}
-            className="overflow-x-auto rounded-lg border border-edge bg-wash px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink"
+            className={frameClass({ tone: 'ink' })}
           >
             <Lean code={d.message} />
           </pre>
@@ -130,7 +131,7 @@ export function LeanProbe({
   const hasInfo = status !== '' || goalText != null || diags.length > 0
   return (
     <div className={className}>
-      <div className="rounded-lg border border-edge bg-wash">
+      <div className="rounded-xl border border-edge bg-wash">
         <LeanEditor
           value={code}
           onChange={setCode}
@@ -152,10 +153,10 @@ export function LeanProbe({
         )}
       </div>
       {hasInfo && (
-        <div className="mt-1.5 rounded-lg border border-edge px-3 py-2">
+        <div className="mt-1.5 rounded-xl border border-edge px-3 py-2">
           {status !== '' && <div className="text-[11px] text-ink-faint">{status}</div>}
           {goalText && (
-            <pre className="overflow-x-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink">
+            <pre className={frameClass({ frame: false, tone: 'ink' })}>
               <span className="mr-2 text-[10px] tracking-widest text-ink-faint uppercase">
                 goal
               </span>

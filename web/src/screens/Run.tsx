@@ -21,6 +21,7 @@ import StrategyPanel from '../components/StrategyPanel'
 import LogTail from '../components/LogTail'
 import { LeanProbe } from '../components/LeanProbe'
 import type { Meta, ProblemDetail, RunStatus, RunWorker } from '../lib/types'
+import { frameClass } from '../lib/textFrame'
 
 /*
  * Run — mission control. The one page that answers "what is the
@@ -304,7 +305,7 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
             // tokenizer was colouring `have` red mid-sentence (owner
             // screenshot, 2026-07-25). Unbalanced $ mid-write simply
             // stays raw (withMath needs the closing $).
-            <div className="mt-1.5 max-h-96 overflow-y-auto rounded-lg border border-edge bg-bg px-3.5 py-2.5 text-[12.5px] leading-relaxed text-ink-dim">
+            <div className={frameClass({ cap: 'lg', size: 'md', mono: false, className: 'mt-1.5' })}>
               {renderProse(stableMdTail(w.file.tail, w.file.size), { mode: 'document' })}
             </div>
           ) : (
@@ -316,7 +317,7 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
                   rides inside it on hover, as the Library's does. */}
               {!probe && (
                 <div className="group/snap relative mt-1.5">
-                  <pre className="max-h-96 overflow-y-auto rounded-lg border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
+                  <pre className={frameClass({ cap: 'lg' })}>
                     <Lean code={w.file.tail} />
                   </pre>
                   {laneProblem && (

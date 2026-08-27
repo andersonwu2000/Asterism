@@ -8,6 +8,7 @@ import { useLeanSession, type LeanCursor } from '../lib/leanSession'
 import { claimLeanSlot, releaseLeanSlot, useLeanSlotActive } from '../lib/leanSlot'
 import { LeanEditor } from '../components/LeanEditor'
 import type { PaperShelfItem } from '../lib/types'
+import { frameClass } from '../lib/textFrame'
 
 /*
  * Problem authoring, mathematician-first: a name, a natural-language
@@ -347,7 +348,7 @@ export default function New() {
                   </span>
                 )}
               </div>
-              <pre className="max-h-56 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
+              <pre className={frameClass({ frame: false, tone: 'ink', size: 'md', cap: 'sm', className: 'px-3 py-2' })}>
                 {engineWord ? (
                   <span className="text-ink-dim">{engineWord}</span>
                 ) : !cursor ? (
@@ -398,7 +399,7 @@ export default function New() {
       )}
 
       {error && (
-        <pre className="mb-3 rounded-lg border border-edge-strong bg-surface px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink">
+        <pre className={frameClass({ tone: 'ink', className: 'mb-3' })}>
           {error}
         </pre>
       )}

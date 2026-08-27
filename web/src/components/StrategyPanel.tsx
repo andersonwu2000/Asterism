@@ -4,6 +4,7 @@ import { relTime } from '../lib/format'
 import { renderProse } from '../lib/prose'
 import { GOAL_STATUS_CLS, goalStatusLabel, strategyStatusLabel } from '../lib/vocab'
 import { SectionLabel } from './ui'
+import { frameClass } from '../lib/textFrame'
 
 /** Strategy (decomposition) drill-down: the agent's proposal reasoning,
  * subgoal roster, and why it died if it died. */
@@ -141,7 +142,7 @@ export default function StrategyPanel({
                         <span className="text-ink-faint">{relTime(a.ts)}</span>
                       </div>
                       {a.failure_detail && (
-                        <pre className="mt-1 font-mono text-[11px] whitespace-pre-wrap text-ink-faint">
+                        <pre className={frameClass({ frame: false, lead: 'quote', tone: 'faint', className: 'mt-1' })}>
                           {a.failure_detail.slice(0, 600)}
                         </pre>
                       )}

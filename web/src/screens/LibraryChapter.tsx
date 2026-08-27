@@ -11,6 +11,7 @@ import { CITE_DASH, citePath } from '../lib/sky'
 import { DEF_KINDS } from '../lib/vocab'
 import { layoutConstellation } from '../lib/layout'
 import type { Goal, LibraryChapter, LibraryChapterDecl, LibraryChapterFile } from '../lib/types'
+import { frameClass } from '../lib/textFrame'
 
 /*
  * Library chapter — one harvested problem, read for humans. Nobody
@@ -244,7 +245,7 @@ function DeclEntry({
       {d.signature && !probing && (
         <div className="group/sig relative mt-2 ml-[22px] max-w-4xl">
           <pre
-            className="overflow-x-auto rounded-lg border border-edge bg-wash px-3.5 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink"
+            className={frameClass({ tone: 'ink', size: 'md' })}
             title={d.signature}
           >
             <Lean code={conciseSignature(d.signature, short)} declHead />

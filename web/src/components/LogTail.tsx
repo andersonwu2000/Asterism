@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { frameClass } from '../lib/textFrame'
 
 /** Live tail of the engine's event stream — the "what actually
  * happened" window when a run misbehaves. Collapsed by default where
@@ -42,7 +43,7 @@ export default function LogTail() {
         stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30
       }}
     >
-      <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
+      <pre className={frameClass({ frame: false })}>
         {/* an error line in routine gray is invisible (cold-eye: a
             swallowed-error line hid in plain sight) — failures carry
             the warn ink, line by line */}

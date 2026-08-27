@@ -45,6 +45,28 @@ for the values). Every Lean fragment on every screen goes through it.
 No rainbow brackets, no editor underlines: reading ink, not tooling
 ink.
 
+## Text blocks — one template (2026-08-27)
+
+Every block of Lean, markdown or plain text is built by
+`lib/textFrame` (`frameClass`, or the `TextFrame` component). Never
+hand-write the chrome: that is how this rule became necessary.
+
+- **Ground is `bg-wash`, always.** It is a 2% white overlay, so a block
+  recedes from whatever is behind it. `bg-bg` and `bg-surface` are
+  opaque — using them makes a block assume a host it may not have.
+- **Radius is the container rung** (12px), like every other block that
+  envelops content. Code blocks had all drifted onto the CONTROL rung.
+- Only four things vary, and they are the language's own axes:
+  `tone` (brightness), `size`, `lead` (`quote` = packed into a side
+  panel, `read` = a thing you read), `cap` (reading room). Plus
+  `frame: false` for a quotation already inside someone else's frame —
+  two frames on one block draws the same fact twice.
+
+Owner, 2026-08-27. Before it: 24 hand-written `<pre>` blocks across 14
+files carrying four grounds, three paddings, five type sizes and four
+ink levels for one object — and two verbatim copies of the editor
+metrics string. A written law nothing owns is a law that drifts.
+
 ## Shape — the radius ladder
 
 Radius states nesting depth: the more an element envelops, the

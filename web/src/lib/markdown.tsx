@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { Lean } from './lean'
+import { EDITOR_METRICS as METRICS } from './textFrame'
 
 /*
  * Markdown display colouring for intent prose — the same achromatic
@@ -96,7 +97,6 @@ export function Markdown({ text }: { text: string }): ReactNode {
   return out
 }
 
-const METRICS = 'p-3 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap'
 
 /** A coloured markdown editor, LeanEditor's trick verbatim: a
  * transparent textarea (input, caret, selection) stacked on a painted

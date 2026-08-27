@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { usePoll } from '../lib/api'
 import { EVENT_CLS, eventLabel, eventTitle, failureLabel } from '../lib/vocab'
 import type { TimelineEvent, TimelineGroup } from '../lib/types'
+import { frameClass } from '../lib/textFrame'
 
 /*
  * The Timeline is a LOG, not a narrative: every row reads
@@ -214,7 +215,7 @@ function Row({
           )}
           {note && <div className="mb-1.5 text-xs text-ink-dim">{note}</div>}
           {e.body && (
-            <pre className="font-mono text-[11px] whitespace-pre-wrap text-ink-faint">
+            <pre className={frameClass({ frame: false, lead: 'quote', tone: 'faint' })}>
               {e.body}
             </pre>
           )}

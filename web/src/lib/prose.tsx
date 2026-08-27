@@ -3,6 +3,7 @@ import { navigate } from './router'
 import { Lean } from './lean'
 import { withMath } from './tex'
 import { emitGoalHover, emitGoalOpen } from './goalFocus'
+import { frameClass } from './textFrame'
 
 /*
  * Markdown-lite for MACHINE-AUTHORED prose the human reads: chat
@@ -263,7 +264,7 @@ export function renderProse(
     const end = text.indexOf('\n---', 4)
     if (end > 0) {
       fmBlock = (
-        <pre className="rounded-lg border border-edge bg-surface px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-faint">
+        <pre className={frameClass({ tone: 'faint' })}>
           {text.slice(4, end)}
         </pre>
       )
@@ -280,7 +281,7 @@ export function renderProse(
           return (
             <pre
               key={bi}
-              className="overflow-x-auto rounded-lg border border-edge bg-surface p-2.5 font-mono text-[12px] leading-relaxed"
+              className={frameClass({ tone: 'ink', size: 'md' })}
             >
               <Lean code={body.replace(/\n$/, '')} />
             </pre>

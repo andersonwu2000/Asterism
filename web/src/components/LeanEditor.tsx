@@ -1,5 +1,6 @@
 import { useRef } from 'react'
 import { Lean } from '../lib/lean'
+import { EDITOR_METRICS as METRICS } from '../lib/textFrame'
 import { caretLineCol } from '../lib/leanSession'
 
 /*
@@ -11,8 +12,6 @@ import { caretLineCol } from '../lib/leanSession'
  * transparent and only its caret ink shows.
  */
 
-const METRICS =
-  'p-3 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap'
 
 export function LeanEditor({
   value,
@@ -49,7 +48,7 @@ export function LeanEditor({
         'relative ' +
         (frameless
           ? ''
-          : 'rounded-lg border border-edge bg-surface focus-within:border-ink-faint')
+          : 'rounded-xl border border-edge bg-surface focus-within:border-ink-faint')
       }
     >
       <pre
