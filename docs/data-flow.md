@@ -75,7 +75,7 @@ source/config fingerprint drift, drains, then spawns a successor daemon for hand
 (concurrent dispatchers can't grab the same row; leased rows still count as "in queue" for dedup
 queries); only at pipeline end does `complete_queue_row` delete it. Pop / flush / startup cleanup
 all filter by the daemon's `--scope`. **NL-first gate**: while the gateway is not yet warm, only
-non-Lean kinds are popped (Strategist/Scholar go first, Lean work stays in the queue).
+non-Lean kinds are popped (Strategist goes first, Lean work stays in the queue).
 
 Between pop and spawn, in order:
 
@@ -85,7 +85,8 @@ Between pop and spawn, in order:
 4. **lazy verify gate**: on a problem's first dispatch in this daemon run, pay one `lake build Defs+Root` (~5–15s); on failure, quarantine
 5. `pool.submit(_run_pipeline, ...)` into a worker thread
 
-> Only four live queue kinds: `Strategist` / `Formalizer` / `Scholar` / `Librarian`.
+> Only three live queue kinds: `Strategist` / `Formalizer` / `Librarian` (`Scholar` retired
+> 2026-08-22 — paper fetching folded into the Strategist's own tool surface).
 > `Builder`/`Backward`/`Forward` are legacy row names from before the merge; the dispatcher still recognizes and routes them the same way.
 
 ---
@@ -99,10 +100,13 @@ Between pop and spawn, in order:
 `proved` / `success` / `failed` / `exhausted` / `moot`.
 
 **Entry**: pre-write the framework-locked files (§5) → **intake** (fresh short session writes `intake.json`:
-proceed / decline; the only decline vocabulary is `no_nl_correspondence` and `unprovable`, the
-latter must attach a counterexample note or fail-open lets it proceed) → only on proceed run
-presearch + compile Context.md. The intake session is then resumed by the work loop
-(continuation), nothing wasted.
+proceed / decline; the only decline vocabulary is `return_to_nl` and `unprovable`, the latter
+must attach a counterexample note or fail-open lets it proceed) → only on proceed run presearch
++ compile Context.md. The intake session is then resumed by the work loop (continuation),
+nothing wasted.
+**Falsity is non-terminal at intake too** (owner ruling 2026-08-25): a bare `unprovable` CLAIM
+maps to `agent_declined`, same as the work-turn directive (§3.1) — a goal reaches `disproved`
+only through the kernel-certified `-- decline: disprove` gate, never a bare assertion.
 
 **Retry loop (at most budget rounds; budget = SHELVE_THRESHOLD − goal.attempts)**
 
@@ -156,7 +160,12 @@ signature cannot be extracted from the stub, rebuild it with the declInfo oracle
 
 1. bail detection: `_progress.md` has content + patch untouched + no `new_*.lean` → `agent_bailed`
 2. glob `patch*.lean` → missing file `parse_proposal_fail`
-3. file-top `-- decline:` branches: `unprovable` / `return_to_parent` / `shelve` / `needs_decomposition` / `no_nl_correspondence`
+3. file-top `-- decline:` branches: `disprove` (2026-08-25 — the agent rewrote patch.lean to
+   PROVE the negation; kernel-certified via `_disprove.run_disproof_gate`, the only road to
+   `agent_infeasible`→`disproved`; the gate matches either the goal-slug head or the attempt's
+   own `s<id>` head, fixed 2026-08-27 after it certified zero real submissions) / `unprovable`
+   (non-terminal since 2026-08-25 — a bare falsity claim maps to `agent_declined` and teaches
+   the `disprove` road) / `return_to_parent` / `shelve` / `needs_decomposition` / `return_to_nl`
 4. signature unmodified (compared against the skeleton) → otherwise `patch_signature_mismatch`
 5. **leaf-bypass**: 0 `new_*.lean` files and body not sorry → treated as a 0-subgoal strategy: forbidden
    grep + single-file verify + axiom gate + race guard → commit if all pass
@@ -209,14 +218,15 @@ Strategist adjusts its briefs from the results in the failure replay.
 
 `target_kind='Group'` (since v35 seats belong to **groups**; legacy `Problem` rows still
 recognized, mapped to the top-level group).
-**Three triggers** (determined at spawn time, priority routine > inject_batch_done > pending_review >
+**Four triggers** (determined at spawn time, priority routine > inject_batch_done > pending_review >
 stall):
 
 | trigger | When |
 |---|---|
 | `routine` | ≥ `strategist.interval_min` since the last routine commit (default 120 min; clock lives in `groups.last_routine_at`, per-group; the legacy problem-level clock is dual-written, slated for retirement at Stage D). The wake's first phase runs a belief audit |
-| `inject_batch_done` | All outcomes of some batch (Inject/Delegate share one batch ledger) have landed; **or the group is in structural stall at spawn time** (fresh group / deadlock / root proved awaiting Ingest all count as "empty batch done"; wall-state detection is per-group, `is_group_stalled`) |
+| `inject_batch_done` | All outcomes of some batch (Inject/Delegate share one batch ledger) have landed |
 | `pending_review` | A goal turns `pending_strategist_review` (decline escalation or attempts threshold); routed to **the group owning that goal** |
+| `stall` | The group is in structural stall at spawn time (fresh group / deadlock / root proved awaiting Ingest all count as "empty batch done"; wall-state detection is per-group, `is_group_stalled`). First-class SQL-visible kind since v43 (2026-08-24) — reverses the old conflation that rode this on `inject_batch_done`; both still drive the same mandatory-advance gate (`BATCH_DONE_LIKE`) |
 
 All wakes first pass `problem_accepts_wake`: any `problems.state` other than `active` is refused.
 Multiple groups of the same problem can each hold a seat; `_strategist_inflight` dedups per group.
@@ -225,32 +235,47 @@ Multiple groups of the same problem can each hold a seat; `_strategist_inflight`
 
 1. spawn produces `decision.json` (JSON array) + non-exempt batches must attach `proposal.md` (`# Title` /
    `## Argument` / `## Proof` / `## Roadmap`; exempt kinds = {FetchPaper, RequestUserAmend,
-   Noop}; non-endgame batches must include ≥1 experiment = Inject / AttemptDisproof)
+   Noop, ReturnToParent, MarkDeliverable}; no per-batch experiment-count quota (retired
+   2026-08-16) — the invariant that a batch must not leave the group in dead air is enforced by
+   state (the stalled-delta gate + the parked-root gate inside `verify_decisions`), not by
+   counting decision kinds)
 2. Mechanical checks (schema, cross-decision invariants, package shape) fail → revise in the same session
-3. Past mechanical checks → **Adversary**: each round a fresh sub-spawn reviews the proposal
-   package in a hard-isolated projection directory and produces per-criterion `verdict.json`;
-   pass/rebut is derived by the framework; rebut → revise in the same session with the critique
-4. Mechanical errors and rebuttals **share** the round cap `strategist.verify_retry` (default 6);
-   still rebutted at the cap → `strategist_proposal_rejected`: proposal + critique stored in
+3. **Mechanical delta gate** (2026-08-28): a revision whose `proposal.md` is byte-identical to
+   the body the Adversary just rejected bounces back with a mechanical notice, judge skipped;
+   three consecutive no-deltas discard the proposal (`strategist_no_delta`), independent of the
+   round cap below
+4. Past the delta gate → **Adversary**: each round a fresh sub-spawn reviews the proposal
+   package in a hard-isolated projection directory and produces per-criterion `verdict.json`
+   (each criterion is a LIST of objection bullets since 2026-08-28, so several defects under one
+   criterion fire together instead of dripping one per round; legacy single-string verdicts stay
+   parseable); pass/rebut is derived by the framework; rebut → revise in the same session with
+   the critique
+5. Mechanical errors, delta-gate bounces, and rebuttals **share** the round cap
+   `strategist.verify_retry` (default 6); still rebutted at the cap →
+   `strategist_proposal_rejected`: proposal + critique stored in
    `programme_revisions` (status='rejected'), session discarded, the next wake carries only a
    one-line record for a blind re-derivation, target cooldown
-5. Pass → commit the decision batch + `programme.record_pass` (redraws `PROGRAMME.md`)
+6. Pass → commit the decision batch + `programme.record_pass` (redraws `PROGRAMME.md`)
 
-**commit_decisions side effects** (nine decision kinds):
+**commit_decisions side effects** (nine decision kinds commit; three more —
+`EmitDirective`, `FetchPaper`, `AttemptDisproof` — are retired and rejected by
+`verify_decisions` before ever reaching here, kept parseable so the rejection can teach the
+replacement: standing guidance moved into the Programme's `## Conventions` section
+(2026-08-03), paper fetching into the Strategist's own tool surface (2026-08-22), and
+disproof into the general machinery — `Inject` a negation mint / `ReturnToParent(refuted)` /
+`RequestUserAmend` (2026-08-04)):
 
 | decision | Action |
 |---|---|
 | `Inject` (no target) | enqueue mint (Formalizer/Problem) + decision row (writes batch_id) |
 | `Inject` (with target) | force reopen + detach when needed + un-stall the upstream strategy + enqueue Formalizer |
 | `ConfirmShelve` | goal terminal(shelved) + propagate |
-| `EmitDirective` | set the problem's standing directive |
 | `RequestUserAmend` | write `.proposed_<file>` + problem transitions to `awaiting_human` |
 | `MarkDeliverable` | mark a deliverable (anchor+claim) |
 | `Ingest` | **Top-level group**: stamps `ingested_at` (the only terminal state; refused by the framework if a root is present but not proved); library:true additionally goes through sign-off/harvest. **Sub-group**: lightweight — group marked `delivered`, wakes the parent group, touches no sign-off/harvest/problem FSM; gate = anchor proved (rescue shape) or ≥1 deliverable marked by this group (anchorless shape) |
-| `FetchPaper` | enqueue Scholar (payload carries query/reason; outcome backfilled by Scholar) |
-| `AttemptDisproof` | the framework **mechanically** performs the negation surgery to mint the ¬P goal (the LLM never rewrites the statement — anti-strawman) |
 | `Delegate` | INSERT a new group (charter=brief) + immediately schedule the new group's seat; with a target, the anchor turns `attempting`. Outcome stays NULL until the sub-group reaches a terminal state — shares the batch ledger with same-batch Injects; the parent group wakes only when all are terminal |
 | `ReturnToParent` | sub-group only: group marked `returned`, rescue anchor lands `shelved` (with cascade), parent's Delegate outcome=`failed:returned`, wakes the parent group |
+| `CloseGroup` | the reverse of `Delegate`: marks a child group `closed`, fills the parent's open Delegate outcome; the child's own seat stops naturally (`groups_needing_t1`/`groups_stalled` select `active` only) |
 | `Noop` | only INSERTs an audit row |
 
 Wrap-up: the batch layer touches `last_strategist_at` (routine additionally touches `last_routine_at`,
@@ -259,11 +284,15 @@ which is what re-arms the clock); routine wakes may also add/edit global lessons
 
 ---
 
-### 3.4 Scholar
+### 3.4 Scholar (retired 2026-08-22)
 
-Single-stage spawn dispatched by a `FetchPaper` decision: uses `Tooling.papers.search` / `papers.fetch`
-to find a copy from whitelisted sources; success → paper lands in `Papers/<shelf-id>/` + bound via `problem_papers` (`paper_fetched`);
-no fetchable copy → `paper_unfetchable`, with the precise request written into the decision's `outcome_detail` for the human channel.
+The dedicated paper-fetch pipeline (`pipeline/scholar.py`, dispatched by a `FetchPaper`
+decision) is deleted — dispatcher branch, quota seat, config seat keys and the `Asterism.yaml`
+block are gone. Paper fetching is now the Strategist's own tool surface: `paper_search` /
+`paper_fetch` (the same `Tooling.papers.search` / `papers.fetch` backends) are called directly,
+mid-wake, no separate spawn — success still lands the paper in `Papers/<shelf-id>/` and binds it
+via `problem_papers`. `FetchPaper` stays in `DECISION_KINDS` (parseable) but `verify_decisions`
+rejects it outright, teaching the replacement.
 
 ---
 
@@ -353,16 +382,25 @@ statements in the `CATALOG.md` companion) → previous progress note / previous 
 (umbrella, 4 sub-sections; projection logic in `pipeline/events.py`, design history in
 `docs/archive/design/goal_history_unified.md`).
 
-**mint** (`compile_forward_context`): brief → Library inventory → past mint proposals →
-active goals → charter (+ user word) → paper index. (No TREE, **no Programme section**.)
+**mint** (`compile_forward_context`): brief → conventions (optional `## Conventions` from the
+authoring group's Programme) → **Programme `## Proof`** (added 2026-07-30 — mint's own
+falsity-triage now has a source independent of the brief) → Library inventory → Candidate
+lemmas (pre-search, since 2026-08-07) → past mint proposals → active goals → charter (+ user
+word) → forbidden lemmas → paper index. (No TREE.)
 
-**Strategist** (`compile_strategist_context`): trigger → (pending_review only: failure
-replay / existing strategies / ancestor chain) → stall warning + Ingest availability →
-disproof guidance → **Programme** (current rev full text + Adversary reservations + one line for the last rejection)
-→ directive → plan note (`.drafts/strategist_plan.md`, private notes) → completed Inject
-batches (with landed decl names) → pending reopen-promises → active goals → recent decisions →
-TREE → catalog → "## Your charter" (own charter inline at every depth; the top group also
-gets a Defs.lean preview) → "## The user's word" → (routine only: KB curation surface).
+**Strategist** (`compile_strategist_context`): trigger → "## The user's word" (2nd section,
+not last) → (**any non-routine wake**, not just `pending_review` — 2026-08-26 wake merge:
+failure replay / adjudication history / existing strategies / ancestor chain, for every goal
+awaiting review, capped) → stall warning + Ingest availability → disproof guidance →
+"## Your group" / "## Your groups in flight" → **Programme** (current rev full text +
+Adversary reservations + one line for the last rejection) → directive → plan note
+(`.drafts/strategist_plan.md`, private notes) → completed Inject batches (full briefs live in
+the `BATCHES.md` companion since 2026-08-22) → pending reopen-promises → active goals (counts +
+newest-15 tail; full roster with signatures moved to `CATALOG.md`'s `## Alive goals`,
+2026-08-26 — it was the same alive roster as TREE's, re-sent every loop step and drifting
+apart mid-wake) → recent decisions → TREE → catalog → adjudication-history pointer →
+"## Your charter" (own charter inline at every depth; the top group also
+gets a Defs.lean preview) → paper index → (routine only: KB curation surface).
 
 ### Sandbox
 
@@ -373,8 +411,9 @@ agent cwd locked to problem_dir:
 - **Read forbidden**: other `Problems/<...>/`; operator state (`~/.claude/projects/**` deny +
   auto-memory off + `spawn_guard` PreToolUse whitelist hook)
 - **Tools**: `Read` / `Write` / `Edit` / `Grep` / `Bash`, Bash whitelisted to only
-  `python -m Tooling.knowledge.loogle` and `python -m json.tool` (Scholar additionally gets
-  `papers.search` / `papers.fetch`; spawn env injects the repo root into `PYTHONPATH`); LSP MCP
+  `python -m Tooling.knowledge.loogle` and `python -m json.tool` (the Strategist seat
+  additionally gets `paper_search` / `paper_fetch` — Scholar retired 2026-08-22, no separate
+  spawn; spawn env injects the repo root into `PYTHONPATH`); LSP MCP
   tools (apply_edit / goal_at / errors_at / validate_file)
 - **spawn flags**: `--setting-sources ""` (CLAUDE.md never loaded); user/framework files
   (problem.json/Defs/Root/PROGRAMME) fully disallowed for Write+Edit

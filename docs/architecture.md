@@ -46,9 +46,13 @@ this principle draws the role boundaries.
 |---|---|---|
 | **Formalizer** | Goal / Problem | The sole Lean proving worker (merged from the former Builder/Backward/Forward trio on 2026-07-27, v33). Goal-target: intake triage (incl. falsity scan, may decline) → decides on its own whether to prove directly or split into a Strategy + N sub-Goals; Problem-target (**mint**): dispatched by the Strategist, produces one new toolkit lemma. Implementation remains split across `pipeline/backward.py` (prove/split) and `forward.py` (mint) |
 | **Strategist** | Problem | Reads problem state, writes a proposal package (Programme revision + decision batch), commits after the Adversary's verdict clears it (twelve decision kinds, see below) |
-| **Scholar** | Problem | Dispatched via Strategist `FetchPaper`: fetches whitelisted papers into `Papers/`, builds the index (v23) |
 | **Librarian** | Problem (per-file) | After proved + opt-in, runs the five-stage chain: dedup → classify → migrate → cleanup → bridge |
 | **Verify housekeeping** | — | Not a worker: runs sequentially inside the dispatcher tick, assembles fully-proved strategies, writes aliases into the parent, runs G1 revival |
+
+**Scholar retired 2026-08-22** (`020ebf85`): `pipeline/scholar.py` is deleted (dispatcher branch,
+quota seat, config seat keys, `Asterism.yaml` block gone). Paper fetching is now the
+Strategist's own tool surface (`paper_search`/`paper_fetch`, same `Tooling.papers` backends),
+called directly mid-wake — no separate spawn.
 
 **The Adversary (judge) is not a worker kind** — it is a sub-spawn inside the Strategist wake,
 fresh per round, that reviews the proposal package under hard isolation in a projection
@@ -57,15 +61,23 @@ per-criterion verdicts (see "Research mode" below).
 
 Twelve Strategist decision kinds (SoT: `strategist.py` `DECISION_KINDS`): `Inject` /
 `ConfirmShelve` / `EmitDirective` / `RequestUserAmend` / `MarkDeliverable` / `Ingest` /
-`FetchPaper` / `AttemptDisproof` (the framework mechanically mints the ¬P goal — belief is
-not trusted; both directions must go through the kernel) / `Delegate` / `ReturnToParent` /
+`FetchPaper` / `AttemptDisproof` / `Delegate` / `ReturnToParent` /
 `CloseGroup` (these three belong to the group tree, see below; `ReturnToParent` is
 child-group-only, `CloseGroup` is the reverse of `Delegate` — a parent retires a child) /
-`Noop`. Three triggers: `routine` (incl. the first stage of belief audit) / `pending_review` /
-`inject_batch_done` (structural-stall wakes are also this kind — fresh problem, deadlock, and
-root proved awaiting Ingest all count as "empty batch done"). `Ingest` is the sole terminal
-state: while a root is present the framework hard-rejects it until the root is proved;
-`ingested_at` drives T1/T4 liveness, Librarian selfstart, and daemon exit.
+`Noop`. **Three of the twelve are retired** — kept in `DECISION_KINDS` and parseable so
+`verify_decisions` can reject them with a teaching message instead of executing them:
+`EmitDirective` (2026-08-03 — standing worker guidance now lives in the Programme's optional
+`## Conventions` section instead of a second document), `FetchPaper` (2026-08-22 — folded into
+the Strategist's own tool surface, see above), `AttemptDisproof` (2026-08-04 — betting against
+a claim goes through the general machinery instead: `Inject` a Forward mint of the precise
+negation, `ReturnToParent(refuted)`, or `RequestUserAmend` with the disproof attached; never a
+mechanically-linked negation pair). Four triggers: `routine` (incl. the first stage of belief
+audit) / `pending_review` / `inject_batch_done` / `stall` (v43, 2026-08-24 — structural-stall
+wakes get their own SQL-visible trigger_kind now, reversing the old conflation with
+`inject_batch_done`; both still drive the same mandatory-advance gate, `BATCH_DONE_LIKE`).
+`Ingest` is the sole terminal state: while a root is present the framework hard-rejects it
+until the root is proved; `ingested_at` drives T1/T4 liveness, Librarian selfstart, and daemon
+exit.
 
 Concurrency discipline: at most one pipeline per Goal at a time (passive OR, cap=1); at most
 one in-flight Strategist per problem; mint deduplicates on `(target, kind, decision_id)` —
@@ -78,14 +90,19 @@ The Strategist no longer submits decision batches bare: a **proposal package** (
 `# Title` / `## Argument` / `## Proof` / `## Roadmap`) goes with the decision batch to the
 Adversary for round-by-round review; rebuttals ride the verify-retry loop (sharing the round
 cap with mechanical checks); still rebutted at the cap → proposal + critique are stored in
-`programme_revisions` (v30, status='rejected') and the session is discarded. The chain of
-passed Programme revisions is the problem's strategic SoT (`PROGRAMME.md` is only a render;
+`programme_revisions` (v30, status='rejected') and the session is discarded. A **mechanical
+delta gate** (2026-08-28) sits in front of the judge: a revision whose `proposal.md` is
+byte-identical to the body just rejected bounces back with a mechanical notice instead of being
+re-judged; three consecutive no-deltas discard the same way (`strategist_no_delta`). The chain
+of passed Programme revisions is the problem's strategic SoT (`PROGRAMME.md` is only a render;
 v31 pins at most one passed per rev via a partial unique index).
 **NL-first** (since 2026-07-25): workers treat the Programme's `## Proof` as their premise;
-a goal that maps to no NL step is handed back as `no_nl_correspondence` — no inventing
-mathematics. {`FetchPaper`, `RequestUserAmend`, `Noop`, `ReturnToParent`} are all exempt from
-the package gate; a proposal must include ≥1 experiment
-(`Inject`/`AttemptDisproof`/`Delegate`). Design SoT:
+a goal that maps to no NL step is handed back as `return_to_nl` — no inventing
+mathematics. {`FetchPaper`, `RequestUserAmend`, `Noop`, `ReturnToParent`, `MarkDeliverable`}
+are all exempt from the package gate; there is no per-batch experiment-count quota (retired
+2026-08-16) — the invariant that a batch must not leave the group in dead air is enforced by
+state, not by counting decision kinds (the stalled-delta gate and the parked-root gate inside
+`verify_decisions`). Design SoT:
 `docs/internal/research_mode_design.md`, `nl_first_design.md`.
 
 ### Discussion group tree (2026-08-02, v35)
@@ -137,7 +154,7 @@ Design SoT: `docs/internal/discussion_group_design.md`.
 
 | Form | Contents |
 |---|---|
-| **DB** (`asterism.db`, sqlite WAL; version number and table list are authoritative in `state/db.py` `_CURRENT_USER_VERSION` (v35 and 17 tables at time of writing); recent milestones: v17 queue lease, v21 spawn_usage accounting, v23 Scholar/FetchPaper, v25 AttemptDisproof, v28 user_file_history, v29 problem FSM, v30/v31 Programme revision chain, v33 Formalizer merge, v35 discussion group tree) | The whole graph, pipeline history, dead attempt forensics, Strategist decisions, Programme revisions, group tree, Librarian lifecycle, KB lessons, spawn usage |
+| **DB** (`asterism.db`, sqlite WAL; version number and table list are authoritative in `state/db.py` `_CURRENT_USER_VERSION` (v44 and 18 tables at time of writing); recent milestones: v17 queue lease, v21 spawn_usage accounting, v23 Scholar/FetchPaper, v25 AttemptDisproof, v28 user_file_history, v29 problem FSM, v30/v31 Programme revision chain, v33 Formalizer merge, v35 discussion group tree, v40 Manifest retirement, v43 stall trigger_kind) | The whole graph, pipeline history, dead attempt forensics, Strategist decisions, Programme revisions, group tree, Librarian lifecycle, KB lessons, spawn usage |
 | **Problem intent** (DB: top group's `groups.charter` + `problems.user_word` + `problem_settings`) | The human's goal, standing directives, and machine settings (§4); durable seed `problem.json` |
 | **`Defs.lean` / `Root.lean`** | Problem's custom definitions / framework-managed root (§5) |
 | **`proofs/L_<slug>.lean`, `_strategy_s<sid>.lean`** | One file per sub-Goal, one assembled patch per Strategy |
@@ -373,7 +390,7 @@ Tooling/
               consistency.py (drift-check predicates), kb.py / kb_ingest.py (lessons, Model B)
   pipeline/   backward.py / forward.py (the Formalizer's prove-split / mint entries),
               _intake.py (Formalizer intake gate), strategist.py, adversary.py (the Adversary),
-              scholar.py (paper fetching),
+              _disprove.py (kernel-certified disproof gate),
               librarian/, _retry.py (session retry helper), _assembly.py,
               _axiom.py (shared axiom gate), _cite_gate.py, _presearch.py, _reflection.py,
               events.py, etc.
@@ -407,8 +424,8 @@ is present, it injects
 Programme's
 `## Proof` is injected into worker context as the programme section (the NL-first premise);
 bulky content goes to the
-`CATALOG.md` / `PAPER_MAP.md` companions, inline keeps only index pointers. Full section
-order in
+`CATALOG.md` / `PAPER_MAP.md` / `BATCHES.md` companions, inline keeps only index pointers.
+Full section order in
 `data-flow.md` §5.
 
 ---
@@ -419,7 +436,7 @@ order in
 |---|---|
 | A 'running' state in the pipelines table | Only finished rows are stored; no zombies left when the daemon dies |
 | An active cancellation propagation table | The cascade entry no-op already passively catches OR losers |
-| New worker_kinds such as Generalizer / Refuter | Still deferred (Scholar v23 and Formalizer v33 already demonstrated the kind-extension path) |
+| New worker_kinds such as Generalizer / Refuter | Still deferred (Scholar v23 — since retired 2026-08-22 — and Formalizer v33 already demonstrated the kind-extension path) |
 | Auto-pruning OR-losing strategy files | Blast radius too large (Jordan 2026-05-26); only auto-reconcile; prune is the operator opt-in `asterism prune` |
 | An events-table audit log | dead_attempts.artifacts JSON + stdout suffice |
 | Two-phase `commit_state` pending/live | backup-restore + `os.replace` is enough |
@@ -440,8 +457,8 @@ order in
   unclaimed slots
 - The `pipelines` table stores finished rows only
 - worker_kind ↔ target_kind: Formalizer → Goal (prove/split) or Problem (mint),
-  Strategist → Problem, Scholar → Problem, Librarian → Problem (per-file target
-  `problem\x1ffile`); Verify is not a worker
+  Strategist → Problem, Librarian → Problem (per-file target
+  `problem\x1ffile`); Verify is not a worker (Scholar retired 2026-08-22)
 - `problems.state` transitions only via `apply_problem_transition`; wakes only delivered to `active` (WAKE_LEGALITY)
 
 **soundness**
