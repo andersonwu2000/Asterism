@@ -250,3 +250,42 @@ test('constellation: the first view IS the fit', async ({ page }) => {
   for (let i = 0; i < a.length; i++)
     expect(Math.abs(a[i] - b[i]), `opened ${opened} vs fitted ${fitted}`).toBeLessThan(1)
 })
+
+test('engine console: the sky opens on its fit, and stays put', async ({ page }) => {
+  // The console is where "opened != fitted" actually bit: its sky is
+  // LIVE, so the plate is re-laid as goals land, and a camera fitted
+  // to the plate of ten seconds ago is not the fit any more. Measured
+  // there before the fix: the view sat at k=0.05801 for as long as you
+  // liked while `fit` gave 0.05932 (owner, 2026-08-27). The problem
+  // page's copy of this test passed throughout — its plate is static.
+  await page.goto('/#/run')
+  const cam = page.locator('svg.constellation > g[transform]').first()
+  const alive = await cam
+    .waitFor({ timeout: 15000 })
+    .then(() => true)
+    .catch(() => false)
+  test.skip(!alive, 'no problem in focus on this console')
+
+  const read = async () => (await cam.getAttribute('transform')) ?? ''
+  const settled = async () => {
+    let prev = ''
+    for (let i = 0; i < 25; i++) {
+      const t = await read()
+      if (t !== '' && t === prev) return t
+      prev = t
+      await page.waitForTimeout(150)
+    }
+    return prev
+  }
+  const opened = await settled()
+  expect(opened).not.toBe('')
+  await page.getByRole('button', { name: 'fit', exact: true }).click()
+  const fitted = await settled()
+
+  const nums = (t: string) => (t.match(/-?\d+(\.\d+)?/g) ?? []).map(Number)
+  const a = nums(opened)
+  const b = nums(fitted)
+  expect(b.length).toBe(a.length)
+  for (let i = 0; i < a.length; i++)
+    expect(Math.abs(a[i] - b[i]), `opened ${opened} vs fitted ${fitted}`).toBeLessThan(1)
+})

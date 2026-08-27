@@ -107,6 +107,24 @@ export function useSkyCamera(
   // (latent in the pre-hook copy; caught in review, 2026-07-09). The
   // first fit proves the container exists, so re-running on that
   // transition attaches exactly once per appearance.
+  // A PLATE that changes size re-fits — on the same terms as a
+  // container resize, and only for a camera the reader has not
+  // touched. The engine console is where this bites: the sky is live,
+  // so the plate is re-laid as goals land, and a camera fitted to the
+  // plate of ten seconds ago is not the fit any more. Measured there:
+  // the view sat at k=0.05801 indefinitely while `fit` gave 0.05932
+  // (owner, 2026-08-27). `userAdjusted` is what keeps this from
+  // fighting a reader who has zoomed — the rule this file already had
+  // for resizes, applied to the other way a plate can change.
+  const sizeKey = `${contentW}x${contentH}`
+  const lastSize = useRef(sizeKey)
+  useEffect(() => {
+    if (lastSize.current === sizeKey) return
+    lastSize.current = sizeKey
+    if (userAdjusted.current) return
+    setView(null)
+  }, [sizeKey])
+
   const attached = view !== null
   // window/panel resize re-fits ONLY untouched views (fighting an
   // explicit zoom is worse than letting it drift off-centre). With a
