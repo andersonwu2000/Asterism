@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { Goal, Strategy, StrategyEdge } from '../lib/types'
 import { CameraControls, useSkyCamera } from '../lib/camera'
 import { splitSignature } from '../lib/leanSig'
-import { layoutConstellation } from '../lib/layout'
+import { layoutConstellation, liveWorkIds } from '../lib/layout'
 import { Lean } from '../lib/lean'
 import {
   ALIAS_DASH,
@@ -728,6 +728,14 @@ export default function Constellation({
     return segs.length > 0 ? { segs, stars: [...stars] } : null
   }, [hovered, layout, byId])
 
+  // Which stars have work on them RIGHT NOW — their own, or anywhere
+  // beneath them. Not `attempting`, which only says "decomposed, and
+  // waiting" (owner, 2026-08-27); see `liveWorkIds`.
+  const hot = useMemo(
+    () => liveWorkIds(goals, strategies, strategyEdges, anchorEdges),
+    [goals, strategies, strategyEdges, anchorEdges],
+  )
+
   // The legend shows only what THIS sky contains (owner) — a swatch
   // for a mark that never appears is homework.
   const present = useMemo(() => {
@@ -748,7 +756,7 @@ export default function Constellation({
         g.status === 'attempting' ||
         g.status === 'pending_strategist_review'
       if (live) open = true
-      if (engineWorking && (g.status === 'attempting' || g.in_flight)) working = true
+      if (engineWorking && hot.has(g.id)) working = true
       if (g.status === 'proved') proved = true
       if (g.status === 'disproved') disproved = true
       if (g.status === 'shelved') shelved = true
@@ -775,7 +783,7 @@ export default function Constellation({
       cites: layout.edges.some((e) => e.kind === 'citation'),
       alias: layout.edges.some((e) => e.kind === 'alias'),
     }
-  }, [goals, layout, engineWorking, isAnchor])
+  }, [goals, layout, engineWorking, isAnchor, hot])
   const legendStatus =
     present.open ||
     present.working ||
@@ -1112,9 +1120,7 @@ export default function Constellation({
           // status-flip opacity transition, which otherwise low-pass
           // filters the 1.4s wave to a ±0.03 flicker nobody can see
           // (the legend blinked, the sky didn't — owner, 2026-07-09)
-          const working =
-            engineWorking &&
-            (n.goal.status === 'attempting' || n.goal.in_flight)
+          const working = engineWorking && hot.has(n.goal.id)
           // Attempts heat gauge: lives burned out of threshold+1, only
           // meaningful while the goal is still being worked. The +1
           // keeps the gauge visibly open right up to the shelving
@@ -1700,7 +1706,7 @@ export default function Constellation({
         {present.working && (
 <span
           className="flex items-center gap-1"
-          title="the engine is writing this star right now — it blinks"
+          title="an agent is on this star right now, or on something beneath it — the blink leads down to the work"
         >
           <svg width="13" height="13" viewBox="-5 -5 10 10">
             <circle r="3.2" fill="var(--color-starlight)">

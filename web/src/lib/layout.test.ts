@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { layoutConstellation, X_GAP } from './layout'
+import { layoutConstellation, liveWorkIds, X_GAP } from './layout'
 import type { ConstellationLayout } from './layout'
 import type { Goal, Strategy, StrategyEdge } from './types'
 import residueFixture from './__fixtures__/residue_thm.json'
@@ -135,27 +135,27 @@ describe('layout laws on real problem states', () => {
   }
 })
 
-describe('layout edge cases', () => {
-  const goal = (id: number, over: Partial<Goal> = {}): Goal =>
-    ({
-      id,
-      slug: `g${id}`,
-      status: 'open',
-      kind: 'Prop',
-      origin: 'backward',
-      depth: 0,
-      detached: false,
-      alias_target_id: null,
-      is_deliverable: false,
-      statement: '',
-      lean_path: '',
-      created_at: '',
-      attempts: 0,
-      dead_attempts: 0,
-      in_flight: false,
-      ...over,
-    }) as Goal
+const goal = (id: number, over: Partial<Goal> = {}): Goal =>
+  ({
+    id,
+    slug: `g${id}`,
+    status: 'open',
+    kind: 'Prop',
+    origin: 'backward',
+    depth: 0,
+    detached: false,
+    alias_target_id: null,
+    is_deliverable: false,
+    statement: '',
+    lean_path: '',
+    created_at: '',
+    attempts: 0,
+    dead_attempts: 0,
+    in_flight: false,
+    ...over,
+  }) as Goal
 
+describe('layout edge cases', () => {
   it('empty input does not crash and yields finite dims', () => {
     const v = layoutConstellation([], [], [])
     expect(Number.isFinite(v.width)).toBe(true)
@@ -295,5 +295,123 @@ describe('layout edge cases', () => {
     ] as StrategyEdge[])
     expect(v.bundles.length).toBe(1)
     expect(v.edges.every((e) => e.kind === 'strategy')).toBe(true)
+  })
+})
+
+/*
+ * The blink law (owner, 2026-08-27): a star blinks when work is
+ * DISPATCHED on it or anywhere beneath it — never for wearing
+ * `attempting`, which only says the goal was decomposed and is
+ * waiting. These are the cases the sky got wrong.
+ */
+describe('the blink follows the work, not the status', () => {
+  const strat = (id: number, goal_id: number): Strategy =>
+    ({ id, goal_id, status: 'proposed' }) as Strategy
+  const minted = (sid: number, ...subs: number[]): StrategyEdge[] =>
+    subs.map((s) => ({ strategy_id: sid, subgoal_id: s, link_kind: 'minted' })) as StrategyEdge[]
+
+  it('leaves a bare `attempting` dark when nothing is dispatched', () => {
+    // the whole complaint: `attempting` rode up as liveness, and a
+    // goal wears it while its entire subtree sits parked
+    const goals = [goal(1, { status: 'attempting' }), goal(2, { status: 'open' })]
+    const hot = liveWorkIds(goals, [strat(10, 1)], minted(10, 2))
+    expect([...hot]).toEqual([])
+  })
+
+  it('blinks the star an agent is actually on', () => {
+    const goals = [goal(1, { status: 'attempting' }), goal(2, { in_flight: true })]
+    const hot = liveWorkIds(goals, [strat(10, 1)], minted(10, 2))
+    expect(hot.has(2)).toBe(true)
+  })
+
+  it('carries the blink up every star the work hangs under', () => {
+    // 1 → 2 → 3, an agent on 3: the whole spine leads the eye down
+    const goals = [goal(1, { origin: 'root' }), goal(2), goal(3, { in_flight: true })]
+    const hot = liveWorkIds(
+      goals, [strat(10, 1), strat(11, 2)], [...minted(10, 2), ...minted(11, 3)])
+    expect([...hot].sort((a, b) => a - b)).toEqual([1, 2, 3])
+  })
+
+  it('leaves the sibling branch dark', () => {
+    // 1 decomposes into 2 and 3; the agent is on 2 — 3 has no work
+    const goals = [goal(1, { origin: 'root' }), goal(2, { in_flight: true }), goal(3)]
+    const hot = liveWorkIds(goals, [strat(10, 1)], minted(10, 2, 3))
+    expect(hot.has(3)).toBe(false)
+    expect([...hot].sort((a, b) => a - b)).toEqual([1, 2])
+  })
+
+  it('does not climb a citation — one busy lemma must not blink its citers', () => {
+    // goal 3 is a lemma route 11 REUSES. Work inside it belongs to
+    // whoever minted it, not to everyone reaching for it (this is
+    // `link_kind` again, so the two rules cannot drift apart).
+    const goals = [goal(1, { origin: 'root' }), goal(2), goal(3, { in_flight: true })]
+    const edges = [
+      ...minted(10, 2, 3),
+      { strategy_id: 11, subgoal_id: 3, link_kind: 'cited' },
+    ] as StrategyEdge[]
+    const hot = liveWorkIds(goals, [strat(10, 1), strat(11, 2)], edges)
+    expect(hot.has(2)).toBe(false)
+    expect([...hot].sort((a, b) => a - b)).toEqual([1, 3])
+  })
+
+  it('climbs an anchor to the claim it holds up', () => {
+    // anchors hang beneath their claim — layout flips them, and so
+    // must this, or the blink runs the wrong way down the picture
+    const goals = [goal(1, { origin: 'root' }), goal(2, { in_flight: true })]
+    const hot = liveWorkIds(goals, [], [], [{ from: 2, to: 1 }])
+    expect([...hot].sort((a, b) => a - b)).toEqual([1, 2])
+  })
+
+  it('survives a hierarchy cycle', () => {
+    // research mode really produces these (the a5_cmp fixture's
+    // 6370→6375→6380→6370); a blink must not spin on one
+    const goals = [goal(1, { in_flight: true }), goal(2), goal(3)]
+    const hot = liveWorkIds(
+      goals, [strat(10, 1), strat(11, 2), strat(12, 3)],
+      [...minted(10, 2), ...minted(11, 3), ...minted(12, 1)])
+    expect([...hot].sort((a, b) => a - b)).toEqual([1, 2, 3])
+  })
+
+  it('climbs only edges the reader can see it climb', () => {
+    // Anti-drift lock. "Beneath" must mean what the PICTURE means by
+    // it: every star the blink carries to is one layout actually drew
+    // a parent line from, on real problem shapes.
+    for (const [name, f] of Object.entries(FIXTURES)) {
+      const v = run(f)
+      const parents = new Map<number, Set<number>>()
+      const add = (child: number, parent: number) => {
+        const at = parents.get(child)
+        if (at) at.add(parent)
+        else parents.set(child, new Set([parent]))
+      }
+      for (const e of v.edges)
+        if (e.kind === 'strategy' || e.kind === 'anchor') add(e.to, e.from)
+      for (const b of v.bundles) for (const c of b.children) add(c, b.parentId)
+
+      const drawn = new Set(v.nodes.map((n) => n.goal.id))
+      // ~a dozen seeds spread through the node order whatever the
+      // fixture's size, so the walk crosses several real trees (a
+      // fixed stride gave the 36-goal a5_cmp exactly one seed, and it
+      // was a root — the non-vacuity guard below caught that)
+      const stride = Math.max(1, Math.floor(v.nodes.length / 12))
+      const seeds = v.nodes.filter((_, i) => i % stride === 0).map((n) => n.goal.id)
+      let climbed = 0
+      for (const seed of seeds) {
+        const hot = liveWorkIds(
+          f.goals.map((g) => (g.id === seed ? { ...g, in_flight: true } : { ...g, in_flight: false })),
+          f.strategies, f.strategy_edges, f.anchor_edges)
+        for (const id of hot) {
+          if (id === seed || !drawn.has(id)) continue
+          climbed++
+          // it is hot because something under it is: SOME child of it
+          // is hot too, along a line layout drew
+          const viaDrawnChild = [...hot].some((c) => parents.get(c)?.has(id))
+          expect(viaDrawnChild, `${name}: star ${id} blinks with no drawn child under it`).toBe(true)
+        }
+      }
+      // the seeds must actually have ancestors, or this proves nothing
+      expect(climbed, `${name}: no seed climbed — the lock is vacuous`)
+        .toBeGreaterThan(0)
+    }
   })
 })

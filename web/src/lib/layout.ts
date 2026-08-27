@@ -80,6 +80,74 @@ export const X_GAP = 110
 export const Y_GAP = 120
 const PAD = 60
 
+/**
+ * The stars a blink belongs on: work DISPATCHED right now, plus every
+ * star it hangs under.
+ *
+ * `attempting` is NOT that signal (owner, 2026-08-27). It means the
+ * goal has been decomposed and is waiting on its subtree — a goal sits
+ * `attempting` while nothing at all is happening beneath it. The
+ * engine learned this about its own reader as `status-SHALLOW`
+ * (putnam_2025_b6 silent idle, 2026-07-09: a produced goal sat
+ * `attempting` with every strategy under it dead and nothing queued)
+ * and fixed it by recursing; the sky went on reading the bare status.
+ * `in_flight` is the honest signal — a queue row leased by the LIVE
+ * daemon, which is why it also needs `engineWorking` at the call site.
+ *
+ * The climb follows the SAME edges that make this picture a tree:
+ * minted strategy edges and anchors. A cited lemma is a cross-link —
+ * work inside it says nothing about the goals reaching for it, and
+ * climbing citations would blink half a sky over one busy lemma. That
+ * is `link_kind` again, one axis over, so `agreesWithHierarchy` in the
+ * tests holds the two definitions together.
+ */
+export function liveWorkIds(
+  goals: Goal[],
+  strategies: Strategy[],
+  strategyEdges: StrategyEdge[],
+  anchorEdges: AnchorEdge[] = [],
+): Set<number> {
+  const hot = new Set<number>()
+  for (const g of goals) if (g.in_flight) hot.add(g.id)
+  if (hot.size === 0) return hot
+  const known = new Set(goals.map((g) => g.id))
+  const stratById = new Map(strategies.map((s) => [s.id, s]))
+  const up = new Map<number, number[]>()
+  const link = (child: number, parent: number) => {
+    if (child === parent || !known.has(child) || !known.has(parent)) return
+    const at = up.get(child)
+    if (at) at.push(parent)
+    else up.set(child, [parent])
+  }
+  const claimed = new Set<string>()
+  for (const e of strategyEdges) {
+    if (e.link_kind === 'cited') continue
+    const s = stratById.get(e.strategy_id)
+    if (!s) continue
+    claimed.add(`${s.goal_id}>${e.subgoal_id}`)
+    link(e.subgoal_id, s.goal_id)
+  }
+  // anchors hang BENEATH the claim they support — layout flips them
+  // for hierarchy, so the parent is `to`. Its precedence too: a pair a
+  // route already owns keeps the route's direction, and taking the
+  // anchor as well would hand the pair a parent EACH way.
+  for (const e of anchorEdges) {
+    if (claimed.has(`${e.from}>${e.to}`) || claimed.has(`${e.to}>${e.from}`))
+      continue
+    link(e.from, e.to)
+  }
+  // `hot` doubles as the visited set, so a cycle cannot spin here
+  const stack = [...hot]
+  while (stack.length > 0) {
+    for (const p of up.get(stack.pop()!) ?? []) {
+      if (hot.has(p)) continue
+      hot.add(p)
+      stack.push(p)
+    }
+  }
+  return hot
+}
+
 export function layoutConstellation(
   goals: Goal[],
   strategies: Strategy[],
