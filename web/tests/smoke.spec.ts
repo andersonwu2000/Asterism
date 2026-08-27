@@ -136,43 +136,51 @@ test('new-problem form renders (read-only: no submit)', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Create problem' })).toBeDisabled()
 })
 
-test('new-problem: the shelf is a search, not a wall', async ({ page }) => {
+test('new-problem: the shelf is a window, not a wall', async ({ page }) => {
   // The picker used to render one checkbox per shelved paper, which
-  // buried the rest of the form (owner, 2026-08-27). Collapsed it is
-  // one field; the list opens under the cursor and drops what is
-  // already bound. Read-only — nothing here submits.
+  // buried the rest of the form (owner, 2026-08-27). It is a floating
+  // window now: collapsed the field is one button, and choosing marks
+  // a paper in place rather than moving it. Read-only — no submit.
   await page.goto('/#/new')
-  const search = page.getByPlaceholder(/search the shelf|whole shelf is bound/)
-  const shelved = await search
+  const open = page.locator('[data-paper-open]')
+  const shelved = await open
     .waitFor({ timeout: 5000 })
     .then(() => true)
     .catch(() => false)
   test.skip(!shelved, 'needs a workspace with a paper shelf')
 
-  // collapsed: the wall is gone — no checkbox survives in this form
+  // shut: the wall is gone — no checkbox, and no list at all
   expect(await page.locator('input[type="checkbox"]').count()).toBe(0)
-
-  // the list is closed until the field has the cursor
   const options = page.locator('[data-paper-option]')
-  expect(await options.count()).toBe(0)
-  await search.click()
+  await expect(options).toHaveCount(0)
+
+  await open.click()
   await expect(options.first()).toBeVisible()
   const all = await options.count()
   expect(all).toBeGreaterThan(0)
 
-  // typing narrows it, and a query nothing matches says so rather
-  // than leaving an empty box
+  // search narrows, and a query nothing matches says so rather than
+  // leaving an empty box
+  const search = page.getByPlaceholder(/search \d+ papers/)
   await search.fill('zzzzz-no-such-paper')
   await expect(page.getByText('nothing on the shelf matches')).toBeVisible()
-
-  // taking one moves it out of the list and into a chip that drops it
   await search.fill('')
-  const first = (await options.first().innerText()).split('\n')[0].trim()
+  await expect(options).toHaveCount(all)
+
+  // taking one marks it IN PLACE (the row must not jump away under
+  // the cursor) and raises a chip on the form behind
+  const first = (await options.first().locator('[data-paper-name]').innerText()).trim()
   await options.first().click()
+  await expect(page.locator('[data-paper-option][data-bound]')).toHaveCount(1)
+  await expect(options).toHaveCount(all)
+  await expect(page.locator('[data-paper-chip]')).toHaveCount(1)
+
+  // Escape closes any floating surface; the chip survives it and
+  // drops the paper on click
+  await page.keyboard.press('Escape')
+  await expect(options).toHaveCount(0)
   const chip = page.locator('[data-paper-chip]')
-  await expect(chip).toHaveCount(1)
   await expect(chip.first()).toContainText(first)
-  expect(await options.count()).toBe(all - 1)
   await chip.first().click()
   await expect(chip).toHaveCount(0)
 })

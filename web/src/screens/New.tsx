@@ -67,17 +67,29 @@ export default function New() {
     () => shelf.filter((p) => papers.has(p.id)),
     [shelf, papers],
   )
+  // In the window a bound paper KEEPS its place, marked — the whole
+  // point of opening the shelf is seeing it, and unbinding belongs
+  // where binding happened. (The chips on the form are the settled
+  // summary for when the window is shut, not a second copy of this.)
   const offered = useMemo(() => {
-    // a chosen paper leaves the list — it is already standing above it
-    const rest = shelf.filter((p) => !papers.has(p.id))
     const q = paperQ.trim().toLowerCase()
-    if (q === '') return rest
-    return rest.filter(
+    if (q === '') return shelf
+    return shelf.filter(
       (p) =>
         paperName(p).toLowerCase().includes(q) ||
         p.source_name.toLowerCase().includes(q),
     )
-  }, [shelf, papers, paperQ])
+  }, [shelf, paperQ])
+
+  // Escape closes the shelf window, as it closes any floating surface
+  useEffect(() => {
+    if (!paperOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPaperOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [paperOpen])
 
   const togglePaper = (id: string) =>
     setPapers((old) => {
@@ -240,8 +252,8 @@ export default function New() {
             the engine reads these for definitions and proof routes (you can bind more
             later)
           </p>
-          {/* what you picked stands here, and only here — the list
-              below drops it, so no paper is drawn twice */}
+          {/* the settled summary for when the window is shut: what is
+              bound, and a click to drop it without reopening */}
           {chosen.length > 0 && (
             <div className="mb-2 flex max-w-2xl flex-wrap gap-1.5">
               {chosen.map((p) => (
@@ -266,73 +278,18 @@ export default function New() {
               ))}
             </div>
           )}
-          <div className="max-w-2xl">
-            <input
-              className="w-full rounded-lg border border-edge bg-surface px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
-              placeholder={
-                shelf.length === chosen.length
-                  ? 'the whole shelf is bound'
-                  : `search the shelf — ${shelf.length - chosen.length} more`
-              }
-              value={paperQ}
-              onChange={(e) => setPaperQ(e.target.value)}
-              onFocus={() => setPaperOpen(true)}
-              onBlur={() => setPaperOpen(false)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setPaperOpen(false)
-                  e.currentTarget.blur()
-                } else if (e.key === 'Enter' && offered.length > 0) {
-                  // type three characters and take it — the fast path
-                  e.preventDefault()
-                  togglePaper(offered[0].id)
-                  setPaperQ('')
-                }
-              }}
-              spellCheck={false}
-            />
-            {paperOpen && (
-              <div className="mt-1 max-h-56 overflow-y-auto rounded-lg border border-edge">
-                {offered.length === 0 ? (
-                  <div className="px-2.5 py-2 text-[11px] text-ink-faint">
-                    {paperQ.trim() === ''
-                      ? 'every paper on the shelf is already bound'
-                      : 'nothing on the shelf matches'}
-                  </div>
-                ) : (
-                  offered.map((p) => (
-                    <button
-                      key={p.id}
-                      data-paper-option
-                      className="block w-full cursor-pointer px-2.5 py-1.5 text-left transition-colors hover:bg-wash"
-                      // the input keeps focus, so the click lands
-                      // before the blur that would close this list
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        togglePaper(p.id)
-                        setPaperQ('')
-                      }}
-                    >
-                      <span
-                        className={
-                          'block truncate text-[12.5px] text-ink ' +
-                          (p.title ? '' : 'font-mono')
-                        }
-                      >
-                        {paperName(p)}
-                      </span>
-                      <span className="block truncate font-mono text-[10.5px] text-ink-faint">
-                        {/* the filename earns a line only when it is
-                            NOT already the name above it */}
-                        {p.title ? `${p.source_name} · ` : ''}
-                        {p.pages} pp
-                      </span>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
+          <button
+            data-paper-open
+            className="cursor-pointer rounded-lg border border-edge bg-surface px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-edge-strong hover:text-ink"
+            onClick={() => {
+              setPaperQ('')
+              setPaperOpen(true)
+            }}
+          >
+            {chosen.length > 0
+              ? `choose from the shelf — ${chosen.length} of ${shelf.length} bound`
+              : `choose from the shelf — ${shelf.length} paper${shelf.length === 1 ? '' : 's'}`}
+          </button>
         </div>
       )}
 
@@ -469,6 +426,98 @@ export default function New() {
           </Button>
         )}
       </div>
+
+      {/* The shelf, floating (owner, 2026-08-27). Browsing a
+          collection to choose from it is a task of its own: inlined it
+          buried the form, and a bounded inline list made the reader
+          choose through a slot. The delete-confirm's shape — backdrop
+          click or Escape closes, focus lands inside. Nothing here is
+          irreversible, so there is nothing to confirm: picks apply as
+          they are made and the window just closes. */}
+      {paperOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70"
+          onClick={() => setPaperOpen(false)}
+        >
+          <div
+            className="flex max-h-[80vh] w-[38rem] max-w-[92vw] flex-col rounded-xl border border-edge bg-surface p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-sm font-medium text-ink">Ground it in papers</div>
+            <p className="mt-1 text-xs text-ink-dim">
+              the engine reads these for definitions and proof routes
+            </p>
+            <input
+              className="mt-3 w-full rounded-md border border-edge bg-bg px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+              placeholder={`search ${shelf.length} papers by title or filename`}
+              value={paperQ}
+              onChange={(e) => setPaperQ(e.target.value)}
+              spellCheck={false}
+              autoFocus
+            />
+            <div className="mt-2 min-h-0 flex-1 overflow-y-auto rounded-lg border border-edge">
+              {offered.length === 0 ? (
+                <div className="px-3 py-3 text-[11px] text-ink-faint">
+                  nothing on the shelf matches
+                </div>
+              ) : (
+                offered.map((p) => {
+                  const bound = papers.has(p.id)
+                  return (
+                    <button
+                      key={p.id}
+                      data-paper-option
+                      data-bound={bound ? '' : undefined}
+                      className="flex w-full cursor-pointer items-baseline gap-2.5 px-3 py-1.5 text-left transition-colors hover:bg-wash"
+                      onClick={() => togglePaper(p.id)}
+                    >
+                      {/* bound reads as brightness, as everywhere else:
+                          the mark is the same glyph in both states so
+                          the rows do not shift when one is taken */}
+                      <span
+                        className={
+                          'shrink-0 text-[11px] ' +
+                          (bound ? 'text-ink' : 'text-ink-faint/25')
+                        }
+                      >
+                        ✓
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span
+                          data-paper-name
+                          className={
+                            'block truncate text-[12.5px] ' +
+                            (bound ? 'text-ink' : 'text-ink-dim') +
+                            (p.title ? '' : ' font-mono')
+                          }
+                        >
+                          {paperName(p)}
+                        </span>
+                        <span className="block truncate font-mono text-[10.5px] text-ink-faint">
+                          {/* the filename earns a line only when it is
+                              NOT already the name above it */}
+                          {p.title ? `${p.source_name} · ` : ''}
+                          {p.pages} pp
+                        </span>
+                      </span>
+                    </button>
+                  )
+                })
+              )}
+            </div>
+            <div className="mt-3 flex items-center justify-between">
+              <span className="text-[11px] text-ink-faint">
+                {chosen.length === 0
+                  ? 'none bound — the engine will work from your description alone'
+                  : `${chosen.length} bound`}
+              </span>
+              <Button variant="outline" onClick={() => setPaperOpen(false)}>
+                Done
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

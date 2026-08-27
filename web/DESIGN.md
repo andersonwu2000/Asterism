@@ -154,14 +154,31 @@ the ladder via `::picker(select)` where supported.
 ## Interaction
 
 - Hover / selection = focus: related ink brightens, the rest recedes.
-  Prefer dimming over popups.
+  Focus is shown by DIMMING what is not focused — never by lifting the
+  focused thing into a popup. (This is a rule about focus, not a
+  general verdict on floating surfaces; see below.)
 - Actions with consequences confirm **in place, two-step** — the
-  second click names what happens ("Confirm — engine runs now"). No
-  modal dialogs — with ONE exception: **irreversible destruction**
-  (deleting a problem) earns a floating confirm whose action button
-  unlocks only when the thing's name is typed back, and that button
-  is the achromatic law's single owner-sanctioned use of red
-  (2026-07-09). Friction proportional to consequence.
+  second click names what happens ("Confirm — engine runs now").
+  Friction proportional to consequence.
+- **Irreversible destruction MUST float.** Deleting a problem earns a
+  floating confirm whose action button unlocks only when the thing's
+  name is typed back, and that button is the achromatic law's single
+  owner-sanctioned use of red (2026-07-09).
+- A floating window is **not reserved to** that case (owner,
+  2026-08-27, correcting this section: it had been written as "no
+  modal dialogs except irreversible destruction", which turns a
+  requirement into a monopoly — irreversible work must float; floating
+  is not thereby limited to irreversible work). Float where a task is
+  genuinely a task of its own: **browsing a collection to choose from
+  it** is the standing example — the New page's paper picker floats
+  because inlining the shelf buries the form it belongs to, and a
+  bounded inline list makes the reader choose through a slot. Do not
+  float what the page can simply say: a confirmation, a status, a
+  field's own error.
+- A floating surface follows the delete-confirm's shape: `fixed
+  inset-0 z-50` over `bg-bg/70`, one centred `rounded-xl border
+  border-edge bg-surface` panel, backdrop click and `Escape` both
+  close it, focus lands inside it on open.
 - Engine states speak inside the panel they affect, in plain words.
   The audience is mathematicians: human words in the UI, engine
   vocabulary in tooltips (`web/src/lib/vocab.ts` is the enum→word

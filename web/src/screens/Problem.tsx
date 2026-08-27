@@ -359,6 +359,16 @@ function DeleteProblem({ problem }: { problem: string }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const match = typed === problem
+  // Escape closes any floating surface (DESIGN.md). Safe here BECAUSE
+  // it is the destructive one: the key cancels, it can never confirm.
+  useEffect(() => {
+    if (!open || busy) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, busy])
   const doDelete = async () => {
     setBusy(true)
     setError(null)
