@@ -309,33 +309,57 @@ function Lane({ w, problem, multi }: { w: RunWorker; problem: string | null; mul
             </div>
           ) : (
             <>
-              {laneProblem && (
-                <div className="mt-1 flex justify-end">
-                  <button
-                    className="text-[10px] text-ink-faint underline decoration-edge-strong underline-offset-2 transition-colors hover:text-ink"
-                    title="copy the patch as it stands into the reader's Lean slot — the cursor then shows the goal at any line; edits land in the copy, never in the agent's file"
-                    onClick={() =>
-                      setProbe((p) => ({
-                        seed: `namespace Problems.${laneProblem}\n${w.file!.tail}\nend Problems.${laneProblem}`,
-                        seq: (p?.seq ?? 0) + 1,
-                      }))
-                    }
-                  >
-                    run a snapshot
-                  </button>
+              {/* The probe TAKES the frame, exactly as it does in the
+                  Library (owner, 2026-08-27): opening one BELOW left
+                  the agent's text standing above it and ran the card
+                  off the page. One frame, two states — and the button
+                  rides inside it on hover, as the Library's does. */}
+              {!probe && (
+                <div className="group/snap relative mt-1.5">
+                  <pre className="max-h-96 overflow-y-auto rounded-lg border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
+                    <Lean code={w.file.tail} />
+                  </pre>
+                  {laneProblem && (
+                    <button
+                      className="absolute right-2 bottom-2 cursor-pointer rounded-md border border-edge bg-surface px-2.5 py-0.5 font-mono text-[11px] text-ink-dim opacity-0 transition-opacity group-hover/snap:opacity-100 hover:border-edge-strong hover:text-ink"
+                      title="copy the patch as it stands into the reader's Lean slot — the cursor then shows the goal at any line; edits land in the copy, never in the agent's file"
+                      onClick={() =>
+                        setProbe((p) => ({
+                          seed: `namespace Problems.${laneProblem}\n${w.file!.tail}\nend Problems.${laneProblem}`,
+                          seq: (p?.seq ?? 0) + 1,
+                        }))
+                      }
+                    >
+                      ▸ run a snapshot
+                    </button>
+                  )}
                 </div>
               )}
-              <pre className="max-h-96 overflow-y-auto rounded-lg border border-edge bg-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-dim">
-                <Lean code={w.file.tail} />
-              </pre>
-              {/* the snapshot probe (Library's own block): interactive,
-                  cursor-goal, editable — the copy is the reader's; the
-                  agent's file streams on above, untouched */}
+              {/* the snapshot probe (the Library's own block):
+                  interactive, cursor-goal, editable — the copy is the
+                  reader's; the agent's file streams on, untouched.
+
+                  `Mathlib`, not the `Problems.<p>.Defs` this used to
+                  invent: the agent writes a scratch file under
+                  .attempts/ whose real prelude is `import Mathlib`
+                  (596/596 problem Roots open with it; not one sampled
+                  attempt file imported a Defs). ~29 problems have no
+                  Defs.lean at all — union_closed among them — and lake
+                  refused the entire build rather than the one import
+                  (owner screenshot, 2026-08-27). The FILE's own
+                  prelude is the real answer, and serve strips it
+                  before the UI ever sees it (`run.py::_tail`); until
+                  it comes through, name the one import the framework
+                  guarantees rather than a module that may not exist. */}
               {probe && laneProblem && (
                 <LeanProbe
                   key={probe.seq}
                   seed={probe.seed}
-                  module={`Problems.${laneProblem}.Defs`}
+                  imports={['Mathlib']}
+                  className="mt-1.5"
+                  // the cap the streaming frame carries, so opening a
+                  // snapshot swaps the card's height for nothing
+                  heightClass="min-h-16 h-auto max-h-96 field-sizing-content"
                   onClose={() => setProbe(null)}
                 />
               )}

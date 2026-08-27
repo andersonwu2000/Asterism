@@ -67,14 +67,30 @@ export function DiagList({ diags }: { diags: EvalDiag[] }) {
 export function LeanProbe({
   fq,
   module,
+  imports,
   seed,
   onClose,
+  className = 'mt-2 ml-[22px] max-w-4xl',
+  heightClass = 'min-h-16 h-auto field-sizing-content',
 }: {
   /** the declaration the probe defaults to when no `seed` is given */
   fq?: string
   module?: string
+  /** what the snippet needs imported, when that is NOT "the module the
+   * declaration lives in". The Library reads a decl in its own module
+   * and `module` says it all; a scratch file an agent is writing has a
+   * prelude of its own and must name it (Engine Console, 2026-08-27). */
+  imports?: string[]
   seed?: string
   onClose?: () => void
+  /** the block's own place on the page — the indent belongs to the
+   * caller's layout, not to the probe (the Library hangs it under a
+   * chapter decl; the Engine Console swaps it INTO a lane's frame) */
+  className?: string
+  /** grows to its content by default — a Library decl is a signature.
+   * A caller swapping this in FOR a scrolling frame passes that
+   * frame's cap, so the swap costs the page no height. */
+  heightClass?: string
 }) {
   const [code, setCode] = useState(seed ?? (fq ? `#print axioms ${fq}` : ''))
   const [cursor, setCursor] = useState<LeanCursor | null>(null)
@@ -87,7 +103,7 @@ export function LeanProbe({
     enabled: true,
     active,
     parts: [{ id: 'probe', code }],
-    imports: module ? [module] : [],
+    imports: imports ?? (module ? [module] : []),
     cursor,
   })
   const diags = [...s.preamble, ...(s.parts.probe ?? [])]
@@ -113,7 +129,7 @@ export function LeanProbe({
   // (goal at cursor on top, messages/output under it)
   const hasInfo = status !== '' || goalText != null || diags.length > 0
   return (
-    <div className="mt-2 ml-[22px] max-w-4xl">
+    <div className={className}>
       <div className="rounded-lg border border-edge bg-wash">
         <LeanEditor
           value={code}
@@ -121,7 +137,7 @@ export function LeanProbe({
           onCaret={(pos) => setCursor({ part: 'probe', ...pos })}
           onFocus={() => claimLeanSlot(slotId)}
           autoFocus
-          heightClass="min-h-16 h-auto field-sizing-content"
+          heightClass={heightClass}
           frameless
         />
         {onClose && (
