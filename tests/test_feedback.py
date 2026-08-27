@@ -88,6 +88,37 @@ def test_records_accumulate_one_header(ws_on):
     assert "first thing" in content and "DIED: spawn_fast_fail" in content
 
 
+def test_feedback_file_is_a_ring_of_whole_records(ws_on, monkeypatch):
+    """Owner call 2026-08-29: feedback is short-shelf-life signal — an
+    unattended cloud run must not grow the file without bound. The write
+    chokepoint keeps only the newest MAX_ENTRIES records, in WHOLE-record
+    units (a continuation line lives and dies with its record), and the
+    header block survives every trim."""
+    assert _feedback.MAX_ENTRIES == 1000        # the owner's number
+    monkeypatch.setattr(_feedback, "MAX_ENTRIES", 5)
+    att = _attempts(ws_on)
+    for i in range(3):
+        _feedback.record_death(ws_on, kind="forward", slug=f"g{i}",
+                               problem="p", reason=f"reason_{i}")
+    _feedback.scratch_path(att).write_text(
+        "keeper friction\nevidence: with a continuation line",
+        encoding="utf-8")
+    _feedback.record_survivor(ws_on, attempts_dir=att, kind="backward",
+                              slug="keeper", problem="p", outcome="success")
+    for i in range(3, 7):
+        _feedback.record_death(ws_on, kind="forward", slug=f"g{i}",
+                               problem="p", reason=f"reason_{i}")
+    content = (ws_on / _OUT).read_text(encoding="utf-8")
+    # 8 appended, 5 kept: the survivor + the last four deaths
+    assert content.count("\n- [") == 5
+    assert content.startswith("# Agent framework feedback")   # header intact
+    assert "keeper friction" in content
+    assert "evidence: with a continuation line" in content    # rode along
+    for gone in ("reason_0", "reason_1", "reason_2"):
+        assert gone not in content
+    assert "reason_3" in content and "reason_6" in content
+
+
 def test_survivor_prompt_section_has_path_placeholder():
     # The standalone feedback prompt must carry the scratch-path placeholder so
     # attempt_feedback can substitute the per-spawn sandbox file.

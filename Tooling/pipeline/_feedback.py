@@ -29,6 +29,7 @@ nor triggers it.
 """
 from __future__ import annotations
 
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,11 +56,21 @@ def _survivor_section() -> str:
 
 
 SURVIVOR_PROMPT_SECTION = _survivor_section()
+
+#: Ring cap (owner call 2026-08-29): feedback is short-shelf-life signal —
+#: entries go stale against the moving code (triage re-verifies every claim
+#: anyway) and the durable layers (backlog items, adjudications, commits)
+#: hold whatever mattered. An unattended long run must not grow this file
+#: without bound, so the write chokepoint keeps only the newest N whole
+#: records — no cron, no operator memory involved.
+MAX_ENTRIES = 1000
+
 _HEADER = (
     "# Agent framework feedback (dev-only)\n\n"
     "_Survivor self-reports + framework-written death causes. One line each:_\n"
     "_`- [ts | kind | model | outcome | problem/slug] <sentence>`_\n"
-    "_(+ optional `  evidence: ...` continuation). Newest at the bottom._\n\n"
+    "_(+ optional `  evidence: ...` continuation). Newest at the bottom;_\n"
+    f"_a ring — only the newest {MAX_ENTRIES} records are kept._\n\n"
 )
 
 # Single global lock: the output is ONE shared file across all problems, so
@@ -67,6 +78,23 @@ _HEADER = (
 # serialize globally. Held only for the fast file append, never across an
 # LLM call.
 _APPEND_LOCK = threading.Lock()
+
+
+def _trim_locked(path: Path) -> None:
+    """Drop the oldest records past `MAX_ENTRIES`, in WHOLE-record units
+    (a `- [` line plus its indented continuation lines); the header block
+    above the first record is preserved verbatim. Runs under
+    `_APPEND_LOCK`, right after an append; atomic replace so a crash
+    mid-trim cannot eat the file."""
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    starts = [i for i, ln in enumerate(lines) if ln.startswith("- [")]
+    if len(starts) <= MAX_ENTRIES:
+        return
+    keep_from = starts[len(starts) - MAX_ENTRIES]
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("".join(lines[:starts[0]]) + "".join(lines[keep_from:]),
+                   encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
 
 
 def feedback_enabled(workspace: Path | None) -> bool:
@@ -114,6 +142,7 @@ def _append(workspace: Path, line: str) -> None:
                 path.write_text(_HEADER, encoding="utf-8")
             with path.open("a", encoding="utf-8", newline="\n") as f:
                 f.write(line if line.endswith("\n") else line + "\n")
+            _trim_locked(path)
     except OSError:
         pass
 
