@@ -64,16 +64,27 @@ class DisproofVerdict:
     detail: str
 
 
-def _rename_claim_decl(patch_text: str, slug: str) -> "str | None":
-    """Rename the patch's `<kind> <slug>` head to `<slug>_disproof_claim`
-    so it can coexist with the imported original. None when the patch
-    declares no `<slug>` head at all (nothing to certify)."""
-    pat = re.compile(
-        rf"^((?:@\[[^\]]*\]\s*)?(?:theorem|lemma))(\s+){re.escape(slug)}\b",
-        re.MULTILINE)
-    if not pat.search(patch_text):
-        return None
-    return pat.sub(rf"\g<1>\g<2>{slug}{_CLAIM_SUFFIX}", patch_text, count=1)
+def _rename_claim_decl(patch_text: str, slug: str,
+                       claim_slug: "str | None" = None) -> "str | None":
+    """Rename the patch's claim head to `<slug>_disproof_claim` so it
+    can coexist with the imported original. The head the pipeline
+    actually seeds is the per-attempt strategy token (`theorem s<id>`,
+    backward's locked signature) — NEVER the goal slug, which is why
+    the goal-slug-only lookup certified zero real submissions between
+    2026-08-25 and 2026-08-27 (flagship: 0 disproved all-time; local:
+    last disproved the night BEFORE the gate shipped). `claim_slug` is
+    that owned head; the bare `slug` head stays accepted as the belt
+    (synthetic probes, future flat paths). None when neither head is
+    declared (nothing to certify)."""
+    for head in dict.fromkeys(h for h in (claim_slug, slug) if h):
+        pat = re.compile(
+            rf"^((?:@\[[^\]]*\]\s*)?(?:theorem|lemma))(\s+)"
+            rf"{re.escape(head)}\b",
+            re.MULTILINE)
+        if pat.search(patch_text):
+            return pat.sub(rf"\g<1>\g<2>{slug}{_CLAIM_SUFFIX}",
+                           patch_text, count=1)
+    return None
 
 
 def _stub_module(goal_lean_path: str) -> str:
@@ -82,11 +93,15 @@ def _stub_module(goal_lean_path: str) -> str:
 
 
 def build_probe(patch_text: str, *, slug: str,
-                goal_lean_path: str) -> "str | None":
+                goal_lean_path: str,
+                claim_slug: "str | None" = None) -> "str | None":
     """The probe unit: the renamed claim + the absurd bridge, with the
-    original stub module imported for its constant. None when the patch
-    has no `<slug>` declaration to rename."""
-    renamed = _rename_claim_decl(patch_text, slug)
+    original stub module imported for its constant. The claim head may
+    be the attempt's own `s<id>` token (`claim_slug`) or the bare goal
+    slug; either renames to `<slug>_disproof_claim`, so the bridge and
+    the fq name downstream never change. None when the patch declares
+    neither head (nothing to certify)."""
+    renamed = _rename_claim_decl(patch_text, slug, claim_slug=claim_slug)
     if renamed is None:
         return None
     stub_import = f"import {_stub_module(goal_lean_path)}"
@@ -121,9 +136,23 @@ def build_probe(patch_text: str, *, slug: str,
 def teaching(locked_signature: "str | None", why: str) -> str:
     """The gate's refusal — hands the agent the framework-known
     negation (owner-approved wording shape, 2026-08-25) and the way
-    out. Never a judgment on the mathematics."""
-    neg = (f"¬ ({locked_signature.strip()})" if locked_signature
-           else "the negation of the goal's locked signature")
+    out. Never a judgment on the mathematics. The negation shows the
+    TYPE alone: the locked signature arrives as a full declaration
+    (`theorem s3497 : ∀ …`) and wrapping THAT in `¬ (…)` hands the
+    agent an un-Lean target it cannot possibly state (three decline
+    loops on mathd_algebra_433, 2026-08-27)."""
+    neg = "the negation of the goal's locked signature"
+    if locked_signature:
+        m = re.match(r"^\s*(?:@\[[^\]]*\]\s*)?(?:theorem|lemma)\s+\S+\s*(.*)$",
+                     locked_signature.strip(), re.S)
+        rest = (m.group(1) if m else locked_signature).strip()
+        if rest.startswith(":"):
+            neg = f"¬ ({rest[1:].strip()})"
+        elif rest:
+            # binder-style head: dropping the binders would drop the
+            # quantifiers, so describe rather than misquote
+            neg = (f"the negation of `{rest}` (with its binders "
+                   f"universally quantified)")
     return (
         f"disproof not certified: {why}. The goal's negation is: {neg} — "
         f"rewrite patch.lean so your declaration proves exactly that "
@@ -139,16 +168,24 @@ def run_disproof_gate(*, workspace: Path, attempts_dir: Path,
                       patch_text: str, slug: str, goal_lean_path: str,
                       locked_signature: "str | None",
                       axiom_whitelist: "list[str]",
-                      problem: str) -> DisproofVerdict:
+                      problem: str,
+                      claim_slug: "str | None" = None) -> DisproofVerdict:
     """Certify a `-- decline: disprove` submission. ok=True detail
-    carries the certification line; ok=False detail carries teaching."""
+    carries the certification line; ok=False detail carries teaching.
+    `claim_slug` = the declaration head the attempt actually owns (the
+    `s<id>` strategy token backward locked); the goal `slug` head stays
+    accepted as the belt."""
     from . import _axiom
     probe_text = build_probe(patch_text, slug=slug,
-                             goal_lean_path=goal_lean_path)
+                             goal_lean_path=goal_lean_path,
+                             claim_slug=claim_slug)
     if probe_text is None:
+        owned = claim_slug or slug
         return DisproofVerdict(False, teaching(
             locked_signature,
-            f"patch.lean declares no `theorem {slug}` head to certify"))
+            f"patch.lean declares no `theorem {owned}` head to certify "
+            f"— keep your locked `theorem {owned} : …` declaration and "
+            f"prove the negation under that head"))
     probe_path = attempts_dir / PROBE_FILENAME
     probe_path.write_text(probe_text, encoding="utf-8")
     fq_claim = f"Problems.{problem}.{slug}{_CLAIM_SUFFIX}"

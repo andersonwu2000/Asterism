@@ -1138,7 +1138,12 @@ def _backward_parse_and_commit(
                 locked_signature=_locked_sig,
                 axiom_whitelist=intent_mod.effective_axioms(
                     intent, problem=goal["problem"]),
-                problem=str(goal["problem"]))
+                problem=str(goal["problem"]),
+                # the head the agent actually owns: patch.lean is seeded
+                # `theorem s<id>` (the locked signature), never the goal
+                # slug — the goal-slug-only lookup certified ZERO real
+                # submissions in the gate's first two days
+                claim_slug=sid_token)
             if verdict.ok:
                 print(f"[backward] {goal['slug']}: {verdict.detail}",
                       flush=True)
