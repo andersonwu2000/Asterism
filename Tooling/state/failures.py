@@ -183,6 +183,11 @@ REGISTRY: "dict[str, FailureTraits]" = {
     # spawns); no attempts++ (no agent-side proof failure happened).
     "strategist_proposal_rejected": _T("pipeline_infra",
                                        cooldown_scope="target"),
+    # delta gate (2026-08-28): three consecutive revision turns left
+    # proposal.md byte-identical — an accident signature (revision
+    # never reached the file), same discard semantics as a rejection.
+    "strategist_no_delta": _T("pipeline_infra",
+                              cooldown_scope="target"),
     "forward_no_new_goal": _T("pipeline_infra"),
 
     # --- structured decline directives (terminal in the retry loop) -----

@@ -45,17 +45,18 @@ Failure modes — a plan showing these is rejected through criterion 1:
 
 ## Output
 
-Write `{attempts_dir}/verdict.json` — adjudicate EVERY criterion, one line each:
+Write `{attempts_dir}/verdict.json` — adjudicate EVERY criterion, a list per criterion, one bullet per objection; list every objection you see:
 
 ```json
 {"criteria": {
-   "1": "fired: <concrete, load-bearing objection — name the step / decision / closure it targets, and where possible suggest the discriminating experiment>",
-   "2": "clear: <the entry that closes the MAIN claim> — <what still stands between this batch and it>",
-   "3": "clear", "4": "clear", "5": "clear"},
+   "1": ["fired: <concrete, load-bearing objection — name the step / decision / closure it targets, and where possible suggest the discriminating experiment>",
+         "fired: <another objection under this criterion>"],
+   "2": ["clear: <the entry that closes the MAIN claim> — <what still stands between this batch and it>"],
+   "3": ["clear"], "4": ["clear"], "5": ["clear"]},
  "reservations": ["<advisory note — shown to the next Strategist wake; only for concerns that fire no criterion>"]}
 ```
 
-Any fired = rebut (your fired lines go verbatim to the Strategist); all clear = pass.
+Any fired = rebut (your fired bullets go verbatim to the Strategist); all clear = pass.
 
 Criterion 2 never takes a bare `clear` — its judgment IS the naming, so the line carries it either way.
 

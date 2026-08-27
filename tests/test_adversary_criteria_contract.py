@@ -69,7 +69,9 @@ def test_the_output_template_puts_the_naming_on_that_criterion() -> None:
     different number than the rule demands, the example loses — the
     same failure the strategist prompts had with `brief`/`proof`."""
     tmpl = TEXT.split("```json", 1)[1].split("```", 1)[0]
-    m = re.search(r'"(\d)":\s*"clear: <the entry that closes', tmpl)
+    # 2026-08-28: criteria take LISTS (one bullet per objection) — the
+    # naming shape sits inside the list brackets now.
+    m = re.search(r'"(\d)":\s*\["clear: <the entry that closes', tmpl)
     assert m, "the template no longer shows the naming shape at all"
     assert m.group(1) == adversary.NAMING_CRITERION, (
         f"the template demonstrates the naming on criterion {m.group(1)} "

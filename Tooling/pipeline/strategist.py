@@ -2537,6 +2537,12 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     package_verdict: "dict | None" = None
     proposal_body: "str | None" = None
     first_err: "str | None" = None
+    #: mechanical delta gate (owner design 2026-08-28): the body the
+    #: Adversary last rejected, the rebuttal it issued, and how many
+    #: consecutive revision turns came back byte-identical.
+    _last_judged: "str | None" = None
+    _last_rebuttal: "str | None" = None
+    _no_delta = 0
     while True:
         # Round-boundary race-guard: the authoring group can be retired
         # mid-dialogue (ancestor ReturnToParent cascade). Ask before
@@ -2564,6 +2570,50 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
         if not err and package_gate_applies(decisions, trigger_kind):
             proposal_body, sections, err = verify_proposal_package(
                 decisions, attempts_dir)
+            # ── mechanical delta gate (owner design 2026-08-28): a
+            # byte-identical resubmission never reaches the judge — it
+            # is an ACCIDENT signature, not author conviction (every
+            # byte-identical debate on record traces to the zen
+            # resume-amnesia era: the revision turn succeeded but never
+            # touched the file, and the judge re-fired the same
+            # rebuttal at the same bytes until the round cap). Bounce
+            # with a mechanical notice; three consecutive no-deltas
+            # discard — a fresh wake re-passes cheaply (73-77% within
+            # two revisions, measured 2026-08-28).
+            if (not err and _last_judged is not None
+                    and proposal_body == _last_judged):
+                _no_delta += 1
+                if _no_delta >= 3:
+                    _discard_proposal(
+                        conn, problem, proposal_body, dialogue,
+                        rounds_used,
+                        "proposal byte-identical for 3 consecutive "
+                        "revision rounds", attempts_dir,
+                        group_id=group_id, channel="strategist_no_delta")
+                    return PipelineResult(
+                        outcome="failed",
+                        failure_reason="strategist_no_delta",
+                        failure_detail=(
+                            "three consecutive revision rounds left "
+                            "proposal.md byte-identical; pending "
+                            "rebuttal recorded in programme_revisions"))
+                print(f"[strategist] {problem}: delta gate — proposal "
+                      f"byte-identical, judge skipped (no-delta "
+                      f"{_no_delta}/3)", flush=True)
+                err = (
+                    "mechanical delta gate: proposal.md is "
+                    "byte-identical to the version the Adversary just "
+                    f"rejected (no-delta {_no_delta}/3; at 3 this "
+                    "proposal is discarded and the next wake restarts "
+                    "fresh). The revision never reached the file — "
+                    "edit proposal.md to address the pending rebuttal, "
+                    "or change the batch.\n\n"
+                    "Pending rebuttal (unchanged):\n"
+                    + (_last_rebuttal
+                       or "(see the previous turn's rebuttal)"))
+                err_is_rebuttal = True
+            elif not err:
+                _no_delta = 0
             if not err:
                 proof_warn = _programme.length_warning(
                     sections, proposal_body)
@@ -2618,6 +2668,10 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                     max_rounds - rounds_used,
                     length_warn=proof_warn)
                 err_is_rebuttal = True
+                # delta-gate bookkeeping: THIS body is what the judge
+                # rejected; the next revision must change it.
+                _last_judged = proposal_body
+                _last_rebuttal = err
         if not err:
             break  # verify clean; exempt batches skip the package gate
         if first_err is None:

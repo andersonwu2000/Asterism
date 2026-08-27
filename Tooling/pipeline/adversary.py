@@ -13,7 +13,7 @@ Verdict contract (`verdict.json` written by the judge into its cwd —
 per-criterion adjudication, 2026-07-25; five instances across three
 b6_1 legs of the judge naming a defect and passing anyway, so the
 pass/rebut decision is no longer the model's to write):
-    {"criteria": {"1": "clear" | "fired: <objection>", ..., "5": ...},
+    {"criteria": {"1": ["fired: <objection>", ...] | ["clear"], ...},
      "reservations": ["...", ...]}   # advisory notes; legal only for
                                      # concerns that fire no criterion
 The framework DERIVES the verdict: any `fired` → rebut (the fired
@@ -411,9 +411,33 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
     fired: list[str] = []
     for k in CRITERIA_KEYS:
         val = criteria[k]
-        if not isinstance(val, str):
-            return None, f"criterion {k} must be a string"
-        s = val.strip()
+        # 2026-08-28 (owner design): a criterion takes a LIST — one
+        # bullet per objection — so a judge that sees three defects
+        # under one criterion fires all three THIS round instead of
+        # dripping one per round (measured: the one-string schema bound
+        # in 4,495/4,495 rounds; ~22% of late objections were visible
+        # a round earlier). A bare string stays accepted (legacy form,
+        # one bullet).
+        vals = [val] if isinstance(val, str) else val
+        if not (isinstance(vals, list) and vals
+                and all(isinstance(x, str) for x in vals)):
+            return None, (f"criterion {k} must be a list of strings "
+                          f"(one bullet per objection) or a single "
+                          f"string")
+        heads = [("clear" if re.match(r"clear\b", x.strip(), re.IGNORECASE)
+                  else "fired" if re.match(r"fired\b", x.strip(),
+                                           re.IGNORECASE)
+                  else "?") for x in vals]
+        if "?" in heads:
+            return None, (f"criterion {k}: every bullet must start "
+                          f"\"clear\" or \"fired: <objection>\"")
+        if "clear" in heads and "fired" in heads:
+            return None, (f"criterion {k} mixes \"clear\" and \"fired\" "
+                          f"bullets — a criterion is one or the other")
+        if heads[0] == "clear" and len(vals) > 1:
+            return None, (f"criterion {k}: \"clear\" takes exactly one "
+                          f"entry")
+        s = vals[0].strip()
         # Prefix-keyed, annotation-tolerant (07-29, third occurrence of
         # the same wake-killing parse: opus-tier judges annotate their
         # verdicts — `"clear — I checked the chain end to end…"` — and
@@ -443,16 +467,15 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
                     f"<entry that closes the MAIN claim> — <what still "
                     f"stands>\"`")
             continue
-        if re.match(r"fired\b", s, re.IGNORECASE):
-            reason = (s.split(":", 1)[1].strip() if ":" in s
-                      else s[5:].strip(" -—–:"))
+        for x in vals:
+            xs = x.strip()
+            reason = (xs.split(":", 1)[1].strip() if ":" in xs
+                      else xs[5:].strip(" -—–:"))
             if not reason:
                 return None, (f"criterion {k} is fired but carries no "
                               f"objection — `\"fired: <objection>\"`")
             fired.append(f"[criterion {k}] {reason}")
-            continue
-        return None, (f"criterion {k} must be \"clear\" or "
-                      f"\"fired: <objection>\" (got {val!r})")
+        continue
     reservations = v.get("reservations", [])
     if not (isinstance(reservations, list)
             and all(isinstance(x, str) for x in reservations)):

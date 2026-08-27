@@ -59,6 +59,8 @@ def test_pipeline_infra_set_pinned():
     assert failures.PIPELINE_INFRA_REASONS == {
         "strategist_noop", "strategist_schema_invalid",
         "strategist_proposal_rejected",
+        # 08-28: delta gate — byte-identical revision ×3 discards
+        "strategist_no_delta",
         "forward_no_new_goal",
     }
 
@@ -104,6 +106,7 @@ def test_target_cooldown_set_pinned():
     assert failures.TARGET_COOLDOWN_REASONS == {
         "spawn_fast_fail", "missing_dep", "gateway_unreachable",
         "transient_timeout", "strategist_proposal_rejected",
+        "strategist_no_delta",
         "system_killed", "unclassified_spawn_failure",
         # 08-25: one beat while the machine sheds its overload.
         "local_overload",
