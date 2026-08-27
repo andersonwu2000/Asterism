@@ -539,6 +539,20 @@ describe('a lone star goes in a gap, never in a bed', () => {
         ).toBeGreaterThan(X_GAP / 2)
   })
 
+  it('does not spend a band per star when the gaps run out', () => {
+    // The bug this pins had a very loud picture: the overflow band was
+    // read as `bandDepth.length` INSIDE the loop, and writing
+    // bandDepth[b] extends the array, so every overflow star got a
+    // band of its own — a 1110x600 sky became 2100x4212, one star per
+    // row, drifting right (owner screenshot, 2026-08-27).
+    const v = withTrees(60)
+    const rows = new Set(v.nodes.map((n) => n.y))
+    expect(rows.size, `${rows.size} rows for 64 stars — a band per star`)
+      .toBeLessThan(20)
+    // and the plate must still read as a plate, not as a column
+    expect(v.width / v.height).toBeGreaterThan(0.8)
+  })
+
   it('places every one of them, even past the gaps', () => {
     // more stars than the sky has room for: the overflow gets rows of
     // its own rather than being dropped or piled on one point

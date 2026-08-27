@@ -1348,11 +1348,30 @@ function packOnce(
           .filter((v): v is number => v !== undefined)
         if (xs.length === 0) return -1
         const want = xs.reduce((m, v) => m + v, 0) / xs.length
+        // …and near in Y as well. Ranking on |x - want| alone let a
+        // citation CHAIN track its citer's x while its y wandered
+        // wherever the free list happened to offer that column, which
+        // drew a staircase across the whole sky — a diagonal the
+        // mathematics never had.
+        const ys = (citPartner.get(id) ?? [])
+          .map((q) => {
+            const b = bandOfNode.get(q)
+            const l = layer.get(q)
+            return b === undefined || l === undefined
+              ? undefined
+              : (bandYBase[b] ?? 0) + l
+          })
+          .filter((v): v is number => v !== undefined)
+        const wantY = ys.length > 0 ? ys.reduce((m, v) => m + v, 0) / ys.length : undefined
         let bestIdx = -1
         let bestD = Infinity
         for (let k = 0; k < free.length; k++) {
           if (taken.has(k)) continue
-          const d = Math.abs(free[k].x - want)
+          const c = free[k]
+          const dx = c.x - want
+          const dy =
+            wantY === undefined ? 0 : ((bandYBase[c.b] ?? 0) + c.l - wantY) * (Y_GAP / X_GAP)
+          const d = dx * dx + dy * dy
           if (d < bestD) {
             bestD = d
             bestIdx = k
@@ -1362,6 +1381,13 @@ function packOnce(
         return bestIdx
       }
       let i = 0
+      // The overflow band is chosen ONCE. Reading `bandDepth.length`
+      // inside the loop was a bug with a very loud picture: writing
+      // `bandDepth[b]` extends the array, so the next star computed a
+      // band one further along and every overflow star got a band of
+      // its OWN — 19 of them turned a 1110x600 sky into 2100x4212, one
+      // star per row, drifting right (owner screenshot, small sky).
+      const overBase = bandDepth.length
       for (const id of order) {
         const pick = nearestFor(id)
         if (pick >= 0) {
@@ -1386,7 +1412,7 @@ function packOnce(
           // five-column column of stars.
           const over = i - free.length
           i++
-          const b = bandDepth.length
+          const b = overBase
           bandOfNode.set(id, b)
           layer.set(id, Math.floor(over / overWide))
           localSlot.set(id, over % overWide)
