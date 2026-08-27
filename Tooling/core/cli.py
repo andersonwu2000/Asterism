@@ -1425,25 +1425,6 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         line("WARN", "claude CLI not on PATH (Claude provider unavailable)")
 
-    # Gemini CLI — use the same Windows-aware resolver the provider does
-    # (npm ships gemini as a bash shim + gemini.cmd; subprocess.run on
-    # Windows can only launch the .cmd).
-    from ..llm.gemini_cli import resolve_gemini_executable
-    gemini_exe = resolve_gemini_executable()
-    if gemini_exe:
-        try:
-            r = subprocess.run(
-                [gemini_exe, "--version"],
-                capture_output=True, text=True, timeout=10,
-                encoding="utf-8", errors="replace",
-            )
-            v = (r.stdout or "").strip().splitlines()[0] if r.stdout else "?"
-            line("OK", f"gemini  {v}")
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            line("FAIL", f"gemini --version timed out or errored: {exc}")
-    else:
-        line("WARN", "gemini CLI not on PATH (Gemini provider unavailable)")
-
     # Antigravity CLI (`agy`) — the subscription-priced path to Gemini
     # models since Google cut the Gemini CLI's individual tiers off
     # (2026-06-18). Resolver probes the installer location first: the

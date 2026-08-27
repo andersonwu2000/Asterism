@@ -175,15 +175,15 @@ def test_get_skips_empty_string_env(
 
 def test_get_dotted_path_navigates_yaml(tmp_path: Path) -> None:
     (tmp_path / "Asterism.yaml").write_text(
-        "builder:\n  provider: gemini\n  model: gemini-2.5-flash\n",
+        "builder:\n  provider: codex\n  model: gpt-5.6-luna\n",
         encoding="utf-8",
     )
     assert config.get(
         "builder.provider", default="claude", workspace=tmp_path,
-    ) == "gemini"
+    ) == "codex"
     assert config.get(
         "builder.model", default="x", workspace=tmp_path,
-    ) == "gemini-2.5-flash"
+    ) == "gpt-5.6-luna"
 
 
 def test_get_missing_dotted_path_falls_to_default(tmp_path: Path) -> None:
@@ -245,16 +245,16 @@ def test_dispatcher_shelve_threshold_via_yaml(
 def test_provider_resolution_via_yaml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """builder.provider in yaml routes get_provider('builder') to gemini."""
+    """builder.provider in yaml routes get_provider('builder') there."""
     from Tooling import llm
     for v in ("ASTERISM_BUILDER_PROVIDER", "ASTERISM_LLM_PROVIDER"):
         monkeypatch.delenv(v, raising=False)
     (tmp_path / "Asterism.yaml").write_text(
-        "builder:\n  provider: gemini\n", encoding="utf-8")
+        "builder:\n  provider: openai\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     config._reset_cache()
     p = llm.get_provider(kind="builder")
-    assert type(p).__name__ == "GeminiCliProvider"
+    assert type(p).__name__ == "OpenAIProvider"
 
 
 def test_claude_model_resolution_via_yaml(

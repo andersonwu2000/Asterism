@@ -5,8 +5,8 @@ free tier, Google AI Pro AND AI Ultra all stopped being served (only
 enterprise Code Assist licences and API-key auth survived there). The
 replacement terminal product is the Antigravity CLI (`agy`), and it is
 the ONLY subscription-priced path to Gemini models — the API key route
-is per-token. `gemini_cli.py` stays for API-key / enterprise users; it
-cannot serve a personal subscription any more.
+is per-token. (`gemini_cli.py`, kept a while for API-key / enterprise
+users, retired 2026-08-28: never seated here, and a pre-MCP surface.)
 
 Interface fit (measured 2026-07-30, agy 1.1.8 — every claim below was
 probed, not read off the docs):

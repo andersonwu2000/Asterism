@@ -25,7 +25,7 @@ key silently returns the default, so the registry is bound to the code by
 tests/test_config_spec_drift.py in BOTH directions: an unregistered
 `config.get` key fails CI, and a registered key nobody reads fails too.
 
-Provider-specific knobs (gemini model / openai base url / claude
+Provider-specific knobs (openai base url / claude
 tools) stay env-only — they're cross-cutting toggles that don't
 fit the per-Problem mental model and are seldom changed.
 """

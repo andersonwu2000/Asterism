@@ -577,7 +577,8 @@ def resolve_claude_executable() -> "str | None":
     re-wakes the planner — the exact bill codex paid on 2026-08-12
     (~106k output tokens against a CLI that never launched). The
     mechanism was already measured and written down one module over, in
-    `gemini_cli.resolve_gemini_executable`.
+    the old gemini provider's resolver (module retired 2026-08-28; the
+    knowledge lives in `base.which_launchable` now).
 
     The change is equivalence-provable on a healthy machine: this
     returns the very `.exe` `shutil.which` was already finding, so

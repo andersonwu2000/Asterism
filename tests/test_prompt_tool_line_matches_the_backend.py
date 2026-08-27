@@ -82,7 +82,7 @@ def test_an_undeclared_backend_gets_the_pessimistic_line() -> None:
 def test_the_flag_pair_is_total() -> None:
     """Fail-open rendering makes a PARTIAL answer worse than none, so
     the helper always returns both names."""
-    for provider in ("claude", "codex", "antigravity", "gemini", "openai"):
+    for provider in ("claude", "codex", "antigravity", "openai"):
         assert set(caps.prompt_tool_flags(provider)) == {
             "native_file_tools", "mcp_only_reads"}
         f = caps.prompt_tool_flags(provider)

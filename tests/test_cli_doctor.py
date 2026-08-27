@@ -25,7 +25,7 @@ class _FakeRun:
     """Monkeypatch target for subprocess.run during doctor tests.
     Each response key is a space-joined cmd prefix (e.g. `claude --version`,
     `lake env lean --version`); doctor's actual cmd[0] may be an absolute
-    path (`/fake/gemini` or `gemini.cmd`), so we match against its
+    path (`/fake/agy` or `claude.cmd`), so we match against its
     basename-without-extension to stay platform-agnostic."""
     def __init__(self, responses: dict[str, tuple[int, str]]):
         self.responses = responses
@@ -33,7 +33,7 @@ class _FakeRun:
 
     def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         self.calls.append(cmd)
-        # Normalize cmd[0]: '/fake/gemini' or 'gemini.cmd' → 'gemini'.
+        # Normalize cmd[0]: '/fake/claude' or 'claude.cmd' → 'claude'.
         base = Path(cmd[0]).stem if cmd else ""
         norm = [base] + list(cmd[1:])
         for key, (rc, stdout) in self.responses.items():
@@ -45,7 +45,7 @@ class _FakeRun:
 
 
 def _setup_tools(monkeypatch: pytest.MonkeyPatch, *,
-                 has_claude: bool = True, has_gemini: bool = True,
+                 has_claude: bool = True,
                  has_lake: bool = True, has_agy: bool = True,
                  agy_perms: bool = True, agy_legacy_creds: bool = False,
                  responses: dict[str, tuple[int, str]] | None = None) -> _FakeRun:
@@ -71,8 +71,6 @@ def _setup_tools(monkeypatch: pytest.MonkeyPatch, *,
     available = set()
     if has_claude:
         available.add("claude")
-    if has_gemini:
-        available.add("gemini")
     if has_lake:
         available.add("lake")
     monkeypatch.setattr(
@@ -81,7 +79,6 @@ def _setup_tools(monkeypatch: pytest.MonkeyPatch, *,
     )
     fake = _FakeRun(responses or {
         "claude --version": (0, "2.1.123 (Claude Code)\n"),
-        "gemini --version": (0, "0.40.1\n"),
         "agy --version": (0, "1.1.8\n"),
         "lake env lean --version": (0, "Lean (version 4.x.x)\n"),
     })
@@ -135,7 +132,6 @@ def test_doctor_all_green(
     assert rc == 0
     assert "FAIL" not in out
     assert "claude" in out
-    assert "gemini" in out
     assert "lake" in out
     assert "wilson" in out
 
@@ -162,8 +158,8 @@ def test_doctor_claude_missing_is_warn_not_fail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Claude is optional (a project might use only Gemini) so its
-    absence is WARN, not FAIL."""
+    """Claude is optional (a project might run on another backend) so
+    its absence is WARN, not FAIL."""
     _setup_tools(monkeypatch, has_claude=False)
     monkeypatch.chdir(tmp_path)
     rc = cmd_doctor(argparse.Namespace())

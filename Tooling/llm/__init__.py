@@ -4,11 +4,9 @@
   'claude' (fallback)  — claude CLI subprocess
   'openai'             — OpenAI-compatible HTTP API (vLLM / Ollama /
                          LM Studio / Anthropic-via-proxy / etc.)
-  'gemini'             — Google Gemini CLI subprocess (API-key /
-                         enterprise Code Assist only: the individual
-                         tiers were cut off 2026-06-18)
   'antigravity'        — Antigravity CLI (`agy`) subprocess; the
                          subscription-priced path to Gemini models
+  ('gemini' retired 2026-08-28 — see the teaching refusal below)
 
 Per-pipeline overrides:
   `ASTERISM_BUILDER_PROVIDER` / `ASTERISM_BACKWARD_PROVIDER` take
@@ -54,8 +52,16 @@ def get_provider(kind: str | None = None) -> Provider:
         from .openai_api import OpenAIProvider
         return OpenAIProvider()
     if name == "gemini":
-        from .gemini_cli import GeminiCliProvider
-        return GeminiCliProvider()
+        # Retired, not unknown — the name deserves a road sign. The
+        # standalone Gemini CLI provider was a pre-MCP surface (no
+        # framework tool plane, no session resume), never seated by
+        # this workspace, and Google cut its individual tiers off
+        # 2026-06-18.
+        raise ValueError(
+            "provider 'gemini' retired 2026-08-28: Gemini models run "
+            "through provider 'antigravity' (the agy CLI, subscription "
+            "path); an API key can front them via provider 'openai' "
+            "with a compatible endpoint.")
     if name in ("antigravity", "agy"):
         from .antigravity_cli import AntigravityCliProvider
         return AntigravityCliProvider()

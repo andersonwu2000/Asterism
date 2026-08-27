@@ -399,7 +399,8 @@ Tooling/
   agent/      context.py / phase2_context.py (Context.md compilation), runtime.py (spawn +
               spawn_usage accounting), sandbox.py
   llm/        claude_cli.py (spawn + watchdog + sandbox flags), spawn_guard.py,
-              gemini/openai backends
+              codex_cli.py (+zen flavor via zen_shim.py), antigravity_cli.py,
+              openai_api.py (gemini backend retired 2026-08-28)
   lsp/        gateway.py (warm verify_file + validate_file + anchorClosure RPC),
               client.py, decl_oracle.py, lifecycle
   knowledge/  lemma search (loogle etc.)

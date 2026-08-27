@@ -289,8 +289,7 @@ _NL_GB_TTL = 30.0
 #: dev server) never pollute the reading. General across providers by
 #: construction; a new provider adds its CLI name here (drift test
 #: pins this against the provider table).
-AGENT_PROC_PREFIXES: "tuple[str, ...]" = ("codex", "claude", "agy",
-                                          "gemini")
+AGENT_PROC_PREFIXES: "tuple[str, ...]" = ("codex", "claude", "agy")
 
 
 def nl_gb_measured() -> float:

@@ -185,7 +185,7 @@ _ALLOWED_ENV_NAMES: "frozenset[str]" = frozenset({
     # Config LOCATION, not session identity — the CLAUDE_CODE_* names
     # that leak the host session are deliberately absent.
     "CLAUDE_CONFIG_DIR",
-    "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_API_KEY", "GOOGLE_CLOUD_PROJECT",
     "GOOGLE_APPLICATION_CREDENTIALS", "OPENAI_API_KEY",
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",

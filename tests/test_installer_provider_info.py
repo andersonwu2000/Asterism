@@ -39,8 +39,7 @@ def _info(provider: str) -> dict:
 
 
 @pytest.mark.parametrize("provider",
-                         ["claude", "antigravity", "gemini", "openai",
-                          "codex"])
+                         ["claude", "antigravity", "openai", "codex"])
 def test_declared_providers_answer_the_whole_contract(provider: str) -> None:
     info = _info(provider)
     assert _CONTRACT <= set(info)
@@ -103,7 +102,7 @@ def test_the_installer_grows_no_provider_branch() -> None:
     # this up myself" — a UI value, and there is exactly one of it
     # however many backends exist, so it is not the branch-per-backend
     # this ratchet guards.
-    names = ("claude", "antigravity", "gemini", "openai", "codex")
+    names = ("claude", "antigravity", "openai", "codex")
     pattern = re.compile(
         r"\$\w+\s+-(?:eq|ne)\s+'(" + "|".join(names) + r")'", re.IGNORECASE)
     # setup-orchestrator.ps1: ONE — the own_oauth login, whose argv is

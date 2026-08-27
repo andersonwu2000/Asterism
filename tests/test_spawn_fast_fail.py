@@ -133,29 +133,6 @@ def test_claude_spawn_writes_timeout_stderr(
     assert "TimeoutExpired" in body
 
 
-def test_gemini_spawn_writes_stderr_on_failure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    """Mirror behavior in gemini_cli."""
-    import subprocess as _sub
-    from Tooling.llm import gemini_cli, base
-    monkeypatch.setattr(gemini_cli.shutil, "which", lambda _: "/fake/gemini")
-    monkeypatch.setattr(
-        gemini_cli.subprocess, "run",
-        lambda *a, **kw: _sub.CompletedProcess(
-            args=a[0], returncode=2, stdout="",
-            stderr="gemini: 401 Unauthorized"))
-    (tmp_path / "p.md").write_text("body", encoding="utf-8")
-    p = gemini_cli.GeminiCliProvider()
-    p.spawn(base.LLMRequest(
-        kind="backward", prompt_path=tmp_path / "p.md",
-        problem_dir=tmp_path, attempts_dir=tmp_path, timeout_sec=60,
-    ))
-    body = (tmp_path / "_spawn.stderr").read_text(encoding="utf-8")
-    assert "rc=2" in body
-    assert "401 Unauthorized" in body
-
-
 # ---------------------------------------------------------------------
 # 2. Pipeline classifies spawn_fast_fail
 # ---------------------------------------------------------------------

@@ -589,7 +589,7 @@ def test_only_measured_backends_declare_a_delivery_ceiling() -> None:
     from Tooling.llm import capabilities as caps
 
     assert caps.inspect_delivery_chars("codex") == 30_000
-    for name in ("claude", "antigravity", "gemini", "openai"):
+    for name in ("claude", "antigravity", "openai"):
         assert caps.inspect_delivery_chars(name) is None, name
     assert caps.inspect_delivery_chars("agy") is None  # alias resolves
     assert caps.inspect_delivery_chars("no-such-backend") is None

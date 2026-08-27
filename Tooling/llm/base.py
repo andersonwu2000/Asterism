@@ -12,7 +12,7 @@ SpawnRC is an IntEnum):
   0   success (output files in attempts_dir; pipeline parses them)
   124 timeout
   125 stale session (claude --resume on a GC'd session UUID)
-  126 quota exhausted (gemini free-tier limit)
+  126 quota exhausted (a provider quota/rate refusal)
   127 dependency missing (CLI not on PATH / SDK not installed)
   128 stuck thinking — watchdog killed spawn after >N min without any
       tool_use event in the session jsonl. Distinct from 124 (full

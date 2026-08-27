@@ -601,27 +601,11 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
                "flag); `status: SUCCESS` is not proof of work — the "
                "artifact on disk is"),
     ),
-    "gemini": ProviderCapabilities(
-        name="gemini",
-        usage_endpoint=False,
-        stream_events=False,
-        # `gemini --resume` takes a session INDEX, not a UUID, so the
-        # claude contract does not map; the provider ignores session_id
-        # outright.
-        session_resume=RESUME_NONE,
-        # The CLI returns rc=0 even when every internal retry failed on
-        # quota (observed: 5 attempts, all "You have exhausted your
-        # capacity", final rc=0). An rc that is 0 on failure carries no
-        # information — the provider infers from output presence.
-        rc_contract=RC_UNINFORMATIVE,
-        enforcement_strength=ENFORCEMENT_UNDECLARED,
-        tested_version=None,
-        single_instance_lock=False,
-        notes=("API-key / enterprise Code Assist only since Google cut "
-               "the individual tiers off 2026-06-18 — kept for those "
-               "users; not exercised by this workspace, so nothing "
-               "below the rc contract has been re-measured"),
-    ),
+    # "gemini" retired 2026-08-28: a pre-MCP surface (no framework tool
+    # plane, no session resume, rc=0 on quota failure), never seated by
+    # this workspace, individual tiers cut off by Google 2026-06-18.
+    # `llm.get_provider` refuses the name with a road sign; Gemini
+    # models run through "antigravity".
     "openai": ProviderCapabilities(
         name="openai",
         usage_endpoint=False,

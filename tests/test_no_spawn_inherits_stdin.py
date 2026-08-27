@@ -32,7 +32,6 @@ LAUNCHER_MODULES = (
     "Tooling/llm/claude_cli.py",
     "Tooling/llm/codex_cli.py",
     "Tooling/llm/antigravity_cli.py",
-    "Tooling/llm/gemini_cli.py",
     "Tooling/llm/drift_guard.py",
     "Tooling/agent/runtime.py",
 )
@@ -109,7 +108,7 @@ def test_every_provider_tells_the_prompt_where_its_outputs_go() -> None:
     exists for, one layer up."""
     import re
     missing = []
-    for rel in ("Tooling/llm/claude_cli.py", "Tooling/llm/gemini_cli.py",
+    for rel in ("Tooling/llm/claude_cli.py",
                 "Tooling/llm/antigravity_cli.py",
                 "Tooling/llm/openai_api.py"):
         src = (ROOT / rel).read_text(encoding="utf-8")
