@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react'
+﻿import { useEffect, useMemo, useState } from 'react'
 import { apiGet, apiPost } from '../lib/api'
 import { navigate } from '../lib/router'
 import { Button } from '../components/ui'
@@ -36,6 +36,14 @@ export default function New() {
   const [shelf, setShelf] = useState<PaperShelfItem[]>([])
   const [papers, setPapers] = useState<Set<string>>(new Set())
   const [showConstraints, setShowConstraints] = useState(false)
+  // the shelf is a LIBRARY, not a checklist (owner, 2026-08-27): it
+  // was rendering one checkbox per paper, so an ordinary shelf buried
+  // the rest of the form under forty rows of filename. Collapsed, this
+  // field costs one line; the list opens under the cursor and closes
+  // when you leave it — in flow, never floating (DESIGN.md: prefer
+  // dimming over popups, modals only for irreversible destruction).
+  const [paperQ, setPaperQ] = useState('')
+  const [paperOpen, setPaperOpen] = useState(false)
   const [axioms, setAxioms] = useState<string[]>(DEFAULT_AXIOMS)
   const [forbidden, setForbidden] = useState<string[]>([])
 
@@ -50,6 +58,26 @@ export default function New() {
       cancelled = true
     }
   }, [])
+
+  // a paper reads by its TITLE where it has one, exactly as it does on
+  // the Papers shelf — `div-class-title-a-proof-of-the-erd-s-...pdf`
+  // is a filename, not a name (the picker was showing only that)
+  const paperName = (p: PaperShelfItem) => p.title ?? p.source_name
+  const chosen = useMemo(
+    () => shelf.filter((p) => papers.has(p.id)),
+    [shelf, papers],
+  )
+  const offered = useMemo(() => {
+    // a chosen paper leaves the list — it is already standing above it
+    const rest = shelf.filter((p) => !papers.has(p.id))
+    const q = paperQ.trim().toLowerCase()
+    if (q === '') return rest
+    return rest.filter(
+      (p) =>
+        paperName(p).toLowerCase().includes(q) ||
+        p.source_name.toLowerCase().includes(q),
+    )
+  }, [shelf, papers, paperQ])
 
   const togglePaper = (id: string) =>
     setPapers((old) => {
@@ -206,23 +234,104 @@ export default function New() {
       {shelf.length > 0 && (
         <div className="mt-4">
           <label className="mb-1 block text-[11px] font-medium tracking-widest text-ink-faint uppercase">
-            ground it in papers
+            ground it in papers <span className="lowercase">(optional)</span>
           </label>
           <p className="mb-2 text-[11px] text-ink-faint">
-            the engine reads checked papers for definitions and proof routes (you can bind
-            more later)
+            the engine reads these for definitions and proof routes (you can bind more
+            later)
           </p>
-          <div className="flex flex-col gap-1">
-            {shelf.map((p) => (
-              <label key={p.id} className="flex items-center gap-2 text-xs text-ink-dim">
-                <input
-                  type="checkbox"
-                  checked={papers.has(p.id)}
-                  onChange={() => togglePaper(p.id)}
-                />
-                <span className="font-mono text-[12px] text-ink">{p.source_name}</span>
-              </label>
-            ))}
+          {/* what you picked stands here, and only here — the list
+              below drops it, so no paper is drawn twice */}
+          {chosen.length > 0 && (
+            <div className="mb-2 flex max-w-2xl flex-wrap gap-1.5">
+              {chosen.map((p) => (
+                <button
+                  key={p.id}
+                  data-paper-chip
+                  className="group/chip flex max-w-full cursor-pointer items-center gap-1.5 rounded-lg border border-edge bg-surface px-2.5 py-1 transition-colors hover:border-edge-strong"
+                  title={`${p.source_name} — click to drop it`}
+                  onClick={() => togglePaper(p.id)}
+                >
+                  <span
+                    className={
+                      'truncate text-[12px] text-ink ' + (p.title ? '' : 'font-mono')
+                    }
+                  >
+                    {paperName(p)}
+                  </span>
+                  <span className="shrink-0 text-[11px] text-ink-faint transition-colors group-hover/chip:text-ink">
+                    ×
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="max-w-2xl">
+            <input
+              className="w-full rounded-lg border border-edge bg-surface px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+              placeholder={
+                shelf.length === chosen.length
+                  ? 'the whole shelf is bound'
+                  : `search the shelf — ${shelf.length - chosen.length} more`
+              }
+              value={paperQ}
+              onChange={(e) => setPaperQ(e.target.value)}
+              onFocus={() => setPaperOpen(true)}
+              onBlur={() => setPaperOpen(false)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setPaperOpen(false)
+                  e.currentTarget.blur()
+                } else if (e.key === 'Enter' && offered.length > 0) {
+                  // type three characters and take it — the fast path
+                  e.preventDefault()
+                  togglePaper(offered[0].id)
+                  setPaperQ('')
+                }
+              }}
+              spellCheck={false}
+            />
+            {paperOpen && (
+              <div className="mt-1 max-h-56 overflow-y-auto rounded-lg border border-edge">
+                {offered.length === 0 ? (
+                  <div className="px-2.5 py-2 text-[11px] text-ink-faint">
+                    {paperQ.trim() === ''
+                      ? 'every paper on the shelf is already bound'
+                      : 'nothing on the shelf matches'}
+                  </div>
+                ) : (
+                  offered.map((p) => (
+                    <button
+                      key={p.id}
+                      data-paper-option
+                      className="block w-full cursor-pointer px-2.5 py-1.5 text-left transition-colors hover:bg-wash"
+                      // the input keeps focus, so the click lands
+                      // before the blur that would close this list
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        togglePaper(p.id)
+                        setPaperQ('')
+                      }}
+                    >
+                      <span
+                        className={
+                          'block truncate text-[12.5px] text-ink ' +
+                          (p.title ? '' : 'font-mono')
+                        }
+                      >
+                        {paperName(p)}
+                      </span>
+                      <span className="block truncate font-mono text-[10.5px] text-ink-faint">
+                        {/* the filename earns a line only when it is
+                            NOT already the name above it */}
+                        {p.title ? `${p.source_name} · ` : ''}
+                        {p.pages} pp
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -135,3 +135,44 @@ test('new-problem form renders (read-only: no submit)', async ({ page }) => {
   await expect(page.getByPlaceholder('Topology.my_theorem')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Create problem' })).toBeDisabled()
 })
+
+test('new-problem: the shelf is a search, not a wall', async ({ page }) => {
+  // The picker used to render one checkbox per shelved paper, which
+  // buried the rest of the form (owner, 2026-08-27). Collapsed it is
+  // one field; the list opens under the cursor and drops what is
+  // already bound. Read-only — nothing here submits.
+  await page.goto('/#/new')
+  const search = page.getByPlaceholder(/search the shelf|whole shelf is bound/)
+  const shelved = await search
+    .waitFor({ timeout: 5000 })
+    .then(() => true)
+    .catch(() => false)
+  test.skip(!shelved, 'needs a workspace with a paper shelf')
+
+  // collapsed: the wall is gone — no checkbox survives in this form
+  expect(await page.locator('input[type="checkbox"]').count()).toBe(0)
+
+  // the list is closed until the field has the cursor
+  const options = page.locator('[data-paper-option]')
+  expect(await options.count()).toBe(0)
+  await search.click()
+  await expect(options.first()).toBeVisible()
+  const all = await options.count()
+  expect(all).toBeGreaterThan(0)
+
+  // typing narrows it, and a query nothing matches says so rather
+  // than leaving an empty box
+  await search.fill('zzzzz-no-such-paper')
+  await expect(page.getByText('nothing on the shelf matches')).toBeVisible()
+
+  // taking one moves it out of the list and into a chip that drops it
+  await search.fill('')
+  const first = (await options.first().innerText()).split('\n')[0].trim()
+  await options.first().click()
+  const chip = page.locator('[data-paper-chip]')
+  await expect(chip).toHaveCount(1)
+  await expect(chip.first()).toContainText(first)
+  expect(await options.count()).toBe(all - 1)
+  await chip.first().click()
+  await expect(chip).toHaveCount(0)
+})
