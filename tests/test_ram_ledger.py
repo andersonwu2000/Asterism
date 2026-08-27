@@ -278,13 +278,19 @@ def test_target_is_ram_only_backpressure_owns_cpu(monkeypatch):
 
 def test_ledger_tick_is_rate_limited(monkeypatch):
     _quiet_pressure(monkeypatch)
+    # Pinned clock, not a stretched interval: the 3600s stretch (the
+    # 2026-08-25 flake guard) met uptime-anchored monotonic() on
+    # freshly booted CI runners and suppressed the FIRST push — every
+    # CI run red for 3 days (2026-08-25..28). A pinned clock kills
+    # both races and pins first-tick-pushes besides.
+    now = {"t": 100.0}
+    monkeypatch.setattr(rl.time, "monotonic", lambda: now["t"])
     led = rl.DispatcherLedger(28.0, 32.0)
-    # A loaded parallel test run can stall >15s between the two calls
-    # (measured flake, 2026-08-25) — the interval under test must not
-    # race the wall clock.
     led.PUSH_INTERVAL_SEC = 3600.0
     calls = []
     led.tick(nl_demand=0, push=lambda t, f: calls.append(t) or None)
+    assert calls, "a fresh ledger's first tick must push, uptime be damned"
+    now["t"] += 5.0
     led.tick(nl_demand=0, push=lambda t, f: calls.append(t) or None)
     assert len(calls) == 1, "second tick inside the interval must not push"
 
@@ -293,7 +299,6 @@ def test_ledger_unreachable_gateway_keeps_last_counts(monkeypatch):
     _quiet_pressure(monkeypatch)
     led = rl.DispatcherLedger(28.0, 32.0)
     led.open_slots = 9
-    led._last_push = 0.0
     led.tick(nl_demand=0, push=lambda t, f: None)
     assert led.open_slots == 9
 

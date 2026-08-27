@@ -383,7 +383,11 @@ class DispatcherLedger:
         self.open_slots = 0
         self.free_slots = 0
         self.last_target = 0
-        self._last_push = 0.0
+        # -inf, not 0.0: monotonic() is uptime-anchored, so on a young
+        # machine 0.0 is INSIDE the interval and the first push gets
+        # suppressed — CI runners boot minutes before the suite and sat
+        # red on exactly this for 3 days (2026-08-25..28).
+        self._last_push = -math.inf
         self._slot_gb_at = time.monotonic()
         self._nl_admits: "list[float]" = []
         #: Measured-pressure feedback (owner-approved 2026-08-26): the

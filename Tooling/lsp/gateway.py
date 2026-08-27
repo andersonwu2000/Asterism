@@ -1659,7 +1659,11 @@ def _maybe_kick_midlease_rewarm(slot: WorkerSlot, meta) -> None:
         return
     if slot.rewarming or slot.closed or slot.reserved or slot.frozen:
         return
-    if time.monotonic() - slot.rewarmed_at < _MIDLEASE_COOLDOWN_SEC:
+    # rewarmed_at=0.0 means "never" — and uptime-anchored monotonic()
+    # reads 0.0 as "recent" on a young machine (the ram_ledger
+    # first-push lesson), so a never-rewarmed slot gets no cooldown.
+    if slot.rewarmed_at \
+            and time.monotonic() - slot.rewarmed_at < _MIDLEASE_COOLDOWN_SEC:
         return
     mb = _slot_private_mb_cached().get(slot.slot_id)
     if mb is None:
