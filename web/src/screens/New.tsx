@@ -3,9 +3,8 @@ import { apiGet, apiPost } from '../lib/api'
 import { navigate } from '../lib/router'
 import { Button } from '../components/ui'
 import ListField from '../components/ListField'
-import { countErrors } from '../components/LeanProbe'
-import { LeanBlock } from '../components/LeanBlock'
-import { useLeanSession, type LeanCursor } from '../lib/leanSession'
+import { DiagList, LeanBlock, countErrors } from '../components/LeanBlock'
+import { boxDiags, engineWord, useLeanSession, type LeanCursor } from '../lib/leanSession'
 import { claimLeanSlot, releaseLeanSlot, useLeanSlotActive } from '../lib/leanSlot'
 import type { PaperShelfItem } from '../lib/types'
 import { frameClass } from '../lib/textFrame'
@@ -141,51 +140,42 @@ export default function New() {
     ...(check.parts.defs ?? []),
     ...(check.parts.root ?? []),
   ])
-  // buffer verdict only — engine lifecycle states live in the goal
-  // panel, where the eye already is
+  // The VERDICT only. The engine's PHASE is a separate fact and each
+  // box says it in its own InfoView — `checking…` used to appear in
+  // both places at once, which is one fact drawn twice.
   const checkWord =
-    check.phase === 'checking'
-      ? 'checking…'
-      : check.phase === 'ready' && !check.detail
-        ? nErr === 0
-          ? '✓ elaborates'
-          : `${nErr} error${nErr === 1 ? '' : 's'}`
-        : ''
-  const engineWord =
-    check.phase === 'dormant'
-      ? 'click into a box below to check — the Lean engine follows your cursor'
-      : check.phase === 'warming'
-        ? 'engine warming — the check resumes on its own (a cold start can take a minute)'
-        : check.phase === 'busy'
-          ? 'the engine editor slot is busy elsewhere — retrying'
-          : check.phase === 'connecting'
-            ? 'connecting to the engine…'
-            : check.detail
-              ? `engine error: ${check.detail}`
-              : null
+    check.phase === 'ready' && !check.detail
+      ? nErr === 0
+        ? '✓ elaborates'
+        : `${nErr} error${nErr === 1 ? '' : 's'}`
+      : ''
+  const engineSays = engineWord(check)
 
   // What ONE box has to say — its own diagnostics, and (only while the
-  // caret is in it) the goal there. The synthesized import header
-  // belongs to neither box; it is folded into Defs, which is what it
-  // sits above and where an import error points.
+  // caret is in it) the goal there. NOT the preamble: a `#check` result
+  // reaches us with `line: null` (measured — serve's `_map_diags` can
+  // only bin an unpositioned diagnostic as `_preamble`), so folding
+  // that bin into Defs printed the ROOT box's output above the Defs
+  // box (owner screenshot, 2026-08-27). Un-attributable output belongs
+  // to the pair, and is rendered as the pair's own row.
   const partInfo = (part: 'defs' | 'root') => {
     const mine = cursor?.part === part
     const g = check.goal
     const goal =
-      mine && !engineWord && g && g !== 'no goals' && !g.startsWith('<no goals')
+      mine && !engineSays && g && g !== 'no goals' && !g.startsWith('<no goals')
         ? g.replace(/^```lean\n?/, '').replace(/\n?```\s*$/, '')
         : null
     const status = !mine
       ? ''
-      : engineWord
-        ? engineWord
+      : engineSays
+        ? engineSays
         : goal
           ? (check.note ?? '')
           : g
             ? 'no goals here — the caret is outside an open `by` proof'
             : ''
     return {
-      diags: [...(part === 'defs' ? check.preamble : []), ...(check.parts[part] ?? [])],
+      diags: boxDiags(check, part),
       goal,
       status,
     }
@@ -352,9 +342,24 @@ export default function New() {
       </button>
       {showLean && (
         <div className="mb-3 flex flex-col gap-3">
-          {/* the pair's verdict — what gates Create; the per-box word
-              lives in each box's own InfoView, as it does in a probe */}
-          <div className="min-h-4 text-[11px] text-ink-faint">{checkWord}</div>
+          {/* The pair's own row: the verdict that gates Create, and any
+              output the engine could not pin to a box — a `#check`
+              result arrives unpositioned, so it belongs to the file,
+              not to whichever box happens to be first. The per-box
+              word lives in each box's InfoView, as it does in a probe. */}
+          {(() => {
+            // the engine's word belongs wherever the reader is: in the
+            // box holding the caret, or here while no box holds it
+            const word = cursor === null ? engineSays : ''
+            const line = word !== '' ? word : checkWord
+            if (line === '' && check.preamble.length === 0) return null
+            return (
+              <div className="rounded-xl border border-edge px-3 py-2">
+                {line !== '' && <div className="text-[11px] text-ink-faint">{line}</div>}
+                <DiagList diags={check.preamble} />
+              </div>
+            )
+          })()}
           {LEAN_BOXES.map((box) => {
             const info = partInfo(box.id)
             return (

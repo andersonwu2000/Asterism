@@ -13,6 +13,38 @@ import type { EvalDiag } from '../components/LeanProbe'
 
 export type LeanCursor = { part: string; line: number; col: number }
 
+/**
+ * What the engine is doing, in one sentence — ONE mapping, shared by
+ * every surface that runs Lean (owner, 2026-08-27: the warm-up
+ * produced different words in different boxes, because the probe and
+ * the New page each kept their own copy of this ladder and had
+ * drifted: "resumes on its own" vs "the check resumes on its own",
+ * "connecting..." vs "connecting to the engine...", and the New page
+ * had no `checking` case here at all, so a box went silent while a
+ * separate verdict line spoke).
+ *
+ * Empty = the engine has nothing to say, which is the steady state.
+ */
+export function engineWord(s: {
+  phase: LeanSessionState['phase']
+  detail: string | null
+}): string {
+  switch (s.phase) {
+    case 'dormant':
+      return 'click into the editor to check — the Lean engine follows your cursor'
+    case 'warming':
+      return 'engine warming — the check resumes on its own (a cold start can take a minute)'
+    case 'busy':
+      return 'the engine editor slot is busy elsewhere — retrying'
+    case 'connecting':
+      return 'connecting to the engine…'
+    case 'checking':
+      return 'checking…'
+    default:
+      return s.detail ? `engine error: ${s.detail}` : ''
+  }
+}
+
 export type LeanSessionState = {
   phase: 'idle' | 'connecting' | 'warming' | 'busy' | 'checking' | 'ready' | 'dormant'
   parts: Record<string, EvalDiag[]>
@@ -20,6 +52,24 @@ export type LeanSessionState = {
   goal: string | null
   note: string | null
   detail: string | null
+}
+
+/**
+ * The diagnostics that belong to ONE box, and only those.
+ *
+ * `preamble` is the bin for output the engine could not place: serve's
+ * `_map_diags` files anything with `line: null` there, and a `#check`
+ * result arrives exactly that way (measured, 2026-08-27). Folding that
+ * bin into a box makes the box claim the OTHER box's output — the New
+ * page printed Root's `#check` above Defs before this was pinned down
+ * (owner screenshot). Unplaceable output is the file's, and a surface
+ * with more than one box renders it once, for the set.
+ */
+export function boxDiags(
+  s: Pick<LeanSessionState, 'parts'>,
+  part: string,
+): EvalDiag[] {
+  return s.parts[part] ?? []
 }
 
 const IDLE: LeanSessionState = {

@@ -1,6 +1,6 @@
 import { useEffect, useId, useState } from 'react'
 import { LeanBlock } from './LeanBlock'
-import { useLeanSession, type LeanCursor } from '../lib/leanSession'
+import { engineWord, useLeanSession, type LeanCursor } from '../lib/leanSession'
 import { claimLeanSlot, releaseLeanSlot, useLeanSlotActive } from '../lib/leanSlot'
 
 /*
@@ -60,20 +60,7 @@ export function LeanProbe({
     cursor,
   })
   const diags = [...s.preamble, ...(s.parts.probe ?? [])]
-  const status =
-    s.phase === 'dormant'
-      ? 'click into this block to check — the Lean engine follows your cursor'
-      : s.phase === 'warming'
-        ? 'engine warming — resumes on its own (a cold start can take a minute)'
-        : s.phase === 'busy'
-          ? 'the engine editor slot is busy elsewhere — retrying'
-          : s.phase === 'connecting'
-            ? 'connecting…'
-            : s.phase === 'checking'
-              ? 'checking…'
-              : s.detail
-                ? `engine error: ${s.detail}`
-                : ''
+  const status = engineWord(s)
   const goalText =
     cursor && s.goal && s.goal !== 'no goals' && !s.goal.startsWith('<no goals')
       ? s.goal.replace(/^```lean\n?/, '').replace(/\n?```\s*$/, '')
