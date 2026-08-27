@@ -1515,18 +1515,9 @@ export default function Constellation({
               </text>
             </g>
           )}
-          {layout.singlesBlock && (
-            <text
-              x={layout.singlesBlock.x}
-              y={layout.singlesBlock.y - 22 / k}
-              fill="var(--color-ink-faint)"
-              fontSize={10 / k}
-              fontFamily="var(--font-sans)"
-              className="pointer-events-none select-none"
-            >
-              unlinked · {layout.singlesBlock.count}
-            </text>
-          )}
+          {/* the "unlinked · N" caption went with the bed it captioned
+              (2026-08-27). Lone stars are scattered through the sky's
+              gaps now, and a scattered set has no corner to label. */}
           {nodesEl}
           {/* hover family echo: the hovered star's parents and subgoals
               relit over the base layers — dead routes at residue ink,

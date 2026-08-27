@@ -124,11 +124,12 @@ function plate(lay) {
   const w = Math.round(lay.width)
   const h = Math.round(lay.height)
   // A LONE STAR is one no route reaches: no hierarchy edge, no bundle.
-  // They are bedded in grids, and those beds are the biggest and least
-  // informative thing on a big plate — `bed` is the share of the plate
-  // their bounding boxes cover. The first version of this read
-  // `singlesBlock`, which is only the UNLINKED handful, and reported 0
-  // on the very sky whose beds fill a quarter of the page.
+  // `spread` is the share of the plate their bounding box covers, and
+  // HIGH is the good direction: they are scattered into the sky's gaps
+  // now, so covering the page means covering it evenly, while a low
+  // number means they have pooled back into a bed. (The first version
+  // of this read `singlesBlock`, which was only the unlinked handful,
+  // and reported 0 on the very sky whose beds filled a tenth of it.)
   const tied = new Set()
   for (const e of lay.edges) {
     if (e.kind === 'citation' || e.kind === 'alias') continue
@@ -140,14 +141,14 @@ function plate(lay) {
     for (const c of b.children) tied.add(c)
   }
   const lone = lay.nodes.filter((n) => !tied.has(n.goal.id))
-  let bed = 0
+  let spread = 0
   if (lone.length > 1) {
     const xs = lone.map((n) => n.x)
     const ys = lone.map((n) => n.y)
     const a = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys))
-    bed = Math.round((a / (w * h)) * 100)
+    spread = Math.round((a / (w * h)) * 100)
   }
-  return { w, h, ratio: Math.round((w / h) * 100) / 100, lone: lone.length, bedPct: bed }
+  return { w, h, ratio: Math.round((w / h) * 100) / 100, lone: lone.length, spreadPct: spread }
 }
 
 const problems = process.argv.slice(2).length > 0 ? process.argv.slice(2) : DEFAULT_PROBLEMS

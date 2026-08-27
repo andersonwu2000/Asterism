@@ -72,8 +72,6 @@ export interface ConstellationLayout {
   /** y (px) of the horizon rule between the root-grown sky and the
    * other forward work; null when everything grew from the root */
   horizonY: number | null
-  /** caption anchor for the unlinked forward block */
-  singlesBlock: { x: number; y: number; count: number } | null
 }
 
 export const X_GAP = 110
@@ -796,69 +794,18 @@ function packOnce(
     return g !== undefined && (g.origin === 'root' || g.is_deliverable || g.detached)
   }
   const singletonIds = goals.filter((g) => isSingleton(g.id)).map((g) => g.id)
-  // Singleton beds: a run of lone stars in one row reads as a
-  // clothesline — grid them into compact beds instead. Main-ish ones
-  // (detached seeds, bare claims) bed in region 0; citation-linked
-  // ones bed in region 1 ordered under their citers.
-  //
-  // HALF a cell each way, not a whole one (owner, looking at
-  // union_closed: "the singleton placement has room, and it is good
-  // value"). A lone star has no children to make room for and no
-  // descent to leave air under, yet each was taking a full tree cell:
-  // 698 of them on that sky became beds covering 9% of a plate they
-  // also made 23% bigger — the largest thing on the page and the one
-  // carrying the least information. Half-pitch is the tightest the
-  // sky's own de-overlap law allows (min gap X_GAP/2) and takes a bed
-  // to a QUARTER of its area.
-  const SINGLE_PITCH = 0.5
-  const gridComp = (ids: number[]) => {
-    if (ids.length === 0) return
-    const perRow = Math.max(3, Math.ceil(Math.sqrt(ids.length * 2.2) / SINGLE_PITCH))
-    const start = slot
-    ids.forEach((id, i) => {
-      xSlot.set(id, start + (i % perRow) * SINGLE_PITCH)
-      layer.set(id, Math.floor(i / perRow) * SINGLE_PITCH)
-    })
-    slot = start + Math.min(ids.length, perRow) * SINGLE_PITCH
-    treeInfos.push({
-      members: ids,
-      start,
-      end: slot - 1,
-      depth: Math.floor((ids.length - 1) / perRow) * SINGLE_PITCH,
-    })
-    slot += 0.6
-  }
-  // A heavily-cited singleton is an ordinary singleton (owner,
-  // 2026-08-26). It used to be two extra tiers — a "hub" that left the
-  // shared beds for a component of its own, and above it an
-  // "ultra-hub" (a quarter of the sky citing it) that got a band
-  // spliced in for itself alone, plate-centred, with its starburst
-  // exempted from the crossing objective. Stokes' `smul_form` was the
-  // only witness the tiers ever had, and the reason they existed was
-  // that its 100 threads used to look like structure: solid starlight,
-  // indistinguishable from a decomposition limb, so a sun buried in a
-  // shelf read as a tangle. Now cross-links are dotted and read as a
-  // weave, and a weave needs no orbit of its own. Measured cost of the
-  // removal on stokes: the sun sits ~700px off its citers' x centre
-  // instead of ~40; measured gain: ~9% fewer crossings, one band and
-  // ~200px of height back, and one fewer special case in the engine.
-  const mainSingles = singletonIds.filter((id) => mainish(id))
-  const linkedSingles = singletonIds.filter(
-    (id) => !mainish(id) && citPartner.has(id),
-  )
-  const partnerMean = (id: number) => {
-    const xs = (citPartner.get(id) ?? [])
-      .map((p) => xSlot.get(p))
-      .filter((v): v is number => v !== undefined)
-    return xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : Infinity
-  }
-  linkedSingles.sort((a, b) => partnerMean(a) - partnerMean(b) || a - b)
-  gridComp(mainSingles)
-  gridComp(linkedSingles)
-  const unlinkedSingles = singletonIds.filter(
-    (id) => !citPartner.has(id) && !mainish(id),
-  )
-
+  // Lone stars are NOT bedded. They used to be gridded into blocks —
+  // and on union_closed the 698 of them made a rectangle covering 9%
+  // of the plate while forcing the plate 23% bigger. Packing the bed
+  // tighter only made it worse: the renderer boosts star radius at
+  // fit-zoom (`0.78 / kq`, capped at 4x) so stars stay visible when
+  // the sky is small on screen, and that boost assumes a full cell, so
+  // at half-pitch the discs touched and 698 stars became one solid
+  // grey brick (owner: "uglier — worse than scattering them across the
+  // sky"). Density and legibility are one axis here, so a bed cannot
+  // be shrunk by packing; only by not being a bed. They are scattered
+  // into the sky's own gaps instead — `scatterLone`, after the sweeps,
+  // once the tree geometry is final.
   // ---- Two-region sky ------------------------------------------------
   // Region 0: components holding the root, a top-level claim, or an
   // injected spine. Region 1 (below the horizon): other forward work —
@@ -1182,32 +1129,6 @@ function packOnce(
     }
   }
 
-  // Truly unlinked forward work: a compact grid block, last.
-  const singles = unlinkedSingles
-  if (singles.length > 0) {
-    // the bed pitch, and a row length that follows the width the trees
-    // already settled on — the block stops setting the plate's width
-    // and becomes a strip under it
-    let treeMax = 0
-    const lone0 = new Set(singletonIds)
-    for (const [id, v] of localSlot) if (!lone0.has(id)) treeMax = Math.max(treeMax, v)
-    const perRow =
-      treeMax > 0
-        ? Math.max(4, Math.floor(treeMax / SINGLE_PITCH) + 1)
-        : Math.max(4, Math.ceil(Math.sqrt(singles.length * 2.6) / SINGLE_PITCH))
-    const sBand = bandUsed > 0 ? band + 1 : band
-    if (horizonBand === null) horizonBand = sBand
-    singles.forEach((id, i) => {
-      bandOfNode.set(id, sBand)
-      localSlot.set(id, (i % perRow) * SINGLE_PITCH)
-      layer.set(id, Math.floor(i / perRow) * SINGLE_PITCH)
-    })
-    bandDepth[sBand] = Math.max(
-      bandDepth[sBand] ?? 0,
-      Math.floor((singles.length - 1) / perRow) * SINGLE_PITCH,
-    )
-  }
-
   // Vertical base of each band = cumulative depth of the bands above;
   // the horizon band gets extra air so the rule reads as a boundary.
   const bandYBase: number[] = []
@@ -1365,6 +1286,122 @@ function packOnce(
   for (const v of localSlot.values()) minSlot = Math.min(minSlot, v)
   if (minSlot < 0) {
     for (const [id, v] of localSlot) localSlot.set(id, v - minSlot)
+  }
+
+  // ---- lone stars: scattered into the sky's own emptiness ------------
+  // A star no route reaches used to be bedded in a grid — 698 of them
+  // on union_closed made a rectangle covering 9% of the plate and
+  // forced the plate 23% bigger. Packing the bed tighter only made it
+  // a solid brick (the renderer boosts star radius at fit-zoom, so
+  // density and legibility are one axis). The bed itself was the
+  // error: a lone star needs a POSITION, not a neighbourhood, and the
+  // sky is already full of gaps — measured on that same sky, 2880
+  // cells stand empty with a one-cell moat around every tree, against
+  // 698 stars to place. So they go in the gaps, the bed disappears,
+  // and the plate does not grow by a single slot.
+  //
+  // Deterministic: candidate cells are ordered by a fixed hash, and
+  // the stars by id. A cited lone star prefers a gap near its citer;
+  // the rest spread evenly through the scrambled order.
+  {
+    const lone = singletonIds.filter((id) => localSlot.get(id) === undefined)
+    if (lone.length > 0) {
+      const held = new Set<string>()
+      const key = (b: number, l: number, x: number) => `${b}:${l}:${x}`
+      for (const [id, v] of localSlot) {
+        const b = bandOfNode.get(id) ?? 0
+        held.add(key(b, Math.round(layer.get(id) ?? 0), Math.round(v)))
+      }
+      let treeMax = 0
+      for (const v of localSlot.values()) treeMax = Math.max(treeMax, v)
+      const wide = Math.max(4, Math.ceil(treeMax))
+      const overWide = Math.max(
+        wide,
+        Math.ceil(Math.sqrt(lone.length * aspect * (Y_GAP / X_GAP))),
+      )
+      const free: { b: number; l: number; x: number; h: number }[] = []
+      for (let b = 0; b < bandDepth.length; b++) {
+        for (let l = 0; l <= Math.round(bandDepth[b] ?? 0); l++) {
+          for (let x = 0; x <= wide; x++) {
+            if (held.has(key(b, l, x))) continue
+            let near = false
+            for (let dl = -1; dl <= 1 && !near; dl++)
+              for (let dx = -1; dx <= 1 && !near; dx++)
+                if (held.has(key(b, l + dl, x + dx))) near = true
+            if (near) continue
+            // a cheap fixed scramble so the field reads as sky rather
+            // than as rows filling left to right
+            const h = ((b * 73856093) ^ (l * 19349663) ^ (x * 83492791)) >>> 0
+            free.push({ b, l, x, h })
+          }
+        }
+      }
+      free.sort((a, b2) => a.h - b2.h || a.b - b2.b || a.l - b2.l || a.x - b2.x)
+      const order = [...lone].sort((a, b2) => a - b2)
+      // a cited lone star is not really alone: seat it in the nearest
+      // free gap to whoever cites it, and let the rest take the
+      // scrambled order
+      const taken = new Set<number>()
+      const nearestFor = (id: number): number => {
+        const xs = (citPartner.get(id) ?? [])
+          .map((q) => localSlot.get(q))
+          .filter((v): v is number => v !== undefined)
+        if (xs.length === 0) return -1
+        const want = xs.reduce((m, v) => m + v, 0) / xs.length
+        let bestIdx = -1
+        let bestD = Infinity
+        for (let k = 0; k < free.length; k++) {
+          if (taken.has(k)) continue
+          const d = Math.abs(free[k].x - want)
+          if (d < bestD) {
+            bestD = d
+            bestIdx = k
+          }
+          if (bestD === 0) break
+        }
+        return bestIdx
+      }
+      let i = 0
+      for (const id of order) {
+        const pick = nearestFor(id)
+        if (pick >= 0) {
+          taken.add(pick)
+          const c = free[pick]
+          bandOfNode.set(id, c.b)
+          layer.set(id, c.l)
+          localSlot.set(id, c.x)
+          continue
+        }
+        while (i < free.length && taken.has(i)) i++
+        if (i < free.length) {
+          const c = free[i++]
+          bandOfNode.set(id, c.b)
+          layer.set(id, c.l)
+          localSlot.set(id, c.x)
+        } else {
+          // More lone stars than gaps — a small sky, mostly. The
+          // overflow gets fresh rows UNDER the sky at full pitch, as
+          // wide as the page wants rather than as wide as the trees
+          // happen to be: a four-node tree would otherwise dictate a
+          // five-column column of stars.
+          const over = i - free.length
+          i++
+          const b = bandDepth.length
+          bandOfNode.set(id, b)
+          layer.set(id, Math.floor(over / overWide))
+          localSlot.set(id, over % overWide)
+          bandDepth[b] = Math.max(bandDepth[b] ?? 0, Math.floor(over / overWide))
+          // bandYBase was settled before this pass; a band invented
+          // here needs its own base or the overflow lands back on top
+          // of band 0 (which is exactly what it did)
+          if (bandYBase[b] === undefined) {
+            const prev = b - 1
+            bandYBase[b] =
+              (bandYBase[prev] ?? 0) + (bandDepth[prev] ?? 0) + 1.7
+          }
+        }
+      }
+    }
   }
 
   const maxSlot = Math.max(...[...localSlot.values()], 0)
@@ -2468,14 +2505,6 @@ function packOnce(
     horizonBand !== null && horizonBand < bandDepth.length
       ? PAD + ((bandYBase[horizonBand] ?? 0) - 0.95) * Y_GAP
       : null
-  const singlesBlock =
-    singles.length > 0
-      ? {
-          x: PAD,
-          y: PAD + (bandYBase[bandOfNode.get(singles[0]) ?? 0] ?? 0) * Y_GAP,
-          count: singles.length,
-        }
-      : null
 
   return {
     nodes,
@@ -2485,6 +2514,5 @@ function packOnce(
     height,
     bandTops,
     horizonY,
-    singlesBlock,
   }
 }

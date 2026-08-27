@@ -478,64 +478,73 @@ describe('the plate takes the shape it is asked for', () => {
 })
 
 /*
- * Lone stars — the ones no route reaches — are bedded in grids, and on
- * a big sky those beds are the largest thing on the plate and the one
- * carrying the least information (union_closed: 698 of them covering
- * 9% of the page, and making the page 23% bigger). A lone star has no
- * children to make room for and no descent to leave air under, so it
- * gets HALF a cell each way — the tightest the de-overlap law allows.
+ * Lone stars — the ones no route reaches — are NOT bedded. Beds were
+ * tried twice: a grid at full pitch (union_closed: 698 of them, a
+ * rectangle over 9% of a plate they also made 23% bigger) and the
+ * same grid at half pitch, which the renderer's fit-zoom radius boost
+ * turned into one solid brick. A lone star needs a POSITION, not a
+ * neighbourhood, and the sky is full of gaps — so it goes in one.
  */
-describe('a lone star gets half a cell, not a whole one', () => {
-  const lone = (n: number) =>
-    Array.from({ length: n }, (_, i) => goal(i + 1, { origin: 'forward' }))
+describe('a lone star goes in a gap, never in a bed', () => {
+  const lone = (n: number, from = 1) =>
+    Array.from({ length: n }, (_, i) => goal(from + i, { origin: 'forward' }))
 
-  it('beds them at half pitch, in both directions', () => {
-    const v = layoutConstellation(lone(40), [], [])
-    expect(v.nodes.length).toBe(40)
-    const rows = new Map<number, number[]>()
-    for (const n of v.nodes) rows.set(n.y, [...(rows.get(n.y) ?? []), n.x])
-    const gaps: number[] = []
-    for (const xs of rows.values()) {
-      xs.sort((a, b) => a - b)
-      for (let i = 1; i < xs.length; i++) gaps.push(xs[i] - xs[i - 1])
-    }
-    expect(gaps.length).toBeGreaterThan(0)
-    // every neighbour a half cell apart — and never TIGHTER than the
-    // sky's own minimum, which is what makes half the floor
-    for (const g of gaps) expect(g).toBeCloseTo(X_GAP / 2, 6)
-    const ys = [...rows.keys()].sort((a, b) => a - b)
-    expect(ys.length).toBeGreaterThan(1)
-    for (let i = 1; i < ys.length; i++) expect(ys[i] - ys[i - 1]).toBeCloseTo(60, 6)
-  })
-
-  it('a bed survives the alignment sweeps', () => {
-    // the sweeps' unit de-overlap would push a bed back to full pitch;
-    // a lone star has no family for them to align it with, so it sits
-    // them out. A tree in the same sky must still be swept.
+  const withTrees = (nLone: number) => {
     const goals = [
       goal(900, { origin: 'root' }),
       goal(901),
       goal(902),
-      ...lone(30),
+      goal(903),
+      ...lone(nLone),
     ]
-    const v = layoutConstellation(
+    return layoutConstellation(
       goals,
-      [{ id: 10, goal_id: 900, status: 'proposed' }] as Strategy[],
+      [
+        { id: 10, goal_id: 900, status: 'proposed' },
+        { id: 11, goal_id: 901, status: 'proposed' },
+      ] as Strategy[],
       [
         { strategy_id: 10, subgoal_id: 901 },
         { strategy_id: 10, subgoal_id: 902 },
+        { strategy_id: 11, subgoal_id: 903 },
       ] as StrategyEdge[],
     )
+  }
+
+  it('never stacks them into one rectangle', () => {
+    const v = withTrees(60)
     const byId = new Map(v.nodes.map((n) => [n.goal.id, n]))
-    const bedded = [...Array(30).keys()].map((i) => byId.get(i + 1)!).filter(Boolean)
-    const rows = new Map<number, number[]>()
-    for (const n of bedded) rows.set(n.y, [...(rows.get(n.y) ?? []), n.x])
-    let half = 0
-    for (const xs of rows.values()) {
-      xs.sort((a, b) => a - b)
-      for (let i = 1; i < xs.length; i++)
-        if (Math.abs(xs[i] - xs[i - 1] - X_GAP / 2) < 1e-6) half++
-    }
-    expect(half, 'the bed was shoved back to full pitch').toBeGreaterThan(0)
+    const stars = [...Array(60).keys()].map((i) => byId.get(i + 1)!).filter(Boolean)
+    expect(stars.length).toBe(60)
+    const rows = new Set(stars.map((n) => n.y))
+    const cols = new Set(stars.map((n) => n.x))
+    // a bed of 60 is ~11 x 6; a scatter uses many more of both
+    expect(rows.size, 'lone stars share too few rows — this is a bed').toBeGreaterThan(6)
+    expect(cols.size, 'lone stars share too few columns — this is a bed').toBeGreaterThan(11)
+  })
+
+  it('keeps its distance from the routes it has nothing to do with', () => {
+    // the moat: a star with no edge must not sit on a tree's shoulder
+    // and read as part of it
+    const v = withTrees(40)
+    const treeIds = new Set([900, 901, 902, 903])
+    const trees = v.nodes.filter((n) => treeIds.has(n.goal.id))
+    const stars = v.nodes.filter((n) => !treeIds.has(n.goal.id))
+    expect(stars.length).toBe(40)
+    for (const s of stars)
+      for (const t of trees)
+        expect(
+          Math.hypot(s.x - t.x, s.y - t.y),
+          `lone ${s.goal.id} sits on tree ${t.goal.id}`,
+        ).toBeGreaterThan(X_GAP / 2)
+  })
+
+  it('places every one of them, even past the gaps', () => {
+    // more stars than the sky has room for: the overflow gets rows of
+    // its own rather than being dropped or piled on one point
+    const v = withTrees(400)
+    expect(v.nodes.length).toBe(404)
+    const seen = new Set(v.nodes.map((n) => `${n.x}:${n.y}`))
+    expect(seen.size, 'two stars share one point').toBe(404)
   })
 })
