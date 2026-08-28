@@ -966,7 +966,7 @@ def test_register_session_claims_free_slot(
     slots = [_make_fake_slot(0, claimed_by="other-pipe"),
              _make_fake_slot(1, claimed_by=None)]
     monkeypatch.setattr(lsp_gateway._state, "workers", slots)
-    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+    monkeypatch.setattr(lsp_gateway.sessions, "_ensure_backend_ready",
                         lambda **kw: None)
 
     token, err = lsp_gateway._register_session_internal(
@@ -1407,7 +1407,7 @@ def test_register_session_fails_when_pool_exhausted(
     slots = [_make_fake_slot(0, claimed_by="pipe-X"),
              _make_fake_slot(1, claimed_by="pipe-Y")]
     monkeypatch.setattr(lsp_gateway._state, "workers", slots)
-    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+    monkeypatch.setattr(lsp_gateway.sessions, "_ensure_backend_ready",
                         lambda **kw: None)
 
     token, err = lsp_gateway._register_session_internal(
@@ -1669,7 +1669,7 @@ def test_the_cure_cannot_be_slower_than_the_disease(
     worker life, `spawn_timeout_sec` later doubled, and the two clocks
     were never compared again. Whatever anyone sets the threshold to —
     here, a day — a provably dead owner is still released this pass."""
-    monkeypatch.setattr(lsp_gateway, "_LEASE_TTL_SEC", 86_400.0)
+    monkeypatch.setattr(lsp_gateway.sessions, "_LEASE_TTL_SEC", 86_400.0)
     n, held = _sweep_one(monkeypatch, tmp_path, inactive=1.0, owner="dead")
     assert n == 1
     assert held is None
@@ -1740,7 +1740,7 @@ def test_the_slot_error_does_not_prescribe_an_impossible_action(
     names an unreachable exit is worse than one that names none, so
     this one says the fault is the framework's and to retry."""
     src = (Path(__file__).resolve().parents[1] / "Tooling" / "lsp"
-           / "gateway" / "__init__.py").read_text(encoding="utf-8")
+           / "gateway" / "sessions.py").read_text(encoding="utf-8")
     i = src.index("no slot claimed for pipeline")
     msg = src[i:i + 700]
     assert "register_session was not called" not in msg
@@ -2038,7 +2038,7 @@ def test_pipeline_claim_never_takes_reserved_slot(
     slots = [_make_fake_slot(0, claimed_by="other"),
              _make_reserved_slot(1)]
     monkeypatch.setattr(lsp_gateway._state, "workers", slots)
-    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+    monkeypatch.setattr(lsp_gateway.sessions, "_ensure_backend_ready",
                         lambda **kw: None)
     token, err = lsp_gateway._register_session_internal(
         pipeline_id="pipe-A", target_path=target,
@@ -2059,7 +2059,7 @@ def test_interactive_claim_takes_only_reserved_slot(
     slots = [_make_fake_slot(0),            # free pipeline slot
              _make_reserved_slot(1)]
     monkeypatch.setattr(lsp_gateway._state, "workers", slots)
-    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+    monkeypatch.setattr(lsp_gateway.sessions, "_ensure_backend_ready",
                         lambda **kw: None)
     token, err = lsp_gateway._register_session_internal(
         pipeline_id="interactive-a", target_path=target,
@@ -2129,7 +2129,7 @@ def test_interactive_reclaim_evicts_stale_interactive_only(
     slots = [_make_fake_slot(0, claimed_by="pipe-A"),
              _make_reserved_slot(1)]
     monkeypatch.setattr(lsp_gateway._state, "workers", slots)
-    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+    monkeypatch.setattr(lsp_gateway.sessions, "_ensure_backend_ready",
                         lambda **kw: None)
     tok1, err1 = lsp_gateway._register_session_internal(
         pipeline_id="interactive-old", target_path=target,
@@ -3049,7 +3049,7 @@ def test_shed_failure_reopens_the_roster_entry(_ledger_state) -> None:
 def test_claims_skip_closed_slots() -> None:
     """Both claim sites must treat a closed slot as not there."""
     import inspect as _inspect
-    src = _inspect.getsource(lsp_gateway)
+    src = _inspect.getsource(lsp_gateway.sessions)
     assert src.count("s.claimed_by is None and not s.closed") >= 2
 
 

@@ -13,11 +13,13 @@ Patch the mutable globals HERE. `_PRESSURE_DEBT` is rebound under
 them re-exports: a `gateway._PRESSURE_DEBT` patch would go vacuous, and
 an AttributeError is the better answer.
 
-`_refresh_health_snapshot` (health axis) and `_compilation_for`
-(leantext axis) still live in the package `__init__`. They are imported
-at CALL time, never at module level — a module-level import back into
-the facade would close a cycle — which also keeps their patch target
-where it has always been, on the facade.
+`_compilation_for` (leantext axis) still lives in the package
+`__init__`. It is imported at CALL time, never at module level — a
+module-level import back into the facade would close a cycle — which
+also keeps its patch target where it has always been, on the facade.
+`_refresh_health_snapshot` left for `health.py` (A1-3) and is imported
+from there, still at call time: that module reads `_pressure_debt` from
+here, so the cycle survived the move and only changed direction.
 """
 from __future__ import annotations
 
@@ -281,9 +283,10 @@ def _weight_watchdog_run() -> None:
             print(f"[gateway] pressure outlet step failed "
                   f"({type(exc).__name__}: {exc})", file=sys.stderr,
                   flush=True)
-        # Call-time, per pass: the health axis is still in the facade,
-        # and a module-level import back into it would close a cycle.
-        from . import _refresh_health_snapshot
+        # Call-time, per pass: the health axis reads this module's
+        # `_pressure_debt`, so a module-level import of it here would
+        # close a cycle.
+        from .health import _refresh_health_snapshot
         try:
             _refresh_health_snapshot()
         except Exception as exc:  # noqa: BLE001 — the governor survives

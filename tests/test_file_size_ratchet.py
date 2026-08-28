@@ -578,12 +578,18 @@ _WATERMARKS = {
     # outlet, weight cap, wedge/heavy recycle, shed, mid-lease rewarm,
     # freeze/thaw, converger. Sessions, leantext, rpc, gates, verify and
     # health are still to come.
-    "Tooling/lsp/gateway/__init__.py": 4250,  # born 2026-08-29 from the gateway split (A1-1)
+    # 4250→3650: session lifecycle (`sessions.py` — borrow order, acquire,
+    # register/release, stale-claim sweep) and the /health payload plus its
+    # governor-refreshed snapshot (`health.py`) left (A1-3). The HTTP routes
+    # stayed. leantext, rpc, gates and verify are still to come.
+    "Tooling/lsp/gateway/__init__.py": 3650,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/state.py": 250,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/elab.py": 200,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/backend.py": 250,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/weigh.py": 150,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/governor.py": 1100,  # born 2026-08-29 from the gateway split (A1-2)
+    "Tooling/lsp/gateway/sessions.py": 650,  # born 2026-08-29 from the gateway split (A1-3)
+    "Tooling/lsp/gateway/health.py": 150,  # born 2026-08-29 from the gateway split (A1-3)
     "Tooling/lsp/gateway/__main__.py": 50,  # born 2026-08-29 from the gateway split (A1-1)
 }
 
