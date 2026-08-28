@@ -986,7 +986,14 @@ def _setup_validate_session(monkeypatch, tmp_path, backend):
                              content_pipeline_id="pipe-A")]
     monkeypatch.setattr(lsp_gateway._state, "workers", slots)
     monkeypatch.setattr(lsp_gateway._state, "backend", backend)
+    # Both sides of the split-brain name: `validate_file` still resolves
+    # it in the facade, the four tools this harness also drives
+    # (apply_edit / errors_at) resolve `gateway.rpc`'s own copied binding
+    # since the A1-4a split. Patching one alone leaves the other reading
+    # the real warming gate.
     monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+                        lambda *a, **kw: None)
+    monkeypatch.setattr(lsp_gateway.rpc, "_ensure_backend_ready",
                         lambda *a, **kw: None)
     monkeypatch.setattr(lsp_gateway, "_ensure_imports",
                         lambda content, problem, ws: content)
@@ -2621,7 +2628,7 @@ def _stub_session(tmp_path: Path, monkeypatch, *names: str):
     meta = lsp_gateway.SessionMetadata(
         pipeline_id="pipe-w", target_path=attempts / "patch.lean",
         problem="p", workspace=tmp_path, log_path=None, file_content="")
-    monkeypatch.setattr(lsp_gateway, "_current_session", lambda: meta)
+    monkeypatch.setattr(lsp_gateway.rpc, "_current_session", lambda: meta)
     return attempts
 
 

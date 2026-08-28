@@ -283,7 +283,7 @@ def test_midlease_rewarm_restores_content_after_a_real_death(
     merged unit."""
     called: list = []
     meta = types.SimpleNamespace(pipeline_id="p1")
-    monkeypatch.setattr(gw, "_compilation_for",
+    monkeypatch.setattr(gw.governor, "_compilation_for",
                         lambda m: (called.append("content") or
                                    ("MERGED", [None, 1])))
     monkeypatch.setattr(gw.governor, "_await_worker_exit",
@@ -315,7 +315,7 @@ def test_midlease_rewarm_failure_reopens_warmup_never_bricks(
         gw, monkeypatch, capsys):
     opens: list = []
     meta = types.SimpleNamespace(pipeline_id="p1")
-    monkeypatch.setattr(gw, "_compilation_for",
+    monkeypatch.setattr(gw.governor, "_compilation_for",
                         lambda m: ("MERGED", [None]))
     monkeypatch.setattr(gw.governor, "_await_worker_exit",
                         lambda *_a, **_k: True)

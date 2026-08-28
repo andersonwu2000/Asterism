@@ -5,19 +5,25 @@ a probe walks, the acquire context manager every tool op enters,
 register/release, the contextvar lookup, and the stale-claim sweep that
 takes a slot back from an owner that died.
 
-Two names still live in the package `__init__` and are imported at CALL
-time, never at module level — a module-level import back into the facade
-would close a cycle: `_log_for` (the per-session JSONL log, which has no
-axis of its own yet) and `_compilation_for` (the leantext axis, cut 4).
-Their patch target therefore stays the facade. Everything resolved at
-module level here is patched on the OWNING module instead — notably
-`gateway.backend._ensure_backend_ready` for a register-side test, and
-`gateway.governor.…` for the freeze ceiling and the shed/recycle/rewarm
-verbs `_release_session_internal` and `_acquire_slot` call.
+Nothing here reaches back into the package `__init__` any more. The two
+call-time imports this module was born with closed with A1-4a:
+`_log_for` moved to `state` and `_compilation_for` to `leantext`, both
+leaves, so both are imported at module level. A module-level import
+COPIES the binding into this namespace, so everything resolved here is
+patched as `gateway.sessions.<name>` — that is what the register-side
+`_ensure_backend_ready` test does, and what `_compilation_for` now needs
+too. `gateway.governor.…` is the target only for the verbs
+`_release_session_internal` and `_acquire_slot` call INTO (the freeze
+ceiling, shed/recycle/rewarm), which resolve in the governor's own
+namespace.
 
-`_owner_alive`, `_ECHO_END_CHARS` and `_SWEEP_INTERVAL_SEC` do not
-re-export: their only consumers are in this file, so a facade patch
-would go vacuous and an AttributeError is the better answer.
+`_echo_removed` and its `_ECHO_END_CHARS` left for `rpc.py` with 4a:
+`apply_edit` was their only consumer, and what an edit removed is a tool
+answer, not part of the session lifecycle.
+
+`_owner_alive` and `_SWEEP_INTERVAL_SEC` do not re-export: their only
+consumers are in this file, so a facade patch would go vacuous and an
+AttributeError is the better answer.
 """
 from __future__ import annotations
 
@@ -35,7 +41,14 @@ from .governor import (
     _recycle_slot_if_heavy,
     _shed_slot_if_over_target,
 )
-from .state import SessionMetadata, WorkerSlot, _session_ctx, _state
+from .leantext import _compilation_for
+from .state import (
+    SessionMetadata,
+    WorkerSlot,
+    _log_for,
+    _session_ctx,
+    _state,
+)
 
 
 # ─── Slot acquisition (the heart of Phase 2) ─────────────
@@ -260,10 +273,6 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
                         kind = "cold_warmup"
                         with _state.counters_lock:
                             _state.n_cold_warmup += 1
-                        # Call-time: the leantext axis is still in the
-                        # facade (a module-level import back into it
-                        # would close a cycle).
-                        from . import _compilation_for
                         with _elab_gate(my_slot.slot_uri, meta):
                             my_slot.file_version += 1
                             backend.clear_diagnostics(my_slot.slot_uri)
@@ -372,10 +381,6 @@ def _register_session_internal(
             )
         free_slot.claimed_by = pipeline_id
         _state.sessions[token] = meta
-    # Call-time, both here and in the release below: the log helper
-    # is still in the facade and a module-level import would close a
-    # cycle.
-    from . import _log_for
     _log_for(meta, {"event": "session_registered",
                     "pipeline_id": pipeline_id,
                     "claimed_slot": free_slot.slot_id,
@@ -400,7 +405,6 @@ def _release_session_internal(token: str) -> None:
                 slot.claimed_by = None
                 freed = slot
                 break
-    from . import _log_for
     _log_for(meta, {"event": "session_released",
                     "pipeline_id": meta.pipeline_id})
     # OUTSIDE sessions_lock: the recycle re-warms a worker (tens of
@@ -454,26 +458,6 @@ def _current_session() -> SessionMetadata | None:
 # on disk: `_sweep_stale_claims` now asks every pass.
 _LEASE_TTL_SEC = 900.0
 _SWEEP_INTERVAL_SEC = 60.0
-
-
-#: Head and tail of the echo of a removed region. A head-only cap put
-#: the truncation exactly where the evidence lives: an edit that reaches
-#: further than intended shows the opening the agent expected and hides
-#: the tail it did not mean to lose. Both ends, plus the count of what
-#: sits between them, so "I removed more than I thought" is legible
-#: without shipping the whole region back (2026-08-11).
-_ECHO_END_CHARS = 160
-
-
-def _echo_removed(removed: str) -> str:
-    """What an edit took out, as the agent needs to see it."""
-    if len(removed) <= 2 * _ECHO_END_CHARS:
-        return removed
-    head = removed[:_ECHO_END_CHARS]
-    tail = removed[-_ECHO_END_CHARS:]
-    n_lines = removed.count("\n") - head.count("\n") - tail.count("\n")
-    return (f"{head}\n… [{len(removed) - 2 * _ECHO_END_CHARS} chars / "
-            f"{max(n_lines, 0)} lines removed here too] …\n{tail}")
 
 
 def _owner_alive(meta: SessionMetadata) -> bool:

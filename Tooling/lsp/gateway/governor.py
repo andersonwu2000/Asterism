@@ -13,10 +13,10 @@ Patch the mutable globals HERE. `_PRESSURE_DEBT` is rebound under
 them re-exports: a `gateway._PRESSURE_DEBT` patch would go vacuous, and
 an AttributeError is the better answer.
 
-`_compilation_for` (leantext axis) still lives in the package
-`__init__`. It is imported at CALL time, never at module level — a
-module-level import back into the facade would close a cycle — which
-also keeps its patch target where it has always been, on the facade.
+`_compilation_for` was the last name this module reached back into the
+facade for. With A1-4a it lives in `leantext`, a leaf, so the import is
+module-level and the call-time workaround is gone — patch it on
+`gateway.leantext`, not on the facade.
 `_refresh_health_snapshot` left for `health.py` (A1-3) and is imported
 from there, still at call time: that module reads `_pressure_debt` from
 here, so the cycle survived the move and only changed direction.
@@ -31,6 +31,7 @@ import time
 
 from .backend import _BACKEND_WEDGE_SEC, _restart_backend
 from .elab import _elab_gate
+from .leantext import _compilation_for
 from .state import WARMUP_CONTENT, WorkerSlot, _state
 from .weigh import _slot_private_mb, _slot_private_mb_cached, _vm_pte_bytes
 
@@ -737,9 +738,6 @@ def _rebuild_worker(slot: WorkerSlot, meta) -> "int | None":
     must leave whatever worker exists running); a failed reopen falls
     back to warmup so the slot is never bricked, then re-raises.
     Returns the fresh weight reading and resets the residue baseline."""
-    # Call-time: the leantext axis is still in the facade (a module-level
-    # import back into it would close a cycle).
-    from . import _compilation_for
     backend = _state.backend
     merged, line_map = _compilation_for(meta)
     with contextlib.suppress(Exception):

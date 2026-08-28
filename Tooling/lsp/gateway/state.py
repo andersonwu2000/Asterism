@@ -6,13 +6,22 @@ Split out of `gateway.py` 2026-08-29 (A1-1) unchanged. Everything here
 is bound exactly once at import: importers may `from .state import
 _state` without a stale-binding hazard, and the tests that patch
 `gateway._state.<field>` reach this same object through the facade.
+
+A1-4a added the two dependency-free leaves at the bottom: `_log_for`
+(the per-session JSONL log) and `_ts_now` (the server-side stamp on tool
+responses). Neither belongs to an axis of its own, both are consumed by
+`rpc` and by the facade's `validate_file`, and every module already
+imports this one — so putting them here is what let `sessions`' two
+call-time `from . import _log_for` reach-backs close.
 """
 from __future__ import annotations
 
 import contextvars
+import json
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..client import LspClient
@@ -231,3 +240,28 @@ del _code_fp
 _session_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "asterism_session", default=None
 )
+
+
+# ─── Logging ─────────────────────────────────────────────
+
+def _log_for(meta: SessionMetadata | None, event: dict) -> None:
+    """Best-effort per-session JSONL log. Silent on missing log_path
+    or any write failure — never crash a tool call over a log hiccup."""
+    if meta is None or meta.log_path is None:
+        return
+    event = {"ts": datetime.now(timezone.utc).isoformat(), **event}
+    try:
+        meta.log_path.parent.mkdir(parents=True, exist_ok=True)
+        with meta.log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False, default=str))
+            f.write("\n")
+    except Exception:
+        pass
+
+
+def _ts_now() -> str:
+    """High-precision UTC ISO timestamp for server-side stamping into
+    tool responses. Pairs with claude.exe's session jsonl message
+    timestamps to localize MCP transport / claude-internal latency
+    versus actual gateway processing time. Cheap (<1µs)."""
+    return datetime.now(timezone.utc).isoformat()

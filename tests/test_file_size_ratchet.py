@@ -582,14 +582,27 @@ _WATERMARKS = {
     # register/release, stale-claim sweep) and the /health payload plus its
     # governor-refreshed snapshot (`health.py`) left (A1-3). The HTTP routes
     # stayed. leantext, rpc, gates and verify are still to come.
-    "Tooling/lsp/gateway/__init__.py": 3650,  # born 2026-08-29 from the gateway split (A1-1)
-    "Tooling/lsp/gateway/state.py": 250,  # born 2026-08-29 from the gateway split (A1-1)
+    # 3650→2200: the Lean-text axis (`leantext.py` — compilation unit,
+    # sibling stubs, line_map, diag remap, resync) and the four in-spawn MCP
+    # tools (`rpc.py`), with the FastMCP instance and `_offload_to_thread`
+    # in a small `server.py` so the tool decorators resolve before the
+    # facade finishes executing (A1-4a). Gates, verify and the HTTP surface
+    # are what remain for 4b.
+    # sessions 650→600: `_echo_removed` + `_ECHO_END_CHARS` moved on to
+    # `rpc.py`, whose `apply_edit` is their only consumer (A1-4a).
+    # state 250→300: `_log_for` and `_ts_now` landed here (A1-4a) — two
+    # dependency-free leaves that let sessions' call-time reach-backs close.
+    "Tooling/lsp/gateway/__init__.py": 2200,  # born 2026-08-29 from the gateway split (A1-1)
+    "Tooling/lsp/gateway/state.py": 300,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/elab.py": 200,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/backend.py": 250,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/weigh.py": 150,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/governor.py": 1100,  # born 2026-08-29 from the gateway split (A1-2)
-    "Tooling/lsp/gateway/sessions.py": 650,  # born 2026-08-29 from the gateway split (A1-3)
+    "Tooling/lsp/gateway/sessions.py": 600,  # born 2026-08-29 from the gateway split (A1-3)
     "Tooling/lsp/gateway/health.py": 150,  # born 2026-08-29 from the gateway split (A1-3)
+    "Tooling/lsp/gateway/leantext.py": 800,  # born 2026-08-29 from the gateway split (A1-4a)
+    "Tooling/lsp/gateway/rpc.py": 750,  # born 2026-08-29 from the gateway split (A1-4a)
+    "Tooling/lsp/gateway/server.py": 100,  # born 2026-08-29 from the gateway split (A1-4a)
     "Tooling/lsp/gateway/__main__.py": 50,  # born 2026-08-29 from the gateway split (A1-1)
 }
 

@@ -373,6 +373,9 @@ def test_empty_capabilities_are_not_advertised() -> None:
     assert caps.tools is not None
     import inspect as _inspect
     from Tooling.lsp import gateway
-    src = _inspect.getsource(gateway)
+    # `gateway.server` — the FastMCP instance and its un-advertise block
+    # left the package `__init__` with the A1-4a split so the tool
+    # decorators could resolve before the facade finished executing.
+    src = _inspect.getsource(gateway.server)
     assert "ListResourcesRequest" in src, \
         "gateway lsp server must mirror the un-advertise block"

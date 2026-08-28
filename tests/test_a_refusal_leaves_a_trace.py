@@ -24,7 +24,11 @@ import pytest
 
 from Tooling.lsp import gateway as lsp_gateway
 
-GATEWAY = Path(lsp_gateway.__file__)
+#: `apply_edit`'s source, wherever it lives: it left the facade for
+#: `gateway/rpc.py` with the A1-4a split, and a path pinned to the
+#: package `__init__` would have turned the AST walk below into an
+#: "gateway has no 'apply_edit'" error instead of a structural check.
+GATEWAY = Path(lsp_gateway.rpc.__file__)
 
 
 class _Backend:
@@ -45,7 +49,7 @@ def _session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
         content_pipeline_id="pipe-A")
     monkeypatch.setattr(lsp_gateway._state, "workers", [slot])
     monkeypatch.setattr(lsp_gateway._state, "backend", _Backend())
-    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+    monkeypatch.setattr(lsp_gateway.rpc, "_ensure_backend_ready",
                         lambda *a, **kw: None)
     monkeypatch.setattr(lsp_gateway, "_ensure_imports",
                         lambda c, p, w: c)

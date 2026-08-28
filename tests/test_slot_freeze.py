@@ -107,7 +107,7 @@ def test_thaw_rebuilds_from_the_sessions_own_content(
     _backend(gw, monkeypatch, calls)
     from Tooling.core import ram_ledger as rl
     monkeypatch.setattr(rl, "framework_current_gb", lambda: 10.0)
-    monkeypatch.setattr(gw, "_compilation_for",
+    monkeypatch.setattr(gw.governor, "_compilation_for",
                         lambda m: ("MERGED", [None]))
     monkeypatch.setattr(gw.governor, "_slot_private_mb", lambda: {0: 600})
     s = _slot(gw, 0, "p1")
