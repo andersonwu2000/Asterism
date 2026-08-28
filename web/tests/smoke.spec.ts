@@ -207,6 +207,117 @@ test('new-problem: Defs and Root wear the shared Lean block', async ({ page }) =
   await expect(page.getByText('goal at cursor')).toHaveCount(0)
 })
 
+test('timeline: a revision row opens onto the judge that ruled on it', async ({
+  page,
+  request,
+}) => {
+  // The judge changed shape on 2026-08-29 (calibration survey, knives
+  // 0+1): a criterion takes a LIST of bullets, a killed proposal keeps
+  // the verdict that killed it instead of a hard-coded NULL, and every
+  // `clear` carries its reason. None of it was reachable from the
+  // console — this row is where it landed.
+  const list = await request.get('/api/problems')
+  const rows: { name: string; goals: { total: number } }[] = list.ok()
+    ? ((await list.json()).problems ?? [])
+    : []
+  rows.sort((a, b) => (b.goals?.total ?? 0) - (a.goals?.total ?? 0))
+  let target: string | null = null
+  for (const r of rows.slice(0, 6)) {
+    const ev = await request.get(
+      `/api/problems/${encodeURIComponent(r.name)}/events`,
+    )
+    if (!ev.ok()) continue
+    const events: { object_kind: string; rev_id?: number | null }[] =
+      (await ev.json()).events ?? []
+    if (events.some((e) => e.object_kind === 'programme' && e.rev_id)) {
+      target = r.name
+      break
+    }
+  }
+  test.skip(target === null, 'no workspace problem has argued a Programme')
+
+  // Prefer a revision where a criterion carries MORE THAN ONE bullet:
+  // that is the shape the 2026-08-28 list schema introduced, and a
+  // renderer that shows the first and drops the rest passes every other
+  // check in this test. Any revision will do when the workspace has no
+  // such row yet.
+  const ev = await request.get(
+    `/api/problems/${encodeURIComponent(target as string)}/events`,
+  )
+  const ids: number[] = ((await ev.json()).events ?? [])
+    .filter((e: { object_kind: string; rev_id?: number | null }) =>
+      e.object_kind === 'programme' && e.rev_id)
+    .map((e: { rev_id: number }) => e.rev_id)
+  let listy: number | null = null
+  for (const id of ids.slice(0, 14)) {
+    const r = await request.get(
+      `/api/problems/${encodeURIComponent(target as string)}/programme/verdict/${id}`,
+    )
+    if (!r.ok()) continue
+    const v: { criteria: { bullets: string[] }[] } = await r.json()
+    if ((v.criteria ?? []).some((c) => c.bullets.length > 1)) {
+      listy = id
+      break
+    }
+  }
+
+  await page.goto(`/#/problems/${encodeURIComponent(target as string)}`)
+  await page.getByRole('button', { name: /Timeline/ }).click()
+  const row =
+    listy === null
+      ? page.locator('[data-verdict-row]').first()
+      : page.locator(`[data-verdict-row="${listy}"]`).first()
+  await expect(row).toBeVisible({ timeout: 30000 })
+  // the far left of the row: the object's NAME carries its own click
+  // (it follows the log), and hitting the row's centre lands on it
+  await row.click({ position: { x: 6, y: 6 } })
+
+  // it always answers: the ruling, or the fact that this one predates
+  // the record. A revision row that opens onto nothing is the bug this
+  // whole read exists to end.
+  const block = page.locator('[data-verdict="read"], [data-verdict="none"]').first()
+  await expect(block).toBeVisible({ timeout: 30000 })
+  if ((await block.getAttribute('data-verdict')) === 'none') return
+
+  // the rubric's five criteria, named and in its own order
+  const crit = page.locator('[data-criterion]')
+  await expect(crit).toHaveCount(5)
+  expect(
+    await crit.evaluateAll((els) =>
+      els.map((e) => e.getAttribute('data-criterion')),
+    ),
+  ).toEqual(['1', '2', '3', '4', '5'])
+
+  // a criterion is a LIST: however many bullets the judge wrote, that
+  // many render. The one-string schema bound in 4,495 of 4,495 rounds
+  // and hid ~22% of objections for a round; a reader shown the first
+  // bullet is in the same position.
+  for (const c of await crit.all()) {
+    const n = Number(await c.getAttribute('data-bullets'))
+    if (n === 0) {
+      expect((await c.innerText()).trim()).toContain('no reason recorded')
+      continue
+    }
+    expect(await c.locator('[data-bullet]').count()).toBe(n)
+  }
+  if (listy !== null) {
+    const counts = await crit.evaluateAll((els) =>
+      els.map((e) => Number(e.getAttribute('data-bullets'))),
+    )
+    expect(
+      Math.max(...counts),
+      'this revision was chosen BECAUSE a criterion carries several bullets',
+    ).toBeGreaterThan(1)
+  }
+  const fired = page.locator('[data-criterion][data-state="fired"]')
+  if ((await fired.count()) > 0)
+    await expect(fired.first()).toContainText('fired')
+  // clearing is the settled norm and says nothing (subtraction rule)
+  const cleared = page.locator('[data-criterion][data-state="clear"]')
+  if ((await cleared.count()) > 0)
+    await expect(cleared.first()).not.toContainText('cleared')
+})
+
 test('constellation: the first view IS the fit', async ({ page }) => {
   // The plate is laid out at a default aspect, measured against the
   // page, and re-laid out at the real one — and the camera went on

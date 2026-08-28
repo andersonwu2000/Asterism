@@ -703,6 +703,7 @@ _WATERMARKS = {
     "Tooling/serve/data/edges.py": 550,  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/timeline.py": 1250,  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/library.py": 500,  # born 2026-08-28 from the data.py split (B3)
+    "Tooling/serve/data/verdict.py": 100,  # born 2026-08-29 — one revision's judge verdict
     # ── 2026-08-29 default-cap sweep ─────────────────────────────────
     # The ratchet used to be an OPT-IN list: gateway.py reached 5,886
     # lines and cli.py 3,307 with no entry at all, because nobody had
@@ -714,7 +715,13 @@ _WATERMARKS = {
     "Tooling/llm/zen_shim.py": 1950,
     "Tooling/llm/claude_cli.py": 1900,
     "Tooling/agent/context.py": 1800,
-    "Tooling/serve/app.py": 1700,
+    # 1700→1750 (2026-08-29): one route, `/api/problems/{p}/programme/
+    # verdict/{rev_id}` — the console's on-demand read of a revision's
+    # judge verdict. app.py IS the route table, so an endpoint costs it
+    # ~20 lines by construction; the read itself went to its own module
+    # (`serve/data/verdict.py`) rather than into `timeline.py`, which
+    # this same run would otherwise have pushed over its watermark.
+    "Tooling/serve/app.py": 1750,
     "Tooling/knowledge/workspace_query.py": 1400,
     "Tooling/pipeline/_retry.py": 1300,
     "Tooling/llm/codex_cli.py": 1250,

@@ -3,6 +3,7 @@ import { usePoll } from '../lib/api'
 import { EVENT_CLS, eventLabel, eventTitle, failureLabel } from '../lib/vocab'
 import type { TimelineEvent, TimelineGroup } from '../lib/types'
 import { frameClass } from '../lib/textFrame'
+import JudgeVerdict from './JudgeVerdict'
 
 /*
  * The Timeline is a LOG, not a narrative: every row reads
@@ -86,6 +87,7 @@ function Row({
   prefix,
   argument,
   showProblem,
+  problem,
   onFollow,
   onOpenGoal,
   onOpenProgramme,
@@ -102,12 +104,23 @@ function Row({
   argument: string | null
   /** the run view merges several problems; say which */
   showProblem: boolean
+  /** the problem this log is scoped to; the run-scoped read stamps
+   * each row instead (it merges several) */
+  problem?: string
   onFollow: (f: Follow) => void
   onOpenGoal?: (id: number, problem: string | null) => void
   onOpenProgramme?: () => void
 }) {
   const [open, setOpen] = useState(false)
-  const expandable = Boolean(e.body || e.note || argument)
+  // a revision row opens onto the judge's ruling on it — criterion by
+  // criterion, and for a killed proposal the reason it was killed
+  // (readable only since 2026-08-29; see JudgeVerdict.tsx)
+  const revProblem = e.problem ?? problem
+  const verdictOf =
+    e.object_kind === 'programme' && typeof e.rev_id === 'number' && revProblem
+      ? { problem: revProblem, revId: e.rev_id }
+      : null
+  const expandable = Boolean(e.body || e.note || argument || verdictOf)
   const note = e.kind === 'failed' || e.kind === 'hiccup'
     ? failureLabel(e.note ?? '')
     : e.note
@@ -118,6 +131,7 @@ function Row({
           expandable ? 'cursor-pointer hover:bg-surface' : ''
         }`}
         onClick={expandable ? () => setOpen((v) => !v) : undefined}
+        data-verdict-row={verdictOf ? verdictOf.revId : undefined}
       >
         <span
           className="tnum text-[11px] text-ink-faint"
@@ -202,10 +216,13 @@ function Row({
       </div>
       {open && (
         <div className="mx-2 mt-1 mb-2 ml-[9.4rem] rounded-lg border border-edge bg-surface px-3 py-2">
-          {argument && (
+          {argument && argument !== e.label && (
             /* which argument this brick serves. A column would cost
                width on every problem to answer a question only
-               multi-group problems raise (owner, 2026-08-07) */
+               multi-group problems raise (owner, 2026-08-07). Dropped
+               when it IS the row's own name: a delegated group's
+               revision often titles itself after the charter it was
+               handed, and the line then said the row twice. */
             <div
               className="mb-1.5 text-[11px] text-ink-faint"
               title="the discussion group whose programme commissioned this — a problem under load argues several at once"
@@ -218,6 +235,9 @@ function Row({
             <pre className={frameClass({ frame: false, lead: 'quote', tone: 'faint' })}>
               {e.body}
             </pre>
+          )}
+          {verdictOf && (
+            <JudgeVerdict problem={verdictOf.problem} revId={verdictOf.revId} />
           )}
           <div className="mt-1.5 flex items-center gap-3 text-[11px]">
             {e.goal_id !== null && onOpenGoal && (
@@ -248,6 +268,7 @@ export default function Timeline({
   path,
   pollMs = 15000,
   showProblem = false,
+  problem,
   onSelectGoal,
   onOpenProgramme,
 }: {
@@ -260,6 +281,9 @@ export default function Timeline({
   /** name the problem on each row — only the run view needs it, and
    * only when the run holds more than one */
   showProblem?: boolean
+  /** the problem this log is scoped to. The run-scoped read merges
+   * several and stamps each row, so it passes nothing. */
+  problem?: string
   /** where clicking a goal's name lands: the star map (the side panel
    * carries the history). The run view navigates to the problem's own
    * page — the second argument says which. */
@@ -390,6 +414,7 @@ export default function Timeline({
               prefix={follow === null}
               showProblem={showProblem && (data?.problems?.length ?? 0) > 1}
               argument={argOf(e.group_id)}
+              problem={problem}
               onFollow={setFollow}
               onOpenGoal={onSelectGoal}
               onOpenProgramme={onOpenProgramme}

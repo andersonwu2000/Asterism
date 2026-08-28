@@ -659,6 +659,7 @@ export default function Problem({
             <div className="mx-auto max-w-4xl px-4 py-3">
               <Timeline
                 path={`/api/problems/${encodeURIComponent(data.name)}/events`}
+                problem={data.name}
                 onSelectGoal={(id) => {
                   setSelectedGoal(id)
                   setSelectedStrategy(null)

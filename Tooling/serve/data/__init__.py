@@ -133,6 +133,7 @@ from .timeline import (
     strategy_detail,
     _top_group_id,
 )
+from .verdict import programme_verdict
 from .edges import (
     _CITE_RE,
     _cite_file_cache,

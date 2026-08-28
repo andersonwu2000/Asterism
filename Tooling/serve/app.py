@@ -834,6 +834,26 @@ def create_app(workspace: Path, *, prewarm: bool = False) -> FastAPI:
                 return {"current": None, "history": [],
                         "group_id": None, "charter": None, "groups": []}
 
+    @app.get("/api/problems/{problem}/programme/verdict/{rev_id}")
+    def problem_programme_verdict(problem: str, rev_id: int) -> dict:
+        """The judge's verdict on ONE revision — criterion by criterion,
+        plus which seat issued it.
+
+        On demand, never on a poll: the Timeline row that opens this
+        already names the revision, and union_closed's last 100
+        revisions carry 152 KB of verdict against a 15s poll.
+
+        Keyed by the programme_revisions row id, which the Timeline
+        event carries as `rev_id`: `rev` alone names several rows (a
+        rejected proposal and the revision that later takes its
+        number)."""
+        with _ro(workspace) as conn:
+            v = _data.programme_verdict(conn, problem, rev_id)
+            if v is None:
+                raise HTTPException(status_code=404,
+                                    detail="no such revision")
+            return v
+
     @app.get("/api/problems/{problem}/events")
     def problem_events(problem: str) -> dict:
         """The Timeline: one flat log of what happened, to whom.

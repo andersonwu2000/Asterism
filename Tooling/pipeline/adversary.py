@@ -382,6 +382,67 @@ CRITERIA_KEYS = ("1", "2", "3", "4", "5")
 NAMING_CRITERION = "2"
 
 
+def criteria_names() -> "dict[str, str]":
+    """`{"1": "Value", ...}` — the rubric's own names for its criteria,
+    read from the prompt that states them.
+
+    The console shows a verdict criterion by criterion and a bare "3"
+    says nothing; the names must not become a THIRD copy of the rubric.
+    Value and Reachability swapped places on 2026-08-13, so a hard-coded
+    list would silently mislabel every verdict it renders. Read from the
+    prompt, a renumbering carries.
+
+    Empty when the prompt cannot be read or its list does not parse —
+    the caller falls back to bare numbers, which are what the verdict
+    actually stores."""
+    from . import PROMPT_DIR
+    try:
+        text = (PROMPT_DIR / "adversary" / "adversary.md").read_text(
+            encoding="utf-8")
+    except OSError:
+        return {}
+    out: "dict[str, str]" = {}
+    for m in re.finditer(r"^(\d)\.\s+\*\*(.+?)\*\*\s*:", text,
+                         re.MULTILINE):
+        if m.group(1) in CRITERIA_KEYS:
+            out[m.group(1)] = m.group(2).strip()
+    return out if len(out) == len(CRITERIA_KEYS) else {}
+
+
+def split_criterion(val: Any) -> "tuple[str, list[str]]":
+    """One criterion's adjudication as `(state, bullets)` — state is
+    `"clear"`, `"fired"` or `""`, and each bullet has its head word and
+    separators stripped off.
+
+    A criterion takes a LIST as of 2026-08-28 (owner design: a judge
+    that sees three defects under one criterion fires all three this
+    round instead of dripping one per round); a bare string is the
+    legacy one-bullet form and both are on the record. Reading it is
+    the same operation `parse_verdict` performs, so it lives beside it
+    — a private copy in the serve layer is the drift that made every
+    rebut read as `passed` for a week (44ff4321).
+
+    Tolerant on purpose: this reads what the judge WROTE, including
+    verdicts the parser would refuse, because a refused verdict is
+    exactly the one a reader needs to look at."""
+    vals = [val] if isinstance(val, str) else val
+    if not isinstance(vals, list):
+        return "", []
+    state = ""
+    out: "list[str]" = []
+    for x in vals:
+        if not isinstance(x, str):
+            continue
+        t = x.strip()
+        head = ("clear" if re.match(r"clear\b", t, re.IGNORECASE)
+                else "fired" if re.match(r"fired\b", t, re.IGNORECASE)
+                else "")
+        if head and not state:
+            state = head
+        out.append(t[len(head):].strip(" -—–:") if head else t)
+    return state, [x for x in out if x]
+
+
 def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
     """Validate the per-criterion verdict.json and DERIVE the ruling.
 

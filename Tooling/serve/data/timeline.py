@@ -40,12 +40,15 @@ def _programme_events(conn: sqlite3.Connection, problem: str,
     clause, args = _group_clause(group_id)
     try:
         return [{
+            "id": int(r["id"]),
             "rev": int(r["rev"]),
             "status": str(r["status"]),
             "rounds": int(r["rounds"]),
             "created_at": str(r["created_at"]),
+            "group_id": (None if r["group_id"] is None
+                         else int(r["group_id"])),
         } for r in conn.execute(
-            "SELECT rev, status, rounds, created_at"
+            "SELECT id, rev, status, rounds, created_at, group_id"
             " FROM programme_revisions WHERE problem = ?" + clause +
             " ORDER BY id DESC LIMIT 100", (problem,) + args)]
     except sqlite3.OperationalError:
@@ -128,6 +131,7 @@ def programme(conn: sqlite3.Connection, problem: str,
     return {"current": current, "history": history,
             "group_id": group_id, "charter": charter,
             "groups": groups_of(conn, problem)}
+
 
 
 # ---------------------------------------------------------------------
@@ -235,7 +239,8 @@ def _ev(at: str, kind: str, *, object_kind: str = "problem",
         body: "str | None" = None, approx: bool = False,
         eid: str = "", batch_id: "str | None" = None,
         group_id: "int | None" = None,
-        object_group_id: "int | None" = None) -> dict:
+        object_group_id: "int | None" = None,
+        rev_id: "int | None" = None) -> dict:
     # `group_id` = which ARGUMENT this event belongs to (v35). A problem
     # under real load runs several discussion groups at once — 7 on
     # simple_loop_conjecture, 4 on union_closed — and their bricks
@@ -247,6 +252,12 @@ def _ev(at: str, kind: str, *, object_kind: str = "problem",
         "body": body, "approx": approx, "id": eid,
         "batch_id": batch_id, "group_id": group_id,
         "object_group_id": object_group_id,
+        # the programme_revisions row this event IS — the key the
+        # verdict read takes. `rev` cannot serve: a rejected proposal
+        # and the revision that later takes its number are both `rev
+        # N` of the same group (union_closed group 382 has seven rev
+        # 1 rows), so the row id is the only handle that names one.
+        "rev_id": rev_id,
     }
 
 
@@ -583,35 +594,46 @@ def problem_events(conn: sqlite3.Connection, problem: str) -> dict:
                               note=str(g["origin"]),
                               eid=f"o{int(g['id'])}"))
 
-    # the argument's own landmarks — only revisions that LANDED ride the
-    # default stream; a rejected proposal is a round of editing, not a
-    # change to the record (owner, 2026-08-07)
-    top = _top_group_id(conn, problem)
-    # A revision NAMES itself in its own `# Title` — "programme" for
-    # every row said only which surface it came from, not what changed
-    # (owner, 2026-08-07). substr: the title is the first non-empty
-    # line, and a body runs to tens of KB.
+    # The argument's own landmarks. A revision NAMES itself in its own
+    # `# Title` — "programme" on every row said only which surface it
+    # came from, not what changed (owner, 2026-08-07). substr: the title
+    # is the first non-empty line and a body runs to tens of KB.
+    #
+    # Keyed by ROW, not by rev: the log carries every group's revisions
+    # and `rev 28` names one row per group, so a rev-keyed title would
+    # hand the top group's heading to somebody else's argument.
+    #
+    # Rejected proposals get their titles too. They read "Programme:
+    # programme" while they had nothing to open; they now open onto the
+    # ruling that killed them, and a row you can open is a row worth
+    # naming.
     titles: "dict[int, str]" = {}
     try:
         for r in conn.execute(
-                "SELECT rev, substr(body, 1, 400) AS head FROM"
-                " programme_revisions WHERE problem = ? AND group_id IS ?"
-                " AND status = 'passed'", (problem, top)):
+                "SELECT id, substr(body, 1, 400) AS head FROM"
+                " programme_revisions WHERE problem = ?", (problem,)):
             t = _programme_title(str(r["head"] or ""))
             if t:
-                titles[int(r["rev"])] = t
+                titles[int(r["id"])] = t
     except sqlite3.OperationalError:
         pass
-    for r in _programme_events(conn, problem, top):
+    # EVERY group's revisions, not just the top one. A problem under
+    # load argues several at once (4 on union_closed) and the delegated
+    # ones do most of the arguing: on 2026-08-29 all five verdicts
+    # carrying the new judge stamp sat in sub-groups, so a log scoped to
+    # the top group showed none of them. The row names which argument it
+    # serves through `group_id`, which is exactly why events carry one.
+    for r in _programme_events(conn, problem, None):
         passed = r["status"] == "passed"
         events.append(_ev(
             r["created_at"], "rev" if passed else "proposal",
             object_kind="programme",
-            label=titles.get(r["rev"], "programme"), n=r["rev"],
+            label=titles.get(r["id"], "programme"), n=r["rev"],
             note=(None if r["rounds"] == 0 else
                   f"{r['rounds']} round{'' if r['rounds'] == 1 else 's'}"
                   " of review"),
-            eid=f"p{r['rev']}-{r['created_at']}", group_id=top))
+            eid=f"p{r['id']}",
+            group_id=r["group_id"], rev_id=r["id"]))
 
     # which argument each event serves — a decision knows its own group;
     # everything derived from a goal inherits the goal's

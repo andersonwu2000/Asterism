@@ -212,8 +212,49 @@ export interface TimelineEvent {
   group_id: number | null
   /** the group a handover row is ABOUT (Delegate / ReturnToParent) */
   object_group_id: number | null
+  /** programme rows only: the revision row this event IS, and the key
+   * the verdict read takes. `n` (the rev) cannot serve — a rejected
+   * proposal and the revision that later takes its number are both
+   * "rev N" of one group. */
+  rev_id?: number | null
   /** set only by the run-scoped read, which merges several problems */
   problem?: string
+}
+
+/** One revision's judge verdict, read on demand (never on the poll:
+ * union_closed's last 100 revisions carry 152 KB of these). All of it
+ * is new as of 2026-08-29 — before that a killed revision's verdict was
+ * hard-coded NULL and four of the five criteria took a bare `clear`. */
+export interface RevisionVerdict {
+  rev: number
+  status: string
+  rounds: number
+  created_at: string
+  /** the ruling itself; null on a row whose verdict never parsed */
+  ruling: 'pass' | 'rebut' | null
+  criteria: {
+    key: string
+    /** the rubric's own name for it, read from the prompt that states
+     * it — null if that could not be read */
+    name: string | null
+    /** '' when the judge wrote neither word */
+    state: 'clear' | 'fired' | ''
+    /** a criterion takes a LIST — a judge firing three defects under
+     * one criterion shows three. Empty on a bare `clear`. */
+    bullets: string[]
+  }[]
+  criticisms: string[]
+  reservations: string[]
+  /** which seat issued it; null on every verdict written before the
+   * stamp landed (2026-08-28) */
+  judge: {
+    model: string | null
+    provider: string | null
+    effort: string | null
+    rubric_sha: string | null
+  } | null
+  discard_reason: string | null
+  discard_channel: string | null
 }
 
 export interface TimelineGroup {
