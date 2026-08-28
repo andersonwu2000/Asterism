@@ -91,9 +91,9 @@ def test_both_entry_points_build_the_same_bytes(tmp_path: Path,
         "theorem side : True := trivial\n", encoding="utf-8")
     content = (tmp_path / "new_forward.lean").read_text(encoding="utf-8")
 
-    monkeypatch.setattr(gateway, "_framework_prefix_lines",
-                        lambda *a, **k: ["-- prefix"], raising=False)
-
+    # (A `_framework_prefix_lines` patch with raising=False sat here for
+    # months — the symbol never existed anywhere in Tooling, so it set a
+    # dead attribute and guarded nothing. Removed 2026-08-29.)
     a = gateway._build_compilation_unit(
         content, "P", tmp_path, tmp_path, own_name="new_forward.lean")
     b = gateway._build_compilation_unit(
