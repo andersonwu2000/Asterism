@@ -65,7 +65,7 @@ def test_a_claimed_slot_is_never_recycled(gw, monkeypatch, capsys):
     slot taken from a live owner costs that pipeline its next tool call
     and the goal an attempt."""
     called: list = []
-    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 9999})
+    monkeypatch.setattr(gw.governor, "_slot_private_mb", lambda: {0: 9999})
     monkeypatch.setattr(gw._state, "backend",
                         types.SimpleNamespace(
                             did_close=lambda *_a: called.append("close"),
@@ -78,7 +78,7 @@ def test_a_claimed_slot_is_never_recycled(gw, monkeypatch, capsys):
 
 def test_a_busy_slot_is_never_recycled(gw, monkeypatch):
     called: list = []
-    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 9999})
+    monkeypatch.setattr(gw.governor, "_slot_private_mb", lambda: {0: 9999})
     monkeypatch.setattr(gw._state, "backend",
                         types.SimpleNamespace(
                             did_close=lambda *_a: called.append("close"),
@@ -95,7 +95,7 @@ def test_a_busy_slot_is_never_recycled(gw, monkeypatch):
 
 def test_a_slot_under_the_threshold_is_left_alone(gw, monkeypatch):
     called: list = []
-    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 700})
+    monkeypatch.setattr(gw.governor, "_slot_private_mb", lambda: {0: 700})
     monkeypatch.setattr(gw._state, "backend",
                         types.SimpleNamespace(
                             did_close=lambda *_a: called.append("close"),
@@ -109,7 +109,7 @@ def test_an_unmeasured_slot_is_left_alone(gw, monkeypatch):
     """None is "could not measure", not "zero" and not "huge". Acting on
     a reading nobody took is how a healthy slot gets restarted."""
     called: list = []
-    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: None})
+    monkeypatch.setattr(gw.governor, "_slot_private_mb", lambda: {0: None})
     monkeypatch.setattr(gw._state, "backend",
                         types.SimpleNamespace(
                             did_close=lambda *_a: called.append("close"),
@@ -124,7 +124,7 @@ def test_a_fat_idle_slot_is_closed_and_reopened(gw, monkeypatch, capsys):
     the process, so it cannot return the heap — which is why this needed
     a verb the client did not have."""
     called: list = []
-    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 2600})
+    monkeypatch.setattr(gw.governor, "_slot_private_mb", lambda: {0: 2600})
     monkeypatch.setattr(gw._state, "backend",
                         types.SimpleNamespace(
                             did_close=lambda *_a: called.append("close"),
@@ -146,7 +146,7 @@ def test_a_failed_recycle_still_leaves_the_slot_open(gw, monkeypatch,
     def _boom(*_a, **_k):
         raise RuntimeError("backend went away mid-recycle")
 
-    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 2600})
+    monkeypatch.setattr(gw.governor, "_slot_private_mb", lambda: {0: 2600})
     monkeypatch.setattr(gw._state, "backend",
                         types.SimpleNamespace(
                             did_close=lambda *_a: called.append("close"),
@@ -164,8 +164,8 @@ def test_recycle_waits_for_the_worker_death_between_close_and_open(
     315 historical recycles were exactly that no-op ("recycled in 0.0s —
     5831 MB -> 5831 MB", 2026-08-26): the wait IS the fix."""
     called: list = []
-    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 2600})
-    monkeypatch.setattr(gw, "_await_worker_exit",
+    monkeypatch.setattr(gw.governor, "_slot_private_mb", lambda: {0: 2600})
+    monkeypatch.setattr(gw.governor, "_await_worker_exit",
                         lambda *_a, **_k: called.append("await") or True)
     monkeypatch.setattr(gw._state, "backend",
                         types.SimpleNamespace(
@@ -181,9 +181,10 @@ def test_a_surviving_worker_is_hard_killed_never_reattached(
     """A reattach would keep the old heap and log a recycle that never
     happened. The escalation is the wedge path's proven kill."""
     called: list = []
-    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 2600})
-    monkeypatch.setattr(gw, "_await_worker_exit", lambda *_a, **_k: False)
-    monkeypatch.setattr(gw, "_kill_worker_for_uri",
+    monkeypatch.setattr(gw.governor, "_slot_private_mb", lambda: {0: 2600})
+    monkeypatch.setattr(gw.governor, "_await_worker_exit",
+                        lambda *_a, **_k: False)
+    monkeypatch.setattr(gw.governor, "_kill_worker_for_uri",
                         lambda *_a: called.append("kill") or True)
     monkeypatch.setattr(gw._state, "backend",
                         types.SimpleNamespace(
@@ -198,12 +199,14 @@ def test_a_surviving_worker_is_hard_killed_never_reattached(
 def test_await_worker_exit_semantics(gw, monkeypatch):
     """No worker found -> gone (True, fast). A live process -> False
     once the wait expires (the caller escalates)."""
-    monkeypatch.setattr(gw, "_worker_pid_for_uri", lambda _u: None)
-    assert gw._await_worker_exit("file:///s0.lean", timeout=0.2) is True
+    monkeypatch.setattr(gw.governor, "_worker_pid_for_uri", lambda _u: None)
+    assert gw.governor._await_worker_exit(
+        "file:///s0.lean", timeout=0.2) is True
     import os as _os
-    monkeypatch.setattr(gw, "_worker_pid_for_uri",
+    monkeypatch.setattr(gw.governor, "_worker_pid_for_uri",
                         lambda _u: _os.getpid())   # provably alive
-    assert gw._await_worker_exit("file:///s0.lean", timeout=0.4) is False
+    assert gw.governor._await_worker_exit(
+        "file:///s0.lean", timeout=0.4) is False
 
 
 def test_midlease_residue_is_baseline_relative(gw, monkeypatch):
@@ -217,7 +220,7 @@ def test_midlease_residue_is_baseline_relative(gw, monkeypatch):
     monkeypatch.setattr(gw.threading, "Thread",
                         lambda **kw: types.SimpleNamespace(
                             start=lambda: started.append(kw["name"])))
-    monkeypatch.setattr(gw, "_slot_private_mb_cached",
+    monkeypatch.setattr(gw.governor, "_slot_private_mb_cached",
                         lambda: {0: reading["mb"]})
     monkeypatch.setattr(gw._state, "backend", object())
     meta = types.SimpleNamespace(pipeline_id="p1")
@@ -233,7 +236,7 @@ def test_midlease_residue_is_baseline_relative(gw, monkeypatch):
     assert started and s.rewarming is True
     # the allowance derives from the recycle knob (one fact, one home)
     assert gw._midlease_residue_mb() == int(
-        gw.SLOT_RECYCLE_MB_DEFAULT * gw._MIDLEASE_RESIDUE_FACTOR)
+        gw.SLOT_RECYCLE_MB_DEFAULT * gw.governor._MIDLEASE_RESIDUE_FACTOR)
     # content change resets the judgment to a fresh measurement
     started.clear()
     s.rewarming = False
@@ -251,7 +254,8 @@ def test_midlease_kick_guards(gw, monkeypatch):
     monkeypatch.setattr(gw.threading, "Thread",
                         lambda **kw: types.SimpleNamespace(
                             start=lambda: started.append(kw["name"])))
-    monkeypatch.setattr(gw, "_slot_private_mb_cached", lambda: {0: 9999})
+    monkeypatch.setattr(gw.governor, "_slot_private_mb_cached",
+                        lambda: {0: 9999})
     monkeypatch.setattr(gw._state, "backend", object())
     meta = types.SimpleNamespace(pipeline_id="p1")
     s = _slot(gw, claimed="p1")
@@ -282,11 +286,11 @@ def test_midlease_rewarm_restores_content_after_a_real_death(
     monkeypatch.setattr(gw, "_compilation_for",
                         lambda m: (called.append("content") or
                                    ("MERGED", [None, 1])))
-    monkeypatch.setattr(gw, "_await_worker_exit",
+    monkeypatch.setattr(gw.governor, "_await_worker_exit",
                         lambda *_a, **_k: called.append("await") or False)
-    monkeypatch.setattr(gw, "_kill_worker_for_uri",
+    monkeypatch.setattr(gw.governor, "_kill_worker_for_uri",
                         lambda *_a: called.append("kill") or True)
-    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 500})
+    monkeypatch.setattr(gw.governor, "_slot_private_mb", lambda: {0: 500})
     monkeypatch.setattr(gw._state, "backend",
                         types.SimpleNamespace(
                             did_close=lambda *_a: called.append("close"),
@@ -313,8 +317,9 @@ def test_midlease_rewarm_failure_reopens_warmup_never_bricks(
     meta = types.SimpleNamespace(pipeline_id="p1")
     monkeypatch.setattr(gw, "_compilation_for",
                         lambda m: ("MERGED", [None]))
-    monkeypatch.setattr(gw, "_await_worker_exit", lambda *_a, **_k: True)
-    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 500})
+    monkeypatch.setattr(gw.governor, "_await_worker_exit",
+                        lambda *_a, **_k: True)
+    monkeypatch.setattr(gw.governor, "_slot_private_mb", lambda: {0: 500})
 
     def open_boom(_p, txt):
         opens.append(txt)
@@ -349,12 +354,13 @@ def test_acquire_slides_and_credits_while_rewarming(gw):
 
 def _weight_env(gw, monkeypatch, readings):
     called: list = []
-    monkeypatch.setattr(gw, "_slot_private_mb_cached", lambda: readings)
+    monkeypatch.setattr(gw.governor, "_slot_private_mb_cached",
+                        lambda: readings)
     # the knife re-weighs its candidate fresh (2026-08-27); the fixture
     # scale agrees with the cache unless a test says otherwise
-    monkeypatch.setattr(gw, "_slot_private_mb_fresh",
+    monkeypatch.setattr(gw.governor, "_slot_private_mb_fresh",
                         lambda s: readings.get(s.slot_id))
-    monkeypatch.setattr(gw, "_kill_worker_for_uri",
+    monkeypatch.setattr(gw.governor, "_kill_worker_for_uri",
                         lambda uri: called.append(("kill", uri)) or True)
     monkeypatch.setattr(gw._state, "backend",
                         types.SimpleNamespace(
@@ -362,7 +368,7 @@ def _weight_env(gw, monkeypatch, readings):
                             did_open=lambda _p, txt: called.append(
                                 ("open", txt))))
     monkeypatch.setattr(gw._state, "first_warm_done", True)
-    gw._WEIGHT_KILL_HISTORY.clear()
+    gw.governor._WEIGHT_KILL_HISTORY.clear()
     return called
 
 
@@ -393,7 +399,7 @@ def test_weight_cap_respects_cooldown_and_disable(gw, monkeypatch):
     assert gw._weight_kill_over_cap() == 0, \
         "cooldown: the respawned worker needs time before re-judgment"
     monkeypatch.setenv("ASTERISM_LEAN_MEMORY_CAP_MB", "0")
-    gw._WEIGHT_KILL_HISTORY.clear()
+    gw.governor._WEIGHT_KILL_HISTORY.clear()
     assert gw._weight_kill_over_cap() == 0, "cap<=0 disables the guard"
 
 
@@ -404,7 +410,7 @@ def test_the_reading_is_private_bytes_not_working_set():
     other way would recycle every slot, forever."""
     import inspect
     from Tooling.lsp import gateway
-    src = inspect.getsource(gateway._slot_private_mb)
+    src = inspect.getsource(gateway.weigh._slot_private_mb)
     assert "private" in src and "uss" in src
     assert "rss" not in src.lower().split("never rss")[-1][:400]
 
@@ -417,5 +423,5 @@ def test_the_slot_to_worker_map_reads_the_workers_own_argv():
     restarts in any order."""
     import inspect
     from Tooling.lsp import gateway
-    src = inspect.getsource(gateway._slot_private_mb)
+    src = inspect.getsource(gateway.weigh._slot_private_mb)
     assert "--worker" in src and "cmdline" in src

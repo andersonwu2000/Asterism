@@ -2812,9 +2812,9 @@ def _wedge_setup(monkeypatch, *, backend=None, killed=True,
     monkeypatch.setattr(lsp_gateway._state, "workers", [slot])
     monkeypatch.setattr(lsp_gateway._state, "backend",
                         backend if backend is not None else _WedgeBackend())
-    monkeypatch.setattr(lsp_gateway, "_kill_worker_for_uri",
+    monkeypatch.setattr(lsp_gateway.governor, "_kill_worker_for_uri",
                         lambda uri: killed)
-    lsp_gateway._WEDGE_TARGETED_HISTORY.clear()
+    lsp_gateway.governor._WEDGE_TARGETED_HISTORY.clear()
     return slot
 
 

@@ -23,12 +23,14 @@ def gw(monkeypatch):
     monkeypatch.setattr(gateway._state, "first_warm_done", True)
     monkeypatch.setattr(gateway._state, "ram_budget_gb", 20.0)
     monkeypatch.setattr(gateway._state, "warm_target", 10)
-    monkeypatch.setattr(gateway, "_await_worker_exit",
+    monkeypatch.setattr(gateway.governor, "_await_worker_exit",
                         lambda *_a, **_k: True)
-    monkeypatch.setattr(gateway, "_kill_worker_for_uri", lambda *_a: True)
-    monkeypatch.setattr(gateway, "_machine_gb", lambda: 32.0)
-    monkeypatch.setattr(gateway, "_kick_warm_converger", lambda: None)
-    monkeypatch.setattr(gateway, "_PRESSURE_DEBT", 0)
+    monkeypatch.setattr(gateway.governor, "_kill_worker_for_uri",
+                        lambda *_a: True)
+    monkeypatch.setattr(gateway.governor, "_machine_gb", lambda: 32.0)
+    monkeypatch.setattr(gateway.governor, "_kick_warm_converger",
+                        lambda: None)
+    monkeypatch.setattr(gateway.governor, "_PRESSURE_DEBT", 0)
     return gateway
 
 
@@ -49,9 +51,10 @@ def _backend(gw, monkeypatch, calls):
 
 
 def _readings(gw, monkeypatch, cached, fresh=None):
-    monkeypatch.setattr(gw, "_slot_private_mb_cached", lambda: dict(cached))
+    monkeypatch.setattr(gw.governor, "_slot_private_mb_cached",
+                        lambda: dict(cached))
     monkeypatch.setattr(
-        gw, "_slot_private_mb_fresh",
+        gw.governor, "_slot_private_mb_fresh",
         lambda s: (fresh or cached).get(s.slot_id))
 
 
@@ -97,7 +100,7 @@ def test_the_outlet_never_takes_the_last_open_worker(gw, monkeypatch):
 def test_effective_target_subtracts_the_debt_everywhere(
         gw, monkeypatch):
     import inspect
-    monkeypatch.setattr(gw, "_PRESSURE_DEBT", 3)
+    monkeypatch.setattr(gw.governor, "_PRESSURE_DEBT", 3)
     assert gw._effective_target() == 7
     # every pool-sizing consumer reads the effective allowance — a raw
     # read would re-warm the outlet's kills while hot
@@ -110,7 +113,7 @@ def test_calm_forgives_one_step_only_once_the_pool_converged(
     calls: list = []
     _backend(gw, monkeypatch, calls)
     _axes(gw, monkeypatch, avail=30.0)        # calm on both axes
-    monkeypatch.setattr(gw, "_PRESSURE_DEBT", 2)
+    monkeypatch.setattr(gw.governor, "_PRESSURE_DEBT", 2)
     slots = [_slot(gw, i) for i in range(8)]  # open 8 = target 10 - 2
     monkeypatch.setattr(gw._state, "workers", slots)
     _readings(gw, monkeypatch, cached={})

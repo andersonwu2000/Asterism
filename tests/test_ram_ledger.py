@@ -398,7 +398,7 @@ def test_slot_reading_includes_page_tables():
     price, not in a fixed reserve."""
     import inspect
     from Tooling.lsp import gateway
-    src = inspect.getsource(gateway._slot_private_mb)
+    src = inspect.getsource(gateway.weigh._slot_private_mb)
     assert "_vm_pte_bytes" in src
 
 

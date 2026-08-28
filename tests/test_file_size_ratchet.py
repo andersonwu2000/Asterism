@@ -574,11 +574,16 @@ _WATERMARKS = {
     # and the HTTP surface, which later batches carry out. Every entry is
     # the file's line count at that split, rounded up to the next 50 — the
     # __init__ number is meant to keep FALLING as the remaining axes leave.
-    "Tooling/lsp/gateway/__init__.py": 5250,  # born 2026-08-29 from the gateway split (A1-1)
+    # 5250→4250: the RAM governor left for `governor.py` (A1-2) — pressure
+    # outlet, weight cap, wedge/heavy recycle, shed, mid-lease rewarm,
+    # freeze/thaw, converger. Sessions, leantext, rpc, gates, verify and
+    # health are still to come.
+    "Tooling/lsp/gateway/__init__.py": 4250,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/state.py": 250,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/elab.py": 200,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/backend.py": 250,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/weigh.py": 150,  # born 2026-08-29 from the gateway split (A1-1)
+    "Tooling/lsp/gateway/governor.py": 1100,  # born 2026-08-29 from the gateway split (A1-2)
     "Tooling/lsp/gateway/__main__.py": 50,  # born 2026-08-29 from the gateway split (A1-1)
 }
 

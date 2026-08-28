@@ -21,9 +21,10 @@ def gw(monkeypatch):
     from Tooling.lsp import gateway
     monkeypatch.setattr(gateway._state, "first_warm_done", True)
     monkeypatch.setattr(gateway._state, "ram_budget_gb", 20.0)
-    monkeypatch.setattr(gateway, "_await_worker_exit",
+    monkeypatch.setattr(gateway.governor, "_await_worker_exit",
                         lambda *_a, **_k: True)
-    monkeypatch.setattr(gateway, "_kill_worker_for_uri", lambda *_a: True)
+    monkeypatch.setattr(gateway.governor, "_kill_worker_for_uri",
+                        lambda *_a: True)
     return gateway
 
 
@@ -51,7 +52,7 @@ def test_over_budget_freezes_the_fattest_idle_and_keeps_the_claim(
     monkeypatch.setattr(rl, "framework_current_gb", lambda: 22.0)
     fat, thin = _slot(gw, 0, "p1"), _slot(gw, 1, "p2")
     monkeypatch.setattr(gw._state, "workers", [thin, fat])
-    monkeypatch.setattr(gw, "_slot_private_mb_cached",
+    monkeypatch.setattr(gw.governor, "_slot_private_mb_cached",
                         lambda: {0: 5000, 1: 700})
     assert gw._freeze_tick() == 1
     assert fat.frozen is True and fat.claimed_by == "p1", \
@@ -68,7 +69,8 @@ def test_freeze_never_takes_the_last_worker(gw, monkeypatch):
     monkeypatch.setattr(rl, "framework_current_gb", lambda: 30.0)
     only = _slot(gw, 0, "p1")
     monkeypatch.setattr(gw._state, "workers", [only])
-    monkeypatch.setattr(gw, "_slot_private_mb_cached", lambda: {0: 9000})
+    monkeypatch.setattr(gw.governor, "_slot_private_mb_cached",
+                        lambda: {0: 9000})
     assert gw._freeze_tick() == 0
     assert only.frozen is False
 
@@ -84,13 +86,13 @@ def test_busy_slots_freeze_only_under_deep_overshoot(gw, monkeypatch):
     busy1.lock.acquire()         # mid-elaboration
     busy2.lock.acquire()
     monkeypatch.setattr(gw._state, "workers", [busy1, busy2, thin])
-    monkeypatch.setattr(gw, "_slot_private_mb_cached",
+    monkeypatch.setattr(gw.governor, "_slot_private_mb_cached",
                         lambda: {0: 9000, 1: 8000, 2: 500})
     try:
         gw._freeze_tick()        # overshoot 1G: only the idle may go
         assert busy1.frozen is False and busy2.frozen is False, \
             "shallow overshoot must not kill mid-elaboration"
-        cur["v"] = 20.0 + gw._FREEZE_BUSY_ESCALATION_GB + 6.0
+        cur["v"] = 20.0 + gw.governor._FREEZE_BUSY_ESCALATION_GB + 6.0
         gw._freeze_tick()
         assert busy1.frozen is True, \
             "deep overshoot escalates to the fattest busy worker"
@@ -107,7 +109,7 @@ def test_thaw_rebuilds_from_the_sessions_own_content(
     monkeypatch.setattr(rl, "framework_current_gb", lambda: 10.0)
     monkeypatch.setattr(gw, "_compilation_for",
                         lambda m: ("MERGED", [None]))
-    monkeypatch.setattr(gw, "_slot_private_mb", lambda: {0: 600})
+    monkeypatch.setattr(gw.governor, "_slot_private_mb", lambda: {0: 600})
     s = _slot(gw, 0, "p1")
     s.frozen, s.frozen_at = True, 0.0
     s.slot_path = tmp_path / "s0.lean"
