@@ -635,6 +635,21 @@ _WATERMARKS = {
     "Tooling/core/cli/diagnose.py": 850,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/maint.py": 550,  # born 2026-08-28 from the cli.py split (A3)
     "Tooling/core/cli/main.py": 350,  # born 2026-08-28 from the cli.py split (A3)
+    # `Tooling/pipeline/strategist.py` (3,078 lines, no prior watermark
+    # here) split move-only into `Tooling/pipeline/strategist/` by
+    # pipeline stage (Phase B, task B1): `model.py` is the Decision
+    # dataclass + decision-kind vocabulary + decision.json parser;
+    # `verify.py` is the self_verify stage (verify_decision/
+    # verify_decisions) plus USER_AMEND_FILES; `commit.py` is the commit
+    # stage (CommitOutcome + every _commit_* handler); `wake.py` is the
+    # outer run_strategist entry, the proposal-package gate, and the
+    # Adversary revision loop's mechanical delta gate. Facade
+    # `__init__.py` re-exports every public (and tested private) symbol.
+    "Tooling/pipeline/strategist/__init__.py": 100,  # born 2026-08-28 from the strategist.py split (B1)
+    "Tooling/pipeline/strategist/model.py": 300,  # born 2026-08-28 from the strategist.py split (B1)
+    "Tooling/pipeline/strategist/verify.py": 1050,  # born 2026-08-28 from the strategist.py split (B1)
+    "Tooling/pipeline/strategist/commit.py": 1000,  # born 2026-08-28 from the strategist.py split (B1)
+    "Tooling/pipeline/strategist/wake.py": 900,  # born 2026-08-28 from the strategist.py split (B1)
 }
 
 

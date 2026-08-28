@@ -165,7 +165,7 @@ def test_every_prompt_naming_a_tool_gets_a_config() -> None:
     prompts = repo / "Tooling" / "prompts"
     # prompt directory -> the module that spawns that kind
     owners = {
-        "strategist": ["Tooling/pipeline/strategist.py"],
+        "strategist": ["Tooling/pipeline/strategist/wake.py"],
         "adversary": ["Tooling/pipeline/adversary.py"],
         "librarian": ["Tooling/pipeline/librarian/run.py"],
         "formalizer": ["Tooling/pipeline/_retry.py"],

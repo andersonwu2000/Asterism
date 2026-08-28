@@ -176,6 +176,6 @@ def test_routine_context_gets_curation_surface(conn, tmp_path):
     ctx_src = (root / "Tooling" / "agent" / "phase2_context.py").read_text(
         encoding="utf-8")
     assert 'if trigger_kind == "routine":' in ctx_src
-    strat_src = (root / "Tooling" / "pipeline" / "strategist.py").read_text(
-        encoding="utf-8")
+    strat_src = (root / "Tooling" / "pipeline" / "strategist" /
+                 "wake.py").read_text(encoding="utf-8")
     assert strat_src.count("_apply_kb_curation(conn, problem=problem,") == 2

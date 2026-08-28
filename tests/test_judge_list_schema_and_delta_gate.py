@@ -72,7 +72,7 @@ def test_the_delta_gate_bounces_identical_bodies_before_the_judge() -> None:
     rejected, skips the judge on identity, discards at three
     consecutive no-deltas, and books the rejected body at the rebut
     point."""
-    src = Path("Tooling/pipeline/strategist.py").read_text(
+    src = Path("Tooling/pipeline/strategist/wake.py").read_text(
         encoding="utf-8")
     assert "proposal_body == _last_judged" in src
     assert "judge skipped" in src

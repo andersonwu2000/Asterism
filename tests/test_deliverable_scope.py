@@ -147,7 +147,7 @@ def test_the_ingest_gate_does_not_scope():
     whose sub-groups did all the finished work, which is a different
     decision from what was ruled here and has not been made."""
     from Tooling.pipeline import strategist
-    src = inspect.getsource(strategist)
+    src = inspect.getsource(strategist.verify)
     marker = "if not db.deliverables(conn, problem=problem) and not root_proved"
     assert marker in src, (
         "the Ingest existence check must stay unscoped — see this test's "
