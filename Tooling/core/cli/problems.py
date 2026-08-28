@@ -16,6 +16,7 @@ from pathlib import Path
 from .. import fsutil
 from ...state import brief, db, satellites, tree
 from ...state import intent as intent_mod
+from .run import daemon_status
 
 
 # Root.lean lifecycle:

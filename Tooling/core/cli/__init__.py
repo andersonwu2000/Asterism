@@ -33,6 +33,7 @@ from .run import (
     _open_run_log,
     _read_exit_summary,
     _retain_recent_logs,
+    _utc_log_stamp,
     _write_exit_summary,
     cmd_daemon,
     cmd_run,

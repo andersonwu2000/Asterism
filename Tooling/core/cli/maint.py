@@ -12,6 +12,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from ...quality import prune
 from ...state import db, kb, kb_ingest
 from ...state import intent as intent_mod
 

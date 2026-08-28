@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ...state import db
+from .run import LOG_DIR
 from ...state import intent as intent_mod
 
 
