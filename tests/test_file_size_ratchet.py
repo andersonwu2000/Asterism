@@ -453,7 +453,23 @@ _WATERMARKS = {
     # 3880→3900 (2026-08-25): v44 strategy_subgoals.link_kind — DDL
     # provenance comment (which readers traverse which edge kind) +
     # link_subgoal param. Conscious bump.
-    "Tooling/state/db.py": 3930,  # +23 2026-08-26 strict_ancestor_ids home
+    # 3930→(retired) (2026-08-29): move-only split into `Tooling/state/db/`
+    # — the #11 順勢項 this whole history called for, finally landed. Same
+    # section cuts as the SoT comments above (core/paths/goals/problems/
+    # reach/strategies/pipelines/queue/deaths/library); facade re-exports
+    # every symbol so `db.X` call sites are unaffected. See the born-
+    # 2026-08-29 entries below.
+    "Tooling/state/db/__init__.py": 200,  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/core.py": 900,  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/paths.py": 150,  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/goals.py": 650,  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/problems.py": 1200,  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/reach.py": 200,  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/strategies.py": 400,  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/pipelines.py": 150,  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/queue.py": 250,  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/deaths.py": 100,  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/library.py": 300,  # born 2026-08-29 from the db.py split
     # Born 2026-07-07 from the db.py split (v24): additive backfills +
     # user_version stepping. Grows by one block per schema version.
     # 1560→1660 (2026-07-08): v25 AttemptDisproof CHECK widen (feature D,

@@ -42,10 +42,12 @@ _RAW_STATUS_UPDATE_RE = re.compile(
 
 # posix path relative to Tooling/ → pinned count of allowed raw status UPDATEs.
 _ALLOWED: dict[str, int] = {
-    # The official mutators themselves: update_goal_status (2 branches:
+    # The official mutators themselves. update_goal_status (2 branches:
     # proved keeps integrity_verified, non-proved clears it) and
-    # update_strategy_status.
-    "state/db.py": 3,
+    # update_strategy_status (1) split from db.py into db/goals.py and
+    # db/strategies.py respectively (2026-08-29 db.py package split).
+    "state/db/goals.py": 2,
+    "state/db/strategies.py": 1,
     # The disproved / bootstrap-frozen migration backfills (migrations run
     # at vocabulary-change points — the state machine's edges don't apply
     # to them). Split out of db.py 2026-07-07 (v24 schema rework).

@@ -113,7 +113,7 @@ def _tables() -> "list[_Table]":
     ] + [
         _Table(
             "db.BATCH_DECISION_KINDS", set(_db.BATCH_DECISION_KINDS),
-            {"Tooling/state/db.py"},
+            {"Tooling/state/db/problems.py"},
             "use `db.BATCH_DECISION_KINDS` (its docstring exists to stop "
             "a future kind landing in two consumers and being forgotten "
             "in the third — which is what a literal copy guarantees)",
