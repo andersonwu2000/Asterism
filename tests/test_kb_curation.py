@@ -173,8 +173,8 @@ def test_routine_context_gets_curation_surface(conn, tmp_path):
     # the runner applies the sidecar from both commit branches
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
-    ctx_src = (root / "Tooling" / "agent" / "phase2_context.py").read_text(
-        encoding="utf-8")
+    ctx_src = (root / "Tooling" / "agent" / "phase2_context" /
+               "compile.py").read_text(encoding="utf-8")
     assert 'if trigger_kind == "routine":' in ctx_src
     strat_src = (root / "Tooling" / "pipeline" / "strategist" /
                  "wake.py").read_text(encoding="utf-8")

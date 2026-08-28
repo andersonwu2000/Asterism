@@ -650,6 +650,26 @@ _WATERMARKS = {
     "Tooling/pipeline/strategist/verify.py": 1050,  # born 2026-08-28 from the strategist.py split (B1)
     "Tooling/pipeline/strategist/commit.py": 1000,  # born 2026-08-28 from the strategist.py split (B1)
     "Tooling/pipeline/strategist/wake.py": 900,  # born 2026-08-28 from the strategist.py split (B1)
+    # `Tooling/agent/phase2_context.py` (2,428 lines, no prior watermark
+    # here) split move-only into `Tooling/agent/phase2_context/` along the
+    # file's own section breaks (task B2): `dossier.py` is the pending-
+    # review dossier (failure/adjudications/strategies/ancestor-chain
+    # sections); `outcomes.py` is the Inject-batch results (delegate/
+    # delivered-group summaries, the per-step scoreboard + BATCHES.md,
+    # `_prose_label`, worker declines, pending reopens — `pipeline/
+    # adversary.py` imports `_section_inject_batch_outcomes` from this
+    # package directly, not through the facade); `compile.py` is the rest
+    # of the Strategist side (trigger/gate/stall sections, roster/replay/
+    # plan/directive/tree/charter, `compile_strategist_context` itself,
+    # `_CATALOG_RECENT_N`); `forward.py` is the Forward side (brief/
+    # library/history/Programme-proof/presearch/conventions,
+    # `compile_forward_context` itself). Facade `__init__.py` re-exports
+    # every public (and tested private) symbol.
+    "Tooling/agent/phase2_context/__init__.py": 150,  # born 2026-08-28 from the phase2_context.py split (B2)
+    "Tooling/agent/phase2_context/dossier.py": 250,  # born 2026-08-28 from the phase2_context.py split (B2)
+    "Tooling/agent/phase2_context/outcomes.py": 850,  # born 2026-08-28 from the phase2_context.py split (B2)
+    "Tooling/agent/phase2_context/compile.py": 1150,  # born 2026-08-28 from the phase2_context.py split (B2)
+    "Tooling/agent/phase2_context/forward.py": 350,  # born 2026-08-28 from the phase2_context.py split (B2)
 }
 
 

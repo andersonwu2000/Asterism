@@ -239,10 +239,14 @@ def test_strategist_index_present_and_wired(conn, tmp_path):
     # wiring pins: all three compile paths carry the catalog surface
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
-    p2 = (root / "Tooling" / "agent" / "phase2_context.py").read_text(
-        encoding="utf-8")
-    assert "_section_catalog_index_strategist(conn, problem, attempts_dir)" in p2
-    assert "_section_library_inventory(conn, problem, attempts_dir)" in p2
+    p2_compile = (root / "Tooling" / "agent" / "phase2_context" /
+                  "compile.py").read_text(encoding="utf-8")
+    assert ("_section_catalog_index_strategist(conn, problem, attempts_dir)"
+            in p2_compile)
+    p2_forward = (root / "Tooling" / "agent" / "phase2_context" /
+                  "forward.py").read_text(encoding="utf-8")
+    assert ("_section_library_inventory(conn, problem, attempts_dir)"
+            in p2_forward)
     c = (root / "Tooling" / "agent" / "context.py").read_text(
         encoding="utf-8")
     assert "_section_catalog_pointer(conn, str(goal[\"problem\"]), attempts_dir)" in c

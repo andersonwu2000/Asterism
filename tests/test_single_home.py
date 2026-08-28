@@ -128,7 +128,7 @@ def _tables() -> "list[_Table]":
 #: Keyed by (posix path, sorted values) rather than line number so the
 #: entry survives edits above it but NOT a change to the list itself.
 _GRANDFATHERED: "dict[tuple[str, tuple[str, ...]], str]" = {
-    ("Tooling/agent/phase2_context.py",
+    ("Tooling/agent/phase2_context/outcomes.py",
      ("agent_declined", "circular_decomposition", "no_progress",
       "parent_needs_fix")):
         "which declines get surfaced in the phase-2 context → trait "
