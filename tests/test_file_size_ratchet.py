@@ -614,6 +614,27 @@ _WATERMARKS = {
     "Tooling/lsp/gateway/gates.py": 450,  # born 2026-08-29 from the gateway split (A1-4b)
     "Tooling/lsp/gateway/verify.py": 850,  # born 2026-08-29 from the gateway split (A1-4b)
     "Tooling/lsp/gateway/__main__.py": 50,  # born 2026-08-29 from the gateway split (A1-1)
+    # `Tooling/core/cli.py` (3,307 lines, no prior watermark here) split
+    # move-only into `Tooling/core/cli/` by command domain (task A3): the
+    # facade `__init__.py` re-exports every public (and tested private)
+    # symbol; `run.py` is the daemon/run lifecycle (cmd_run, daemon_status/
+    # start/stop, cmd_daemon, cmd_serve); `problems.py` is init/init-batch/
+    # reset + the init_problem/delete_problem/wipe_problem_rows
+    # chokepoints; `diagnose.py` is the health-check surfaces (status/
+    # doctor/library-verify/review/regress/knowledge-stats/drift-check/
+    # logs/config); `maint.py` is the remaining operational commands
+    # (reject/approve-ingest/reject-ingest/repin/charter/word/revive/
+    # library-backfill-declinfo/prune/paper-add/paper-index/kb-migrate);
+    # `main.py` is the argparse wiring; `__main__.py` preserves
+    # `python -m Tooling.core.cli` (daemon_start's own relaunch argv, the
+    # systemd unit, installer/launch.ps1).
+    "Tooling/core/cli/__init__.py": 150,  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/__main__.py": 50,  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/run.py": 750,  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/problems.py": 950,  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/diagnose.py": 850,  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/maint.py": 550,  # born 2026-08-28 from the cli.py split (A3)
+    "Tooling/core/cli/main.py": 350,  # born 2026-08-28 from the cli.py split (A3)
 }
 
 

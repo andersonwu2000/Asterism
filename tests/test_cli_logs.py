@@ -276,8 +276,11 @@ def test_cmd_run_logs_traceback_on_crash(
     monkeypatch.setattr(cli.dispatcher, "run", _boom)
     # Stub the zombie-lock hard-exit seam (production os._exit would take
     # the test runner with it); record that it fired with rc=2.
+    # `cmd_run` and `_hard_exit_after_fatal` both live in `cli.run` (the
+    # cli.py split, task A3) — patch THAT module, not the facade, or
+    # `cmd_run`'s own internal call resolves the un-patched original.
     exited = {"rc": None}
-    monkeypatch.setattr(cli, "_hard_exit_after_fatal",
+    monkeypatch.setattr(cli.run, "_hard_exit_after_fatal",
                         lambda rc: exited.__setitem__("rc", rc))
 
     args = argparse.Namespace(scope="Geometry.green_theorem", once=False,

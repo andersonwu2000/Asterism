@@ -54,7 +54,11 @@ def test_approve_signs_and_reject_revokes(tmp_path: Path, monkeypatch) -> None:
     conn.commit()
     conn.close()
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(_cli, "_claude_login_email", lambda: "acct@x.y")
+    # `cmd_approve_ingest` -> `_signoff_record` -> `_claude_login_email` all
+    # live in `cli.maint` (the cli.py split, task A3) — patch THAT module,
+    # not the facade, or `_signoff_record`'s own internal call resolves
+    # the un-patched original.
+    monkeypatch.setattr(_cli.maint, "_claude_login_email", lambda: "acct@x.y")
 
     rc = _cli.cmd_approve_ingest(
         argparse.Namespace(problem="p", signer="  Anderson Wu "))
@@ -108,7 +112,7 @@ def test_approve_enqueues_librarian_iff_library_flag(
     _settings.write(conn, "q", "library", True)
     conn.close()
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(_cli, "_claude_login_email", lambda: "a@x.y")
+    monkeypatch.setattr(_cli.maint, "_claude_login_email", lambda: "a@x.y")
 
     assert _cli.cmd_approve_ingest(
         argparse.Namespace(problem="p", signer="A")) == 0

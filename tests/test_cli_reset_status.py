@@ -587,7 +587,11 @@ def test_reset_raises_on_persistent_unlink_failure(
         if path.name == "L_stuck.lean":
             return False
         return real_unlink(path, **kw)
-    monkeypatch.setattr(cli_mod, "_robust_unlink", fake_unlink)
+    # `cmd_reset` -> `_reset_problem_files` -> `_robust_unlink` all live in
+    # `cli.problems` (the cli.py split, task A3) — patch THAT module, not
+    # the facade, or `_reset_problem_files`'s own internal call resolves
+    # the un-patched original.
+    monkeypatch.setattr(cli_mod.problems, "_robust_unlink", fake_unlink)
 
     rc = cmd_reset(argparse.Namespace(problem="wilson"))
     assert rc == 2, f"expected fail rc=2 on stuck unlink, got {rc}"

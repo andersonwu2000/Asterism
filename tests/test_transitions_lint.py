@@ -60,7 +60,9 @@ _ALLOWED: dict[str, int] = {
     # no goal_events and knew nothing about delegate anchors).
     "state/recovery.py": 1,
     # Operator soft-reset CLI (attempts + status in one statement).
-    "core/cli.py": 1,
+    # `core/cli.py` split move-only into `core/cli/` (task A3, 2026-08-28);
+    # `_soft_reset` (the raw UPDATE's owner) landed in `problems.py`.
+    "core/cli/problems.py": 1,
 }
 
 

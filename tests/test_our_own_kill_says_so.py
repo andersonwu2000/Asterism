@@ -101,11 +101,18 @@ def test_the_live_process_registry_is_shared_by_every_provider() -> None:
 
 def test_no_shutdown_message_calls_an_arbitrary_backend_claude() -> None:
     """It killed a codex process and said "claude" — which is how the
-    label was noticed at all (08-15)."""
-    for rel in ("Tooling/core/dispatcher.py", "Tooling/core/cli.py"):
-        text = (ROOT / rel).read_text(encoding="utf-8")
+    label was noticed at all (08-15).
+
+    `Tooling/core/cli.py` split move-only into `Tooling/core/cli/` (task
+    A3, 2026-08-28) — glob the whole package so the guard still covers
+    every command module, not just whichever one happens to hold the
+    in-flight-kill message today."""
+    paths = [ROOT / "Tooling" / "core" / "dispatcher.py"]
+    paths += sorted((ROOT / "Tooling" / "core" / "cli").glob("*.py"))
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
         assert "in-flight claude " not in text, (
-            f"{rel}: the kill reaches every provider, so the message "
+            f"{path}: the kill reaches every provider, so the message "
             f"must not name one")
 
 

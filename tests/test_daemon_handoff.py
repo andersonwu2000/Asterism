@@ -52,7 +52,11 @@ def test_daemon_start_spawns_through_a_relay_on_windows(
         calls.append((argv, kw))
         return _FakeRelay()
 
-    monkeypatch.setattr(_cli, "_daemon_live_pid", lambda ws: None)
+    # `daemon_start`/`daemon_status` and `_daemon_live_pid` all live in
+    # `cli.run` (the cli.py split, task A3) — patch THAT module, not the
+    # facade, or daemon_start's own internal call resolves the un-patched
+    # original (this file's four `_daemon_live_pid` patch sites).
+    monkeypatch.setattr(_cli.run, "_daemon_live_pid", lambda ws: None)
     import subprocess
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     _register_problem(tmp_path)
@@ -73,7 +77,7 @@ def test_daemon_start_wait_lock_retries_until_the_lock_frees(
     lock frees, then starts — without wait_lock_sec it refuses at once
     (unchanged behaviour)."""
     live: list = [111, 111, None]  # two refusals, then free
-    monkeypatch.setattr(_cli, "_daemon_live_pid",
+    monkeypatch.setattr(_cli.run, "_daemon_live_pid",
                         lambda ws: live.pop(0) if live else None)
     import subprocess
     monkeypatch.setattr(subprocess, "Popen",
@@ -84,7 +88,7 @@ def test_daemon_start_wait_lock_retries_until_the_lock_frees(
     assert rc == 0
 
     # and the zero-wait path still refuses immediately
-    monkeypatch.setattr(_cli, "_daemon_live_pid", lambda ws: 222)
+    monkeypatch.setattr(_cli.run, "_daemon_live_pid", lambda ws: 222)
     rc, msg = _cli.daemon_start(tmp_path, scope="p")
     assert rc == 1
     assert "REFUSED" in msg
@@ -122,7 +126,7 @@ def test_daemon_status_reports_code_stale(
     (logs / "daemon-fp.txt").write_text("OLD", encoding="utf-8")
     (tmp_path / ".asterism" / "daemon.pid").write_text(
         "999\n1000.0\n", encoding="utf-8")
-    monkeypatch.setattr(_cli, "_daemon_live_pid", lambda ws: 999)
+    monkeypatch.setattr(_cli.run, "_daemon_live_pid", lambda ws: 999)
     from Tooling.lsp import lifecycle as gwl
     monkeypatch.setattr(gwl, "code_fingerprint", lambda: "NEW")
     st = _cli.daemon_status(tmp_path)
