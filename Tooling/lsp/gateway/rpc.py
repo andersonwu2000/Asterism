@@ -4,7 +4,7 @@ withdraw_stub.
 Split out of `gateway.py` 2026-08-29 (A1-4a) unchanged, decorators and
 all. `@mcp.tool` registers at IMPORT time, so the facade's
 `from .rpc import …` is what keeps the roster at five tools (these four
-plus `validate_file`, which stays in `__init__` until cut 4b) in the
+plus `validate_file`, which moved to `verify.py` with cut 4b) in the
 same registration order they were declared in.
 
 `_echo_removed` and `_ECHO_END_CHARS` arrive here from `sessions.py`
@@ -12,13 +12,15 @@ with this cut: `apply_edit` is their only consumer, and what an edit
 removed is a tool answer, not part of the session lifecycle.
 
 The submission gates (`_citation_submission`,
-`_locked_signature_submission`) are still in the facade (cut 4b), so
-`apply_edit` imports them at CALL time — a module-level import back
-into the facade would close a cycle — and their patch target stays the
-facade. Everything else is imported at module level, which copies the
-binding into THIS namespace — so a tool-side test patches
-`gateway.rpc.<name>` (`_ensure_backend_ready`, `_current_session`,
-`_compilation_for`, …), never the facade and never the defining module.
+`_locked_signature_submission`) were in the facade until cut 4b, so
+`apply_edit` imported them at CALL time — a module-level import back
+into the facade would have closed a cycle. They live in `gates.py` now,
+a leaf, so the import is module-level like every other and their
+tool-side patch target is `gateway.rpc`. Everything else is imported at
+module level too, which copies the binding into THIS namespace — so a
+tool-side test patches `gateway.rpc.<name>` (`_ensure_backend_ready`,
+`_current_session`, `_compilation_for`, …), never the facade and never
+the defining module.
 
 `_ELABORATING_WARNING`, `_ECHO_END_CHARS` and the three `_HB_*`
 constants do not re-export: their only consumers are in this file, so a
@@ -35,6 +37,7 @@ import time
 from .. import edits as _edits
 from .backend import _ensure_backend_ready
 from .elab import _elab_gate
+from .gates import _citation_submission, _locked_signature_submission
 from .leantext import (
     _collapse_repeats,
     _compilation_for,
@@ -227,9 +230,6 @@ def apply_edit(edits: list = None) -> str:
               for i in range(_tail_from, len(new_lines) + 1)]
     post_edit_region = "\n".join(_echo)
 
-    # Call-time: the submission gates are still in the facade (cut 4b),
-    # and a module-level import back into it would close a cycle.
-    from . import _citation_submission, _locked_signature_submission
     # Locked-signature tripwire (warning, not a block): the commit gate
     # byte-compares the seeded `s<sid>` signature, so an edit touching
     # it — usually via a drifted range — is doomed at commit. Same

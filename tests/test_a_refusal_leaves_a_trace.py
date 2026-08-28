@@ -51,8 +51,9 @@ def _session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     monkeypatch.setattr(lsp_gateway._state, "backend", _Backend())
     monkeypatch.setattr(lsp_gateway.rpc, "_ensure_backend_ready",
                         lambda *a, **kw: None)
-    monkeypatch.setattr(lsp_gateway, "_ensure_imports",
-                        lambda c, p, w: c)
+    # No `_ensure_imports` patch: nothing in the gateway calls it, so the
+    # setattr that used to sit here patched a name no production path
+    # reads — it fired and nothing happened (A1-4b).
     target = tmp_path / "x.lean"
     target.write_text(content, encoding="utf-8")
     log = tmp_path / "session.jsonl"

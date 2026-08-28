@@ -592,7 +592,15 @@ _WATERMARKS = {
     # `rpc.py`, whose `apply_edit` is their only consumer (A1-4a).
     # state 250→300: `_log_for` and `_ts_now` landed here (A1-4a) — two
     # dependency-free leaves that let sessions' call-time reach-backs close.
-    "Tooling/lsp/gateway/__init__.py": 2200,  # born 2026-08-29 from the gateway split (A1-1)
+    # 2200→1050: the commit-gate mirrors (`gates.py` — citation,
+    # annotation, locked signature, stale olean, slug collision, decl
+    # head, namespace, axioms) and the candidate probe with the two
+    # /verify sync cores (`verify.py` — `validate_file`,
+    # `_verify_sync`, `_verify_session_sync`) left (A1-4b). What remains
+    # IS the HTTP surface — eleven `@mcp.custom_route` handlers, the
+    # session-header middleware, `main()` and the facade — so this
+    # number stops falling here.
+    "Tooling/lsp/gateway/__init__.py": 1050,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/state.py": 300,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/elab.py": 200,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/backend.py": 250,  # born 2026-08-29 from the gateway split (A1-1)
@@ -603,6 +611,8 @@ _WATERMARKS = {
     "Tooling/lsp/gateway/leantext.py": 800,  # born 2026-08-29 from the gateway split (A1-4a)
     "Tooling/lsp/gateway/rpc.py": 750,  # born 2026-08-29 from the gateway split (A1-4a)
     "Tooling/lsp/gateway/server.py": 100,  # born 2026-08-29 from the gateway split (A1-4a)
+    "Tooling/lsp/gateway/gates.py": 450,  # born 2026-08-29 from the gateway split (A1-4b)
+    "Tooling/lsp/gateway/verify.py": 850,  # born 2026-08-29 from the gateway split (A1-4b)
     "Tooling/lsp/gateway/__main__.py": 50,  # born 2026-08-29 from the gateway split (A1-1)
 }
 

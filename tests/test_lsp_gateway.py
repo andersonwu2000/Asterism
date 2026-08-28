@@ -912,7 +912,7 @@ def test_verify_endpoint_offloads_sync_body_to_thread(
             sent.append(msg)
         # Use Request to feed the handler
         req = Request(scope, receive=receive, send=send)
-        resp = await lsp_gateway.verify(req)
+        resp = await lsp_gateway.verify_route(req)
         return resp
 
     asyncio.run(_run())
@@ -986,17 +986,19 @@ def _setup_validate_session(monkeypatch, tmp_path, backend):
                              content_pipeline_id="pipe-A")]
     monkeypatch.setattr(lsp_gateway._state, "workers", slots)
     monkeypatch.setattr(lsp_gateway._state, "backend", backend)
-    # Both sides of the split-brain name: `validate_file` still resolves
-    # it in the facade, the four tools this harness also drives
-    # (apply_edit / errors_at) resolve `gateway.rpc`'s own copied binding
-    # since the A1-4a split. Patching one alone leaves the other reading
-    # the real warming gate.
-    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+    # Both sides of the split-brain name: `validate_file` left the facade
+    # for `gateway.verify` with the A1-4b split and resolves its own
+    # copied binding there; the four tools this harness also drives
+    # (apply_edit / errors_at) resolve `gateway.rpc`'s since A1-4a.
+    # Patching one alone leaves the other reading the real warming gate.
+    monkeypatch.setattr(lsp_gateway.verify, "_ensure_backend_ready",
                         lambda *a, **kw: None)
     monkeypatch.setattr(lsp_gateway.rpc, "_ensure_backend_ready",
                         lambda *a, **kw: None)
-    monkeypatch.setattr(lsp_gateway, "_ensure_imports",
-                        lambda content, problem, ws: content)
+    # No `_ensure_imports` patch: nothing in the gateway calls it (the
+    # compilation unit is built by `_build_compilation_unit`), so the
+    # setattr that used to sit here patched a name no production path
+    # reads — it fired and nothing happened (A1-4b).
     meta = lsp_gateway.SessionMetadata(
         pipeline_id="pipe-A", target_path=tmp_path / "x.lean",
         problem="p", workspace=tmp_path, log_path=None,
@@ -2771,7 +2773,7 @@ def test_validate_file_surfaces_sorries_beside_ok_true(
     ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
     # Identity compilation unit so the fake diag's line survives the
     # prefix remap untouched.
-    monkeypatch.setattr(lsp_gateway, "_build_compilation_unit",
+    monkeypatch.setattr(lsp_gateway.verify, "_build_compilation_unit",
                         lambda content, *a, **kw: (content, None, []))
     (tmp_path / "x.lean").write_text(
         "theorem t : True := by sorry\n", encoding="utf-8")

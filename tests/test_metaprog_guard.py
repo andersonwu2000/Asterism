@@ -35,6 +35,7 @@ from Tooling.state.failures import REGISTRY
 ROOT = Path(__file__).resolve().parents[1]
 GATEWAY = ROOT / "Tooling" / "lsp" / "gateway" / "__init__.py"
 GATEWAY_RPC = ROOT / "Tooling" / "lsp" / "gateway" / "rpc.py"
+GATEWAY_VERIFY = ROOT / "Tooling" / "lsp" / "gateway" / "verify.py"
 CLIENT = ROOT / "Tooling" / "lsp" / "client.py"
 BACKWARD = ROOT / "Tooling" / "pipeline" / "backward.py"
 FORWARD = ROOT / "Tooling" / "pipeline" / "forward.py"
@@ -91,13 +92,16 @@ def test_lsp_boundary_guards_every_elaboration(name) -> None:
 #:
 #: Each entry carries the FILE it lives in, so the enumeration stays an
 #: audit after the gateway became a package: the three in-spawn tools
-#: moved to `gateway/rpc.py` with the A1-4a split, and a name-only list
-#: would have failed as "no function named" rather than telling anyone
-#: where to look.
+#: moved to `gateway/rpc.py` with the A1-4a split and the candidate probe
+#: plus the two /verify sync cores to `gateway/verify.py` with A1-4b, and
+#: a name-only list would have failed as "no function named" rather than
+#: telling anyone where to look. `interactive_sync` is the one that stays
+#: in `__init__` — it is an HTTP handler, not a helper.
 @pytest.mark.parametrize("path, name", [
     (GATEWAY_RPC, "apply_edit"), (GATEWAY_RPC, "goal_at"),
-    (GATEWAY_RPC, "errors_at"), (GATEWAY, "validate_file"),
-    (GATEWAY, "_verify_sync"), (GATEWAY, "_verify_session_sync"),
+    (GATEWAY_RPC, "errors_at"), (GATEWAY_VERIFY, "validate_file"),
+    (GATEWAY_VERIFY, "_verify_sync"),
+    (GATEWAY_VERIFY, "_verify_session_sync"),
     (GATEWAY, "interactive_sync"),
 ], ids=lambda v: getattr(v, "name", v))
 def test_gateway_entry_scans_agent_text(path, name) -> None:

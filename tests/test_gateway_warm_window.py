@@ -74,7 +74,7 @@ def test_compute_answers_while_a_lean_route_waits_on_readiness(
 
     async def drive() -> None:
         lean = asyncio.ensure_future(
-            gateway.verify(_Req({"target_path": str(target)})))
+            gateway.verify_route(_Req({"target_path": str(target)})))
         await asyncio.sleep(0)          # hand the loop to /verify
         resp = await asyncio.wait_for(
             gateway.compute_endpoint(_Req({"code": "print(2+2)"})),
