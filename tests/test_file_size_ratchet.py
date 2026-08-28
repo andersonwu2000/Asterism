@@ -701,6 +701,24 @@ _WATERMARKS = {
     "Tooling/serve/data/edges.py": 550,  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/timeline.py": 1250,  # born 2026-08-28 from the data.py split (B3)
     "Tooling/serve/data/library.py": 500,  # born 2026-08-28 from the data.py split (B3)
+    # ── 2026-08-29 default-cap sweep ─────────────────────────────────
+    # The ratchet used to be an OPT-IN list: gateway.py reached 5,886
+    # lines and cli.py 3,307 with no entry at all, because nobody had
+    # ever added one. The default cap below closes that hole; these are
+    # the files that were already over it, grandfathered at their
+    # current size (next multiple of 50) — shrink-only, like the rest.
+    "Tooling/pipeline/backward.py": 2350,
+    "Tooling/quality/dedupe.py": 1950,
+    "Tooling/llm/zen_shim.py": 1950,
+    "Tooling/llm/claude_cli.py": 1900,
+    "Tooling/agent/context.py": 1800,
+    "Tooling/serve/app.py": 1700,
+    "Tooling/knowledge/workspace_query.py": 1400,
+    "Tooling/pipeline/_retry.py": 1300,
+    "Tooling/llm/codex_cli.py": 1250,
+    "Tooling/pipeline/forward.py": 1200,
+    "Tooling/lsp/lifecycle.py": 1150,
+    "Tooling/llm/antigravity_cli.py": 1150,
 }
 
 
@@ -728,3 +746,27 @@ def test_every_cleanup_module_has_a_watermark() -> None:
         for p in cleanup_dir.glob("*.py")
         if f"Tooling/quality/librarian/cleanup/{p.name}" not in _WATERMARKS)
     assert not unlisted, f"add a watermark for: {unlisted}"
+
+# Any module NOT in the watermark list must stay under this. The list
+# above is the conscious-exception mechanism: a file that legitimately
+# needs more space gets a named entry (visible in review), it does not
+# get to grow in silence — that is exactly how gateway.py reached 5,886
+# lines unwatched (split A1, 2026-08-29).
+_DEFAULT_CAP = 1000
+
+
+def test_unlisted_modules_stay_under_the_default_cap() -> None:
+    over = []
+    for p in (ROOT / "Tooling").rglob("*.py"):
+        if "__pycache__" in p.parts:
+            continue
+        rel = p.relative_to(ROOT).as_posix()
+        if rel in _WATERMARKS:
+            continue
+        n = sum(1 for _ in p.open(encoding="utf-8", errors="replace"))
+        if n > _DEFAULT_CAP:
+            over.append(f"{rel}: {n} > {_DEFAULT_CAP}")
+    assert not over, (
+        "unlisted module(s) over the default cap — split the file, or "
+        "add a conscious watermark entry in the same PR so the growth "
+        "is visible in review:\n" + "\n".join(over))
