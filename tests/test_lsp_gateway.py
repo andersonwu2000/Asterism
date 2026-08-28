@@ -1725,7 +1725,7 @@ def test_the_ceiling_is_derived_from_the_spawn_budget_not_typed_twice(
     relation, not a number."""
     import re
     src = (Path(__file__).resolve().parents[1] / "Tooling" / "lsp"
-           / "gateway.py").read_text(encoding="utf-8")
+           / "gateway" / "__init__.py").read_text(encoding="utf-8")
     assert "dispatch.spawn_timeout_sec" in src, (
         "the claim ceiling must read the spawn budget, not restate it")
     m = re.search(r"claim_ceiling_sec = max\(\s*([\d.]+) \* float", src)
@@ -1740,7 +1740,7 @@ def test_the_slot_error_does_not_prescribe_an_impossible_action(
     names an unreachable exit is worse than one that names none, so
     this one says the fault is the framework's and to retry."""
     src = (Path(__file__).resolve().parents[1] / "Tooling" / "lsp"
-           / "gateway.py").read_text(encoding="utf-8")
+           / "gateway" / "__init__.py").read_text(encoding="utf-8")
     i = src.index("no slot claimed for pipeline")
     msg = src[i:i + 700]
     assert "register_session was not called" not in msg
@@ -1848,7 +1848,7 @@ def test_restart_backend_reaps_old_then_rewarms(monkeypatch) -> None:
         _state.backend = _FakeBackend()
         _state.workspace = Path(".")
         _state.workers = [object(), object(), object()]  # width 3
-        monkeypatch.setattr(lsp_gateway, "_start_workers",
+        monkeypatch.setattr(lsp_gateway.backend, "_start_workers",
                             lambda ws, n, n_res=0: order.append(f"start:{n}"))
         lsp_gateway._restart_backend("unit test")
         assert order == ["shutdown", "start:3"], order
@@ -2942,7 +2942,7 @@ def test_health_reads_slot_memory_from_an_off_loop_cache(monkeypatch) -> None:
         _t.sleep(0.3)          # a Linux smaps walk is exactly this shape
         return {1: 42}
 
-    monkeypatch.setattr(lsp_gateway, "_slot_private_mb", slow_scan)
+    monkeypatch.setattr(lsp_gateway.weigh, "_slot_private_mb", slow_scan)
     lsp_gateway._SLOT_MB_CACHE.update(
         {"at": 0.0, "val": {}, "refreshing": False})
     t0 = _t.monotonic()
@@ -3134,9 +3134,9 @@ def test_elab_gate_bounds_concurrency_and_counts(monkeypatch):
     `_ELAB_CONCURRENCY` holders, waiters visible on the stats surface
     (the cockpit's binding-axis signal)."""
     import threading as _th
-    monkeypatch.setattr(lsp_gateway, "_ELAB_SEM",
+    monkeypatch.setattr(lsp_gateway.elab, "_ELAB_SEM",
                         _th.BoundedSemaphore(1))
-    monkeypatch.setattr(lsp_gateway, "_ELAB_QUEUE_TIMEOUT_SEC", 30.0)
+    monkeypatch.setattr(lsp_gateway.elab, "_ELAB_QUEUE_TIMEOUT_SEC", 30.0)
     entered = _th.Event()
     release = _th.Event()
     seen = {}
@@ -3175,9 +3175,9 @@ def test_elab_gate_saturation_fails_loud(monkeypatch):
     """A queue past the timeout raises a retryable teaching message
     instead of silently spending the caller's outer wall."""
     import threading as _th
-    monkeypatch.setattr(lsp_gateway, "_ELAB_SEM",
+    monkeypatch.setattr(lsp_gateway.elab, "_ELAB_SEM",
                         _th.BoundedSemaphore(1))
-    monkeypatch.setattr(lsp_gateway, "_ELAB_QUEUE_TIMEOUT_SEC", 0.05)
+    monkeypatch.setattr(lsp_gateway.elab, "_ELAB_QUEUE_TIMEOUT_SEC", 0.05)
     release = _th.Event()
     entered = _th.Event()
 
@@ -3213,8 +3213,8 @@ def test_elab_gate_records_queue_credit(monkeypatch, tmp_path):
     meta = _Meta()
     meta.target_path = att / "patch.lean"
 
-    monkeypatch.setattr(lsp_gateway, "_ELAB_SEM", _th.BoundedSemaphore(1))
-    monkeypatch.setattr(lsp_gateway, "_ELAB_QUEUE_TIMEOUT_SEC", 30.0)
+    monkeypatch.setattr(lsp_gateway.elab, "_ELAB_SEM", _th.BoundedSemaphore(1))
+    monkeypatch.setattr(lsp_gateway.elab, "_ELAB_QUEUE_TIMEOUT_SEC", 30.0)
     entered = _th.Event()
     release = _th.Event()
 

@@ -567,6 +567,19 @@ _WATERMARKS = {
     # (`_opens_in`) so a proof referencing an opened symbol (`residue`) resolves
     # in the isolation probe instead of failing as an autoImplicit — 2026-06-20.
     "Tooling/quality/librarian/cleanup/simplify.py": 220,
+    # The LSP gateway. `gateway.py` (5,890 lines, never watched here) became
+    # `Tooling/lsp/gateway/` on 2026-08-29 — move-only, first batch of four
+    # axes out of the monolith (state / elab / backend / weigh); the facade
+    # __init__ still holds governor, sessions, leantext, rpc, gates, verify
+    # and the HTTP surface, which later batches carry out. Every entry is
+    # the file's line count at that split, rounded up to the next 50 — the
+    # __init__ number is meant to keep FALLING as the remaining axes leave.
+    "Tooling/lsp/gateway/__init__.py": 5250,  # born 2026-08-29 from the gateway split (A1-1)
+    "Tooling/lsp/gateway/state.py": 250,  # born 2026-08-29 from the gateway split (A1-1)
+    "Tooling/lsp/gateway/elab.py": 200,  # born 2026-08-29 from the gateway split (A1-1)
+    "Tooling/lsp/gateway/backend.py": 250,  # born 2026-08-29 from the gateway split (A1-1)
+    "Tooling/lsp/gateway/weigh.py": 150,  # born 2026-08-29 from the gateway split (A1-1)
+    "Tooling/lsp/gateway/__main__.py": 50,  # born 2026-08-29 from the gateway split (A1-1)
 }
 
 

@@ -63,7 +63,7 @@ def test_compute_answers_while_a_lean_route_waits_on_readiness(
     # if `_ensure_backend_ready` ever waits through the FIRST warm
     # again, `/verify` reaches this Event and takes the loop with it.
     warming = threading.Event()
-    monkeypatch.setattr(gateway, "_await_backend",
+    monkeypatch.setattr(gateway.backend, "_await_backend",
                         lambda timeout: warming.wait(60) and "too late")
     monkeypatch.setattr("Tooling.sandbox.run",
                         lambda code: gateway_result("4"))
@@ -122,7 +122,7 @@ def test_a_wedge_rewarm_is_still_waited_out(monkeypatch) -> None:
     monkeypatch.setattr(gateway._state, "first_warm_done", True)
     gateway._state.ready_event.clear()
     waited: list = []
-    monkeypatch.setattr(gateway, "_await_backend",
+    monkeypatch.setattr(gateway.backend, "_await_backend",
                         lambda t: waited.append(t) or "still restarting")
     assert gateway._ensure_backend_ready(timeout=7.0) == "still restarting"
     assert waited == [7.0], "a re-warm must be waited out, not refused"
@@ -178,7 +178,7 @@ def test_the_marker_is_dropped_at_warm_end_not_at_http_open(
     2026-07-07 collision, reintroduced."""
     marker = tmp_path / "gateway-starting.txt"
     marker.write_text("123", encoding="utf-8")
-    monkeypatch.setattr(gateway, "_await_backend", lambda budget: None)
+    monkeypatch.setattr(gateway.backend, "_await_backend", lambda budget: None)
     gateway._watch_initial_warm(1.0, marker)
     assert gateway._state.first_warm_done is True
     assert not marker.exists()
@@ -192,7 +192,7 @@ def test_a_failed_warm_still_kills_the_process(
     daemon's rc-3 handling would never fire."""
     marker = tmp_path / "gateway-starting.txt"
     marker.write_text("123", encoding="utf-8")
-    monkeypatch.setattr(gateway, "_await_backend", lambda budget: "no pool")
+    monkeypatch.setattr(gateway.backend, "_await_backend", lambda budget: "no pool")
 
     class _Srv:
         should_exit = False

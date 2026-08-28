@@ -33,7 +33,7 @@ from Tooling.state import metaprog
 from Tooling.state.failures import REGISTRY
 
 ROOT = Path(__file__).resolve().parents[1]
-GATEWAY = ROOT / "Tooling" / "lsp" / "gateway.py"
+GATEWAY = ROOT / "Tooling" / "lsp" / "gateway" / "__init__.py"
 CLIENT = ROOT / "Tooling" / "lsp" / "client.py"
 BACKWARD = ROOT / "Tooling" / "pipeline" / "backward.py"
 FORWARD = ROOT / "Tooling" / "pipeline" / "forward.py"

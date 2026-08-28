@@ -111,7 +111,7 @@ def _function_node(path: Path, name: str) -> ast.FunctionDef:
 
 def test_conftest_verify_stub_covers_gateway_response_shape():
     gateway_keys = _dict_keys_of_return(
-        _function_node(ROOT / "Tooling" / "lsp" / "gateway.py",
+        _function_node(ROOT / "Tooling" / "lsp" / "gateway" / "__init__.py",
                        "_verify_sync"), last_only=True)
     stub_keys = _dict_keys_of_return(
         _function_node(ROOT / "tests" / "conftest.py", "_stub_verify_file"))

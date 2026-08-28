@@ -53,377 +53,56 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from . import edits as _edits
+from .. import edits as _edits
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from ..state import assemble, db, metaprog, transitions
-from ..state import intent as intent_mod
-from .client import LspClient
+from ...state import assemble, db, metaprog, transitions
+from ...state import intent as intent_mod
+from ..client import LspClient
 
 
-# ─── Worker slot ────────────────────────────────────────────────
-
-WARMUP_CONTENT = "import Mathlib\n"
-
-
-@dataclass
-class WorkerSlot:
-    """One persistent lean --worker holding a slot URI. Pre-warmed at
-    startup with `import Mathlib`; subsequent loads are didChange swaps
-    on this URI (~3-4s vs ~27s fresh worker).
-
-    1:1 lifecycle (#118): each spawn claims one slot at register_session
-    and holds it until release_session. `claimed_by` tracks ownership;
-    `content_pipeline_id` tracks which pipeline's content is actually
-    didChanged in (may lag `claimed_by` until the first tool call).
-    """
-    slot_id: int
-    slot_path: Path
-    slot_uri: str
-    lock: threading.Lock = field(default_factory=threading.Lock)
-    # Lifetime ownership. None = available for claim. Set at
-    # register_session, cleared at release_session.
-    claimed_by: str | None = None
-    # Reserved for the serve UI's interactive editor (owner's
-    # pipeline=slot identity, both directions): pipeline claims skip
-    # reserved slots, interactive claims take ONLY reserved slots, and
-    # borrow probes never touch them.
-    reserved: bool = False
-    # Whose content is currently didChanged in this slot. May lag
-    # `claimed_by` until the first tool call (warmup state has neither
-    # set). Stale after release — next claim's first tool call rewrites.
-    content_pipeline_id: str | None = None
-    # Monotonic version for LSP didChange. Starts at 2 (didOpen was 1).
-    file_version: int = 2
-    # Wall-clock time of last release, kept for diagnostics.
-    last_used_ts: float = 0.0
-    # line_map of the compilation unit currently didChanged in (merged
-    # line → session-content line, None for framework-prefix / sibling
-    # region). Set whenever content is swapped in; tools translate their
-    # positions / diagnostics through it. None until the first swap.
-    line_map: "list[int | None] | None" = None
-    # RAM-ledger lifecycle (2026-08-25): a closed slot keeps its roster
-    # entry but has no live worker (did_close freed its RAM) and is
-    # skipped by every claim. The warm-target converger re-opens it —
-    # or extends the roster — when the target rises.
-    closed: bool = False
-    # Mid-lease rewarm (owner design 2026-08-26): a worker that grew
-    # far past its content's own need DURING a lease is restarted in
-    # the background right after a tool call returns (the agent is
-    # thinking; the rebuild overlaps that window). True while the
-    # background rewarm holds the slot; acquires slide their deadline
-    # and the wait is credited to the session's wall.
-    rewarming: bool = False
-    # Freeze (owner design 2026-08-26, the fleet-level pressure
-    # answer): over-budget -> the fattest idle worker is KILLED but
-    # its session and claim survive; a tool call arriving meanwhile
-    # queues on the slot (sliding deadline, wall credit — the CPU
-    # gate's contract). When pressure clears, the thaw rebuilds the
-    # worker from the session's own content and the queued call runs.
-    # A suspend, not a kill: the cliff mechanisms stay as backstops.
-    frozen: bool = False
-    frozen_at: float = 0.0
-    # Set while an acquire is queued on this frozen slot — the thaw
-    # loop serves these sessions first.
-    thaw_waiting: bool = False
-    # Short cooldown stamp — bridges the reading cache's TTL right
-    # after a rewarm (the stale fat reading must not re-trigger).
-    rewarmed_at: float = 0.0
-    # The content's OWN weight (owner insight 2026-08-26): fat that was
-    # there the first time this content ran is the content's need; only
-    # growth BEYOND it across later calls is residue worth a restart.
-    # Measured at the first tool return after the content lands and
-    # re-measured fresh after every rewarm; reset when the content
-    # changes hands. Absolute thresholds judged the monster certs by
-    # their (legitimate) size and churned — the delta cannot.
-    content_baseline_mb: "int | None" = None
-    baseline_for: "str | None" = None
-
-
-# ─── Session metadata ────────────────────────────────────────
-
-@dataclass
-class SessionMetadata:
-    """Per-pipeline state held in gateway. file_content is the mirror
-    of the agent's accumulated edits; slot URIs are transient stages
-    we push this content onto for elaboration. target_path is the
-    real on-disk goal_lean — write-through ensures the framework's
-    post-spawn cascade reads the agent's final state.
-
-    `last_active` is the activity-TTL liveness signal: updated by
-    `_acquire_slot` on every successful tool acquire and consumed by
-    the `_sweep_stale_claims` background loop to reclaim leaked
-    slots. Initialized to register-time so a fresh session that
-    hasn't issued a tool call yet still gets the full LEASE_TTL grace
-    window."""
-    pipeline_id: str
-    target_path: Path
-    problem: str
-    workspace: Path
-    log_path: Path | None = None
-    file_content: str = ""
-    last_active: float = field(default_factory=time.monotonic)
-    # Pipeline kind ('Backward' / 'Builder' / 'Forward' / …) — lets the
-    # submission mirror give pipeline-ACCURATE verdicts (a non-proved
-    # citation is a warn for a Backward decomposition but a hard commit
-    # reject for Builder). Optional: an old client that doesn't send it
-    # gets the kind-agnostic mirror, never an error.
-    kind: str | None = None
-    # Fingerprint of the attempts dir's `new_*.lean` stub set (name,
-    # mtime_ns, size). A freshly WRITTEN stub changes the merged
-    # compilation unit, but slot ownership never noticed — errors_at /
-    # goal_at elaborated the PREVIOUS unit and reported phantom unknown
-    # identifiers on citations validate_file accepted (agent_feedback
-    # 2026-07-09/10, ~32 reports). `_resync_buffer_from_disk` compares
-    # and invalidates the slot on change.
-    stub_fingerprint: tuple = ()
-    # The session's goal identity (register payload `goal_id`, threaded
-    # from run_lsp_edit_loop 2026-08-26) — lets validate's parity probe
-    # run the SAME strict-ancestor cycle predicate commit runs, so
-    # "citation ok" can no longer precede a commit-time circularity
-    # reject (feedback x2). Optional: older clients get no cycle check,
-    # never an error.
-    goal_id: "int | None" = None
-    # --- heartbeat-budget gate (2026-08-12) -------------------------
-    #: A heartbeat timeout has been reported to this agent at least once.
-    hb_saw_timeout: bool = False
-    #: The `maxHeartbeats` this session's content last asked for (None =
-    #: never set it, i.e. Lean's default).
-    hb_limit: "int | None" = None
-    #: Wall seconds the last diagnostics call took — the number the gate
-    #: quotes, because a machine-measured cost cannot drift the way a
-    #: hard-coded "4M ≈ 8 minutes" would.
-    hb_last_check_s: float = 0.0
-    #: Content hashes already warned about: the SAME write resent is the
-    #: confirmation, so the gate asks once and then gets out of the way.
-    hb_confirmed: set = field(default_factory=set)
-
-
-# ─── Gateway global state ─────────────────────────────────
-
-@dataclass
-class GatewayState:
-    backend: LspClient | None = None
-    workspace: Path | None = None
-    workers: list[WorkerSlot] = field(default_factory=list)
-    sessions: dict[str, SessionMetadata] = field(default_factory=dict)
-    sessions_lock: threading.Lock = field(default_factory=threading.Lock)
-    ready_event: threading.Event = field(default_factory=threading.Event)
-    init_error: str | None = None
-    # Slot acquire path counters (visible via /health). Under 1:1
-    # binding (#118), cold_evicted never fires — slots are owned by a
-    # single pipeline for their lifetime and never serve another's
-    # content. Hot vs cold_warmup distinguishes first-tool-call (must
-    # didChange) from later calls on the same claim.
-    counters_lock: threading.Lock = field(default_factory=threading.Lock)
-    n_hot: int = 0           # this slot already has our content loaded
-    n_cold_warmup: int = 0   # first tool call on this slot for this claim
-    n_cold_noswap: int = 0   # swap_in=False (apply_edit / validate_file)
-    n_busy_polls: int = 0    # times we slept 0.1s waiting for our slot's lock
-    # The dispatch.pool value this process launched under, BEFORE any
-    # RAM clamp — the daemon's reuse gate compares yaml-to-yaml against
-    # this, so a clamped pool doesn't read as a stale gateway.
-    workers_configured: int | None = None
-    # Absolute age past which a claim is reclaimed even from a LIVE
-    # owner. Derived from `dispatch.spawn_timeout_sec` at startup (see
-    # `_sweep_stale_claims`); the default matches a 1800s spawn.
-    claim_ceiling_sec: float = 3600.0
-    # One-way latch: the FIRST warm has finished (whatever happens to
-    # the backend later). HTTP now opens before that warm, so this is
-    # what separates "the pool has never been up" from "a wedge restart
-    # cleared `ready_event` and Lean work is legitimately waiting for
-    # the replacement". Lean surfaces refuse fast in the first case and
-    # keep blocking in the second — `_ensure_backend_ready` alone can't
-    # tell them apart, and blocking through the initial warm would put
-    # a 240s wait on the event loop where `/compute` lives.
-    first_warm_done: bool = False
-    #: Set by the warm watcher when the initial warm fails; `main`
-    #: turns it into the same rc 3 the blocking version exited with.
-    warm_failed: str | None = None
-    #: The uvicorn Server, so the watcher can ask it to stop rather
-    #: than `os._exit` past the Lean-subtree reap in `main`'s finally.
-    http_server: object | None = None
-    #: Adaptive RAM ledger (owner design 2026-08-25). None = static
-    #: mode: the pool is exactly what launch warmed, nothing closes.
-    #: Set via POST /warm_target by the dispatcher's ledger tick; the
-    #: converger warms toward it, the release path sheds above it.
-    warm_target: "int | None" = None
-    #: Measured veto the dispatcher sends with the target: never start
-    #: a warm when the machine's available RAM (GB) is below this.
-    warm_min_available_gb: float = 0.0
-    #: The RAM budget (owner .env), stashed at launch for the freezer
-    #: (owner design 2026-08-26): the gateway needs the same number the
-    #: dispatcher's ledger plans with. None = no budget (freeze off).
-    ram_budget_gb: "float | None" = None
-    #: Single-flight latch for the background converger thread.
-    warm_converger_on: bool = False
-
-
-_state = GatewayState()
-
-# Source-tree fingerprint at THIS process's import time (version-skew
-# guard). The gateway deliberately outlives daemons; a reusing daemon
-# compares this /health field against the CURRENT tree (lifecycle.
-# code_fingerprint) and relaunches the gateway on any drift — a stale
-# process answers /health 200 while its tool calls 500 on new-code
-# requests (sphere daemon #5, 2026-07-05). Computed once: it must
-# describe the code THIS process loaded, not the disk's later state.
-from .lifecycle import code_fingerprint as _code_fp
-_CODE_FINGERPRINT = _code_fp()
-del _code_fp
-_session_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "asterism_session", default=None
-)
-
-
-# ─── Elaboration CPU gate (owner call 2026-08-25) ────────────────────
+# ─── Package facade (2026-08-29: gateway.py → gateway/, split A1-1) ──
 #
-# Warm slots are RAM; ELABORATION is CPU. Each elaboration runs one
-# core flat-out (Lean is single-threaded per file), so N slots
-# elaborating on C cores don't share politely — they thrash: every
-# elaboration runs at C/N speed, and everything AROUND them starves
-# (codex's fixed 30s MCP handshake, heartbeats, the event loop).
-# Measured on the flagship, 2026-08-25: ~93 concurrent formalizer
-# sessions drove load to 41 on 8 cores, 50+ spawns died on handshake
-# timeouts, and the dispatcher's unclassified breaker halted the
-# fleet. The semaphore converts thrash into a queue: same total work,
-# each elaboration at full speed, the machine keeps breathing. Idle
-# warm slots stay free (measured: 100 warm slots, 0.30 cores) — this
-# gates CONCURRENT ELABORATIONS, not the pool.
-_ELAB_CONCURRENCY = int(
-    os.environ.get("ASTERISM_LEAN_ELAB_CONCURRENCY") or 0) or max(
-        2, (os.cpu_count() or 4) - 2)
-_ELAB_QUEUE_TIMEOUT_SEC = float(
-    os.environ.get("ASTERISM_ELAB_QUEUE_TIMEOUT_SEC") or 600)
-_ELAB_SEM = threading.BoundedSemaphore(_ELAB_CONCURRENCY)
-_ELAB_CTR_LOCK = threading.Lock()
-_ELAB_BUSY = 0
-_ELAB_WAITING = 0
+# Four axes moved into their own modules; the names below are the ones
+# code still in THIS file resolves by bare name, plus the ones callers
+# and tests reach as `gateway.X`. Names whose only consumers live inside
+# the moved module are deliberately absent, so a monkeypatch aimed at
+# the facade fails loudly instead of becoming a silent no-op: patch
+# `gateway.elab._ELAB_SEM` / `_ELAB_QUEUE_TIMEOUT_SEC`,
+# `gateway.backend._await_backend` / `_start_workers` (for
+# `_restart_backend`'s call), and `gateway.weigh._slot_private_mb` (for
+# `_slot_private_mb_cached`'s call) on the owning module.
 
-
-#: Upper bound on how long a watcher escorts a runaway elaboration's
-#: permit after its caller stopped waiting (see _elab_gate).
-_ELAB_ESCORT_BOUND_SEC = float(
-    os.environ.get("ASTERISM_ELAB_ESCORT_BOUND_SEC") or 600)
-
-
-def _release_permit() -> None:
-    global _ELAB_BUSY
-    with _ELAB_CTR_LOCK:
-        _ELAB_BUSY -= 1
-    _ELAB_SEM.release()
-
-
-def _escort_runaway_permit(slot_uri: str) -> None:
-    """The caller's wait timed out but the Lean worker is still burning
-    a core (`wait_for_diagnostics` only stops WAITING — the worker
-    elaborates on, gateway.py's own long-standing note). Releasing the
-    permit here would let a fresh elaboration in beside the runaway and
-    the busy count would quietly exceed the cap (external review
-    2026-08-25). The permit stays held until fileProgress actually
-    clears, bounded so a wedged worker cannot strand it forever."""
-    t0 = time.monotonic()
-    try:
-        while time.monotonic() - t0 < _ELAB_ESCORT_BOUND_SEC:
-            backend = _state.backend
-            if backend is None:
-                break
-            try:
-                if slot_uri not in backend.busy_uris():
-                    break
-            except Exception:  # noqa: BLE001 — backend mid-restart
-                break
-            time.sleep(2.0)
-        else:
-            print(f"[gateway] elab permit escort gave up after "
-                  f"{_ELAB_ESCORT_BOUND_SEC:.0f}s — {slot_uri} still "
-                  f"reports busy; releasing anyway (recycle policy owns "
-                  f"the runaway)", file=sys.stderr, flush=True)
-    finally:
-        _release_permit()
-
-
-#: Queue-credit file, written into a pipeline's attempts dir: the
-#: cumulative seconds its tool calls spent WAITING at this gate. The
-#: provider wall reads it and extends by the same amount (capped) —
-#: queue time is machine congestion, not the agent's (owner design
-#: 2026-08-26; agent_timeout ×223 in the 08-25 crush were sessions
-#: burning their wall in exactly these queues).
-ELAB_CREDIT_FILENAME = "_elab_queue_credit"
-_ELAB_CREDIT_LOCK = threading.Lock()
-
-
-def _record_queue_credit(meta, waited_sec: float) -> None:
-    if meta is None or waited_sec < 0.05:
-        return
-    try:
-        d = meta.target_path.parent
-        if ".attempts" not in d.parts:
-            return  # verify probes point at proofs/ — no wall, no file
-        p = d / ELAB_CREDIT_FILENAME
-        with _ELAB_CREDIT_LOCK:
-            try:
-                cur = float(p.read_text(encoding="utf-8").strip() or 0)
-            except (OSError, ValueError):
-                cur = 0.0
-            p.write_text(f"{cur + waited_sec:.1f}", encoding="utf-8")
-    except Exception:  # noqa: BLE001 — credit is best-effort
-        pass
-
-
-@contextlib.contextmanager
-def _elab_gate(slot_uri: "str | None" = None, meta=None):
-    """Hold one elaboration ticket for the did_change→wait critical
-    section. Acquire AFTER the slot lock (never while queuing for a
-    slot — head-of-line blocking), release when the elaboration is
-    actually done: if the caller's wait timed out while Lean still
-    reports the slot busy, a watcher escorts the permit until
-    fileProgress clears. A saturated queue past the timeout fails LOUD
-    with a retryable message instead of burning the caller's wall.
-    Time spent queuing is credited back to the session's wall via
-    `_record_queue_credit`."""
-    global _ELAB_BUSY, _ELAB_WAITING
-    with _ELAB_CTR_LOCK:
-        _ELAB_WAITING += 1
-    _q0 = time.monotonic()
-    try:
-        ok = _ELAB_SEM.acquire(timeout=_ELAB_QUEUE_TIMEOUT_SEC)
-    finally:
-        with _ELAB_CTR_LOCK:
-            _ELAB_WAITING -= 1
-        _record_queue_credit(meta, time.monotonic() - _q0)
-    if not ok:
-        raise RuntimeError(
-            f"Lean elaboration queue saturated "
-            f"({_ELAB_CONCURRENCY} concurrent, waited "
-            f"{_ELAB_QUEUE_TIMEOUT_SEC:.0f}s) — the machine is over "
-            f"capacity, not your file. Retry this call; if it repeats, "
-            f"report it as framework feedback.")
-    with _ELAB_CTR_LOCK:
-        _ELAB_BUSY += 1
-    try:
-        yield
-    finally:
-        still_busy = False
-        if slot_uri is not None:
-            backend = _state.backend
-            try:
-                still_busy = (backend is not None
-                              and slot_uri in backend.busy_uris())
-            except Exception:  # noqa: BLE001
-                still_busy = False
-        if still_busy:
-            threading.Thread(target=_escort_runaway_permit,
-                             args=(slot_uri,), daemon=True).start()
-        else:
-            _release_permit()
-
-
-def elab_gate_stats() -> "dict":
-    with _ELAB_CTR_LOCK:
-        return {"elab_cap": _ELAB_CONCURRENCY, "elab_busy": _ELAB_BUSY,
-                "elab_waiting": _ELAB_WAITING}
+from .state import (
+    WARMUP_CONTENT,
+    WorkerSlot,
+    SessionMetadata,
+    GatewayState,
+    _state,
+    _CODE_FINGERPRINT,
+    _session_ctx,
+)
+from .elab import (
+    ELAB_CREDIT_FILENAME,
+    _record_queue_credit,
+    _elab_gate,
+    elab_gate_stats,
+)
+from .backend import (
+    WARMING_MSG,
+    _start_workers,
+    _ensure_backend_ready,
+    _watch_initial_warm,
+    _BACKEND_WEDGE_SEC,
+    _restart_backend,
+)
+from .weigh import (
+    _vm_pte_bytes,
+    _slot_private_mb,
+    _slot_private_mb_cached,
+    _SLOT_MB_CACHE,
+)
 
 
 # ─── Logging ─────────────────────────────────────────────
@@ -441,218 +120,6 @@ def _log_for(meta: SessionMetadata | None, event: dict) -> None:
             f.write("\n")
     except Exception:
         pass
-
-
-# ─── Backend + worker pool lifecycle ──────────────────────
-
-def _start_workers(workspace: Path, w_count: int,
-                   n_interactive: int = 0) -> None:
-    """Pre-warm `w_count` workers at gateway startup. Each worker is a
-    didOpen on a distinct slot URI (`_gateway_slot_<i>.lean`) with
-    `import Mathlib\\n` content. Lean elaborates Mathlib once per
-    worker (parallel by Lean's worker model, serial-waited by us);
-    after this, each slot can serve any pipeline's content via
-    didChange in ~3-4s instead of paying the ~27s fresh-worker cost.
-
-    Sets `_state.ready_event` regardless of outcome — error captured
-    in `_state.init_error`. Daemon's gateway_lifecycle.start_gateway
-    polls /health and refuses to dispatch if init failed."""
-    try:
-        t0 = time.perf_counter()
-        client = LspClient(workspace)
-        client.start()
-        client.initialize(timeout=60)
-        _state.backend = client
-        _state.workspace = workspace
-
-        # Slot files are framework runtime artifacts (per-worker warmup
-        # surface for didOpen). Kept under `.asterism/runtime_slots/` so
-        # they don't pollute the workspace root and don't get glob'd by
-        # lake's `lean_lib` Asterism/Problems/Library blocks. The
-        # workspace root remains the cwd for lake serve, so import
-        # resolution is unaffected — file location only matters for the
-        # URI, not for Lean's LEAN_PATH.
-        slots_dir = workspace / ".asterism" / "runtime_slots"
-        slots_dir.mkdir(parents=True, exist_ok=True)
-        slots: list[WorkerSlot] = []
-        for i in range(w_count + n_interactive):
-            slot_path = slots_dir / f"_gateway_slot_{i}.lean"
-            slot_path.write_text(WARMUP_CONTENT, encoding="utf-8")
-            slot = WorkerSlot(
-                slot_id=i,
-                slot_path=slot_path,
-                slot_uri=slot_path.as_uri(),
-                # trailing slots are the serve UI's interactive pool
-                reserved=(i >= w_count),
-            )
-            client.did_open(slot_path, WARMUP_CONTENT)
-            slots.append(slot)
-
-        # Lean processes didOpens in parallel across worker processes
-        # (one per slot); we serial-wait each one's elaborate done.
-        # The fileProgress=[] signal means "this file's elaborate
-        # finished" — sufficient for "the worker is warm". We do NOT
-        # also wait_for_diagnostics_settled here because for plain
-        # `import Mathlib` Lean keeps emitting incremental info
-        # publishDiagnostics as transitive modules load, which on
-        # multi-worker machines (CPU contention) can trickle for many
-        # minutes and never reach 3s-stable. fileProgress is the
-        # canonical "elaborate done" signal at this layer; per-tool
-        # operations (apply_edit / validate_file / verify) still
-        # use wait_for_diagnostics_settled for their POST-edit reads
-        # because at that point the file is small and diagnostics
-        # converge fast.
-        for slot in slots:
-            t_slot = time.perf_counter()
-            try:
-                client.wait_for_file_done(slot.slot_uri, timeout=300)
-                print(f"[gateway] slot {slot.slot_id} warmed in "
-                      f"{time.perf_counter() - t_slot:.1f}s",
-                      file=sys.stderr, flush=True)
-            except TimeoutError:
-                # NOT warm — say so (the old print reported the timeout
-                # as 'warmed in 300.0s', which read as success in jtyy's
-                # triage). The slot stays in the pool; its first tool
-                # call waits out the remaining elaboration.
-                print(f"[gateway] slot {slot.slot_id} warm TIMEOUT "
-                      f"after {time.perf_counter() - t_slot:.1f}s — "
-                      f"continuing; still elaborating in background "
-                      f"(machine under-spec for this pool size?)",
-                      file=sys.stderr, flush=True)
-
-        _state.workers = slots
-        elapsed = time.perf_counter() - t0
-        print(f"[gateway] {w_count} workers warmed in {elapsed:.1f}s",
-              file=sys.stderr, flush=True)
-    except Exception as e:
-        _state.init_error = f"{type(e).__name__}: {e}"
-        print(f"[gateway] worker pool init failed: {_state.init_error}",
-              file=sys.stderr, flush=True)
-    finally:
-        _state.ready_event.set()
-
-
-#: What every Lean surface says while the pool has never been up. Not
-#: a bare "unavailable": this state ends by itself, and the caller's
-#: right move is to wait rather than to conclude damage.
-WARMING_MSG = (
-    "the Lean worker pool is still warming (first start of this gateway "
-    "— minutes, not seconds). This is the framework starting up, not a "
-    "problem with the request: Lean-side work is queued until it "
-    "finishes, while `compute` and the other non-Lean tools work now.")
-
-
-def _await_backend(timeout: float) -> "str | None":
-    """The blocking primitive: wait out an init/re-init and report."""
-    if not _state.ready_event.wait(timeout=timeout):
-        return f"backend not ready after {timeout}s"
-    if _state.backend is None or not _state.workers:
-        return _state.init_error or "backend init failed"
-    return None
-
-
-def _ensure_backend_ready(timeout: float = 240.0) -> str | None:
-    """Every Lean surface's readiness gate. None on success, else the
-    reason — and during the FIRST warm the reason arrives instantly.
-
-    HTTP now opens before that warm (2026-08-12) so the NL layer, which
-    the dispatcher deliberately runs in exactly that window, can reach
-    `compute`. That also makes every Lean surface reachable minutes
-    before it can work, and the old answer was to BLOCK up to 240s. On
-    `/verify` and `/verify_session` — async routes calling this
-    straight from the event loop — one stray Lean POST would then wedge
-    the very endpoint the change exists to serve. A hang is worse than
-    the refusal it replaces, which was at least instant.
-
-    The fast no is gated on `first_warm_done`, NOT on
-    `ready_event.is_set()`: the wedge watchdog clears that event to
-    swap a hung backend, and a caller waiting through THAT is right to
-    wait — its work is real and in flight. Only the first warm, when by
-    construction no Lean work exists yet, gets the instant answer."""
-    if not _state.first_warm_done:
-        return WARMING_MSG
-    return _await_backend(timeout)
-
-
-def _watch_initial_warm(budget: float, marker: "Path") -> None:
-    """Wait out the first warm on a thread, so HTTP can serve during it.
-
-    Runs beside the serving loop, never on it. Opens the Lean surfaces
-    when the pool is up, and keeps a failed warm exactly as fatal as it
-    was when `main` blocked here and called `sys.exit(3)`."""
-    err = _await_backend(budget)
-    if err:
-        # The only way a thread can end this process without cutting
-        # ahead of `main`'s finally — which reaps the Lean subtree.
-        print(f"[gateway] FATAL: {err}", file=sys.stderr, flush=True)
-        _state.warm_failed = err
-        srv = _state.http_server
-        if srv is not None:
-            srv.should_exit = True              # type: ignore[attr-defined]
-        return
-    _state.first_warm_done = True
-    print("[gateway] worker pool warm — Lean surfaces now open",
-          file=sys.stderr, flush=True)
-    # The marker's job ends only HERE, not when HTTP opened. `/health`
-    # answers 503 for the whole warm, so `_ping_health` sees nothing
-    # and this file stays the presence signal — and
-    # `_wait_for_starting_gateway` reads its disappearance as "that
-    # gateway is up". Removing it at HTTP-open would tell a second
-    # daemon to spawn a rival into an occupied port.
-    marker.unlink(missing_ok=True)
-
-
-# ─── Wedge recovery (2026-06-12 gateway-hang fix) ─────────
-# A non-terminating Lean elaborate (runaway typeclass search / loop)
-# pins a worker forever: `wait_for_diagnostics` only stops *waiting*
-# (the 120s/300s timeout returns stale), but the worker keeps burning
-# the slot. With one shared backend that eventually starves every slot
-# and the dispatcher freezes (observed: a ~2h hang). The watchdog spots
-# a slot stuck in-flight past `_BACKEND_WEDGE_SEC` and replaces the
-# backend; `LspClient.shutdown` now tree-kills lake serve's whole
-# `lean --server`/`--worker` subtree so the runaway is actually reaped.
-
-_BACKEND_WEDGE_SEC = 600.0
-_restart_lock = threading.Lock()
-
-
-def _restart_backend(reason: str) -> None:
-    """Tree-kill the wedged backend and re-warm a fresh worker pool.
-    Sessions lose their slot claims (fresh slots are unowned) — their
-    next tool call re-claims or gets a clear error → spawn retry. A
-    last-resort recovery, far cheaper than an indefinite hang."""
-    if not _restart_lock.acquire(blocking=False):
-        return
-    try:
-        old = _state.backend
-        ws = _state.workspace
-        if ws is None:
-            return
-        n_res = sum(1 for s in _state.workers
-                    if getattr(s, "reserved", False))
-        # OPEN slots only — the roster remembers every slot the ledger
-        # ever warmed, and re-warming the closed ones here would
-        # resurrect a field the target shrank (external review
-        # 2026-08-25; the converger regrows toward the live target if
-        # it is higher).
-        n = sum(1 for s in _state.workers
-                if not getattr(s, "reserved", False)
-                and not getattr(s, "closed", False)) or 1
-        print(f"[gateway] backend restart — {reason} "
-              f"({n}+{n_res} slots)",
-              file=sys.stderr, flush=True)
-        _state.ready_event.clear()
-        if old is not None:
-            try:
-                old.shutdown()
-            except Exception:
-                try:
-                    old._kill_tree()
-                except Exception:
-                    pass
-        _start_workers(ws, n, n_res)
-    finally:
-        _restart_lock.release()
 
 
 #: One targeted rescue per slot per window: a SECOND wedge of the same
@@ -753,7 +220,7 @@ def _pressure_outlet_step() -> bool:
     if budget is None or _state.backend is None \
             or not _state.first_warm_done or _state.warm_target is None:
         return False
-    from ..core import ram_ledger as rl
+    from ...core import ram_ledger as rl
     cur = rl.framework_current_gb()
     avail = rl.available_gb()
     machine = _machine_gb()
@@ -836,7 +303,7 @@ def _weight_kill_over_cap() -> int:
         return 0
     cap_mb = SLOT_RECYCLE_MB_DEFAULT * 5  # unreachable fallback
     try:
-        from ..core import config as _cfg
+        from ...core import config as _cfg
         cap_mb = int(_cfg.get("gateway.lean_memory_cap_mb", default=8192,
                               env_var="ASTERISM_LEAN_MEMORY_CAP_MB",
                               cast=int))
@@ -1397,7 +864,7 @@ def _register_session_internal(
 # One home for the threshold: the RAM ledger prices slots at this same
 # ceiling (`ram_ledger.slot_recycle_gb`), so the two knobs move
 # together.
-from ..core.ram_ledger import SLOT_RECYCLE_MB_DEFAULT  # noqa: E402
+from ...core.ram_ledger import SLOT_RECYCLE_MB_DEFAULT  # noqa: E402
 
 
 def _worker_pid_for_uri(slot_uri: str) -> "int | None":
@@ -1494,7 +961,7 @@ def _recycle_slot_if_heavy(slot: "WorkerSlot") -> None:
     """
     cap_mb = SLOT_RECYCLE_MB_DEFAULT
     try:
-        from ..core import config as _cfg
+        from ...core import config as _cfg
         cap_mb = int(_cfg.get("gateway.slot_recycle_mb",
                               default=SLOT_RECYCLE_MB_DEFAULT,
                               env_var="ASTERISM_SLOT_RECYCLE_MB",
@@ -1632,7 +1099,7 @@ def _midlease_residue_mb() -> int:
         pass
     cap_mb = SLOT_RECYCLE_MB_DEFAULT
     try:
-        from ..core import config as _cfg
+        from ...core import config as _cfg
         cap_mb = int(_cfg.get("gateway.slot_recycle_mb",
                               default=SLOT_RECYCLE_MB_DEFAULT,
                               env_var="ASTERISM_SLOT_RECYCLE_MB", cast=int))
@@ -1864,7 +1331,7 @@ def _freeze_tick() -> int:
     if budget is None or _state.backend is None \
             or not _state.first_warm_done:
         return 0
-    from ..core import ram_ledger as _rl
+    from ...core import ram_ledger as _rl
     cur = _rl.framework_current_gb()
     if cur is None:
         return 0
@@ -1961,7 +1428,7 @@ def _warm_converger_run() -> None:
             floor = _state.warm_min_available_gb
             if floor > 0:
                 try:
-                    from ..core import ram_ledger
+                    from ...core import ram_ledger
                     if ram_ledger.available_gb() < floor \
                             + ram_ledger.SLOT_GB_FALLBACK:
                         print(f"[gateway] warm-converger paused — "
@@ -2134,7 +1601,7 @@ def _owner_alive(meta: SessionMetadata) -> bool:
     """
     try:
         import json as _json
-        from ..agent.sandbox import MANIFEST_NAME, _pid_alive
+        from ...agent.sandbox import MANIFEST_NAME, _pid_alive
         manifest_path = (Path(meta.workspace) / ".attempts"
                          / meta.pipeline_id / "sandbox" / MANIFEST_NAME)
         data = _json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -4106,7 +3573,7 @@ def _axioms_submission(backend, slot, content: str,
     the legal decomposition currency pre-commit, and the commit gate's
     own tripwire handles the illegal cases."""
     try:
-        from ..state import intent as _intent
+        from ...state import intent as _intent
         conn = db.connect_readonly(Path(meta.workspace) / "asterism.db")
         try:
             pintent = _intent.read(conn, meta.problem)
@@ -4135,7 +3602,7 @@ def _axioms_submission(backend, slot, content: str,
             rogue |= set(r.get("axioms") or []) - wl
     if not rogue:
         return None
-    from ..state.failures import rogue_axioms_message
+    from ...state.failures import rogue_axioms_message
     return {"ok": False, "rogue": sorted(rogue),
             "note": rogue_axioms_message(rogue)}
 
@@ -5293,7 +4760,7 @@ async def compute_endpoint(request: Request):
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"error": f"invalid JSON: {e}"}, status_code=400)
     code = str(data.get("code") or "")
-    from ..sandbox import run as _sandbox_run
+    from ...sandbox import run as _sandbox_run
     try:
         res = await asyncio.to_thread(_sandbox_run, code)
     except Exception as e:  # noqa: BLE001 — reported, never swallowed
@@ -5302,121 +4769,6 @@ async def compute_endpoint(request: Request):
                                 f"{type(e).__name__}: {e}", "seconds": 0.0})
     return JSONResponse({"rc": res.rc, "output": res.output,
                          "seconds": res.seconds, "killed": res.killed})
-
-
-def _vm_pte_bytes(pid: int) -> int:
-    """VmPTE of one process, in bytes (0 where /proc is absent)."""
-    try:
-        with open(f"/proc/{pid}/status", "rb") as fh:
-            for ln in fh:
-                if ln.startswith(b"VmPTE:"):
-                    return int(ln.split()[1]) * 1024
-    except (OSError, ValueError, IndexError):
-        pass
-    return 0
-
-
-def _slot_private_mb() -> "dict[int, int | None]":
-    """slot_id -> the worker's PRIVATE bytes, in MB. None = not measured.
-
-    The mapping is free and exact: Lean runs one worker per open
-    document and puts the document's URI on its own command line
-    (`lean-asterism-server --worker file:///…/_gateway_slot_3.lean`),
-    so nothing here depends on process order or on counting.
-
-    PRIVATE, never RSS. The mathlib olean region is mmap'd shared across
-    every worker, and working-set counts it once per process: measured
-    2026-08-14, five workers reported 17.93 GB of working set against
-    5.38 GB private, on a box with 11.5 GB actually in use. An earlier
-    pass at this investigation reported a 20 GB phantom for exactly that
-    reason.
-
-    Never raises and never blocks: `/health` is a liveness probe, and a
-    reader that cannot tell "the gateway is dead" from "psutil hiccuped"
-    is worse than no reading at all. A slot that cannot be measured
-    reports None — which is not zero.
-    """
-    out: "dict[int, int | None]" = {s.slot_id: None for s in _state.workers}
-    try:
-        import psutil
-        by_uri: "dict[str, int]" = {}
-        me = psutil.Process(os.getpid())
-        for proc in me.children(recursive=True):
-            try:
-                argv = proc.cmdline()
-            except (psutil.Error, OSError):
-                continue
-            if "--worker" not in argv:
-                continue
-            uri = next((a for a in argv if a.startswith("file://")), None)
-            if uri is None:
-                continue
-            try:
-                mem = proc.memory_info()
-            except (psutil.Error, OSError):
-                continue
-            # `private` is Windows-only; elsewhere USS is the same
-            # question ("pages this process alone would free").
-            priv = getattr(mem, "private", None)
-            if priv is None:
-                try:
-                    priv = proc.memory_full_info().uss
-                except (psutil.Error, OSError):
-                    continue
-            # Page tables are per-worker weight the heap numbers miss:
-            # Lean's sparse mappings cost ~180 MB of VmPTE per worker
-            # (census 2026-08-26: 13.3 GB across 77 workers — the
-            # fleet's second-largest tenant). They die with the worker,
-            # so both the recycle threshold and the ledger's slot price
-            # honestly include them. /proc is Linux-only; Windows
-            # reports heap alone as before.
-            by_uri[uri] = int(priv) + _vm_pte_bytes(proc.pid)
-        for slot in _state.workers:
-            hit = by_uri.get(slot.slot_uri)
-            if hit is not None:
-                out[slot.slot_id] = hit // (1024 * 1024)
-    except Exception:  # noqa: BLE001 — health must answer regardless
-        pass
-    return out
-
-
-#: /health used to run the smaps scan INLINE on the event loop: on
-#: Linux `memory_full_info` walks /proc/<pid>/smaps_rollup, and a pool
-#: of 2 GB Lean workers turns one call into seconds — the daemon's 1s
-#: ready-poll then times out, retries, and the loop never drains its
-#: own backlog (gateway pegged at 96% CPU, /health dark, dispatch
-#: frozen 25 minutes; Oracle boarding, 2026-08-24 — Windows psutil is
-#: cheap, which is why the home fleet never saw it). Health reads a
-#: cache a throwaway thread refreshes at most once per TTL; the event
-#: loop never pays for the scan. The recycle path keeps the raw call —
-#: it runs on worker threads and needs a fresh number.
-_SLOT_MB_TTL = 20.0
-_SLOT_MB_CACHE: "dict" = {"at": 0.0, "val": {}, "refreshing": False}
-_SLOT_MB_LOCK = threading.Lock()
-
-
-def _slot_private_mb_cached() -> "dict[int, int | None]":
-    now = time.monotonic()
-    with _SLOT_MB_LOCK:
-        if (now - _SLOT_MB_CACHE["at"] < _SLOT_MB_TTL
-                or _SLOT_MB_CACHE["refreshing"]):
-            return dict(_SLOT_MB_CACHE["val"])
-        _SLOT_MB_CACHE["refreshing"] = True
-
-    def _refresh() -> None:
-        try:
-            val = _slot_private_mb()
-        except Exception:  # noqa: BLE001 — health must answer regardless
-            val = {}
-        with _SLOT_MB_LOCK:
-            _SLOT_MB_CACHE["val"] = val
-            _SLOT_MB_CACHE["at"] = time.monotonic()
-            _SLOT_MB_CACHE["refreshing"] = False
-
-    threading.Thread(target=_refresh, name="slot-mb-refresh",
-                     daemon=True).start()
-    with _SLOT_MB_LOCK:
-        return dict(_SLOT_MB_CACHE["val"])
 
 
 @mcp.custom_route("/warm_target", methods=["POST"])
@@ -5434,7 +4786,7 @@ async def warm_target(request: Request):
         return JSONResponse({"error": "JSON body required"},
                             status_code=400)
     try:
-        from ..core.ram_ledger import MAX_SLOTS
+        from ...core.ram_ledger import MAX_SLOTS
         target = max(1, min(int(data.get("target")), MAX_SLOTS))
     except (TypeError, ValueError):
         return JSONResponse({"error": "target must be an int"},
@@ -5630,7 +4982,7 @@ def main() -> None:
               file=sys.stderr, flush=True)
         sys.exit(2)
     workspace = Path(workspace_env).resolve()
-    from ..core import config as _cfg
+    from ...core import config as _cfg
     port = _cfg.get(
         "gateway.port", default=8765,
         env_var="ASTERISM_GATEWAY_PORT", cast=int,
@@ -5650,7 +5002,7 @@ def main() -> None:
     # plane — start small, let the converger grow the pool in the
     # background while work already flows.
     try:
-        from ..core import ram_ledger as _rl
+        from ...core import ram_ledger as _rl
         _budget_gb = _rl.parse_budget(_rl.env_budget_spec(workspace),
                                       _rl.total_gb())
     except Exception:  # noqa: BLE001 — the ledger must not stop launch
@@ -5692,7 +5044,7 @@ def main() -> None:
     # 8 GB machine: slot 0 not done after 300s). Yaml is intent; RAM is
     # law. The configured value still goes to /health so the daemon's
     # reuse gate compares yaml-to-yaml.
-    from .lifecycle import ram_clamped_pool
+    from ..lifecycle import ram_clamped_pool
     _state.workers_configured = w_count
     w_count, clamp_msg = ram_clamped_pool(w_count, n_interactive)
     if clamp_msg:
@@ -5733,7 +5085,7 @@ def main() -> None:
     # Presence signal for the warm window (HTTP opens only after the
     # pool warms, so /health can't see us yet): daemon-side
     # `start_gateway` waits on this marker instead of spawning a rival.
-    from .lifecycle import gateway_starting_marker
+    from ..lifecycle import gateway_starting_marker
     _marker = gateway_starting_marker(workspace)
     try:
         _marker.parent.mkdir(parents=True, exist_ok=True)
@@ -5884,7 +5236,3 @@ def _install_windows_event_loop_policy() -> None:
         return
     import asyncio
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-
-if __name__ == "__main__":
-    main()

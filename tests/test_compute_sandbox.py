@@ -342,11 +342,11 @@ def test_the_gateway_endpoint_runs_the_same_sandbox() -> None:
     does — same isolation, same caps, same contract."""
     import pathlib
     src = (pathlib.Path(__file__).resolve().parents[1] / "Tooling" / "lsp"
-           / "gateway.py").read_text(encoding="utf-8")
+           / "gateway" / "__init__.py").read_text(encoding="utf-8")
     i = src.index('@mcp.custom_route("/compute"')
     # To the next route, not a character count — a docstring grew past
     # the old 2500-char window and took the assertion's subject with it.
     body = src[i:src.index("@mcp.custom_route", i + 1)]
-    assert "from ..sandbox import run as _sandbox_run" in body
+    assert "from ...sandbox import run as _sandbox_run" in body
     assert "asyncio.to_thread" in body      # never block the event loop
     assert '"killed": res.killed' in body   # the limit, not just the data
