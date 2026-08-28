@@ -121,7 +121,7 @@ def test_run_strategist_inject_enqueues_forward(
             # commit path.
             (kw["attempts_dir"] / "verdict.json").write_text(
                 json.dumps({"criteria": {
-                    **{str(i): "clear" for i in range(1, 6)},
+                    **{str(i): "clear: holds" for i in range(1, 6)},
                     # The naming criterion is read, never written as a
                     # number: it moved 1 → 2 on 2026-08-13.
                     _adv.NAMING_CRITERION:

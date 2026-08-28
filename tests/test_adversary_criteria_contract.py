@@ -46,15 +46,20 @@ def test_the_prompt_still_declares_five_numbered_criteria() -> None:
 
 
 def test_the_naming_rule_names_the_same_criterion_in_both_places() -> None:
-    """The exact drift the renumber nearly shipped."""
-    m = re.search(r"Criterion (\d) never takes a bare `clear`", TEXT)
-    assert m, ("the prompt no longer states the bare-clear rule — if it "
-               "moved, move `NAMING_CRITERION` with it")
+    """The exact drift the renumber nearly shipped. Since 2026-08-29 the
+    bare-clear ban is five-wide, so the prompt states the general rule
+    plus which criterion's reason IS the naming — both halves must track
+    the parser."""
+    assert "No criterion takes a bare `clear`" in TEXT, (
+        "the prompt no longer states the five-wide bare-clear rule the "
+        "parser enforces")
+    m = re.search(r"Criterion (\d)'s reason IS the naming", TEXT)
+    assert m, ("the prompt no longer says whose reason is the naming — "
+               "if it moved, move `NAMING_CRITERION` with it")
     assert m.group(1) == adversary.NAMING_CRITERION, (
-        f"prompt says criterion {m.group(1)} may not take a bare "
-        f"`clear`; the parser enforces it on "
-        f"{adversary.NAMING_CRITERION}. A judge obeying the prompt "
-        f"would have its verdict refused.")
+        f"prompt hangs the naming on criterion {m.group(1)}; the parser "
+        f"enforces it on {adversary.NAMING_CRITERION}. A judge obeying "
+        f"the prompt would have its verdict refused.")
 
 
 def test_the_naming_criterion_is_the_one_about_reaching_the_claim() -> None:
@@ -83,7 +88,8 @@ def test_the_parser_actually_refuses_a_bare_clear_there() -> None:
     reads it."""
     import json
     n = adversary.NAMING_CRITERION
-    bare = {k: "clear" for k in adversary.CRITERIA_KEYS}
+    bare = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
+    bare[n] = "clear"
     v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
     assert v is None and f"criterion {n}" in (err or ""), (
         f"a bare clear on {n} must be refused; got {err!r}")
@@ -160,15 +166,17 @@ def test_the_route_clause_kept_its_two_original_refusals() -> None:
     assert "contradicts a verified Programme record" in line
 
 
-def test_every_other_criterion_still_takes_a_bare_clear() -> None:
-    """The rule is one criterion's, not a general tax on brevity."""
+def test_every_criterion_refuses_a_bare_clear() -> None:
+    """2026-08-29 (calibration survey): the reason requirement went
+    five-wide — 70-94% of clears on the unforced criteria were the bare
+    word, and the survey's rule-position experiment proved reasons
+    appear only where the parser demands them. Refusal must name the
+    criterion and show the way out."""
     import json
-    n = adversary.NAMING_CRITERION
     for k in adversary.CRITERIA_KEYS:
-        if k == n:
-            continue
-        crit = {c: "clear" for c in adversary.CRITERIA_KEYS}
-        crit[n] = "clear: entry — distance"
+        crit = {c: "clear: holds here" for c in adversary.CRITERIA_KEYS}
+        crit[adversary.NAMING_CRITERION] = "clear: entry — distance"
         crit[k] = "clear"
         v, err = adversary.parse_verdict(json.dumps({"criteria": crit}))
-        assert v is not None, f"bare clear on {k} should pass: {err}"
+        assert v is None, f"bare clear on {k} must be refused"
+        assert f"criterion {k}" in err and "clear:" in err

@@ -447,7 +447,8 @@ def _verdict_json(**criteria: str) -> str:
     body = {"criteria": {k: criteria.get(
                              f"c{k}",
                              "clear: closer entry — nothing stands"
-                             if k == NAMING_CRITERION else "clear")
+                             if k == NAMING_CRITERION
+                             else "clear: holds")
                          for k in CRITERIA_KEYS},
             "reservations": []}
     return _json.dumps(body)

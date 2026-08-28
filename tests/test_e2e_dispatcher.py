@@ -180,7 +180,7 @@ def test_e2e_root_proved_through_dispatcher(
             import json as _json
             (attempts / "verdict.json").write_text(
                 _json.dumps({"criteria": {
-                    **{str(i): "clear" for i in range(1, 6)},
+                    **{str(i): "clear: holds" for i in range(1, 6)},
                     # Read, never written as a literal: the naming
                     # criterion moved 1 → 2 on 2026-08-13.
                     _adversary.NAMING_CRITERION:

@@ -664,7 +664,13 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
                     dialogue   TEXT,
                     rounds     INTEGER NOT NULL DEFAULT 0,
                     batch_id   TEXT,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    -- judge provenance (survey P1/P2, 2026-08-29);
+                    -- old DBs get these via the post-ladder ALTER
+                    judge_model    TEXT NULL DEFAULT NULL,
+                    judge_provider TEXT NULL DEFAULT NULL,
+                    judge_effort   TEXT NULL DEFAULT NULL,
+                    rubric_sha     TEXT NULL DEFAULT NULL
                 )""")
         conn.execute("PRAGMA user_version = 30")
         conn.commit()
@@ -983,6 +989,22 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         _migrate_to_v44(conn)
         conn.execute("PRAGMA user_version = 44")
         conn.commit()
+
+    # Judge provenance columns (calibration survey P1/P2, 2026-08-29).
+    # Additive nullable audit columns, no version bump (the
+    # last_routine_at pattern) — but they live AFTER the ladder, not in
+    # the top additive loop: programme_revisions is only born at v30,
+    # and the loop's except tolerates duplicate columns, not missing
+    # tables. Guarded by table_info, so fresh DBs (whose v30 CREATE
+    # already carries them) no-op here.
+    pr_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(programme_revisions)")}
+    for col in ("judge_model", "judge_provider", "judge_effort",
+                "rubric_sha"):
+        if col not in pr_cols:
+            conn.execute(f"ALTER TABLE programme_revisions"
+                         f" ADD COLUMN {col} TEXT NULL DEFAULT NULL")
+    conn.commit()
 
 
 def _migrate_to_v41(conn: sqlite3.Connection) -> None:

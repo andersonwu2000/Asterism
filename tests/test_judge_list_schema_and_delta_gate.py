@@ -15,7 +15,8 @@ from Tooling.pipeline import adversary
 
 
 def _verdict(criteria):
-    base = {k: ["clear"] for k in adversary.CRITERIA_KEYS}
+    base = {k: ["clear: holds for this batch"]
+            for k in adversary.CRITERIA_KEYS}
     base[adversary.NAMING_CRITERION] = [
         "clear: the closure entry — two lemmas still stand"]
     base.update(criteria)
@@ -35,18 +36,18 @@ def test_a_criterion_takes_many_bullets_and_all_of_them_fire() -> None:
 
 def test_mixed_clear_and_fired_in_one_criterion_is_refused() -> None:
     v, err = adversary.parse_verdict(_verdict({
-        "3": ["fired: a defect", "clear"]}))
+        "3": ["fired: a defect", "clear: rest holds"]}))
     assert v is None and "one or the other" in err
 
 
 def test_clear_takes_exactly_one_entry() -> None:
     v, err = adversary.parse_verdict(_verdict({
-        "4": ["clear", "clear — checked twice"]}))
+        "4": ["clear: checked", "clear — checked twice"]}))
     assert v is None and "exactly one" in err
 
 
 def test_the_legacy_single_string_form_still_parses() -> None:
-    base = {k: "clear" for k in adversary.CRITERIA_KEYS}
+    base = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
     base[adversary.NAMING_CRITERION] = "clear: the entry — one gap"
     base["1"] = "fired: a load-bearing objection"
     v, err = adversary.parse_verdict(json.dumps({"criteria": base}))

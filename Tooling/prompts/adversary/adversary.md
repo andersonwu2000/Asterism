@@ -52,13 +52,14 @@ Write `{attempts_dir}/verdict.json` — adjudicate EVERY criterion, a list per c
    "1": ["fired: <concrete, load-bearing objection — name the step / decision / closure it targets, and where possible suggest the discriminating experiment>",
          "fired: <another objection under this criterion>"],
    "2": ["clear: <the entry that closes the MAIN claim> — <what still stands between this batch and it>"],
-   "3": ["clear"], "4": ["clear"], "5": ["clear"]},
+   "3": ["clear: <one concrete reason this holds for THIS proposal>"],
+   "4": ["clear: <one concrete reason>"], "5": ["clear: <one concrete reason>"]},
  "reservations": ["<advisory note — shown to the next Strategist wake; only for concerns that fire no criterion>"]}
 ```
 
 Any fired = rebut (your fired bullets go verbatim to the Strategist); all clear = pass.
 
-Criterion 2 never takes a bare `clear` — its judgment IS the naming, so the line carries it either way.
+No criterion takes a bare `clear` — every clear carries one concrete sentence of why it holds for THIS proposal. Criterion 2's reason IS the naming: the entry that closes the MAIN claim, and what still stands.
 
 Rules:
 - You review and point directions; never rewrite the proposal or the directive yourself.

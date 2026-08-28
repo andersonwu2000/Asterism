@@ -441,9 +441,15 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
                 # Rebuttal: the criticisms target THIS body — keep it
                 # with them so the next (fresh) judge reads the round
                 # as documents (fresh-per-round, design §3).
+                # Full verdict object rides along (survey P4,
+                # 2026-08-29): criticisms alone dropped every rejection
+                # round's clear-reasons and reservations — exactly the
+                # calibration transcript. `criticisms` stays for the
+                # existing readers.
                 dialogue.append({"round": rounds_used + 1,
                                  "role": "adversary",
                                  "criticisms": verdict["criticisms"],
+                                 "verdict": verdict,
                                  "proposal": proposal_body})
                 # rounds_left = revisions still available AFTER this
                 # rebuttal: a retry fires whenever rounds_used <
@@ -808,12 +814,22 @@ def _discard_proposal(conn, problem: str,
     if not proposal_body:
         return
     from ...state import programme as _programme
+    # Survey P3 (2026-08-29): the final verdict used to be dropped on
+    # every discard (89 NULLs) — the one document a wrongful-kill audit
+    # needs. Derive it from the dialogue tail so all ten discard call
+    # sites stay untouched; provider-failure discards genuinely have
+    # none and stay NULL.
+    last_verdict = next(
+        (e["verdict"] for e in reversed(dialogue)
+         if isinstance(e, dict) and e.get("role") == "adversary"
+         and e.get("verdict")), None)
     try:
         _programme.record_rejection(conn, problem, proposal_body,
                                     dialogue, rounds_used,
                                     discard_reason=reason,
                                     group_id=group_id,
-                                    discard_channel=channel)
+                                    discard_channel=channel,
+                                    verdict=last_verdict)
         conn.commit()
     except Exception as e:  # noqa: BLE001 — audit record, never fatal
         print(f"[strategist] {problem}: discard record failed: "

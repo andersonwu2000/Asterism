@@ -460,12 +460,25 @@ def parse_verdict(text: str) -> tuple[Optional[dict[str, Any]], str]:
             # takes a bare clear" — and the two must move together or a
             # judge that obeys the prompt has its verdict refused.
             # `test_adversary_criteria_contract.py` holds them level.
-            if k == NAMING_CRITERION and not s[len("clear"):].strip(" -—–:"):
+            rest = s[len("clear"):].strip(" -—–:")
+            if k == NAMING_CRITERION and not rest:
                 return None, (
                     f"criterion {NAMING_CRITERION} never takes a bare "
                     f"\"clear\" — its judgment IS the naming: `\"clear: "
                     f"<entry that closes the MAIN claim> — <what still "
                     f"stands>\"`")
+            if not rest:
+                # Calibration survey 2026-08-29: 70-94% of clears on
+                # criteria 3/4/5 were the bare word, and the survey's
+                # rule-position experiment showed reasons appear only
+                # where the parser demands them (the requirement moved
+                # from c1 to c2 on 08-13 and the reasons moved with
+                # it). A bare clear leaves no calibration transcript —
+                # every criterion now carries its one sentence of why.
+                return None, (
+                    f"criterion {k} never takes a bare \"clear\" — say "
+                    f"why it holds for THIS proposal: `\"clear: <one "
+                    f"concrete reason>\"`")
             continue
         for x in vals:
             xs = x.strip()
@@ -649,6 +662,21 @@ def review(*, round_no: int, attempts_dir: Path, problem_dir: Path,
             if verdict_tries >= VERDICT_TRIES:
                 return None, last_err, 0
             continue
+        # Judge provenance (calibration survey P1/P2, 2026-08-29):
+        # every seat comparison used to need yaml archaeology plus
+        # date-slicing, and prompt edits crossed unmarked breakpoints.
+        # This is the CONFIGURED seat — a runtime rescue swap inside
+        # the provider layer is not visible here.
+        import hashlib
+        verdict["_judge"] = {
+            "model": str(config.get("adversary.model", default="?")),
+            "provider": str(config.get("adversary.provider",
+                                       default="?")),
+            "effort": str(config.get("adversary.reasoning_effort",
+                                     default="")),
+            "rubric_sha": hashlib.sha256(
+                prompt_path.read_bytes()).hexdigest()[:16],
+        }
         # Framework-feedback questionnaire — the judge was the one spawn
         # family without the channel (zero adversary lines ever landed).
         # Resume cwd stays the projection: isolation holds; only the

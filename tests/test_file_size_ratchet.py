@@ -510,7 +510,9 @@ _WATERMARKS = {
     # 2710→2750 (2026-08-25): +v44 link_kind block (grows by one block
     # per schema version by design). Prior: +migration file-mutex & v43
     # self-heal (2026-08-24); +v43 stall rebuild.
-    "Tooling/state/db_migrations.py": 2750,
+    # 2750→2800: judge provenance columns (survey P1/P2,
+    # 2026-08-29) — conscious bump.
+    "Tooling/state/db_migrations.py": 2800,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

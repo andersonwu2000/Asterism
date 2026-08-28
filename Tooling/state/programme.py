@@ -398,15 +398,26 @@ def record_pass(conn: sqlite3.Connection, problem: str, body: str,
                 group_id: "int | None" = None) -> int:
     """Advance the revision chain. Returns the new rev number."""
     rev = next_rev_number(conn, problem, group_id)
+    j = _judge_cols(verdict)
     conn.execute(
         "INSERT INTO programme_revisions"
         " (problem, rev, body, status, verdict, dialogue, rounds,"
-        "  batch_id, created_at, group_id)"
-        " VALUES (?,?,?,'passed',?,?,?,?,?,?)",
+        "  batch_id, created_at, group_id,"
+        "  judge_model, judge_provider, judge_effort, rubric_sha)"
+        " VALUES (?,?,?,'passed',?,?,?,?,?,?,?,?,?,?)",
         (problem, rev, body, json.dumps(verdict, ensure_ascii=False),
          json.dumps(dialogue, ensure_ascii=False), rounds, batch_id,
-         now(), group_id))
+         now(), group_id, *j))
     return rev
+
+
+def _judge_cols(verdict: "dict[str, Any] | None") -> tuple:
+    """(judge_model, judge_provider, judge_effort, rubric_sha) from the
+    verdict's `_judge` stamp (adversary.review, survey P1/P2) — NULLs
+    when the verdict predates the stamp or never existed."""
+    m = (verdict or {}).get("_judge") or {}
+    return (m.get("model"), m.get("provider"), m.get("effort"),
+            m.get("rubric_sha"))
 
 
 def record_rejection(conn: sqlite3.Connection, problem: str, body: str,
@@ -414,7 +425,8 @@ def record_rejection(conn: sqlite3.Connection, problem: str, body: str,
                      rounds: int,
                      discard_reason: Optional[str] = None,
                      group_id: "int | None" = None,
-                     discard_channel: Optional[str] = None) -> None:
+                     discard_channel: Optional[str] = None,
+                     verdict: "dict[str, Any] | None" = None) -> None:
     """Keep a discarded proposal + full criticism for audit.
 
     `discard_reason` (v34) names WHICH channel dropped it — adversary
@@ -428,15 +440,22 @@ def record_rejection(conn: sqlite3.Connection, problem: str, body: str,
     prose and must never be pattern-matched; the channel is what
     decides whether the successor wake is shown the draft (see
     `rejection_notice`)."""
+    j = _judge_cols(verdict)
     conn.execute(
         "INSERT INTO programme_revisions"
         " (problem, rev, body, status, verdict, dialogue, rounds,"
         "  batch_id, created_at, discard_reason, group_id,"
-        "  discard_channel)"
-        " VALUES (?,?,?,'rejected',NULL,?,?,NULL,?,?,?,?)",
+        "  discard_channel,"
+        "  judge_model, judge_provider, judge_effort, rubric_sha)"
+        # Survey P3 (2026-08-29): rejected rows used to hard-code
+        # verdict=NULL — 89 final verdicts destroyed. The wrongful-kill
+        # audit reads exactly this column.
+        " VALUES (?,?,?,'rejected',?,?,?,NULL,?,?,?,?,?,?,?,?)",
         (problem, next_rev_number(conn, problem, group_id), body,
+         json.dumps(verdict, ensure_ascii=False)
+         if verdict is not None else None,
          json.dumps(dialogue, ensure_ascii=False), rounds, now(),
-         discard_reason, group_id, discard_channel))
+         discard_reason, group_id, discard_channel, *j))
 
 
 def rejection_notice(conn: sqlite3.Connection, problem: str,

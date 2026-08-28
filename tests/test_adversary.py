@@ -161,7 +161,8 @@ def _criteria(**fired: str) -> dict:
     written as "1": the criteria were renumbered on 2026-08-13 and a
     hard-coded number here would have made six tests assert yesterday's
     contract."""
-    c = {k: "clear" for k in adversary.CRITERIA_KEYS}
+    c = {k: "clear: holds for this batch"
+         for k in adversary.CRITERIA_KEYS}
     c[adversary.NAMING_CRITERION] = (
         "clear: the closer entry — one prerequisite stands")
     for k, reason in fired.items():
@@ -197,10 +198,14 @@ def test_criterion_one_never_takes_a_bare_clear():
     word — the attention-forcing device (name the MAIN-claim entry +
     remaining distance) was bypassed by the output template, on the one
     criterion built to catch a main claim orbiting untouched.
-    Mechanical: a bare clear there is malformed; other criteria keep
-    bare clear."""
+    Mechanical: a bare clear there is malformed. 2026-08-29 the rule
+    went five-wide (calibration survey: 70-94% of clears on c3/c4/c5
+    were the bare word, and reasons appear only where the parser
+    demands them) — every criterion now refuses a bare clear; the
+    naming criterion keeps its own message."""
     n = adversary.NAMING_CRITERION
-    bare = {k: "clear" for k in adversary.CRITERIA_KEYS}
+    bare = {k: "clear: holds here" for k in adversary.CRITERIA_KEYS}
+    bare[n] = "clear"
     v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
     assert v is None and f"criterion {n}" in err and "naming" in err
     # Punctuation-only annotation is still bare.
@@ -211,6 +216,11 @@ def test_criterion_one_never_takes_a_bare_clear():
     bare[n] = "clear: entry closing the main claim — two steps stand"
     v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
     assert err == "" and v["verdict"] == "pass"
+    # And a bare clear on any OTHER criterion is refused too (08-29).
+    other = next(k for k in adversary.CRITERIA_KEYS if k != n)
+    bare[other] = "clear"
+    v, err = adversary.parse_verdict(json.dumps({"criteria": bare}))
+    assert v is None and f"criterion {other}" in err
 
 
 def test_parse_verdict_contract():
@@ -1129,11 +1139,11 @@ def test_parse_verdict_tolerates_annotated_clear_and_fired() -> None:
     # naming rule, and after the 2026-08-13 renumber those are different
     # numbers than they used to be.
     v, err = adversary.parse_verdict(json.dumps({"criteria": {
-        "1": "Clear",
+        "1": "Clear: capitalised annotation holds",
         "2": "clear — I checked the chain end to end",
         "3": "fired — the merge is not forced",
         "4": "fired: the Proof skips the boundary case",
-        "5": "clear"}}))
+        "5": "clear: rest is sound"}}))
     assert err == "" and v is not None
     assert v["verdict"] == "rebut"
     assert len(v["criticisms"]) == 2
