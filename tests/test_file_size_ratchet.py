@@ -670,6 +670,30 @@ _WATERMARKS = {
     "Tooling/agent/phase2_context/outcomes.py": 850,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/compile.py": 1150,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/forward.py": 350,  # born 2026-08-28 from the phase2_context.py split (B2)
+    # `Tooling/serve/data.py` (2,357 lines, no prior watermark here) split
+    # move-only into `Tooling/serve/data/` along the file's own section
+    # breaks (task B3): `status.py` is the status-chip derivation shared
+    # by board()/problem_detail(); `edges.py` is citation-edge extraction
+    # + `problem_detail` itself; `timeline.py` is the Timeline event log
+    # plus everything downstream of that section marker (Programme reads,
+    # the group tree, goal/strategy detail, inbox/review/library-index) —
+    # the Programme-read cluster (`programme`/`_programme_events`/
+    # `_programme_rev`/`_group_clause`) moved here from its literal
+    # position ahead of the "Timeline" marker, because it and the
+    # groups-tree cluster it calls were consumed by both `edges.py`'s
+    # `problem_detail` and this module's own `problem_events`/
+    # `_decision_events` — a straight line-range split would have made
+    # `edges.py` and `timeline.py` import each other; `library.py` is the
+    # Library chapter (bridged-module parsing) plus the trailing
+    # telemetry/papers/file-read leaves that share no call edge with it.
+    # Facade `__init__.py` re-exports every public (and tested private)
+    # symbol; `_link_kind_expr` stays in the facade itself as the one
+    # helper both `edges.py` and `timeline.py` call.
+    "Tooling/serve/data/__init__.py": 200,  # born 2026-08-28 from the data.py split (B3)
+    "Tooling/serve/data/status.py": 200,  # born 2026-08-28 from the data.py split (B3)
+    "Tooling/serve/data/edges.py": 550,  # born 2026-08-28 from the data.py split (B3)
+    "Tooling/serve/data/timeline.py": 1250,  # born 2026-08-28 from the data.py split (B3)
+    "Tooling/serve/data/library.py": 500,  # born 2026-08-28 from the data.py split (B3)
 }
 
 
