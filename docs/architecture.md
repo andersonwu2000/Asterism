@@ -377,11 +377,15 @@ but must not be removed — verify-collapse deliberately does not probe non-leaf
 ## 11. Code map
 
 ```
-Tooling/
-  core/       dispatcher.py (main loop + scheduling), librarian_sched.py (five-stage DAG scheduling),
-              cli.py, config.py, quota_wait.py / usage_quota.py (quota),
+Tooling/     (the 2026-08 split turned every 2,300+-line monolith into a package
+              behind a re-exporting facade — old import paths all still work)
+  core/       dispatcher/ (refill/triggers/worker/lock + run() in loop.py),
+              librarian_sched.py (five-stage DAG scheduling),
+              cli/ (run/problems/diagnose/maint + main.py argparse), config.py,
+              quota_wait.py / usage_quota.py (quota),
               warmup.py (NL-first gateway warmup), process_group.py (Job Object)
-  state/      db.py (schema DDL + query), db_migrations.py (full migration set),
+  state/      db/ (schema+connect in core.py; goals/problems/reach/strategies/
+              pipelines/queue/deaths/library domains), db_migrations.py (full migration set),
               transitions.py (goal/strategy/problem state machines + ProvedReceipt + cascade_one),
               programme.py (Programme revision chain), intent.py (charter / user word +
               problem.json seed), settings.py (problem_settings), proof_store.py (proofs/
@@ -389,23 +393,27 @@ Tooling/
               (failure-reason registry = machine SoT), thresholds.py, regress.py,
               consistency.py (drift-check predicates), kb.py / kb_ingest.py (lessons, Model B)
   pipeline/   backward.py / forward.py (the Formalizer's prove-split / mint entries),
-              _intake.py (Formalizer intake gate), strategist.py, adversary.py (the Adversary),
+              _intake.py (Formalizer intake gate),
+              strategist/ (model/verify/commit/wake), adversary.py (the Adversary),
               _disprove.py (kernel-certified disproof gate),
               librarian/, _retry.py (session retry helper), _assembly.py,
               _axiom.py (shared axiom gate), _cite_gate.py, _presearch.py, _reflection.py,
               events.py, etc.
   quality/    verify.py (housekeeping + root gate), dedupe.py, prune.py, review.py,
               knowledge_stats.py, librarian/ (dedup/gates/inventory/relabel + cleanup/*)
-  agent/      context.py / phase2_context.py (Context.md compilation), runtime.py (spawn +
+  agent/      context.py / phase2_context/ (Context.md compilation:
+              dossier/outcomes/compile/forward), runtime.py (spawn +
               spawn_usage accounting), sandbox.py
   llm/        claude_cli.py (spawn + watchdog + sandbox flags), spawn_guard.py,
               codex_cli.py (+zen flavor via zen_shim.py), antigravity_cli.py,
               openai_api.py (gemini backend retired 2026-08-28)
-  lsp/        gateway.py (warm verify_file + validate_file + anchorClosure RPC),
+  lsp/        gateway/ (state/elab/backend/weigh/governor/sessions/health/
+              leantext/rpc/gates/verify + routes in __init__),
               client.py, decl_oracle.py, lifecycle
   knowledge/  lemma search (loogle etc.)
   papers/     fetch / index / search / shelf (the Papers/ shelf)
-  serve/      web console (`asterism serve`: star map, Engine view, chat explainer)
+  serve/      web console (`asterism serve`: star map, Engine view, chat explainer);
+              data/ (status/edges/timeline/library API reads)
   prompts/    one folder per worker, multi-stage files (formalizer/{intake,formalize,mint},
               strategist/, adversary/, scholar/, librarian/, _shared/)
 ```
