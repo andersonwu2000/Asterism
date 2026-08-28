@@ -107,7 +107,7 @@ def test_no_shutdown_message_calls_an_arbitrary_backend_claude() -> None:
     A3, 2026-08-28) — glob the whole package so the guard still covers
     every command module, not just whichever one happens to hold the
     in-flight-kill message today."""
-    paths = [ROOT / "Tooling" / "core" / "dispatcher.py"]
+    paths = sorted((ROOT / "Tooling" / "core" / "dispatcher").glob("*.py"))
     paths += sorted((ROOT / "Tooling" / "core" / "cli").glob("*.py"))
     for path in paths:
         text = path.read_text(encoding="utf-8")

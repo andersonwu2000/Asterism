@@ -2297,7 +2297,7 @@ def test_singleton_lock_acquires_when_no_file(
 ) -> None:
     """No lock → acquire, writing `pid\nstart_time`."""
     import os
-    monkeypatch.setattr(_dispatcher, "_proc_start_time", lambda pid: 1000.0)
+    monkeypatch.setattr(_dispatcher.lock, "_proc_start_time", lambda pid: 1000.0)
     p = _dispatcher._acquire_singleton_lock(tmp_path)
     assert p == tmp_path / ".asterism" / "daemon.pid"
     lines = p.read_text(encoding="utf-8").split("\n")
@@ -2311,8 +2311,8 @@ def test_singleton_lock_blocks_same_live_instance(
     """A live PID whose start-time MATCHES the recorded one is the same
     daemon instance → refuse (return None)."""
     _write_lock(tmp_path, "99999\n5000.0")
-    monkeypatch.setattr(_dispatcher, "_pid_alive", lambda pid: pid == 99999)
-    monkeypatch.setattr(_dispatcher, "_proc_start_time",
+    monkeypatch.setattr(_dispatcher.lock, "_pid_alive", lambda pid: pid == 99999)
+    monkeypatch.setattr(_dispatcher.lock, "_proc_start_time",
                         lambda pid: 5000.0 if pid == 99999 else 1.0)
     assert _dispatcher._acquire_singleton_lock(tmp_path) is None
 
@@ -2326,8 +2326,8 @@ def test_singleton_lock_stale_on_pid_reuse(
     crashed daemon's PID was reused by the editor)."""
     import os
     _write_lock(tmp_path, "99999\n5000.0")
-    monkeypatch.setattr(_dispatcher, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(_dispatcher, "_proc_start_time",
+    monkeypatch.setattr(_dispatcher.lock, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(_dispatcher.lock, "_proc_start_time",
                         lambda pid: 9000.0)   # different instance
     p = _dispatcher._acquire_singleton_lock(tmp_path)
     assert p is not None
@@ -2339,8 +2339,8 @@ def test_singleton_lock_stale_on_dead_pid(
 ) -> None:
     """A dead PID → stale → acquire."""
     _write_lock(tmp_path, "99999\n5000.0")
-    monkeypatch.setattr(_dispatcher, "_pid_alive", lambda pid: False)
-    monkeypatch.setattr(_dispatcher, "_proc_start_time", lambda pid: 1.0)
+    monkeypatch.setattr(_dispatcher.lock, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(_dispatcher.lock, "_proc_start_time", lambda pid: 1.0)
     assert _dispatcher._acquire_singleton_lock(tmp_path) is not None
 
 
@@ -2350,8 +2350,8 @@ def test_singleton_lock_legacy_blocks_live_daemon(
     """Legacy pid-only lock (no start-time): fall back to the cmdline
     signature. A live process that IS a daemon → refuse."""
     _write_lock(tmp_path, "99999")
-    monkeypatch.setattr(_dispatcher, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(_dispatcher, "_cmdline_is_daemon", lambda pid: True)
+    monkeypatch.setattr(_dispatcher.lock, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(_dispatcher.lock, "_cmdline_is_daemon", lambda pid: True)
     assert _dispatcher._acquire_singleton_lock(tmp_path) is None
 
 
@@ -2361,8 +2361,8 @@ def test_singleton_lock_legacy_stale_on_reused_pid(
     """Legacy pid-only lock + a live process that is NOT a daemon (reused
     PID) → stale → acquire."""
     _write_lock(tmp_path, "99999")
-    monkeypatch.setattr(_dispatcher, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(_dispatcher, "_cmdline_is_daemon", lambda pid: False)
+    monkeypatch.setattr(_dispatcher.lock, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(_dispatcher.lock, "_cmdline_is_daemon", lambda pid: False)
     assert _dispatcher._acquire_singleton_lock(tmp_path) is not None
 
 
@@ -2372,8 +2372,8 @@ def test_singleton_lock_legacy_conservative_when_cmdline_unreadable(
     """Legacy lock + live PID whose cmdline can't be read (None) → cannot
     prove it's a reused PID, so conservatively block (never double-start)."""
     _write_lock(tmp_path, "99999")
-    monkeypatch.setattr(_dispatcher, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(_dispatcher, "_cmdline_is_daemon", lambda pid: None)
+    monkeypatch.setattr(_dispatcher.lock, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(_dispatcher.lock, "_cmdline_is_daemon", lambda pid: None)
     assert _dispatcher._acquire_singleton_lock(tmp_path) is None
 
 

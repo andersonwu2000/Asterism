@@ -25,7 +25,11 @@ from Tooling.core import dispatcher
 from Tooling.core.admission import (
     ADMIT, DENY_KIND_BACKOFF, DENY_QUOTA, DENY_TARGET_COOLED, admission)
 
-SRC = Path(dispatcher.__file__).read_text(encoding="utf-8")
+# The dispatcher split move-only into a package (B4, 2026-08-29) —
+# the one-door pins scan every module of it, same guard, new shape.
+SRC = "\n".join(
+    p.read_text(encoding="utf-8")
+    for p in sorted(Path(dispatcher.__file__).parent.glob("*.py")))
 
 
 # ─── the predicate itself ─────────────────────────────────────────────

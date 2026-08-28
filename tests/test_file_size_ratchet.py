@@ -279,7 +279,14 @@ _WATERMARKS = {
     # gateway open slots, NL on measured RAM; owner design). The pure
     # ledger lives in core/ram_ledger.py; only the admission seam is
     # here. Conscious bump.
-    "Tooling/core/dispatcher.py": 3020,  # +6 2026-08-26 pressure-pause seam
+    # dispatcher.py split move-only into core/dispatcher/ (B4, 2026-08-29);
+    # fresh locks per module — the monolith never grows back.
+    "Tooling/core/dispatcher/__init__.py": 250,
+    "Tooling/core/dispatcher/refill.py": 300,
+    "Tooling/core/dispatcher/triggers.py": 600,
+    "Tooling/core/dispatcher/worker.py": 650,
+    "Tooling/core/dispatcher/lock.py": 300,
+    "Tooling/core/dispatcher/loop.py": 1300,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

@@ -57,8 +57,8 @@ def test_drift_handoff_exits_nonzero_under_systemd() -> None:
     must NOT self-spawn a successor (an unsupervised orphan whose crash
     is a silent fleet stop — measured 2026-08-24); it exits rc=75 and
     Restart=on-failure relaunches the unit on current code."""
-    src = pathlib.Path("Tooling/core/dispatcher.py").read_text(
-        encoding="utf-8")
+    src = pathlib.Path("Tooling/core/dispatcher/loop.py").read_text(
+        encoding="utf-8")  # run() lives in loop.py since the B4 split
     assert 'os.environ.get("INVOCATION_ID")' in src
     assert "return 75" in src
 

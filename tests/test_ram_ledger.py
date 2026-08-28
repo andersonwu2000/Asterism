@@ -443,7 +443,7 @@ def test_dispatcher_reserves_for_inflight_nl_only():
     inside the yield request gate."""
     import inspect
     from Tooling.core import dispatcher
-    src = inspect.getsource(dispatcher)
+    src = inspect.getsource(dispatcher.run)   # the tick lives in run() (B4)
     assert "nl_demand=_nl_fly," in src
     assert "request_nl_yield" in src
 

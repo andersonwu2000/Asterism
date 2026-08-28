@@ -111,7 +111,7 @@ _STATE = _REPO / "Tooling" / "state"
 _CORE = _REPO / "Tooling" / "core"
 _NONPIPELINE_FILES = [
     _STATE / "recovery.py",
-    _CORE / "dispatcher.py",
+    *sorted((_CORE / "dispatcher").glob("*.py")),  # B4: the whole package
     _REPO / "Tooling" / "quality" / "verify.py",
 ]
 # a glob over DB-tracked proof artifacts
