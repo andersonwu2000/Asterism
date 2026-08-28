@@ -2927,7 +2927,7 @@ def test_health_reads_slot_memory_from_an_off_loop_cache(monkeypatch) -> None:
     # 2026-08-27: the invariant escalated — the handler now serves a
     # governor-refreshed snapshot of the WHOLE payload; the payload
     # builder is where the cached reading (never the inline scan) lives.
-    src = _inspect.getsource(lsp_gateway.health)
+    src = _inspect.getsource(lsp_gateway.health_route)
     assert "_HEALTH_SNAPSHOT" in src
     assert "_slot_private_mb()" not in src
     src_payload = _inspect.getsource(lsp_gateway._health_payload)

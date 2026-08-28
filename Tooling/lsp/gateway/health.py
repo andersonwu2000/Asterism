@@ -6,13 +6,12 @@ governor-thread refresh that rebuilds it every pass. The `/health` route
 itself stays in the package `__init__` with the rest of the HTTP surface
 and reads these names through the facade.
 
-Naming, and it is a trap: the route function is ALSO called `health` and
-is defined after this module is imported, so `gateway.health` resolves
-to the ROUTE, not to this module — `gateway.health._health_payload`
-would set an attribute on a coroutine function and patch nothing. Reach
-these names by from-import (`from .health import _refresh_health_snapshot`
-resolves through `sys.modules` and is unaffected), and patch them on the
-facade, which is where `/health`'s own consumer resolves them. Nothing
+Naming: the `/health` route handler is `health_route`, renamed away from
+the bare `health` that used to shadow this module on the package
+namespace (a `monkeypatch.setattr(gateway.health, ...)` would have set
+an attribute on a coroutine function and patched nothing). Patch these
+names on the facade, which is where `/health`'s own consumer resolves
+them. Nothing
 here is rebound after import — `_HEALTH_SNAPSHOT` is mutated in place,
 never replaced — so the facade's binding cannot go stale.
 """

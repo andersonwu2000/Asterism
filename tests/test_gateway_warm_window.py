@@ -140,7 +140,8 @@ def test_the_warming_message_says_what_still_works() -> None:
 # ──────────────────────── /health stays honest ────────────────────────
 
 def test_health_is_503_while_warming() -> None:
-    resp = asyncio.new_event_loop().run_until_complete(gateway.health(None))
+    resp = asyncio.new_event_loop().run_until_complete(
+        gateway.health_route(None))
     assert resp.status_code == 503
     assert json.loads(bytes(resp.body).decode())["warming"] is True
 

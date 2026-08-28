@@ -96,9 +96,10 @@ from ..client import LspClient
 # reach-back and closed with this cut: it lives in `health` now and the
 # governor imports it from there.
 #
-# `gateway.health` is NOT this package's health module — the `/health`
-# route function of the same name is defined below and wins the
-# attribute. Reach the module by from-import; patch its names here.
+# The `/health` route handler is `health_route`, NOT `health` — the
+# bare name would have shadowed the `health` submodule on the package
+# namespace and turned `monkeypatch.setattr(gateway.health, ...)` into
+# a silent no-op against a coroutine function.
 
 from .state import (
     WARMUP_CONTENT,
@@ -3278,7 +3279,7 @@ async def warm_target(request: Request):
 
 
 @mcp.custom_route("/health", methods=["GET"])
-async def health(request: Request):
+async def health_route(request: Request):
     """Liveness check. Reports worker pool status + active sessions
     + slot acquire counters (so operator can compute hot/cold ratio
     over the run, especially relevant at pool > W where churn
