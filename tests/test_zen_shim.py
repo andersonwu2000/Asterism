@@ -19,6 +19,20 @@ from Tooling.llm import zen_shim
 
 
 @pytest.fixture(autouse=True)
+def _pinned_upstreams(monkeypatch):
+    """The upstream constants come from the repo `.env` at import time
+    (`_cfg`), so on a deployed box — the flagship's `.env` names real
+    primary and rescue stations — the tests below ran against whatever
+    that file said (2026-08-29: `test_zen_call_falls_back_to_rescue_upstream`
+    red on the flagship, green everywhere else). Every test here sees
+    two distinct fake stations and the plan rebuilt from them."""
+    monkeypatch.setattr(zen_shim, "ZEN", "https://primary.test/v1")
+    monkeypatch.setattr(zen_shim, "ZEN_RESCUE", "https://rescue.test/v1")
+    monkeypatch.setattr(zen_shim, "_UPSTREAM_PLAN",
+                        zen_shim._build_plan(zen_shim.ZEN, zen_shim.ZEN_RESCUE))
+
+
+@pytest.fixture(autouse=True)
 def _no_pacing_by_default(request, monkeypatch):
     """`_pace()` keeps a MODULE-GLOBAL rolling window of 40 stamps/min.
     Ten tests call `_zen_call` in one process, the window fills, and the
@@ -1172,3 +1186,9 @@ def test_turn_trail_ships_as_a_message_item_never_a_function_call() -> None:
     block = src[i:i + 400]
     assert '"type": "message"' in block
     assert '"function_call"' not in block
+
+
+def test_the_plan_is_rebuilt_from_the_pinned_stations() -> None:
+    plan = zen_shim._UPSTREAM_PLAN
+    assert set(plan) == {"https://primary.test/v1", "https://rescue.test/v1"}
+    assert plan.count("https://rescue.test/v1") == 2 and plan[3] == "https://rescue.test/v1"

@@ -1060,8 +1060,15 @@ def _touch_heartbeat(attempt_dir: "str | None") -> None:
 #: seat caps) stay the outer layers, and 0 restores fail-fast.
 _429_WAIT_BUDGET = int(os.environ.get("ASTERISM_ZEN_429_BUDGET") or 600)
 
-_UPSTREAM_PLAN = (ZEN, ZEN, ZEN, ZEN_RESCUE, ZEN, ZEN, ZEN, ZEN_RESCUE,
-                  ZEN, ZEN)
+def _build_plan(zen: str, rescue: str) -> "tuple[str, ...]":
+    """The alternating upstream schedule: three primary tries, one
+    rescue, three primary, one rescue, two primary. One home for the
+    shape, so a test can rebuild the plan from pinned stations instead
+    of inheriting whatever the deployed `.env` named."""
+    return (zen, zen, zen, rescue, zen, zen, zen, rescue, zen, zen)
+
+
+_UPSTREAM_PLAN = _build_plan(ZEN, ZEN_RESCUE)
 
 #: Consecutive LADDER-EXHAUSTING empty-stream failures per attempt,
 #: across calls. Granularity matters: WITHIN a call the full plan must
