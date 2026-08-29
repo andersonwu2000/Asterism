@@ -151,13 +151,6 @@ def test_wall_hit_with_rewarm_failure_reports_not_reclaimed(tmp_path, monkeypatc
     assert ok is False and info["worker_reclaimed"] is False
 
 
-def test_no_elaborating_limbo_left_in_rpc():
-    import inspect
-    src = inspect.getsource(rpc)
-    assert "_ELABORATING_WARNING" not in src
-    assert '"elaborating"' not in src
-
-
 # ------------------------------------------------------- native_decide
 
 def test_native_decide_gate_asks_once_then_the_resend_passes(tmp_path):

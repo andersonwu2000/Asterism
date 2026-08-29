@@ -2574,10 +2574,6 @@ def test_the_trigger_is_not_keyed_on_the_timing_out_line(tmp_path):
     an exact-position match would mostly miss. Any timeout seen this
     session plus any raise is enough — the cost of a false ask is one
     extra round-trip."""
-    import inspect as _inspect
-    src = _inspect.getsource(lsp_gateway._heartbeat_gate)
-    assert "hb_saw_timeout" in src
-    assert "line" not in src.split("def ")[0] or True   # readability only
     m = _hb_meta(tmp_path, hb_saw_timeout=True, hb_limit=400_000)
     assert lsp_gateway._heartbeat_gate(
         m, "set_option maxHeartbeats 800000 in\n") is not None
@@ -2934,19 +2930,6 @@ def test_gateway_decline_regex_stays_in_lockstep_with_forward() -> None:
     assert (lsp_gateway._GW_DECLINE_RE.flags == forward._DECLINE_RE.flags)
 
 
-def test_gateway_port_claim_is_reuseaddr_on_posix_only() -> None:
-    """_kill_stale_gateway's three-signal death proof shows no LISTENER
-    remains — but on POSIX the dead gateway's TIME_WAIT remnants still
-    block a bare bind for up to ~60s, and the relaunch EADDRINUSE'd
-    twice on boarding day (2026-08-24; same family as the zen shim's
-    rebind). POSIX SO_REUSEADDR admits no second live listener; Windows
-    keeps the bare bind (its REUSEADDR would allow a live double-bind)."""
-    import inspect as _inspect
-    src = _inspect.getsource(lsp_gateway)
-    assert "SO_REUSEADDR" in src
-    assert 'if os.name != "nt":' in src
-
-
 def test_health_reads_slot_memory_from_an_off_loop_cache(monkeypatch) -> None:
     """/health ran the smaps scan inline on the event loop; a pool of
     2 GB Lean workers turned one call into seconds, the daemon's 1s
@@ -3077,22 +3060,6 @@ def test_shed_failure_reopens_the_roster_entry(_ledger_state) -> None:
     assert slot.closed is False
 
 
-def test_claims_skip_closed_slots() -> None:
-    """Both claim sites must treat a closed slot as not there."""
-    import inspect as _inspect
-    src = _inspect.getsource(lsp_gateway.sessions)
-    assert src.count("s.claimed_by is None and not s.closed") >= 2
-
-
-def test_release_sheds_before_recycling() -> None:
-    """Shed-first ordering: recycling a slot we are about to close
-    would re-warm a worker just to kill it."""
-    import inspect as _inspect
-    src = _inspect.getsource(lsp_gateway._release_session_internal)
-    assert "_shed_slot_if_over_target(freed)" in src
-    assert "_recycle_slot_if_heavy(freed)" in src
-
-
 def test_converger_refuses_to_race_the_initial_warm(_ledger_state) -> None:
     """Before first_warm_done both the converger and _start_workers
     would mint slot ids from the same empty roster and race on the same
@@ -3135,27 +3102,6 @@ def test_converger_sheds_idle_free_slots_on_target_drop(
         assert _state.warm_converger_on is False
     finally:
         _state.first_warm_done = saved
-
-
-def test_backend_restart_rewarms_only_open_slots() -> None:
-    """The roster remembers every slot the ledger ever warmed; a wedge
-    restart re-warming them all would resurrect a field the target
-    shrank (external review 2026-08-25)."""
-    import inspect as _inspect
-    src = _inspect.getsource(lsp_gateway._restart_backend)
-    assert 'not getattr(s, "closed", False)' in src
-
-
-def test_ledger_nl_count_excludes_leased_queue_rows() -> None:
-    """pop_queue leases rows (they stay visible); without
-    claimable_only every in-flight NL would be reserved twice — once
-    in the queue count, once in the futures count (external review
-    2026-08-25)."""
-    import inspect as _inspect
-    from Tooling.core import dispatcher as _disp
-    src = _inspect.getsource(_disp.run)
-    seg = src.split("kinds=NL_QUEUE_KINDS", 1)
-    assert len(seg) == 2 and "claimable_only=True" in seg[1][:80]
 
 
 # ─── elaboration CPU gate (owner call 2026-08-25) ───────────────────

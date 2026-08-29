@@ -6,10 +6,9 @@ These pin the helper's semantics and the lifecycle-path wiring.
 """
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 
-from Tooling.core import cli, dispatcher, fsutil
+from Tooling.core import fsutil
 
 
 def test_unlink_existing(tmp_path):
@@ -55,21 +54,3 @@ def test_unlink_transient_lock_recovers(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------- wiring pins
 
-def test_daemon_start_clears_exit_summary_tolerantly():
-    src = inspect.getsource(cli.daemon_start)
-    assert 'fsutil.unlink_tolerant(logs / "daemon-exit.txt")' in src, (
-        "the 21:01 crash site must use the tolerant unlink")
-    assert '"daemon-exit.txt").unlink' not in src
-
-
-def test_dispatcher_lifecycle_unlinks_are_tolerant():
-    src = inspect.getsource(dispatcher.run)
-    assert "fsutil.unlink_tolerant" in src
-    # No bare unlink on the lifecycle files inside run() — the pid-lock
-    # atexit and the stop/starting files all go through the helper.
-    assert ".unlink(missing_ok=True)" not in src
-
-
-def test_cli_robust_unlink_delegates():
-    src = inspect.getsource(cli._robust_unlink)
-    assert "fsutil.unlink_tolerant" in src

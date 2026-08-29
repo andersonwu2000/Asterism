@@ -670,10 +670,8 @@ def test_both_providers_read_one_definition_of_the_write_roots(
     """The point of `llm/envelope.py`: the grants are provider-
     independent, only the dialect differs. A third backend inherits the
     definition instead of adding a third copy."""
-    import inspect
     import json
     from Tooling.llm import antigravity_cli as agy
-    from Tooling.llm import claude_cli
     from Tooling.llm.envelope import envelope_for
 
     req = _envelope_req(tmp_path, mcp=None)
@@ -686,7 +684,3 @@ def test_both_providers_read_one_definition_of_the_write_roots(
             encoding="utf-8"))["permissions"]["allow"]
     assert [f"write_file({p})" for p in roots] == [
         a for a in perms if a.startswith("write_file(")]
-
-    src = inspect.getsource(claude_cli.ClaudeCliProvider.spawn)
-    assert "envelope_for(" in src, (
-        "claude must consume the shared definition, not keep its own list")

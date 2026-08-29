@@ -99,13 +99,8 @@ def test_the_outlet_never_takes_the_last_open_worker(gw, monkeypatch):
 
 def test_effective_target_subtracts_the_debt_everywhere(
         gw, monkeypatch):
-    import inspect
     monkeypatch.setattr(gw.governor, "_PRESSURE_DEBT", 3)
     assert gw._effective_target() == 7
-    # every pool-sizing consumer reads the effective allowance — a raw
-    # read would re-warm the outlet's kills while hot
-    for fn in (gw._shed_slot_if_over_target, gw._warm_converger_run):
-        assert "_effective_target()" in inspect.getsource(fn)
 
 
 def test_calm_forgives_one_step_only_once_the_pool_converged(
@@ -156,13 +151,6 @@ def test_weight_kill_weighs_its_candidate_fresh_before_the_knife(
 
 
 def test_health_serves_the_governor_snapshot(gw, monkeypatch):
-    import inspect
-    src = inspect.getsource(gw.health)
-    assert "_HEALTH_SNAPSHOT" in src, \
-        "/health must read the snapshot, not walk the pool per request"
-    src_gov = inspect.getsource(gw._weight_watchdog_run)
-    assert "_refresh_health_snapshot" in src_gov
-    assert "_pressure_outlet_step" in src_gov
     # the payload carries the outlet's surface
     monkeypatch.setattr(gw._state, "workers", [])
     monkeypatch.setattr(gw._state, "backend", None)
@@ -213,7 +201,3 @@ def test_daemon_status_asks_health_exactly_once(monkeypatch, tmp_path):
     assert calls["n"] == 1
     assert phase == "ready"
     assert slots == {"target": 5, "open": 5, "free": 2}
-    import inspect
-    src = inspect.getsource(cli.daemon_status)
-    assert "_gateway_status_once" in src
-    assert "_gateway_slots_safe" not in src

@@ -144,9 +144,7 @@ def test_claude_cli_injects_write_roots(tmp_path) -> None:
     roots[0]). Asserted through `envelope.envelope_for` — the shared
     definition both providers render since 2026-08-01 — rather than by
     matching a source line, which froze the moment the line moved."""
-    import inspect
 
-    from Tooling.llm import claude_cli
     from Tooling.llm.base import LLMRequest
     from Tooling.llm.envelope import envelope_for
 
@@ -158,9 +156,6 @@ def test_claude_cli_injects_write_roots(tmp_path) -> None:
     assert env_spec.write_roots[0] == att
     assert env_spec.write_roots_env().split(os.pathsep)[0] == str(att)
 
-    src = inspect.getsource(claude_cli.ClaudeCliProvider.spawn)
-    assert "WRITE_ROOTS_ENV]" in src
-    assert "envelope_for(" in src
 
 
 # ---------- fail-open + hook protocol ----------

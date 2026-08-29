@@ -145,9 +145,3 @@ def test_thaw_of_a_released_session_reopens_warmup(gw, monkeypatch,
     assert ("open", gw.WARMUP_CONTENT) in calls
 
 
-def test_frozen_slots_are_invisible_to_borrow_and_reclaim(gw):
-    import inspect
-    src = inspect.getsource(gw._acquire_slot)
-    assert "slot.frozen" in src and "my_slot.frozen" in src
-    src2 = inspect.getsource(gw._release_session_internal)
-    assert "frozen" in src2

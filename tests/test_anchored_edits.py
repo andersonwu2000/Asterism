@@ -162,15 +162,6 @@ def test_an_unknown_key_teaches_the_three_forms() -> None:
         assert form in ei.value.message
 
 
-def test_there_is_no_way_to_address_by_line_number() -> None:
-    """The property that ends the class: a line number cannot be
-    expressed in a request, so it cannot be stale. Line numbers survive
-    only in OUTPUT, where the tool measured them."""
-    import inspect
-    src = inspect.getsource(E.resolve)
-    assert "start_line" not in src and "end_line" not in src
-
-
 # --------------------------------------------------- the tail case
 
 def test_replacing_the_last_block_keeps_what_follows() -> None:

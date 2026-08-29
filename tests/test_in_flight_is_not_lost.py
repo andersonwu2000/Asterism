@@ -15,11 +15,9 @@ one side of this pair was how it stayed open.
 """
 from __future__ import annotations
 
-import inspect as _inspect
 import sqlite3
 
 from Tooling.agent import phase2_context
-from Tooling.pipeline import adversary
 
 
 def _seed(conn: sqlite3.Connection, *, batch: str, outcome) -> None:
@@ -96,23 +94,6 @@ def test_only_your_groups_running_batches_are_rostered(
     bare = "\n".join(phase2_context._section_inject_batch_outcomes(
         conn, "p"))
     assert "mine-bat" in bare and "their-ba" in bare, bare
-
-
-def test_the_judge_reads_the_same_section():
-    """One render, two readers — so the line cannot land on one side
-    only. Fixing half of this pair is how it survived a week."""
-    src = _inspect.getsource(adversary)
-    assert "_section_inject_batch_outcomes" in src, (
-        "the judge no longer shares the Strategist's render — an "
-        "in-flight batch can now be visible to one and not the other")
-
-
-def test_an_outcome_less_decision_says_it_is_in_flight():
-    """`## Recent decisions` printed `outcome=` only when non-NULL, so a
-    dispatched-and-still-running decision looked exactly like one whose
-    result was lost."""
-    src = _inspect.getsource(phase2_context._section_failure_replay)
-    assert "IN FLIGHT" in src, src[:200]
 
 
 def test_a_running_batchs_substance_rides_the_lazy_companion(

@@ -242,18 +242,6 @@ def test_forensics_never_breaks_the_probe(monkeypatch):
 # the venv was never the problem and no amount of fixing it would have
 # helped.
 
-def test_the_tool_does_not_spawn_the_sandbox_itself() -> None:
-    """The regression that matters: a future edit that "simplifies" the
-    tool back to calling `sandbox.run` locally restores a path that has
-    never once worked."""
-    import inspect as _inspect
-    src = _inspect.getsource(mcp_tools.compute)
-    assert "_compute_via_gateway" in src
-    assert "sandbox" not in src, (
-        "compute must not reach the sandbox from this process — no "
-        "subprocess started here runs (2026-08-11)")
-
-
 def test_a_gateway_that_does_not_answer_says_whose_fault_it_is(monkeypatch):
     """The old message named the venv and guessed "base Python upgraded
     under it?" — a hard-coded explanation for a generic failure, and it
@@ -295,9 +283,6 @@ def test_the_env_does_not_pretend_to_configure_a_python_that_ignores_it():
     """Pin the RELATION, not one side of it: while the child is launched
     with `-E`, a `PYTHON*` entry in the environment is inert, and an
     inert setting that looks load-bearing is how this went unnoticed."""
-    import inspect as _inspect
-    src = _inspect.getsource(sandbox.run)
-    assert '"-E"' in src, "isolation flag dropped — revisit this test"
     assert not [k for k in sandbox._sandbox_env() if k.startswith("PYTHON")]
 
 

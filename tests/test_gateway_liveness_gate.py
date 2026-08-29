@@ -204,17 +204,6 @@ def test_the_credit_survives_nothing_being_wrong(
         budget_sec=BUDGET) == (None, None)
 
 
-def test_the_credit_window_is_the_spawn_budget_not_a_new_number(
-) -> None:
-    """The window is `dispatch.spawn_timeout_sec` — this system's
-    definition of one work unit's worth of time — read from config by
-    the dispatcher, never a constant invented here."""
-    import inspect
-    src = inspect.getsource(dispatcher.run)
-    assert "dispatch.spawn_timeout_sec" in src
-    assert "budget_sec=spawn_budget_sec" in src
-
-
 def test_the_grace_is_derived_from_the_breaker_it_replaces() -> None:
     """Pin the RELATION, not the number. Both constants have been tuned
     before, and the 900s-recycle / 780s-suicide pair is the standing

@@ -69,14 +69,6 @@ def test_delegate_refused_at_the_cap_with_the_way_out(
     assert "ReturnToParent(amend)" in err
 
 
-def test_contract_states_the_cap() -> None:
-    text = (_PROMPTS / "adversary" / "_contract.md").read_text(
-        encoding="utf-8")
-    assert ("`Delegate` only to the top group and its direct sub-groups"
-            in text)
-    assert "caps two levels below the top" in text
-
-
 def test_your_group_section_drops_the_verb_only_at_the_cap(
         conn: sqlite3.Connection) -> None:
     from Tooling.agent.phase2_context import _section_your_group

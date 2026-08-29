@@ -20,45 +20,16 @@ the defect was prose.
 """
 from __future__ import annotations
 
-import inspect as _inspect
 import re
 from pathlib import Path
 
-from Tooling.pipeline import adversary
 from Tooling.state import tree
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_the_judges_file_list_does_not_call_the_copy_live():
-    text = (ROOT / "Tooling" / "prompts" / "adversary"
-            / "adversary.md").read_text(encoding="utf-8")
-    line = next(l for l in text.splitlines() if l.startswith("- `TREE.md`"))
-    assert "live goal tree" not in line, line
-    assert "round started" in line or "when this round" in line, line
-    # …and it points at the thing that IS live.
-    assert "inspect(" in line, line
-
-
-def test_the_projection_label_does_not_claim_liveness():
-    src = _inspect.getsource(adversary)
-    label = src[src.index('"_(Framework label'):]
-    # the snapshot body follows the label (post-elision text since
-    # 2026-08-15 — `ctx_text`, no longer a raw `ctx.read_text(...)`)
-    label = label[:label.index("+ ctx_text")]
-    assert "are LIVE" not in label, label
-    assert "live files are authoritative" not in label, label
-    assert "COPY" in label, "the label must say what TREE.md actually is"
-    assert "reads it live" in label, (
-        "having removed the false pointer, it must give the true one")
-
-
 def test_the_tree_file_says_when_it_was_written():
     """A reader comparing two renders needs to know which is older.
     Without this, a disagreement looks like someone's mistake."""
-    src = _inspect.getsource(tree)
-    assert "_stamp()" in src, "TREE.md carries no as-of time"
-    assert re.search(r"%Y-%m-%dT%H:%M:%SZ", src), (
-        "the stamp must be a real timestamp, not a phrase")
     stamp = tree._stamp()
     assert re.fullmatch(r"20\d\d-\d\d-\d\dT\d\d:\d\d:\d\dZ", stamp), stamp

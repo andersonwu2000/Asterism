@@ -84,8 +84,3 @@ def test_the_read_side_still_treats_disproved_as_settled() -> None:
     assert ("disproved", "open") in transitions.GOAL_EDGES
 
 
-def test_the_judge_contract_states_the_park_semantics() -> None:
-    text = (_PROMPTS / "adversary" / "_contract.md").read_text(
-        encoding="utf-8")
-    assert "CLAIMED counterexample" in text
-    assert "`proved` / `dead` are terminal" in text

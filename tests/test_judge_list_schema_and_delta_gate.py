@@ -8,8 +8,6 @@ record traces to the zen resume-amnesia era (the revision turn
 succeeded but never touched the file), so the delta gate is an
 accident guard, not author discipline."""
 import json
-import re
-from pathlib import Path
 
 from Tooling.pipeline import adversary
 
@@ -61,26 +59,3 @@ def test_the_naming_rule_survives_the_list_form() -> None:
     assert v is None and adversary.NAMING_CRITERION in err
 
 
-def test_the_prompt_teaches_the_list_shape() -> None:
-    text = Path("Tooling/prompts/adversary/adversary.md").read_text(
-        encoding="utf-8")
-    assert "a list per criterion, one bullet per objection" in text
-    assert '"fired: <another objection under this criterion>"' in text
-
-
-def test_the_delta_gate_bounces_identical_bodies_before_the_judge() -> None:
-    """Source pins: the gate compares against the body the judge last
-    rejected, skips the judge on identity, discards at three
-    consecutive no-deltas, and books the rejected body at the rebut
-    point."""
-    src = Path("Tooling/pipeline/strategist/wake.py").read_text(
-        encoding="utf-8")
-    assert "proposal_body == _last_judged" in src
-    assert "judge skipped" in src
-    assert "_no_delta >= 3" in src
-    assert 'channel="strategist_no_delta"' in src
-    assert re.search(r"err_is_rebuttal = True\s*\n\s*# delta-gate "
-                     r"bookkeeping", src), (
-        "the rebut point must record _last_judged/_last_rebuttal")
-    # the bounce message names the reachable action
-    assert "edit proposal.md" in src

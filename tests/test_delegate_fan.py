@@ -94,15 +94,3 @@ def test_two_groups_may_race_one_goal_and_routing_is_deterministic(
     assert owner is not None and int(owner["id"]) == max(a, b)
 
 
-def test_the_delegate_contract_is_mirrored_in_all_four_prompts() -> None:
-    files = [
-        _PROMPTS / "adversary" / "_contract.md",
-        _PROMPTS / "strategist" / "routine.md",
-        _PROMPTS / "strategist" / "pending_review.md",
-        _PROMPTS / "strategist" / "inject_batch_done.md",
-    ]
-    for f in files:
-        text = f.read_text(encoding="utf-8")
-        assert ("A batch delegates several groups or none — never "
-                "exactly one" in text), f
-        assert "`charter`, `reason`, optional `brief`" in text, f

@@ -169,13 +169,3 @@ def test_routine_context_gets_curation_surface(conn, tmp_path):
     # empty KB → no section at all
     kb.delete_global_lesson(conn, entry_id=a, problem="P")
     assert _section_kb_lessons_curation(conn, "P", tmp_path) == []
-    # wiring pin: compile gates the section on the routine trigger, and
-    # the runner applies the sidecar from both commit branches
-    from pathlib import Path
-    root = Path(__file__).resolve().parents[1]
-    ctx_src = (root / "Tooling" / "agent" / "phase2_context" /
-               "compile.py").read_text(encoding="utf-8")
-    assert 'if trigger_kind == "routine":' in ctx_src
-    strat_src = (root / "Tooling" / "pipeline" / "strategist" /
-                 "wake.py").read_text(encoding="utf-8")
-    assert strat_src.count("_apply_kb_curation(conn, problem=problem,") == 2

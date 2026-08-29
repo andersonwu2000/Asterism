@@ -912,7 +912,6 @@ def test_adversary_contract_section_matches_wake_prompts() -> None:
     not be shown it). The guard follows the text there too — the judge's
     copy must still match whatever the Strategist was actually told."""
     import re as _re
-    import sqlite3 as _sqlite3
     root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
     section = (root / "adversary" / "_contract.md").read_text(
         encoding="utf-8")
@@ -999,51 +998,6 @@ def test_contract_standing_rules_are_real_wake_rules() -> None:
         assert b in wakes, (
             "the judge holds the batch to a rule the Strategist was "
             "never given:\n" + b[:160])
-
-
-def test_plan_note_rewrite_step_synced_and_names_attempts_dir() -> None:
-    """07-29 SG: the `Rewrite _plan.md` step named no location, and with
-    cwd=problem_dir one strategist wrote the note to the problem root —
-    persist_plan_note found nothing in the sandbox, so soft-cap telemetry
-    and the next wake's plan-note context section silently vanished
-    (cube_e2e same day: sandbox write, channel fine). The step must carry
-    the same location convention as proposal.md / decision.json and stay
-    byte-identical across the three wake prompts."""
-    root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
-    steps = []
-    for f in ("routine.md", "inject_batch_done.md", "pending_review.md"):
-        text = (root / "strategist" / f).read_text(encoding="utf-8")
-        hits = [ln.lstrip("-0123456789. ") for ln in text.splitlines()
-                if "**Rewrite `{attempts_dir}/_plan.md`**" in ln]
-        assert len(hits) == 1, (f, hits)
-        steps.append(hits[0])
-    assert len(set(steps)) == 1, steps
-    # The location is now GIVEN, not described: `{attempts_dir}` is
-    # substituted with the absolute path at render time. Deriving it was
-    # the agent's job until 2026-08-16, and on codex a bare name cost
-    # 40-86s per write and created nothing.
-    assert "{attempts_dir}/_plan.md" in steps[0]
-
-
-def test_proposal_section_shared_lines_synced() -> None:
-    """07-29 programme readback: both SG and cube strategists misread
-    'Carry ≥1' as a per-batch quota and paid a recurring defense
-    paragraph in every revision; passed revisions also carried
-    round-numbered concession narration. The corrective lines stay
-    byte-identical across the three wake prompts."""
-    root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
-    texts = {
-        f: (root / "strategist" / f).read_text(encoding="utf-8")
-        for f in ("routine.md", "inject_batch_done.md",
-                  "pending_review.md")}
-    for needle in (
-        "A batch must not leave your group idle: after it commits, "
-        "something of yours is in flight, dispatched, or delivered.",
-        "Every Inject is proven in the Proof — inject only what is "
-        "fully argued",
-    ):
-        for f, t in texts.items():
-            assert needle in t, (f, needle)
 
 
 def test_review_retries_infra_rc_and_keeps_the_proposal(

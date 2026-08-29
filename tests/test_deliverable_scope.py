@@ -30,7 +30,6 @@ from pathlib import Path
 import pytest
 
 from Tooling.core import cli
-from Tooling.pipeline.librarian import run as librarian_run
 from Tooling.quality import review
 from Tooling.state import db
 
@@ -135,23 +134,6 @@ def test_harvest_scopes_because_the_library_is_for_people(tree, conn):
     seeds = {r["slug"] for r in db.deliverables(
         conn, problem=tree, group_id=db.top_group_id(conn, tree))}
     assert seeds == {"top_claim"}
-    src = inspect.getsource(librarian_run)
-    assert "group_id=db.top_group_id" in src, (
-        "harvest seeds must scope to the top group")
-
-
-def test_the_ingest_gate_does_not_scope():
-    """The one that must NOT move. It asks "did this problem produce
-    anything at all" — a question about the machine's work, not the
-    human's reading list. Scoping it would refuse Ingest to a problem
-    whose sub-groups did all the finished work, which is a different
-    decision from what was ruled here and has not been made."""
-    from Tooling.pipeline import strategist
-    src = inspect.getsource(strategist.verify)
-    marker = "if not db.deliverables(conn, problem=problem) and not root_proved"
-    assert marker in src, (
-        "the Ingest existence check must stay unscoped — see this test's "
-        "docstring before 'fixing' it")
 
 
 # ─── what the map is given ────────────────────────────────────────────

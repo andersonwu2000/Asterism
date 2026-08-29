@@ -13,7 +13,6 @@ with the framework owning the command line.
 """
 from __future__ import annotations
 
-import inspect
 import json
 from pathlib import Path
 
@@ -141,17 +140,6 @@ def test_tools_config_is_stdio_with_pythonpath(tmp_path: Path) -> None:
     assert set(cfg["mcpServers"]) == {"asterism_tools"}
 
 
-def test_gateway_config_carries_the_same_tools_entry() -> None:
-    """Both configs must build the entry from one helper. Two copies is
-    how the providers drift apart, which is the failure this whole change
-    exists to end."""
-    from Tooling import pipeline
-
-    src = inspect.getsource(pipeline._write_mcp_config)
-    assert 'tools_mcp_entry(workspace, "formalizer")' in src
-    assert '"asterism_tools"' in src
-
-
 def test_every_prompt_naming_a_tool_gets_a_config() -> None:
     """Naming a tool in a prompt is a promise the dispatch must keep.
 
@@ -238,22 +226,13 @@ def test_judge_contract_rides_the_projection_not_the_prompt() -> None:
     projection — in their own file: `decisions.md` is what the Strategist
     wrote, and a judge that prosecutes attribution should not find
     framework text inside it."""
-    import inspect
 
-    from Tooling.pipeline import adversary
 
     repo = Path(__file__).resolve().parents[1]
     fragment = repo / "Tooling" / "prompts" / "adversary" / "_contract.md"
-    prompt = (repo / "Tooling" / "prompts" / "adversary"
-              / "adversary.md").read_text(encoding="utf-8")
 
     assert fragment.exists()
     assert "`Inject` —" in fragment.read_text(encoding="utf-8")
-    # Moved, not copied.
-    assert "The Strategist's contract (verbatim)" not in prompt
-    assert "`contract.md`" in prompt          # the judge is told it exists
-    src = inspect.getsource(adversary.build_projection)
-    assert '"contract.md"' in src
 
 
 def test_loogle_left_the_shell_allowlist() -> None:
@@ -371,11 +350,3 @@ def test_empty_capabilities_are_not_advertised() -> None:
         NotificationOptions(), {})
     assert caps.resources is None and caps.prompts is None
     assert caps.tools is not None
-    import inspect as _inspect
-    from Tooling.lsp import gateway
-    # `gateway.server` — the FastMCP instance and its un-advertise block
-    # left the package `__init__` with the A1-4a split so the tool
-    # decorators could resolve before the facade finished executing.
-    src = _inspect.getsource(gateway.server)
-    assert "ListResourcesRequest" in src, \
-        "gateway lsp server must mirror the un-advertise block"

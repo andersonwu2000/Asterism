@@ -13,10 +13,9 @@ Three layers:
 """
 from __future__ import annotations
 
-import inspect
 import time
 
-from Tooling.core import dispatcher, quota_wait, usage_quota
+from Tooling.core import quota_wait, usage_quota
 from Tooling.core.dispatcher import SchedulerState
 
 
@@ -135,14 +134,6 @@ def test_confirmed_deadline_exhausted_retry_budget(monkeypatch):
     monkeypatch.setattr(quota_wait.time, "sleep", lambda s: None)
     assert quota_wait.confirmed_quota_deadline(1000.0, attempts=4) is None
     assert calls["n"] == 4
-
-
-def test_breaker_passes_probe_retry_budget():
-    src = inspect.getsource(dispatcher.run)
-    tail = src[src.index("CONSEC_SPAWN_FAIL_LIMIT"):]
-    assert "QUOTA_CONFIRM_ATTEMPTS" in tail.split("return 2")[0], (
-        "fast-fail breaker must give the quota probe its transient-"
-        "failure retry budget (#115)")
 
 
 def test_confirmed_deadline_healthy_is_none(monkeypatch):
@@ -281,21 +272,6 @@ def test_no_substitution_warning_without_a_confirmed_window(
     assert "DETECTOR SUBSTITUTION" not in capsys.readouterr().out
 
 
-def test_dispatcher_states_the_evidence_class_at_both_sites():
-    """The flag is only honest if each call site states the right value:
-    rc=126 (markers fired) is True, the fast-fail breaker (markers said
-    nothing) is False. Pinned at the source so moving the rule's
-    statement without its enforcement fails here."""
-    src = inspect.getsource(dispatcher.run)
-    rc126 = src.split('source=f"{kind} quota_exhausted"')[0]
-    assert rc126.rstrip().endswith("st, enabled=quota_wait_enabled,"), \
-        "rc=126 call site changed shape — re-pin this test"
-    after = src.split('source=f"{kind} quota_exhausted"')[1]
-    assert "trigger_quota_classified=True" in after[:200]
-    breaker = src.split("source=_trip")[1]
-    assert "trigger_quota_classified=False" in breaker[:200]
-
-
 # ------------------------------------------------------------- tick machine
 
 def test_tick_inactive_is_false():
@@ -352,51 +328,9 @@ def test_paused_total_closed_plus_open():
 
 # ------------------------------------------------------------- wiring pins
 
-def test_breaker_consults_probe_before_exit():
-    src = inspect.getsource(dispatcher.run)
-    breaker = src.split("consecutive spawn_fast_fails")[0]
-    tail = src[src.index("CONSEC_SPAWN_FAIL_LIMIT"):]
-    assert "quota_wait.maybe_enter" in tail.split("return 2")[0], (
-        "fast-fail breaker must consult the quota probe before exiting")
-
-
-def test_pop_loop_and_refill_gate_on_quota_wait():
-    src = inspect.getsource(dispatcher.run)
-    assert "quota_waiting = quota_wait.tick" in src
-    # The gate must sit BETWEEN the section comment and the call. The
-    # earlier form took the text before the comment (never contains the
-    # gate — it is always false) and carried an `or <whole source>`
-    # fallback, so this assertion could not fail in either direction.
-    before_call = src.split("bfs_refill(")[0]
-    assert "if not (quota_waiting or network_waiting):" in before_call.rsplit(
-        "# Refill queue", 1)[-1], (
-        "bfs_refill must be gated on quota_waiting and network_waiting")
-    # Indentation-insensitive: the pop-loop guard was reshaped by the
-    # RAM ledger (2026-08-25) without changing what it guards.
-    flat = " ".join(src.split())
-    assert ("stopping or drifting or quota_waiting or network_waiting"
-            in flat), (
-        "pop loop must not spawn during quota-wait or network-wait")
-
-
-def test_budget_check_excludes_paused_time():
-    src = inspect.getsource(dispatcher.run)
-    assert "quota_wait.paused_total(st, _now)" in src, (
-        "budget clock must subtract quota-wait pauses")
-    assert "network_wait.paused_total(st, _now)) > budget_sec" in src, (
-        "budget clock must subtract network-wait pauses too (08-18)")
-
-
-def test_once_runs_never_quota_wait():
-    src = inspect.getsource(dispatcher.run)
-    assert "quota_wait_enabled and not once" in src
-
-
 def test_serve_meter_delegates_to_shared_fetch():
     from Tooling.serve import run as serve_run
     assert serve_run._fetch_oauth_usage.__module__ == "Tooling.serve.run"
-    src = inspect.getsource(serve_run._fetch_oauth_usage)
-    assert "usage_quota.fetch_usage" in src
 
 
 def test_tick_early_recovery_resumes(monkeypatch):

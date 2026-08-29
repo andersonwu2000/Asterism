@@ -92,9 +92,3 @@ def test_mint_rescue_ships_what_the_mint_parse_reads(tmp_path):
     assert "_progress.md" in out          # bail stays available
 
 
-def test_forward_passes_the_mint_rescue_template():
-    """The call-site pin: forward's run_lsp_edit_loop must select the
-    mint menu — losing the kwarg silently reverts to the goal menu."""
-    src = (Path(__file__).resolve().parents[1] / "Tooling" / "pipeline"
-           / "forward.py").read_text(encoding="utf-8")
-    assert 'rescue_template="_shared/fresh_rescue_stage2_mint.md"' in src

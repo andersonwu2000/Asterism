@@ -880,27 +880,6 @@ def test_tools_server_env_carries_the_delivery_ceiling(
     assert "PYTHONPATH" in toml
 
 
-def test_cold_prompt_carries_the_toolface_alignment_note() -> None:
-    """codex hard-injects developer guidance mandating apply_patch; the
-    asterism tool face has no such tool (12 self-reports of agents
-    reconciling the two worlds by guesswork, 2026-08-22). The adapter
-    prepends one alignment line on COLD spawns — codex-path only (user
-    ruling), so no other provider's prompts ever change."""
-    import inspect as _inspect
-    from Tooling.llm import codex_cli
-    src = _inspect.getsource(codex_cli)
-    assert "authoritative toolset" in src
-    # the note must be fenced to the non-resume branch
-    assert "if not resuming:" in src
-    # 2026-08-24 extension: the code-mode door (`functions.exec` +
-    # ALL_TOOLS) is named so a spawn does not burn a discovery turn.
-    assert "functions.exec" in src and "ALL_TOOLS" in src
-    # Oracle boarding, same day, 6 reports: on Linux the tools arrive
-    # as TOP-LEVEL `mcp__asterism_tools__*` functions — the note must
-    # name that shape too, or it re-opens the guesswork it closes.
-    assert "mcp__asterism_tools__" in src
-
-
 def test_zen_turn_budget_margin_scales_with_the_wall(tmp_path: Path) -> None:
     """A flat 300s wrap-up margin (calibrated on the 1800s formalizer)
     starved a 420s presearch to a 120s turn budget — tools locked

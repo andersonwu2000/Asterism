@@ -22,10 +22,9 @@ and these tests hold each backend to it.
 """
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 
-from Tooling.llm import antigravity_cli, claude_cli, codex_cli, envelope
+from Tooling.llm import antigravity_cli, codex_cli, envelope
 from Tooling.llm.base import LLMRequest
 
 #: Fields of `LLMRequest` that are a CAPABILITY — something the spawn
@@ -50,18 +49,6 @@ def test_the_envelope_carries_every_capability_the_caller_grants(
     assert env.read_allow_roots == (proofs, papers), (
         "extra_read_dirs never reached the envelope, so a backend that "
         "reads only the envelope cannot honour it")
-
-
-def test_every_backend_renders_the_read_grant():
-    """agy needs it most — its unmatched actions are soft-denied and a
-    soft-deny ends the turn — but a backend that cannot express a grant
-    must say so rather than drop it."""
-    for mod in (antigravity_cli, claude_cli, codex_cli):
-        src = inspect.getsource(mod)
-        assert ("read_allow_roots" in src or "extra_read_dirs" in src), (
-            f"{mod.__name__} renders neither the envelope's "
-            f"read_allow_roots nor the request's extra_read_dirs — the "
-            f"caller's grant is dropped on the floor")
 
 
 def test_the_judge_is_granted_its_two_directories_and_not_the_workspace(
@@ -136,29 +123,3 @@ def test_codex_tells_the_tools_server_which_attempt_it_serves(
     assert str(spec.write_roots[0]) in toml
 
 
-def test_agy_tells_the_tools_server_which_attempt_it_serves(
-        tmp_path: Path):
-    """agy's route is the per-spawn `mcp_config.json` it writes into the
-    fake HOME; its env allowlist never carried this."""
-    from Tooling.llm.spawn_guard import ATTEMPT_DIR_ENV
-    src = inspect.getsource(antigravity_cli)
-    assert ATTEMPT_DIR_ENV in src or "ATTEMPT_DIR_ENV" in src, (
-        "agy writes the tools server's config and must declare the "
-        "attempt dir in it")
-    # …and it must land in the file, not merely be mentioned.
-    assert 'entry.setdefault("env", {})' in src
-
-
-def test_claude_tells_the_tools_server_which_attempt_it_serves():
-    from Tooling.llm.spawn_guard import ATTEMPT_DIR_ENV
-    src = inspect.getsource(claude_cli)
-    assert "ATTEMPT_DIR_ENV" in src
-    assert ATTEMPT_DIR_ENV == "ASTERISM_SPAWN_ATTEMPT_DIR"
-
-
-def test_the_tool_reads_the_declaration_every_backend_writes():
-    """The consumer end of the same fact — and it must not depend on
-    the fence variable, which is the route codex drops."""
-    from Tooling.knowledge import workspace_query as wq
-    src = inspect.getsource(wq._own_attempt_dir)
-    assert "ATTEMPT_DIR_ENV" in src

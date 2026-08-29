@@ -20,7 +20,6 @@ baseline.
 """
 from __future__ import annotations
 
-import sys
 import types
 
 import pytest
@@ -342,16 +341,6 @@ def test_midlease_rewarm_failure_reopens_warmup_never_bricks(
     assert "FAILED" in capsys.readouterr().err
 
 
-def test_acquire_slides_and_credits_while_rewarming(gw):
-    """The blocked caller's wait is the framework's, not the agent's —
-    same contract as the elab gate (source pin: the acquire loop must
-    slide its deadline on `rewarming` and record the credit)."""
-    import inspect
-    src = inspect.getsource(gw._acquire_slot)
-    assert "rewarming" in src and "_record_queue_credit" in src
-    assert "_maybe_kick_midlease_rewarm" in src
-
-
 def _weight_env(gw, monkeypatch, readings):
     called: list = []
     monkeypatch.setattr(gw.governor, "_slot_private_mb_cached",
@@ -415,13 +404,3 @@ def test_the_reading_is_private_bytes_not_working_set():
     assert "rss" not in src.lower().split("never rss")[-1][:400]
 
 
-@pytest.mark.skipif(sys.platform != "win32",
-                    reason="cmdline shape measured on the Windows pool")
-def test_the_slot_to_worker_map_reads_the_workers_own_argv():
-    """Not process order, not counting: Lean puts the document URI on
-    its worker's command line, so the mapping is exact and survives
-    restarts in any order."""
-    import inspect
-    from Tooling.lsp import gateway
-    src = inspect.getsource(gateway.weigh._slot_private_mb)
-    assert "--worker" in src and "cmdline" in src

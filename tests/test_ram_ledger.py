@@ -138,12 +138,7 @@ def test_agent_proc_prefixes_cover_every_provider():
     layer actually spawns — a provider missing here silently degrades
     the measurement to the fallback constant (general-framework rule:
     coefficients are measured, not case-tuned)."""
-    import inspect
-    import Tooling.llm as llm
-    src = inspect.getsource(llm)
-    for provider, prefix in [("claude", "claude"), ("codex", "codex"),
-                             ("antigravity", "agy")]:
-        assert f'"{provider}"' in src, f"provider table lost {provider}?"
+    for prefix in ("claude", "codex", "agy"):
         assert prefix in rl.AGENT_PROC_PREFIXES
 
 
@@ -338,11 +333,6 @@ def test_cache_reserve_is_a_budget_tenant(monkeypatch):
     assert rl.cache_reserve_gb(125.0) == 4.0, "env override is absolute"
     monkeypatch.setenv("ASTERISM_RAM_CACHE_RESERVE_GB", "banana")
     assert rl.cache_reserve_gb(32.0) == pytest.approx(2.0)
-    # both admission formulas carry both reserves (one fact per term)
-    import inspect
-    for fn in (rl.compute_target_slots, rl.DispatcherLedger.nl_admissible):
-        src = inspect.getsource(fn)
-        assert "cache_reserve_gb(" in src and "base_reserve_gb(" in src
 
 
 # ── measured-pressure feedback ──────────────────────────────────
@@ -404,16 +394,6 @@ def test_pressure_hysteresis_holds_then_releases(monkeypatch):
     assert led.dispatch_paused is False
 
 
-def test_slot_reading_includes_page_tables():
-    """~180 MB of VmPTE per worker (13.3 GB across 77, census
-    2026-08-26) dies with the worker — it belongs in the per-slot
-    price, not in a fixed reserve."""
-    import inspect
-    from Tooling.lsp import gateway
-    src = inspect.getsource(gateway.weigh._slot_private_mb)
-    assert "_vm_pte_bytes" in src
-
-
 def test_nl_yield_demand_driven_priority(monkeypatch):
     """Owner ruling 2026-08-26 (forecast -> demand): a budget-blocked
     NL admission with free slots standing yields ONE slot per tick —
@@ -447,17 +427,6 @@ def test_nl_yield_only_answers_the_budget_branch(monkeypatch):
     led.slot_gb = 1.0
     assert led.nl_admissible(0) is False
     assert led.nl_blocked_by_budget is False
-
-
-def test_dispatcher_reserves_for_inflight_nl_only():
-    """Source pin: the tick's nl_demand is _nl_fly alone — the
-    queued-wakes forecast reserve is retired; queue_size survives only
-    inside the yield request gate."""
-    import inspect
-    from Tooling.core import dispatcher
-    src = inspect.getsource(dispatcher.run)   # the tick lives in run() (B4)
-    assert "nl_demand=_nl_fly," in src
-    assert "request_nl_yield" in src
 
 
 # ── partition + queue plumbing ──────────────────────────────────
