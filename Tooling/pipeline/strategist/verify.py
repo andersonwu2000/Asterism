@@ -898,6 +898,49 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # currency: `predicted_batch_delta` (transitions §2.3) — a stalled
     # wake with nothing live in flight must move ≥1 state or dispatch
     # ≥1 new piece of work, root or no root.
+    if trigger_kind == "routine_fired" and group_id is not None:
+        # The action wake exists to act on the audit's findings: every
+        # fired root must be the target of a decision in this batch —
+        # parked (ConfirmShelve, restart condition in PAST) or kept with
+        # its argument (Inject). A structural check on decision targets,
+        # never on prose (owner design 2026-08-30).
+        from . import audit as _audit
+        pending = _audit.pending_fired_verdict(conn, int(group_id))
+        if pending is not None:
+            fired = json.loads(str(pending["fired_json"] or "[]"))
+            targets: set[int] = set()
+            for d in decisions:
+                t = getattr(d, "target_goal_id", None)
+                if t is None:
+                    continue
+                try:
+                    targets.add(int(t))
+                    continue
+                except (TypeError, ValueError):
+                    pass
+                row = conn.execute(
+                    "SELECT id FROM goals WHERE problem = ? AND slug = ?",
+                    (problem, str(t))).fetchone()
+                if row is not None:
+                    targets.add(int(row["id"]))
+            untouched = []
+            for f in fired:
+                gid_f = f.get("goal_id")
+                if gid_f is not None and int(gid_f) not in targets:
+                    untouched.append(f)
+            if untouched:
+                lines = "\n".join(
+                    f"  - `{f.get('slug')}` (goal_id {f.get('goal_id')}): "
+                    f"criterion {f.get('criterion')} — {f.get('reason')}"
+                    for f in untouched)
+                return (
+                    f"routine audit {int(pending['id'])} fired on lines "
+                    f"this batch leaves untouched:\n{lines}\n"
+                    f"Act on every fired root: `ConfirmShelve` it (its "
+                    f"restart condition in the Roadmap's PAST) or "
+                    f"`Inject(target_goal_id=...)` it with the argument "
+                    f"that keeps it. Other decisions may accompany these.")
+
     if trigger_kind in BATCH_DONE_LIKE:
         try:
             # v35 — ask about THIS group's slice: a sibling group's work

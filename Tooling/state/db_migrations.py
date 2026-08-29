@@ -989,6 +989,16 @@ def _apply_locked(conn: sqlite3.Connection) -> None:
         _migrate_to_v44(conn)
         conn.execute("PRAGMA user_version = 44")
         conn.commit()
+    if v < 45:
+        # v45 — the routine wake is an audit (owner design 2026-08-30):
+        # strategist_decisions.trigger_kind gains 'routine_fired' (the
+        # action wake a fired audit seats); the routine_verdicts table
+        # itself arrives via the SCHEMA's CREATE TABLE IF NOT EXISTS.
+        # SQLite cannot widen a CHECK in place; rebuild from the live
+        # DDL as v43 did.
+        _migrate_to_v45(conn)
+        conn.execute("PRAGMA user_version = 45")
+        conn.commit()
 
     # Judge provenance columns (calibration survey P1/P2, 2026-08-29).
     # Additive nullable audit columns, no version bump (the
@@ -2762,3 +2772,42 @@ def _migrate_to_v44(conn: sqlite3.Connection) -> None:
     if n:
         print(f"[v44] strategy_subgoals.link_kind backfilled: {n} cited"
               f" edge(s) reclassified (rest minted)", flush=True)
+
+
+def _migrate_to_v45(conn: sqlite3.Connection) -> None:
+    """Widen strategist_decisions.trigger_kind CHECK to accept
+    'routine_fired' — the v43 rebuild, one value further. Derives the
+    DDL from the live sqlite_master entry (vintage-proof), self-heals an
+    interrupted prior attempt, runs with FK enforcement off."""
+    conn.execute("DROP TABLE IF EXISTS _sd_v45")
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'strategist_decisions'").fetchone()
+        sql = (row["sql"] or "") if row else ""
+        if not sql or "'routine_fired'" in sql:
+            return  # fresh DB from current SCHEMA already carries it
+        if "'stall'" not in sql:
+            raise RuntimeError(
+                "v45: strategist_decisions CHECK enum has no 'stall' —"
+                " v43 did not run; refusing to guess")
+        new_sql = sql.replace("'stall'", "'stall','routine_fired'", 1)
+        new_sql = re.sub(r"CREATE TABLE\s+\"?strategist_decisions\"?",
+                         "CREATE TABLE _sd_v45", new_sql, count=1)
+        indexes = [r["sql"] for r in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index'"
+            " AND tbl_name = 'strategist_decisions' AND sql IS NOT NULL")]
+        conn.execute(new_sql)
+        n = conn.execute(
+            "INSERT INTO _sd_v45 SELECT * FROM strategist_decisions").rowcount
+        conn.execute("DROP TABLE strategist_decisions")
+        conn.execute("ALTER TABLE _sd_v45 RENAME TO strategist_decisions")
+        for s in indexes:
+            conn.execute(s)
+        if n:
+            print(f"[v45] strategist_decisions rebuilt with 'routine_fired'"
+                  f" in the trigger_kind CHECK ({n} row(s) carried)",
+                  flush=True)
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")

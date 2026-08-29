@@ -480,7 +480,8 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                             -- rate grep-only).
                             CHECK(trigger_kind IN
                                   ('first_launch','pending_review','routine',
-                                   'inject_batch_done','audit','stall')),
+                                   'inject_batch_done','audit','stall',
+                                   'routine_fired')),
     decision_kind       TEXT NOT NULL
                             -- 'Reopen'/'InitializeDefs': LEGACY, never emitted now
                             -- (see strategist.DECISION_KINDS); retained so pre-
@@ -629,6 +630,28 @@ CREATE TABLE IF NOT EXISTS library_decls (
 -- `problem\x1ffile` (per-file migrate/cleanup unit). Pure new table → a plain
 -- CREATE TABLE IF NOT EXISTS suffices for fresh + existing DBs (no user_version
 -- bump; init_schema re-runs SCHEMA each start).
+-- routine_verdicts — the routine wake as an AUDIT (owner design
+-- 2026-08-30). One row per routine wake: the verdict.json it handed in,
+-- its fired findings, and the roots it never ruled on. A fired row
+-- with acted_at NULL is the persistent state that seats the action wake
+-- (`trigger_kind='routine_fired'`), the way an unacknowledged Inject
+-- batch seats a batch-done wake; the action wake's commit stamps
+-- acted_at.
+CREATE TABLE IF NOT EXISTS routine_verdicts (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem        TEXT NOT NULL REFERENCES problems(name),
+    group_id       INTEGER NOT NULL,
+    pipeline_id    TEXT NOT NULL,
+    verdict_json   TEXT NOT NULL,
+    fired_json     TEXT NOT NULL DEFAULT '[]',
+    unaudited_json TEXT NOT NULL DEFAULT '[]',
+    fired          INTEGER NOT NULL DEFAULT 0 CHECK(fired IN (0,1)),
+    acted_at       TEXT NULL DEFAULT NULL,
+    created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rv_group_pending
+    ON routine_verdicts(group_id, fired, acted_at);
+
 CREATE TABLE IF NOT EXISTS librarian_fail_counts (
     target_id   TEXT PRIMARY KEY,
     n           INTEGER NOT NULL,
@@ -741,7 +764,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 44
+_CURRENT_USER_VERSION = 45
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:

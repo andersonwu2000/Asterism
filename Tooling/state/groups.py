@@ -495,6 +495,17 @@ def touch_strategist(conn: sqlite3.Connection, group_id: int, *,
             " WHERE id = ?", (ts, ts, int(group_id)))
 
 
+def touch_routine(conn: sqlite3.Connection, group_id: int) -> None:
+    """Advance ONLY the routine clock — the routine audit's commit
+    (2026-08-30). `last_strategist_at` is the batch-acknowledgement
+    ratchet and stays where it is."""
+    ts = now()
+    conn.execute(
+        "UPDATE groups SET last_routine_at = ?, updated_at = ?"
+        " WHERE id = ?", (ts, ts, int(group_id)))
+    conn.commit()
+
+
 def _qualify_headings(charter: str, gid: int) -> str:
     """Stamp `[group N]` into every markdown heading of a STACKED
     charter, so identical headings from different charters stay

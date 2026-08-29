@@ -92,6 +92,27 @@ def strict_ancestor_slugs(conn: sqlite3.Connection,
     return {r["slug"]: r["lean_path"] for r in rows}
 
 
+def descendant_ids(conn: sqlite3.Connection, goal_id: int) -> "set[int]":
+    """Goal ids of every STRICT descendant of `goal_id` via the
+    strategy_subgoals graph — the mirror of `strict_ancestor_ids`. A
+    "line" for the routine audit (2026-08-30) is a dispatched root plus
+    this set; the tallies the auditor rules on are counted over it."""
+    rows = conn.execute(
+        "WITH RECURSIVE kids(id) AS ("
+        "  SELECT ss.subgoal_id FROM strategies s"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    WHERE s.goal_id = ?"
+        "  UNION"
+        "  SELECT ss.subgoal_id FROM strategies s"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    JOIN kids k ON k.id = s.goal_id"
+        ") "
+        "SELECT id FROM kids",
+        (goal_id,),
+    ).fetchall()
+    return {int(r["id"]) for r in rows} - {int(goal_id)}
+
+
 def strict_ancestor_ids(conn: sqlite3.Connection,
                         goal_id: int) -> "set[int]":
     """Goal ids of every STRICT ancestor of `goal_id` via the

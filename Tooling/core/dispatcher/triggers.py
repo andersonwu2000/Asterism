@@ -250,6 +250,26 @@ def strategist_triggers(conn: sqlite3.Connection,
             continue
         _enqueue_strategist(conn, gid, prob, priority=10)
 
+    # T1.6 — a FIRED routine audit nobody has acted on (2026-08-30):
+    # persistent state, seated like an unacknowledged batch. The
+    # findings must not wait for the next routine clock.
+    _scope_sql = "" if scope is None else " AND problem LIKE ?"
+    _scope_args: tuple = () if scope is None else (scope,)
+    for row in conn.execute(
+            "SELECT DISTINCT group_id, problem FROM routine_verdicts"
+            " WHERE fired = 1 AND acted_at IS NULL" + _scope_sql,
+            _scope_args).fetchall():
+        prob = str(row["problem"])
+        gid = int(row["group_id"])
+        if not _transitions.problem_accepts_wake(conn, prob,
+                                                 "inject_batch_done"):
+            continue
+        if db.problem_has_awaiting_human(conn, prob):
+            continue
+        if _strategist_inflight(conn, gid, running):
+            continue
+        _enqueue_strategist(conn, gid, prob, priority=15)
+
     # T4 — structural stall trigger.
     # Fires when a problem has no open goals (BFS has nothing to
     # dispatch), no in-flight Backward/Builder/Forward worker, and
@@ -463,6 +483,14 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
     if _routine_due(conn, problem, routine_interval_min,
                     since_iso=since_iso, group_id=group_id):
         return ("routine", pending_id)
+    # A FIRED routine audit is persistent state (routine_verdicts row,
+    # acted_at NULL) the way an unacknowledged batch is — it seats the
+    # action wake right behind the periodic wake (owner design
+    # 2026-08-30): the audit's findings go stale fastest.
+    if group_id is not None:
+        from ...pipeline.strategist import audit as _audit
+        if _audit.pending_fired_verdict(conn, int(group_id)) is not None:
+            return ("routine_fired", pending_id)
     unack_batches = db.unacknowledged_inject_batches(
         conn, problem, group_id)
     if unack_batches:

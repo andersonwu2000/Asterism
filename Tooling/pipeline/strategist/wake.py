@@ -154,7 +154,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     # mandatory-advance rule the rescue exists to invoke (there is no
     # stall.md — the identity split is for the DB record, not for a
     # different conversation).
-    _prompt_kind = ("inject_batch_done" if trigger_kind == "stall"
+    _prompt_kind = ("inject_batch_done"
+                    if trigger_kind in ("stall", "routine_fired")
                     else trigger_kind)
     prompt_path = PROMPT_DIR / "strategist" / f"{_prompt_kind}.md"
     if not prompt_path.exists():
@@ -205,7 +206,8 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
         problem_dir=problem_dir, attempts_dir=attempts_dir,
         session_id=sid, timeout_sec=strategist_timeout,
         mcp_config_path=tools_cfg,
-        prompt_flags={"has_history": has_history, "has_kb": has_kb},
+        prompt_flags={"has_history": has_history, "has_kb": has_kb,
+                      "routine_verdict": trigger_kind == "routine_fired"},
     )
     # Persist the plan note BEFORE any outcome branching: the note is the
     # agent's memory of its own thinking — worth keeping even when the
@@ -217,6 +219,18 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             failure_reason=_rc_to_reason(rc),
             failure_detail=f"agent rc={rc}",
         )
+    if trigger_kind == "routine":
+        # The routine wake is an AUDIT (owner design 2026-08-30): it
+        # hands in verdict.json and decides nothing — no decision.json,
+        # no proposal, no Adversary round. A fired finding becomes the
+        # persistent state that seats the action wake.
+        from .audit import finish_routine_audit
+        return finish_routine_audit(
+            conn, problem=problem, group_id=group_id,
+            attempts_dir=attempts_dir, problem_dir=problem_dir,
+            workspace=workspace, pipeline_id=pipeline_id, sid=sid,
+            prompt_path=prompt_path, tools_cfg=tools_cfg,
+            strategist_timeout=strategist_timeout)
 
     # Stage 3-4 — parse + verify + the proposal-package gate + the
     # Adversary, unified into one N-round revision loop on the same

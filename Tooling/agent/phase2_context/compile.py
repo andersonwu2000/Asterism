@@ -757,6 +757,14 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
                  workspace),
         _section_user_word_strategist(intent),
     ]
+    from ...pipeline.strategist import audit as _audit
+    if trigger_kind == "routine_fired" and group_id is not None:
+        # The action wake a fired audit seated: its findings lead the
+        # Context, verbatim (2026-08-30).
+        pending = _audit.pending_fired_verdict(conn, int(group_id))
+        if pending is not None:
+            section_names.append("routine_verdict")
+            sections.append(_audit.render_verdict_section(pending))
     # T2 review_context (Phase 2 §2.2) — failure brief + existing
     # strategies + ancestor chain. Un-gated from the pending_review
     # trigger (owner design 2026-08-26, wake merge): the
@@ -836,7 +844,16 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_paper_index_strategist(intent, workspace, conn,
                                         attempts_dir=attempts_dir),
     ]
+    # The lines this group has in flight — what the routine audit rules
+    # on per line (criteria 3, 4). Rendered for every wake; the ROUTINE
+    # wake also freezes the roster as `_audit_roots.json`, the snapshot
+    # its verdict is checked against (a line that grows while the
+    # auditor thinks is not its omission).
+    lines = _audit.in_flight_lines(conn, problem, group_id)
+    section_names.append("lines_in_flight")
+    sections.append(_audit.render_lines_section(lines))
     if trigger_kind == "routine":
+        _audit.write_roots_snapshot(attempts_dir, lines)
         # Curation surface for the kb_curation.json sidecar — only the
         # routine wake gets it (the power is structurally routine-only;
         # moved from the retired audit wake 2026-07-25).

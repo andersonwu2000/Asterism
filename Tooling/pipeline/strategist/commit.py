@@ -572,6 +572,13 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                              routine=(trigger_kind == "routine"))
     if trigger_kind == "routine":
         db.update_problem_last_routine_at(conn, problem)
+    if trigger_kind == "routine_fired":
+        # The action wake's batch stands: the audit it answered is acted
+        # on (verify already required a decision per fired root).
+        from . import audit as _audit
+        pending = _audit.pending_fired_verdict(conn, int(gid))
+        if pending is not None:
+            _audit.mark_acted(conn, int(pending["id"]))
     conn.commit()
     return out
 

@@ -473,7 +473,7 @@ _WATERMARKS = {
     "Tooling/state/db/problems.py": 1200,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/reach.py": 200,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/strategies.py": 400,  # born 2026-08-29 from the db.py split
-    "Tooling/state/db/pipelines.py": 150,  # born 2026-08-29 from the db.py split
+    "Tooling/state/db/pipelines.py": 165,  # born 2026-08-29 from the db.py split  # +routine audit 2026-08-30
     "Tooling/state/db/queue.py": 250,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/deaths.py": 100,  # born 2026-08-29 from the db.py split
     "Tooling/state/db/library.py": 300,  # born 2026-08-29 from the db.py split
@@ -512,7 +512,7 @@ _WATERMARKS = {
     # self-heal (2026-08-24); +v43 stall rebuild.
     # 2750→2800: judge provenance columns (survey P1/P2,
     # 2026-08-29) — conscious bump.
-    "Tooling/state/db_migrations.py": 2800,
+    "Tooling/state/db_migrations.py": 2820,  # +routine audit 2026-08-30
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
@@ -656,7 +656,7 @@ _WATERMARKS = {
     # `__init__.py` re-exports every public (and tested private) symbol.
     "Tooling/pipeline/strategist/__init__.py": 100,  # born 2026-08-28 from the strategist.py split (B1)
     "Tooling/pipeline/strategist/model.py": 300,  # born 2026-08-28 from the strategist.py split (B1)
-    "Tooling/pipeline/strategist/verify.py": 1050,  # born 2026-08-28 from the strategist.py split (B1)
+    "Tooling/pipeline/strategist/verify.py": 1085,  # born 2026-08-28 from the strategist.py split (B1)  # +routine audit 2026-08-30
     "Tooling/pipeline/strategist/commit.py": 1000,  # born 2026-08-28 from the strategist.py split (B1)
     "Tooling/pipeline/strategist/wake.py": 900,  # born 2026-08-28 from the strategist.py split (B1)
     # `Tooling/agent/phase2_context.py` (2,428 lines, no prior watermark
@@ -677,7 +677,7 @@ _WATERMARKS = {
     "Tooling/agent/phase2_context/__init__.py": 150,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/dossier.py": 250,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/outcomes.py": 850,  # born 2026-08-28 from the phase2_context.py split (B2)
-    "Tooling/agent/phase2_context/compile.py": 1150,  # born 2026-08-28 from the phase2_context.py split (B2)
+    "Tooling/agent/phase2_context/compile.py": 1165,  # born 2026-08-28 from the phase2_context.py split (B2)  # +routine audit 2026-08-30
     "Tooling/agent/phase2_context/forward.py": 350,  # born 2026-08-28 from the phase2_context.py split (B2)
     # `Tooling/serve/data.py` (2,357 lines, no prior watermark here) split
     # move-only into `Tooling/serve/data/` along the file's own section

@@ -65,13 +65,18 @@ TRIGGER_KINDS: frozenset[str] = frozenset({
     # grep-only). Behaves as inject_batch_done everywhere; only the
     # recorded identity differs.
     "stall",
+    # The action wake a FIRED routine audit seats (2026-08-30): the
+    # batch-done conversation with the audit's findings on top of its
+    # Context, and a verify rule that every fired root is acted on.
+    "routine_fired",
 })
 
 #: A stall wake IS a batch-done wake behaviorally — same prompt, same
 #: mandatory-advance rule, same reopen-promise section. Branch points
 #: test membership here, never `== "inject_batch_done"`, so the split
 #: identity cannot silently drop one of the two.
-BATCH_DONE_LIKE: frozenset[str] = frozenset({"inject_batch_done", "stall"})
+BATCH_DONE_LIKE: frozenset[str] = frozenset({"inject_batch_done", "stall",
+                                              "routine_fired"})
 
 # Research mode (research_mode_design.md §1) — the proposal-package
 # gate keys on decision SHAPE: a batch wholly within the exempt kinds

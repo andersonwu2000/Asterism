@@ -239,6 +239,26 @@ def validate_json(text: str = "", file: str = "") -> str:
         # through as OK" and died a whole round later at the parser
         # (4 judge self-reports, 2026-08-22). Same facts the server
         # parser enforces, surfaced before the hand-in.
+        if "criteria" in obj and isinstance(obj.get("criteria"), dict) \
+                and isinstance(obj["criteria"].get("3"), list) \
+                and "5" not in obj["criteria"]:
+            # The routine AUDIT verdict (criteria 1-4, 3 and 4 per line
+            # in flight). Shape errors are what the hand-in parser would
+            # refuse; coverage notes are advisory — a line left unruled
+            # is recorded as unaudited, never invented as fired.
+            from ..pipeline.strategist import audit as _audit
+            from . import workspace_query as _wq
+            own = _wq._own_attempt_dir()
+            snap = (_audit.read_roots_snapshot(own) if own else None) or []
+            _v, err = _audit.parse_verdict(src, snap)
+            if err:
+                return f"OK as JSON, but the audit parser will reject it: {err}"
+            notes = _audit.coverage_report(obj, snap)
+            if notes:
+                return ("OK as JSON, audit-shaped; coverage: "
+                        + "; ".join(notes))
+            return (f"OK: audit-shaped, criteria 1-4 present, every line "
+                    f"in flight ruled on ({len(snap)} line(s))")
         if "criteria" in obj:
             crit = obj.get("criteria")
             if not isinstance(crit, dict):
