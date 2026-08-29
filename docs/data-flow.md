@@ -1,520 +1,323 @@
-# Asterism — Data Flow
+# Asterism data flow
 
-This doc covers **dynamics**: how one dispatcher tick runs, each pipeline's flow, and the
-mechanisms shared across pipelines. Static shape (roles, invariants, schema) is in
-`docs/architecture.md`; the full failure-vocabulary mapping lives **only** in
-`docs/failure_modes.md` §2 and is not repeated here.
+Verified against framework code at `dabf9e8f` (2026-08-30).
 
-> Originally written 2026-05-06; fully rewritten against the code 2026-07-29 (Formalizer merge, research mode, constant corrections);
-> 2026-08-02 added the discussion-group tree (v35, per-group seats); 2026-08-19 Manifest retired (v40: charter/word/settings are DB-resident).
-> All numbers in this doc are **program defaults**; this repo's overrides live in `Asterism.yaml`, which is authoritative.
+This document owns **runtime sequencing**: daemon startup, one dispatcher tick, pipeline
+lifecycle, agent context, gateway admission, and recovery. Static state and invariants belong
+in [`architecture.md`](architecture.md). Failure traits, accounting, and cascade branches
+belong in [`failure_modes.md`](failure_modes.md).
 
----
+## 1. End-to-end flow
 
-## 0. Read first: two global conventions
+```text
+durable state
+    │
+    ├─ derive queue work ── lease row ── insert pipeline(running)
+    │                                      │
+    │                                      ├─ compile Context + scratch
+    │                                      ├─ run worker / retries / gates
+    │                                      └─ finalize pipeline + release scratch
+    │
+    ├─ cascade completed outcome on the main thread
+    ├─ promote ready strategies / revive aliases
+    ├─ verify newly proved roots
+    ├─ derive Librarian and Strategist work
+    └─ repeat until Ingest + Library endgame or an operator/limit stops the run
+```
 
-**Compile verification goes through the LSP gateway, not cold `lake build`.**
-All pipelines' elaborate / build verification hits the resident LSP gateway warm workers (`lake serve`),
-saving the 5–15s cold startup each time. A few exceptions are **deliberately** cold: dedupe's
-apply/isDefEq probes, each problem's Defs/Root pre-flight before first dispatch, and the Librarian's
-foreign-closure decl gate / final warn-gate / post-import-swap rebuild-gate
-(warm slots only serve same-closure whole-file gates).
+The queue is a delivery mechanism, not the authority for whether work exists. BFS work,
+Strategist wakes, and Librarian units are re-derived from database state. A queue row is
+leased while a pipeline is in flight and deleted only when that pipeline completes.
 
-**`dispatch.pool == gateway workers`, 1:1 binding + own-slot discipline (#118).**
-Worker pool size equals the gateway backend count and they scale together (actual slot count minus
-the RAM clamp and the `gateway.interactive_slots` reserved for the serve UI). Each pipeline claims
-one slot via `/register` before spawn; all verification during its lifetime hits
-**its own slot** (`verify_in_session` with session token; shared dispatch lives in
-`_axiom.verify_on_own_slot`, falling back to `verify_file` when there is no token). `verify_file` is
-the **borrow** entry (gateway picks a slot, evicting that slot's warm content), reserved for
-non-pipeline contexts: main-thread housekeeping (G1 revival, root integrity gate), operator CLI,
-and pre-spawn framework probes (hint pre-pass, skeleton signature, pre-intake verification).
-Borrow prefers unclaimed slots.
+## 2. Daemon startup and dispatcher tick
 
----
+### Startup
 
-## 1. Three storage tiers
+`Tooling/core/dispatcher/loop.py::run` establishes the runtime in this order:
 
-| Tier | Location | Lifetime | Purpose |
-|---|---|---|---|
-| **Ephemeral** | `.attempts/<pipeline_id>/` | one spawn | agent working dir; unconditionally `rmtree` on exit |
-| **Cross-spawn** | `Problems/<p>/.drafts/<kind>_g<gid>.md` | until that goal is proved | progress notes left after a timeout for the next attempt |
-| **Permanent** | DB + `proofs/L_*.lean` + `_strategy_s*.lean` + `Root.lean` | lives as long as the problem | single source of truth (SoT) |
+1. resolve static or RAM-ledger concurrency and initialize the executor;
+2. connect, migrate the schema, validate scope, and load DB-backed problem intent;
+3. run startup recovery, then sweep orphan spawn sandboxes;
+4. regenerate `BRIEF.md` for registered problems and surface human-paused problems;
+5. warm the Lean gateway in the background and run the Lean interface contract gate;
+6. begin the tick loop. NL work may run while Lean workers are still warming.
 
-Everything the agent writes into `.attempts/<pid>/` (success or not) is packed into
-`dead_attempts.artifacts` before the `rmtree`. **The DB is always the SoT.**
+The daemon records source and configuration fingerprints at boot. With handoff enabled, a
+later fingerprint change stops new dispatch, drains in-flight work, and transfers the scope to
+a successor. This is a lifecycle mechanism, not hot reload: a running pipeline always finishes
+under the process that started it.
 
----
+### One tick
 
-## 2. One dispatcher tick
+The stable tick order is:
 
-The main loop runs each tick in a fixed order:
-
-| # | Step | What it does |
-|---|---|---|
-| 1 | **cascade** | Harvest the previous tick's completed pipeline outcomes, apply goal/strategy state transitions (details in `failure_modes.md` §2) |
-| 2 | **verify housekeeping** | Assemble strategies whose sub-goals are all proved, write the alias into the parent; run shelved-revival (§4) |
-| 3 | **post-proved gate** | Problems whose root just flipped proved: fix drift → root integrity verification → refresh TREE (end of §4) |
-| 4 | **librarian refill** | Schedule Library-ization work for opt-in, already-Ingested problems (§3.5) |
-| 5 | **exit check** | `all_problems_ingested` ∧ no Librarian backlog ∧ no outstanding harvest → daemon exits |
-| 5b | **quota-wait gate** | Subscription quota confirmed exhausted → sleep until resets_at, pause all spawns (DB-side triggers still run; budget clock deducts the wait) |
-| 6 | **bfs refill** | Open goals always enqueue `Formalizer`; those with `attempts ≥ SHELVE_THRESHOLD` go to strategist review instead, no dispatch |
-| 7 | **strategist triggers** | Schedule routine (T1) / stall (T4) wakes; since v35 seats are **per-group** (`groups_needing_t1` / `groups_stalled`, queue rows `target_kind='Group'`; legacy Problem rows still recognized); wakes only delivered to `problems.state='active'` (WAKE_LEGALITY) |
-| 7b | **reconcile_stuck_states** | Per-tick safety net: repairs orphaned pending_review / NULL-outcome Inject |
-| 7c | **lease sweep** | Release leased queue rows whose owner is dead **or** past TTL (6h) (Windows reuses PIDs, hence both criteria) |
-| 8 | **spawn** | While slots are free, pop the queue and dispatch pipelines into worker threads |
-
-The tail of the tick also handles: `--once` exit, idle exit (no in-flight, empty queue, no open
-goals, no ready strategies), periodic TREE.md redraw, budget-expiry exit. The daemon also detects
-source/config fingerprint drift, drains, then spawns a successor daemon for handoff
-(`dispatch.handoff_on_code_change`).
-
-### Step 8 — spawn details
-
-**Since v17, pop = lease claim**: the row is marked `owner_pid`+`leased_at` instead of deleted
-(concurrent dispatchers can't grab the same row; leased rows still count as "in queue" for dedup
-queries); only at pipeline end does `complete_queue_row` delete it. Pop / flush / startup cleanup
-all filter by the daemon's `--scope`. **NL-first gate**: while the gateway is not yet warm, only
-non-Lean kinds are popped (Strategist goes first, Lean work stays in the queue).
-
-Between pop and spawn, in order:
-
-1. 3-tuple `(target_id, kind, decision_id)` dedup (mint siblings in the same batch are distinguished by decision_id and may run in parallel)
-2. Skip kinds in quota cooldown
-3. Strategist rows for already-Ingested problems are dropped outright (stale)
-4. **lazy verify gate**: on a problem's first dispatch in this daemon run, pay one `lake build Defs+Root` (~5–15s); on failure, quarantine
-5. `pool.submit(_run_pipeline, ...)` into a worker thread
-
-> Only three live queue kinds: `Strategist` / `Formalizer` / `Librarian` (`Scholar` retired
-> 2026-08-22 — paper fetching folded into the Strategist's own tool surface).
-> `Builder`/`Backward`/`Forward` are legacy row names from before the merge; the dispatcher still recognizes and routes them the same way.
-
----
-
-## 3. Pipeline flows
-
-### 3.0 Common skeleton
-
-**One pipeline = the full lifecycle of one claude session** (including retries), housed in
-`run_with_session_retries` in `Tooling/pipeline/_retry.py`. Five outcomes:
-`proved` / `success` / `failed` / `exhausted` / `moot`.
-
-**Entry**: pre-write the framework-locked files (§5) → **intake** (fresh short session writes `intake.json`:
-proceed / decline; the only decline vocabulary is `return_to_nl` and `unprovable`, the latter
-must attach a counterexample note or fail-open lets it proceed) → only on proceed run presearch
-+ compile Context.md. The intake session is then resumed by the work loop (continuation),
-nothing wasted.
-**Falsity is non-terminal at intake too** (owner ruling 2026-08-25): a bare `unprovable` CLAIM
-maps to `agent_declined`, same as the work-turn directive (§3.1) — a goal reaches `disproved`
-only through the kernel-certified `-- decline: disprove` gate, never a bare assertion.
-
-**Retry loop (at most budget rounds; budget = SHELVE_THRESHOLD − goal.attempts)**
-
-Each round first cascade re-checks (goal already terminal → `moot`), then spawns, branching on rc:
-
-| rc | Meaning | Handling |
-|---|---|---|
-| 0 | normal return | `parse_fn` → return if terminal; non-terminal failure → buffer + warm resume next round |
-| 124 | timeout (SIGKILL) | try one salvage parse; failing that, postmortem writes `.drafts/` → `exhausted` (§6.2) |
-| 125 | stale session (warm only) | re-mint sid in place + cold re-spawn, no budget spent |
-| 128 | thinking-trap watchdog | fresh-sid takeover continues, no budget spent (reason `agent_stuck_thinking`) |
-| 129 | daemon shutdown | wrap up with reason `daemon_shutdown` |
-| 126 / 127 / fast-fail | infra | early-return `failed`, no budget spent, not buffered (§6.3) |
-
-**Wrap-up**: dispatcher writes the pipelines row → flushes the accumulated pending_failures (one
-dead_attempt per entry) → `cascade_one` applies state transitions → clears `.attempts/`; only
-successful outcomes clear `.drafts/`.
-
-Easy to misread:
-
-- **attempts++ is immediate** (at the moment each round fails); the dead_attempt row waits until
-  flush. A daemon killed mid-run leaves attempts one higher (ledger drift, explicitly accepted).
-- **`.drafts/` clearing depends on kind**: success tokens (`proved`/`success`) and `moot` clear it;
-  `failed`/`exhausted` keep it for the next cold restart.
-
-**Strategist Inject exception**: when the pipeline carries a `decision_id`, the budget gate is fully
-bypassed (full budget, no attempts-cap check) — the Strategist saw the failure replay and still
-gave the order; the framework does not second-guess. The only check kept: goal status already
-terminal → `moot`. Convergence responsibility rests on the Strategist's ConfirmShelve discipline.
-
----
-
-### 3.1 Formalizer — goal job (prove / split)
-
-Decides for one goal between "prove directly" and "decompose"; the agent chooses autonomously
-within the same session. OR-aware: each strategy uses an isolated filename (scratch
-`_strategy_s<sid>.lean`, theorem name `s<sid>` framework-locked); the parent's `lean_path` is
-untouched, rewritten only when a strategy wins at §4 Verify.
-
-**hint pre-pass (zero spawns)**: when `goal.attempts == 0`, first swap the strategy skeleton's body
-for a `by hint` probe — Lean runs the tactic set registered via mathlib's `register_hint`; on a hit
-the named winner is written into `patch.lean` and goes through the **exact same** commit gate as an
-agent patch; on a miss it falls silently into the normal flow.
-
-**Entry**: INSERT a new strategy to get a fresh `s<sid>` (dead strategies are not reused) → compute
-the skeleton from the parent stub (keep the declared kind, rename to `s<sid>`, body sorry; when the
-signature cannot be extracted from the stub, rebuild it with the declInfo oracle's
-`ppSignature`, and only failing that `parent_stub_not_decomposable`) → pre-write `patch.lean`.
-
-**parse_fn (once per round)**:
-
-1. bail detection: `_progress.md` has content + patch untouched + no `new_*.lean` → `agent_bailed`
-2. glob `patch*.lean` → missing file `parse_proposal_fail`
-3. file-top `-- decline:` branches: `disprove` (2026-08-25 — the agent rewrote patch.lean to
-   PROVE the negation; kernel-certified via `_disprove.run_disproof_gate`, the only road to
-   `agent_infeasible`→`disproved`; the gate matches either the goal-slug head or the attempt's
-   own `s<id>` head, fixed 2026-08-27 after it certified zero real submissions) / `unprovable`
-   (non-terminal since 2026-08-25 — a bare falsity claim maps to `agent_declined` and teaches
-   the `disprove` road) / `return_to_parent` / `shelve` / `needs_decomposition` / `return_to_nl`
-4. signature unmodified (compared against the skeleton) → otherwise `patch_signature_mismatch`
-5. **leaf-bypass**: 0 `new_*.lean` files and body not sorry → treated as a 0-subgoal strategy: forbidden
-   grep + single-file verify + axiom gate + race guard → commit if all pass
-6. `forbidden_lemmas` grep (patch + all `new_*.lean`)
-7. sub-goal slug validation (lowercase, ≤60 chars; name collisions auto-suffix)
-8. **dedupe**: batch probe `apply @<canonical> <;> assumption` against the candidate pool (ancestors /
-   sibling orphans / cross-branch proved / same-problem disproved), preceded by a slug-pattern
-   pre-check and a no-progress guard. Hit on alive → write alias and build-verify (on failure fall back to opening a new sub-goal);
-   hit on disproved → abort the whole batch
-9. Move files to `proofs/` + auto-inject imports (agents often forget)
-10. cite gate (the decomp path allows auto-link to absorb parallelizable open siblings)
-11. scratch must not retain sorry → `patch_body_contains_sorry`
-12. `verify_file` batch (subs + scratch) → on failure unlink + `lake_build_error`
-13. race guard: goal no longer open/attempting → unlink + `goal_no_longer_open`
-14. INSERT goals + strategy_subgoals; sorry-free / dedupe-hit subs go straight to proved
-15. UPDATE strategy → `outcome='success'`
-
-On exit, `outcome != 'success'` → strategy marked dead (infra reasons or empty rows are DELETEd
-outright). Cascade semantics of each failure_reason: `failure_modes.md` §2.
-
----
-
-### 3.2 Formalizer — mint job
-
-Dispatched by the Strategist via a targetless `Inject` (shape-derived); produces one new toolkit
-lemma into the pool. `target_kind='Problem'`; multiple mints in one batch are distinguished by
-decision_id and may run in parallel. Lemma kinds:
-`theorem` / `def` / `structure` / `class` / `inductive` / `instance` (named).
-
-Flow (`forward.py`; retry budget = `FORWARD_RETRY_BUDGET`):
-
-1. LSP edit-mode against the **fixed file** `new_forward.lean` (framework pre-writes the seed scaffold); the agent edits in place
-2. intake same as the goal job (two decline vocab words); work-turn decline `-- decline: library_sufficient` → `agent_declined` terminal
-3. `extract_forward_metadata`: slug / rationale / kind / sorry_free; missing fields or unrecognized kind → `parse_rejected`; `inductive` carrying sorry rejected outright
-4. auto-prepend imports → self_verify (`verify_file` probe; build error → `forward_no_new_goal` + retry_context)
-5. **Defs vocabulary protection**: a non-theorem kind whose slug collides with charter statement vocabulary → reject, steer toward `RequestUserAmend(Defs.lean)`
-6. sorry-bearing with no type annotation → declInfo oracle fills in the signature, reject only when it can't
-7. **dedupe, three branches**: same-problem alive/parked twin → `reuse` (Inject repointed to the existing goal; cascade-shelved ones revived + detached, no new row); hit on proved → land an alias; otherwise commit normally
-8. `commit_forward_lemma`: move to `proofs/L_<slug>.lean` + INSERT goal (sorry_free → proved, else open; always `detached=1`)
-9. shelved_link (G1): reverse-probe same-problem shelved goals; on a hit record the link now, §4 writes the alias once X is proved
-10. Unconditionally backfill the decision's `produced_goal_id`; when proved, propagate the inject outcome directly
-
-Failures touch no goal's attempts (mint is goal-less); infra failures re-enqueue the same
-decision_id. Two lines of defense against junk proposals: dedupe blocks duplicates, and the
-Strategist adjusts its briefs from the results in the failure replay.
-
----
-
-### 3.3 Strategist
-
-`target_kind='Group'` (since v35 seats belong to **groups**; legacy `Problem` rows still
-recognized, mapped to the top-level group).
-**Four triggers** (determined at spawn time, priority routine > inject_batch_done > pending_review >
-stall):
-
-| trigger | When |
+| Phase | Action |
 |---|---|
-| `routine` | ≥ `strategist.interval_min` since the last routine commit (default 120 min; clock lives in `groups.last_routine_at`, per-group; the legacy problem-level clock is dual-written, slated for retirement at Stage D). The wake's first phase runs a belief audit |
-| `inject_batch_done` | All outcomes of some batch (Inject/Delegate share one batch ledger) have landed |
-| `pending_review` | A goal turns `pending_strategist_review` (decline escalation or attempts threshold); routed to **the group owning that goal** |
-| `stall` | The group is in structural stall at spawn time (fresh group / deadlock / root proved awaiting Ingest all count as "empty batch done"; wall-state detection is per-group, `is_group_stalled`). First-class SQL-visible kind since v43 (2026-08-24) — reverses the old conflation that rode this on `inject_batch_done`; both still drive the same mandatory-advance gate (`BATCH_DONE_LIKE`) |
+| collect | Read completed futures, finalize their queue leases, and call `cascade_one` for ordinary pipelines. Librarian results instead advance their derived chain unit. |
+| verify | `verify_housekeeping` repeatedly promotes ready strategies and processes shelved alias revivals. |
+| root gate | Reconcile proved-goal files, run integrity for roots whose marker is clear, then redraw their tree. |
+| Library refill | Derive every dispatchable serial/per-file Librarian unit; the durable Library lifecycle holds the exit gate open. |
+| exit checks | Exit only when scoped problems are ingested and no Library work or harvest state remains. `--once`, wall budget, idle, stop, and fatal gateway conditions have their own exits. |
+| global holds | Update quota wait, network wait, provider/model quota blocks, and adaptive RAM pressure. |
+| BFS refill | Enqueue eligible open goals as Formalizer work. Goals at the attempt threshold go to Strategist review instead. |
+| Strategist triggers | Enqueue per-group routine and structural-stall seats. Pending review and completed-batch relays also have event-driven paths. |
+| reconcile | Repair pending reviews or unresolved Inject products whose wake/queue edge was lost. |
+| lease sweep | Release leases owned by a dead process or older than the TTL. |
+| spawn | Pop claimable work permitted by gateway readiness, quota, cooldown, RAM, scope, and duplicate checks. |
 
-All wakes first pass `problem_accepts_wake`: any `problems.state` other than `active` is refused.
-Multiple groups of the same problem can each hold a seat; `_strategist_inflight` dedups per group.
+Before a worker starts, the dispatcher resolves its problem, performs the problem's once-per-run
+Defs/Root preflight, creates a pipeline id, inserts `pipelines.status='running'`, and submits
+the worker. The worker finalizes that same row to `succeeded` or `failed`; a process crash leaves
+an explicit `running` row for startup recovery.
 
-**Proposal package + Adversary loop** (research mode, always on):
+Librarian file units are persisted as `target_id=problem` plus `queue.payload.file`. At pop time
+the dispatcher forms an in-process `problem\x1ffile` identity for duplicate tracking and worker
+routing; that separator is not the durable queue contract.
 
-1. spawn produces `decision.json` (JSON array) + non-exempt batches must attach `proposal.md` (`# Title` /
-   `## Argument` / `## Proof` / `## Roadmap`; exempt kinds = {FetchPaper, RequestUserAmend,
-   Noop, ReturnToParent, MarkDeliverable}; no per-batch experiment-count quota (retired
-   2026-08-16) — the invariant that a batch must not leave the group in dead air is enforced by
-   state (the stalled-delta gate + the parked-root gate inside `verify_decisions`), not by
-   counting decision kinds)
-2. Mechanical checks (schema, cross-decision invariants, package shape) fail → revise in the same session
-3. **Mechanical delta gate** (2026-08-28): a revision whose `proposal.md` is byte-identical to
-   the body the Adversary just rejected bounces back with a mechanical notice, judge skipped;
-   three consecutive no-deltas discard the proposal (`strategist_no_delta`), independent of the
-   round cap below
-4. Past the delta gate → **Adversary**: each round a fresh sub-spawn reviews the proposal
-   package in a hard-isolated projection directory and produces per-criterion `verdict.json`
-   (each criterion is a LIST of objection bullets since 2026-08-28, so several defects under one
-   criterion fire together instead of dripping one per round; legacy single-string verdicts stay
-   parseable); pass/rebut is derived by the framework; rebut → revise in the same session with
-   the critique
-5. Mechanical errors, delta-gate bounces, and rebuttals **share** the round cap
-   `strategist.verify_retry` (default 6); still rebutted at the cap →
-   `strategist_proposal_rejected`: proposal + critique stored in
-   `programme_revisions` (status='rejected'), session discarded, the next wake carries only a
-   one-line record for a blind re-derivation, target cooldown
-6. Pass → commit the decision batch + `programme.record_pass` (redraws `PROGRAMME.md`)
+## 3. Common pipeline boundary
 
-**commit_decisions side effects** (nine decision kinds commit; three more —
-`EmitDirective`, `FetchPaper`, `AttemptDisproof` — are retired and rejected by
-`verify_decisions` before ever reaching here, kept parseable so the rejection can teach the
-replacement: standing guidance moved into the Programme's `## Conventions` section
-(2026-08-03), paper fetching into the Strategist's own tool surface (2026-08-22), and
-disproof into the general machinery — `Inject` a negation mint / `ReturnToParent(refuted)` /
-`RequestUserAmend` (2026-08-04)):
+Every queue worker runs with its own SQLite connection and `WorkArea`:
 
-| decision | Action |
+1. `.attempts/<pipeline_id>/` is created and any pipeline-specific skeleton/context is staged;
+2. the provider executes one or more turns;
+3. framework parsers and commit gates read the final bytes from disk;
+4. the worker finalizes the dispatch-time pipeline row and returns a compact result to the main
+   thread;
+5. artifacts needed for forensics are packed before `WorkArea` removes scratch and returns any
+   claimed gateway session.
+
+`PipelineResult.outcome` is separate from `pipelines.status`:
+
+| Outcome | Meaning at the worker boundary |
 |---|---|
-| `Inject` (no target) | enqueue mint (Formalizer/Problem) + decision row (writes batch_id) |
-| `Inject` (with target) | force reopen + detach when needed + un-stall the upstream strategy + enqueue Formalizer |
-| `ConfirmShelve` | goal terminal(shelved) + propagate |
-| `RequestUserAmend` | write `.proposed_<file>` + problem transitions to `awaiting_human` |
-| `MarkDeliverable` | mark a deliverable (anchor+claim) |
-| `Ingest` | **Top-level group**: stamps `ingested_at` (the only terminal state; refused by the framework if a root is present but not proved); library:true additionally goes through sign-off/harvest. **Sub-group**: lightweight — group marked `delivered`, wakes the parent group, touches no sign-off/harvest/problem FSM; gate = anchor proved (rescue shape) or ≥1 deliverable marked by this group (anchorless shape) |
-| `Delegate` | INSERT a new group (charter=brief) + immediately schedule the new group's seat; with a target, the anchor turns `attempting`. Outcome stays NULL until the sub-group reaches a terminal state — shares the batch ledger with same-batch Injects; the parent group wakes only when all are terminal |
-| `ReturnToParent` | sub-group only: group marked `returned`, rescue anchor lands `shelved` (with cascade), parent's Delegate outcome=`failed:returned`, wakes the parent group |
-| `CloseGroup` | the reverse of `Delegate`: marks a child group `closed`, fills the parent's open Delegate outcome; the child's own seat stops naturally (`groups_needing_t1`/`groups_stalled` select `active` only) |
-| `Noop` | only INSERTs an audit row |
+| `proved` | A Formalizer mint landed an immediately proved goal. |
+| `success` | The requested product committed: a proof/decomposition strategy, a sorry-bearing minted goal, a Strategist batch, or a Librarian unit. |
+| `failed` | Terminal non-success, including structured declines, infra, races, and rejected work. |
+| `exhausted` | The in-session retry budget ended after recorded agent-side failures. |
+| `moot` | The target settled before this iteration could do useful work. |
 
-Wrap-up: the batch layer touches `last_strategist_at` (routine additionally touches `last_routine_at`,
-which is what re-arms the clock); routine wakes may also add/edit global lessons via the
-`kb_curation.json` sidecar (cap 10 ops).
+Only `proved` and `success` map to `pipelines.status='succeeded'`; the other outcomes map to
+`failed`. Goal attempts, dead-attempt evidence, cooldowns, and state cascade are deliberately
+not inferred from that status alone; see [`failure_modes.md`](failure_modes.md).
 
----
+## 4. Formalizer goal flow
 
-### 3.4 Scholar (retired 2026-08-22)
+`Tooling/pipeline/backward.py::run_backward` is the live Goal-target Formalizer entry. It uses
+one strategy frame for both direct proof and decomposition:
 
-The dedicated paper-fetch pipeline (`pipeline/scholar.py`, dispatched by a `FetchPaper`
-decision) is deleted — dispatcher branch, quota seat, config seat keys and the `Asterism.yaml`
-block are gone. Paper fetching is now the Strategist's own tool surface: `paper_search` /
-`paper_fetch` (the same `Tooling.papers.search` / `papers.fetch` backends) are called directly,
-mid-wake, no separate spawn — success still lands the paper in `Papers/<shelf-id>/` and binds it
-via `problem_papers`. `FetchPaper` stays in `DECISION_KINDS` (parseable) but `verify_decisions`
-rejects it outright, teaching the replacement.
+1. load the goal and create a fresh strategy id/theorem name;
+2. build and prewrite `patch.lean` with a locked declaration signature;
+3. on the first organic attempt, run the deterministic `hint` pre-pass; a hit still goes
+   through the ordinary commit gates;
+4. run the short intake turn; `proceed` continues the same session, while a structured decline
+   returns through the failure model;
+5. run pre-search and compile the work `Context.md`;
+6. enter `run_with_session_retries`; warm retries receive the prior reason and detail;
+7. parse the final disk files and choose one commit shape:
+   - no new sub-goal plus a complete proof body: commit a zero-subgoal strategy;
+   - one or more `new_*.lean` files: validate and commit a decomposition strategy.
 
----
+The commit path checks the class of errors, not just individual known examples:
 
-### 3.5 Librarian
+- top-level name and slug ownership;
+- locked signature and final `validate_file` hash (`stale_validation`);
+- forbidden lemmas and elaboration-time metaprogramming;
+- strict-ancestor and batch reference cycles;
+- citation status and edge provenance (`minted` versus `cited`);
+- textual twin reuse before kernel-level dedupe/no-progress probes;
+- sorry placement, whole batch verification, and the axiom gate;
+- a final target-state race guard before rows and proof files become durable.
 
-Harvests proved problems into mathlib-shaped `Library/`. Auto-start condition: the problem's `library: true` setting ∧
-Ingested ∧ no harvest artifacts yet; while sign-off is pending, all automatic paths pause.
+The validate surface mirrors name, slug, and ancestor-cycle gates to teach the error before
+commit, but commit is authoritative. A committed strategy returns `success`; the parent becomes
+`attempting` in cascade and is proved later by Verify housekeeping after every dependency is
+proved.
 
-Chained `dedup → classify → migrate → cleanup → bridge`; the work-kind is derived from the
-`library_decls` lifecycle, re-derived at the tick layer after each success until drained.
-`migrate`/`cleanup` parallelize with whole files as the unit.
+## 5. Formalizer mint flow
 
-| Step | Form | What it does |
-|---|---|---|
-| **dedup** | purely mechanical | Narrow to the live usage closure of the harvest targets, mark `keep → deduped` |
-| **classify** | one-shot JSON spawn | agent proposes file layout + order; framework corrects via SCC-merge + toposort |
-| **migrate** | LSP + commit-retry | write the whole file's decls at once → commit gate → `migrated` |
-| **cleanup** | multi-stage LLM + mechanical wrap-up | per-file refinement (drop/merge/simplify/audit/rename/import-min); zero-warning hard gate + post-rewrite axiom gate → `cleaned`/`dropped` |
-| **bridge** | no agent | Gate B whole-meaning verification; PASS backfills signatures + stamps `library_bridged_at`, ends the chain |
+A targetless Strategist `Inject` queues `Formalizer` with `target_kind='Problem'` and a
+`decision_id`. `Tooling/pipeline/forward.py::run_forward` produces one declaration:
 
-**commit gate (every migrate; shared by the cleanup wrap-up and the deliverable bridge)**: Gate A import
-closure ⊆ {Mathlib, Library, Init, Std, Batteries, Lean}; whole file 0 errors 0 sorry; per-decl
-`#print axioms` ⊆ whitelist; Gate D checks `rfl` def-equivalence for `def`s; any `axiom` declaration
-hard-fails. Failure rolls back and the chain sticks at that file; consecutive failures beyond `LIBRARIAN_MAX_CHAIN_RETRIES`
-(=2, i.e. the 3rd) → STALLED.
+1. prewrite the fixed `new_forward.lean` scaffold;
+2. run intake, pre-search, and the mint context;
+3. edit the same file across retries and parse its metadata/kind;
+4. enforce metaprogramming, name, charter-vocabulary, declaration-shape, verify, and axiom
+   gates;
+5. dedupe in three useful directions:
+   - reuse an alive/parked same-problem twin;
+   - land a proved alias when an equivalent theorem already exists;
+   - otherwise create a new detached goal/file;
+6. store `produced_goal_id` on the authoring decision and look for reverse shelved-revival
+   links.
 
-**post-rewrite axiom gate (cleanup wrap-up)**: cleanup's LLM rewrite stage is the only place after
-the migrate gate that can change the axiom set (e.g. `by native_decide` pulls in `Lean.ofReduceBool`);
-the wrap-up reruns the per-decl axiom check against the **final text**; failure → `librarian_axiom_violation`, the file stays `migrated` for retry.
+A sorry-free declaration lands proved and returns `proved`; a theorem with a remaining proof
+obligation lands open/detached and returns `success`. The Inject product is not considered
+complete merely because the file was written: its decision outcome follows the produced goal
+until that goal settles. Provider-infra failures requeue the same decision when no goal was
+produced.
 
-**Gate B (bridge, the "linchpin")**: re-derive the original root from the Library (Defs-free):
-statement-pin + import closure + build + axiom whitelist. Marker present = the Library can genuinely
-re-prove the original problem. Deliverable problems (no root to re-derive) instead get: builds-only + the
-per-decl axiom gate on each harvested file's final text.
+## 6. Strategist and Adversary flow
 
-> Three gates: **A** import closure, **B** root re-derivation, **D** def-equivalence. There is no Gate C.
+A Strategist seat belongs to a group. At spawn time the trigger is re-derived from persistent
+state in this priority order:
 
----
+1. `routine` when the group's routine clock is due;
+2. `inject_batch_done` for an unacknowledged completed batch;
+3. `pending_review` for a goal owned by the group;
+4. `stall` when the group's slice has no live frontier or product;
+5. residual `routine` if the reason that queued the seat vanished.
 
-## 4. Verify housekeeping
+`stall` is recorded separately but behaves like `inject_batch_done`; both are members of
+`BATCH_DONE_LIKE` and must advance the group rather than leave it idle. No wake is accepted for
+a non-active problem, and a group that retires during dialogue aborts before commit.
 
-Runs after cascade each tick, **pure framework, no LLM, single-threaded**. Each iteration fetches
-two kinds of pending work (at most `max_iters=8` iterations):
+One wake runs this loop:
 
-- **ready strategies**: `proposed` ∧ non-empty scratch ∧ parent not terminal ∧ all sub-goals proved
-- **revivals (G1)**: shelved goal S with `alias_target_id = X` and X now proved
+1. compile the group's context, including every actionable pending-review dossier on a
+   non-routine wake;
+2. the Strategist writes `decision.json` and, for a non-exempt batch, `proposal.md`;
+3. parse and mechanically verify the decision set and package;
+4. reject a revision that is byte-identical to the proposal just rebutted; three consecutive
+   no-deltas discard the wake;
+5. stage an isolated Adversary projection and obtain per-criterion objection lists;
+6. on rebuttal, resume the same Strategist session with the critique; mechanical errors,
+   no-deltas, and rebuttals share the configured revision budget;
+7. on pass, commit decisions and record/redraw the Programme revision; on discard, persist a
+   rejected revision and a terse notice for the next blind re-derivation.
 
-**For each ready strategy**: atomically rewrite the parent `.lean` into an alias (import strategy module +
-`def <parent_slug> := @...s<sid>`; the locked signature guarantees type match, pure string templating) → strategy
-`succeeded`, parent `proved` (optimistic), siblings `superseded` → background olean warm-up
-(`OleanWarmer` runs the cold build on its own thread, occupying neither the main thread nor the LLM pool; kill switch
-`verify.olean_warm`). The parent may itself be a higher-level sub-goal, picked up by the chain on the next iteration.
+Decision side effects and structural restrictions are summarized in
+[`architecture.md`](architecture.md#6-programme-and-decision-model). The exact verifier and
+commit code is under `Tooling/pipeline/strategist/`.
 
-**For each revival (S, X)**: S's sorry body is rewritten to `apply <X> <;> assumption` + build-verify
-(on failure restore, stays shelved) → S turns proved + propagate.
+## 7. Librarian flow
 
-### Root integrity gate (the core of §2 step 3)
+The Librarian starts only for a problem that is ingested, opted into Library promotion, and not
+waiting for sign-off. The scheduler derives work from `library_decls` and
+`librarian_fail_counts` rather than trusting a queued stage name:
 
-After root flips proved, run the single integrity gate: `axiom_probe(Problems.<p>.main)` (900s cap,
-the only full elaboration), catching both alias-chain drift and escaped sorryAx.
+```text
+dedup → classify → migrate (per file) → cleanup (per file) → bridge
+```
 
-- **happy path**: `set_integrity_verified(1)` + clear cascade backups. Writes no Library files, does not exit the
-  daemon (Library-ization and exit are each decided by §2 steps 4/5).
-- **rogue sorryAx**: `bisect_sorryax_source` finds the culprit strategy → `rollback_cascade_chain`
-  restores level by level (root drops out of proved; next tick re-decomposes the culprit); if the problem was already Ingested → automatic revocation + Librarian
-  un-harvest, fully automatic takedown.
-
-> Empirically 41+ cascade verifies with 0 interceptions — hence per-level verify is a purely mechanical alias rewrite with no per-level
-> elaboration; the root gate is the last correction net for false-proved, rarely fires in practice but must not be removed.
-
----
-
-## 5. Pre-spawn preparation
-
-### Context.md compilation
-
-Before each spawn the framework compiles a `Context.md` from the DB. **Everything the agent sees comes from here** (companion files
-are only fallback). Three compilers: `compile_context` (Formalizer goal job),
-`compile_forward_context` (mint), `compile_strategist_context`. Inapplicable sections are omitted entirely.
-
-**goal job** (`compile_context`), top to bottom: BRIEF inline → KB lessons (invariant across spawns,
-put first for the prompt cache) → paper index → **Programme `## Proof`** (the NL-first premise) →
-directive → Strategist brief (on Inject) → goal statement → Library available →
-strategy naming → parent goal & strategy → mathlib lemmas (past lake errors) →
-Candidate lemmas (pre-search; when present, replaces the proved-siblings section) → **catalog pointer** (exact
-statements in the `CATALOG.md` companion) → previous progress note / previous patch → Goal history
-(umbrella, 4 sub-sections; projection logic in `pipeline/events.py`, design history in
-`docs/archive/design/goal_history_unified.md`).
-
-**mint** (`compile_forward_context`): brief → conventions (optional `## Conventions` from the
-authoring group's Programme) → **Programme `## Proof`** (added 2026-07-30 — mint's own
-falsity-triage now has a source independent of the brief) → Library inventory → Candidate
-lemmas (pre-search, since 2026-08-07) → past mint proposals → active goals → charter (+ user
-word) → forbidden lemmas → paper index. (No TREE.)
-
-**Strategist** (`compile_strategist_context`): trigger → "## The user's word" (2nd section,
-not last) → (**any non-routine wake**, not just `pending_review` — 2026-08-26 wake merge:
-failure replay / adjudication history / existing strategies / ancestor chain, for every goal
-awaiting review, capped) → stall warning + Ingest availability → disproof guidance →
-"## Your group" / "## Your groups in flight" → **Programme** (current rev full text +
-Adversary reservations + one line for the last rejection) → directive → plan note
-(`.drafts/strategist_plan.md`, private notes) → completed Inject batches (full briefs live in
-the `BATCHES.md` companion since 2026-08-22) → pending reopen-promises → active goals (counts +
-newest-15 tail; full roster with signatures moved to `CATALOG.md`'s `## Alive goals`,
-2026-08-26 — it was the same alive roster as TREE's, re-sent every loop step and drifting
-apart mid-wake) → recent decisions → TREE → catalog → adjudication-history pointer →
-"## Your charter" (own charter inline at every depth; the top group also
-gets a Defs.lean preview) → paper index → (routine only: KB curation surface).
-
-### Sandbox
-
-agent cwd locked to problem_dir:
-
-- **`--add-dir`**: problem_dir, attempts_dir, `.lake/packages/`, `Library/`, `Papers/`
-  (each when present). **Adversary exception: all cleared**, trust boundary reduced to the projection directory
-- **Read forbidden**: other `Problems/<...>/`; operator state (`~/.claude/projects/**` deny +
-  auto-memory off + `spawn_guard` PreToolUse whitelist hook)
-- **Tools**: `Read` / `Write` / `Edit` / `Grep` / `Bash`, Bash whitelisted to only
-  `python -m Tooling.knowledge.loogle` and `python -m json.tool` (the Strategist seat
-  additionally gets `paper_search` / `paper_fetch` — Scholar retired 2026-08-22, no separate
-  spawn; spawn env injects the repo root into `PYTHONPATH`); LSP MCP
-  tools (apply_edit / goal_at / errors_at / validate_file)
-- **spawn flags**: `--setting-sources ""` (CLAUDE.md never loaded); user/framework files
-  (problem.json/Defs/Root/PROGRAMME) fully disallowed for Write+Edit
-
-### Pre-written framework-locked files
-
-| job | Pre-written |
+| Stage | Work and gate |
 |---|---|
-| Formalizer goal job | `patch.lean` = strategy skeleton (signature locked, agent edits body only) |
-| Formalizer mint | `new_forward.lean` seed scaffold (imports + namespace, edited in place) |
-| Strategist | no patch; outputs `decision.json` (+ `proposal.md`) |
+| `dedup` | Compute the live usage closure and classify keep/cite/drop candidates. |
+| `classify` | Ask for file placement; mechanically merge SCCs and topologically order declarations/files. |
+| `migrate` | Move a whole file's declarations, fill mechanical holes where possible, and run the commit gate. |
+| `cleanup` | Refine, simplify, audit, rename, minimize imports, require a zero-warning final file, and rerun per-declaration axioms after rewrites. |
+| `bridge` | Classic root: rederive the original statement from Library. Deliverable form: rebuild and axiom-check every harvested file. Stamp `library_bridged_at` on success. |
 
----
+Failure counts are persistent per unit. A busy file does not count; repeated real failure past
+the chain cap leaves that unit stalled for operator inspection without changing proof-goal
+attempts.
 
-## 6. Post-spawn failure / interruption handling
+## 8. Verify and root integrity
 
-### 6.1 Ordinary failure retry
+`Tooling/quality/verify.py::verify_housekeeping` runs synchronously after cascade and iterates to
+a bounded fixed point:
 
-(build failure, forbidden_lemma, missing annotation, etc.) The helper buffers a snapshot into
-pending_failures, extracts stderr into detail, and the next round warm-resumes with retry_context. Budget exhausted →
-`exhausted`. Ordinary failures **do not write `.drafts/`** — session memory + retry_context are already the continuation medium.
+- a `proposed` strategy whose linked goals are all proved is written into its parent as a thin
+  alias, marked `succeeded`, and its competing strategies are superseded;
+- a shelved goal with a proved `alias_target_id` is rebuilt as a delegation to that target and
+  revived after verification.
 
-**Reflection callback**: after the helper finishes (success, exhausted, or a decline directive), a
-second claude is spawned on the same thread (`--resume`, 120s cap) to write a one-line lesson about this pipeline into
-`LESSONS.md`. Best-effort, not triggered on infra failures, kill switch `lessons.reflection_enabled`.
-There is also an independent framework feedback tail step (`feedback.enabled`) and an infra death-note channel.
+Promotion is deliberately mechanical; it does not run an LLM repair turn. A background olean
+warmer may build the newly promoted alias spine outside both the dispatcher main thread and LLM
+executor.
 
-### 6.2 Timeout (rc=124)
+When a root first becomes proved with `integrity_verified=0`, the post-proved gate reconciles
+its files and probes the complete root closure. Success sets the marker and clears cascade
+backups. Escaped `sorryAx` triggers source bisection and `rollback_cascade_chain`; an already
+ingested problem is revoked and unharvested rather than leaving a false Library result.
 
-The main spawn exceeds `dispatch.spawn_timeout_sec` (default 900s) and gets SIGKILL. Handling order:
+## 9. Context and sandbox boundary
 
-1. **salvage parse**: the agent may already have left valid output on disk — run `parse_fn` once; a
-   terminal success/decline is collected as usual (a timeout can still count as success)
-2. salvage fails and the watchdog rules a thinking trap → fresh-sid takeover continues (no exhaust)
-3. otherwise **postmortem**: `claude --resume` + short prompt (180s cap) "write down your direction/blockers
-   in 150 words" saved to `_progress.md` → copied to `.drafts/<kind>_g<gid>.md` → `exhausted` (no further retry)
+### Context compilation
 
-The next dispatch (fresh pipeline) inlines it into Context as "## Your previous progress note".
+Every worker receives a generated `Context.md`; large lazy material lives beside it in bounded
+companions such as `CATALOG.md`, `BATCHES.md`, `ADJUDICATIONS.md`, `PAPER_MAP.md`, and attempt
+history files. Empty sections are omitted.
 
-> Why timeout forces exhaust: the thinking path is stuck; resuming the same session would hit the same wall. `.drafts/`
-> exists precisely for the cold restart. If the postmortem itself dies, it's only a best-effort loss.
-
-### 6.3 Infra noise (no budget spent, no dead_attempt written)
-
-Five `PROVIDER_INFRA_REASONS`:
-
-| reason | Trigger | Handling |
-|---|---|---|
-| `spawn_fast_fail` | rc≠0 and wall-clock < 10s | 30s target cooldown; 10 in a row → ask the usage endpoint first, switch to quota-wait if quota is confirmed, else daemon exits rc=2 |
-| `quota_exhausted` | rc=126 | **per-kind exponential backoff** (30s×2ⁿ, cap 600s) + flush same-kind queue + may enter quota-wait |
-| `missing_dep` | rc=127 (CLI missing) | 30s cooldown, operator-fix |
-| `gateway_unreachable` | HTTP transport lost | 30s cooldown; 8 in a row → daemon exits rc=2 |
-| `transient_timeout` | RPC timeout (slot contention) | 30s cooldown, **enters no CONSEC counter** (healthy overload, not death) |
-
-During cooldown, bfs_refill skips that (target, kind); `.attempts/<pid>/_spawn.stderr` is kept for forensics.
-
----
-
-## 7. Key constants (program defaults; overrides in `Asterism.yaml`)
-
-| Constant | Default | Source |
-|---|---|---|
-| `dispatch.pool` (= gateway workers) | 4 | config.py (also subject to the RAM clamp and interactive_slots deduction) |
-| `SHELVE_THRESHOLD` | 8 | `dispatch.shelve_threshold` (at threshold goes to strategist review, no longer auto-shelves) |
-| main spawn hard cap (SIGKILL) | 900s | `dispatch.spawn_timeout_sec` / `WORKER_TIMEOUT_SEC` |
-| intake short-turn cap | 300s | `dispatch.intake_timeout_sec` |
-| Strategist wake hard cap | 10800s | `strategist.timeout_sec` (hang guard) |
-| Adversary round cap | 7200s | `adversary.timeout_sec` |
-| postmortem / reflection cap | 180s / 120s | `POSTMORTEM_TIMEOUT_SEC` / `_REFLECTION_TIMEOUT_SEC` |
-| spawn_fast_fail threshold | 10s | `SPAWN_FAST_FAIL_SEC` |
-| spawn cooldown / quota backoff | 30s / 30s×2ⁿ cap 600s | `SPAWN_COOLDOWN_SEC` / `QUOTA_BACKOFF_*` |
-| consecutive fast-fail / gateway-loss caps | 10 / 8 | `CONSEC_*_LIMIT` (daemon exits rc=2) |
-| queue lease TTL | 6h | `LEASE_TTL_SEC` |
-| Strategist routine interval | 120 min | `strategist.interval_min` |
-| Strategist verify/Adversary revision rounds | 6 | `strategist.verify_retry` |
-| mint retry budget | 3 | `FORWARD_RETRY_BUDGET` |
-| verify housekeeping iteration cap | 8 | `max_iters` |
-| Librarian chain retry cap | 2 (STALL on the 3rd) | `LIBRARIAN_MAX_CHAIN_RETRIES` |
-
----
-
-## 8. Design trade-offs quick reference
-
-| Decision | Why |
+| Seat | Ordered content groups |
 |---|---|
-| Must-see info inlined in Context.md, companions only fallback | Lesson: agents don't proactively read companions |
-| Timeout goes to postmortem, not save-as-you-think | The main task isn't distracted by deliverable upkeep |
-| Pipeline = session lifecycle, retry folded inside the pipeline | sid is a local var, nothing carries across pipelines |
-| Compilation unified through the LSP gateway | Saves the 5–15s cold startup each time |
-| Verify inline, occupies no worker slot; verify-time LLM repair dropped | Pure framework operation; LLM repair empirically fired 0 times |
-| Builder/Backward/Forward merged into Formalizer | Prove/split is one judgment; separate kinds caused routing hacks and context breaks |
-| OR passive (cap=1), no eager fanout | Pure token waste under strong models |
-| Dedupe uses apply-probe | Lean understands α/β/η/defeq; string comparison has a low hit rate |
-| hint pre-pass + write back the named winner | Taps mathlib's curated set; the artifact keeps the named tactic |
-| Infra failures don't count as agent errors | Don't burn goal budget |
-| Proposal package must pass the Adversary before commit | Between task and action there must be a reviewed full argument (research mode) |
+| Formalizer goal | brief and lessons; papers; Programme/standing guidance and Inject argument; goal and reusable Library; strategy/parent frame; pre-search or proved siblings; catalog pointer; prior progress/patch; unified goal history |
+| Formalizer mint | Inject argument; group conventions and Programme proof; in-problem Library; pre-search; prior mint proposals and active goals; charter/user word; forbidden lemmas; papers |
+| Strategist | trigger and user word; non-routine review dossiers; stall/Ingest/disproof gates; own group and children; Programme/directive/plan note; batch outcomes and reopen promises; active goals and failure replay; tree/catalog/adjudications; charter and papers; routine-only KB curation |
 
----
+The exact order is code, not prose: `agent/context.py::compile_context`,
+`agent/phase2_context/forward.py::compile_forward_context`, and
+`agent/phase2_context/compile.py::compile_strategist_context`.
 
-## 9. Cross-references
+### Filesystem and tools
 
-- Static shape (roles, invariants, schema): `docs/architecture.md`
-- Full failure reason × trigger × cascade × event mapping: `docs/failure_modes.md` §2
-- Goal history umbrella design history: `docs/archive/design/goal_history_unified.md`
+Provider adapters implement one envelope:
+
+- the working scope is the problem plus the pipeline's scratch and explicitly granted
+  Library/Papers/mathlib surfaces;
+- other problems, operator state, foreign attempts, and framework/user-owned inputs are fenced;
+- writes are limited to the attempts sandbox or the role's sanctioned edit surface;
+- `problem.json`, `Defs.lean`, `Root.lean`, and `PROGRAMME.md` are denied to worker edits;
+- shell execution is denied; common tools are provider-independent MCP operations:
+  `inspect`, `write_file`, `compute`, `loogle`, and `validate_json`;
+- the Strategist additionally receives `paper_search` and `paper_fetch`; the Formalizer Lean
+  phase receives the LSP editing/inspection/validation tools;
+- the Adversary sees only its projection, not the source workspace.
+
+`spawn_guard.py`, `llm/envelope.py`, and the provider adapters jointly enforce this boundary.
+Commit gates remain the final defense if a provider-side permission layer fails open.
+
+## 10. Gateway and resource flow
+
+The gateway is warmed in the background. Lean queue kinds remain unleased until warmup and the
+interface contract pass; Strategist work can proceed because it does not claim a Lean slot.
+
+A Lean pipeline registers its target and receives a session token bound to one warm slot.
+Editing, diagnostics, declaration queries, and validation use that session. Non-pipeline
+housekeeping borrows through `verify_file`, preferring an unclaimed slot.
+
+Every elaboration must either converge or hit the wall in `lsp/gateway/wall.py`:
+
+- the primary time meter is Lean worker CPU time, with a wall-clock backstop;
+- when the adaptive ledger is active, private-memory growth in that elaboration is also
+  bounded;
+- queue time behind an elaboration lane is credited back to the provider session's wall;
+- a wall hit kills/reclaims the worker, records a teaching verdict, and refuses identical
+  content again in that session;
+- native computation receives an additional confirmation gate so “still elaborating with no
+  diagnostics” is never reported as success.
+
+With no `dispatch.ram_budget`, the static pool limits all in-flight pipelines. With a valid RAM
+budget, Lean and NL admissions split:
+
+- the gateway warm target opens at the lesser of elaboration lanes and the RAM target, then
+  grows one slot at a time under measured calm;
+- Lean admission follows confirmed open gateway slots;
+- NL admission follows the budget remainder and measured available memory;
+- pressure pauses new dispatch, and waiting NL work may ask the gateway to yield an idle Lean
+  slot.
+
+Exact knobs and defaults remain in `core/config.py::CONFIG_SPEC`, `core/ram_ledger.py`, and
+`lsp/gateway/wall.py` rather than being copied here.
+
+## 11. Failure, interruption, and recovery
+
+The Formalizer retry helper eagerly records each retryable agent failure, then continues the
+same session with a compact retry context. Timeout and thinking-trap paths may salvage a valid
+disk result, transfer to a fresh session, or leave a `.drafts/` progress note. Provider and
+framework failures use the registry traits and dispatcher cooldown/park logic. The complete
+taxonomy is [`failure_modes.md`](failure_modes.md).
+
+Recovery is layered by durable fact:
+
+| Residue | Recovery owner |
+|---|---|
+| stale `pipelines.status='running'`, abandoned queue leases, incomplete strategy placeholders | startup `state/recovery.py` plus the lease sweep |
+| orphan spawn sandbox or interrupted file projection | startup sandbox sweep and its manifest/backup |
+| ready strategy or alias revival not yet promoted | next tick's derived Verify queries |
+| pending-review goal or settled Inject/Delegate with a missing relay | per-tick `reconcile_stuck_states` and DB batch reconciliation |
+| DB/file ownership or lifecycle drift | `proof_store.inventory`, `state/consistency.py`, `asterism drift-check` |
+| false proved root or post-Ingest soundness failure | root integrity rollback, problem revocation, and Librarian unharvest |
+| generated view stale after a commit | redraw from DB (`TREE.md`, `PROGRAMME.md`, `BRIEF.md`) |
+
+Recovery converges from durable state; it does not make queue rows or generated Markdown into
+new authorities.

@@ -1,514 +1,294 @@
-# Asterism — Architecture
+# Asterism architecture
 
-Originally written 2026-05-06; fully rewritten against the code 2026-07-03; drift-corrected
-2026-07-29 (Formalizer merge, research mode, problem FSM); discussion group tree added
-2026-08-02 (v35); Manifest retired 2026-08-19 (v40). This doc covers the **conceptual shape**: what roles make up the system,
-where state lives, and which invariants uphold correctness. Dynamic flow (how a tick runs,
-pipeline step-by-step) is in `docs/data-flow.md`; failure vocabulary in `docs/failure_modes.md`;
-the code is authoritative for technical detail — read it when you touch it.
+Verified against framework code at `dabf9e8f` (2026-08-30).
 
----
+This document owns the system's **static shape**: authority boundaries, runtime roles,
+persistent state, state machines, soundness gates, and invariants. Runtime sequencing belongs
+in [`data-flow.md`](data-flow.md); failure classification and cascade effects belong in
+[`failure_modes.md`](failure_modes.md). Historical design records explain why a mechanism was
+introduced, but they are not descriptions of the current runtime.
 
-## 1. What this is
+## 1. Authority map
 
-Abstract "prove Lean 4 theorems with LLMs" into BFS over an AND/OR graph:
+Do not treat one broad statement such as “the DB is the SoT” as applying to every byte. The
+current ownership split is:
 
-```
-Goal      = OR  : any one Strategy succeeds → Goal succeeds
-Strategy  = AND : all sub-Goals succeed → Strategy succeeds
-```
-
-Leaf Goals are closed directly by an LLM writing tactics; non-leaf Goals are decomposed via
-Strategies. The whole reasoning tree lives in sqlite (`goals` × `strategies` ×
-`strategy_subgoals`); **the DB is the single source of truth**.
-
-Two completion modes:
-
-- **classic**: root goal proved → integrity gate → (opt-in) Library promotion.
-- **anchor+claim** (since 2026-06): a human states the goal in natural language (since v40
-  this is the top group's charter, DB-resident — see §4); the
-  Strategist generates defs/claims and marks deliverables with `MarkDeliverable`; the kernel
-  computes the anchor closure for human `asterism review` / `reject`; once all deliverables
-  reach a terminal state the Strategist issues `Ingest`, which goes through **human sign-off**
-  (`approve-ingest` / `reject-ingest`) before harvesting into the Library. The root may be
-  mere scaffolding at this point (`main : True`).
-  `Root.lean` / `Defs.lean` are both optional — a pure-NL problem lacks both: no root goal
-  row; a structural stall wakes the first Strategist.
-
----
-
-## 2. Roles: four workers, one housekeeping
-
-**Workers are the LLM entry points; pure framework operations never occupy a worker slot** —
-this principle draws the role boundaries.
-
-| Role | target_kind | What it does |
+| Concern | Authoritative source | Derived or secondary forms |
 |---|---|---|
-| **Formalizer** | Goal / Problem | The sole Lean proving worker (merged from the former Builder/Backward/Forward trio on 2026-07-27, v33). Goal-target: intake triage (incl. falsity scan, may decline) → decides on its own whether to prove directly or split into a Strategy + N sub-Goals; Problem-target (**mint**): dispatched by the Strategist, produces one new toolkit lemma. Implementation remains split across `pipeline/backward.py` (prove/split) and `forward.py` (mint) |
-| **Strategist** | Problem | Reads problem state, writes a proposal package (Programme revision + decision batch), commits after the Adversary's verdict clears it (twelve decision kinds, see below) |
-| **Librarian** | Problem (per-file) | After proved + opt-in, runs the five-stage chain: dedup → classify → migrate → cleanup → bridge |
-| **Verify housekeeping** | — | Not a worker: runs sequentially inside the dispatcher tick, assembles fully-proved strategies, writes aliases into the parent, runs G1 revival |
+| Graph, lifecycle, queue, pipelines, decisions, groups, Programme revisions, Library lifecycle, usage and forensics | SQLite schema and rows under `Tooling/state/db/` | `TREE.md`, `PROGRAMME.md`, UI projections |
+| Goal, strategy, problem and group state vocabularies | `Tooling/state/transitions.py`, `Tooling/state/groups.py` | schema `CHECK` constraints, documentation |
+| Failure taxonomy and traits | `Tooling/state/failures.py::REGISTRY` | retry/cooldown/projection sets, this document's narrative companion |
+| Strategist decisions and triggers | `Tooling/pipeline/strategist/model.py` | schema accepts additional historical values |
+| Problem intent at runtime | top-group `groups.charter`, `problems.user_word`, `problem_settings`, `problem_papers` | `problem.json` is the durable seed refreshed by sanctioned writers |
+| Lean source bytes | `Root.lean`, `Defs.lean`, and framework-owned files under `proofs/` | DB paths and statements index those files; proof writes pass through `proof_store` |
+| Configuration keys and defaults | `Tooling/core/config.py::CONFIG_SPEC` plus each `config.get` call | `Asterism.yaml` and environment values override defaults |
 
-**Scholar retired 2026-08-22** (`020ebf85`): `pipeline/scholar.py` is deleted (dispatcher branch,
-quota seat, config seat keys, `Asterism.yaml` block gone). Paper fetching is now the
-Strategist's own tool surface (`paper_search`/`paper_fetch`, same `Tooling.papers` backends),
-called directly mid-wake — no separate spawn.
+The database is SQLite in WAL mode. Schema version and migrations are authoritative in
+`Tooling/state/db/core.py` and `Tooling/state/db_migrations.py`; at this verification point the
+schema is v44 with 18 tables.
 
-**The Adversary (judge) is not a worker kind** — it is a sub-spawn inside the Strategist wake,
-fresh per round, that reviews the proposal package under hard isolation in a projection
-directory and produces `verdict.json`; the framework derives pass/rebuttal from the
-per-criterion verdicts (see "Research mode" below).
+## 2. Proof graph and completion modes
 
-Twelve Strategist decision kinds (SoT: `strategist.py` `DECISION_KINDS`): `Inject` /
-`ConfirmShelve` / `EmitDirective` / `RequestUserAmend` / `MarkDeliverable` / `Ingest` /
-`FetchPaper` / `AttemptDisproof` / `Delegate` / `ReturnToParent` /
-`CloseGroup` (these three belong to the group tree, see below; `ReturnToParent` is
-child-group-only, `CloseGroup` is the reverse of `Delegate` — a parent retires a child) /
-`Noop`. **Three of the twelve are retired** — kept in `DECISION_KINDS` and parseable so
-`verify_decisions` can reject them with a teaching message instead of executing them:
-`EmitDirective` (2026-08-03 — standing worker guidance now lives in the Programme's optional
-`## Conventions` section instead of a second document), `FetchPaper` (2026-08-22 — folded into
-the Strategist's own tool surface, see above), `AttemptDisproof` (2026-08-04 — betting against
-a claim goes through the general machinery instead: `Inject` a Forward mint of the precise
-negation, `ReturnToParent(refuted)`, or `RequestUserAmend` with the disproof attached; never a
-mechanically-linked negation pair). Four triggers: `routine` (incl. the first stage of belief
-audit) / `pending_review` / `inject_batch_done` / `stall` (v43, 2026-08-24 — structural-stall
-wakes get their own SQL-visible trigger_kind now, reversing the old conflation with
-`inject_batch_done`; both still drive the same mandatory-advance gate, `BATCH_DONE_LIKE`).
-`Ingest` is the sole terminal state: while a root is present the framework hard-rejects it
-until the root is proved; `ingested_at` drives T1/T4 liveness, Librarian selfstart, and daemon
-exit.
+Asterism models proof search as an AND/OR graph:
 
-Concurrency discipline: at most one pipeline per Goal at a time (passive OR, cap=1); at most
-one in-flight Strategist per problem; mint deduplicates on `(target, kind, decision_id)` —
-N mint Injects in the same batch fan out in parallel; the Librarian parallelizes per file.
-A problem in `ingest_signoff` suspends all automatic Librarian paths (awaiting human sign-off).
+```text
+Goal      = OR   any one live Strategy may prove it
+Strategy  = AND  every linked sub-goal must be proved
+```
 
-### Research mode (Programme + Adversary, since 2026-07)
+The graph is stored in `goals`, `strategies`, and `strategy_subgoals`. Since v44 every
+strategy edge records its provenance:
 
-The Strategist no longer submits decision batches bare: a **proposal package** (`proposal.md`:
-`# Title` / `## Argument` / `## Proof` / `## Roadmap`) goes with the decision batch to the
-Adversary for round-by-round review; rebuttals ride the verify-retry loop (sharing the round
-cap with mechanical checks); still rebutted at the cap → proposal + critique are stored in
-`programme_revisions` (v30, status='rejected') and the session is discarded. A **mechanical
-delta gate** (2026-08-28) sits in front of the judge: a revision whose `proposal.md` is
-byte-identical to the body just rejected bounces back with a mechanical notice instead of being
-re-judged; three consecutive no-deltas discard the same way (`strategist_no_delta`). The chain
-of passed Programme revisions is the problem's strategic SoT (`PROGRAMME.md` is only a render;
-v31 pins at most one passed per rev via a partial unique index).
-**NL-first** (since 2026-07-25): workers treat the Programme's `## Proof` as their premise;
-a goal that maps to no NL step is handed back as `return_to_nl` — no inventing
-mathematics. {`FetchPaper`, `RequestUserAmend`, `Noop`, `ReturnToParent`, `MarkDeliverable`}
-are all exempt from the package gate; there is no per-batch experiment-count quota (retired
-2026-08-16) — the invariant that a batch must not leave the group in dead air is enforced by
-state, not by counting decision kinds (the stalled-delta gate and the parked-root gate inside
-`verify_decisions`). Design SoT:
-`docs/internal/research_mode_design.md`, `nl_first_design.md`.
+- `minted`: the strategy created the sub-goal. Authorship and inherited-context walks use
+  these edges.
+- `cited`: the strategy reuses an existing goal. Dependency, verification, pruning, and cycle
+  checks use both edge kinds.
 
-### Discussion group tree (2026-08-02, v35)
+There are two supported endgames:
 
-The NL argumentation layer grew from "one Programme, one strategist, one Adversary for the
-whole problem" into **a tree**:
+- **Root proof**: the root goal is proved, the root integrity gate passes, and the top group
+  commits `Ingest`. Library promotion is optional.
+- **Anchor and claims**: a natural-language charter drives minted claims; the Strategist marks
+  deliverables, then commits `Ingest` when the charter is satisfied. A human sign-off may be
+  required before Library work. `Root.lean` and `Defs.lean` are optional for a pure-NL problem.
 
-> Group = one charter + its own Programme + its own strategist/Adversary loop + the subtree beneath it.
+`Ingest` is the problem-level completion decision. Root proof is a hard prerequisite when a
+root exists, but root proof by itself does not terminate the problem.
 
-A group's charter is a natural-language claim: a child group's comes verbatim from the
-parent's Delegate brief, and the top group's is the problem's goal itself, written at init
-(v40, 2026-08-19: Manifest retired — the old analogy "charter : sub-group :: Manifest :
-problem" is now literal: **every group at every depth, top included, is judged against its
-own charter and nothing else**), so a child group inherits every
-whole-problem mechanism all the way to its endgame. Groups are **partitions within the same
-problem** (cross-problem citation is forbidden by the cite gate), not recursive problems; the
-top-level group is a real row in the `groups` table with `parent_group_id IS NULL`, unique per
-problem (pinned by a partial unique index), and is the only group facing the human.
+## 3. Runtime roles
 
-- **`Delegate`**: hands a claim the group cannot yet prove itself to a new group (optionally
-  with a `target_goal_id` as rescue anchor; the anchor flips to `attempting`). Exempt from the
-  Adversary's closure-law criterion 4 — the delegated item is itself the argument; the
-  Adversary instead reviews that the charter is precisely decidable / the Proof is complete
-  assuming it holds / it depends on no ancestor charter or this group's conclusions / it is a
-  real burden, not a skipped step.
-- **`ReturnToParent`**: a child group hands back (`refuted` must point at a proved ¬charter
-  brick / `amend` attaches a suggested new charter / `exhausted` attaches a post-mortem).
-- **Structural walls (all at the verifier layer)**: the top-level group may not
-  `ReturnToParent` (nowhere to go — the machine does not toss hard problems back to the
-  human); child groups may not `RequestUserAmend` (they cannot see user files; go through
-  `ReturnToParent` and let the parent decide whether to escalate).
-- **A parent goes quiet after delegating**: `Delegate` and `Inject` share the batch in-flight
-  accounting (both in-flight predicates recognize "a live child group" as the third kind of
-  product — this "enters both gates together" rule is pinned by an invariant test); only a
-  child group's terminal state wakes the parent. A child group's `Ingest` is the lightweight
-  version (marks `delivered`, touches no sign-off/harvest/problem FSM); handing back marks
-  `returned`, and the rescue anchor falls back to `shelved`.
-- Wake seats, the routine clock, wall-state detection, the Programme revision chain, plan
-  notes, and the Adversary projection are all **per-group**; a goal's group membership is
-  derived, not stored in a column (anchor first → the group that authored the most recent
-  producing decision → top-level group; resolution to a non-active group swaps to the nearest
-  active ancestor).
+The live dispatcher has three pipeline kinds. The Adversary and Verify are intentionally not
+independent queue workers.
 
-Design SoT: `docs/internal/discussion_group_design.md`.
+| Role | Live target | Responsibility |
+|---|---|---|
+| **Formalizer** | `Goal` or `Problem` | Goal target: prove or split in one session. Problem target: mint one toolkit declaration from a Strategist `Inject`. Implemented by `pipeline/backward.py` and `pipeline/forward.py`. |
+| **Strategist** | `Group` | Maintain one group's Programme, adjudicate reviews and stalls, and commit decision batches after mechanical checks and Adversary review. |
+| **Librarian** | `Problem`, optionally one file in queue payload | Turn an ingested, opted-in problem into checked `Library/` declarations through a derived work DAG. |
+| **Adversary** | sub-spawn inside a Strategist wake | Judge a proposal package in an isolated projection; it has no queue kind or independent seat. |
+| **Verify housekeeping** | main dispatcher thread | Promote ready strategies, revive aliases, and run root-level integrity work; it is pure framework work, not an LLM pipeline. |
 
----
+The schema still accepts `Builder`, `Backward`, `Forward`, `Verify`, and `Scholar` in historical
+pipeline/queue rows. Dispatch compatibility routes the former proving names to Formalizer.
+Scholar is retired: paper search and fetch are Strategist tools, and no Scholar pipeline or
+prompt remains.
 
-## 3. Where state lives
+Concurrency is scoped by the work's identity:
 
-| Form | Contents |
+- one organic Formalizer pipeline per goal; OR expansion is passive rather than eager;
+- one Strategist seat per active group, so sibling groups may run concurrently;
+- mint siblings are distinguished by `decision_id` and may run in parallel;
+- Librarian migration and cleanup parallelize by file while serial stages remain problem-wide.
+
+## 4. Persistent and filesystem state
+
+| Lifetime | Location | Contract |
+|---|---|---|
+| Durable relational state | `asterism.db` | Graph and lifecycle truth; every dispatched pipeline is inserted as `running` before its worker starts and finalized in place. |
+| Durable problem source | `Problems/<domain>/<slug>/` | Human Lean inputs, framework proof modules, generated views, and `problem.json` seed. |
+| Cross-pipeline continuation | `.drafts/`, `.presearch/` | Timeout/rescue notes, Strategist plan notes, and reusable pre-search results. |
+| Per-pipeline scratch | `.attempts/<pipeline_id>/` | Context, proposed outputs, provider state, and temporary gateway metadata; removed by `WorkArea` after artifacts are packed. |
+| Durable operational evidence | DB forensics plus `.asterism/{mcp_logs,transcripts,...}` | `dead_attempts`, usage, tool traces, and provider transcripts survive scratch cleanup. |
+
+Framework-owned `proofs/` mutations go through `Tooling/state/proof_store.py`, which combines
+atomic replacement, path ownership checks, and drift inventory. `asterism drift-check` adds DB
+and filesystem consistency checks; generated `TREE.md`, `PROGRAMME.md`, and `BRIEF.md` are
+redrawable projections rather than independent authorities.
+
+## 5. State machines
+
+### Goals and strategies
+
+The canonical sets are declared in `Tooling/state/transitions.py`:
+
+| Entity | States |
 |---|---|
-| **DB** (`asterism.db`, sqlite WAL; version number and table list are authoritative in `state/db.py` `_CURRENT_USER_VERSION` (v44 and 18 tables at time of writing); recent milestones: v17 queue lease, v21 spawn_usage accounting, v23 Scholar/FetchPaper, v25 AttemptDisproof, v28 user_file_history, v29 problem FSM, v30/v31 Programme revision chain, v33 Formalizer merge, v35 discussion group tree, v40 Manifest retirement, v43 stall trigger_kind) | The whole graph, pipeline history, dead attempt forensics, Strategist decisions, Programme revisions, group tree, Librarian lifecycle, KB lessons, spawn usage |
-| **Problem intent** (DB: top group's `groups.charter` + `problems.user_word` + `problem_settings`) | The human's goal, standing directives, and machine settings (§4); durable seed `problem.json` |
-| **`Defs.lean` / `Root.lean`** | Problem's custom definitions / framework-managed root (§5) |
-| **`proofs/L_<slug>.lean`, `_strategy_s<sid>.lean`** | One file per sub-Goal, one assembled patch per Strategy |
-| **`.drafts/`, `.presearch/`** | Cross-spawn progress notes / per-node pre-search cache |
-| **`.attempts/<pid>/`** | Pure scratch, unconditional rmtree at spawn end (artifacts packed into `dead_attempts.artifacts` first) |
+| Goal | `open`, `attempting`, `proved`, `shelved`, `pending_strategist_review`, `disproved`, `frozen`, `dead` |
+| Strategy | `proposed`, `succeeded`, `dead`, `superseded`, `stalled` |
 
-**Every mutation of proofs/ files goes through the single `state/proof_store.py` chokepoint**
-(atomic write + ownership guard + drift inventory; a lint test forbids bare writes outside
-it). `asterism drift-check` can verify DB↔file consistency at any time.
+`proved`, `disproved`, and `dead` are hard-settled read states; `shelved` is a soft terminal.
+`disproved` is also reopenable by an explicit Strategist action because it records a claimed,
+kernel-certified negation proof path rather than an immutable schema fact. A transition into
+`proved` requires a `ProvedReceipt` at the checked mutator.
 
-The schema is "code as documentation": table definitions in `Tooling/state/db.py`, the full
-migration set in `state/db_migrations.py`. State enums have their SoT in
-`Tooling/state/transitions.py` (8 goal states, 5 strategy states incl. `stalled`, 5 problem
-states — see §7); the 4 group states
-(`active`/`delivered`/`returned`/`closed`) are driven solely by `state/groups.py`
-`set_status`. Schema CHECKs are bound by tests and cannot drift.
+All normal writes use `apply_goal_transition` or `apply_strategy_transition`. Cascade
+propagation is main-thread-only; worker threads may commit their own target but do not walk
+upward through the graph. Exact failure-to-transition behavior is centralized in
+[`failure_modes.md`](failure_modes.md).
 
----
+### Problems and groups
 
-## 4. Human interface
+| Entity | States |
+|---|---|
+| Problem | `active`, `awaiting_human`, `ingest_signoff`, `ingested`, `revoked` |
+| Group | `active`, `delivered`, `returned`, `closed` |
 
-**Problem intent** (DB-resident since v40, 2026-08-19 — `Manifest.md` retired; SoT
-`state/intent.py`, dataclass `ProblemIntent` + `IntentCache` (per-access DB read)). Three
-homes:
+Only an `active` problem accepts Strategist wakes. “Stalled” is derived while active; it is not
+a problem state. Problem transitions pass through `apply_problem_transition`; group status
+changes pass through `groups.set_status`.
 
-- **Charter** (the goal): the top discussion group's `groups.charter` row. Every group at
-  every depth, top included, is judged against its own charter and nothing else; sub-group
-  charters come verbatim from the parent's Delegate brief (§2 group tree).
-- **The user's word** (`problems.user_word`): standing directives from the human, rendered
-  verbatim into every agent surface at every depth (strategist context "The user's word",
-  judge projection `user_word.md`, worker BRIEF section). Never replaced by any charter,
-  never machine-amendable.
-- **Machine settings** in `problem_settings` (`state/settings.py`, no file fallback):
-  `axioms_whitelist`, `forbidden_lemmas`, `library: true` (opt-in Library promotion),
-  `signoff: false` (benchmark unattended mode only, skips human sign-off); `paper:` binding
-  lives in the `problem_papers` table.
+Exactly one top group exists per problem (`parent_group_id IS NULL`, enforced by a partial
+unique index). It alone faces the human. A child group has its own charter, Programme,
+Strategist/Adversary loop, clocks, and terminal result, but shares the parent's problem and
+cannot cite across problem boundaries.
 
-Not a character of charter or word is parsed — both go verbatim to every agent. Durable
-seed: `Problems/<p>/problem.json` (machine-format JSON: `{"problem", "charter", "word"?,
-"settings"?, "papers"?}`); `asterism init` / `init-batch` read it to seed the DB, and every
-sanctioned charter/word/settings write refreshes it best-effort (chokepoint dual-write,
-proof_store-style), so `asterism reset` + re-init round-trips. The runtime never re-reads it
-after init. Writers: `state/intent.set_charter` / `set_word` (history rows in
-`user_file_history` under pseudo-keys 'charter'/'word'), UI `GET/POST
-/api/problems/{p}/intent`, CLI `asterism charter <p> [--file F]` / `asterism word <p>
-[--file F|--clear]`. `RequestUserAmend` may target {`Defs.lean`, `Root.lean`, `charter`}
-(an accepted charter amend writes the DB via `set_charter`); the user's word has no machine
-amend path. The canonical statement is the
-theorem signature in `Root.lean`, and the prover's hint channel is the auto-generated
-`## Candidate lemmas`.
+## 6. Programme and decision model
 
-**Human intervention points for anchor+claim** (CLI): `asterism review` (view deliverables +
-kernel anchor closure), `asterism reject` (reverse-closure cascade invalidation),
-`approve-ingest` / `reject-ingest`
-(the sign-off gate before harvest).
+Each group owns a passed Programme revision chain. `PROGRAMME.md` renders the current passed
+revision; `programme_revisions` retains passed and rejected packages. A non-exempt decision
+batch must provide `proposal.md` with Title, Argument, Proof, and Roadmap sections, pass
+mechanical verification, change after a rebuttal, and clear the Adversary before commit.
 
-**Problem layout**: `<Domain>.<slug>` → `Problems/<Domain>/<slug>/`; Domains align with
-mathlib top-level naming (`Topology`/`NumberTheory`/`Analysis`… by convention, not a
-hard-coded whitelist). Old problems cannot be moved with a bare `git mv` — Lean module path =
-file path, the build breaks. `Defs.lean` / `Root.lean`
-are both optional (pure-NL may lack both); after hand-editing the Root statement, re-run
-`init` or `asterism repin` (choices: `Root.lean` / `Defs.lean` / `charter` / `word`;
-baselines go through `user_file_history`, v28).
+The live decision behaviors are:
 
----
+| Decision | Architectural effect |
+|---|---|
+| `Inject` | Mint a new goal or explicitly redispatch/reopen a target goal. |
+| `ConfirmShelve` | Settle a goal as shelved and propagate the lost route. |
+| `RequestUserAmend` | Enter `awaiting_human` with a proposed charter/Lean-file amendment. |
+| `MarkDeliverable` | Mark a kernel-backed claim for the anchor-and-claims endgame. |
+| `Ingest` | Top group: enter the sign-off/ingested endgame. Child group: mark the group delivered. |
+| `Delegate` | Open a child group; its terminal status resolves the parent's batch product. |
+| `ReturnToParent` | Child-only hand-back as `refuted`, `amend`, or `exhausted`. |
+| `CloseGroup` | Parent retires an active child group. |
+| `Noop` | Audit-only decision; it creates no work product. |
 
-## 5. The three states of Root.lean
+`EmitDirective`, `FetchPaper`, and `AttemptDisproof` remain parseable so the verifier can teach
+their replacements, but cannot commit. Standing guidance belongs in Programme conventions;
+papers use the Strategist tool surface; disproof uses the ordinary proof machinery.
 
-**A initial**: the user hand-writes the sorry stub (the framework does not generate it;
-`init` only does a lake-build type check + statement extraction, `--force` bypasses the type
-check; the root goal starts `frozen`). **B in progress**: the framework only produces files
-under `proofs/`; Root.lean is untouched. **C proved**: two sanctioned forms — (a) assembly
-writes the complete `theorem main` in place (statement preserved byte-for-byte); (b)
-`prune.reconcile_proved_goals`
-rewrites it as a thin indirection —
+Inject and Delegate share batch completion semantics. A batch is complete only when every
+produced goal, strategy, or child group has a non-NULL terminal outcome. `batch_id` is
+immutable; a completion relay wakes the authoring group.
 
-```lean
-import Problems.<p>.proofs._strategy_s<NN>
-namespace Problems.<p>
-def main := @Problems.<p>.s<NN>
-end Problems.<p>
-```
+## 7. Soundness boundary
 
-Note it is a `def` (the type is inferred from the winner strategy's signature); keyword
-modifiers (`noncomputable`) and the
-`@[instance]` prefix are preserved (a root may declare a Prop instance — the framework only
-proves Props, never produces data).
-Both forms pass `verify._root_statement_pin_ok` (statement pin, task #120 — the proved root
-is pinned back to the user baseline).
+The controlling principle is: **no goal enters `proved`, and no declaration enters the
+Library, without the relevant kernel-facing gate**.
 
----
+| Gate | Boundary |
+|---|---|
+| Formalizer axiom gate | Before an immediately proved minted goal or a proof strategy is accepted; the used axiom set must fit the effective whitelist. |
+| Validate/commit parity gates | Name collisions, ancestor cycles, stale validation, forbidden metaprogramming, citations, declaration shape, and other commit-time refusals are mirrored as early as possible in the editing tools. Commit remains authoritative. |
+| Verify promotion | A ready strategy is promoted mechanically only after all linked goals are proved; the checked transition supplies a receipt. |
+| Root integrity gate | Rechecks the complete root closure, statement pin, and axioms; on escaped `sorryAx` it bisects and rolls back the culprit chain. |
+| Librarian gates | Import closure, whole-file verification, per-declaration axioms, no `axiom` declarations, def-equivalence for definitions, final rewrite recheck, and root/deliverable bridge. |
 
-## 6. Dispatcher main loop
+When `axioms_whitelist` is absent, `state.intent.effective_axioms` uses the framework default
+(`Classical.choice`, `propext`, `Quot.sound`) and warns; absence never disables checking.
+Elaboration-time metaprogramming is separately refused because it executes with framework
+privileges and is not made safe merely by `#print axioms`.
 
-Fixed order every tick: cascade → verify housekeeping → post-proved gate (reconcile + root
-integrity) → librarian refill → exit check → quota-wait gate → bfs refill →
-strategist triggers → reconcile_stuck_states (per-tick safety net) → lease sweep → spawn.
-Step-by-step detail and exit conditions in `data-flow.md` §2.
+## 8. Human intent and Root.lean
 
-**Discipline**: cascade **propagation** always runs sequentially on the main thread
-(guarded by `transitions.assert_main_thread`; CI strict mode raises). A worker thread may
-perform commit-time state transitions on **its own target** (always via the transitions
-checked mutators), but never runs a propagation entry point. This eliminates a whole class of
-OR-races.
+Runtime intent has three independent channels:
 
-**pipeline = slot** (#118): dispatch.pool and gateway workers are 1:1 and scale together; a
-pipeline claims one warm slot on entry and all verification during its lifetime hits its own
-slot (own-slot, no eviction). Borrowing
-(`verify_file`) is restricted to non-pipeline contexts, preferring unclaimed slots. Semantic
-detail in data-flow §0.
+- the top group's charter is the problem's goal;
+- `problems.user_word` is the human's standing, verbatim direction and is shown at every group
+  depth;
+- `problem_settings` contains machine settings such as forbidden lemmas, axiom whitelist,
+  Library opt-in, and sign-off behavior; paper bindings live in `problem_papers`.
 
-At startup the daemon binds the whole process tree into a kill-on-close Job Object — when the
-daemon dies, children (claude /
-lake) are reclaimed automatically; no manual orphan cleanup needed.
+`problem.json` seeds those values during init and is refreshed best-effort by sanctioned
+writers. The daemon does not poll it as runtime authority.
 
----
+For a rooted problem, `Root.lean` moves through three conceptual forms:
 
-## 7. State machines and cascade (conceptual)
+1. the human-authored statement with a hole, registered as a frozen root goal;
+2. an unchanged root while work proceeds under `proofs/`;
+3. a proved root, either a complete theorem body or a thin import/alias to the winning
+   strategy. The root statement pin must still match the user baseline.
 
-All goal/strategy state transitions go through the checked mutators in
-`state/transitions.py`: legal edges are registered in
-`GOAL_EDGES` / `STRATEGY_EDGES`; in CI strict mode an unregistered edge raises directly, in
-production it logs loudly. A lint test with a count ratchet forbids new raw
-`UPDATE … SET status`.
+## 9. Durability and process boundaries
 
-Conceptual shape of the cascade (the full outcome × transition table lives **only** in
-`failure_modes.md` §2):
+- Queue pop is a lease (`owner_pid`, `leased_at`), not a delete. Completion deletes the row;
+  startup recovery and the per-tick TTL sweep release abandoned leases.
+- A `pipelines` row exists for the full dispatch lifetime. Startup recovery finalizes stale
+  `running` rows after a daemon crash.
+- Per-retry evidence is written before its paired `goals.attempts` increment, so the remaining
+  crash window can under-count an attempt rather than leave an unexplained increment.
+- Ready strategies, Librarian work, and most queue contents are re-derived from durable state.
+  Pending-review and unresolved batch relays also have a per-tick reconciler.
+- Proof writes use atomic replacement and backups; startup recovery, consistency sweep, and
+  root integrity are separate correction layers.
+- The daemon process tree is attached to a kill-on-close process group/Job Object so provider
+  and Lean children are reclaimed with the daemon.
 
-- Failures increment `attempts`; reaching SHELVE_THRESHOLD → transition to
-  `pending_strategist_review` for Strategist adjudication — **only ConfirmShelve truly makes
-  it `shelved` and propagates upward** (killing the parent strategy that depends on it; a
-  parent with no live strategy → keeps propagating up). Hard terminal `dead` (e.g.
-  `missing_parent_stub`) still propagates directly.
-- `open_goals` uses a recursive CTE to filter out orphans under dead branches; `detached=1`
-  (mint output, Strategist restart targets) is additionally unioned into the alive seed.
-- Every Inject decision writes an outcome; when the whole batch has landed → enqueue
-  Strategist `inject_batch_done` (batch_id immutable; completion derived from "all outcomes
-  non-NULL").
-- Preconditions for proved: see §10 axiom gates.
+Operationally, `.asterism/degraded.json` records best-effort mechanisms that failed open (for
+example a dedupe probe). This is observability, not a second lifecycle state.
 
-**The Problem layer has its own five-state FSM** (v29, `problems.state`): `active` /
-`awaiting_human` / `ingest_signoff` / `ingested` / `revoked`. `WAKE_LEGALITY` only lets
-`active` receive Strategist wakes (the rest are human-owned or terminal); sole mutator
-`apply_problem_transition`; `revoked`
-(un-proved after ingestion) is revived via `asterism revive`. "stalled" is deliberately not a
-state but a derived guard on `active` — the machine has no legal resting state. Design SoT:
-`docs/internal/problem_fsm_design.md`.
+## 10. Configuration resolution
 
----
+For a registered key, `config.get` resolves in this order:
 
-## 8. Sequential OR expansion (passive)
+1. its primary process environment variable, then the workspace `.env` value;
+2. the dotted path in `Asterism.yaml`;
+3. any declared legacy environment variables;
+4. the call-site default.
 
-Each Goal runs only one Strategy at a time; the next is born only when it dies. Under strong
-models, eager fanout is pure token waste; the cost is slower wall-clock when the first
-strategy heads the wrong way, mitigated by SHELVE_THRESHOLD + showing the Formalizer
-"what past dead decompositions tried". Each Strategy uses a strategy-isolated filename
-(`_strategy_s<sid>.lean`,
-theorem name `s<sid>` locked by the framework); the parent's `lean_path` is only changed when
-Verify picks a winner. Sub-goal slugs
-are agent-chosen descriptive names, unique per problem (`UNIQUE(problem, slug)`).
+`CONFIG_SPEC` is the key registry and drift gate. Exact defaults belong there, not in these
+architecture/data-flow documents. Configuration is cached for a daemon run; source,
+`Asterism.yaml`, or `.env` fingerprint drift can trigger a drain-and-handoff when enabled.
 
----
-
-## 9. Dedupe (sub-goal equivalence sharing)
-
-When the Formalizer splits out a new sub-goal, the framework uses a Lean kernel probe
-(`apply @<canonical> <;> assumption`
-in a single batch cold call) against the candidate pool: ancestor chain / sibling orphans /
-cross-branch proved / same-problem disproved / reuse tier (open·attempting·shelved). On hit →
-no INSERT;
-`strategy_subgoals` links to the canonical, the file is written as an alias and
-build-verified. Fail-open: if the probe
-breaks, always treat as no-hit — never block the main flow.
-
-Key points:
-
-- **The alias mechanism is theorem-only** — data defs are never aliased (def-blind
-  misjudgment fixed in `cbe5bc3`,
-  soundness-adjacent).
-- Hit on disproved → abort the whole batch ("a counterexample was already given, stop
-  proposing this").
-- The `no_progress` gatekeeper is a single-canonical apply probe: if a sub-goal can be
-  discharged in one shot by the goal being split or an unproved
-  ancestor of it → reject (the split achieved nothing).
-- Three mint branches: hit on a same-problem alive/parked twin → **reuse** (the Inject is
-  repointed to the existing goal, reviving/detaching as needed — no new row); hit on
-  **proved** → land directly as an alias (the proposal becomes a citation); otherwise
-  land normally. The cite-gate resolves aliases; proved aliases are citable.
-- **G1 shelved-revival**: when mint lands a new goal X, probe in reverse "can X discharge
-  some shelved S"; on hit, record the link first; once X is later proved, housekeeping
-  backfills the alias body and S revives, flips to proved, and propagates up.
-
----
-
-## 10. The axiom gate system
-
-Principle (settled 2026-07-03): **`proved` is only marked after the axiom set has been
-verified against the whitelist; re-verify after every high-risk rewrite**. The whitelist comes
-from the problem's `axioms_whitelist` setting (`problem_settings`, read via
-`state/intent.effective_axioms`); when absent, framework default
-(Classical.choice / propext / Quot.sound) + warning — **never skip because the field is
-absent**.
-
-| Gate | Location | What it guards |
-|---|---|---|
-| **pipeline exit gate** | `_axiom.axiom_gate`, shared by both Formalizer entries (prove/split leaf-bypass + mint) (own-slot, ~150ms) | Before any goal is marked proved, its proof's axiom set ⊆ whitelist (asserted by a structural lint test) |
-| **root integrity gate** | When the root flips to proved (guarded by the `integrity_verified` marker, auto-cleared on flipping away from proved) | The single full elaboration of the whole alias chain; catches drift + escaped sorryAx, bisects the culprit + rollback and re-split |
-| **Librarian migrate gate** | On each file moved into the Library | per-decl `#print axioms` ⊆ whitelist + import closure + Gate D def-equivalence; any `axiom` declaration is a hard-fail |
-| **cleanup final re-gate** | After cleanup rewrites proof bodies | The same per-decl check re-run against the **final text** — LLM-rewritten sections (simplify / near-dup bridge / audit whole-file rewrite) are the only place after migrate where the axiom set can change |
-| **bridge endgame gate** | End of the chain | classic: Gate B re-derives the root from the Library (statement-pin + axiom probe); deliverable: after cite_drop, per-decl axiom gate per file, PASS before bridge is marked complete (`problems.library_bridged_at`, v18) |
-
-The verify-collapse design is unchanged: per-level `verify_strategy` is a purely mechanical
-alias rewrite, no per-level
-elaboration; the root gate's rollback is the correction net for a false-proved slipping past
-mechanical verification (fires very rarely in practice,
-but must not be removed — verify-collapse deliberately does not probe non-leaf promotes).
-
----
+`dispatch.ram_budget` changes the concurrency model: when set and parseable, adaptive RAM
+admission owns the Lean/NL split and `dispatch.pool` becomes a fallback/executor bound. When it
+is absent, the static pool model remains active. See [`data-flow.md`](data-flow.md) for runtime
+admission and elaboration walls.
 
 ## 11. Code map
 
-```
-Tooling/     (the 2026-08 split turned every 2,300+-line monolith into a package
-              behind a re-exporting facade — old import paths all still work)
-  core/       dispatcher/ (refill/triggers/worker/lock + run() in loop.py),
-              librarian_sched.py (five-stage DAG scheduling),
-              cli/ (run/problems/diagnose/maint + main.py argparse), config.py,
-              quota_wait.py / usage_quota.py (quota),
-              warmup.py (NL-first gateway warmup), process_group.py (Job Object)
-  state/      db/ (schema+connect in core.py; goals/problems/reach/strategies/
-              pipelines/queue/deaths/library domains), db_migrations.py (full migration set),
-              transitions.py (goal/strategy/problem state machines + ProvedReceipt + cascade_one),
-              programme.py (Programme revision chain), intent.py (charter / user word +
-              problem.json seed), settings.py (problem_settings), proof_store.py (proofs/
-              chokepoint), recovery.py (startup repair + orphan sweep), failures.py
-              (failure-reason registry = machine SoT), thresholds.py, regress.py,
-              consistency.py (drift-check predicates), kb.py / kb_ingest.py (lessons, Model B)
-  pipeline/   backward.py / forward.py (the Formalizer's prove-split / mint entries),
-              _intake.py (Formalizer intake gate),
-              strategist/ (model/verify/commit/wake), adversary.py (the Adversary),
-              _disprove.py (kernel-certified disproof gate),
-              librarian/, _retry.py (session retry helper), _assembly.py,
-              _axiom.py (shared axiom gate), _cite_gate.py, _presearch.py, _reflection.py,
-              events.py, etc.
-  quality/    verify.py (housekeeping + root gate), dedupe.py, prune.py, review.py,
-              knowledge_stats.py, librarian/ (dedup/gates/inventory/relabel + cleanup/*)
-  agent/      context.py / phase2_context/ (Context.md compilation:
-              dossier/outcomes/compile/forward), runtime.py (spawn +
-              spawn_usage accounting), sandbox.py
-  llm/        claude_cli.py (spawn + watchdog + sandbox flags), spawn_guard.py,
-              codex_cli.py (+zen flavor via zen_shim.py), antigravity_cli.py,
-              openai_api.py (gemini backend retired 2026-08-28)
-  lsp/        gateway/ (state/elab/backend/weigh/governor/sessions/health/
-              leantext/rpc/gates/verify + routes in __init__),
-              client.py, decl_oracle.py, lifecycle
-  knowledge/  lemma search (loogle etc.)
-  papers/     fetch / index / search / shelf (the Papers/ shelf)
-  serve/      web console (`asterism serve`: star map, Engine view, chat explainer);
-              data/ (status/edges/timeline/library API reads)
-  prompts/    one folder per worker, multi-stage files (formalizer/{intake,formalize,mint},
-              strategist/, adversary/, scholar/, librarian/, _shared/)
+```text
+Tooling/
+  core/
+    dispatcher/       main loop, refill, triggers, worker boundary, singleton lock
+    config.py         config registry and precedence
+    ram_ledger.py     adaptive Lean/NL admission
+    librarian_sched.py, quota*.py, network_wait.py, degraded.py
+  state/
+    db/               schema facade split by domain
+    transitions.py    checked state transitions and cascade
+    failures.py       failure registry
+    groups.py, programme.py, intent.py, proof_store.py, recovery.py, consistency.py
+  pipeline/
+    backward.py       Formalizer goal arm
+    forward.py        Formalizer mint arm
+    _retry.py         shared session/retry lifecycle
+    strategist/       decision model, verification, commit, wake
+    adversary.py
+    librarian/
+    events.py, _axiom.py, _cite_gate.py, _disprove.py, _presearch.py
+  quality/
+    verify.py         ready-strategy/revival/root housekeeping
+    dedupe.py, dedupe_probe.py, names.py
+    librarian/
+  agent/
+    context.py, phase2_context/   Context and companion compilation
+    runtime.py, sandbox.py
+  llm/
+    provider adapters, capability model, sandbox envelope and guards
+  lsp/
+    gateway/          sessions, elaboration lanes/wall, verification, RAM governor
+    lifecycle.py, client.py, decl_oracle.py
+  knowledge/          inspect, loogle, compute, validation and paper tools
+  papers/             paper shelf/search/fetch/index
+  prompts/            formalizer, strategist, adversary, librarian, shared prompts
+  serve/              console/API projections and chat explainer
 ```
 
----
+## 12. Modification invariants
 
-## 12. Context.md: the agent's sole interface
-
-Before every spawn the framework compiles a Context.md from the DB — **everything the agent
-sees comes from here** (companion
-files are fallback only; agents often skip them). Compilation principles: must-see info
-inline, curated not dumped; sections stable across spawns
-(BRIEF, KB lessons) go first for prompt-cache hits. Lessons come from the DB `kb_entries`
-(Model B: global-only, written by reflection, inlined every spawn, cap 25); when pre-search
-is present, it injects
-`## Candidate lemmas` and replaces the proved-siblings section. In research mode the
-Programme's
-`## Proof` is injected into worker context as the programme section (the NL-first premise);
-bulky content goes to the
-`CATALOG.md` / `PAPER_MAP.md` / `BATCHES.md` companions, inline keeps only index pointers.
-Full section order in
-`data-flow.md` §5.
-
----
-
-## 13. Non-goals (what does not exist in this system, and why)
-
-| Not done | Reason |
-|---|---|
-| A 'running' state in the pipelines table | Only finished rows are stored; no zombies left when the daemon dies |
-| An active cancellation propagation table | The cascade entry no-op already passively catches OR losers |
-| New worker_kinds such as Generalizer / Refuter | Still deferred (Scholar v23 — since retired 2026-08-22 — and Formalizer v33 already demonstrated the kind-extension path) |
-| Auto-pruning OR-losing strategy files | Blast radius too large (Jordan 2026-05-26); only auto-reconcile; prune is the operator opt-in `asterism prune` |
-| An events-table audit log | dead_attempts.artifacts JSON + stdout suffice |
-| Two-phase `commit_state` pending/live | backup-restore + `os.replace` is enough |
-
----
-
-## 14. Invariants (read before modifying)
-
-**Concurrency and state**
-- State writes only go through `transitions` checked mutators; unregistered edges raise in CI
-  (lint: raw `UPDATE …
-  status` count ratchet guard)
-- Cascade **propagation** only on the main thread (guarded by `assert_main_thread`); worker
-  threads only do commit-time transitions on their own target
-- **pipeline = slot**: verification during a pipeline's lifetime goes through its own claimed
-  gateway slot
-  (`_axiom.verify_on_own_slot`); borrowing is restricted to non-pipeline contexts, preferring
-  unclaimed slots
-- The `pipelines` table stores finished rows only
-- worker_kind ↔ target_kind: Formalizer → Goal (prove/split) or Problem (mint),
-  Strategist → Problem, Librarian → Problem (per-file target
-  `problem\x1ffile`); Verify is not a worker (Scholar retired 2026-08-22)
-- `problems.state` transitions only via `apply_problem_transition`; wakes only delivered to `active` (WAKE_LEGALITY)
-
-**soundness**
-- `proved` is only marked after `axiom_gate` passes; Library content re-verifies axioms after
-  every high-risk rewrite (§10)
-- The Library never admits an `axiom` declaration
-- `proofs/` file mutations only via `proof_store` (atomic write + ownership guard; lint-guarded)
-
-**Files and schema**
-- `goals.lean_path` UNIQUE; `strategies.lean_path` not UNIQUE (multiple strategies share the parent target)
-- Strategy `scratch_path` is write-once (may be empty at INSERT, backfilled once, then never changes)
-- Sub-goal slugs unique per problem (`UNIQUE(problem, slug)`); strategy filename/theorem name `s<sid>` framework-locked
-- `.attempts/<pid>/` unconditional rmtree; agent output packed into `dead_attempts.artifacts` first
-- Schema changes must bump user_version + write a migration
-
-**Group tree**
-- Exactly one top-level group per problem (`parent_group_id IS NULL`, partial unique index);
-  the top-level group is a real row, not a code special case
-- "A live child group" as the third kind of in-flight product must be recognized
-  **simultaneously** by `has_active_inflight_inject`
-  (stall side) and `has_live_inflight_inject` (anti-idle side) (pinned by an invariant test;
-  the two have diverged three times historically, each time a livelock/deadlock)
-- The top-level group may not `ReturnToParent`; child groups may not `RequestUserAmend` (both rejected by the verifier)
-- A child group's Ingest touches no `problems.ingested_at`/sign-off/harvest/problem FSM
-- Group state transitions only via `groups.set_status`
-
-**Strategist**
-- ConfirmShelve and a goal-target Inject may not point at the same target or a descendant of it
-- `strategist_decisions.batch_id` is immutable; completion derived from "all outcomes in the batch non-NULL"
-- Mint output goals must be `detached=1`
-- Non-exempt decision batches must carry a proposal package passed by the Adversary; the
-  Programme revision chain has at most one passed per rev (v31)
-- Deliverable problems must pass the `ingest_signoff` human sign-off before harvest
-  (benchmark problems with `signoff: false`
-  excepted)
-
-**Processes**
-- The daemon process tree is bound to a kill-on-close Job Object (parent dies, children auto-reclaimed)
-
----
-
-The list of proved problems is not maintained in this doc — query the DB:
-`origin='root' AND status='proved'`; the Library index is
-`library_decls` + `problems.library_bridged_at` (INDEX.md retired since v18; the DB is the index).
+1. Transition state through the checked mutators; never add a raw status write casually.
+2. Run propagation only on the dispatcher main thread.
+3. Require a `ProvedReceipt` for every transition into `proved`.
+4. Preserve the distinction between `minted` and `cited` strategy edges.
+5. Route framework-owned proof writes through `proof_store` and keep path ownership unique.
+6. Keep pipeline start/finish and per-retry evidence ordering intact.
+7. Treat a live child group as an in-flight batch product in both stall and anti-idle queries.
+8. Keep exactly one top group per problem; top/child human-interface restrictions belong in
+   the decision verifier.
+9. Do not let a non-active problem accept automatic wakes or Librarian work during sign-off.
+10. Keep validation mirrors helpful, but make commit gates authoritative and fail closed at
+    soundness boundaries.
+11. Add schema changes through a versioned migration and bind new enums to their code SoT.
+12. Add a failure reason first to `failures.REGISTRY`, then document it in
+    [`failure_modes.md`](failure_modes.md).
