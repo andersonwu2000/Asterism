@@ -289,7 +289,9 @@ def inspect(queries: list = None) -> str:
     CATALOG.md, decisions.md — are written with stable headings, so this
     is the cheap way to read them; naming a section you already know
     beats paging. `outline: true` returns the map (headings, line
-    ranges, sizes) when you do not know which section you want. `lines`
+    ranges, sizes) when you do not know which section you want; on a
+    roster-sized file (CATALOG.md) add `outline_prefix: "uc_four"` or
+    `outline_grep: "<regex>"` — its whole map is refused. `lines`
     is for files with no headings, such as `.lean`. With none of the
     three, `read` returns the whole file. Add `"raw": true` to get the
     content UNDECORATED (no line numbers, no banners) — use it whenever

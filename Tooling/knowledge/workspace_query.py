@@ -73,6 +73,12 @@ _ECHO_CHARS = 200
 #: Echoes past this budget collapse to an index range; the caller still
 #: holds the full list it sent.
 _NOTE_CHARS = 2_000
+#: `outline: true` lists a file whole only up to this many sections.
+#: Past it the map IS the roster (CATALOG.md: 1,333 sections, 30-60K
+#: chars — owner ruling 2026-08-29) and must be asked for by name:
+#: `outline_prefix` / `outline_grep`, answered up to this many hits.
+OUTLINE_INLINE_MAX = 120
+OUTLINE_MATCH_MAX = 60
 
 #: A markdown heading, which is how a framework document declares its
 #: sections. Level 1-4 only: deeper is prose formatting, not structure.
@@ -707,6 +713,26 @@ def _heading_key(s: str) -> str:
     return str(s).strip().strip("`").lstrip("#").strip().lower()
 
 
+def _outline_roster(secs, spec: str, why: str) -> "list[str]":
+    """A roster-sized file's map is the roster itself (CATALOG.md: 1,333
+    headings, 30-60K chars), so it is never shipped whole. What ships is
+    the way to NAME a slice — heading-prefix counts, short by
+    construction — and the two questions a roster actually answers."""
+    counts: "dict[str, int]" = {}
+    for text, *_ in secs:
+        tok = re.split(r"[_\s]", _heading_key(text), 1)[0][:24]
+        counts[tok] = counts.get(tok, 0) + 1
+    top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:30]
+    return [
+        f'{why} Name what you want: `outline_prefix: "<prefix>"` (case-'
+        f"insensitive, up to {OUTLINE_MATCH_MAX} hits) or `outline_grep: "
+        f'"<regex>"`; a live goal: {{"decl": "<slug or gNNNN>"}}; one '
+        f'entry\'s text: {{"grep": "<name>", "in": {spec!r}}}.',
+        f"heading prefixes (token before the first `_`; {len(counts)} "
+        f"distinct, top {len(top)}): "
+        + ", ".join(f"{k} ({n})" for k, n in top)]
+
+
 def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
     """A document is read by the SECTION; a window is the fallback.
 
@@ -755,8 +781,33 @@ def _q_read(q: dict, cwd: Path, deny) -> "list[str]":
             return [f"{len(lines)} lines, no markdown headings — this file "
                     f"has no sections. Read it whole, or a window with "
                     f'`lines: "1-200"`.']
-        out = [f"{len(secs)} sections, {len(lines)} lines:"]
-        for text, level, a, b in secs:
+        pre = _heading_key(q.get("outline_prefix") or "")
+        pat = str(q.get("outline_grep") or "")
+        head = f"{len(secs)} sections, {len(lines)} lines"
+        shown = secs
+        if pre or pat:
+            try:
+                rx = re.compile(pat, re.I)
+            except re.error as exc:
+                return [f"bad `outline_grep` pattern: {exc}"]
+            shown = [s for s in secs if _heading_key(s[0]).startswith(pre)
+                     and rx.search(s[0])]
+            sel = " and ".join(x for x in (pre and f"prefix {pre!r}",
+                                           pat and f"grep {pat!r}") if x)
+            if len(shown) > OUTLINE_MATCH_MAX:
+                return [f"{len(shown)} of {len(secs)} headings match {sel} "
+                        f"— more than the {OUTLINE_MATCH_MAX} an outline "
+                        f"lists; narrow `outline_prefix` / `outline_grep`."]
+            if not shown:
+                return _outline_roster(secs, spec, f"no heading matches "
+                                       f"{sel} among {len(secs)} sections.")
+            head += f", {len(shown)} match"
+        elif len(secs) > OUTLINE_INLINE_MAX:
+            return _outline_roster(
+                secs, spec, f"{head} — more than the {OUTLINE_INLINE_MAX} an "
+                f"outline lists whole; this file's map IS the roster.")
+        out = [head + ":"]
+        for text, level, a, b in shown:
             size = sum(len(lines[n - 1]) + 1 for n in range(a, b + 1))
             out.append(f'  {"#" * level} {text}   lines {a}-{b}, '
                        f'{size:,} chars')
@@ -948,17 +999,21 @@ def _q_decl(q: dict, cwd: Path, deny) -> "list[str]":
         conn = _db.connect_readonly(ws / "asterism.db")
     except Exception as exc:  # noqa: BLE001 — never fail the whole batch
         return [f"declaration index unavailable ({type(exc).__name__})"]
+    # `gNNNN` is how TREE.md / Context.md label a goal — its row id, an
+    # exact address; a slug is exact first, then substring: an agent
+    # that typed the whole name wants THAT one, and burying it among six
+    # near-misses is the same "answer is in there somewhere" failure the
+    # CATALOG had.
+    gid = re.fullmatch(r"g(\d+)", name)
     try:
         rows = conn.execute(
-            # Exact first, then substring: an agent that typed the whole
-            # name wants THAT one, and burying it among six near-misses
-            # is the same "answer is in there somewhere" failure the
-            # CATALOG had.
             "SELECT slug, lean_path, statement, status, problem, "
             "alias_target_id FROM goals "
-            "WHERE slug = ? OR slug LIKE ? "
-            "ORDER BY (slug = ?) DESC, slug LIMIT 6",
-            (name, f"%{name}%", name)).fetchall()
+            + ("WHERE id = ?" if gid else
+               "WHERE slug = ? OR slug LIKE ? "
+               "ORDER BY (slug = ?) DESC, slug LIMIT 6"),
+            (int(gid.group(1)),) if gid else (name, f"%{name}%", name)
+        ).fetchall()
         # An alias row's own file is `def slug := @sNNN` — truthful and
         # useless (90 self-reports: "shows the full statement for
         # unproved goals but only the alias for proved ones"). The
@@ -1162,8 +1217,9 @@ def _whole_read_refusal(q: dict, here: Path, deny, size: int,
     if o_text and len(o_text) <= _REFUSAL_OUTLINE_CHARS:
         return head + "\n" + o_text
     first = o_text.splitlines()[0] if o_text else "many sections"
-    return (head + f"\n{first} `outline: true` maps them; then "
-            f"`sections: [...]`, or `grep` it by slug/keyword.")
+    return (head + f"\n{first} `outline: true` maps them (`outline_prefix` "
+            f"narrows a big map); then `sections: [...]`, or `grep` it by "
+            f"slug/keyword.")
 
 
 def _deferral_note(deferred: "list[tuple[int, object]]", reason: str) -> str:
@@ -1248,12 +1304,13 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
     amputates the middle of anything larger (measured 2026-08-15: a
     90,417-char reply delivered as 39,700, mid-batch answers gone). So
     the reply must fit the pipe HERE, where whole queries can still be
-    deferred by name — once the next answer would overflow it, that
-    query and every later one wait for a second call. Answers already
-    delivered keep their full per-query budget; the FIRST query is
-    always answered even alone over the ceiling. None = a backend
-    nobody has measured; no ceiling is applied (`llm/capabilities.
-    mcp_result_delivery_chars` owns the numbers).
+    deferred by name — an answer that would overflow it waits for a
+    second call, and later answers that still fit are delivered (owner
+    ruling 2026-08-29: one oversize question must not hold ten small
+    ones). Delivered answers keep their full per-query budget; the FIRST
+    query is always answered even alone over the ceiling. None = a
+    backend nobody has measured; no ceiling is applied
+    (`llm/capabilities.mcp_result_delivery_chars` owns the numbers).
     """
     if cwd is None:
         # The shim runs tools in-process: ITS cwd is the repo root,
@@ -1277,9 +1334,6 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
     srcs: "list[tuple[int, object]]" = []  # blocks[i] answers srcs[i]
     joined = 0  # len("\n\n".join(blocks))
     for n, q in enumerate(queries[:max_queries], 1):
-        if budget_deferred:  # ceiling hit — everything later waits too
-            budget_deferred.append((n, q))
-            continue
         if not isinstance(q, dict):
             block = f"[{n}] not a query object: {q!r}"
         else:
@@ -1360,11 +1414,14 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
         srcs.append((n, q))
         joined += sep + len(block)
     while True:
-        deferred = budget_deferred + count_deferred
+        # Sorted: a deferral can sit between two delivered answers now,
+        # and the note's collapsed tail speaks in send order.
+        deferred = sorted(budget_deferred, key=lambda t: t[0]) + count_deferred
         if budget_deferred:
             note = _deferral_note(
-                deferred, f"delivering more would overflow this reply's "
-                          f"{delivery_chars:,}-char budget.")
+                deferred, f"their answers would not fit this reply's "
+                          f"{delivery_chars:,}-char budget beside the ones "
+                          f"delivered.")
         elif count_deferred:
             note = _deferral_note(
                 deferred, f"this call carried {len(queries)} and the limit "
@@ -1379,6 +1436,6 @@ def run_queries(queries: "list[dict]", *, cwd: "Path | None" = None,
             break
         # The deferral note itself needs room: hand back the last
         # delivered answer, whole, rather than cutting anything.
-        budget_deferred.insert(0, srcs.pop())
+        budget_deferred.append(srcs.pop())
         joined -= len(blocks.pop()) + 2
     return "\n\n".join(blocks + ([note] if note else []))

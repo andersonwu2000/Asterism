@@ -618,7 +618,7 @@ _WATERMARKS = {
     "Tooling/lsp/gateway/sessions.py": 600,  # born 2026-08-29 from the gateway split (A1-3)
     "Tooling/lsp/gateway/health.py": 150,  # born 2026-08-29 from the gateway split (A1-3)
     "Tooling/lsp/gateway/leantext.py": 800,  # born 2026-08-29 from the gateway split (A1-4a)
-    "Tooling/lsp/gateway/rpc.py": 750,  # born 2026-08-29 from the gateway split (A1-4a)
+    "Tooling/lsp/gateway/rpc.py": 850,  # 2026-08-29 elaboration wall + native_decide gate (+103 on the 750 split-born mark); next growth = split the gates out
     "Tooling/lsp/gateway/server.py": 100,  # born 2026-08-29 from the gateway split (A1-4a)
     "Tooling/lsp/gateway/gates.py": 450,  # born 2026-08-29 from the gateway split (A1-4b)
     "Tooling/lsp/gateway/verify.py": 850,  # born 2026-08-29 from the gateway split (A1-4b)
@@ -722,7 +722,7 @@ _WATERMARKS = {
     # (`serve/data/verdict.py`) rather than into `timeline.py`, which
     # this same run would otherwise have pushed over its watermark.
     "Tooling/serve/app.py": 1750,
-    "Tooling/knowledge/workspace_query.py": 1400,
+    "Tooling/knowledge/workspace_query.py": 1450,  # 2026-08-29 outline roster + defer-by-name + decl gNNNN (+41); next growth = split, not a bump
     "Tooling/pipeline/_retry.py": 1300,
     "Tooling/llm/codex_cli.py": 1250,
     "Tooling/pipeline/forward.py": 1200,
