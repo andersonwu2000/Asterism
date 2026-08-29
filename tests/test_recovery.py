@@ -16,8 +16,14 @@ def test_startup_sweeps_fossil_rows_for_deleted_problems(tmp_path):
                 problem="Test.gone", target_kind="Problem")
     _db.enqueue(conn, kind="Strategist", target_id="Test.leased",
                 problem="Test.leased", target_kind="Problem")
-    conn.execute("UPDATE queue SET owner_pid = 424242 "
-                 "WHERE problem = 'Test.leased'")
+    # Leased by a LIVE owner (this process). A dead fake pid used to
+    # stand in here, which held only while dead-owner leases outside
+    # the scope were left alone; since 2026-08-30 a dead owner is swept
+    # in every scope (owner ruling 2026-08-27) — only a live one is
+    # respected, fossil or not.
+    import os
+    conn.execute("UPDATE queue SET owner_pid = ? "
+                 "WHERE problem = 'Test.leased'", (os.getpid(),))
     conn.commit()
 
     # scoped to another problem: the fossil sweep must still run
