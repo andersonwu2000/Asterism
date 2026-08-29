@@ -163,6 +163,9 @@ class SessionMetadata:
     #: Content hashes already warned about: the SAME write resent is the
     #: confirmation, so the gate asks once and then gets out of the way.
     hb_confirmed: set = field(default_factory=set)
+    #: content hashes the native_decide gate already asked about
+    #: (`rpc._native_decide_gate`; same resend-to-confirm shape).
+    nd_confirmed: set = field(default_factory=set)
 
 
 # ─── Gateway global state ─────────────────────────────────

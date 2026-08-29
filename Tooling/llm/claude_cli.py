@@ -1632,6 +1632,9 @@ class ClaudeCliProvider:
         # is the root-cause layer — no memory section in the spawn
         # system prompt, so the spawn never learns the shared dir.
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+        # MCP tool call ceiling (ms) above the gateway heavy elaboration wall
+        # (900s) + re-warm; same reason as codex tool_timeout_sec.
+        env["MCP_TOOL_TIMEOUT"] = "1500000"
         # A JOB FOR THE TREE, not a handle on the shim. See `_proc_jobs`:
         # an npm-installed CLI is `cmd.exe -> node.exe -> <vendor>.exe`
         # and `Popen.kill()` reaps only the first. `per_process_mb=None`

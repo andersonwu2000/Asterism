@@ -140,7 +140,10 @@ def test_unfinished_elaboration_does_not_read_as_clean(
     assert status == 200
     assert body["diagnostics"] == []
     assert body["converged"] is False
-    assert "not 'clean'" in (body["note"] or "")
+    # 2026-08-29: the wall is a hard failure — the note carries the
+    # verdict's teaching and the structured wall info rides alongside.
+    assert "FAILURE" in (body["note"] or "")
+    assert body["elab_wall"]["wall_s"] == 300
 
 
 def test_converged_sync_says_so(

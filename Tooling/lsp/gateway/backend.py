@@ -185,7 +185,7 @@ def _watch_initial_warm(budget: float, marker: "Path") -> None:
 # backend; `LspClient.shutdown` now tree-kills lake serve's whole
 # `lean --server`/`--worker` subtree so the runaway is actually reaped.
 
-_BACKEND_WEDGE_SEC = 600.0
+_BACKEND_WEDGE_SEC = 1200.0  # > rpc.ELAB_WALL_HEAVY_SEC (900): the per-op wall reclaims first
 _restart_lock = threading.Lock()
 
 

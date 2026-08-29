@@ -22,16 +22,18 @@ tool-side test patches `gateway.rpc.<name>` (`_ensure_backend_ready`,
 `_current_session`, `_compilation_for`, …), never the facade and never
 the defining module.
 
-`_ELABORATING_WARNING`, `_ECHO_END_CHARS` and the three `_HB_*`
+`_ECHO_END_CHARS`, the `ELAB_WALL_*` pair and the three `_HB_*`
 constants do not re-export: their only consumers are in this file, so a
 facade patch would go vacuous and an AttributeError is the better
 answer.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
+import sys
 import time
 
 from .. import edits as _edits
@@ -174,6 +176,15 @@ def apply_edit(edits: list = None) -> str:
             {"edit": "held — file unchanged", "heartbeat_budget": _hb,
              "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()},
             ensure_ascii=False)
+    _nd = _native_decide_gate(meta, new_content)
+    if _nd is not None:
+        # Same pre-write refusal shape as the heartbeat gate: the file is
+        # untouched, the cost was milliseconds, the resend confirms.
+        _log_for(meta, {"event": "apply_edit", "outcome": "refused"})
+        return json.dumps(
+            {"edit": "held — file unchanged", "native_decide": _nd,
+             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()},
+            ensure_ascii=False)
     meta.hb_limit = _hb_declared(new_content) or meta.hb_limit
     new_lines = new_content.split(chr(10))
     # Where each edit LANDED, measured on the produced file. Line numbers
@@ -259,7 +270,7 @@ def apply_edit(edits: list = None) -> str:
             # publishDiagnostics for it, and all command snapshots have
             # elaborated. Replaces the prior fileProgress + 3s-settle
             # polling, which over-waited by ~3s on every tool call.
-            converged = _diags_converged(backend, slot)
+            converged, _wall = _await_elaboration(backend, slot, meta)
         diags = backend.diagnostics_for(slot.slot_uri)
         q_line = _merged_line_for(line_map, start_line)
         try:
@@ -328,15 +339,19 @@ def apply_edit(edits: list = None) -> str:
         **({"goal_at_edit_end": goal_end_text,
             "goal_at_edit_end_note": _GOAL_AT_EDIT_END_NOTE}
            if goal_end_text is not None else {}),
-        "diagnostic_count": _n_diags,
+        # None, not 0, when Lean never finished: a count is the one field
+        # every reader trusts, so an unfinished elaboration must not own
+        # one (the fake-clean class, ~150 worker reports 2026-08-29).
+        "diagnostic_count": _n_diags if converged else None,
         "elapsed_s": round(time.perf_counter() - t0, 1),
         "_server_recv_ts": _recv_ts,
         "_server_send_ts": _ts_now(),
     }
     _note_diagnostics(meta, formatted, time.perf_counter() - t0)
     if not converged:
-        response["elaborating"] = True
-        response["warning"] = _ELABORATING_WARNING
+        response["ok"] = False
+        response["status"] = "elab_wall"
+        response["elab_wall"] = _wall
     if _cite is not None and _cite.get("issues"):
         response["citation"] = _cite
     if _locked_warn is not None:
@@ -412,7 +427,7 @@ def goal_at(line: int = 0, col: int = 0) -> str:
         # Same honesty signal as errors_at/apply_edit (#106; 07-19: a
         # goal_at blocked ~2min and the agent could not tell timeout
         # from truth): an unconverged elaboration must say so.
-        converged = _diags_converged(backend, slot)
+        converged, _wall = _await_elaboration(backend, slot, meta)
         try:
             result = backend.plain_goal(
                 slot.slot_path, line=q_line - 1, character=col, timeout=15
@@ -442,8 +457,9 @@ def goal_at(line: int = 0, col: int = 0) -> str:
     resp = {"line": line, "col": col, "goal": goal_text,
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()}
     if not converged:
-        resp["elaborating"] = True
-        resp["warning"] = _ELABORATING_WARNING
+        resp["ok"] = False
+        resp["status"] = "elab_wall"
+        resp["elab_wall"] = _wall
     if resolved_at_sorry is not None:
         resp["note"] = ("queried position had no goal (a `sorry` admits its "
                         "goal); showing the goal at the `sorry` token "
@@ -451,20 +467,110 @@ def goal_at(line: int = 0, col: int = 0) -> str:
     return json.dumps(resp, ensure_ascii=False)
 
 
-def _diags_converged(backend, slot) -> bool:
-    """True iff Lean finished elaborating the slot's current version and
-    flushed its publishDiagnostics — i.e. `diagnostics_for` is the FINAL
-    answer. False (wait expired / client error) means the stash is a
-    snapshot of an unfinished elaborate: an empty list is NOT "clean",
-    it is "no news yet". Every tool that returns diagnostics to the
-    agent must surface this bit instead of letting a timeout masquerade
-    as a clean file (the `errors_at`-fake-clean class, 2026-07-18)."""
+#: Elaboration wall — compute to completion, then a verdict (owner
+#: design 2026-08-29). The old 120s early return handed the agent
+#: "elaborating, 0 diagnostics" to misread as clean while the worker kept
+#: the slot busy for the next call (~150 worker reports + 36 asking for a
+#: cancel key, union_closed ring 2026-08-29). Past the wall the worker is
+#: killed, its slot re-warmed in place, and the tool answers a hard
+#: failure. A file that bought a large heartbeat budget through
+#: `_heartbeat_gate` gets the heavy wall: 11 proved bricks in this
+#: workspace needed ~240s checks at 4M. Client-side MCP timeouts are set
+#: above both walls (codex `tool_timeout_sec`, claude `MCP_TOOL_TIMEOUT`).
+ELAB_WALL_SEC = 300.0
+ELAB_WALL_HEAVY_SEC = 900.0
+
+
+def _elab_wall_for(meta: SessionMetadata) -> float:
+    return (ELAB_WALL_HEAVY_SEC
+            if _hb_rank(meta.hb_limit) > _HB_ASK_ABOVE else ELAB_WALL_SEC)
+
+
+def _reclaim_slot(backend, slot) -> bool:
+    """Kill the slot's worker mid-elaboration and re-warm it in place —
+    the caller holds the slot lock (the wedge recycler's close/re-open
+    flow, in production since 2026-08-14). The session re-swaps its
+    content on its next call: one cold elaboration, paid by the one
+    session that overran, nobody else loses a claim."""
+    from .governor import _kill_worker_for_uri  # lazy: no import cycle
+    from .state import WARMUP_CONTENT
+    killed = _kill_worker_for_uri(slot.slot_uri)
+    try:
+        with contextlib.suppress(Exception):
+            backend.did_close(slot.slot_path)
+        backend.did_open(slot.slot_path, WARMUP_CONTENT)
+        backend.wait_for_file_done(slot.slot_uri, timeout=300)
+    except Exception:  # noqa: BLE001 — the wedge watchdog escalates
+        return False
+    slot.content_pipeline_id = None
+    slot.line_map = None
+    return killed
+
+
+def _await_elaboration(backend, slot, meta) -> "tuple[bool, dict | None]":
+    """Wait for Lean to finish the slot's current version, up to the wall.
+
+    (True, None): `diagnostics_for` is the FINAL answer. (False, info):
+    the wall was hit — the worker is gone, the slot re-warmed, and `info`
+    is the structured verdict every tool must surface INSTEAD of a
+    diagnostic count (an empty list here is not "clean", it is a
+    failure)."""
+    wall = _elab_wall_for(meta)
     try:
         backend.wait_for_diagnostics(slot.slot_uri, slot.file_version,
-                                     timeout=120)
-        return True
-    except (TimeoutError, RuntimeError):
-        return False
+                                     timeout=wall)
+        return True, None
+    except (TimeoutError, RuntimeError) as exc:
+        reclaimed = _reclaim_slot(backend, slot)
+        print(f"[gateway] elaboration wall {wall:.0f}s hit on slot "
+              f"{getattr(slot, 'slot_id', '?')} ({type(exc).__name__}) — "
+              f"worker {'killed and re-warmed' if reclaimed else 'NOT reclaimed'}",
+              file=sys.stderr, flush=True)
+        return False, {
+            "wall_s": wall,
+            "worker_reclaimed": reclaimed,
+            "teaching": (
+                f"Lean did not finish elaborating within {wall:.0f}s; the "
+                "worker was killed and its slot re-warmed, so this result is "
+                "a FAILURE, not 'no news yet'. A check this slow does not "
+                "converge by waiting: bound the quantity instead of "
+                "evaluating it, split the finite case into smaller bricks, "
+                "or lift the heavy step into its own `new_<slug>.lean` with "
+                "a small context and cite it. Your file content is kept; the "
+                "next call re-elaborates it cold."),
+        }
+
+
+#: `native_decide` proves via `Lean.ofReduceBool`, which the axiom gate
+#: never whitelists (ruling 2026-08-18): a proof carrying it cannot land,
+#: and the native compilation it triggers runs for minutes outside the
+#: heartbeat budget — 133 of 1,000 worker reports in the union_closed
+#: ring (2026-08-29) were that wait, paid before any gate spoke. Asked
+#: once per content, confirmed by the identical resend (the heartbeat
+#: gate's shape: not a hard block, a bill shown before the purchase).
+_NATIVE_DECIDE_RE = re.compile(r"\bnative_decide\b|Lean\.ofReduceBool")
+
+
+def _native_decide_gate(meta: SessionMetadata, content: str) -> "str | None":
+    if not _NATIVE_DECIDE_RE.search(content or ""):
+        return None
+    key = hashlib.sha1((content or "").encode("utf-8")).hexdigest()
+    if key in meta.nd_confirmed:
+        return None
+    meta.nd_confirmed.add(key)
+    return (
+        "This write uses `native_decide` (or `Lean.ofReduceBool`). It proves "
+        "through the `Lean.ofReduceBool` axiom, which is NOT on the axiom "
+        "whitelist — the commit gate rejects every such brick "
+        "unconditionally (ruling 2026-08-18), so this proof cannot land. It "
+        "also compiles natively: the check runs for minutes outside the "
+        "heartbeat budget and the elaboration wall will kill it. What works: "
+        "kernel `decide` on an instance small enough to reduce, `omega`/"
+        "`simp` with the finite case split written out, or lift the heavy "
+        "check into its own `new_<slug>.lean` as smaller bricks. — Resend "
+        "this identical write to confirm and it will be applied; changing "
+        "the content asks again."
+    )
 
 
 #: `set_option maxHeartbeats N`. Lean syntax, not prose — the value is
@@ -576,11 +682,6 @@ def _heartbeat_gate(meta: SessionMetadata, content: str) -> "str | None":
                    "be applied; changing the content asks again.")
 
 
-_ELABORATING_WARNING = (
-    "Lean has NOT finished elaborating this file (120s wait expired) — "
-    "the diagnostics here are INCOMPLETE and a count of 0 does NOT mean "
-    "the file is clean. Re-run this tool to check again."
-)
 
 # `goal_at_edit_end` is a CURSOR SNAPSHOT at the edited region's end
 # position, not a verdict on the file — ~38 agent reports treated a
@@ -624,7 +725,7 @@ def errors_at(line: int | None = None) -> str:
         return json.dumps({"error": _mp, "_server_recv_ts": _recv_ts,
                            "_server_send_ts": _ts_now()}, ensure_ascii=False)
     with _acquire_slot(meta, swap_in=True) as (slot, _slot_kind):
-        converged = _diags_converged(backend, slot)
+        converged, _wall = _await_elaboration(backend, slot, meta)
         diags = backend.diagnostics_for(slot.slot_uri)
         formatted = [_format_diag(d) for d in diags]
         slot_line_map = slot.line_map
@@ -646,13 +747,15 @@ def errors_at(line: int | None = None) -> str:
     # (g7554, 2026-08-12).
     _elapsed = time.perf_counter() - t0
     _note_diagnostics(meta, formatted, _elapsed)
-    response = {"diagnostics": formatted, "count": len(formatted),
+    response = {"diagnostics": formatted,
+                "count": len(formatted) if converged else None,
                 "elapsed_s": round(_elapsed, 1),
                 "_server_recv_ts": _recv_ts,
                 "_server_send_ts": _ts_now()}
     if not converged:
-        response["elaborating"] = True
-        response["warning"] = _ELABORATING_WARNING
+        response["ok"] = False
+        response["status"] = "elab_wall"
+        response["elab_wall"] = _wall
     return json.dumps(response, ensure_ascii=False)
 
 

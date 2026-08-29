@@ -1120,7 +1120,11 @@ def test_validate_file_timeout_reports_indeterminate(
     assert out["ok"] is False
     assert out["timed_out"] is True
     assert "error" in out
-    assert out["diagnostic_count"] == 0  # no diagnostics, yet not "clean"
+    # 2026-08-29: the wall is a hard failure — no count to misread (None,
+    # not 0), a status, and the verdict's teaching attached.
+    assert out["diagnostic_count"] is None
+    assert out["status"] == "elab_wall"
+    assert "FAILURE" in out["elab_wall"]["teaching"]
 
 
 def test_validate_file_clean_when_no_diags(
@@ -1154,8 +1158,8 @@ def test_errors_at_unconverged_says_elaborating_not_clean(
     """errors_at fake-clean class (2026-07-18): while Lean is still
     elaborating (waitForDiagnostics expires), the stash is typically
     empty — the old response was a bare count:0 that read as 'clean'.
-    The response must carry elaborating:true + a warning saying 0 does
-    NOT mean clean."""
+    Since 2026-08-29 the wait is a wall: the response is a hard failure
+    (count None, ok false, status elab_wall) — never a number to misread."""
     (tmp_path / "x.lean").write_text(
         "theorem t : True := trivial\n", encoding="utf-8")
     backend = _DiagBackend(wait_raises=TimeoutError("still elaborating"))
@@ -1165,9 +1169,12 @@ def test_errors_at_unconverged_says_elaborating_not_clean(
     finally:
         lsp_gateway._session_ctx.reset(ctx)
         lsp_gateway._state.sessions.pop("tok-A", None)
-    assert out["count"] == 0
-    assert out["elaborating"] is True
-    assert "does NOT mean" in out["warning"]
+    # Owner design 2026-08-29: no limbo. The wall hit is a hard failure —
+    # no count to misread, a status, and the teaching in the verdict.
+    assert out["count"] is None
+    assert out["ok"] is False
+    assert out["status"] == "elab_wall"
+    assert "FAILURE" in out["elab_wall"]["teaching"]
 
 
 def test_errors_at_converged_clean_has_no_warning(

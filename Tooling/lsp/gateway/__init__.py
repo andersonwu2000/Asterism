@@ -63,7 +63,7 @@ from starlette.responses import JSONResponse
 # `_slot_private_mb_cached`'s call), `gateway.sessions._owner_alive` /
 # `_SWEEP_INTERVAL_SEC`, `gateway.leantext._DECL_SLUG_RE_TMPL` /
 # `_needed_imports` / `_proved_sibling_import_lines` / `_SCOPE_*`,
-# `gateway.rpc._ELABORATING_WARNING` / `_ECHO_END_CHARS` / `_HB_*`,
+# `gateway.rpc.ELAB_WALL_*` / `_ECHO_END_CHARS` / `_HB_*`,
 # `gateway.gates._gw_leading_comments` / `_AXIOM_PROBE_DECL_CAP`,
 # `gateway.verify._olean_dest_for`, and
 # everything the governor alone consumes — `gateway.governor.
@@ -204,7 +204,7 @@ from .rpc import (
     withdraw_stub,
     _echo_removed,
     _arg_help,
-    _diags_converged,
+    _await_elaboration,
     _hb_rank,
     _hb_declared,
     _note_diagnostics,
@@ -393,7 +393,7 @@ async def interactive_sync(request: Request):
                 merged, _line_map = _compilation_for(meta)
                 backend.did_change_full(slot.slot_path, merged,
                                         slot.file_version)
-                converged = _diags_converged(backend, slot)
+                converged, _wall = _await_elaboration(backend, slot, meta)
             diags = backend.diagnostics_for(slot.slot_uri)
     except Exception as exc:  # noqa: BLE001 — reported, not swallowed
         return JSONResponse({"error": f"sync failed: {exc}"},
@@ -409,8 +409,10 @@ async def interactive_sync(request: Request):
         "converged": converged,
     }
     if not converged:
-        resp["note"] = ("still elaborating — an empty diagnostic list "
-                        "here means 'no news yet', not 'clean'")
+        # The wall hit: the worker was reclaimed and the empty list is a
+        # FAILURE, not "no news yet" (owner design 2026-08-29).
+        resp["note"] = (_wall or {}).get("teaching") or "elaboration wall hit"
+        resp["elab_wall"] = _wall
     line, col = data.get("line"), data.get("col")
     if isinstance(line, int):
         goal_raw = await goal_at(line, int(col or 0))

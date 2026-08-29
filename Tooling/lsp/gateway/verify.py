@@ -61,6 +61,7 @@ from .leantext import (
     _remap_inlined_diags,
 )
 from .rpc import (
+    _await_elaboration,
     _arg_help,
     _hb_declared,
     _heartbeat_gate,
@@ -215,6 +216,7 @@ def validate_file(content: str = "", file: str = "") -> str:
     elaborate_failed = False
     elaborate_error = ""
     timed_out = False
+    _wall_info: "dict | None" = None
     axioms_sub: "dict | None" = None
     _slot_kind: str = "unknown"
     backend = _state.backend
@@ -229,16 +231,11 @@ def validate_file(content: str = "", file: str = "") -> str:
                 backend.clear_diagnostics(slot.slot_uri)
                 backend.did_change_full(slot.slot_path, full_content,
                                         slot.file_version)
-                try:
-                    backend.wait_for_diagnostics(slot.slot_uri,
-                                                 slot.file_version,
-                                                 timeout=120)
-                except (TimeoutError, RuntimeError):
-                    # Elaboration didn't confirm within the budget. Do
-                    # NOT swallow into a clean verdict — record it so
-                    # the response reports indeterminate, not a false
-                    # ok:true (#102).
-                    timed_out = True
+                # Compute to completion or hit the wall (worker killed,
+                # slot re-warmed, hard failure) — never an indeterminate
+                # "maybe clean" verdict (#102, owner design 2026-08-29).
+                _conv, _wall_info = _await_elaboration(backend, slot, meta)
+                timed_out = not _conv
             try:
                 diags = backend.diagnostics_for(slot.slot_uri)
                 # Pre-commit axiom mirror — needs the slot while it
@@ -289,9 +286,11 @@ def validate_file(content: str = "", file: str = "") -> str:
         # A timeout means we never confirmed the file is clean, so it must
         # not surface as ok:true — report indeterminate (#102).
         "ok": not has_error and not timed_out,
+        **({"status": "elab_wall", "elab_wall": _wall_info}
+           if timed_out else {}),
         "file": _fname,
         "content_sha256": _content_sha,
-        "diagnostic_count": n_diags,
+        "diagnostic_count": n_diags if not timed_out else None,
         "diagnostics": formatted,
         "elapsed_s": round(time.perf_counter() - t0, 1),
         "_server_recv_ts": _recv_ts,
@@ -318,8 +317,10 @@ def validate_file(content: str = "", file: str = "") -> str:
     _note_diagnostics(meta, formatted, time.perf_counter() - t0)
     if timed_out:
         response["timed_out"] = True
-        response["error"] = ("validate_file elaboration did not complete "
-                             "within 120s; result indeterminate")
+        response["error"] = (
+            "validate_file hit the elaboration wall: the worker was killed "
+            "and its slot re-warmed — a FAILURE, not an indeterminate result "
+            "(see `elab_wall.teaching`)")
     if elaborate_failed:
         response["error"] = (
             f"validate_file could not run: {elaborate_error}. This is a "

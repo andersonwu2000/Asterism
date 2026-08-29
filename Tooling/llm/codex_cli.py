@@ -203,6 +203,10 @@ def _mcp_servers_toml(mcp_config_path: "Path | None",
             out.append("args = ["
                        + ", ".join(_toml_str(str(a)) for a in args) + "]")
         out.append('default_tools_approval_mode = "approve"')
+        # Above the gateway heavy elaboration wall (rpc.ELAB_WALL_HEAVY_SEC 900s
+        # + re-warm): a client that hangs up first turns a measured failure
+        # into a mystery tool error mid-elaboration.
+        out.append("tool_timeout_sec = 1500")
         out.append("required = true")
         env = dict(entry.get("env") or {})
         if name == "asterism_tools":
