@@ -96,7 +96,9 @@ def _seed_active_tool_use(parser: StreamParser) -> None:
 def _run_watchdog(proc, sid: str, parser: StreamParser, *,
                   timeout_sec: int,
                   monkeypatch: pytest.MonkeyPatch,
-                  kind: str = "") -> tuple[list[bool], list[bool]]:
+                  kind: str = "",
+                  spawn_finishes_after: float | None = None,
+                  ) -> tuple[list[bool], list[bool]]:
     """Run `_watchdog` in a thread with the trap-check floor lowered so
     the trigger fires fast. Returns (stuck_flag, done_flag) once the
     thread exits."""
@@ -112,7 +114,19 @@ def _run_watchdog(proc, sid: str, parser: StreamParser, *,
         daemon=True,
     )
     th.start()
-    th.join(timeout=8.0)
+    if spawn_finishes_after is None:
+        th.join(timeout=8.0)
+        return stuck, done
+    # A test that expects DEFERRAL: give the trap check (1s here) time to
+    # fire and be judged, then let the spawn finish naturally — a
+    # watchdog that deferred keeps polling a live proc forever, and the
+    # fixed 8s join waited that whole window out (6 tests x 8s,
+    # 2026-08-30) and left the thread running after the test.
+    th.join(timeout=spawn_finishes_after)
+    if th.is_alive():
+        setattr(proc, "_done", True)
+        th.join(timeout=4.0)
+    assert not th.is_alive(), "watchdog thread did not exit after the spawn finished"
     return stuck, done
 
 
@@ -199,7 +213,8 @@ def test_watchdog_defers_when_mid_tool_at_trigger(
     _seed_active_tool_use(parser)
     proc = _FakeProc()
     flag, _done = _run_watchdog(proc, "abc34567", parser, timeout_sec=2,
-                         monkeypatch=monkeypatch)
+                         monkeypatch=monkeypatch,
+                         spawn_finishes_after=2.0)
     assert flag[0] is False
     assert proc.term_calls == 0
     assert proc.kill_calls == 0
@@ -216,7 +231,8 @@ def test_watchdog_defers_when_idle_at_trigger(
     parser = StreamParser()  # initial state: IDLE, no events fed
     proc = _FakeProc()
     flag, _done = _run_watchdog(proc, "abc45678", parser, timeout_sec=2,
-                         monkeypatch=monkeypatch)
+                         monkeypatch=monkeypatch,
+                         spawn_finishes_after=2.0)
     assert flag[0] is False
     assert proc.term_calls == 0
 
@@ -243,7 +259,8 @@ def test_watchdog_defers_when_finalized_clean_stop(
     parser.feed_line(_stream_event({"type": "message_stop"}))
     proc = _FakeProc()
     flag, _done = _run_watchdog(proc, "abc56789", parser, timeout_sec=2,
-                         monkeypatch=monkeypatch)
+                         monkeypatch=monkeypatch,
+                         spawn_finishes_after=2.0)
     assert flag[0] is False
     assert proc.term_calls == 0
 
@@ -367,7 +384,8 @@ def test_watchdog_defers_when_trap_but_not_silent(
         "content_block": {"type": "thinking", "thinking": ""}}))
     proc = _FakeProc()
     flag, _done = _run_watchdog(proc, "trapnsil", parser, timeout_sec=2,
-                         monkeypatch=monkeypatch)
+                         monkeypatch=monkeypatch,
+                         spawn_finishes_after=2.0)
     assert flag[0] is False, (
         "AND condition: trap state alone (without silence) must NOT "
         "fire watchdog kill — TIMEOUT path catches this case later")
@@ -391,7 +409,8 @@ def test_watchdog_defers_when_silent_but_not_trap(
     # is MID_TOOL → NOT trap → AND fails.
     proc = _FakeProc()
     flag, _done = _run_watchdog(proc, "silnotr", parser, timeout_sec=2,
-                         monkeypatch=monkeypatch)
+                         monkeypatch=monkeypatch,
+                         spawn_finishes_after=2.0)
     assert flag[0] is False, (
         "AND condition: silence alone (without trap state) must NOT "
         "fire watchdog kill — could be a slow Bash / lake build")
@@ -524,7 +543,8 @@ def test_nl_kind_survives_a_long_think_with_a_live_stream(
     with _DeltaFeeder(parser):
         flag, _done = _run_watchdog(proc, "nlthink1", parser, timeout_sec=4,
                                     monkeypatch=monkeypatch,
-                                    kind="strategist")
+                                    kind="strategist",
+                                    spawn_finishes_after=3.0)
     assert flag[0] is False
     assert proc.term_calls + proc.kill_calls == 0
 
