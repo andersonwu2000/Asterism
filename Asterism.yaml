@@ -178,6 +178,14 @@ strategist:
   # reasoning_effort: high
   # 2026-08-25: back to union_closed on codex/sol (user; the Erdős
   # boarding lives on the flagship now).
+  # 2026-08-29: author moves to opus-5, judge stays gpt/sol (user) —
+  # recent debates ran to r8-r10 with the judge's objections argued
+  # down every time; flip the split to see whether the pattern follows
+  # the seat or the role. claude carries no reasoning_effort knob.
+  # 2026-08-29 (later): experiment read out — the 0.89-0.97 re-skin
+  # resubmission pattern vanished under the opus author (consecutive-
+  # proposal sim 0.03-0.82 across four r10 debates), so the disease
+  # followed the seat, not the role. Both sides back to gpt (user).
   provider: codex
   model: gpt-5.6-sol
   reasoning_effort: high   # user 2026-08-15: sol does not need xhigh to
@@ -304,6 +312,10 @@ adversary:
   # reasoning_effort: high
   # 2026-08-25: back to union_closed on codex/sol (user) — the judge
   # matches the strategist, the 08-23 shape.
+  # 2026-08-29: opus-5 detour for the list-schema first flight, reverted
+  # same day (user) — claude's 5h rolling window is friction on a seat
+  # that fires every strategist wake. Back to codex/sol, the 08-25
+  # judge-matches-author shape.
   provider: codex
   model: gpt-5.6-sol
   reasoning_effort: high
