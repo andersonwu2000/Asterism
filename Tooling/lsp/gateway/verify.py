@@ -35,7 +35,9 @@ import time
 import uuid
 from pathlib import Path
 
+from ...quality import names as _names
 from ...state import assemble
+from ...state import db as _db
 from .backend import _ensure_backend_ready
 from .elab import _elab_gate
 from .gates import (
@@ -367,6 +369,13 @@ def validate_file(content: str = "", file: str = "") -> str:
     ns = _namespace_submission(content, meta.problem)
     if ns is not None:
         submission["namespace"] = ns
+    # Pre-commit mirror of the name gate (owner ruling 2026-08-29): a
+    # top-level name another file of the problem already declares.
+    nm = _names.submission(
+        content, _db.problem_dir(meta.workspace, meta.problem),
+        own_rel=f"proofs/{meta.target_path.name}")
+    if nm is not None:
+        submission["names"] = nm
     if axioms_sub is not None:
         # Pre-commit mirror of the commit axiom gate (2026-08-18):
         # `ok: false` here rides `commit_will_reject` like every other

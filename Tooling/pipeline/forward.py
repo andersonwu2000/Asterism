@@ -319,6 +319,11 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
         raise FileExistsError(
             f"forward target {dest} already exists (slug collision)"
         )
+    # String-level name gate (owner ruling 2026-08-29): a top-level name some
+    # other file of the problem already declares is refused here, before the
+    # write and before the kernel, with the way out named (`quality/names`).
+    from ..quality import names as _names
+    _names.check_landing_at(dest, body)
     # Ownership-guarded placement (structural clobber prevention): a fresh
     # forward target must be owned by NO existing goal. The on-disk check above
     # catches a surviving file; this catches a DB collision whose file was

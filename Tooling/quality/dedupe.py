@@ -80,20 +80,17 @@ theorem candidate_slug <original binders> : <conclusion> := by
 from __future__ import annotations
 
 import math
-import os
 import re
-import shutil
 import sqlite3
-import subprocess
-import time
-import uuid
 from pathlib import Path
 from typing import NamedTuple
 
-from ..core.process_group import no_window_creationflags
-from ..state import metaprog
 from ..state import db
-from ..core import degraded as _degraded
+from .dedupe_probe import (  # noqa: F401 — re-exported: tests and
+    _BATCH_TIMEOUT_SEC, _LAKE_ERR_RE, _MAX_ERRORS_RE,  # the conftest stub
+    _batch_provable_via_apply, _batch_statement_defeq,  # bind dedupe.<name>
+    _max_errors_cutoff,
+)
 
 
 # Signature extractor: matches ONLY a real `theorem` / `lemma` DECL HEAD
@@ -120,28 +117,6 @@ _THM_HEAD_RE = re.compile(
     re.MULTILINE,
 )
 _SORRY_BODY_RE = re.compile(r":=\s*by\s+sorry")
-# Lake/Lean error line: `<path>:<line>:<col>: error: ...`. Lazy `.+?` for
-# the path part so a Windows drive-letter colon (`D:\...`) doesn't abort
-# the match; the `\d+:\d+` line-col anchor identifies the boundary.
-_LAKE_ERR_RE = re.compile(r"^.+?:(\d+):\d+:\s*error", re.MULTILINE)
-# Lean stops elaborating at `maxErrors` and exits mid-file; every pair
-# AFTER that point emits nothing, and the attribution loop would read
-# the silence as success (b6 2026-07-12: 184-pair batch, 98 failing
-# pairs hit the default cap of 100, the first post-cutoff pair became a
-# fake alias that shadowed the true twin). The probes raise the option
-# in-file; this marker is the backstop should the raised cap ever be
-# hit again — pairs at/after the marker line are UNKNOWN, not clean.
-_MAX_ERRORS_RE = re.compile(
-    r"^.+?:(\d+):\d+:\s*error: maximum number of errors", re.MULTILINE)
-_BATCH_TIMEOUT_SEC = 240
-
-
-def _max_errors_cutoff(output: str) -> "int | None":
-    """Line number of Lean's `maxErrors ... exiting` marker, or None."""
-    hits = [int(m.group(1)) for m in _MAX_ERRORS_RE.finditer(output)]
-    return min(hits) if hits else None
-
-
 def _strip_comments(text: str) -> str:
     """Remove Lean line (`-- …`) and block (`/- … -/`) comments so the
     signature extractor anchors on a real decl head, never comment prose.
@@ -542,231 +517,6 @@ def _eligible_library(conn, workspace: Path, *, domain: str,
     return [mf for _, mf in scored]
 
 
-def _batch_provable_via_apply(
-    workspace: Path,
-    problem: str,
-    pairs: list[tuple[str, str, str]],
-) -> list[bool | None]:
-    """For each (cand_signature, canonical_module, canonical_fqn)
-    pair, check if `apply @canonical_fqn <;> assumption` proves
-    `<cand_signature>`.
-
-    `cand_signature` is `<binders> : <conclusion>` (output of
-    `_extract_full_signature`).
-    `canonical_module` is the Lean module to import for canonical.
-    `canonical_fqn` is the fully-qualified name to `apply @` — built by
-    the caller, NOT reconstructed here. In-problem canonicals pass
-    `Problems.<problem>.<thm>`; cross-problem Library decls pass
-    `Library.<...>.<decl>` (whose namespace ≠ `Problems.<problem>`).
-
-    Replaces the prior `_batch_isdefeq` (2026-05-11). The rfl check
-    rejected hypothesis-extension cases (Goals 323 vs 329 in SG run
-    #15 — same conclusion with extra hypotheses). The provability
-    check via `apply <;> assumption` matches `build_alias_content`'s
-    alias body semantics: anything this accepts can be aliased
-    successfully.
-
-    Returns a list of bool aligned with `pairs`. On subprocess
-    timeout or any error, returns all False (fail-open: never block
-    run_backward).
-    """
-    if not pairs:
-        return []
-
-    # Pre-flight: materialize .olean for every canonical module we're
-    # about to import. `lake env lean` does NOT cascade-build, so a
-    # missing .olean trips a global "object file does not exist" error
-    # that fail-opens the whole batch to all-False. Running `lake build`
-    # over the unique module set ensures every canonical is on disk
-    # before elaboration starts. Lake's scheduler builds independent
-    # modules in parallel; first call within a daemon run pays full
-    # cost (~30-60s for Jordan-deep modules), subsequent calls hit
-    # cache. Best-effort: any failure here leaves the original fail-
-    # open behaviour intact, so dedupe quality degrades gracefully.
-    # Replaces the prior inline-in-verify-housekeeping materialization
-    # (jordan_normal_form 2026-05-25: that scheme stalled the
-    # dispatcher main thread N × ~30-60s on every cascade chain).
-    seen_modules: set[str] = set()
-    for _, mod, _ in pairs:
-        if mod:
-            seen_modules.add(mod)
-    if seen_modules:
-        from ..pipeline._lake import lake_build_modules as _lake_build_modules
-        try:
-            _lake_build_modules(workspace, sorted(seen_modules))
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            print(f"[dedupe] pre-flight lake build failed "
-                  f"(non-fatal): {exc}", flush=True)
-            _degraded.record(workspace, "dedupe_preflight_build", str(exc))
-
-    lines: list[str] = ["import Mathlib"]
-    defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
-    if defs_path.exists():
-        lines.append(f"import Problems.{problem}.Defs")
-
-    for mod in sorted(seen_modules):
-        lines.append(f"import {mod}")
-
-    lines.append("")
-    lines.append("namespace dedupe_check")
-    lines.append("")
-
-    pair_start_lines: list[int] = []
-    for i, (cand_sig, canonical_module, canonical_fqn) in enumerate(pairs):
-        # canonical_fqn is the fully-qualified name to `apply @`, already
-        # built by the caller. The probe does NOT reconstruct a namespace
-        # from `problem`, so a Library decl (namespace `Library.<...>` ≠
-        # `Problems.<problem>`) is invoked exactly like an in-problem one.
-        if not canonical_fqn:
-            # No fqn resolved — pair is unusable; emit a
-            # syntactically-broken stub so its line attributes the error
-            # to this pair only (not a global error swallowing siblings).
-            pair_start_lines.append(len(lines) + 1)
-            lines.append(f"-- pair {i} (no canonical fqn)")
-            lines.append(f"theorem _dc_{i} : True := by trivial_unknown_tac_force_fail")
-            lines.append("")
-            continue
-        # Flatten cand_sig whitespace: candidate signatures extracted
-        # from on-disk theorems often span multiple lines (long ∀-prefixed
-        # statements wrap for readability). Embedding a multi-line cand_sig
-        # via `lines.append(<one-string>)` makes the file's line count
-        # diverge from `len(lines)`, throwing off pair_start_lines and
-        # causing lake errors to land outside the (Python-tracked) pair
-        # range → global-error short-circuit → all pairs False. Collapse
-        # all whitespace runs to single spaces so the appended string
-        # remains one file line.
-        cand_sig_flat = " ".join(cand_sig.split())
-        pair_start_lines.append(len(lines) + 1)
-        lines.append(f"-- pair {i}")
-        lines.append(f"theorem _dc_{i} {cand_sig_flat} := by")
-        lines.append(f"  apply @{canonical_fqn} <;> assumption")
-        lines.append("")
-
-    lines.append("end dedupe_check")
-    content = "\n".join(lines)
-
-    # Metaprogramming gate: the spliced signatures are AGENT text, and
-    # this probe elaborates them outside the gateway. Fail-open to
-    # all-False like every other error path here — dedupe is an
-    # optimisation, never a soundness verdict.
-    if metaprog.scan_metaprogramming(content) is not None:
-        print("[dedupe] probe skipped — candidate signature carries a "
-              "metaprogramming entry", flush=True)
-        return [None] * len(pairs)
-
-    tmp_dir = workspace / ".attempts"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_file = tmp_dir / f"_dedupe_check_{uuid.uuid4().hex}.lean"
-    tmp_file.write_text(content, encoding="utf-8")
-
-    try:
-        r = subprocess.run(
-            # -DmaxErrors: a wall-state batch carries 180+ mostly-failing
-            # pairs; Lean's default cap of 100 exits mid-file and the
-            # post-cutoff silence reads as success (b6 2026-07-12, fake
-            # alias). In-file `set_option maxErrors` is IGNORED (frontend
-            # reads it from initial options) — must be the CLI flag.
-            ["lake", "env", "lean", "-DmaxErrors=10000", str(tmp_file)],
-            cwd=str(workspace),
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=_BATCH_TIMEOUT_SEC,
-            creationflags=no_window_creationflags(),
-        )
-        output = r.stdout + r.stderr
-        rc = r.returncode
-    except subprocess.TimeoutExpired:
-        # UNKNOWN, not "not equal": a swallowed probe used to be
-        # indistinguishable from a completed scan that found nothing, so
-        # the summary line "checked N pairs" read as evidence when it was
-        # silence (2026-08-08). The sentinel makes the difference
-        # un-flattenable — callers must decide, and the count is logged.
-        print(f"[dedupe] probe TIMED OUT after {_BATCH_TIMEOUT_SEC:.0f}s "
-              f"— {len(pairs)} pair(s) UNCHECKED (not 'no duplicate')",
-              flush=True)
-        _degraded.record(workspace, "dedupe_probe_timeout",
-                         f"{len(pairs)} pair(s) unchecked after "
-                         f"{_BATCH_TIMEOUT_SEC:.0f}s")
-        return [None] * len(pairs)
-    except OSError as e:
-        print(f"[dedupe] probe could not run ({e}) — {len(pairs)} pair(s) "
-              f"UNCHECKED (not 'no duplicate')", flush=True)
-        _degraded.record(workspace, "dedupe_probe_unavailable", str(e))
-        return [None] * len(pairs)
-    finally:
-        try:
-            tmp_file.unlink()
-        except OSError:
-            pass
-
-    # Walk error lines and partition them by which pair's range they
-    # fall into. Errors outside any pair range are GLOBAL (e.g. import
-    # not found, namespace mis-parse, earlier example bailing the
-    # elaborator). A global error invalidates the run — Lean may have
-    # stopped before reaching later pairs, so absence-of-error in their
-    # line range does NOT mean unify passed. Conservative: treat all
-    # pairs as False on global error.
-    #
-    # NB (2026-05-29 BT bug): we do NOT fast-path on rc=0. `lake env
-    # lean` emits per-line `error(<kind>): ...` for tactic / elaboration
-    # failures but propagates rc=0 anyway, so the old fast-path silently
-    # accepted every pair when Lean had actually rejected the apply
-    # body. The error-line scan below is now the sole truth-source for
-    # the probe's per-pair verdict, regardless of process exit code.
-    #
-    # NB (task #108): this stays a COLD `lake env lean`, not the warm
-    # gateway. Measured: a gateway `verify_file` of this throwaway
-    # Mathlib-importing file costs ~24s EVERY call (the warm worker still
-    # elaborates a fresh file's import environment from scratch; warmth
-    # only helps incremental re-edits of the same slot) — no faster than
-    # cold lake (~20s) and it ties up a gateway worker slot. So the cold
-    # subprocess (separate process, no gateway contention) is kept.
-    error_lines: set[int] = set()
-    for m in _LAKE_ERR_RE.finditer(output):
-        error_lines.add(int(m.group(1)))
-
-    if not error_lines:
-        # No error lines parsed from the output. Two sub-cases:
-        #   - rc == 0 AND no errors → genuinely clean elaboration, every
-        #     pair passed.
-        #   - rc != 0 AND no errors → failure pattern is unfamiliar
-        #     (Lean crashed pre-elaboration, lake env setup error, etc.);
-        #     refuse all rather than silently accept.
-        if rc == 0:
-            return [True] * len(pairs)
-        _degraded.record(workspace, "dedupe_probe_global_error",
-                         f"rc={rc} without error lines: {output[:200]}")
-        return [False] * len(pairs)
-
-    in_any_pair = set()
-    for el in error_lines:
-        for i, start in enumerate(pair_start_lines):
-            end = (pair_start_lines[i + 1] - 1
-                   if i + 1 < len(pair_start_lines) else len(lines))
-            if start <= el <= end:
-                in_any_pair.add(el)
-                break
-
-    if error_lines - in_any_pair:
-        # Global error present: failure is not attributable to a single
-        # pair. Refuse all.
-        _degraded.record(workspace, "dedupe_probe_global_error",
-                         output[:200])
-        return [False] * len(pairs)
-
-    # Per-pair attribution: pair fails iff at least one error line falls
-    # in its range. Backstop: everything at/after a maxErrors cutoff is
-    # UNKNOWN (Lean exited before elaborating it), never True.
-    cutoff = _max_errors_cutoff(output)
-    results: list[bool | None] = []
-    for i, start in enumerate(pair_start_lines):
-        end = (pair_start_lines[i + 1] - 1
-               if i + 1 < len(pair_start_lines) else len(lines))
-        has_error = any(start <= el <= end for el in error_lines)
-        results.append(not has_error and (cutoff is None or end < cutoff))
-    return results
-
-
 def _sig_split_binders(sig: str) -> "tuple[str, str] | None":
     """Split a full signature `<binders> : <conclusion>` at the TOP-LEVEL
     colon (depth-aware over ()/{}/[]/⦃⦄ — binder types contain colons).
@@ -826,158 +576,6 @@ def _forall_form(sig: str) -> "str | None":
     if not binders:
         return concl
     return f"∀ {binders}, {concl}"
-
-
-def _batch_statement_defeq(
-    workspace: Path,
-    problem: str,
-    pairs: list[tuple[str, str, str]],
-) -> list[bool | None]:
-    """For each (cand_forall, twin_forall, twin_module) pair, check the
-    two statement TYPES are definitionally equal via an `rfl` probe:
-
-        theorem _dceq_i : (<cand_forall>) = (<twin_forall>) := rfl
-
-    P1 (agent_feedback 2026-07-11, the b6 twin-minting churn): the reuse
-    tier's binder-verbatim shape gate missed paraphrased twins, and the
-    one-directional apply probe is too loose for a reference REWRITE
-    (hypothesis extension passes it — the two recorded `Function
-    expected` accidents). Defeq of the full ∀-types is symmetric and
-    binder-name/notation blind (alpha + unfolding live in the kernel);
-    the caller checks the call INTERFACE (bracket sequence) separately.
-
-    Failure direction: NOT-linking (candidate mints as novel) — an
-    rfl-shy elaborator hiccup costs a duplicate, never a broken rewrite.
-    The first raw probe error is logged so a future "why didn't this
-    merge" has forensics. Same cold `lake env lean` batch shape and
-    per-pair line attribution as `_batch_provable_via_apply`.
-    """
-    if not pairs:
-        return []
-    seen_modules: set[str] = set()
-    for _, _, mod in pairs:
-        if mod:
-            seen_modules.add(mod)
-    if seen_modules:
-        from ..pipeline._lake import lake_build_modules as _lake_build_modules
-        try:
-            _lake_build_modules(workspace, sorted(seen_modules))
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            print(f"[dedupe] defeq pre-flight lake build failed "
-                  f"(non-fatal): {exc}", flush=True)
-            _degraded.record(workspace, "dedupe_preflight_build", str(exc))
-
-    lines: list[str] = ["import Mathlib"]
-    defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
-    if defs_path.exists():
-        lines.append(f"import Problems.{problem}.Defs")
-    for mod in sorted(seen_modules):
-        lines.append(f"import {mod}")
-    lines.append("")
-    lines.append("namespace dedupe_check")
-    lines.append("")
-
-    pair_start_lines: list[int] = []
-    for i, (cand_forall, twin_forall, _mod) in enumerate(pairs):
-        cand_flat = " ".join(cand_forall.split())
-        twin_flat = " ".join(twin_forall.split())
-        pair_start_lines.append(len(lines) + 1)
-        lines.append(f"-- defeq pair {i}")
-        lines.append(f"theorem _dceq_{i} : ({cand_flat}) = ({twin_flat})"
-                     f" := rfl")
-        lines.append("")
-    lines.append("end dedupe_check")
-    content = "\n".join(lines)
-
-    # Same gate as `_batch_provable_via_apply` (agent text, gateway
-    # bypassed, fail-open).
-    if metaprog.scan_metaprogramming(content) is not None:
-        print("[dedupe] defeq probe skipped — candidate statement carries "
-              "a metaprogramming entry", flush=True)
-        return [False] * len(pairs)
-
-    tmp_dir = workspace / ".attempts"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_file = tmp_dir / f"_dedupe_defeq_{uuid.uuid4().hex}.lean"
-    tmp_file.write_text(content, encoding="utf-8")
-    try:
-        r = subprocess.run(
-            # Same -DmaxErrors guard as _batch_provable_via_apply
-            # (post-cutoff silence must not read as success).
-            ["lake", "env", "lean", "-DmaxErrors=10000", str(tmp_file)],
-            cwd=str(workspace),
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=_BATCH_TIMEOUT_SEC,
-            creationflags=no_window_creationflags(),
-        )
-        output = r.stdout + r.stderr
-        rc = r.returncode
-    except subprocess.TimeoutExpired:
-        # UNKNOWN, not "not equal": a swallowed probe used to be
-        # indistinguishable from a completed scan that found nothing, so
-        # the summary line "checked N pairs" read as evidence when it was
-        # silence (2026-08-08). The sentinel makes the difference
-        # un-flattenable — callers must decide, and the count is logged.
-        print(f"[dedupe] probe TIMED OUT after {_BATCH_TIMEOUT_SEC:.0f}s "
-              f"— {len(pairs)} pair(s) UNCHECKED (not 'no duplicate')",
-              flush=True)
-        _degraded.record(workspace, "dedupe_probe_timeout",
-                         f"{len(pairs)} pair(s) unchecked after "
-                         f"{_BATCH_TIMEOUT_SEC:.0f}s")
-        return [None] * len(pairs)
-    except OSError as e:
-        print(f"[dedupe] probe could not run ({e}) — {len(pairs)} pair(s) "
-              f"UNCHECKED (not 'no duplicate')", flush=True)
-        _degraded.record(workspace, "dedupe_probe_unavailable", str(e))
-        return [None] * len(pairs)
-    finally:
-        try:
-            tmp_file.unlink()
-        except OSError:
-            pass
-
-    error_lines: set[int] = set()
-    for m in _LAKE_ERR_RE.finditer(output):
-        error_lines.add(int(m.group(1)))
-    if not error_lines:
-        if rc == 0:
-            return [True] * len(pairs)
-        _degraded.record(workspace, "dedupe_probe_global_error",
-                         f"rc={rc} without error lines: {output[:200]}")
-        return [False] * len(pairs)
-
-    in_any_pair = set()
-    for el in error_lines:
-        for i, start in enumerate(pair_start_lines):
-            end = (pair_start_lines[i + 1] - 1
-                   if i + 1 < len(pair_start_lines) else len(lines))
-            if start <= el <= end:
-                in_any_pair.add(el)
-                break
-    if error_lines - in_any_pair:
-        print(f"[dedupe] defeq probe global error — all pairs refused; "
-              f"first output: {output[:200]!r}", flush=True)
-        _degraded.record(workspace, "dedupe_probe_global_error",
-                         output[:200])
-        return [False] * len(pairs)
-
-    cutoff = _max_errors_cutoff(output)
-    results: list[bool | None] = []
-    for i, start in enumerate(pair_start_lines):
-        end = (pair_start_lines[i + 1] - 1
-               if i + 1 < len(pair_start_lines) else len(lines))
-        has_error = any(start <= el <= end for el in error_lines)
-        results.append(not has_error and (cutoff is None or end < cutoff))
-    if not all(results):
-        # Forensics for the rfl-shy / genuine-mismatch cases (teammate
-        # review 2026-07-11): keep the first raw error so a future
-        # "why didn't this merge" is answerable from the log.
-        first = next((ln for ln in output.splitlines() if "error" in ln), "")
-        print(f"[dedupe] defeq probe: "
-              f"{sum(1 for x in results if not x)}/{len(pairs)} pair(s) "
-              f"not defeq; first error: {first[:200]}", flush=True)
-    return results
 
 
 def _eligible_ancestors(conn: sqlite3.Connection, workspace: Path, *,
@@ -1621,6 +1219,22 @@ def find_canonicals_batch(
                       f"({kind}) — no probe needed", flush=True)
                 result[ci] = CanonicalMatch(
                     goal_id=int(anc_row["id"]), kind=kind)
+                break
+        # ── Tier 0 for the reuse pool (owner ruling 2026-08-29): a twin
+        # whose normalized statement IS the candidate's is a reuse hit on
+        # the spot. The kernel is not asked, so the twin's module — a
+        # shelved leftover more often than not — is never imported for
+        # a question the text already settled.
+        if result[ci] is None and cand_norm is not None:
+            for reuse_row, reuse_text in cand_reusable[ci]:
+                if _normalized_signature(reuse_text) != cand_norm:
+                    continue
+                print(f"[dedupe] tier-0 identity: candidate {ci} ({slug}) "
+                      f"is byte-equal to twin goal {int(reuse_row['id'])} "
+                      f"({reuse_row['status']}) — reuse-link, no probe",
+                      flush=True)
+                result[ci] = CanonicalMatch(
+                    goal_id=int(reuse_row["id"]), kind=KIND_REUSE)
                 break
         if result[ci] is not None:
             continue

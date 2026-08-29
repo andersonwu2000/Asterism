@@ -68,7 +68,11 @@ def _place_unowned(conn: sqlite3.Connection, workspace: Path,
     sub-goal stub (`L_<slug>.lean`, its goal row INSERTed afterwards) or the
     strategy scratch file (`_strategy_s*.lean`, never goal-owned). Routes through
     the chokepoint so a path some OTHER goal already owns raises ClobberError
-    before the write, instead of clobbering a committed file (DB↔file drift)."""
+    before the write, instead of clobbering a committed file (DB↔file drift).
+    The name gate runs first (owner ruling 2026-08-29): a helper another
+    file already declares refuses the landing with the way out named."""
+    from ..quality import names as _names
+    _names.check_landing_at(dst, content)
     proof_store.place_proof(
         conn, workspace, goal_id=None,
         rel_path=dst.relative_to(workspace).as_posix(), content=content)

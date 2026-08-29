@@ -1211,21 +1211,40 @@ def test_build_alias_handles_no_imports() -> None:
 # _batch_provable_via_apply global-error handling (F14)
 # ---------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _fresh_probe_partition():
+    """The probe's import partition is cached per (workspace, module
+    set, mtimes); tests script Lean per test, so no test may inherit
+    another's rooms."""
+    from Tooling.quality import dedupe_probe as _dp
+    _dp.import_batches.cache_clear()
+    yield
+    _dp.import_batches.cache_clear()
+
+
 def _patch_subprocess(monkeypatch: pytest.MonkeyPatch, *,
                       stdout: str, stderr: str, rc: int) -> None:
-    """Stub subprocess.run inside dedupe with a fixed result."""
+    """Stub subprocess.run inside the probe module with a fixed result
+    for the PAIR file. The header round (2026-08-29: imports only, no
+    `dedupe_check` namespace) answers clean, so these tests keep
+    exercising the per-pair attribution they were written for."""
     class FakeResult:
-        def __init__(self) -> None:
-            self.stdout = stdout
-            self.stderr = stderr
-            self.returncode = rc
+        def __init__(self, out: str, err: str, code: int) -> None:
+            self.stdout = out
+            self.stderr = err
+            self.returncode = code
 
-    def fake_run(*args, **kwargs):  # noqa: ANN001, ANN002, ANN003
-        return FakeResult()
+    def fake_run(cmd, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        try:
+            body = Path(cmd[-1]).read_text(encoding="utf-8")
+        except (OSError, TypeError, IndexError):
+            body = ""
+        if "namespace dedupe_check" not in body:
+            return FakeResult("", "", 0)
+        return FakeResult(stdout, stderr, rc)
 
-    monkeypatch.setattr(
-        __import__("Tooling.quality.dedupe",
-                   fromlist=["subprocess"]).subprocess, "run", fake_run)
+    from Tooling.quality import dedupe_probe as _dp
+    monkeypatch.setattr(_dp.subprocess, "run", fake_run)
 
 
 def test_lake_err_re_matches_windows_absolute_path() -> None:
@@ -1394,16 +1413,17 @@ def test_probe_subprocess_raises_max_errors_via_cli(
     def fake_run(cmd, **kw):  # noqa: ANN001, ANN003
         seen_cmds.append(list(cmd))
         return FakeResult()
-    monkeypatch.setattr(
-        __import__("Tooling.quality.dedupe",
-                   fromlist=["subprocess"]).subprocess, "run", fake_run)
+    from Tooling.quality import dedupe_probe as _dp
+    monkeypatch.setattr(_dp.subprocess, "run", fake_run)
 
     dedupe._batch_provable_via_apply(
         tmp_path, "p", [(": A", "Mod.A", "Problems.p.thm_a")])
     dedupe._batch_statement_defeq(
         tmp_path, "p", [("∀ x, P x", "∀ y, P y", "Mod.A")])
     lean_cmds = [c for c in seen_cmds if c[:3] == ["lake", "env", "lean"]]
-    assert len(lean_cmds) == 2
+    # header round(s) + one pair file per probe; the header partition
+    # is cached across the two probes (same module set)
+    assert len(lean_cmds) >= 2
     for cmd in lean_cmds:
         assert "-DmaxErrors=10000" in cmd
 
@@ -1581,7 +1601,7 @@ def test_batch_provable_via_apply_template_handles_hypothesis_extension(
             returncode = 0
         return _R()
 
-    import Tooling.quality.dedupe as _d
+    from Tooling.quality import dedupe_probe as _d
     monkeypatch.setattr(_d.subprocess, "run", capture_run)
 
     # cand has extra hypothesis (hcard) vs canonical. The 3rd tuple slot
@@ -2469,7 +2489,48 @@ def test_probe_failure_is_unknown_not_no_duplicate(
 
     def boom(*a, **k):
         raise _sp.TimeoutExpired(cmd="lake", timeout=1)
-    monkeypatch.setattr(dedupe.subprocess, "run", boom)
+    from Tooling.quality import dedupe_probe as _dp
+    monkeypatch.setattr(_dp.subprocess, "run", boom)
     out = dedupe._batch_provable_via_apply(
         tmp_path, "p", [("(a : T) : X", "M", "M.foo")])
     assert out == [None], "probe failure must be UNKNOWN, not False"
+
+
+def test_tier0_reuse_twin_is_decided_by_text_before_the_kernel(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner ruling 2026-08-29: a candidate whose normalized statement
+    equals a shelved/open twin's is a reuse hit on the spot — the kernel
+    probe is not consulted, so the twin's (possibly stale, possibly
+    colliding) module is never imported for it. The 2026-08-29 incident
+    walked exactly that path: the probe imported a shelved leftover to
+    judge a twin the text already settled, and the leftover's helper
+    names broke the whole batch."""
+    _seed_problem(conn)
+    root = _seed_root(conn, statement="ROOT")
+    twin = _seed_sub(conn, slug="twin", statement="X", status="shelved")
+    parent = _seed_sub(conn, slug="parent", statement="OTHER")
+    _link(conn, root, [twin, parent])
+    _write_lean(tmp_path, "p", "twin",
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem twin (a : T) : X := by sorry\nend Problems.p\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : OTHER := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+    probed: list = []
+
+    def probe(ws, p, pairs):
+        probed.extend(pairs)
+        return [False] * len(pairs)
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", probe)
+    cand = ("import Mathlib\nnamespace Problems.p\n"
+            "theorem cand (a : T) : X := by sorry\nend Problems.p\n")
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("cand", cand)],
+    )
+    assert canonicals == [dedupe.CanonicalMatch(goal_id=twin, kind="reuse")]
+    assert not any("twin" in mod for _sig, mod, _fqn in probed), \
+        "the twin's module must not be imported for a text-settled pair"
