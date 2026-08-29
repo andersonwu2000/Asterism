@@ -507,6 +507,42 @@ def test_worker_section_pins_within_the_goals_own_group(
     assert (pdir / ".groups" / str(child) / "PROGRAMME.md").exists()
 
 
+def test_worker_section_does_not_call_an_older_authorising_rev_a_fossil(
+        workspace: Path, conn: sqlite3.Connection):
+    """Owner ruling 2026-08-30: a goal re-dispatched under a rev older
+    than the group's current one is ordinary work — the batch that
+    authorised it is still the argument it formalizes against. The
+    "note it renders rev M, which has moved on from the rev that
+    authorised this goal" sentence (71d374c0) read as a fossil warning
+    to the worker and was noise. The pointer line is the same one
+    every worker gets; only the daemon log keeps the pin record."""
+    from Tooling.agent import context as wctx
+    from Tooling.state import groups as groups_store
+
+    top = groups_store.ensure_top_group(conn, "p")
+    for n in range(3):
+        programme.record_pass(conn, "p", _PROPOSAL, {"verdict": "pass"},
+                              [], 0, f"top-b{n}", group_id=top)
+    g = db.insert_goal(conn, problem="p", slug="old_rev_brick",
+                       lean_path="Problems/p/proofs/L_old_rev_brick.lean",
+                       statement="theorem old_rev_brick : T",
+                       origin="forward", depth=1, status="open")
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, batch_id, group_id,"
+        " produced_goal_id, created_at, updated_at)"
+        " VALUES ('p', 0, 'inject_batch_done', 'Inject', 'top-b0', ?,"
+        " ?, ?, ?)", (top, g, db.now(), db.now()))
+    conn.commit()
+
+    pdir = workspace / "Problems" / "p"
+    w = "\n".join(wctx._section_programme_worker(conn, "p", None, pdir,
+                                                 goal_id=g))
+    assert "## Proof (Programme rev 1)" in w
+    assert "moved on" not in w
+    assert "Full Programme (Argument / Roadmap / adversary reservations)" in w
+
+
 def test_plan_note_provenance_is_group_scoped(
         workspace: Path, conn: sqlite3.Connection):
     """#164 class: the plan note is per group, so its provenance stamp

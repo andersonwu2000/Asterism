@@ -1360,31 +1360,18 @@ def _section_programme_worker(conn: sqlite3.Connection, problem: str,
     out = [f"## Proof (Programme rev {row['rev']})", ""]
     if proof and not has_own:
         out += [proof, ""]
-    # PROGRAMME.md on disk always renders the group's CURRENT rev. When
-    # that is not the rev above, say so rather than let the pointer
-    # quietly substitute a different argument for the one that
-    # authorised this goal — the same drift this section was just
-    # pinned against.
+    # PROGRAMME.md on disk always renders the group's CURRENT rev. A goal
+    # re-dispatched under an older rev is ordinary work (owner ruling
+    # 2026-08-30) — the batch that authorised it is still its argument,
+    # so the worker gets the same pointer as everyone; the divergence is
+    # a log record only.
     if current is not None and int(current["rev"]) != int(row["rev"]):
-        # The race actually happening, on the record. Silence here means
-        # the Programme never moved under anyone's feet in this run;
-        # a line means it did, and names who was riding the old argument.
         print(f"[programme-pin] goal {goal_id}: authorised by rev "
               f"{row['rev']}, current is {current['rev']}"
               f" (group {gid})", flush=True)
-        # The stamp is the whole point of this branch and it must not go
-        # with the text it used to annotate: a worker on attempt 4 of a
-        # stale line has no other way to know its argument is a fossil.
-        anchor = ("The argument above" if not has_own
-                  else "The argument for this brick")
-        out += [f"Full Programme: `{prog_rel}` beside the problem "
-                f"files — note it renders rev {current['rev']}, which has "
-                f"moved on from the rev that authorised this goal. "
-                f"{anchor} is the one you formalize against.", ""]
-    else:
-        out += [f"Full Programme (Argument / Roadmap / adversary "
-                f"reservations): `{prog_rel}` beside the problem files.",
-                ""]
+    out += [f"Full Programme (Argument / Roadmap / adversary "
+            f"reservations): `{prog_rel}` beside the problem files.",
+            ""]
     return out
 
 
