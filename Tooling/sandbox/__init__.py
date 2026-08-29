@@ -88,8 +88,9 @@ _MAX_PROCESSES = 2
 RESULT_HEADER = (
     "[compute] Python output. NOT a proof: no computation here "
     "establishes a mathematical claim, in either direction — only the "
-    "Lean kernel does. Use this to find counterexamples and to check "
-    "your own arithmetic.\n"
+    "Lean kernel does. Use this as your laboratory: find concrete "
+    "examples here, so that less rests on mental arithmetic and on Lean "
+    "verification.\n"
 )
 
 

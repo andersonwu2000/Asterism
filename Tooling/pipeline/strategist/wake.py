@@ -93,7 +93,7 @@ def _format_rebuttal(verdict: dict, round_no: int,
         "round(s) left before this proposal is discarded and the next "
         "wake restarts fresh):\n" + crits + "\n" + over +
         "For EACH point: either revise (rewrite proposal.md — and "
-        "decision.json if the experiments change) or defend (keep your "
+        "decision.json) or defend (keep your "
         "position and answer the point inside `## Argument`). Revise by "
         "cutting and correcting in place, not by appending defenses. "
         "Do not concede points you believe are misreadings. Re-emit "

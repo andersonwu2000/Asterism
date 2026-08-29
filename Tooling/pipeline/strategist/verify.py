@@ -922,16 +922,17 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                     "the dimension to vary); build the missing vocabulary "
                     "as Forward bricks; question your own DO-NOTs (a "
                     "verdict covers only the instantiation it cites); "
-                    "test a false-looking statement; pick the experiment "
-                    "whose outcome most changes your Thesis.\n"
+                    "propose the hypothesis, then argue rigorously "
+                    "whether it holds — face the unknown with the courage "
+                    "of long thought, look for clues and reach for a "
+                    "genuinely new idea.\n"
                     "Commit the work as: `Inject` (a genuinely new angle) "
                     "/ `ConfirmShelve` (a live goal) paired with an "
                     "`Inject` / `MarkDeliverable` (a "
                     "PROVED forward node) then `Ingest`. "
                     "`RequestUserAmend` ONLY if a user file is factually "
                     "WRONG — difficulty or a missing API is work, not "
-                    "wrongness. EmitDirective / Noop may accompany, "
-                    "never alone."
+                    "wrongness. `Noop` may accompany, never alone."
                 )
 
     # Cross-decision: if the root is in a state only Strategist can
