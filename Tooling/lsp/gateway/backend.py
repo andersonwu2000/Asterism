@@ -30,6 +30,7 @@ def _start_workers(workspace: Path, w_count: int,
     Sets `_state.ready_event` regardless of outcome — error captured
     in `_state.init_error`. Daemon's gateway_lifecycle.start_gateway
     polls /health and refuses to dispatch if init failed."""
+    client: "LspClient | None" = None
     try:
         t0 = time.perf_counter()
         client = LspClient(workspace)
@@ -101,6 +102,21 @@ def _start_workers(workspace: Path, w_count: int,
         _state.init_error = f"{type(e).__name__}: {e}"
         print(f"[gateway] worker pool init failed: {_state.init_error}",
               file=sys.stderr, flush=True)
+        # A client that was spawned but never became the backend is a
+        # live `lake serve` tree nobody holds: the flagship's 12:23Z
+        # wedge restart (2026-08-29, load 53) timed out `initialize`,
+        # dropped the client here, and its `lean --server` came up
+        # eight minutes later to sit at 1.9 GB until the next day.
+        # `shutdown` tree-kills on a wait timeout; the fallback covers
+        # a client too broken to notify.
+        if client is not None and _state.backend is not client:
+            try:
+                client.shutdown(timeout=5.0)
+            except Exception:  # noqa: BLE001 — reaping must not mask init_error
+                try:
+                    client._kill_tree()
+                except Exception:  # noqa: BLE001
+                    pass
     finally:
         _state.ready_event.set()
 

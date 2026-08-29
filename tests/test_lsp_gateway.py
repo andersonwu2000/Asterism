@@ -3225,3 +3225,50 @@ def test_elab_gate_records_queue_credit(monkeypatch, tmp_path):
     with lsp_gateway._elab_gate(None, meta2):
         pass
     assert not (tmp_path / "proofs" / "_elab_queue_credit").exists()
+
+
+def test_start_workers_reaps_a_backend_whose_initialize_failed(
+        monkeypatch, tmp_path) -> None:
+    """A `lake serve` that was spawned but never answered `initialize`
+    is still a live process tree. The flagship's 12:23Z wedge restart
+    (2026-08-29, load 53) spawned one, `initialize` timed out at 60s,
+    the except branch recorded `init_error` and dropped the client —
+    its `lean --server` came up eight minutes later with nobody holding
+    it and sat at 1.9 GB until the next day. A failed init must reap
+    what it started, and must not leave `_state.backend` pointing at
+    the half-started client either."""
+    events: list[str] = []
+
+    class _HalfStarted:
+        def __init__(self, workspace) -> None:
+            events.append("spawn")
+
+        def start(self) -> None: ...
+
+        def initialize(self, timeout=60) -> dict:
+            raise TimeoutError("LSP request 'initialize' timed out")
+
+        def shutdown(self, timeout=5.0) -> None:
+            events.append("shutdown")
+
+        def _kill_tree(self) -> None:
+            events.append("kill_tree")
+
+    saved = (_state.backend, _state.workspace, list(_state.workers),
+             _state.init_error)
+    sentinel = object()
+    try:
+        _state.backend = sentinel
+        _state.init_error = None
+        _state.ready_event.clear()
+        monkeypatch.setattr(lsp_gateway.backend, "LspClient", _HalfStarted)
+        lsp_gateway.backend._start_workers(tmp_path, 1)
+        assert _state.init_error and "initialize" in _state.init_error
+        assert _state.backend is sentinel, "the half-started client leaked in"
+        assert any(e in ("shutdown", "kill_tree") for e in events), (
+            f"the spawned lake serve was never reaped: {events}")
+        assert _state.ready_event.is_set()
+    finally:
+        (_state.backend, _state.workspace, _state.workers,
+         _state.init_error) = saved[0], saved[1], saved[2], saved[3]
+        _state.ready_event.set()
