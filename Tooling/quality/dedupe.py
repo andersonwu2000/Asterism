@@ -93,6 +93,7 @@ from typing import NamedTuple
 from ..core.process_group import no_window_creationflags
 from ..state import metaprog
 from ..state import db
+from ..core import degraded as _degraded
 
 
 # Signature extractor: matches ONLY a real `theorem` / `lemma` DECL HEAD
@@ -596,6 +597,7 @@ def _batch_provable_via_apply(
         except Exception as exc:  # noqa: BLE001 — best-effort
             print(f"[dedupe] pre-flight lake build failed "
                   f"(non-fatal): {exc}", flush=True)
+            _degraded.record(workspace, "dedupe_preflight_build", str(exc))
 
     lines: list[str] = ["import Mathlib"]
     defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
@@ -682,10 +684,14 @@ def _batch_provable_via_apply(
         print(f"[dedupe] probe TIMED OUT after {_BATCH_TIMEOUT_SEC:.0f}s "
               f"— {len(pairs)} pair(s) UNCHECKED (not 'no duplicate')",
               flush=True)
+        _degraded.record(workspace, "dedupe_probe_timeout",
+                         f"{len(pairs)} pair(s) unchecked after "
+                         f"{_BATCH_TIMEOUT_SEC:.0f}s")
         return [None] * len(pairs)
     except OSError as e:
         print(f"[dedupe] probe could not run ({e}) — {len(pairs)} pair(s) "
               f"UNCHECKED (not 'no duplicate')", flush=True)
+        _degraded.record(workspace, "dedupe_probe_unavailable", str(e))
         return [None] * len(pairs)
     finally:
         try:
@@ -728,6 +734,8 @@ def _batch_provable_via_apply(
         #     refuse all rather than silently accept.
         if rc == 0:
             return [True] * len(pairs)
+        _degraded.record(workspace, "dedupe_probe_global_error",
+                         f"rc={rc} without error lines: {output[:200]}")
         return [False] * len(pairs)
 
     in_any_pair = set()
@@ -742,6 +750,8 @@ def _batch_provable_via_apply(
     if error_lines - in_any_pair:
         # Global error present: failure is not attributable to a single
         # pair. Refuse all.
+        _degraded.record(workspace, "dedupe_probe_global_error",
+                         output[:200])
         return [False] * len(pairs)
 
     # Per-pair attribution: pair fails iff at least one error line falls
@@ -855,6 +865,7 @@ def _batch_statement_defeq(
         except Exception as exc:  # noqa: BLE001 — best-effort
             print(f"[dedupe] defeq pre-flight lake build failed "
                   f"(non-fatal): {exc}", flush=True)
+            _degraded.record(workspace, "dedupe_preflight_build", str(exc))
 
     lines: list[str] = ["import Mathlib"]
     defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
@@ -911,10 +922,14 @@ def _batch_statement_defeq(
         print(f"[dedupe] probe TIMED OUT after {_BATCH_TIMEOUT_SEC:.0f}s "
               f"— {len(pairs)} pair(s) UNCHECKED (not 'no duplicate')",
               flush=True)
+        _degraded.record(workspace, "dedupe_probe_timeout",
+                         f"{len(pairs)} pair(s) unchecked after "
+                         f"{_BATCH_TIMEOUT_SEC:.0f}s")
         return [None] * len(pairs)
     except OSError as e:
         print(f"[dedupe] probe could not run ({e}) — {len(pairs)} pair(s) "
               f"UNCHECKED (not 'no duplicate')", flush=True)
+        _degraded.record(workspace, "dedupe_probe_unavailable", str(e))
         return [None] * len(pairs)
     finally:
         try:
@@ -926,7 +941,11 @@ def _batch_statement_defeq(
     for m in _LAKE_ERR_RE.finditer(output):
         error_lines.add(int(m.group(1)))
     if not error_lines:
-        return ([True] * len(pairs)) if rc == 0 else [False] * len(pairs)
+        if rc == 0:
+            return [True] * len(pairs)
+        _degraded.record(workspace, "dedupe_probe_global_error",
+                         f"rc={rc} without error lines: {output[:200]}")
+        return [False] * len(pairs)
 
     in_any_pair = set()
     for el in error_lines:
@@ -939,6 +958,8 @@ def _batch_statement_defeq(
     if error_lines - in_any_pair:
         print(f"[dedupe] defeq probe global error — all pairs refused; "
               f"first output: {output[:200]!r}", flush=True)
+        _degraded.record(workspace, "dedupe_probe_global_error",
+                         output[:200])
         return [False] * len(pairs)
 
     cutoff = _max_errors_cutoff(output)

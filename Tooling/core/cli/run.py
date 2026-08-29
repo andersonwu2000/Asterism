@@ -394,6 +394,7 @@ def daemon_status(workspace: Path) -> dict:
         except OSError:
             code_stale = False
     gw_phase, gw_slots = _gateway_status_once(workspace)
+    from .. import degraded as _degraded
     return {
         "running": pid is not None,
         # the boot window between daemon_start and the child's lock claim
@@ -407,6 +408,11 @@ def daemon_status(workspace: Path) -> dict:
         "stopping": pid is not None
         and _disp.stop_file_path(workspace).exists(),
         "in_flight_leases": _daemon_in_flight(workspace),
+        # silent-degradation ledger (core/degraded.py): best-effort steps
+        # that failed and logged one line — dedupe pre-flight / probe
+        # refusals etc. Per run (reset at daemon boot); {} = nothing
+        # degraded. The patrol reads this instead of grepping logs.
+        "degraded": _degraded.snapshot(workspace),
         # gateway phase ('warming'/'ready'/None): the first minutes of
         # a cold run are Lean warm-up — without this the user stares
         # at dead air (Test.Test3 run, 2026-07-07)

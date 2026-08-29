@@ -92,6 +92,10 @@ def run(workspace: Path, *, once: bool = False,
             code_fp_at_boot, encoding="utf-8")
     except OSError:
         pass
+    # fresh silent-degradation ledger — `daemon status`'s `degraded`
+    # field describes THIS run (core/degraded.py)
+    from .. import degraded as _degraded
+    _degraded.reset(workspace)
 
     # Bind this process + every later spawn (claude / lake / lean / per-spawn
     # LSP) into a kill-on-close Job Object, so a hard daemon death reaps the
