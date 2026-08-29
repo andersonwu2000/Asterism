@@ -152,3 +152,88 @@ def test_statement_defeq_probe_shares_the_partition(scripted_lean, tmp_path):
     ]
     flags = dp._batch_statement_defeq(ws, "p", pairs)
     assert flags == [True, True, False]
+
+
+# ------------------------------ transitive collisions (2026-08-30 fix)
+#
+# Lean names the module that FAILED to import — which is the transitive
+# one (`L_four_packet_mask_certificate`, pulled in by a header module),
+# not the header line that pulled it. The partition looked the name up
+# in the header set, found nothing, and the whole room went out as a
+# "header refused" global error: 81 times in one local run, 331 modules
+# voided each time, the probe blind for that batch. And Lean stops at
+# the FIRST collision, so a room with k colliders costs k cold rounds
+# unless the names are compared before Lean is asked at all.
+
+def _file(ws: Path, mod: str, text: str) -> None:
+    p = ws / (mod.replace(".", "/") + ".lean")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+
+
+def test_partition_attributes_a_transitive_collision_to_its_importer():
+    at = {2: "Problems.p.proofs.L_a", 3: "Problems.p.proofs.L_b"}
+    out = ("x.lean:1:0: error: import Problems.p.proofs.L_helper failed, "
+           "environment already contains 'Problems.p.foo' from "
+           "Problems.p.proofs.L_a")
+
+    def closure(mod: str) -> set[str]:
+        return {"Problems.p.proofs.L_helper"} if mod.endswith("L_b") else set()
+
+    dropped, deferred = dp.partition_header_errors(out, at, closure=closure)
+    assert deferred == ["Problems.p.proofs.L_b"], (dropped, deferred)
+    assert not dropped
+
+
+def test_import_batches_fall_back_to_the_closure_when_lean_names_a_helper(
+        tmp_path):
+    """The exact local failure shape: stub files carry no names to
+    pre-house by, Lean names the helper, the importer must be deferred
+    — never the whole room refused."""
+    dp.import_batches.cache_clear()
+    ws = tmp_path
+    _file(ws, "P.A", "-- stub\n")
+    _file(ws, "P.H", "-- stub\n")
+    _file(ws, "P.B", "import P.H\n-- stub\n")
+    runs: list[str] = []
+
+    def run(content: str) -> tuple[int, str]:
+        runs.append(content)
+        if "import P.A" in content and "import P.B" in content:
+            return 1, ("h.lean:1:0: error: import P.H failed, environment "
+                       "already contains 'P.foo' from P.A")
+        return 0, ""
+
+    batches, dropped = dp.import_batches(ws, ["P.A", "P.B"], run)
+    assert not dropped, f"a room was refused instead of split: {dropped}"
+    assert sorted(map(sorted, batches)) == [["P.A"], ["P.B"]]
+    assert len(runs) == 3   # collide → A alone → B alone
+
+
+def test_import_batches_pre_house_by_closure_names_before_asking_lean(
+        tmp_path):
+    """Two header modules whose import closures define the same name
+    never share a room, so Lean is never asked a header it will refuse."""
+    dp.import_batches.cache_clear()
+    ws = tmp_path
+    _file(ws, "P.A", "theorem foo : True := trivial\n")
+    _file(ws, "P.H", "theorem foo : True := trivial\n")
+    _file(ws, "P.B", "import P.H\ntheorem bar : True := trivial\n")
+    _file(ws, "P.C", "theorem baz : True := trivial\n")
+    runs: list[str] = []
+
+    def run(content: str) -> tuple[int, str]:
+        runs.append(content)
+        if "import P.A" in content and "import P.B" in content:
+            return 1, ("h.lean:1:0: error: import P.H failed, environment "
+                       "already contains 'foo' from P.A")
+        return 0, ""
+
+    batches, dropped = dp.import_batches(ws, ["P.A", "P.B", "P.C"], run)
+    assert not dropped
+    rooms = [set(b) for b in batches]
+    assert not any({"P.A", "P.B"} <= r for r in rooms), rooms
+    assert all(run_ok for run_ok in (
+        not ("import P.A" in c and "import P.B" in c) for c in runs)), (
+        "Lean was asked a header the names already ruled out")
+    assert len(runs) == len(batches), "one clean header run per room"
