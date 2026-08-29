@@ -816,10 +816,18 @@ def test_acquire_slot_lock_excludes_concurrent_acquire(
         problem="p", workspace=tmp_path, log_path=None,
         file_content="x",
     )
+    import threading as _th
     import time as _t
-    real_mono = _t.monotonic()
+    real, me = _t.monotonic, _th.get_ident()
+    real_mono = real()
     seq = iter([real_mono, real_mono + 0.05, real_mono + 130.0])
-    monkeypatch.setattr(_t, "monotonic", lambda: next(seq))
+    # the scripted clock is for THIS thread only: gateway background
+    # threads left by earlier tests in the same xdist worker (weigh
+    # refresh, converger, permit escort) read time.monotonic too and
+    # used to eat the three scripted readings (flaky StopIteration,
+    # 2026-08-29); they get the real clock
+    monkeypatch.setattr(_t, "monotonic",
+                        lambda: next(seq) if _th.get_ident() == me else real())
     with pytest.raises(RuntimeError, match="still busy"):
         with lsp_gateway._acquire_slot(meta, swap_in=False):
             pass
@@ -986,6 +994,13 @@ def _setup_validate_session(monkeypatch, tmp_path, backend):
                              content_pipeline_id="pipe-A")]
     monkeypatch.setattr(lsp_gateway._state, "workers", slots)
     monkeypatch.setattr(lsp_gateway._state, "backend", backend)
+    # The elaboration wall in miniature: an in-memory backend that gives
+    # up at once would otherwise make every wall test wait the real
+    # 300s budget (2026-08-29: two of them sat 300s each and one ate
+    # 16 GB of a fake's call log before the loop paced itself)
+    monkeypatch.setattr(lsp_gateway.rpc, "ELAB_WALL_SEC", 0.05)
+    monkeypatch.setattr(lsp_gateway.rpc, "ELAB_WALL_HEAVY_SEC", 0.15)
+    monkeypatch.setattr(lsp_gateway.rpc, "ELAB_WALL_SLICE_SEC", 0.005)
     # Both sides of the split-brain name: `validate_file` left the facade
     # for `gateway.verify` with the A1-4b split and resolves its own
     # copied binding there; the four tools this harness also drives

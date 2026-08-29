@@ -820,11 +820,14 @@ def main() -> None:
     if _budget_gb is not None:
         _target0 = _rl.compute_target_slots(budget_gb=_budget_gb,
                                             nl_demand=0)
-        w_count = max(1, min(8, _target0))
-        _state.warm_target = _target0
+        # Launch warms the ledger's OPENING bid (min(lanes, RAM target));
+        # the daemon's ramp pushes the climb one slot per calm minute.
+        w_count = max(1, min(_rl.elab_lanes(), _target0))
+        _state.warm_target = w_count
         print(f"[gateway] RAM ledger active — budget {_budget_gb:.1f} GB,"
-              f" launch warms {w_count} slot(s), converger grows toward "
-              f"{_target0}", file=sys.stderr, flush=True)
+              f" launch warms {w_count} slot(s) (lanes {_rl.elab_lanes()}),"
+              f" RAM target {_target0}; the ramp climbs on measured calm",
+              file=sys.stderr, flush=True)
     # Reserved slots for the serve UI's interactive editor — outside
     # the pipeline pool entirely (pipeline=slot identity holds both
     # ways: spawns never see them, the editor never sees spawn slots).

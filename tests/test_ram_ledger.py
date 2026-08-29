@@ -154,6 +154,10 @@ def _quiet_pressure(monkeypatch):
     the model (the pressure feedback has its own tests)."""
     monkeypatch.setattr(rl, "framework_current_gb", lambda: None)
     monkeypatch.setattr(rl, "available_gb", lambda: 50.0)
+    # the opening-bid ramp (2026-08-29) starts at min(lanes, target):
+    # pin lanes out of the way so model tests see the RAM formula
+    # (the ramp has its own tests below)
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 10_000)
 
 
 def test_ledger_tick_pushes_and_ingests_the_reply(monkeypatch):
@@ -257,6 +261,10 @@ def test_target_is_ram_only_backpressure_owns_cpu(monkeypatch):
     the pushed target."""
     led = rl.DispatcherLedger(110.0, 125.0)
     monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    # the opening-bid ramp (2026-08-29) starts at min(lanes, target);
+    # lanes is the test machine's core count, so pin it out of the way —
+    # this test is about the REPLY's elab stats not clamping the target
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 10_000)
     _quiet_pressure(monkeypatch)
     for reply in ({"open": 0, "free": 0, "elab_cap": 6,
                    "elab_waiting": 0},
@@ -469,3 +477,59 @@ def test_queue_size_kind_filter(tmp_path, monkeypatch):
     assert db.queue_size(conn, kinds=NL_QUEUE_KINDS) == 3
     assert db.queue_size(conn, kinds=LEAN_QUEUE_KINDS) == 2
     assert db.queue_size(conn) == 5
+
+
+# ───────────── opening-bid ramp (owner ruling 2026-08-29) ─────────────
+
+def test_ramp_opens_at_min_of_lanes_and_ram_target(monkeypatch):
+    """4 OCPU / 24 GB flagship, 2026-08-29: a per-worker constant opened
+    9-11 slots onto 2 lanes (load 53, 6 frozen, 0 bricks). The pool now
+    opens at min(lanes, RAM target) — lanes decide where the climb
+    starts, RAM alone decides how high it goes."""
+    led = rl.DispatcherLedger(28.0, 32.0)
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 2)
+    assert led._apply_ramp(12, now=100.0) == 2
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 14)
+    led2 = rl.DispatcherLedger(110.0, 125.0)
+    assert led2._apply_ramp(99, now=100.0) == 14
+    led3 = rl.DispatcherLedger(28.0, 32.0)
+    assert led3._apply_ramp(3, now=100.0) == 3, "lanes above target: RAM caps"
+
+
+def test_ramp_climbs_one_slot_per_calm_minute_and_holds_when_not_calm(
+        monkeypatch):
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 2)
+    led = rl.DispatcherLedger(28.0, 32.0)
+    assert led._apply_ramp(12, now=0.0) == 2
+    led.last_calm = True
+    assert led._apply_ramp(12, now=30.0) == 2, "half a minute: no step yet"
+    assert led._apply_ramp(12, now=60.0) == 3
+    assert led._apply_ramp(12, now=90.0) == 3
+    assert led._apply_ramp(12, now=120.0) == 4
+    led.last_calm = False
+    assert led._apply_ramp(12, now=600.0) == 4, "not calm: hold"
+    led.last_calm = True
+    assert led._apply_ramp(12, now=660.0) == 5
+
+
+def test_ramp_never_exceeds_and_follows_the_ram_target_down(monkeypatch):
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 6)
+    led = rl.DispatcherLedger(28.0, 32.0)
+    led.last_calm = True
+    assert led._apply_ramp(7, now=0.0) == 6
+    assert led._apply_ramp(7, now=60.0) == 7
+    assert led._apply_ramp(7, now=120.0) == 7, "capped at the RAM target"
+    assert led._apply_ramp(4, now=180.0) == 4, "target dropped: ramp follows"
+    assert led._apply_ramp(7, now=240.0) == 5, "and climbs again from there"
+
+
+def test_tick_pushes_the_ramped_target(monkeypatch):
+    _quiet_pressure(monkeypatch)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    monkeypatch.setattr(rl, "elab_lanes", lambda: 2)
+    now = {"t": 100.0}
+    monkeypatch.setattr(rl.time, "monotonic", lambda: now["t"])
+    led = rl.DispatcherLedger(110.0, 125.0)
+    pushed = []
+    led.tick(nl_demand=0, push=lambda t, f: pushed.append(t) or None)
+    assert pushed == [2], "first push is the opening bid, not the RAM formula"

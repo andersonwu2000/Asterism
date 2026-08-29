@@ -371,6 +371,23 @@ def nl_gb_measured() -> float:
 # history what the tool queue answers exactly, live, for free.
 
 
+def elab_lanes() -> int:
+    """The gateway's elaboration lane count (same formula as
+    `lsp/gateway/elab.py`, env override included) — the ledger's OPENING
+    bid for the warm pool, never its ceiling (owner ruling 2026-08-29):
+    RAM alone decides how high the pool climbs; the lanes only decide
+    where the climb starts, so a 4-core box does not open 12 sessions
+    onto 2 lanes at boot."""
+    import os as _os
+    env = _os.environ.get("ASTERISM_LEAN_ELAB_CONCURRENCY")
+    try:
+        if env and int(env) > 0:
+            return int(env)
+    except ValueError:
+        pass
+    return max(2, (_os.cpu_count() or 4) - 2)
+
+
 class DispatcherLedger:
     """Dispatcher-side ledger state + the rate-limited tick.
 
@@ -381,6 +398,14 @@ class DispatcherLedger:
     "no free slot" contract intact while the pool converges."""
 
     PUSH_INTERVAL_SEC = 15.0
+    #: Measured-growth ramp (owner ruling 2026-08-29): the pool opens at
+    #: min(elab lanes, RAM target) and climbs ONE slot per calm interval
+    #: — calm being the pressure band's own verdict — up to the RAM
+    #: target. Shrinking is the outlet's/freezer's business, as before.
+    #: The 2026-08-29 flagship boot (4 OCPU / 24 GB) opened 9-11 slots
+    #: from a per-worker constant the field then measured at 2.5-2.9 GB:
+    #: load 53, 6 frozen slots, 0 bricks. No constant survives here.
+    RAMP_STEP_SEC = 60.0
     #: Time constant for the slot-price EMA (owner call 2026-08-26,
     #: "幾小時的時間窗"): the instantaneous fleet mean rides the
     #: busy/idle mix (one slot reads 0.5 GB fresh and 3 GB
@@ -414,6 +439,10 @@ class DispatcherLedger:
         self.open_slots = 0
         self.free_slots = 0
         self.last_target = 0
+        self._ramp: "int | None" = None
+        self._ramp_at = 0.0
+        self.last_calm = False
+        self.last_hot = False
         # -inf, not 0.0: monotonic() is uptime-anchored, so on a young
         # machine 0.0 is INSIDE the interval and the first push gets
         # suppressed — CI runners boot minutes before the suite and sat
@@ -505,6 +534,7 @@ class DispatcherLedger:
                  or cur < (self.budget_gb - self.PRESSURE_HEADROOM_GB
                            - self.PRESSURE_RELEASE_SLACK_GB))
                 and avail > pressure_high_gb(self.machine_gb))
+        self.last_hot, self.last_calm = bool(hot), bool(calm)
         if hot:
             if not self.dispatch_paused:
                 cur_s = "n/a" if cur is None else f"{cur:.1f}G"
@@ -527,6 +557,23 @@ class DispatcherLedger:
         the next tick; must be re-requested while the block persists
         (a passed wave decays the yield one slot per tick)."""
         self._nl_yield_req = True
+
+    def _apply_ramp(self, target: int, now: float) -> int:
+        """Opening bid = min(lanes, target); +1 per calm RAMP_STEP_SEC;
+        never above the RAM target, and follows it down."""
+        target = max(1, int(target))
+        if self._ramp is None:
+            self._ramp = max(1, min(elab_lanes(), target))
+            self._ramp_at = now
+            print(f"[ledger] warm pool opens at {self._ramp} (lanes "
+                  f"{elab_lanes()}, RAM target {target}) and climbs one "
+                  f"slot per calm minute", flush=True)
+        elif (self.last_calm and self._ramp < target
+              and now - self._ramp_at >= self.RAMP_STEP_SEC):
+            self._ramp += 1
+            self._ramp_at = now
+        self._ramp = min(self._ramp, target)
+        return self._ramp
 
     def _apply_nl_yield(self, target: int) -> int:
         if self._nl_yield_req:
@@ -562,6 +609,11 @@ class DispatcherLedger:
             slot_gb=self.slot_gb + nl_gb, nl_gb=nl_gb,
             machine_gb=self.machine_gb)
         target = self._apply_pressure(target)
+        # ramp first, yield last: the ramp climbs toward (and follows
+        # down) the RAM target; the NL yield is a transient shed on top
+        # of the pool and must not reset the climb (its decay is one
+        # slot per calm TICK, the ramp's step one per calm MINUTE)
+        target = self._apply_ramp(target, now)
         target = self._apply_nl_yield(target)
         self.last_target = target
         resp = push(target, ABS_AVAILABLE_FLOOR_GB)

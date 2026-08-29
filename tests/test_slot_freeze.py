@@ -101,15 +101,21 @@ def test_busy_slots_freeze_only_under_deep_overshoot(gw, monkeypatch):
         busy2.lock.release()
 
 
-def test_thaw_rebuilds_from_the_sessions_own_content(
+def test_thaw_reopens_warmup_and_leaves_the_content_to_the_owner(
         gw, monkeypatch, capsys, tmp_path):
+    """Owner ruling 2026-08-29: the thaw returns a slot, not a proof
+    state. Restoring the session's content inside the thaw queued on the
+    elaboration lanes (600s on the 4-OCPU flagship) and failed with a
+    message the agent could not act on; now it is a ~1s warmup reopen
+    that needs no lane, and the owner's next call swaps its content in
+    under the gate with queue credit, like any cold claim."""
     calls: list = []
     _backend(gw, monkeypatch, calls)
     from Tooling.core import ram_ledger as rl
     monkeypatch.setattr(rl, "framework_current_gb", lambda: 10.0)
     monkeypatch.setattr(gw.governor, "_compilation_for",
-                        lambda m: ("MERGED", [None]))
-    monkeypatch.setattr(gw.governor, "_slot_private_mb", lambda: {0: 600})
+                        lambda m: (_ for _ in ()).throw(AssertionError(
+                            "thaw must not rebuild the session's content")))
     s = _slot(gw, 0, "p1")
     s.frozen, s.frozen_at = True, 0.0
     s.slot_path = tmp_path / "s0.lean"
@@ -118,9 +124,9 @@ def test_thaw_rebuilds_from_the_sessions_own_content(
     monkeypatch.setattr(gw._state, "sessions", {"tok": meta})
     assert gw._freeze_tick() == 1
     assert s.frozen is False
-    assert ("open", "MERGED") in calls
-    assert s.content_pipeline_id == "p1"
-    assert "THAWED" in capsys.readouterr().err
+    assert ("open", gw.WARMUP_CONTENT) in calls
+    assert s.content_pipeline_id is None, "the owner reloads on its next call"
+    assert "THAWED to warmup" in capsys.readouterr().err
 
 
 def test_thaw_of_a_released_session_reopens_warmup(gw, monkeypatch,

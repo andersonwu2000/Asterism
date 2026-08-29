@@ -131,6 +131,11 @@ def test_unfinished_elaboration_does_not_read_as_clean(
     dropped it, which made the owner's surface the one place a timeout
     looked like a clean file."""
     token, backend = _editor_session(monkeypatch, tmp_path)
+    from Tooling.lsp.gateway import rpc
+    # the wall in miniature: a fake that gives up at once would
+    # otherwise sleep the real 300s budget (2026-08-29)
+    monkeypatch.setattr(rpc, "ELAB_WALL_SEC", 0.05)
+    monkeypatch.setattr(rpc, "ELAB_WALL_SLICE_SEC", 0.005)
 
     def _timeout(*a, **kw):
         raise TimeoutError("still elaborating")
@@ -143,7 +148,7 @@ def test_unfinished_elaboration_does_not_read_as_clean(
     # 2026-08-29: the wall is a hard failure — the note carries the
     # verdict's teaching and the structured wall info rides alongside.
     assert "FAILURE" in (body["note"] or "")
-    assert body["elab_wall"]["wall_s"] == 300
+    assert body["elab_wall"]["wall_s"] == rpc.ELAB_WALL_SEC, "the default wall"
 
 
 def test_converged_sync_says_so(

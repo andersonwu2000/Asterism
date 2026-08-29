@@ -2,7 +2,9 @@
 elaboration wall (worker killed, slot re-warmed, hard failure) — never an
 "elaborating, 0 diagnostics" limbo — and `native_decide` is billed before
 the write (resend-to-confirm), not discovered at the commit axiom gate
-after minutes of native compilation."""
+after minutes of native compilation. The wall is measured in the worker's
+CPU seconds (a crowded machine must not fail a converging proof), with a
+loose wall-clock net for a worker that never runs."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -18,6 +20,13 @@ def _meta(tmp_path, **kw):
     for k, v in kw.items():
         setattr(m, k, v)
     return m
+
+
+def _fast(monkeypatch, wall=0.05, heavy=0.15, slice_s=0.005, factor=4.0):
+    monkeypatch.setattr(rpc, "ELAB_WALL_SEC", wall)
+    monkeypatch.setattr(rpc, "ELAB_WALL_HEAVY_SEC", heavy)
+    monkeypatch.setattr(rpc, "ELAB_WALL_SLICE_SEC", slice_s)
+    monkeypatch.setattr(rpc, "ELAB_WALL_CLOCK_FACTOR", factor)
 
 
 # ---------------------------------------------------------------- walls
@@ -61,35 +70,77 @@ def _slot():
                            content_pipeline_id="pipe-w", line_map=[1])
 
 
-def test_converged_elaboration_returns_final_and_touches_nothing(tmp_path):
+def test_converged_elaboration_returns_final_and_touches_nothing(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(rpc, "_worker_cpu_seconds", lambda uri: None)
     b = _Backend(converge=True)
     s = _slot()
     assert rpc._await_elaboration(b, s, _meta(tmp_path)) == (True, None)
-    assert b.calls == [("wait", s.slot_uri, 7, rpc.ELAB_WALL_SEC)]
+    assert b.calls[0][:3] == ("wait", s.slot_uri, 7)
     assert s.content_pipeline_id == "pipe-w"
 
 
-def test_wall_hit_kills_the_worker_rewarms_the_slot_and_fails_hard(
-        tmp_path, monkeypatch):
+def test_clock_mode_when_no_worker_meter(tmp_path, monkeypatch):
+    """No worker to meter (frozen slot, foreign backend) → the budget is
+    wall-clock, as before."""
     from Tooling.lsp.gateway import governor
-    killed: list = []
-    monkeypatch.setattr(governor, "_kill_worker_for_uri",
-                        lambda uri: killed.append(uri) or True)
+    _fast(monkeypatch)
+    monkeypatch.setattr(rpc, "_worker_cpu_seconds", lambda uri: None)
+    monkeypatch.setattr(governor, "_kill_worker_for_uri", lambda uri: False)
     b = _Backend(converge=False)
     s = _slot()
-    ok, info = rpc._await_elaboration(b, s, _meta(tmp_path, hb_limit=4_000_000))
-    assert ok is False
-    assert killed == [s.slot_uri]
+    ok, info = rpc._await_elaboration(b, s, _meta(tmp_path))
+    assert ok is False and info["mode"] == "clock"
+    assert info["elapsed_s"] >= 0.05 - 0.01
+    assert info["worker_reclaimed"] is True, "a slot with no worker still re-warms"
     assert ("open", s.slot_path, state.WARMUP_CONTENT) in b.calls
-    assert any(c[0] == "warm" for c in b.calls)
     assert s.content_pipeline_id is None and s.line_map is None
-    assert info["wall_s"] == rpc.ELAB_WALL_HEAVY_SEC
-    assert info["worker_reclaimed"] is True
     assert "FAILURE" in info["teaching"]
 
 
-def test_wall_hit_with_rewarm_failure_still_fails_hard(tmp_path, monkeypatch):
+def test_cpu_mode_spends_the_budget_in_cpu_seconds_not_wall_clock(
+        tmp_path, monkeypatch):
+    """A starved worker (crowded lanes) burns little CPU per wall-clock
+    second: the wall must not fire on wall-clock alone before the clock
+    cap, and it fires once the CPU budget is consumed."""
     from Tooling.lsp.gateway import governor
+    _fast(monkeypatch, wall=0.05, factor=100.0)   # clock cap far away
+    monkeypatch.setattr(governor, "_kill_worker_for_uri", lambda uri: True)
+    cpu = {"t": 100.0}
+    calls = {"n": 0}
+
+    def meter(uri):
+        calls["n"] += 1
+        # every meter read after the first adds 0.02 CPU-s: budget 0.05
+        # is crossed on the 4th read regardless of the wall-clock spent
+        if calls["n"] > 1:
+            cpu["t"] += 0.02
+        return (4242, cpu["t"])
+    monkeypatch.setattr(rpc, "_worker_cpu_seconds", meter)
+    b = _Backend(converge=False)
+    ok, info = rpc._await_elaboration(b, _slot(), _meta(tmp_path))
+    assert ok is False and info["mode"] == "cpu"
+    assert info["cpu_s"] >= 0.05
+    assert "CPU-seconds consumed" in info["reason"]
+
+
+def test_cpu_mode_clock_cap_catches_a_worker_that_never_runs(
+        tmp_path, monkeypatch):
+    from Tooling.lsp.gateway import governor
+    _fast(monkeypatch, wall=1000.0, slice_s=0.005, factor=0.0001)  # cap ~0.1s
+    monkeypatch.setattr(governor, "_kill_worker_for_uri", lambda uri: True)
+    monkeypatch.setattr(rpc, "_worker_cpu_seconds", lambda uri: (4242, 5.0))  # no CPU progress
+    b = _Backend(converge=False)
+    ok, info = rpc._await_elaboration(b, _slot(), _meta(tmp_path))
+    assert ok is False and info["mode"] == "cpu"
+    assert "starved or hung" in info["reason"]
+    assert info["cpu_s"] == 0.0
+
+
+def test_wall_hit_with_rewarm_failure_reports_not_reclaimed(tmp_path, monkeypatch):
+    from Tooling.lsp.gateway import governor
+    _fast(monkeypatch)
+    monkeypatch.setattr(rpc, "_worker_cpu_seconds", lambda uri: None)
     monkeypatch.setattr(governor, "_kill_worker_for_uri", lambda uri: True)
     b = _Backend(converge=False)
 
@@ -139,3 +190,38 @@ def test_codex_toml_carries_a_tool_timeout_above_the_heavy_wall(tmp_path):
                    encoding="utf-8")
     toml = codex_cli._mcp_servers_toml(cfg)
     assert "tool_timeout_sec = 1500" in toml
+
+
+def test_cpu_mode_rebases_on_a_replacement_worker_and_survives_a_respawn_gap(
+        tmp_path, monkeypatch):
+    """The lean server replaces the file worker on a header change: the
+    new pid's CPU clock starts at zero. Subtracting the old baseline
+    would make the budget unreachable (only the clock cap could ever
+    fire). A None reading in between (respawn gap) is grace, not a
+    verdict."""
+    from Tooling.lsp.gateway import governor
+    _fast(monkeypatch, wall=0.05, factor=100.0)
+    monkeypatch.setattr(governor, "_kill_worker_for_uri", lambda uri: True)
+    readings = iter([(1, 300.0),          # old worker, big baseline
+                     None,                # respawn gap: one slice of grace
+                     (2, 0.02), (2, 0.04), (2, 0.06), (2, 0.08)])
+    monkeypatch.setattr(rpc, "_worker_cpu_seconds",
+                        lambda uri: next(readings, (2, 0.5)))
+    b = _Backend(converge=False)
+    ok, info = rpc._await_elaboration(b, _slot(), _meta(tmp_path))
+    assert ok is False and info["mode"] == "cpu"
+    assert "CPU-seconds consumed" in info["reason"]
+    assert 0.05 <= info["cpu_s"] < 1.0, "rebased on the new pid, not 300-off"
+
+
+def test_cpu_mode_gives_up_when_the_worker_stays_gone(tmp_path, monkeypatch):
+    from Tooling.lsp.gateway import governor
+    _fast(monkeypatch, wall=1000.0, factor=100.0)
+    monkeypatch.setattr(governor, "_kill_worker_for_uri", lambda uri: True)
+    readings = iter([(1, 1.0)])
+    monkeypatch.setattr(rpc, "_worker_cpu_seconds",
+                        lambda uri: next(readings, None))
+    b = _Backend(converge=False)
+    ok, info = rpc._await_elaboration(b, _slot(), _meta(tmp_path))
+    assert ok is False and info["reason"] == "worker gone"
+    assert info["worker_reclaimed"] is True

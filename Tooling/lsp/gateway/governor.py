@@ -863,42 +863,38 @@ def _freeze_slot(slot: WorkerSlot, mb: int, busy: bool) -> bool:
 
 
 def _thaw_slot(slot: WorkerSlot) -> None:
-    """Rebuild the frozen slot's worker from its session's own content
-    (the rewarm core). A session released mid-freeze thaws to warmup —
-    the normal claim paths own it from there."""
+    """Give the frozen slot a worker back — on WARMUP content, never the
+    session's own file (owner ruling 2026-08-29). The freeze is the RAM
+    axis's business: it took the worker's heap and kept the session's
+    claim; the thaw returns a slot, and that is all it owes. Restoring
+    the session's content here meant a full re-elaboration inside the
+    thaw — it queued on the elaboration lanes (600s on the 4-OCPU
+    flagship), failed loudly, and handed the agent a message with no
+    action in it. Now the thaw is a ~1s reopen that needs no lane and
+    cannot fail in any way the agent should hear about; the owner's
+    next tool call swaps its content back in under the elaboration gate
+    with the usual queue credit, exactly like a cold claim."""
     if not slot.lock.acquire(timeout=10):
         return
     try:
         if not slot.frozen:
             return
-        meta = None
-        with _state.sessions_lock:
-            for m in _state.sessions.values():
-                if m.pipeline_id == slot.claimed_by:
-                    meta = m
-                    break
         t0 = time.perf_counter()
-        if meta is None:
-            with contextlib.suppress(Exception):
-                _state.backend.did_open(slot.slot_path, WARMUP_CONTENT)
-            slot.file_version = 1
-            slot.content_pipeline_id = None
-            slot.frozen = False
-            return
         try:
-            after = _rebuild_worker(slot, meta)
-            slot.frozen = False
-            print(f"[gateway] slot {slot.slot_id} THAWED in "
-                  f"{time.perf_counter() - t0:.1f}s — content restored "
-                  f"for {meta.pipeline_id[:8]} at "
-                  f"{after if after is not None else '?'} MB",
-                  file=sys.stderr, flush=True)
-        except Exception as exc:  # noqa: BLE001 — warmup fallback landed
-            slot.frozen = False
-            print(f"[gateway] thaw of slot {slot.slot_id} FAILED "
-                  f"({type(exc).__name__}: {exc}) — reopened on warmup; "
-                  f"the owner reloads on its next call",
-                  file=sys.stderr, flush=True)
+            _state.backend.did_open(slot.slot_path, WARMUP_CONTENT)
+        except Exception as exc:  # noqa: BLE001 — the wedge path owns it
+            print(f"[gateway] thaw of slot {slot.slot_id} could not reopen "
+                  f"warmup ({type(exc).__name__}: {exc}) — left frozen for "
+                  f"the next scan", file=sys.stderr, flush=True)
+            return
+        slot.file_version = 1
+        slot.content_pipeline_id = None
+        slot.line_map = None
+        slot.frozen = False
+        print(f"[gateway] slot {slot.slot_id} THAWED to warmup in "
+              f"{time.perf_counter() - t0:.1f}s — "
+              f"{'owner ' + slot.claimed_by[:8] + ' reloads on its next call' if slot.claimed_by else 'unclaimed'}",
+              file=sys.stderr, flush=True)
     finally:
         slot.thaw_waiting = False
         slot.lock.release()

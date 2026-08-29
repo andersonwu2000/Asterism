@@ -618,7 +618,7 @@ _WATERMARKS = {
     "Tooling/lsp/gateway/sessions.py": 600,  # born 2026-08-29 from the gateway split (A1-3)
     "Tooling/lsp/gateway/health.py": 150,  # born 2026-08-29 from the gateway split (A1-3)
     "Tooling/lsp/gateway/leantext.py": 800,  # born 2026-08-29 from the gateway split (A1-4a)
-    "Tooling/lsp/gateway/rpc.py": 850,  # 2026-08-29 elaboration wall + native_decide gate (+103 on the 750 split-born mark); next growth = split the gates out
+    "Tooling/lsp/gateway/rpc.py": 950,  # 2026-08-29 wall (CPU-second meter) + native_decide gate; SPLIT before the next bump (gates/wall -> own module)
     "Tooling/lsp/gateway/server.py": 100,  # born 2026-08-29 from the gateway split (A1-4a)
     "Tooling/lsp/gateway/gates.py": 450,  # born 2026-08-29 from the gateway split (A1-4b)
     "Tooling/lsp/gateway/verify.py": 850,  # born 2026-08-29 from the gateway split (A1-4b)
