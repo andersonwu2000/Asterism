@@ -295,7 +295,18 @@ def _run_partitioned(workspace: Path, problem: str,
               f"UNCHECKED (not 'no duplicate')", flush=True)
         _degraded.record(workspace, "dedupe_probe_unavailable", str(e))
         return results
+    header_failures = {m: w for m, w in dropped.items()
+                       if w.startswith("header rc=")}
+    if header_failures:
+        # nothing could be attributed to a module: the header itself did
+        # not run — that is the probe's global error, not N bad modules
+        why = next(iter(header_failures.values()))
+        print(f"[dedupe] probe global error — header refused "
+              f"({len(header_failures)} module(s)): {why[:200]!r}", flush=True)
+        _degraded.record(workspace, "dedupe_probe_global_error", why[:200])
     for mod, why in dropped.items():
+        if mod in header_failures:
+            continue
         print(f"[dedupe] probe dropped module {mod}: {why}", flush=True)
         _degraded.record(workspace, "dedupe_probe_module_dropped",
                          f"{mod}: {why}")

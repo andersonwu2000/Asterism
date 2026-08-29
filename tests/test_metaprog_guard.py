@@ -41,6 +41,7 @@ BACKWARD = ROOT / "Tooling" / "pipeline" / "backward.py"
 FORWARD = ROOT / "Tooling" / "pipeline" / "forward.py"
 LAKE_PROBE = ROOT / "Tooling" / "quality" / "lake_probe.py"
 DEDUPE = ROOT / "Tooling" / "quality" / "dedupe.py"
+DEDUPE_PROBE = ROOT / "Tooling" / "quality" / "dedupe_probe.py"
 LIB_EXECUTE = ROOT / "Tooling" / "pipeline" / "librarian" / "execute.py"
 LIB_GATE = ROOT / "Tooling" / "pipeline" / "librarian" / "gate.py"
 
@@ -143,8 +144,9 @@ def test_librarian_scans_agent_lean(path, fn) -> None:
 #: point of enumerating entries rather than patching the obvious one.
 @pytest.mark.parametrize("path,fn", [
     (LAKE_PROBE, "run_lean_source"),          # Library cleanup / dedup probes
-    (DEDUPE, "_batch_provable_via_apply"),    # alias-provability batch
-    (DEDUPE, "_batch_statement_defeq"),       # defeq batch
+    # both dedupe probes (apply / defeq) compose their files and run
+    # `lake env lean` through this one body since 2026-08-29
+    (DEDUPE_PROBE, "_run_partitioned"),
 ])
 def test_direct_lake_probe_scans_its_source(path, fn) -> None:
     src = _fn_source(path, fn)

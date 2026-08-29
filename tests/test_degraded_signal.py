@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from Tooling.core import degraded
 from Tooling.pipeline import _lake
-from Tooling.quality import dedupe
+from Tooling.quality import dedupe, dedupe_probe
 
 # conftest's autouse fixture stubs `_batch_provable_via_apply` per test;
 # bind the genuine function at import (collection runs before fixtures).
@@ -52,7 +52,7 @@ def test_dedupe_preflight_failure_lands_in_ledger(tmp_path, monkeypatch):
     def boom(workspace, modules):
         raise OSError("[WinError 206] filename or extension too long")
     monkeypatch.setattr(_lake, "lake_build_modules", boom)
-    monkeypatch.setattr(dedupe.subprocess, "run",
+    monkeypatch.setattr(dedupe_probe.subprocess, "run",
                         lambda *a, **k: SimpleNamespace(returncode=0,
                                                         stdout="", stderr=""))
     assert _REAL_APPLY(tmp_path, "X", _PAIRS) == [True]
@@ -66,7 +66,7 @@ def test_dedupe_probe_timeout_lands_in_ledger(tmp_path, monkeypatch):
 
     def timed_out(*a, **k):
         raise subprocess.TimeoutExpired(cmd="lake", timeout=1)
-    monkeypatch.setattr(dedupe.subprocess, "run", timed_out)
+    monkeypatch.setattr(dedupe_probe.subprocess, "run", timed_out)
     assert _REAL_APPLY(tmp_path, "X", _PAIRS) == [None]
     assert degraded.snapshot(tmp_path)["dedupe_probe_timeout"]["count"] == 1
 
@@ -75,7 +75,7 @@ def test_dedupe_global_error_lands_in_ledger(tmp_path, monkeypatch):
     monkeypatch.setattr(_lake, "lake_build_modules", lambda ws, mods: (True, ""))
     # an error on line 1 (the `import Mathlib` line) is outside every
     # pair's range → global → all pairs refused
-    monkeypatch.setattr(dedupe.subprocess, "run",
+    monkeypatch.setattr(dedupe_probe.subprocess, "run",
                         lambda *a, **k: SimpleNamespace(
                             returncode=1, stdout="",
                             stderr="x.lean:1:0: error: object file does not exist"))
