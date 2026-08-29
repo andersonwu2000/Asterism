@@ -131,7 +131,7 @@ def test_unfinished_elaboration_does_not_read_as_clean(
     dropped it, which made the owner's surface the one place a timeout
     looked like a clean file."""
     token, backend = _editor_session(monkeypatch, tmp_path)
-    from Tooling.lsp.gateway import rpc
+    from Tooling.lsp.gateway import wall as rpc
     # the wall in miniature: a fake that gives up at once would
     # otherwise sleep the real 300s budget (2026-08-29)
     monkeypatch.setattr(rpc, "ELAB_WALL_SEC", 0.05)

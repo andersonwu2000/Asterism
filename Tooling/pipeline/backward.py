@@ -160,23 +160,10 @@ def _existing_duplicate_strategy(conn, goal_id: int,
 
 def _strict_ancestor_slugs(conn, goal_id: int) -> "dict[str, str]":
     """`{slug: lean_path}` for every STRICT ancestor of `goal_id` on its
-    live chain (walks up via `strategy_subgoals`; excludes `goal_id`
-    itself). Used to detect a circular decomposition — a sub-goal that
-    restates one of its own ancestors (backlog #4)."""
-    rows = conn.execute(
-        "WITH RECURSIVE ancestors(id) AS ("
-        "  SELECT s.goal_id FROM strategies s"
-        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
-        "    WHERE ss.subgoal_id = ?"
-        "  UNION"
-        "  SELECT s.goal_id FROM strategies s"
-        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
-        "    JOIN ancestors a ON a.id = ss.subgoal_id"
-        ") "
-        "SELECT g.slug, g.lean_path FROM goals g WHERE g.id IN ancestors",
-        (goal_id,),
-    ).fetchall()
-    return {r["slug"]: r["lean_path"] for r in rows}
+    live chain. The walk lives in `db.strict_ancestor_slugs` (2026-08-30)
+    so the editing tools' ancestor-cycle refusal and this commit gate
+    match the same names."""
+    return db.strict_ancestor_slugs(conn, goal_id)
 
 
 def _strict_ancestor_ids(conn, goal_id: int) -> "set[int]":

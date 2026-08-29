@@ -998,9 +998,9 @@ def _setup_validate_session(monkeypatch, tmp_path, backend):
     # up at once would otherwise make every wall test wait the real
     # 300s budget (2026-08-29: two of them sat 300s each and one ate
     # 16 GB of a fake's call log before the loop paced itself)
-    monkeypatch.setattr(lsp_gateway.rpc, "ELAB_WALL_SEC", 0.05)
-    monkeypatch.setattr(lsp_gateway.rpc, "ELAB_WALL_HEAVY_SEC", 0.15)
-    monkeypatch.setattr(lsp_gateway.rpc, "ELAB_WALL_SLICE_SEC", 0.005)
+    monkeypatch.setattr(lsp_gateway.wall, "ELAB_WALL_SEC", 0.05)
+    monkeypatch.setattr(lsp_gateway.wall, "ELAB_WALL_HEAVY_SEC", 0.15)
+    monkeypatch.setattr(lsp_gateway.wall, "ELAB_WALL_SLICE_SEC", 0.005)
     # Both sides of the split-brain name: `validate_file` left the facade
     # for `gateway.verify` with the A1-4b split and resolves its own
     # copied binding there; the four tools this harness also drives

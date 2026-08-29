@@ -41,6 +41,7 @@ from ...state import db as _db
 from .backend import _ensure_backend_ready
 from .elab import _elab_gate
 from .gates import (
+    _ancestor_cycle,
     _GW_DECL_HEAD_RE,
     _annotation_submission,
     _axioms_submission,
@@ -236,7 +237,8 @@ def validate_file(content: str = "", file: str = "") -> str:
                 # Compute to completion or hit the wall (worker killed,
                 # slot re-warmed, hard failure) — never an indeterminate
                 # "maybe clean" verdict (#102, owner design 2026-08-29).
-                _conv, _wall_info = _await_elaboration(backend, slot, meta)
+                _conv, _wall_info = _await_elaboration(
+                    backend, slot, meta, content=content)
                 timed_out = not _conv
             try:
                 diags = backend.diagnostics_for(slot.slot_uri)
@@ -376,6 +378,11 @@ def validate_file(content: str = "", file: str = "") -> str:
         own_rel=f"proofs/{meta.target_path.name}")
     if nm is not None:
         submission["names"] = nm
+    # The editing tools refuse an ancestor citation outright; a file that
+    # carries one anyway (written outside apply_edit) is told here.
+    cy = _ancestor_cycle(content, meta)
+    if cy is not None:
+        submission["ancestor_cycle"] = cy
     if axioms_sub is not None:
         # Pre-commit mirror of the commit axiom gate (2026-08-18):
         # `ok: false` here rides `commit_will_reject` like every other
@@ -719,6 +726,7 @@ def _verify_session_sync(token: str, content: str, *, write_olean: bool,
     decl_info_error: str | None = None
     diags: list = []
     timed_out = False
+    wall_info: "dict | None" = None
     try:
         # Claimed mode (borrow=False), swap_in=False: locate the session's own
         # slot, then didChange the candidate ourselves (like validate_file).
@@ -728,12 +736,16 @@ def _verify_session_sync(token: str, content: str, *, write_olean: bool,
                 backend.clear_diagnostics(slot.slot_uri)
                 backend.did_change_full(slot.slot_path, content,
                                         slot.file_version)
-                try:
-                    backend.wait_for_diagnostics(slot.slot_uri,
-                                                 slot.file_version,
-                                                 timeout=wait_timeout)
-                except (TimeoutError, RuntimeError):
-                    timed_out = True
+                # One wall for every elaboration (owner ruling 2026-08-30):
+                # the commit verify used a bare wait on the caller's
+                # timeout — no CPU/RAM meter, no re-warm, no teaching —
+                # and a heavy candidate ran for 100 minutes at commit
+                # after hitting the CPU wall four times through
+                # apply_edit. `wait_timeout` is accepted for the API and
+                # superseded by the wall's own budgets.
+                _conv, wall_info = _await_elaboration(
+                    backend, slot, meta, content=content)
+                timed_out = not _conv
             diags = backend.diagnostics_for(slot.slot_uri)
             formatted0 = [_format_diag(d) for d in diags]
             has_error0 = any(f.get("severity") == "error" for f in formatted0)
@@ -799,6 +811,16 @@ def _verify_session_sync(token: str, content: str, *, write_olean: bool,
 
     formatted = [_format_diag(d) for d in diags]
     has_error = any(f.get("severity") == "error" for f in formatted)
+    if wall_info is not None:
+        # the wall's verdict rides the response like validate_file's:
+        # a hard failure with the teaching, never a count to misread
+        return {
+            "ok": False, "timed_out": True, "status": "elab_wall",
+            "elab_wall": wall_info, "error": wall_info["teaching"],
+            "diagnostic_count": None, "diagnostics": [],
+            "olean_written": False, "olean_path": None, "axioms": None,
+            "axiom_error": None, "decl_info": None, "decl_info_error": None,
+        }
     return {
         "ok": not has_error and not timed_out,
         "diagnostic_count": len(formatted),

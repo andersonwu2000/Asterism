@@ -166,6 +166,9 @@ class SessionMetadata:
     #: content hashes the native_decide gate already asked about
     #: (`rpc._native_decide_gate`; same resend-to-confirm shape).
     nd_confirmed: set = field(default_factory=set)
+    # sha256 of every content that hit the elaboration wall in this
+    # session — refused on resend before any elaboration (2026-08-30).
+    walled: set = field(default_factory=set)
 
 
 # ─── Gateway global state ─────────────────────────────────

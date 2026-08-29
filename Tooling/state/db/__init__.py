@@ -119,7 +119,7 @@ from .pipelines import (
     finish_pipeline,
     is_in_queue,
     queue_count,
-    strict_ancestor_ids,
+    strict_ancestor_ids, strict_ancestor_slugs,
     queue_size,
 )
 

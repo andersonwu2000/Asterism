@@ -440,6 +440,8 @@ class DispatcherLedger:
         self.free_slots = 0
         self.last_target = 0
         self._ramp: "int | None" = None
+        # what the open slots actually hold (GB), from the last push reply
+        self._used_gb: "float | None" = None
         self._ramp_at = 0.0
         self.last_calm = False
         self.last_hot = False
@@ -558,6 +560,25 @@ class DispatcherLedger:
         (a passed wave decays the yield one slot per tick)."""
         self._nl_yield_req = True
 
+    def _apply_headroom(self, target: int, *, nl_demand: int,
+                        nl_gb: float) -> int:
+        """Owner ruling 2026-08-30: the average-price formula is blind to
+        a bimodal field (two 8 GB workers among 1 GB ones said "14", the
+        machine sustained 7, the outlet paid 29 sheds to find out). The
+        target is also bounded by what the open slots actually hold:
+        open + headroom / price, headroom = budget − reserves − NL −
+        measured private bytes. Never below the one-slot floor."""
+        if self._used_gb is None:
+            return target
+        reserves = (cache_reserve_gb(self.machine_gb)
+                    + base_reserve_gb(self.machine_gb)
+                    + max(0, nl_demand) * nl_gb)
+        headroom = self.budget_gb - reserves - self._used_gb
+        cap = self.open_slots
+        if headroom > 0:
+            cap += int(headroom // max(self.slot_gb, SLOT_GB_FALLBACK))
+        return max(1, min(target, cap))
+
     def _apply_ramp(self, target: int, now: float) -> int:
         """Opening bid = min(lanes, target); +1 per calm RAMP_STEP_SEC;
         never above the RAM target, and follows it down."""
@@ -609,6 +630,7 @@ class DispatcherLedger:
             slot_gb=self.slot_gb + nl_gb, nl_gb=nl_gb,
             machine_gb=self.machine_gb)
         target = self._apply_pressure(target)
+        target = self._apply_headroom(target, nl_demand=nl_demand, nl_gb=nl_gb)
         # ramp first, yield last: the ramp climbs toward (and follows
         # down) the RAM target; the NL yield is a transient shed on top
         # of the pool and must not reset the climb (its decay is one
@@ -629,6 +651,8 @@ class DispatcherLedger:
             # fallback.
             if isinstance(readings, dict) \
                     and any(v for v in readings.values()):
+                self._used_gb = sum(int(v) for v in readings.values()
+                                    if v) / 1024
                 measured = slot_gb_from_readings(list(readings.values()))
                 dt = max(0.0, now - self._slot_gb_at)
                 self._slot_gb_at = now

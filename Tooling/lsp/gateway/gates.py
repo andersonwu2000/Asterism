@@ -435,3 +435,52 @@ def _axioms_submission(backend, slot, content: str,
     from ...state.failures import rogue_axioms_message
     return {"ok": False, "rogue": sorted(rogue),
             "note": rogue_axioms_message(rogue)}
+
+
+def _ancestor_cycle(content: str, meta) -> "dict | None":
+    """Owner ruling 2026-08-30: a file that names one of its own STRICT
+    ANCESTORS is refused at the editing tools, not at commit. Citing an
+    ancestor closes a dependency cycle (the ancestor's proof contains
+    this goal); five spawns died at commit for it in one afternoon,
+    ~16 minutes each. The predicate is the graph's own
+    (`db.strict_ancestor_slugs`, the walk commit uses), the scan is over
+    identifiers with comments stripped. Siblings, proved cross-branch
+    bricks and the file's own name are not ancestors."""
+    import re as _re
+
+    from ...quality.names import _strip_comments
+    from ...state import db as _db
+    goal_id = getattr(meta, "goal_id", None)
+    workspace = getattr(meta, "workspace", None)
+    if goal_id is None or workspace is None:
+        return None
+    try:
+        conn = _db.connect(workspace / "asterism.db")
+        try:
+            ancestors = _db.strict_ancestor_slugs(conn, int(goal_id))
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — no DB at hand: the commit gate still owns it
+        return None
+    if not ancestors:
+        return None
+    code = "\n".join(_strip_comments(content))
+    hits = sorted(slug for slug in ancestors
+                  if _re.search(r"(?<![\w.'])" + _re.escape(slug) + r"(?![\w'])",
+                                code))
+    if not hits:
+        return None
+    return {
+        "ok": False,
+        "ancestors": hits,
+        "teaching": (
+            "This file cites " + ", ".join(f"`{h}`" for h in hits) +
+            " — an ANCESTOR of your goal on its own chain: this goal is "
+            "part of that proof, so it cannot also prove itself with it "
+            "(a dependency cycle; commit would reject it as "
+            "circular_decomposition). Cite a sibling or a proved brick "
+            "instead, prove the step here, or — if the sub-goal really "
+            "needs the ancestor — this sub-goal is mis-cut: return it to "
+            "NL (decline with this reason) so the Strategist re-plans."),
+    }
+

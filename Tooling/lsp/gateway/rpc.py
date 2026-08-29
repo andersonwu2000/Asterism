@@ -39,7 +39,11 @@ import time
 from .. import edits as _edits
 from .backend import _ensure_backend_ready
 from .elab import _elab_gate
-from .gates import _citation_submission, _locked_signature_submission
+from .gates import (
+    _ancestor_cycle,
+    _citation_submission,
+    _locked_signature_submission,
+)
 from .leantext import (
     _collapse_repeats,
     _compilation_for,
@@ -56,6 +60,11 @@ from .leantext import (
 from .server import _offload_to_thread, mcp
 from .sessions import _acquire_slot, _current_session
 from .state import SessionMetadata, _log_for, _state, _ts_now
+from .wall import (  # noqa: F401 — re-exported: verify/__init__ bind rpc.<name>
+    _await_elaboration,
+    _elab_wall_for,
+    _walled_gate,
+)
 
 
 #: Head and tail of the echo of a removed region. A head-only cap put
@@ -183,6 +192,21 @@ def apply_edit(edits: list = None) -> str:
         _log_for(meta, {"event": "apply_edit", "outcome": "refused"})
         return json.dumps(
             {"edit": "held — file unchanged", "native_decide": _nd,
+             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()},
+            ensure_ascii=False)
+    _wl = _walled_gate(meta, new_content)
+    if _wl is not None:
+        _log_for(meta, {"event": "apply_edit", "outcome": "refused"})
+        return json.dumps(
+            {"edit": "held — file unchanged", "elab_wall": _wl,
+             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()},
+            ensure_ascii=False)
+    _cy = _ancestor_cycle(new_content, meta)
+    if _cy is not None:
+        _log_for(meta, {"event": "apply_edit", "outcome": "refused"})
+        return json.dumps(
+            {"edit": "rejected — file unchanged", "ancestor_cycle": _cy,
+             "error": _cy["teaching"],
              "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()},
             ensure_ascii=False)
     meta.hb_limit = _hb_declared(new_content) or meta.hb_limit
@@ -465,182 +489,6 @@ def goal_at(line: int = 0, col: int = 0) -> str:
                         "goal); showing the goal at the `sorry` token "
                         f"(col {resolved_at_sorry})")
     return json.dumps(resp, ensure_ascii=False)
-
-
-#: Elaboration wall — compute to completion, then a verdict (owner
-#: design 2026-08-29). The old 120s early return handed the agent
-#: "elaborating, 0 diagnostics" to misread as clean while the worker kept
-#: the slot busy for the next call (~150 worker reports + 36 asking for a
-#: cancel key, union_closed ring 2026-08-29). Past the wall the worker is
-#: killed, its slot re-warmed in place, and the tool answers a hard
-#: failure. A file that bought a large heartbeat budget through
-#: `_heartbeat_gate` gets the heavy wall: 11 proved bricks in this
-#: workspace needed ~240s checks at 4M.
-#:
-#: The wall is measured in the WORKER'S CPU SECONDS, not wall-clock
-#: (owner ruling 2026-08-29): on the 4-OCPU flagship, 2 elaboration
-#: lanes shared with 9 codex CLIs stretched a 60s elaboration past a
-#: 300s wall-clock wall and killed work that was converging — and the
-#: re-warm then queued for the same lanes. "Compute to completion"
-#: means the worker got its budget of compute; a machine that is merely
-#: crowded does not fail a proof. A loose wall-clock cap (×factor)
-#: still catches a worker that never runs at all; when the worker
-#: cannot be found (frozen slot, tests) the wall falls back to
-#: wall-clock. Client-side MCP timeouts sit above the clock cap (codex
-#: `tool_timeout_sec`, claude `MCP_TOOL_TIMEOUT`).
-ELAB_WALL_SEC = 300.0
-ELAB_WALL_HEAVY_SEC = 900.0
-#: Poll slice — how often the CPU meter is read between waits.
-ELAB_WALL_SLICE_SEC = 15.0
-#: Wall-clock safety net as a multiple of the CPU budget.
-ELAB_WALL_CLOCK_FACTOR = 4.0
-
-
-def _elab_wall_for(meta: SessionMetadata) -> float:
-    return (ELAB_WALL_HEAVY_SEC
-            if _hb_rank(meta.hb_limit) > _HB_ASK_ABOVE else ELAB_WALL_SEC)
-
-
-def _worker_cpu_seconds(slot_uri: str) -> "tuple[int, float] | None":
-    """(pid, user+system CPU seconds) of the ONE `lean --worker` serving
-    `slot_uri` (the same exact argv match the governor kills by), or
-    None when no such worker exists (frozen slot, backend not ours,
-    the server between killing a worker and respawning it). The pid
-    travels with the reading because the lean server REPLACES the
-    worker on a header change: a new pid starts its CPU clock at zero
-    and the old baseline must not be subtracted from it."""
-    try:
-        import os as _os
-        import psutil
-        me = psutil.Process(_os.getpid())
-        for proc in me.children(recursive=True):
-            try:
-                argv = proc.cmdline()
-                if "--worker" in argv and slot_uri in argv:
-                    t = proc.cpu_times()
-                    return int(proc.pid), float(t.user + t.system)
-            except (psutil.Error, OSError):
-                continue
-    except Exception:  # noqa: BLE001 — meter unavailable → clock mode
-        return None
-    return None
-
-
-def _reclaim_slot(backend, slot) -> bool:
-    """Kill the slot's worker mid-elaboration (if one exists) and re-warm
-    the slot in place — the caller holds the slot lock (the wedge
-    recycler's close/re-open flow, in production since 2026-08-14). The
-    session re-swaps its content on its next call: one cold
-    elaboration, paid by the one session that overran, nobody else
-    loses a claim. Returns whether the slot is back on warmup — a frozen
-    slot has no worker to kill and still reclaims fine."""
-    from .governor import _kill_worker_for_uri  # lazy: no import cycle
-    from .state import WARMUP_CONTENT
-    _kill_worker_for_uri(slot.slot_uri)
-    try:
-        with contextlib.suppress(Exception):
-            backend.did_close(slot.slot_path)
-        backend.did_open(slot.slot_path, WARMUP_CONTENT)
-        backend.wait_for_file_done(slot.slot_uri, timeout=300)
-    except Exception:  # noqa: BLE001 — the wedge watchdog escalates
-        return False
-    slot.content_pipeline_id = None
-    slot.line_map = None
-    return True
-
-
-def _await_elaboration(backend, slot, meta) -> "tuple[bool, dict | None]":
-    """Wait for Lean to finish the slot's current version, up to the wall.
-
-    (True, None): `diagnostics_for` is the FINAL answer. (False, info):
-    the wall was hit — the worker is gone, the slot re-warmed, and `info`
-    is the structured verdict every tool must surface INSTEAD of a
-    diagnostic count (an empty list here is not "clean", it is a
-    failure)."""
-    wall = _elab_wall_for(meta)
-    clock_cap = wall * ELAB_WALL_CLOCK_FACTOR
-    t0 = time.monotonic()
-    first = _worker_cpu_seconds(slot.slot_uri)
-    mode = "cpu" if first is not None else "clock"
-    base_pid, base_cpu = first if first is not None else (0, 0.0)
-    used = 0.0
-    gone = 0
-    reason = ""
-    while True:
-        elapsed = time.monotonic() - t0
-        if mode == "cpu":
-            slice_s = min(ELAB_WALL_SLICE_SEC, max(0.01, clock_cap - elapsed))
-        else:
-            slice_s = min(ELAB_WALL_SLICE_SEC, max(0.01, wall - elapsed))
-        t_slice = time.monotonic()
-        try:
-            backend.wait_for_diagnostics(slot.slot_uri, slot.file_version,
-                                         timeout=slice_s)
-            return True, None
-        except TimeoutError:
-            # the loop paces ITSELF at one meter read per slice — a
-            # backend that gives up early (a fake, a wedge) must not
-            # turn the wait into a busy-loop
-            spent = time.monotonic() - t_slice
-            if spent < slice_s:
-                time.sleep(slice_s - spent)
-        except RuntimeError as exc:
-            reason = f"{type(exc).__name__}: {exc}"
-            break
-        elapsed = time.monotonic() - t0
-        if mode == "cpu":
-            reading = _worker_cpu_seconds(slot.slot_uri)
-            if reading is None:
-                # no worker right now: the server may be respawning it
-                # (header change) — two slices of grace, then it is gone
-                # for good (wedge kill, freeze) and there is nothing
-                # left to meter
-                gone += 1
-                if gone >= 2:
-                    reason = "worker gone"
-                    break
-                continue
-            gone = 0
-            pid, cpu = reading
-            if pid != base_pid:
-                # a replacement worker: its clock started at zero on
-                # this very elaboration, so its whole CPU time counts
-                base_pid, base_cpu = pid, 0.0
-            used = max(used, cpu - base_cpu)
-            if used >= wall:
-                reason = f"{used:.0f} CPU-seconds consumed"
-                break
-            if elapsed >= clock_cap:
-                reason = (f"{elapsed:.0f}s wall-clock with only "
-                          f"{used:.0f} CPU-seconds — starved or hung")
-                break
-        elif elapsed >= wall:
-            reason = f"{elapsed:.0f}s wall-clock (no CPU meter)"
-            break
-    rewarmed = _reclaim_slot(backend, slot)
-    print(f"[gateway] elaboration wall hit on slot "
-          f"{getattr(slot, 'slot_id', '?')} ({reason}; budget {wall:.0f}"
-          f"{' CPU-s' if mode == 'cpu' else 's'}) — slot "
-          f"{'re-warmed' if rewarmed else 'NOT re-warmed'}",
-          file=sys.stderr, flush=True)
-    return False, {
-        "wall_s": wall,
-        "mode": mode,
-        "cpu_s": round(used, 1),
-        "elapsed_s": round(time.monotonic() - t0, 1),
-        "reason": reason,
-        "worker_reclaimed": rewarmed,
-        "teaching": (
-            f"Lean did not finish elaborating within its budget of {wall:.0f} "
-            f"{'CPU-seconds' if mode == 'cpu' else 'seconds'} ({reason}); "
-            "the worker was killed and its slot re-warmed, so this result is "
-            "a FAILURE, not 'no news yet'. A check this expensive does not "
-            "converge by waiting: bound the quantity instead of evaluating "
-            "it, split the finite case into smaller bricks, or lift the "
-            "heavy step into its own `new_<slug>.lean` with a small context "
-            "and cite it. Your file content is kept; the next call "
-            "re-elaborates it cold."),
-    }
 
 
 #: `native_decide` proves via `Lean.ofReduceBool`, which the axiom gate

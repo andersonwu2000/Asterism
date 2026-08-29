@@ -67,7 +67,7 @@ class LspClient:
         self._pending: dict[int, queue.Queue] = {}
         self._notifications: queue.Queue = queue.Queue()
         self._stopped = threading.Event()
-        self._stderr_buf: list[bytes] = []
+        self._init_stderr_tail()
         self._latest_diagnostics: dict[str, list] = {}
         self._diag_lock = threading.Lock()
         # Per-URI fileProgress state. Reader thread updates on every
@@ -343,6 +343,18 @@ class LspClient:
             return json.loads(body.decode("utf-8"))
         except json.JSONDecodeError:
             return None
+
+    def _init_stderr_tail(self) -> None:
+        """A bounded ring of the server's stderr chunks — a worker crash
+        ("Server process … crashed") is otherwise a message with no
+        cause attached (2026-08-30)."""
+        import collections
+        self._stderr_buf: "collections.deque[bytes]" = collections.deque(maxlen=256)
+
+    def stderr_tail(self, limit: int = 4000) -> str:
+        """The last `limit` characters the Lean server wrote to stderr."""
+        raw = b"".join(self._stderr_buf)
+        return raw.decode("utf-8", "replace")[-limit:]
 
     def _stderr_loop(self) -> None:
         # Just drain stderr to avoid pipe-buffer deadlock.

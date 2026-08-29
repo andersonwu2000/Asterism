@@ -506,3 +506,52 @@ def test_tick_pushes_the_ramped_target(monkeypatch):
     pushed = []
     led.tick(nl_demand=0, push=lambda t, f: pushed.append(t) or None)
     assert pushed == [2], "first push is the opening bid, not the RAM formula"
+
+
+# ───────────── measured headroom clamp (owner ruling 2026-08-30) ─────────────
+
+def test_target_is_clamped_by_measured_headroom_when_fat_slots_eat_the_budget(
+        monkeypatch):
+    """Two 8 GB workers plus a handful of fresh ones: the average-price
+    formula still said 14, the machine sustained 7, and the outlet paid
+    29 sheds to find that out. The ledger now also counts what the open
+    slots actually hold: target ≤ open + headroom / price."""
+    _quiet_pressure(monkeypatch)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    now = {"t": 100.0}
+    monkeypatch.setattr(rl.time, "monotonic", lambda: now["t"])
+    led = rl.DispatcherLedger(28.0, 32.0)
+    led.slot_gb = 1.5
+    pushed = []
+
+    def push(target, min_avail):
+        pushed.append(target)
+        return {"open": 4, "free": 0,
+                "slot_private_mb": {"0": 8000, "1": 8000, "2": 900, "3": 900}}
+    led.tick(nl_demand=0, push=push)
+    now["t"] += 60.0
+    led.tick(nl_demand=0, push=push)
+    # budget 28 − cache 2 − base 1 − used 17.4 = 7.6 GB headroom;
+    # price ~1.5 → 5 more slots at most: 4 + 5 = 9, well under the
+    # formula's answer
+    assert pushed[-1] <= 9
+    assert pushed[-1] >= 5
+
+
+def test_headroom_clamp_never_starves_below_the_floor(monkeypatch):
+    _quiet_pressure(monkeypatch)
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
+    now = {"t": 100.0}
+    monkeypatch.setattr(rl.time, "monotonic", lambda: now["t"])
+    led = rl.DispatcherLedger(20.0, 32.0)
+    led.slot_gb = 1.5
+    pushed = []
+
+    def push(target, min_avail):
+        pushed.append(target)
+        return {"open": 3, "free": 0,
+                "slot_private_mb": {"0": 9000, "1": 9000, "2": 9000}}
+    led.tick(nl_demand=0, push=push)
+    now["t"] += 60.0
+    led.tick(nl_demand=0, push=push)
+    assert pushed[-1] >= 1, "the one-slot floor holds even when the slots overflow the budget"

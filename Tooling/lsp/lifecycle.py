@@ -821,6 +821,10 @@ def start_gateway(workspace: Path,
 
 
 _VERIFY_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)
+#: Daemon-side wait on one gateway verify: must OUTLIVE the gateway's heavy
+#: wall clock cap (`gateway.wall` 900 CPU-s × 4) — a client that gives up
+#: first retries into a slot still busy (100-minute lease, 2026-08-29).
+VERIFY_CLIENT_TIMEOUT_SEC = 3720.0
 
 
 def verify_file(target_path: Path,
@@ -952,7 +956,7 @@ def verify_in_session(token: str, content: str, *,
                       write_olean: bool = False,
                       axioms_for: str | None = None,
                       decl_info: bool = False,
-                      timeout: float = 240.0,
+                      timeout: float = VERIFY_CLIENT_TIMEOUT_SEC,
                       workspace: Path | None = None,
                       _retry_delays: tuple[float, ...] | None = None) -> dict:
     """POST /verify_session: verify `content` on the slot CLAIMED by the

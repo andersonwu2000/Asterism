@@ -77,6 +77,21 @@ def queue_count(conn: sqlite3.Connection, *, target_id: str, kind: str) -> int:
     return int(row["n"])
 
 
+def strict_ancestor_slugs(conn: sqlite3.Connection,
+                          goal_id: int) -> "dict[str, str]":
+    """`{slug: lean_path}` for every STRICT ancestor of `goal_id` — the
+    same walk as `strict_ancestor_ids`, with the names the editing
+    tools and the commit gate both match against (one home, 2026-08-30)."""
+    ids = strict_ancestor_ids(conn, goal_id)
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT slug, lean_path FROM goals WHERE id IN ({marks})",
+        tuple(ids)).fetchall()
+    return {r["slug"]: r["lean_path"] for r in rows}
+
+
 def strict_ancestor_ids(conn: sqlite3.Connection,
                         goal_id: int) -> "set[int]":
     """Goal ids of every STRICT ancestor of `goal_id` via the
