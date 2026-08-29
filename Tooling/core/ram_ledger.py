@@ -246,25 +246,56 @@ def pressure_high_gb(machine_gb: float) -> float:
     return pressure_low_gb(machine_gb) + 4.0
 
 
+def _cgroup_footprint_gb(cg_dir: str) -> "float | None":
+    """`memory.current` MINUS the cgroup's file pages — the framework's
+    unreclaimable footprint (anon heap + page tables + slab + shmem).
+
+    `memory.current` alone charges every page-cache page the unit ever
+    touched: on 2026-08-29 a fresh 4-OCPU/24 GB flagship daemon read
+    11.4 GB of which 8.6 GB were file pages (6.0 GB the workers' mmapped
+    .olean, shared and reclaimable) against 2.0 GB anon. The cgroup axis
+    (hot above budget-8, calm below budget-12) could then never go calm
+    on a 19 GB budget — dispatch stayed PAUSED and the outlet shed the
+    pool down to one worker while `available` sat at 20 GB. File pages
+    are the kernel's to reclaim (the olean map is the one thing the
+    no-swap fleet can drop); they are not pressure. `memory.stat` missing
+    → the raw reading (the pre-fix, conservative shape); either file
+    missing → None."""
+    try:
+        with open(f"{cg_dir}/memory.current", "r", encoding="utf-8") as fh:
+            current = int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+    file_bytes = 0
+    try:
+        with open(f"{cg_dir}/memory.stat", "r", encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) == 2 and parts[0] == "file":
+                    file_bytes = int(parts[1])
+                    break
+    except (OSError, ValueError):
+        file_bytes = 0
+    return max(0, current - file_bytes) / 2**30
+
+
 def framework_current_gb() -> "float | None":
-    """The daemon unit cgroup's `memory.current` — the framework's
-    TRUE total footprint (heap + page tables + slab + file pages),
-    kept by the kernel for free. This is the honest side of every
-    model-vs-reality gap at once: the census that found the model
-    saying 110 while the cgroup weighed 117.5 (2026-08-26) is exactly
-    this number. None off-Linux or outside a cgroup (Windows local:
-    the modeled footprint + available floor remain the only guards)."""
+    """The daemon unit cgroup's unreclaimable footprint in GB (see
+    `_cgroup_footprint_gb`): the honest side of every model-vs-reality
+    gap (the 2026-08-26 census that found the model saying 110 while
+    the cgroup weighed 117.5 was this reading, cache included — the
+    cache term is now excluded, 2026-08-29). None off-Linux or outside
+    a cgroup (Windows local: the modeled footprint + available floor
+    remain the only guards)."""
     try:
         with open("/proc/self/cgroup", "r", encoding="utf-8") as fh:
             first = fh.read().strip().splitlines()[0]
         rel = first.split("::", 1)[1] if "::" in first else ""
         if not rel:
             return None
-        with open(f"/sys/fs/cgroup{rel}/memory.current", "r",
-                  encoding="utf-8") as fh:
-            return int(fh.read().strip()) / 2**30
     except (OSError, ValueError, IndexError):
         return None
+    return _cgroup_footprint_gb(f"/sys/fs/cgroup{rel}")
 
 
 def nl_admit_floor_gb(budget_gb: float, machine_gb: float,
