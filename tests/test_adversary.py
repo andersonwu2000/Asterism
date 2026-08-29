@@ -283,7 +283,7 @@ def test_rebut_then_pass_advances_rev(
     monkeypatch.setattr(agent, "spawn_llm", fake)
 
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=1,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=1,
         workspace=workspace, intent=pintent, pipeline_id="adv-1",
     )
     assert r.outcome == "success"
@@ -319,7 +319,7 @@ def test_exhaustion_records_rejection(
     monkeypatch.setattr(agent, "spawn_llm", fake)
 
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=1,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=1,
         workspace=workspace, intent=pintent, pipeline_id="adv-2",
     )
     assert r.outcome == "failed"
@@ -381,7 +381,7 @@ def test_mechanical_discard_also_records_a_reason(
 
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=1,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=1,
         workspace=workspace, intent=pintent, pipeline_id="adv-mech",
     )
     assert r.outcome == "failed"
@@ -415,7 +415,7 @@ def test_exempt_batch_skips_adversary(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=1,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=1,
         workspace=workspace, intent=pintent, pipeline_id="adv-3",
     )
     assert r.failure_reason == "strategist_noop"
@@ -917,9 +917,11 @@ def test_the_two_antipatterns_are_one_text_in_four_files() -> None:
     sides; these two bullets do not.
     """
     root = Path(__file__).resolve().parents[1] / "Tooling" / "prompts"
+    # routine.md is the audit prompt (2026-08-30): no decisions, no
+    # failure-mode paragraphs — the two DECISION wakes and the judge.
     files = [root / "adversary" / "adversary.md"] + [
         root / "strategist" / f for f in
-        ("routine.md", "inject_batch_done.md", "pending_review.md")]
+        ("inject_batch_done.md", "pending_review.md")]
     for phrase in ("an expensive substitution",
                    "a problem circled is never solved",
                    "do not help settle the requirement",
@@ -953,8 +955,7 @@ def test_adversary_contract_section_matches_wake_prompts() -> None:
         encoding="utf-8")
     wakes = "".join(
         (root / "strategist" / f).read_text(encoding="utf-8")
-        for f in ("routine.md", "inject_batch_done.md",
-                  "pending_review.md"))
+        for f in ("inject_batch_done.md", "pending_review.md"))
     wakes += _rendered_subgroup_section()
     body = section.split("\n\n`target_goal_id`")[0]
     blocks = _re.split(r"\n(?=- )", body)
@@ -1017,8 +1018,7 @@ def test_contract_standing_rules_are_real_wake_rules() -> None:
         encoding="utf-8")
     wakes = "".join(
         (root / "strategist" / f).read_text(encoding="utf-8")
-        for f in ("routine.md", "inject_batch_done.md",
-                  "pending_review.md"))
+        for f in ("inject_batch_done.md", "pending_review.md"))
     # Bounded at both ends by framework-authored prose, not by counting:
     # the standing rules start after the `target_goal_id` note and end
     # at the `ReturnToParent` sentence, which is a group-verb remark

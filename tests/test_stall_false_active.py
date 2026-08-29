@@ -845,7 +845,10 @@ def test_stall_trigger_kind_is_batch_done_like_everywhere(
     assert "changes nothing" in err and "researcher" in err
 
     assert "stall" in strategist.TRIGGER_KINDS
-    assert strategist.BATCH_DONE_LIKE == {"inject_batch_done", "stall"}
+    # 2026-08-30: routine_fired (the wake a fired routine audit seats)
+    # joined the batch-done family.
+    assert strategist.BATCH_DONE_LIKE == {"inject_batch_done", "stall",
+                                          "routine_fired"}
     # No stall.md exists nor should one: the split is for the DB record.
     from Tooling.pipeline import PROMPT_DIR
     assert not (PROMPT_DIR / "strategist" / "stall.md").exists()

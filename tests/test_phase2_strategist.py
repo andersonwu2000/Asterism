@@ -999,7 +999,7 @@ def test_strategist_prompts_cover_all_triggers() -> None:
     # 'stall' deliberately ALIASES inject_batch_done.md (v43 identity
     # split is for the DB record, not a different conversation) — the
     # alias map here mirrors run_strategist's prompt resolution.
-    _alias = {"stall": "inject_batch_done"}
+    _alias = {"stall": "inject_batch_done", "routine_fired": "inject_batch_done"}
     for tk in strategist.TRIGGER_KINDS:
         p = prompt_dir / f"{_alias.get(tk, tk)}.md"
         assert p.exists(), f"missing prompt file for trigger_kind={tk!r}: {p}"
@@ -1028,9 +1028,9 @@ def test_strategist_prompts_share_decision_kind_vocabulary() -> None:
     # EmitDirective retired 2026-08-03 (RS-B/RS-E): standing worker guidance
     # lives in the Programme's `## Conventions` section; no prompt may still
     # offer the kind.
+    # routine.md is the AUDIT prompt since 2026-08-30 — it emits no
+    # decisions (verdict.json only), so it carries no decision kinds.
     expected_kinds = {
-        "routine": {"Inject", "ConfirmShelve", "Delegate",
-                    "RequestUserAmend", "Noop"},
         "pending_review": {"Inject", "ConfirmShelve", "Delegate"},
         "inject_batch_done": {"Inject", "ConfirmShelve", "Delegate"},
     }

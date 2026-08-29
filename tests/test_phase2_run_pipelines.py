@@ -88,7 +88,7 @@ def test_run_strategist_commits_noop(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=1,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=1,
         workspace=workspace, intent=mfst, pipeline_id=pipeline_id,
     )
     assert r.outcome == "failed"
@@ -143,7 +143,7 @@ def test_run_strategist_inject_enqueues_forward(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=2,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=2,
         workspace=workspace, intent=mfst, pipeline_id="test-strat-2",
     )
     assert r.outcome == "success"
@@ -173,7 +173,7 @@ def test_run_strategist_schema_invalid_returns_infra_reason(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=3,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=3,
         workspace=workspace, intent=mfst, pipeline_id="test-strat-3",
     )
     assert r.outcome == "failed"
@@ -195,7 +195,7 @@ def test_run_strategist_no_output(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=4,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=4,
         workspace=workspace, intent=mfst, pipeline_id="test-strat-4",
     )
     assert r.outcome == "failed"
@@ -227,7 +227,7 @@ def test_run_strategist_no_output_corrective_turn_recovers(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=4,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=4,
         workspace=workspace, intent=mfst,
         pipeline_id="test-strat-fix-1",
     )
@@ -271,7 +271,7 @@ def test_run_strategist_malformed_json_corrective_turn_recovers(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=4,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=4,
         workspace=workspace, intent=mfst,
         pipeline_id="test-strat-fix-2",
     )
@@ -294,7 +294,7 @@ def test_run_strategist_quota_exhausted_rc(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=5,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=5,
         workspace=workspace, intent=mfst, pipeline_id="test-strat-5",
     )
     assert r.failure_reason == "quota_exhausted"
@@ -334,7 +334,7 @@ def test_run_strategist_verify_retry_recovers(
 
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=6,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=6,
         workspace=workspace, intent=mfst, pipeline_id="test-strat-retry-1",
     )
     # Noop maps to strategist_noop (infra-reason) but the retry IS the
@@ -368,7 +368,7 @@ def test_run_strategist_verify_retry_both_fail(
 
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=7,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=7,
         workspace=workspace, intent=mfst, pipeline_id="test-strat-retry-2",
     )
     assert r.failure_reason == "strategist_schema_invalid"
@@ -398,7 +398,7 @@ def test_run_strategist_parse_fail_gets_one_corrective_turn_then_dies(
 
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=8,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=8,
         workspace=workspace, intent=mfst, pipeline_id="test-strat-retry-3",
     )
     assert r.failure_reason == "strategist_schema_invalid"
@@ -427,7 +427,7 @@ def test_run_strategist_verify_retry_disabled_via_env(
 
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="routine", tick=9,
+        conn, problem="p", trigger_kind="inject_batch_done", tick=9,
         workspace=workspace, intent=mfst, pipeline_id="test-strat-retry-4",
     )
     assert r.failure_reason == "strategist_schema_invalid"
