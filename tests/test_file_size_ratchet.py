@@ -609,7 +609,7 @@ _WATERMARKS = {
     # IS the HTTP surface — eleven `@mcp.custom_route` handlers, the
     # session-header middleware, `main()` and the facade — so this
     # number stops falling here.
-    "Tooling/lsp/gateway/__init__.py": 1050,  # born 2026-08-29 from the gateway split (A1-1)
+    "Tooling/lsp/gateway/__init__.py": 1052,  # born 2026-08-29 from the gateway split (A1-1); +2 2026-08-30 stderr stamp install
     "Tooling/lsp/gateway/state.py": 300,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/elab.py": 200,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/backend.py": 250,  # born 2026-08-29 from the gateway split (A1-1)

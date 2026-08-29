@@ -118,6 +118,7 @@ from .state import (
     _log_for,
     _ts_now,
 )
+from .stamp import Timestamped
 from .elab import (
     ELAB_CREDIT_FILENAME,
     _elab_gate,
@@ -775,6 +776,7 @@ class SessionHeaderMiddleware:
 # ─── Entrypoint ─────────────────────────────
 
 def main() -> None:
+    sys.stderr = Timestamped(sys.stderr)   # every line UTC-stamped (stamp.py)
     # Install SelectorEventLoop policy at the VERY TOP of main, before
     # any thread or asyncio interaction. _start_workers (launched as a
     # daemon thread below) uses asyncio internally via lsp_client, and
