@@ -14,7 +14,7 @@ from Tooling.state import db
 
 
 def pytest_collection_modifyitems(config, items):
-    """Drop `real_lake`-marked e2e tests from the default run.
+    """Drop `real_lake`- and `slow`-marked tests from the default run.
 
     They spawn a live lake/lean toolchain — slow (seconds to minutes) and only
     runnable where Mathlib is built (the dev workstation). CI runners have no
@@ -23,11 +23,17 @@ def pytest_collection_modifyitems(config, items):
     the default run fast and all-green by not collecting them at all (silent —
     no skip/deselect line). Opt in where lake is present with
     `ASTERISM_REAL_LAKE=1 pytest`, or `pytest -m real_lake`."""
-    if os.environ.get("ASTERISM_REAL_LAKE") or "real_lake" in (
-        config.option.markexpr or ""
-    ):
-        return
-    items[:] = [it for it in items if "real_lake" not in it.keywords]
+    expr = config.option.markexpr or ""
+    drop = set()
+    if not (os.environ.get("ASTERISM_REAL_LAKE") or "real_lake" in expr):
+        drop.add("real_lake")
+    # `slow` (2026-08-29, owner: suite length is a cost): whole-corpus
+    # scans and other minute-scale checks run on opt-in — ASTERISM_SLOW_TESTS=1
+    # or `pytest -m slow` — not on every commit.
+    if not (os.environ.get("ASTERISM_SLOW_TESTS") or "slow" in expr):
+        drop.add("slow")
+    if drop:
+        items[:] = [it for it in items if not (drop & set(it.keywords))]
 
 
 # ---------------------------------------------------------------------

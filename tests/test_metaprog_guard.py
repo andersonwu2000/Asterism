@@ -286,6 +286,7 @@ def test_block_message_first_line_is_self_contained() -> None:
 # 3. Corpus — the false-positive investigation, frozen
 # ---------------------------------------------------------------------
 
+@pytest.mark.slow   # ~125s: every .lean under Library/ + Problems/ (2026-08-29)
 def test_existing_lean_corpus_is_clean() -> None:
     """Zero hits over every committed proof and Library file.
 

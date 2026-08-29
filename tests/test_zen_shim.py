@@ -17,6 +17,21 @@ import pytest
 from Tooling.llm import zen_shim
 
 
+
+@pytest.fixture(autouse=True)
+def _no_pacing_by_default(request, monkeypatch):
+    """`_pace()` keeps a MODULE-GLOBAL rolling window of 40 stamps/min.
+    Ten tests call `_zen_call` in one process, the window fills, and the
+    next call spins: the tests no-op `time.sleep`, so the "sleep until a
+    slot frees" loop is a busy-wait until 60s of real time pass (a 60s
+    test, 2026-08-29). Pacing has its own test; everyone else gets no
+    pacing and an empty window."""
+    zen_shim._PACE_STAMPS.clear()
+    if "pace" not in request.node.name:
+        monkeypatch.setattr(zen_shim, "_pace", lambda: None)
+    yield
+    zen_shim._PACE_STAMPS.clear()
+
 class _FakeResponse(io.BytesIO):
     """Minimal stand-in for urlopen's response: body + wire headers."""
 

@@ -85,5 +85,6 @@ addopts = "-n auto"
 markers = [
     "real_lake: end-to-end test that spawns a live lake/lean toolchain (slow; only runnable where Mathlib is built). OFF by default — opt in with ASTERISM_REAL_LAKE=1 pytest, or pytest -m real_lake.",
     "free_cli_probe: may spawn a provider CLI for a probe that is answered locally (--version / an invalid --model / a nonexistent --resume id / an illegal -c enum value) — no API call, no tokens, no quota. ON by default (it skips itself where the CLI is absent); the side-effect fence checks the argv shape, not just the marker.",
+    "slow: minute-scale check (whole-corpus scans, real clocks). OFF by default — opt in with ASTERISM_SLOW_TESTS=1 pytest, or pytest -m slow. (owner 2026-08-29: suite length is a cost)",
     "live_db: opts out of the live-data fence — the test legitimately opens the operator's own asterism.db / .asterism state. Rare by design: needing live run state is normally a missing monkeypatch.chdir(tmp_path).",
 ]

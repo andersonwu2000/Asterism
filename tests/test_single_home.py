@@ -51,6 +51,8 @@ the other, and `PROBLEM_STATES` is the named vocabulary.
 """
 from __future__ import annotations
 
+import functools
+
 import ast
 from pathlib import Path
 
@@ -178,6 +180,7 @@ def _literal_string_groups(path: Path):
         yield node.lineno, tuple(sorted(vals))
 
 
+@functools.lru_cache(maxsize=1)
 def _violations() -> "list[tuple[str, int, tuple[str, ...], _Table]]":
     found = []
     for table in _tables():

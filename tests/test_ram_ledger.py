@@ -154,6 +154,10 @@ def _quiet_pressure(monkeypatch):
     the model (the pressure feedback has its own tests)."""
     monkeypatch.setattr(rl, "framework_current_gb", lambda: None)
     monkeypatch.setattr(rl, "available_gb", lambda: 50.0)
+    # the NL coefficient is a psutil walk over EVERY process on the box
+    # (11s per tick with a fleet flying, 2026-08-29): pin it — tests that
+    # want a specific value set it after this
+    monkeypatch.setattr(rl, "nl_gb_measured", lambda: 0.3)
     # the opening-bid ramp (2026-08-29) starts at min(lanes, target):
     # pin lanes out of the way so model tests see the RAM formula
     # (the ramp has its own tests below)
