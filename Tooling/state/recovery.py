@@ -168,9 +168,12 @@ def recover_at_startup(conn: sqlite3.Connection,
     queue_cleared = conn.execute(
         "DELETE FROM queue WHERE owner_pid IS NULL" + _scope_sql,
         _scope_args).rowcount
+    # Dead-owner leases are swept in EVERY scope (owner ruling
+    # 2026-08-27): a corpse outside this daemon's scope has no other
+    # daemon coming for it — the 2026-08-28 unscoped-start accident
+    # left 27 such rows for a day. Only a LIVE owner is respected.
     for r in list(conn.execute(
-            "SELECT id, owner_pid FROM queue WHERE owner_pid IS NOT NULL"
-            + _scope_sql, _scope_args)):
+            "SELECT id, owner_pid FROM queue WHERE owner_pid IS NOT NULL")):
         if not _pid_alive(r["owner_pid"]):
             conn.execute("DELETE FROM queue WHERE id = ?", (r["id"],))
             queue_cleared += 1

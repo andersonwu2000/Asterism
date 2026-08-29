@@ -2415,3 +2415,24 @@ def test_ensure_intent_late_registers_and_ghosts(tmp_path, monkeypatch):
     assert _dispatcher._ensure_intent(conn, cache, "ghost") is False
     # plain-dict intents (test fixtures) degrade to a clean miss
     assert _dispatcher._ensure_intent(conn, {}, "unknown") is False
+
+
+def test_recover_at_startup_sweeps_dead_owner_leases_in_every_scope(
+    conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lease whose owner pid is dead is a corpse whatever scope it
+    sits in — the scoped daemon that finds it is the only one that
+    ever will (owner ruling 2026-08-27; the 08-28 unscoped-start
+    accident left 27 such rows for a day)."""
+    from Tooling.core.dispatcher import _recover_at_startup
+    import Tooling.agent.sandbox as sandbox
+    monkeypatch.setattr(sandbox, "_pid_alive", lambda pid: False)
+    for prob in ("a", "b"):
+        conn.execute("INSERT INTO problems (name, created_at,"
+                     " bootstrap_done) VALUES (?,?,1)", (prob, db.now()))
+        db.enqueue(conn, kind="Backward", target_id="1", problem=prob)
+    conn.execute("UPDATE queue SET owner_pid = 424242, leased_at = ?",
+                 (db.now(),))
+    _recover_at_startup(conn, scope="a")
+    left = conn.execute("SELECT problem FROM queue").fetchall()
+    assert left == [], f"dead-owner leases survived outside the scope: {left}"
