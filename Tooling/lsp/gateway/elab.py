@@ -191,8 +191,19 @@ def elab_gate_stats() -> "dict":
 
 _BUILD_LANES_MAX = int(os.environ.get("ASTERISM_BUILD_LANES") or 0) or max(
     1, _ELAB_CONCURRENCY // 2)
-_BUILD_LEASE_TTL_SEC = float(
-    os.environ.get("ASTERISM_BUILD_LEASE_TTL_SEC") or 900)
+
+
+def _default_build_lease_ttl_sec() -> float:
+    """Short on purpose. A lease nobody holds — the daemon died, or its
+    POST timed out client-side while a stalled loop went on to grant it
+    (flagship 2026-08-30 04:51Z: 7 lanes parked for 900s) — is holding
+    ELABORATION lanes; the TTL is how long Formalizers pay for it. The
+    daemon renews every ttl/4, so a live build survives two missed
+    renews."""
+    return float(os.environ.get("ASTERISM_BUILD_LEASE_TTL_SEC") or 120)
+
+
+_BUILD_LEASE_TTL_SEC = _default_build_lease_ttl_sec()
 _BUILD_LOCK = threading.Lock()
 _BUILD_LEASES: "dict[str, dict]" = {}
 

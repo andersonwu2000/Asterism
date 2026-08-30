@@ -609,7 +609,7 @@ _WATERMARKS = {
     # IS the HTTP surface — eleven `@mcp.custom_route` handlers, the
     # session-header middleware, `main()` and the facade — so this
     # number stops falling here.
-    "Tooling/lsp/gateway/__init__.py": 1110,  # born 2026-08-29 from the gateway split (A1-1); +2 2026-08-30 stderr stamp install; +49 2026-08-30 build-lease routes (one CPU budget, two consumers)
+    "Tooling/lsp/gateway/__init__.py": 1113,  # born 2026-08-29 from the gateway split (A1-1); +2 2026-08-30 stderr stamp install; +49 2026-08-30 build-lease routes (one CPU budget, two consumers); +3 2026-08-30 release routes off the event loop
     "Tooling/lsp/gateway/state.py": 300,  # born 2026-08-29 from the gateway split (A1-1)
     "Tooling/lsp/gateway/elab.py": 280,  # born 2026-08-29 from the gateway split (A1-1); +65 2026-08-30 build leases — the second tenant lives beside the semaphore it borrows from
     "Tooling/lsp/gateway/backend.py": 250,  # born 2026-08-29 from the gateway split (A1-1)
@@ -656,7 +656,7 @@ _WATERMARKS = {
     # `__init__.py` re-exports every public (and tested private) symbol.
     "Tooling/pipeline/strategist/__init__.py": 100,  # born 2026-08-28 from the strategist.py split (B1)
     "Tooling/pipeline/strategist/model.py": 300,  # born 2026-08-28 from the strategist.py split (B1)
-    "Tooling/pipeline/strategist/verify.py": 1085,  # born 2026-08-28 from the strategist.py split (B1)  # +routine audit 2026-08-30
+    "Tooling/pipeline/strategist/verify.py": 1092,  # born 2026-08-28 from the strategist.py split (B1)  # +routine audit 2026-08-30; +7 2026-08-30 action gate reads target_id, shelved roots not in flight (3e61beb9 shipped red here — caught 05:59Z)
     "Tooling/pipeline/strategist/commit.py": 1000,  # born 2026-08-28 from the strategist.py split (B1)
     "Tooling/pipeline/strategist/wake.py": 900,  # born 2026-08-28 from the strategist.py split (B1)
     # `Tooling/agent/phase2_context.py` (2,428 lines, no prior watermark

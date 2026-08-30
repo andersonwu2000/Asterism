@@ -155,6 +155,14 @@ def _http_post_json(url: str, payload: dict, timeout: float
         return e.code, data
 
 
+def lease_heartbeat_period(ttl_s: float) -> float:
+    """Renew every quarter of the TTL (never under 5s): two renews may
+    be lost to a stalled gateway loop before a live build's lease
+    expires under it. The server side of the same contract is
+    `elab._default_build_lease_ttl_sec`."""
+    return max(5.0, float(ttl_s) / 4.0)
+
+
 class GatewayBuildGate:
     """Borrow build lanes from the gateway's elaboration gate
     (`POST /build/lease`, 409 = nothing free, poll). Renews the lease
@@ -227,7 +235,7 @@ class GatewayBuildGate:
                 pass
 
         def heartbeat():
-            period = max(5.0, ttl_s / 3.0)
+            period = lease_heartbeat_period(ttl_s)
             while not stop.wait(period):
                 renew()
 

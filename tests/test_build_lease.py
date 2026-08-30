@@ -125,7 +125,7 @@ def test_build_lease_routes(gate):
             return self._body
 
     def run(coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     import json as _json
     r = run(lsp_gateway.build_lease_route(
@@ -150,3 +150,28 @@ def test_build_lease_routes(gate):
     assert r4.status_code == 200
     r5 = run(lsp_gateway.build_lease_renew_route(_Req(token=body["token"])))
     assert r5.status_code == 404
+
+
+# ─── An orphaned lease returns its lanes within minutes ──────────────
+#
+# Flagship 2026-08-30 04:51Z: the gateway's loop stalled 17s, the
+# daemon's lease POST timed out and fell back to local bounding, then
+# the loop served the abandoned request anyway — a 7-lane lease nobody
+# held, nobody renewed, nobody released, parked for the 900s TTL. The
+# lanes are the elaboration lanes; an orphan starves Formalizers for
+# as long as the TTL. Both sides of the contract are pinned here: the
+# server's default TTL is short, and the client heartbeats often
+# enough that a live build survives a couple of missed renews.
+
+def test_orphan_lease_default_ttl_is_minutes_not_a_quarter_hour(monkeypatch):
+    monkeypatch.delenv("ASTERISM_BUILD_LEASE_TTL_SEC", raising=False)
+    import importlib
+    ttl = elab._default_build_lease_ttl_sec()
+    assert ttl <= 180, f"an orphan holds elaboration lanes for {ttl:.0f}s"
+
+
+def test_client_heartbeat_survives_two_missed_renews():
+    from Tooling.pipeline import _lake
+    for ttl in (60.0, 120.0, 900.0):
+        period = _lake.lease_heartbeat_period(ttl)
+        assert 5.0 <= period <= ttl / 3.0, (ttl, period)

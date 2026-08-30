@@ -3272,3 +3272,83 @@ def test_start_workers_reaps_a_backend_whose_initialize_failed(
         (_state.backend, _state.workspace, _state.workers,
          _state.init_error) = saved[0], saved[1], saved[2], saved[3]
         _state.ready_event.set()
+
+
+# ─── Session release must not run on the event loop (2026-08-30) ─────
+#
+# Flagship 04:51Z: `/release/{token}` ran `_release_session_internal`
+# inline, and that call recycles a heavy slot — didClose, wait for the
+# worker to die (up to 15s), didOpen, wait_for_file_done. 17.3s on the
+# loop thread, during which EVERY route stalled: a `/build/lease` POST
+# timed out client-side (10s), another `/release` timed out, and when
+# the loop came back it served the abandoned lease request — 7 lanes
+# orphaned for the 900s TTL. Same class as the 2026-05-12 `/verify`
+# bug above: sync work inside an async handler.
+
+def _off_thread_probe(monkeypatch, attr: str, ret):
+    """Patch `lsp_gateway.<attr>` to record the thread it runs on."""
+    import threading
+    seen: dict[str, object] = {}
+
+    def _probe(*a, **kw):
+        seen["tid"] = threading.get_ident()
+        return ret
+
+    monkeypatch.setattr(lsp_gateway, attr, _probe)
+    return seen
+
+
+def _asgi_request(method: str, path: str, path_params: dict,
+                  body: bytes = b"{}"):
+    from starlette.requests import Request
+    scope = {"type": "http", "method": method, "path": path,
+             "headers": [(b"content-type", b"application/json")],
+             "query_string": b"", "path_params": path_params}
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(msg):
+        pass
+
+    return Request(scope, receive=receive, send=send)
+
+
+def _assert_off_loop(seen: dict, what: str) -> None:
+    import threading
+    assert "tid" in seen, f"{what} was not called"
+    assert seen["tid"] != threading.get_ident(), (
+        f"{what} ran on the event-loop thread — a slot recycle inside it "
+        f"stalls every other route (flagship 2026-08-30 04:51Z: 17.3s, "
+        f"one orphaned build lease). Expected asyncio.to_thread.")
+
+
+def test_release_route_runs_session_release_off_the_event_loop(monkeypatch):
+    import asyncio
+    seen = _off_thread_probe(monkeypatch, "_release_session_internal", None)
+    req = _asgi_request("POST", "/release/tok", {"token": "tok"})
+    asyncio.run(lsp_gateway.release(req))
+    _assert_off_loop(seen, "_release_session_internal")
+
+
+def test_interactive_release_runs_off_the_event_loop(monkeypatch):
+    import asyncio
+    seen = _off_thread_probe(monkeypatch, "_release_session_internal", None)
+    monkeypatch.setattr(lsp_gateway, "_interactive_meta", lambda t: None)
+    req = _asgi_request("POST", "/interactive/release", {},
+                        body=b'{"token": "tok"}')
+    asyncio.run(lsp_gateway.interactive_release(req))
+    _assert_off_loop(seen, "_release_session_internal")
+
+
+def test_interactive_register_claims_off_the_event_loop(monkeypatch, tmp_path):
+    """The claim path evicts stale editors via `_release_session_internal`
+    (same recycle inside) before it registers — all of it off-loop."""
+    import asyncio
+    seen = _off_thread_probe(monkeypatch, "_register_session_internal",
+                             ("tok", None))
+    monkeypatch.setattr(_state, "workspace", tmp_path)
+    req = _asgi_request("POST", "/interactive/register", {},
+                        body=b'{"content": "-- x"}')
+    asyncio.run(lsp_gateway.interactive_register(req))
+    _assert_off_loop(seen, "_register_session_internal")

@@ -279,7 +279,13 @@ async def register(request: Request):
 async def release(request: Request):
     """Drop session metadata. Idempotent on unknown tokens."""
     token = request.path_params["token"]
-    _release_session_internal(token)
+    # Off the loop. A release may recycle a heavy slot — didClose, wait
+    # for the worker to die, didOpen, wait for the warm-up: 17.3s on
+    # the flagship 2026-08-30 04:51Z, during which every other route
+    # (a /build/lease POST, another /release) timed out client-side
+    # and the loop then served the abandoned lease request into a
+    # 900s orphan. Same class as /verify's 2026-05-12 fix.
+    await asyncio.to_thread(_release_session_internal, token)
     return JSONResponse({"ok": True}, status_code=200)
 
 
@@ -364,20 +370,26 @@ async def interactive_register(request: Request):
             log_path=None, kind="interactive", interactive=True,
         )
 
-    token, err = _claim()
-    if err and err.startswith("interactive slot busy"):
-        # Last editor wins. The holder is either an orphan (serve
-        # hard-killed before its release — otherwise it waits out the
-        # 900s sweep) or another live tab; either way the session the
-        # user is opening NOW is the one that matters. Pipeline slots
-        # are untouchable by construction — this evicts interactive
-        # claims only.
-        with _state.sessions_lock:
-            stale = [t for t, m in _state.sessions.items()
-                     if m.kind == "interactive"]
-        for t in stale:
-            _release_session_internal(t)
+    def _claim_evicting() -> "tuple[str, str | None]":
         token, err = _claim()
+        if err and err.startswith("interactive slot busy"):
+            # Last editor wins. The holder is either an orphan (serve
+            # hard-killed before its release — otherwise it waits out the
+            # 900s sweep) or another live tab; either way the session the
+            # user is opening NOW is the one that matters. Pipeline slots
+            # are untouchable by construction — this evicts interactive
+            # claims only.
+            with _state.sessions_lock:
+                stale = [t for t, m in _state.sessions.items()
+                         if m.kind == "interactive"]
+            for t in stale:
+                _release_session_internal(t)
+            token, err = _claim()
+        return token, err
+
+    # Off the loop: the eviction releases sessions, and a release may
+    # recycle a heavy slot (tens of seconds) — see `release` above.
+    token, err = await asyncio.to_thread(_claim_evicting)
     if err:
         scratch.unlink(missing_ok=True)
         busy = err.startswith("interactive slot busy")
@@ -503,7 +515,7 @@ async def interactive_release(request: Request):
         data = {}
     token = str(data.get("token") or "")
     meta = _interactive_meta(token)
-    _release_session_internal(token)
+    await asyncio.to_thread(_release_session_internal, token)
     if meta is not None:
         try:
             meta.target_path.unlink(missing_ok=True)
