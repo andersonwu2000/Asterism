@@ -17,7 +17,8 @@ The rewind is an APPROXIMATION and says so:
   - a `succeeded`/`superseded` strategy whose goal is no longer proved
     falls back to `proposed` (strategy history is not journaled);
   - groups touched after the cutoff go back to `active`; the routine /
-    strategist clocks are clamped to the cutoff.
+    strategist clocks go back to the group's last surviving commit;
+  - proof files of the deleted rows are pruned from the scratch tree.
 It refuses to open the live database (`open_copy_for_rewind`).
 """
 from __future__ import annotations
@@ -134,16 +135,63 @@ def rewind(conn: sqlite3.Connection, *, problem: str, cutoff: str) -> dict:
         "UPDATE groups SET status = 'active' WHERE problem = ? AND updated_at > ?"
         " AND status IN ('closed', 'returned', 'delivered')", (problem, cutoff))
     rep["groups_reopened"] = cur.rowcount
+    # The clocks are the batch-acknowledgement ratchets the trigger
+    # derivation reads: clamping them to the cutoff would make a batch
+    # resolved just before it look acknowledged (the replay would derive
+    # `routine`, not the `inject_batch_done` the original wake had). A
+    # touched clock goes back to the group's last SURVIVING strategist
+    # commit; a group with none keeps NULL semantics via the cutoff.
+    for g in conn.execute("SELECT id FROM groups WHERE problem = ?", (problem,)).fetchall():
+        gid = int(g["id"])
+        last = conn.execute(
+            "SELECT MAX(created_at) FROM strategist_decisions"
+            " WHERE problem = ? AND group_id = ?", (problem, gid)).fetchone()[0]
+        anchor = str(last) if last else cutoff
+        for col in ("last_routine_at", "last_strategist_at"):
+            conn.execute(f"UPDATE groups SET {col} = ? WHERE id = ? AND {col} > ?",
+                         (anchor, gid, cutoff))
+    last_p = conn.execute(
+        "SELECT MAX(created_at) FROM strategist_decisions WHERE problem = ?",
+        (problem,)).fetchone()[0]
     for col in ("last_routine_at", "last_strategist_at"):
-        conn.execute(f"UPDATE groups SET {col} = ? WHERE problem = ? AND {col} > ?",
-                     (cutoff, problem, cutoff))
         try:
             conn.execute(f"UPDATE problems SET {col} = ? WHERE name = ? AND {col} > ?",
-                         (cutoff, problem, cutoff))
+                         (str(last_p) if last_p else cutoff, problem, cutoff))
         except sqlite3.OperationalError:
             pass
     conn.commit()
     return rep
+
+
+def prune_proof_files(conn: sqlite3.Connection, *, snapshot_db: Path,
+                      workspace: Path, problem: str) -> list[str]:
+    """Delete the proof files of rows the rewind removed, so disk matches
+    the rewound DB (a brick or strategy file born after the cutoff would
+    still show in CATALOG / inspect). Files the DB never knew are left
+    alone. Returns the removed file names."""
+    snap = sqlite3.connect(f"file:{Path(snapshot_db).as_posix()}?mode=ro", uri=True)
+    live_goal_paths = {str(r[0]) for r in conn.execute(
+        "SELECT lean_path FROM goals WHERE problem = ?", (problem,))}
+    live_strat_paths = {str(r[0]) for r in conn.execute(
+        "SELECT s.scratch_path FROM strategies s JOIN goals g ON g.id = s.goal_id"
+        " WHERE g.problem = ? AND s.scratch_path IS NOT NULL", (problem,))}
+    gone: list[str] = []
+    for r in snap.execute("SELECT lean_path FROM goals WHERE problem = ?", (problem,)):
+        if str(r[0]) not in live_goal_paths:
+            gone.append(str(r[0]))
+    for r in snap.execute(
+            "SELECT s.scratch_path FROM strategies s JOIN goals g ON g.id = s.goal_id"
+            " WHERE g.problem = ? AND s.scratch_path IS NOT NULL", (problem,)):
+        if str(r[0]) not in live_strat_paths:
+            gone.append(str(r[0]))
+    snap.close()
+    removed: list[str] = []
+    for rel in gone:
+        p = workspace / rel
+        if p.exists():
+            p.unlink()
+            removed.append(p.name)
+    return removed
 
 
 # ─── scratch workspace ───
@@ -200,6 +248,9 @@ def main(argv=None) -> int:
     conn = open_copy_for_rewind(dst / "asterism.db")
     rep = rewind(conn, problem=a.problem, cutoff=a.cutoff)
     print("[timetravel] rewind:", rep)
+    removed = prune_proof_files(conn, snapshot_db=snap / "asterism.db",
+                                workspace=dst, problem=a.problem)
+    print(f"[timetravel] pruned {len(removed)} post-cutoff proof file(s)")
     for k, v in (("goals", conn.execute("SELECT COUNT(*) FROM goals WHERE problem=?", (a.problem,)).fetchone()[0]),
                  ("max decision", conn.execute("SELECT MAX(id) FROM strategist_decisions WHERE problem=?", (a.problem,)).fetchone()[0]),
                  ("max rev row", conn.execute("SELECT MAX(id) FROM programme_revisions WHERE problem=?", (a.problem,)).fetchone()[0])):
