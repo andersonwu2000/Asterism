@@ -118,3 +118,23 @@ def test_prune_proof_files_removes_files_of_deleted_rows(tmp_path, conn):
     assert sorted(removed) == ["L_new.lean", "_strategy_s2.lean"]
     assert (proofs / "L_old.lean").exists() and (proofs / "_strategy_s1.lean").exists()
     assert (proofs / "L_unrelated.lean").exists(), "files the DB never knew are left alone"
+
+
+def test_refresh_derived_files_rewrites_tree_without_the_deleted_goals(tmp_path, conn):
+    """Experiment 3, first run (2026-08-30): the scratch DB was rewound
+    but `Problems/<p>/TREE.md` was the snapshot's file — it still listed
+    the goal the replayed proposal was about to mint, and the judge's
+    projection copies TREE.md verbatim, so the judge rebutted the
+    proposal as 'duplicate work'. The rendered files are derived from
+    the DB and must be re-derived after the rewind."""
+    old, new, s_old, s_new = _seed(conn)
+    pdir = tmp_path / "ws" / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    (pdir / "TREE.md").write_text("- new [g%d] — stale\n- old [g%d]\n" % (new, old),
+                                  encoding="utf-8")
+    tt.rewind(conn, problem="p", cutoff=CUT)
+    written = tt.refresh_derived_files(conn, workspace=tmp_path / "ws", problem="p")
+    tree = (pdir / "TREE.md").read_text(encoding="utf-8")
+    assert f"[g{new}]" not in tree and "stale" not in tree
+    assert f"[g{old}]" in tree
+    assert any(p.name == "TREE.md" for p in written)

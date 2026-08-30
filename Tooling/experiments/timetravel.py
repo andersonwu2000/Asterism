@@ -221,6 +221,28 @@ def _link_dir(src: Path, dst: Path) -> None:
         os.symlink(src, dst, target_is_directory=True)
 
 
+def refresh_derived_files(conn: sqlite3.Connection, *, workspace: Path,
+                          problem: str) -> "list[Path]":
+    """Re-derive the rendered files the DB owns — `TREE.md` and every
+    group's `PROGRAMME.md` — so the scratch workspace shows the rewound
+    scene, not the snapshot's. The judge's projection copies TREE.md
+    verbatim and the agents grep both in place: the first experiment-3
+    run (2026-08-30) was judged against a TREE that still listed the
+    goal the proposal was about to mint."""
+    from Tooling.state import programme, tree
+    written: list[Path] = []
+    t = tree.write(conn, workspace, problem)
+    if t is not None:
+        written.append(t)
+    pdir = db.problem_dir(workspace, problem)
+    if pdir.exists():
+        for row in conn.execute("SELECT id FROM groups WHERE problem = ?", (problem,)):
+            out = programme.render(conn, problem, pdir, int(row["id"]))
+            if out is not None:
+                written.append(out)
+    return written
+
+
 def build_scratch(*, src: Path, dst: Path, snapshot_db: Path,
                   snapshot_problem_dir: Path, problem: str) -> None:
     """A workspace beside the real one: code and config COPIED, the
@@ -262,6 +284,8 @@ def main(argv=None) -> int:
     removed = prune_proof_files(conn, snapshot_db=snap / "asterism.db",
                                 workspace=dst, problem=a.problem)
     print(f"[timetravel] pruned {len(removed)} post-cutoff proof file(s)")
+    written = refresh_derived_files(conn, workspace=dst, problem=a.problem)
+    print(f"[timetravel] re-derived {len(written)} rendered file(s) (TREE.md, PROGRAMME.md)")
     for k, v in (("goals", conn.execute("SELECT COUNT(*) FROM goals WHERE problem=?", (a.problem,)).fetchone()[0]),
                  ("max decision", conn.execute("SELECT MAX(id) FROM strategist_decisions WHERE problem=?", (a.problem,)).fetchone()[0]),
                  ("max rev row", conn.execute("SELECT MAX(id) FROM programme_revisions WHERE problem=?", (a.problem,)).fetchone()[0])):
