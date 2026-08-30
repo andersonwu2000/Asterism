@@ -31,7 +31,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-TERMINAL = {"proved", "dead", "disproved", "shelved"}
+from Tooling.state import db, groups
+from Tooling.state import transitions as _transitions
+
+TERMINAL = _transitions.GOAL_TERMINALS
 
 
 def _looks_live(path: Path) -> bool:
@@ -120,21 +123,29 @@ def rewind(conn: sqlite3.Connection, *, problem: str, cutoff: str) -> dict:
         else:
             continue
         if want != str(g["status"]):
-            conn.execute("UPDATE goals SET status = ? WHERE id = ?", (want, int(g["id"])))
+            # The checked mutator appends a goal_events row stamped now();
+            # the journal trim two lines down removes it with the rest of
+            # the post-cutoff history.
+            db.update_goal_status(conn, int(g["id"]), want, event="timetravel_rewind",
+                                  reason=f"rewound to {cutoff}")
             rewound += 1
     rep["goals_rewound"] = rewound
     conn.execute("DELETE FROM goal_events WHERE problem = ? AND at > ?", (problem, cutoff))
     # 5. strategies whose goal is no longer proved cannot have won
-    cur = conn.execute(
-        "UPDATE strategies SET status = 'proposed' WHERE status IN ('succeeded', 'superseded')"
+    won = conn.execute(
+        "SELECT id FROM strategies WHERE status IN ('succeeded', 'superseded')"
         " AND goal_id IN (SELECT id FROM goals WHERE problem = ? AND status != 'proved')",
-        (problem,))
-    rep["strategies_rewound"] = cur.rowcount
+        (problem,)).fetchall()
+    for row in won:
+        db.update_strategy_status(conn, int(row["id"]), "proposed")  # non-terminal: no hook
+    rep["strategies_rewound"] = len(won)
     # 6. groups and clocks
-    cur = conn.execute(
-        "UPDATE groups SET status = 'active' WHERE problem = ? AND updated_at > ?"
-        " AND status IN ('closed', 'returned', 'delivered')", (problem, cutoff))
-    rep["groups_reopened"] = cur.rowcount
+    closed = conn.execute(
+        "SELECT id FROM groups WHERE problem = ? AND updated_at > ?"
+        " AND status IN ('closed', 'returned', 'delivered')", (problem, cutoff)).fetchall()
+    for row in closed:
+        groups.rewind_status(conn, int(row["id"]), "active")
+    rep["groups_reopened"] = len(closed)
     # The clocks are the batch-acknowledgement ratchets the trigger
     # derivation reads: clamping them to the cutoff would make a batch
     # resolved just before it look acknowledged (the replay would derive

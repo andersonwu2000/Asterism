@@ -394,6 +394,20 @@ def open_group(conn: sqlite3.Connection, *, problem: str,
     return int(cur.lastrowid)
 
 
+def rewind_status(conn: sqlite3.Connection, group_id: int, status: str) -> None:
+    """Restore a HISTORICAL status — `Tooling.experiments.timetravel` only,
+    on a copy of the DB. No edge check (closed → active is not a transition,
+    it is history being put back) and no parent wake: nothing happened.
+    Lives here so the one-door lint stays true — `groups.status` is
+    written from this module and nowhere else."""
+    if status not in STATUSES:
+        raise ValueError(
+            f"unknown group status {status!r}; expected one of {STATUSES}")
+    conn.execute(
+        "UPDATE groups SET status = ?, updated_at = ? WHERE id = ?",
+        (status, now(), int(group_id)))
+
+
 def set_status(conn: sqlite3.Connection, group_id: int,
                status: str, *, event: str = "") -> None:
     """The single sanctioned status mutator, and the group FSM's chokepoint.

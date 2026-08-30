@@ -726,7 +726,11 @@ CAPABILITIES: "dict[str, ProviderCapabilities]" = {
         # fleet on the zen shim) after the strict-response family it
         # shipped was absorbed shim-side (total_tokens, response id,
         # forward-slash skills paths).
-        tested_version="0.149.0",
+        # 0.151 smoke: 2026-08-30 local experiment 1 — 12 Strategist wakes
+        # with 11-round Adversary debates, sol xhigh, ~30 codex spawns on
+        # 0.151.0 (rollout session_meta cli_version), parser and MCP
+        # tools unchanged.
+        tested_version="0.151.0",
         marker_tables=("Tooling.llm.codex_cli._QUOTA_MARKERS",
                        "Tooling.llm.codex_cli._MISCONFIG_MARKERS"),
         single_instance_lock=False,
