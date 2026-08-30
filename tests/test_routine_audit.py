@@ -388,11 +388,69 @@ def test_action_batch_must_act_on_every_fired_root(wconn, workspace):
     assert "root" in err and "audit" in err.lower()
     shelve, _ = strategist.parse_decisions(json.dumps(
         [{"kind": "ConfirmShelve", "target_goal_id": root,
-          "reason": "Roadmap PAST: retired; restart when a band consumes it"}]))
+          "reason": "Roadmap PAST: retired; restart when a band consumes it"},
+         {"kind": "Inject", "proof": "### Brick replacement_bound\n"
+          "Mint one theorem replacement_bound: the prerequisite the "
+          "audit named.\n\nProof. Trivial."}]))
     err2 = strategist.verify_decisions(
         shelve, wconn, problem="p", workspace=workspace,
         trigger_kind="routine_fired", group_id=top)
-    assert "audit" not in err2.lower(), err2
+    # 2026-08-30, experiment 1: this assertion used to read `"audit" not
+    # in err2` and passed while the gate rejected EVERY correct batch in
+    # the field (it read `d.target_goal_id`; the model's field is
+    # `target_id`) — the rejection text contained "audit" only on the
+    # code path the test never reached. A correct batch verifies clean.
+    assert not err2, err2
+
+
+def test_in_flight_lines_skip_roots_that_are_no_longer_in_flight(conn):
+    """Experiment 1 (2026-08-30): the audit listed roots already
+    `shelved` as lines in flight, the strategist dutifully fired on them,
+    and the action wake was then required to ConfirmShelve goals that
+    were shelved already. A root is in flight only while it is live."""
+    from Tooling.pipeline.strategist import audit
+    top = groups_store.ensure_top_group(conn, "p")
+    live = _line_in_flight(conn, top)
+    parked = _goal(conn, "parked", status="shelved")
+    _inject(conn, top, parked, batch="live0002")
+    done = _goal(conn, "done", status="proved")
+    _inject(conn, top, done, batch="live0003")
+    conn.commit()
+    ids = [ln["goal_id"] for ln in audit.in_flight_lines(conn, "p", top)]
+    assert ids == [live]
+
+
+def test_action_batch_is_not_asked_to_act_on_a_root_no_longer_live(wconn, workspace):
+    """Belt and braces for the same class: a fired root that has since
+    left the live set (shelved/proved/dead by another path) is not a
+    line this batch can act on; only live fired roots are required."""
+    from Tooling.pipeline import strategist
+    from Tooling.pipeline.strategist import audit
+    top = groups_store.ensure_top_group(wconn, "p")
+    root = _line_in_flight(wconn, top)
+    gone = _goal(wconn, "gone", status="attempting")
+    _inject(wconn, top, gone, batch="live0002")
+    text = json.dumps({"criteria": {
+        "1": ["clear: ok"], "2": ["clear: ok"],
+        "3": [{"goal_id": root, "slug": "root", "verdict": "fired", "reason": "no consumer"},
+              {"goal_id": gone, "slug": "gone", "verdict": "fired", "reason": "no consumer"}],
+        "4": [{"goal_id": root, "slug": "root", "verdict": "clear", "reason": "fresh"},
+              {"goal_id": gone, "slug": "gone", "verdict": "clear", "reason": "fresh"}]}})
+    v, _ = audit.parse_verdict(text, [{"goal_id": root, "slug": "root"},
+                                      {"goal_id": gone, "slug": "gone"}])
+    audit.record_verdict(wconn, problem="p", group_id=top,
+                         pipeline_id="x", verdict=v, raw="{}")
+    db.update_goal_status(wconn, gone, "shelved")
+    wconn.commit()
+    shelve, _ = strategist.parse_decisions(json.dumps(
+        [{"kind": "ConfirmShelve", "target_goal_id": root,
+          "reason": "Roadmap PAST: retired; restart when a band consumes it"},
+         {"kind": "Inject", "proof": "### Brick replacement_bound\n"
+          "Mint one theorem replacement_bound.\n\nProof. Trivial."}]))
+    err = strategist.verify_decisions(
+        shelve, wconn, problem="p", workspace=workspace,
+        trigger_kind="routine_fired", group_id=top)
+    assert not err, err
 
 
 def test_action_wake_commit_marks_the_verdict_acted(wconn, workspace):
@@ -427,3 +485,30 @@ def test_validate_json_previews_audit_coverage(tmp_path, monkeypatch):
     out = mcp_tools.validate_json(file="verdict.json")
     assert "r2" in out and "not ruled on" in out
     assert "criterion 3" in out and "criterion 4" in out
+
+
+def test_verdict_section_shows_only_fired_roots_still_live(conn):
+    """The action wake's `## Routine audit verdict` lists the fired
+    lines verbatim. A root that left the live set after the audit is not
+    a line the batch can act on; showing it invites a ConfirmShelve on
+    a goal already shelved (experiment 1, 2026-08-30). Roadmap-level
+    findings (no goal) always show."""
+    from Tooling.pipeline.strategist import audit
+    top = groups_store.ensure_top_group(conn, "p")
+    live = _line_in_flight(conn, top)
+    gone = _goal(conn, "gone", status="shelved")
+    text = json.dumps({"criteria": {
+        "1": ["fired: the Roadmap cannot reach MAIN"], "2": ["clear: ok"],
+        "3": [{"goal_id": live, "slug": "root", "verdict": "fired", "reason": "no consumer"},
+              {"goal_id": gone, "slug": "gone", "verdict": "fired", "reason": "no consumer"}],
+        "4": [{"goal_id": live, "slug": "root", "verdict": "clear", "reason": "fresh"},
+              {"goal_id": gone, "slug": "gone", "verdict": "clear", "reason": "fresh"}]}})
+    v, _ = audit.parse_verdict(text, [{"goal_id": live, "slug": "root"},
+                                      {"goal_id": gone, "slug": "gone"}])
+    vid = audit.record_verdict(conn, problem="p", group_id=top,
+                               pipeline_id="x", verdict=v, raw="{}")
+    row = audit.pending_fired_verdict(conn, top)
+    body = "\n".join(audit.render_verdict_section(row, conn))
+    assert "`root` (goal_id" in body
+    assert "`gone`" not in body
+    assert "cannot reach MAIN" in body
