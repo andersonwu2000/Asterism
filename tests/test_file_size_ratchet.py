@@ -512,7 +512,7 @@ _WATERMARKS = {
     # self-heal (2026-08-24); +v43 stall rebuild.
     # 2750→2800: judge provenance columns (survey P1/P2,
     # 2026-08-29) — conscious bump.
-    "Tooling/state/db_migrations.py": 2859,  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
+    "Tooling/state/db_migrations.py": 2860,  # +1 2026-08-30 last_words column  # +39 2026-08-30 v46 problems.state CHECK gains 'refuted'  # +routine audit 2026-08-30
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
@@ -658,7 +658,7 @@ _WATERMARKS = {
     "Tooling/pipeline/strategist/model.py": 300,  # born 2026-08-28 from the strategist.py split (B1)
     "Tooling/pipeline/strategist/verify.py": 1109,  # +17 2026-08-30 refuted needs the gate-born brick; Ingest accepts a disproved root  # born 2026-08-28 from the strategist.py split (B1)  # +routine audit 2026-08-30; +7 2026-08-30 action gate reads target_id, shelved roots not in flight (3e61beb9 shipped red here — caught 05:59Z)
     "Tooling/pipeline/strategist/commit.py": 1011,  # +11 2026-08-30 Ingest on a disproved root closes as refuted  # born 2026-08-28 from the strategist.py split (B1)
-    "Tooling/pipeline/strategist/wake.py": 900,  # born 2026-08-28 from the strategist.py split (B1)
+    "Tooling/pipeline/strategist/wake.py": 906,  # +6 2026-08-30 last-words turn before the adversarial discard  # born 2026-08-28 from the strategist.py split (B1)
     # `Tooling/agent/phase2_context.py` (2,428 lines, no prior watermark
     # here) split move-only into `Tooling/agent/phase2_context/` along the
     # file's own section breaks (task B2): `dossier.py` is the pending-
@@ -677,7 +677,7 @@ _WATERMARKS = {
     "Tooling/agent/phase2_context/__init__.py": 150,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/dossier.py": 250,  # born 2026-08-28 from the phase2_context.py split (B2)
     "Tooling/agent/phase2_context/outcomes.py": 850,  # born 2026-08-28 from the phase2_context.py split (B2)
-    "Tooling/agent/phase2_context/compile.py": 1207,  # +1 2026-08-30 refuted names the gate brick  # +41 2026-08-30 rebuttal surface after a discarded cycle (last round inline, REJECTED.md lazy)  # born 2026-08-28 from the phase2_context.py split (B2)  # +routine audit 2026-08-30
+    "Tooling/agent/phase2_context/compile.py": 1212,  # +5 2026-08-30 the author's last words after the rebuttal  # +1 2026-08-30 refuted names the gate brick  # +41 2026-08-30 rebuttal surface after a discarded cycle (last round inline, REJECTED.md lazy)  # born 2026-08-28 from the phase2_context.py split (B2)  # +routine audit 2026-08-30
     "Tooling/agent/phase2_context/forward.py": 350,  # born 2026-08-28 from the phase2_context.py split (B2)
     # `Tooling/serve/data.py` (2,357 lines, no prior watermark here) split
     # move-only into `Tooling/serve/data/` along the file's own section
