@@ -84,6 +84,16 @@ _ANON_INSTANCE_RE = re.compile(
     r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*(?:" + DECL_MODIFIERS + r"[ \t]+)*"
     r"instance[ \t]*(?::|\[|\{|\()", re.MULTILINE)
 
+# Every named declaration form, not just the commit parser's subset:
+# experiment 6 (2026-08-30, 1,132 local stubs) found the helpers agents
+# write include `abbrev` and `opaque`, which DECL_HEAD_RE does not know.
+_ANY_DECL_HEAD_RE = re.compile(
+    r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*(?:" + DECL_MODIFIERS + r"[ \t]+)*"
+    r"(theorem|lemma|def|abbrev|opaque|axiom|structure|class|inductive|instance)"
+    r"[ \t]+([A-Za-z_][\w'!?]*)",
+    re.MULTILINE,
+)
+
 
 def extra_decls(stub_text: str, slug: str) -> list[str]:
     """Names of every top-level declaration in `stub_text` other than
@@ -91,7 +101,7 @@ def extra_decls(stub_text: str, slug: str) -> list[str]:
     `<instance>`. Comments are stripped first. Empty = a clean stub."""
     text = strip_comments(stub_text)
     found: list[tuple[int, str]] = []
-    for m in DECL_HEAD_RE.finditer(text):
+    for m in _ANY_DECL_HEAD_RE.finditer(text):
         name = m.group(2)
         if name != slug:
             found.append((m.start(), name))
