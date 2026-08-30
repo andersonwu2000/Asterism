@@ -79,3 +79,42 @@ def test_rewind_refuses_the_live_database(tmp_path, monkeypatch):
     monkeypatch.setattr(tt, "_looks_live", lambda p: True)
     with pytest.raises(RuntimeError, match="live"):
         tt.open_copy_for_rewind(live)
+
+
+def test_rewind_clamps_group_clocks_to_the_last_surviving_commit(conn):
+    """The trigger derivation reads `groups.last_strategist_at` as the
+    batch-acknowledgement ratchet. Clamping it to the cutoff instant
+    makes the batch resolved just before look acknowledged, and the
+    replay derives `routine` instead of the `inject_batch_done` the
+    original wake had. The clock goes back to the last SURVIVING
+    strategist commit of that group."""
+    _seed(conn)
+    conn.execute("INSERT INTO groups (problem, charter, status, created_at, updated_at,"
+                 " last_routine_at, last_strategist_at) VALUES (?,?,?,?,?,?,?)",
+                 ("p", "c", "active", BEFORE, AFTER, AFTER, AFTER))
+    gid = conn.execute("SELECT id FROM groups WHERE problem='p'").fetchone()["id"]
+    conn.execute("UPDATE strategist_decisions SET group_id=? WHERE problem='p'", (gid,))
+    conn.commit()
+    tt.rewind(conn, problem="p", cutoff=CUT)
+    g = conn.execute("SELECT last_strategist_at, last_routine_at FROM groups WHERE id=?", (gid,)).fetchone()
+    assert g["last_strategist_at"] == BEFORE, "the surviving decision's created_at, not the cutoff"
+    assert g["last_routine_at"] <= BEFORE
+
+
+def test_prune_proof_files_removes_files_of_deleted_rows(tmp_path, conn):
+    """Files on disk must match the rewound DB: a brick or strategy
+    file born after the cutoff would still show in CATALOG / inspect."""
+    import shutil
+    old, new, s_old, s_new = _seed(conn)
+    snap = tmp_path / "snap.db"
+    snap_conn = sqlite3.connect(snap)
+    conn.backup(snap_conn); snap_conn.close()
+    proofs = tmp_path / "ws" / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+    for name in ("L_old.lean", "L_new.lean", "_strategy_s1.lean", "_strategy_s2.lean", "L_unrelated.lean"):
+        (proofs / name).write_text("x", encoding="utf-8")
+    tt.rewind(conn, problem="p", cutoff=CUT)
+    removed = tt.prune_proof_files(conn, snapshot_db=snap, workspace=tmp_path / "ws", problem="p")
+    assert sorted(removed) == ["L_new.lean", "_strategy_s2.lean"]
+    assert (proofs / "L_old.lean").exists() and (proofs / "_strategy_s1.lean").exists()
+    assert (proofs / "L_unrelated.lean").exists(), "files the DB never knew are left alone"
