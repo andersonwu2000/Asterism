@@ -146,6 +146,7 @@ goal attempt when the helper records them.
 | `agent_timeout` | Formalizer's overall spawn wall expired; salvage/rescue did not yield a terminal result. |
 | `axiom_violation` | The result uses axioms outside the problem whitelist or introduces an illicit axiom. |
 | `batch_reference_cycle` | New sub-goal modules reference each other cyclically, so no import order exists. |
+| `stub_extra_decls` | A sub-goal stub declares more than itself (helper `def`/`instance`); promotion would drop them and break every consumer that cited them — one brick, one declaration (2026-08-30). |
 | `circular_decomposition` | A sub-goal textually restates a strict ancestor. |
 | `cite_unproved_sibling` | A patch cites a sibling whose proof is not established. |
 | `forbidden_lemma` | The patch uses a lemma forbidden by problem policy. |
